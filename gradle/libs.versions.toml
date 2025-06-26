@@ -1,0 +1,13 @@
+[versions]
+kotlin = "1.9.22"
+ktor = "2.3.9"
+coroutines = "1.7.3"
+
+[libraries]
+# Example libraries
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
