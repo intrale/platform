@@ -1,23 +1,30 @@
-import ar.com.intrale.healthRoute
-import io.ktor.server.testing.*
-import io.ktor.server.application.*
+package ar.com.intrale
+
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.server.application.*
+import io.ktor.server.testing.*
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class ApplicationTest {
 
     @Test
-    fun healthEndpointReturnsUp() = withTestApplication({
-        // Aquí configurás tu aplicación como lo harías normalmente
-        healthRoute()
-    }) {
-        handleRequest(HttpMethod.Get, "/health").apply {
-            assertEquals(HttpStatusCode.OK, response.status())
-            assertEquals("{\"status\":\"UP\"}", response.content)
+    fun healthEndpointReturnsUp() = testApplication {
+        application {
+            healthRoute()
         }
+
+        val response = client.get("/health")
+        assertEquals(HttpStatusCode.OK, response.status)
+
+        val body = response.bodyAsText()
+        val json = Json.parseToJsonElement(body).jsonObject
+
+        assertEquals("UP", json["status"]?.toString()?.replace("\"", ""))
     }
 }

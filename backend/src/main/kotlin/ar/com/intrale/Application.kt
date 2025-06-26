@@ -1,9 +1,6 @@
 package ar.com.intrale
 
-import aws.smithy.kotlin.runtime.util.type
 import com.google.gson.Gson
-import io.github.flaxoos.ktor.server.plugins.ratelimiter.RateLimiting
-import io.github.flaxoos.ktor.server.plugins.ratelimiter.implementations.TokenBucket
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -29,15 +26,6 @@ import org.slf4j.Logger
  */
 fun start(appModule: DI.Module) {
     embeddedServer(Netty/*, host = "0.0.0.0", module = Application::module*/) {
-
-        install(RateLimiting) {
-
-            rateLimiter {
-                type = TokenBucket::class
-                capacity = 100
-                rate = 10.seconds
-            }
-        }
 
         di {
             import(appModule)
