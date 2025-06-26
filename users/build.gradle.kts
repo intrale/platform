@@ -8,6 +8,10 @@ kotlin {
     jvmToolchain(21)
 }
 
+application {
+    mainClass.set("ar.com.intrale.UsersApplicationKt")
+}
+
 dependencies {
     implementation(project(":backend"))
 
@@ -30,4 +34,19 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation(libs.ktor.server.tests)
     testImplementation(libs.mockk)
+
+    // AWS Lambdas
+    implementation(libs.aws.lambda.java.core)
+    implementation(libs.aws.lambda.java.events)
+    implementation(libs.aws.lambda.java.log4j)
+
+    // DynamoDB
+    implementation(libs.aws.sdk.dynamodb)
+    implementation(libs.aws.sdk.dynamodb.enhanced)
+    implementation(libs.aws.sdk.auth)
+    implementation(libs.aws.sdk.regions)
+
+    // Two Factor
+    implementation(libs.eatthepath.java.otp)
+    implementation(libs.commons.codec)
 }
