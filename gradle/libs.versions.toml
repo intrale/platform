@@ -2,12 +2,51 @@
 kotlin = "1.9.22"
 ktor = "2.3.9"
 coroutines = "1.7.3"
+aws-lambda-java-core = "1.2.1"
+aws-lambda-java-events = "3.11.4"
+aws-lambda-java-log4j = "1.0.1"
+aws-sdk-kotlin-cognito = "1.2.28"
+logback = "1.5.18"
+serialization-json = "1.7.3"
+konform = "0.6.1"
+kodein = "7.22.0"
+datafaker = "2.4.2"
+java-jwt = "4.4.0"
+jwks-rsa = "0.22.0"
+ktor-server-rate-limiting = "1.2.10"
+shadow = "8.1.1"
+mockk = "1.13.10"
+backend = "0.25.0"
 
 [libraries]
 # Example libraries
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
+aws-lambda-java-core = { module = "com.amazonaws:aws-lambda-java-core", version.ref = "aws-lambda-java-core" }
+aws-lambda-java-events = { module = "com.amazonaws:aws-lambda-java-events", version.ref = "aws-lambda-java-events" }
+aws-lambda-java-log4j = { module = "com.amazonaws:aws-lambda-java-log4j", version.ref = "aws-lambda-java-log4j" }
+cognito-identity-provider = { module = "aws.sdk.kotlin:cognitoidentityprovider", version.ref = "aws-sdk-kotlin-cognito" }
+cognito-identity = { module = "aws.sdk.kotlin:cognitoidentity", version.ref = "aws-sdk-kotlin-cognito" }
+secretsmanager = { module = "aws.sdk.kotlin:secretsmanager", version.ref = "aws-sdk-kotlin-cognito" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+ktor-server-tests = { module = "io.ktor:ktor-server-tests", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization-json" }
+konform = { module = "io.konform:konform", version.ref = "konform" }
+kodein-di = { module = "org.kodein.di:kodein-di", version.ref = "kodein" }
+kodein-di-framework-ktor-server-jvm = { module = "org.kodein.di:kodein-di-framework-ktor-server-jvm", version.ref = "kodein" }
+datafaker = { module = "net.datafaker:datafaker", version.ref = "datafaker" }
+java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
+jwks-rsa = { module = "com.auth0:jwks-rsa", version.ref = "jwks-rsa" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+ktor-server-rate-limiting = { module = "io.github.flaxoos:ktor-server-rate-limiting", version.ref = "ktor-server-rate-limiting" }
+backend = { module = "ar.com.intrale:backend", version.ref = "backend" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
+shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }
