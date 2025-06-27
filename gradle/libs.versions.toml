@@ -1,5 +1,5 @@
 [versions]
-kotlin = "1.9.22"
+kotlin = "2.0.0"
 ktor = "2.3.9"
 coroutines = "1.7.3"
 aws-lambda-java-core = "1.2.1"
@@ -66,3 +66,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }
+compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
