@@ -4,15 +4,19 @@ enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 pluginManagement {
     repositories {
         gradlePluginPortal()
+        google()
         mavenCentral()
     }
 }
 
 dependencyResolutionManagement {
     repositories {
+        google()
         mavenCentral()
     }
 }
 
 rootProject.name = "plataforma"
-include("backend", "users", "app")
+include("app")
+include("backend")
+include("users")
