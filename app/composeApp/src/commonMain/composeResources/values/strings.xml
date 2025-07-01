@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">Intrale</string>
+    <string name="username">Usuario</string>
+    <string name="password">Contraseña</string>
+    <string name="login">Ingresar</string>
+    <string name="logout">Salir</string>
+    <string name="back_button">Volver</string>
+
+
+    <string name="home">Home</string>
+    <string name="secundary">Pantalla secundaria</string>
+</resources>

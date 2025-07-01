@@ -17,7 +17,6 @@ gson = "2.10.1"
 konform = "0.6.1"
 kodein = "7.22.0"
 
-
 java-jwt = "4.4.0"
 jwks-rsa = "0.22.0"
 
@@ -46,7 +45,10 @@ composeMultiplatform = "1.8.2"
 junit = "4.13.2"
 kotlin-multiplatform = "2.2.0"
 kotlinx-coroutines = "1.10.2"
-
+androidx-navigation = "2.7.0-alpha06"
+ktor-wasm2 = "3.0.0-wasm2"
+canard = "1.2.0"
+russhwolf = "1.2.0"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -54,6 +56,13 @@ ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref 
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
 ktor-server-tests = { module = "io.ktor:ktor-server-tests", version.ref = "ktor" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+
+ktor-client-core = { group = "io.ktor", name = "ktor-client-core", version.ref = "ktor-wasm2" }
+ktor-client-json = { group = "io.ktor", name = "ktor-client-json", version.ref = "ktor-wasm2" }
+ktor-client-logging = { group = "io.ktor", name = "ktor-client-logging", version.ref = "ktor-wasm2" }
+ktor-client-serialization = { group = "io.ktor", name = "ktor-client-serialization", version.ref = "ktor-wasm2" }
+ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor-wasm2" }
+ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor-wasm2" }
 
 kodein-di = { module = "org.kodein.di:kodein-di", version.ref = "kodein" }
 kodein-di-framework-ktor-server-jvm = { module = "org.kodein.di:kodein-di-framework-ktor-server-jvm", version.ref = "kodein" }
@@ -98,7 +107,15 @@ androidx-constraintlayout = { module = "androidx.constraintlayout:constraintlayo
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
 androidx-lifecycle-viewmodel = { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel", version.ref = "androidx-lifecycle" }
 androidx-lifecycle-runtimeCompose = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
+androidx-navigation-compose = { module = "org.jetbrains.androidx.navigation:navigation-compose", version.ref = "androidx-navigation" }
 kotlinx-coroutinesSwing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
+canard = { module = "org.kodein.log:canard", version.ref = "canard" }
+settings-no-arg = { module = "com.russhwolf:multiplatform-settings-no-arg", version.ref = "russhwolf" }
+settings-serialization = { module = "com.russhwolf:multiplatform-settings-serialization", version.ref = "russhwolf" }
+settings-coroutines = { module = "com.russhwolf:multiplatform-settings-coroutines", version.ref = "russhwolf" }
+
+[bundles]
+ktor-common = ["ktor-client-core", "ktor-client-json", "ktor-client-logging", "ktor-client-serialization", "ktor-client-content-negotiation", "ktor-serialization-kotlinx-json"]
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

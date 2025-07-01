@@ -21,9 +21,7 @@ kotlin {
     }
     
     listOf(
-        iosX64(),
-        iosArm64(),
-        iosSimulatorArm64()
+        iosX64()
     ).forEach { iosTarget ->
         iosTarget.binaries.framework {
             baseName = "ComposeApp"
@@ -55,7 +53,7 @@ kotlin {
     
     sourceSets {
         val desktopMain by getting
-        
+
         androidMain.dependencies {
             implementation(compose.preview)
             implementation(libs.androidx.activity.compose)
@@ -64,11 +62,26 @@ kotlin {
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.material3)
+            implementation(compose.materialIconsExtended)
             implementation(compose.ui)
             implementation(compose.components.resources)
             implementation(compose.components.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodel)
             implementation(libs.androidx.lifecycle.runtimeCompose)
+
+            implementation(libs.androidx.navigation.compose)
+
+            implementation(libs.bundles.ktor.common)
+            implementation(libs.kodein.di)
+            implementation(libs.canard)
+
+            implementation(libs.settings.no.arg)
+            implementation(libs.settings.serialization)
+            implementation(libs.settings.coroutines)
+
+            implementation(libs.konform)
+
+
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
@@ -124,4 +137,10 @@ compose.desktop {
             packageVersion = "1.0.0"
         }
     }
+}
+
+compose.resources {
+    publicResClass = true
+    packageOfResClass = "ui.rs"
+    generateResClass = always
 }
