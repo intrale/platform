@@ -1,69 +1,114 @@
 [versions]
 kotlin = "2.0.0"
+
 ktor = "2.3.9"
-coroutines = "1.7.3"
+
 aws-lambda-java-core = "1.2.1"
 aws-lambda-java-events = "3.11.4"
 aws-lambda-java-log4j = "1.0.1"
 aws-sdk-kotlin-cognito = "1.2.28"
+aws-sdk-java = "2.25.28"
+
 logback = "1.5.18"
+
 serialization-json = "1.7.3"
+gson = "2.10.1"
+
 konform = "0.6.1"
 kodein = "7.22.0"
-datafaker = "2.4.2"
+
+
 java-jwt = "4.4.0"
 jwks-rsa = "0.22.0"
-ktor-server-rate-limiting = "1.2.10"
+
 shadow = "8.1.1"
-mockk = "1.13.10"
-backend = "0.25.0"
-aws-sdk-java = "2.25.28"
-gson = "2.10.1"
+
 java-otp = "0.4.0"
 commons-codec = "1.15"
 
+datafaker = "2.4.2"
+mockk = "1.13.10"
+
+# Multiplatform versions
+agp = "8.7.3"
+android-compileSdk = "35"
+android-minSdk = "24"
+android-targetSdk = "35"
+androidx-activity = "1.10.1"
+androidx-appcompat = "1.7.1"
+androidx-constraintlayout = "2.2.1"
+androidx-core = "1.16.0"
+androidx-espresso = "3.6.1"
+androidx-lifecycle = "2.9.1"
+androidx-testExt = "1.2.1"
+composeHotReload = "1.0.0-alpha11"
+composeMultiplatform = "1.8.2"
+junit = "4.13.2"
+kotlin-multiplatform = "2.2.0"
+kotlinx-coroutines = "1.10.2"
+
+
 [libraries]
-# Example libraries
-kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
+ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
+ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+ktor-server-tests = { module = "io.ktor:ktor-server-tests", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+
+kodein-di = { module = "org.kodein.di:kodein-di", version.ref = "kodein" }
+kodein-di-framework-ktor-server-jvm = { module = "org.kodein.di:kodein-di-framework-ktor-server-jvm", version.ref = "kodein" }
+
+konform = { module = "io.konform:konform", version.ref = "konform" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization-json" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+
+aws-sdk-dynamodb = { module = "software.amazon.awssdk:dynamodb", version.ref = "aws-sdk-java" }
+aws-sdk-dynamodb-enhanced = { module = "software.amazon.awssdk:dynamodb-enhanced", version.ref = "aws-sdk-java" }
+aws-sdk-regions = { module = "software.amazon.awssdk:regions", version.ref = "aws-sdk-java" }
+aws-sdk-auth = { module = "software.amazon.awssdk:auth", version.ref = "aws-sdk-java" }
+
 aws-lambda-java-core = { module = "com.amazonaws:aws-lambda-java-core", version.ref = "aws-lambda-java-core" }
 aws-lambda-java-events = { module = "com.amazonaws:aws-lambda-java-events", version.ref = "aws-lambda-java-events" }
 aws-lambda-java-log4j = { module = "com.amazonaws:aws-lambda-java-log4j", version.ref = "aws-lambda-java-log4j" }
 cognito-identity-provider = { module = "aws.sdk.kotlin:cognitoidentityprovider", version.ref = "aws-sdk-kotlin-cognito" }
 cognito-identity = { module = "aws.sdk.kotlin:cognitoidentity", version.ref = "aws-sdk-kotlin-cognito" }
 secretsmanager = { module = "aws.sdk.kotlin:secretsmanager", version.ref = "aws-sdk-kotlin-cognito" }
-logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
-ktor-server-tests = { module = "io.ktor:ktor-server-tests", version.ref = "ktor" }
-ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
-kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization-json" }
-konform = { module = "io.konform:konform", version.ref = "konform" }
-kodein-di = { module = "org.kodein.di:kodein-di", version.ref = "kodein" }
-kodein-di-framework-ktor-server-jvm = { module = "org.kodein.di:kodein-di-framework-ktor-server-jvm", version.ref = "kodein" }
-datafaker = { module = "net.datafaker:datafaker", version.ref = "datafaker" }
+
 java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
 jwks-rsa = { module = "com.auth0:jwks-rsa", version.ref = "jwks-rsa" }
-mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
-ktor-server-rate-limiting = { module = "io.github.flaxoos:ktor-server-rate-limiting", version.ref = "ktor-server-rate-limiting" }
-backend = { module = "ar.com.intrale:backend", version.ref = "backend" }
-ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
-ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
-ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
-gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
-aws-sdk-dynamodb = { module = "software.amazon.awssdk:dynamodb", version.ref = "aws-sdk-java" }
-aws-sdk-dynamodb-enhanced = { module = "software.amazon.awssdk:dynamodb-enhanced", version.ref = "aws-sdk-java" }
-aws-sdk-regions = { module = "software.amazon.awssdk:regions", version.ref = "aws-sdk-java" }
-aws-sdk-auth = { module = "software.amazon.awssdk:auth", version.ref = "aws-sdk-java" }
+
 eatthepath-java-otp = { module = "com.eatthepath:java-otp", version.ref = "java-otp" }
 commons-codec = { module = "commons-codec:commons-codec", version.ref = "commons-codec" }
 
-
-ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
-ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+datafaker = { module = "net.datafaker:datafaker", version.ref = "datafaker" }
+
+# Multiplatform libraries
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin-multiplatform" }
+kotlin-testJunit-multiplatform = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin-multiplatform" }
+junit = { module = "junit:junit", version.ref = "junit" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
+androidx-testExt-junit = { module = "androidx.test.ext:junit", version.ref = "androidx-testExt" }
+androidx-espresso-core = { module = "androidx.test.espresso:espresso-core", version.ref = "androidx-espresso" }
+androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "androidx-appcompat" }
+androidx-constraintlayout = { module = "androidx.constraintlayout:constraintlayout", version.ref = "androidx-constraintlayout" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
+androidx-lifecycle-viewmodel = { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel", version.ref = "androidx-lifecycle" }
+androidx-lifecycle-runtimeCompose = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
+kotlinx-coroutinesSwing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
-kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }
-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+
+# Multiplatform plugins
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+androidLibrary = { id = "com.android.library", version.ref = "agp" }
+composeHotReload = { id = "org.jetbrains.compose.hot-reload", version.ref = "composeHotReload" }
+composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
+composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin-multiplatform" }
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin-multiplatform" }
