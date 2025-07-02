@@ -1,4 +1,5 @@
 # Asignación de perfiles
+> Parte del módulo `users` dentro de la arquitectura multimódulo del proyecto.
 
 Endpoint para asignar un perfil a un usuario dentro de un negocio.
 
