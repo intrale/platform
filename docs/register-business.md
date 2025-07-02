@@ -1,4 +1,5 @@
 # Flujo de Registro de Negocios
+> Pertenece al módulo `users` dentro de la arquitectura multimódulo del proyecto.
 
 Este documento describe el proceso que permite registrar un nuevo negocio dentro de la plataforma.
 

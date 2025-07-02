@@ -1,4 +1,5 @@
 # Cambio de contraseña
+> Pertenece al módulo `users` dentro de la arquitectura multimódulo del proyecto.
 
 Endpoint que permite a un usuario autenticado modificar su contraseña.
 
