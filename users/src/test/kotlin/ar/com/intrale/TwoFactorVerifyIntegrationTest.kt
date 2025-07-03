@@ -27,6 +27,7 @@ class DummyVerifyTable : DynamoDbTable<User> {
     override fun index(indexName: String) = throw UnsupportedOperationException()
     override fun putItem(item: User) { items.add(item) }
     override fun getItem(key: Key): User? = items.find { it.email == key.partitionKeyValue().s() }
+    override fun getItem(item: User): User? = items.find { it.email == item.email }
 }
 
 class TwoFactorVerifyIntegrationTest {
