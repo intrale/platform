@@ -28,6 +28,12 @@ class DummyVerifyTable : DynamoDbTable<User> {
     override fun putItem(item: User) { items.add(item) }
     override fun getItem(key: Key): User? = items.find { it.email == key.partitionKeyValue().s() }
     override fun getItem(item: User): User? = items.find { it.email == item.email }
+    override fun getItem(request: software.amazon.awssdk.enhanced.dynamodb.model.GetItemEnhancedRequest): User? = getItem(request.key())
+    override fun getItem(requestConsumer: java.util.function.Consumer<software.amazon.awssdk.enhanced.dynamodb.model.GetItemEnhancedRequest.Builder>): User? {
+        val builder = software.amazon.awssdk.enhanced.dynamodb.model.GetItemEnhancedRequest.builder()
+        requestConsumer.accept(builder)
+        return getItem(builder.build().key())
+    }
 }
 
 class TwoFactorVerifyIntegrationTest {
