@@ -108,7 +108,7 @@ Cuando se indique que el agente debe **"refinar"**, debe seguir estrictamente es
         - Incluir componentes como:
           - Implementación de la funcionalidad.
           - Pruebas unitarias
-          - Pruebas de integración
+          - Pruebas de integración por separado de las unitarias.
           - Documentación
         - Incluir las **rutas completas** dentro del workspace para ubicar los componentes (por ejemplo: `/workspace/platform/users/src/domain/usecase/RegisterUserUseCase.kt`).
         - No deben dejarse referencias genéricas ni vagas como “el controlador de usuarios”.
