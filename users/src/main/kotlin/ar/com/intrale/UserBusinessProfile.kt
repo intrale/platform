@@ -26,6 +26,8 @@ class UserBusinessProfile {
             updateCompositeKey()
         }
 
+    var state: BusinessState = BusinessState.PENDING
+
     private fun updateCompositeKey() {
         compositeKey = "$email#$business#$profile"
     }
