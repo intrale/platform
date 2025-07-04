@@ -105,11 +105,7 @@ Cuando se indique que el agente debe **"refinar"**, debe seguir estrictamente es
     - Evaluar el título y la descripción para determinar viabilidad.
     - Analizar el issue a detalle y seguir la "Estructura de Issues Generadas Automáticamente":
         - Indicar de forma clara y **técnica** el **nombre exacto** de los componentes, clases, funciónes o endpoints involucrados.
-        - Incluir componentes como:
-          - Implementación de la funcionalidad.
-          - Pruebas unitarias
-          - Pruebas de integración por separado de las unitarias.
-          - Documentación
+        - Para determinar componentes a crear, logica de negocio, pruebas unitarias, pruebas de integracion, documentacion y todo lo necesarios para cumplir con la funcionalidad, utilizar la estructura del workspace y el código fuente existente.
         - Incluir las **rutas completas** dentro del workspace para ubicar los componentes (por ejemplo: `/workspace/platform/users/src/domain/usecase/RegisterUserUseCase.kt`).
         - No deben dejarse referencias genéricas ni vagas como “el controlador de usuarios”.
         - Redactar la descripción utilizando la estructura estándar definida en la sección **📝 Estructura de Issues Generadas Automáticamente**.
