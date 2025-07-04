@@ -5,7 +5,7 @@
 Este documento define la configuración y comportamiento esperado del agente automatizado `leitocodexbot` en el entorno de desarrollo de la organización **`intrale`** en GitHub.
 
 `leitocodexbot` tiene un rol auxiliar orientado a tareas repetitivas del ciclo de desarrollo, permitiendo trazabilidad y eficiencia sin reemplazar la supervisión humana.
-
+sabes como lo reactivo
 ---
 
 ## 🔧 Consideraciones Iniciales
@@ -74,20 +74,18 @@ Siempre que la ejecución de una tarea involucre cambios en el código fuente o 
     - Descripción técnica clara y directa.
     - Referencia al issue mediante `Closes #<número de issue>`.
     - Asignado al usuario `leitolarreta`.
-
 4. En caso de que la creación del Pull Request falle:
-    - El agente debe **reintentar hasta 3 veces** la creación del PR.
-    - Si tras 3 intentos sigue fallando, debe:
-        - Mover el issue a la columna **"Blocked"**.
-        - Comentar en el issue detallando el motivo técnico del fallo y que se intentó varias veces.
-        - Incluir el **stacktrace o mensaje de error** recibido, si aplica.
-
+    - Agregar un comentario con el detalle del error en el issue indicando lo que sucedio al crear el PR.
+    - Realizar un pull de la rama para asegurarse de que está actualizada.
+    - Traer los últimos cambios de la rama `main` del repositorio.
+    - Asegurarse de que la rama local esté limpia, sin conflictos y que compile.
+    - Forzar la creación del Pull Request nuevamente.
 5. Si el PR se crea correctamente:
     - Comentar en el issue ejecutado indicando:
         - Qué se hizo.
+        - Enlace directo al registro de ejecucion de codex.
         - Enlace directo al PR creado.
     - Mover el issue a **"Ready"**.
-
 6. ❌ **No debe hacer merge del PR automáticamente.**
 
 ---
