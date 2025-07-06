@@ -12,6 +12,7 @@ class BusinessTest {
     fun defaultStateIsPending() {
         val business = Business()
         assertEquals(BusinessState.PENDING, business.state)
+        assertEquals(false, business.autoAcceptDeliveries)
     }
 
     @Test
@@ -21,11 +22,13 @@ class BusinessTest {
         business.emailAdmin = "admin@biz.com"
         business.description = "desc"
         business.state = BusinessState.APPROVED
+        business.autoAcceptDeliveries = true
 
         assertEquals("Biz", business.name)
         assertEquals("admin@biz.com", business.emailAdmin)
         assertEquals("desc", business.description)
         assertEquals(BusinessState.APPROVED, business.state)
+        assertEquals(true, business.autoAcceptDeliveries)
     }
 
     @Test

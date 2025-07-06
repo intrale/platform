@@ -15,17 +15,7 @@ import io.ktor.http.HttpStatusCode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class DummyRequestJoinTable : DynamoDbTable<UserBusinessProfile> {
-    val items = mutableListOf<UserBusinessProfile>()
-    override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
-    override fun tableSchema(): TableSchema<UserBusinessProfile> = TableSchema.fromBean(UserBusinessProfile::class.java)
-    override fun tableName(): String = "profiles"
-    override fun keyFrom(item: UserBusinessProfile): Key = Key.builder().partitionValue(item.compositeKey).build()
-    override fun index(indexName: String) = throw UnsupportedOperationException()
-    override fun putItem(item: UserBusinessProfile) { items.add(item) }
-}
-
-class DummyBusinessTable : DynamoDbTable<Business> {
+class DummyBusinessConfigTable : DynamoDbTable<Business> {
     var item: Business? = null
     override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
     override fun tableSchema(): TableSchema<Business> = TableSchema.fromBean(Business::class.java)
@@ -33,36 +23,32 @@ class DummyBusinessTable : DynamoDbTable<Business> {
     override fun keyFrom(item: Business): Key = Key.builder().partitionValue(item.name).build()
     override fun index(indexName: String) = throw UnsupportedOperationException()
     override fun getItem(key: Key): Business? = item
-    override fun putItem(item: Business) { this.item = item }
     override fun updateItem(item: Business) { this.item = item }
+    override fun putItem(item: Business) { this.item = item }
 }
 
-class RequestJoinBusinessTest {
+class ConfigAutoAcceptDeliveriesIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
 
     @Test
-    fun `solicitud exitosa guarda registro`() = runBlocking {
-        val table = DummyRequestJoinTable()
-        val businessTable = DummyBusinessTable().apply {
-            item = Business().apply { name = "biz"; autoAcceptDeliveries = true }
-        }
+    fun `configuracion exitosa`() = runBlocking {
+        val table = DummyBusinessConfigTable().apply { item = Business().apply { name = "biz" } }
         val cognito = mockk<CognitoIdentityProviderClient>(relaxed = true)
         coEvery { cognito.getUser(any()) } returns GetUserResponse {
-            username = "delivery"
-            userAttributes = listOf(AttributeType { name = EMAIL_ATT_NAME; value = "delivery@test.com" })
+            username = "admin"
+            userAttributes = listOf(AttributeType { name = PROFILE_ATT_NAME; value = PROFILE_BUSINESS_ADMIN })
         }
-        val join = RequestJoinBusiness(config, logger, cognito, table, businessTable)
+        val function = ConfigAutoAcceptDeliveries(config, logger, cognito, table)
 
-        val response = join.securedExecute(
+        val response = function.securedExecute(
             business = "biz",
-            function = "requestJoinBusiness",
+            function = "configAutoAcceptDeliveries",
             headers = mapOf("Authorization" to "token"),
-            textBody = "{}"
+            textBody = "{\"autoAcceptDeliveries\":true}"
         )
 
         assertEquals(HttpStatusCode.OK, response.statusCode)
-        assertEquals(1, table.items.size)
-        assertEquals(BusinessState.APPROVED, table.items[0].state)
+        assertEquals(true, table.item?.autoAcceptDeliveries)
     }
 }
