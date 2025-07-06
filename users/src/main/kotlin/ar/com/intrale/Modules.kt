@@ -174,4 +174,7 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="requestJoinBusiness") {
         singleton { RequestJoinBusiness(instance(), instance(), instance(), instance()) }
     }
+    bind<Function> (tag="reviewJoinBusiness") {
+        singleton { ReviewJoinBusiness(instance(), instance(), instance(), instance()) }
+    }
 }
