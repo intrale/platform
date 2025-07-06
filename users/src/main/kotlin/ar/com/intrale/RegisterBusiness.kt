@@ -66,6 +66,7 @@ class RegisterBusiness (val config: UsersConfig, val logger: Logger, val tableBu
                 name = body.name,
                 description = body.description,
                 emailAdmin =  body.emailAdmin,
+                autoAcceptDeliveries = body.autoAcceptDeliveries,
             )
             logger.debug("persisting business $business")
             tableBusiness.putItem(business)

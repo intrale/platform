@@ -19,6 +19,7 @@ import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import ar.com.intrale.ChangePassword
 import ar.com.intrale.RequestJoinBusiness
+import ar.com.intrale.ConfigAutoAcceptDeliveries
 
 private const val LOCAL_APP_AVAILABLE_BUSINESSES = "AVAILABLE_BUISNESS"
 private const val LOCAL_AWS_REGION = "REGION_VALUE"
@@ -172,9 +173,12 @@ val appModule = DI.Module("appModule") {
         singleton { AssignProfile(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="requestJoinBusiness") {
-        singleton { RequestJoinBusiness(instance(), instance(), instance(), instance()) }
+        singleton { RequestJoinBusiness(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="reviewJoinBusiness") {
         singleton { ReviewJoinBusiness(instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="configAutoAcceptDeliveries") {
+        singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance()) }
     }
 }

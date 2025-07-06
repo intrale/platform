@@ -9,5 +9,6 @@ class Business(
     var name: String? = null,
     var emailAdmin: String? = null,
     var description: String? = null,
-    var state: BusinessState = BusinessState.PENDING
+    var state: BusinessState = BusinessState.PENDING,
+    var autoAcceptDeliveries: Boolean = false
 )
