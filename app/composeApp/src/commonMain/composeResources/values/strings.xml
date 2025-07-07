@@ -9,4 +9,9 @@
 
     <string name="home">Home</string>
     <string name="secundary">Pantalla secundaria</string>
+    <string name="signup">Registrarme</string>
+    <string name="signup_platform_admin">Registro Platform Admin</string>
+    <string name="signup_delivery">Registro Delivery</string>
+    <string name="signup_saler">Registro Vendedor</string>
+    <string name="email">Correo electrónico</string>
 </resources>
