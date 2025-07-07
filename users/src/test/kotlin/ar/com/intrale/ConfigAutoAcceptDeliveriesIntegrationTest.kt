@@ -15,17 +15,7 @@ import io.ktor.http.HttpStatusCode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class DummyBusinessConfigTable : DynamoDbTable<Business> {
-    var item: Business? = null
-    override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
-    override fun tableSchema(): TableSchema<Business> = TableSchema.fromBean(Business::class.java)
-    override fun tableName(): String = "business"
-    override fun keyFrom(item: Business): Key = Key.builder().partitionValue(item.name).build()
-    override fun index(indexName: String) = throw UnsupportedOperationException()
-    override fun getItem(key: Key): Business? = item
-    override fun updateItem(item: Business) { this.item = item }
-    override fun putItem(item: Business) { this.item = item }
-}
+
 
 class ConfigAutoAcceptDeliveriesIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER

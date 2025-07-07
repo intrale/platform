@@ -25,18 +25,6 @@ class DummyRequestJoinTable : DynamoDbTable<UserBusinessProfile> {
     override fun putItem(item: UserBusinessProfile) { items.add(item) }
 }
 
-class DummyBusinessTable : DynamoDbTable<Business> {
-    var item: Business? = null
-    override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
-    override fun tableSchema(): TableSchema<Business> = TableSchema.fromBean(Business::class.java)
-    override fun tableName(): String = "business"
-    override fun keyFrom(item: Business): Key = Key.builder().partitionValue(item.name).build()
-    override fun index(indexName: String) = throw UnsupportedOperationException()
-    override fun getItem(key: Key): Business? = item
-    override fun putItem(item: Business) { this.item = item }
-    override fun updateItem(item: Business) { this.item = item }
-}
-
 class RequestJoinBusinessTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
