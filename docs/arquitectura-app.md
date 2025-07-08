@@ -44,7 +44,7 @@ var di = DI {
         arrayListOf<Screen>(instance(tag = INIT), instance(tag = DASHBOARD), instance(tag = SECUNDARY))
     }
     bindSingleton<HttpClient> {
-        HttpClient {
+        HttpClient(CIO) {
             install(ContentNegotiation) { json(Json { isLenient = true; ignoreUnknownKeys = true }) }
             install(Logging) { level = LogLevel.NONE }
             install(DefaultRequest) { header(HttpHeaders.ContentType, ContentType.Application.Json) }
