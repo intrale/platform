@@ -42,6 +42,13 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             )
 
             Button(
+                label = stringResource(Res.string.signup),
+                onClick = {
+                    navigate(SELECT_SIGNUP_PROFILE_PATH)
+                }
+            )
+
+            Button(
                 label = stringResource(Res.string.logout),
                 onClick = {
                     coroutineScope.launch {
