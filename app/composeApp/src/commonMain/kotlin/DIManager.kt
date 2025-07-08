@@ -5,6 +5,7 @@ import androidx.navigation.NavHostController
 import asdo.*
 import ext.*
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.DefaultRequest
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.logging.LogLevel
@@ -72,7 +73,7 @@ class DIManager {
                 }
 
                 bindSingleton<HttpClient>{
-                    HttpClient {
+                    HttpClient(CIO) {
                         install(ContentNegotiation) {
                             json(
                                 Json { isLenient = true; ignoreUnknownKeys = true }

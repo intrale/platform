@@ -72,6 +72,7 @@ kotlin {
             implementation(libs.androidx.navigation.compose)
 
             implementation(libs.bundles.ktor.common)
+            implementation(libs.ktor.client.cio)
             implementation(libs.kodein.di)
             implementation(libs.canard)
 
