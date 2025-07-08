@@ -19,13 +19,10 @@ application {
 dependencies {
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
-    //implementation(libs.ktor.server.rate.limiting)
     implementation(libs.kodein.di.framework.ktor.server.jvm)
 
-    //testImplementation(kotlin("test"))
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.mockk)
-    testImplementation(libs.ktor.client.cio)
     testImplementation(libs.kotlin.test.junit)
 
     // Logging
