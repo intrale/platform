@@ -33,6 +33,7 @@ public const val SIGNUP = "signup"
 public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
 public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val SIGNUP_SALER = "signupSaler"
+public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 
 
 //private const val LOGIN_VIEW_MODEL = "loginViewModel"
@@ -58,6 +59,7 @@ class DIManager {
                 bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
                 bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
                 bindSingleton(tag = SIGNUP_SALER) { SignUpSalerScreen() }
+                bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>(
@@ -65,6 +67,7 @@ class DIManager {
                         instance(tag = DASHBOARD),
                         instance(tag = SECUNDARY),
                         instance(tag = SIGNUP),
+                        instance(tag = SELECT_SIGNUP_PROFILE),
                         instance(tag = SIGNUP_PLATFORM_ADMIN),
                         instance(tag = SIGNUP_DELIVERY),
                         instance(tag = SIGNUP_SALER)

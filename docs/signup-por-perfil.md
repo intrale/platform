@@ -7,3 +7,11 @@ Cada una muestra un campo para ingresar el correo electrónico y un botón **"Re
 
 Al presionar el botón se invoca la acción correspondiente del paquete `asdo`,
 la cual consume los endpoints expuestos por el módulo `users`.
+
+## Flujo de selección de perfil
+
+Relacionado con #75.
+
+Se agregó la pantalla `SelectSignUpProfileScreen` que permite elegir el tipo de registro antes de mostrar la pantalla específica.
+Desde `Home` ahora aparece el botón **"Registrarme"** que navega a dicha pantalla.
+Cada opción lleva a `SignUpPlatformAdminScreen`, `SignUpDeliveryScreen` o `SignUpSalerScreen` según corresponda.
