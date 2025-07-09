@@ -24,3 +24,11 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew build
+      - name: Deploy lambda
+        uses: yvesgurcan/deploy-lambda-function@master
+        with:
+          package: ./users/build/libs/users-all.jar
+          function-name: kotlinTest
+          AWS_REGION: ${{ secrets.AWS_DEPLOY_REGION }}
+          AWS_SECRET_ID: ${{ secrets.AWS_DEPLOYER_SECRET_ID }}
+          AWS_SECRET_KEY: ${{ secrets.AWS_DEPLOYER_SECRET_KEY }}
