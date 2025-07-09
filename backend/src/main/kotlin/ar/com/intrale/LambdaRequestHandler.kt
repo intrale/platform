@@ -68,6 +68,7 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
 
                 if (httpMehtod == "POST") {
                     logger.info("Path ${requestEvent.path}")
+                    logger.info("resource = ${requestEvent.resource}")
                     var functionName = requestEvent.pathParameters["function"]
                     val businessName = requestEvent.pathParameters["business"]
 
