@@ -1,0 +1,26 @@
+name: CI-CD Plataforma
+
+on:
+  push:
+    branches: [ main ]
+  repository_dispatch:
+jobs:
+  deploy-lambda:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Download source code
+        uses: actions/checkout@v4
+      - name: JDK Setup
+        uses: actions/setup-java@v2
+        with:
+          java-version: '11' # The JDK version to make available on the path.
+          distribution: 'temurin'
+          java-package: jdk # (jre, jdk, or jdk+fx) - defaults to jdk
+          architecture: x64 # (x64 or x86) - defaults to x64
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+      - name: Build with Gradle
+        run: |
+          chmod +x gradlew
+          ./gradlew build

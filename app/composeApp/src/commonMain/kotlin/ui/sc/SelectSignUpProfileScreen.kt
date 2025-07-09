@@ -12,6 +12,7 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import ui.cp.Button
 import ui.rs.Res
+import ui.rs.signup
 import ui.rs.signup_platform_admin
 import ui.rs.signup_delivery
 import ui.rs.signup_saler

@@ -16,6 +16,7 @@ import ui.rs.Res
 import ui.rs.app_name
 import ui.rs.login
 import ui.rs.logout
+import ui.rs.signup
 
 
 const val HOME_PATH = "/home"
