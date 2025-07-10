@@ -67,6 +67,8 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
                                 username = email
                                 userAttributes = attrs
                             })
+                    } catch (e:Exception){
+                        logger.error("Error creating user", e)
                     } catch (e:UsernameExistsException) {
                         // Obtenemos la informacion del usuario
                         logger.info("Obtenemos la informacion del usuario")
