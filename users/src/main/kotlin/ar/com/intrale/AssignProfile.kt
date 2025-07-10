@@ -50,14 +50,12 @@ class AssignProfile(
         val validationResponse = requestValidation(body)
         if (validationResponse != null) return validationResponse
 
-        cognito.use { identityProviderClient ->
-            val response = identityProviderClient.getUser {
-                this.accessToken = headers["Authorization"]
-            }
-            val profile = response.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
-            if (PLATFORM_ADMIN_PROFILE != profile) {
-                return UnauthorizedException()
-            }
+        val response = cognito.getUser {
+            this.accessToken = headers["Authorization"]
+        }
+        val profile = response.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
+        if (PLATFORM_ADMIN_PROFILE != profile) {
+            return UnauthorizedException()
         }
 
         val userProfile = UserBusinessProfile().apply {
