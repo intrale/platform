@@ -77,8 +77,6 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
                     return ExceptionResponse(e.message ?: "Internal Server Error")
                 }
 
-                //TODO: Tendriamos que actualizar por un lado la informacion del negocio al cual esta habilitado el usuario
-                // y por otro lado la informacion del perfil del usuario
                 logger.debug("Actualizamos el usuario con el nuevo negocio")
                 //Actualizamos la informacion de negocio para el usuario
                 val updateUserAttributesResponse = cognito.adminUpdateUserAttributes (
