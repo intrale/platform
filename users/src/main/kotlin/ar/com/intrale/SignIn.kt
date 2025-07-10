@@ -42,14 +42,15 @@ class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoId
         // Se intenta realizar el signin normalmente contra el proveedor de autenticacion
         try {
             logger.info("Se intenta realizar el signin normalmente contra el proveedor de autenticacion")
-            cognito.use { identityProviderClient ->
-                var authResponse = identityProviderClient.adminInitiateAuth(
-                    AdminInitiateAuthRequest {
-                        authFlow = AdminNoSrpAuth
-                        clientId = config.awsCognitoClientId
-                        userPoolId = config.awsCognitoUserPoolId
-                        authParameters = mapOf("USERNAME" to body.email, "PASSWORD" to body.password)
-                })
+            val identityProviderClient = cognito
+            var authResponse = identityProviderClient.adminInitiateAuth(
+                AdminInitiateAuthRequest {
+                    authFlow = AdminNoSrpAuth
+                    clientId = config.awsCognitoClientId
+                    userPoolId = config.awsCognitoUserPoolId
+                    authParameters = mapOf("USERNAME" to body.email, "PASSWORD" to body.password)
+                }
+            )
 
                 // Validar respuesta luego del intento de login
                 logger.info("Validar respuesta luego del intento de login: " + authResponse.challengeName?.value)
@@ -130,8 +131,6 @@ class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoId
                     accessToken = authResponse.authenticationResult?.accessToken.toString(),
                     refreshToken = authResponse.authenticationResult?.refreshToken.toString()
                 )
-
-            }
         } catch (e: NotAuthorizedException) {
             logger.error("Error al consultar Cognito: ${e.message}", e)
             return UnauthorizedException()
