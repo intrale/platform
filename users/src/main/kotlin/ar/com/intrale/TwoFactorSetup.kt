@@ -19,10 +19,9 @@ class TwoFactorSetup (override val config: UsersConfig, override val logger: Log
             logger.debug("starting two factor setup $function")
 
             logger.debug("checking accessToken")
-            cognito.use { identityProviderClient ->
-                val response = identityProviderClient.getUser {
-                    this.accessToken = headers["Authorization"]
-                }
+            val response = cognito.getUser {
+                this.accessToken = headers["Authorization"]
+            }
 
                 logger.debug("trying to get user $response")
                 val email = response.userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
@@ -40,11 +39,8 @@ class TwoFactorSetup (override val config: UsersConfig, override val logger: Log
                     logger.error("failed to get user")
                     return ExceptionResponse("Email not found")
                 }
-                logger.debug ("return two factor setup $function")
-                return TwoFactorSetupResponse(buildOtpAuthUri(secret, email))
-            }
-        logger.error("failed to get two factor setup $function")
-        return ExceptionResponse()
+            logger.debug ("return two factor setup $function")
+            return TwoFactorSetupResponse(buildOtpAuthUri(secret, email))
     }
 
 
