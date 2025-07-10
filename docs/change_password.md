@@ -14,3 +14,8 @@ Endpoint que permite a un usuario autenticado modificar su contraseña.
 - **200**: Contraseña modificada correctamente.
 - **401**: Token inválido o sin permisos.
 - **400**: Error de validación del request.
+
+## Notas técnicas
+Esta funcionalidad ahora invoca `changePassword` sin utilizar `use` para evitar
+que se cierre el `CognitoIdentityProviderClient`. El ciclo de vida del cliente
+es administrado por la inyección de dependencias.

@@ -52,16 +52,14 @@ class ChangePassword(
         }
 
         try {
-            cognito.use { client ->
-                client.changePassword(
-                    AwsChangePasswordRequest {
-                        accessToken = token
-                        previousPassword = body.oldPassword
-                        proposedPassword = body.newPassword
-                    }
-                )
-                return Response()
-            }
+            cognito.changePassword(
+                AwsChangePasswordRequest {
+                    accessToken = token
+                    previousPassword = body.oldPassword
+                    proposedPassword = body.newPassword
+                }
+            )
+            return Response()
         } catch (e: NotAuthorizedException) {
             logger.error("Error al cambiar contraseña: ${e.message}", e)
             return UnauthorizedException()
