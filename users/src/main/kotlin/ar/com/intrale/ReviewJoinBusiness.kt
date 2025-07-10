@@ -53,12 +53,10 @@ class ReviewJoinBusiness(
         val validationResponse = requestValidation(body)
         if (validationResponse != null) return validationResponse
 
-        cognito.use { client ->
-            val user = client.getUser { this.accessToken = headers["Authorization"] }
-            val profile = user.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
-            if (PROFILE_BUSINESS_ADMIN != profile) {
-                return UnauthorizedException()
-            }
+        val user = cognito.getUser { this.accessToken = headers["Authorization"] }
+        val userProfile = user.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
+        if (PROFILE_BUSINESS_ADMIN != userProfile) {
+            return UnauthorizedException()
         }
 
         val key = UserBusinessProfile().apply {
