@@ -48,19 +48,17 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
             // Validacion del request
             if (textBody.isEmpty()) return RequestValidationException("Request body not found")
             val body = Gson().fromJson(textBody, TwoFactorVerifyRequest::class.java)
-            val response = requestValidation(body)
-            if (response!=null) return response
+            val validationResponse = requestValidation(body)
+            if (validationResponse!=null) return validationResponse
 
 
             logger.debug("checking accessToken")
-            cognito.use { identityProviderClient ->
-                val response = identityProviderClient.getUser {
-                    this.accessToken = headers["Authorization"]
-                }
-
-                logger.debug("trying to get user $response")
-                val email = response.userAttributes?.firstOrNull { it.name == "email" }?.value
-                val username = response.username
+            val userResponse = cognito.getUser {
+                this.accessToken = headers["Authorization"]
+            }
+            logger.debug("trying to get user $userResponse")
+            val email = userResponse.userAttributes?.firstOrNull { it.name == "email" }?.value
+            val username = userResponse.username
 
                 if (email != null) {
                    var user = User(
@@ -85,7 +83,6 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
                     logger.error("failed to get user")
                     return ExceptionResponse("Email not found")
                 }
-            }
         logger.error("failed to get two factor setup $function")
         return ExceptionResponse()
     }
