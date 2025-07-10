@@ -21,7 +21,20 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
       - name: Build with Gradle
+        env:
+          REGION_VALUE: ${{ secrets.REGION }}
+          ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
+          USER_POOL_ID: ${{ secrets.USER_POOL_ID }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
         run: |
+          cd ./users/src/main/resources/
+          sed -i "s/REGION_VALUE/${REGION_VALUE}/gi" application.conf
+          sed -i "s/ACCESS_KEY_ID/${ACCESS_KEY_ID}/gi" application.conf
+          ESCAPED_SECRET=$(printf '%s\n' "$SECRET_ACCESS_KEY" | sed -e 's/[\/&]/\\&/g')
+          sed -i "s/SECRET_ACCESS_KEY/${ESCAPED_SECRET}/gi" application.conf
+          sed -i "s/USER_POOL_ID/${USER_POOL_ID}/gi" application.conf
+          sed -i "s/CLIENT_ID/${CLIENT_ID}/gi" application.conf
           chmod +x gradlew
           ./gradlew build
       - name: Deploy lambda
