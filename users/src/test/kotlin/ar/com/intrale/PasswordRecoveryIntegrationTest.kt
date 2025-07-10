@@ -69,4 +69,28 @@ class PasswordRecoveryIntegrationTest {
         assertEquals(HttpStatusCode.InternalServerError, response.statusCode)
         coVerify(exactly = 1) { cognito.forgotPassword(any()) }
     }
+
+    @Test
+    fun `multiple invocaciones funcionan sin cerrar el provider`() = runBlocking {
+        val cognito = mockk<CognitoIdentityProviderClient>(relaxed = true)
+        coEvery { cognito.forgotPassword(any()) } returns ForgotPasswordResponse { }
+        val recovery = PasswordRecovery(config, logger, cognito)
+
+        val response1 = recovery.execute(
+            business = "biz",
+            function = "passwordRecovery",
+            headers = emptyMap(),
+            textBody = "{\"email\":\"user@test.com\"}"
+        )
+
+        val response2 = recovery.execute(
+            business = "biz",
+            function = "passwordRecovery",
+            headers = emptyMap(),
+            textBody = "{\"email\":\"user@test.com\"}"
+        )
+
+        assertEquals(HttpStatusCode.OK, response1.statusCode)
+        assertEquals(HttpStatusCode.OK, response2.statusCode)
+    }
 }
