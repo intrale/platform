@@ -53,10 +53,9 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
 
 
             logger.debug("checking accessToken")
-            cognito.use { identityProviderClient ->
-                val response = identityProviderClient.getUser {
-                    this.accessToken = headers["Authorization"]
-                }
+            val response = cognito.getUser {
+                this.accessToken = headers["Authorization"]
+            }
 
                 logger.debug("trying to get user $response")
                 val email = response.userAttributes?.firstOrNull { it.name == "email" }?.value
@@ -85,10 +84,9 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
                     logger.error("failed to get user")
                     return ExceptionResponse("Email not found")
                 }
-            }
-        logger.error("failed to get two factor setup $function")
-        return ExceptionResponse()
-    }
+            logger.error("failed to get two factor setup $function")
+            return ExceptionResponse()
+        }
 
 
     fun generateSecret(): String {
