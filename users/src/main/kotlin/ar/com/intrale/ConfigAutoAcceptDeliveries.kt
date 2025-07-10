@@ -24,12 +24,10 @@ class ConfigAutoAcceptDeliveries(
         if (textBody.isEmpty()) return RequestValidationException("Request body not found")
         val body = Gson().fromJson(textBody, ConfigAutoAcceptDeliveriesRequest::class.java)
 
-        cognito.use { client ->
-            val user = client.getUser { this.accessToken = headers["Authorization"] }
-            val profile = user.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
-            if (PROFILE_BUSINESS_ADMIN != profile) {
-                return UnauthorizedException()
-            }
+        val user = cognito.getUser { this.accessToken = headers["Authorization"] }
+        val profile = user.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
+        if (PROFILE_BUSINESS_ADMIN != profile) {
+            return UnauthorizedException()
         }
 
         val key = Business().apply { name = business }
