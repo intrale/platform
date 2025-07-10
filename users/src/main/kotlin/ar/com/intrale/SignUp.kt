@@ -58,48 +58,40 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
 
             try {
                 logger.info("Call to Cognito to create user with email $email")
-                cognito.use { identityProviderClient ->
-                    try {
-                        logger.info("Creamos el usuario")
-                        identityProviderClient.adminCreateUser(
+                cognito.adminCreateUser(
                             AdminCreateUserRequest {
                                 userPoolId = config.awsCognitoUserPoolId
                                 username = email
                                 userAttributes = attrs
                             })
-                    } catch (e:Exception){
-                        logger.error("Error creating user", e)
-                    } catch (e:UsernameExistsException) {
-                        // Obtenemos la informacion del usuario
-                        logger.info("Obtenemos la informacion del usuario")
-                        val user = identityProviderClient.adminGetUser(AdminGetUserRequest {
-                            userPoolId = config.awsCognitoUserPoolId
-                            username = body.email
-                        })
-                        val businesses = user.userAttributes?.find { it.name == BUSINESS_ATT_NAME }?.value
-                        logger.info("businesses: $businesses")
-                        if (businesses?.contains(business) == true){
-                            return ExceptionResponse(e.message ?: "Internal Server Error")
-                        }
-
-                        //TODO: Tendriamos que actualizar por un lado la informacion del negocio al cual esta habilitado el usuario
-                        // y por otro lado la informacion del perfil del usuario
-                        logger.debug("Actualizamos el usuario con el nuevo negocio")
-                        //Actualizamos la informacion de negocio para el usuario
-                        val updateUserAttributesResponse = identityProviderClient.adminUpdateUserAttributes (
-                            AdminUpdateUserAttributesRequest {
-                                userPoolId = config.awsCognitoUserPoolId
-                                username = body.email
-                                userAttributes = listOf(
-                                    AttributeType {
-                                        name = BUSINESS_ATT_NAME
-                                        value = businesses + "," + business
-                                    }
-                                )
-                            })
-
-                    }
+            } catch (e:UsernameExistsException) {
+                // Obtenemos la informacion del usuario
+                logger.info("Obtenemos la informacion del usuario")
+                val user = cognito.adminGetUser(AdminGetUserRequest {
+                    userPoolId = config.awsCognitoUserPoolId
+                    username = body.email
+                })
+                val businesses = user.userAttributes?.find { it.name == BUSINESS_ATT_NAME }?.value
+                logger.info("businesses: $businesses")
+                if (businesses?.contains(business) == true){
+                    return ExceptionResponse(e.message ?: "Internal Server Error")
                 }
+
+                //TODO: Tendriamos que actualizar por un lado la informacion del negocio al cual esta habilitado el usuario
+                // y por otro lado la informacion del perfil del usuario
+                logger.debug("Actualizamos el usuario con el nuevo negocio")
+                //Actualizamos la informacion de negocio para el usuario
+                val updateUserAttributesResponse = cognito.adminUpdateUserAttributes (
+                    AdminUpdateUserAttributesRequest {
+                        userPoolId = config.awsCognitoUserPoolId
+                        username = body.email
+                        userAttributes = listOf(
+                            AttributeType {
+                                name = BUSINESS_ATT_NAME
+                                value = businesses + "," + business
+                            }
+                        )
+                    })
             } catch (e:Exception) {
                 logger.error("Error creating user", e)
                 return ExceptionResponse(e.message ?: "Internal Server Error")
