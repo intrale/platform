@@ -33,14 +33,22 @@ class ConfigAutoAcceptDeliveriesIntegrationTest {
         }
         val function = ConfigAutoAcceptDeliveries(config, logger, cognito, table)
 
-        val response = function.securedExecute(
+        val response1 = function.securedExecute(
             business = "biz",
             function = "configAutoAcceptDeliveries",
             headers = mapOf("Authorization" to "token"),
             textBody = "{\"autoAcceptDeliveries\":true}"
         )
 
-        assertEquals(HttpStatusCode.OK, response.statusCode)
+        val response2 = function.securedExecute(
+            business = "biz",
+            function = "configAutoAcceptDeliveries",
+            headers = mapOf("Authorization" to "token"),
+            textBody = "{\"autoAcceptDeliveries\":true}"
+        )
+
+        assertEquals(HttpStatusCode.OK, response1.statusCode)
+        assertEquals(HttpStatusCode.OK, response2.statusCode)
         assertEquals(true, table.item?.autoAcceptDeliveries)
     }
 }
