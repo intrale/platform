@@ -43,6 +43,7 @@ class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoId
         try {
             logger.info("Se intenta realizar el signin normalmente contra el proveedor de autenticacion")
             val identityProviderClient = cognito
+
             var authResponse = identityProviderClient.adminInitiateAuth(
                 AdminInitiateAuthRequest {
                     authFlow = AdminNoSrpAuth

@@ -51,19 +51,17 @@ class PasswordRecovery(val config: UsersConfig, val logger: Logger, val cognito:
         // Se intenta realizar el signin normalmente contra el proveedor de autenticacion
         try {
             logger.info("Se intenta realizar el signin normalmente contra el proveedor de autenticacion")
-            cognito.use { identityProviderClient ->
+            val identityProviderClient = cognito
 
-                val forgotPasswordRequest = ForgotPasswordRequest {
-                    clientId = config.awsCognitoClientId
-                    username = body.email
-                }
-
-                val forgotPasswordResponse = identityProviderClient.forgotPassword(forgotPasswordRequest)
-
-                logger.info("retornando ok")
-                return Response()
-
+            val forgotPasswordRequest = ForgotPasswordRequest {
+                clientId = config.awsCognitoClientId
+                username = body.email
             }
+
+            identityProviderClient.forgotPassword(forgotPasswordRequest)
+
+            logger.info("retornando ok")
+            return Response()
         } catch (e: NotAuthorizedException) {
             logger.error("Error al consultar Cognito: ${e.message}", e)
             return UnauthorizedException()
