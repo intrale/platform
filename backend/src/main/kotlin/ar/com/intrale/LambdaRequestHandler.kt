@@ -112,7 +112,7 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                                                 functionResponse = ExceptionResponse(e.message.toString())
                                             }
                                         }
-
+                                        logger.info("Returning function response $functionResponse")
                                         return@runBlocking APIGatewayProxyResponseEvent().apply {
                                             body = Gson().toJson(functionResponse)
                                             logger.info("Returning body is $body")

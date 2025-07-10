@@ -20,7 +20,7 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
     }
 
     override suspend fun execute(business: String, function: String, headers: Map<String, String>, textBody:String): Response {
-
+        logger.debug("Executing function $function with parameters $textBody")
         if (textBody.isEmpty()) return RequestValidationException("Request body not found")
 
         var body = Gson().fromJson(textBody, ar.com.intrale.SignUpRequest::class.java)
@@ -39,7 +39,7 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
         }
 
         if (validationResult.isValid){
-
+            logger.debug("Validation is valid")
             val email: String = body.email
 
             val attrs = mutableListOf<AttributeType>()
@@ -57,6 +57,7 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
             })
 
             try {
+                logger.info("Call to Cognito to create user with email $email")
                 cognito.use { identityProviderClient ->
                     try {
                         logger.info("Creamos el usuario")
@@ -81,7 +82,7 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
 
                         //TODO: Tendriamos que actualizar por un lado la informacion del negocio al cual esta habilitado el usuario
                         // y por otro lado la informacion del perfil del usuario
-
+                        logger.debug("Actualizamos el usuario con el nuevo negocio")
                         //Actualizamos la informacion de negocio para el usuario
                         val updateUserAttributesResponse = identityProviderClient.adminUpdateUserAttributes (
                             AdminUpdateUserAttributesRequest {
@@ -98,6 +99,7 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
                     }
                 }
             } catch (e:Exception) {
+                logger.error("Error creating user", e)
                 return ExceptionResponse(e.message ?: "Internal Server Error")
             }
 
