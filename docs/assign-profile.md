@@ -19,3 +19,10 @@ POST /{business}/assignProfile
 El endpoint requiere un token JWT válido de un usuario con perfil `PLATFORM_ADMIN`.
 Si la asignación es exitosa, responde código HTTP 200.
 
+### Notas técnicas
+Para obtener el perfil del usuario autenticado se utiliza `CognitoIdentityProviderClient.getUser`.
+Es importante **no cerrar** el cliente luego de la llamada para evitar la excepción
+`ProviderClosedException` en invocaciones posteriores.
+
+Relacionado con #80.
+
