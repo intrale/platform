@@ -92,7 +92,7 @@ class LambdaRequestHandlerTest {
         assertEquals(500, response.statusCode)
     }
 
-    /*@Test
+    @Test
     fun missingBusinessReturnsError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
@@ -109,7 +109,7 @@ class LambdaRequestHandlerTest {
         }
         val response = handler.handle(module, request, null)
         assertEquals(400, response.statusCode)
-    }*/
+    }
 
     @Test
     fun nullBodyReturnsValidationError() {
