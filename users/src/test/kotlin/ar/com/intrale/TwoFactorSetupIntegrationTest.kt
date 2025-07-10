@@ -23,7 +23,14 @@ class DummyTwoFactorSetupUserTable : DynamoDbTable<User> {
     override fun tableName(): String = "users"
     override fun keyFrom(item: User): Key = Key.builder().partitionValue(item.email).build()
     override fun index(indexName: String) = throw UnsupportedOperationException()
-    override fun putItem(item: User) { items.add(item) }
+    override fun putItem(item: User) {
+        val existing = items.indexOfFirst { it.email == item.email }
+        if (existing >= 0) {
+            items[existing] = item
+        } else {
+            items.add(item)
+        }
+    }
     override fun getItem(key: Key): User? = items.find { it.email == key.partitionKeyValue().s() }
 }
 
@@ -41,18 +48,26 @@ class TwoFactorSetupIntegrationTest {
         }
         val setup = TwoFactorSetup(config, logger, cognito, table)
 
-        val response = setup.securedExecute(
+        val response1 = setup.securedExecute(
             business = "biz",
             function = "2fasetup",
             headers = mapOf("Authorization" to "token"),
             textBody = ""
         )
 
-        assertEquals(HttpStatusCode.OK, response.statusCode)
+        val response2 = setup.securedExecute(
+            business = "biz",
+            function = "2fasetup",
+            headers = mapOf("Authorization" to "token"),
+            textBody = ""
+        )
+
+        assertEquals(HttpStatusCode.OK, response1.statusCode)
+        assertEquals(HttpStatusCode.OK, response2.statusCode)
         assertEquals(1, table.items.size)
         assertEquals("user@test.com", table.items[0].email)
         assertNotNull(table.items[0].secret)
-        assert(response is TwoFactorSetupResponse)
+        assert(response1 is TwoFactorSetupResponse)
     }
 
     @Test
