@@ -29,7 +29,7 @@ class TwoFactorSetup (override val config: UsersConfig, override val logger: Log
             val secret = generateSecret()
 
             if (email != null) {
-                val user = User(
+               val user = User(
                     email = email,
                     secret = secret
                 )
@@ -41,8 +41,6 @@ class TwoFactorSetup (override val config: UsersConfig, override val logger: Log
             }
             logger.debug ("return two factor setup $function")
             return TwoFactorSetupResponse(buildOtpAuthUri(secret, email))
-        logger.error("failed to get two factor setup $function")
-        return ExceptionResponse()
     }
 
 

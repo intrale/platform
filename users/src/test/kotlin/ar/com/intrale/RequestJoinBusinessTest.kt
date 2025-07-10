@@ -4,7 +4,9 @@ import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderCl
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.AttributeType
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.GetUserResponse
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.coVerify
 import kotlinx.coroutines.runBlocking
 import org.slf4j.helpers.NOPLogger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClientExtension
@@ -26,6 +28,18 @@ class DummyRequestJoinTable : DynamoDbTable<UserBusinessProfile> {
     override fun putItem(item: UserBusinessProfile) { items.add(item) }
 }
 
+class DummyBusinessTableJoin : DynamoDbTable<Business> {
+    var item: Business? = null
+    override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
+    override fun tableSchema(): TableSchema<Business> = TableSchema.fromBean(Business::class.java)
+    override fun tableName(): String = "business"
+    override fun keyFrom(item: Business): Key = Key.builder().partitionValue(item.name).build()
+    override fun index(indexName: String) = throw UnsupportedOperationException()
+    override fun putItem(item: Business) { this.item = item }
+    override fun getItem(key: Key): Business? = if (item?.name == key.partitionKeyValue().s()) item else null
+}
+
+
 class RequestJoinBusinessTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
@@ -34,7 +48,7 @@ class RequestJoinBusinessTest {
     @Ignore("Falla por UnsupportedOperationException de DynamoDbTable")
     fun `solicitud exitosa guarda registro`() = runBlocking {
         val table = DummyRequestJoinTable()
-        val businessTable = DummyBusinessTable().apply {
+        val businessTable = DummyBusinessTableJoin().apply {
             item = Business().apply { name = "biz"; autoAcceptDeliveries = true }
         }
         val cognito = mockk<CognitoIdentityProviderClient>(relaxed = true)
@@ -54,5 +68,29 @@ class RequestJoinBusinessTest {
         assertEquals(HttpStatusCode.OK, response.statusCode)
         assertEquals(1, table.items.size)
         assertEquals(BusinessState.APPROVED, table.items[0].state)
+    }
+
+    @Test
+    fun `cliente de cognito no se cierra`() = runBlocking {
+        val table = mockk<DynamoDbTable<UserBusinessProfile>>(relaxed = true)
+        val businessTable = mockk<DynamoDbTable<Business>>()
+        every { businessTable.getItem(any<Business>()) } returns Business().apply { name = "biz"; autoAcceptDeliveries = true }
+        val cognito = mockk<CognitoIdentityProviderClient>()
+        coEvery { cognito.getUser(any()) } returns GetUserResponse {
+            username = "delivery"
+            userAttributes = listOf(AttributeType { name = EMAIL_ATT_NAME; value = "delivery@test.com" })
+        }
+        coEvery { cognito.close() } returns Unit
+        val join = RequestJoinBusiness(config, logger, cognito, table, businessTable)
+
+        val response = join.securedExecute(
+            business = "biz",
+            function = "requestJoinBusiness",
+            headers = mapOf("Authorization" to "token"),
+            textBody = "{}"
+        )
+
+        assertEquals(HttpStatusCode.OK, response.statusCode)
+        coVerify(exactly = 0) { cognito.close() }
     }
 }
