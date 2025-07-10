@@ -8,3 +8,5 @@ POST /{business}/requestJoinBusiness
 ```
 
 Se requiere un token JWT válido del Delivery. Al recibir la petición se guarda un registro en `UserBusinessProfile` con estado `PENDING`.
+
+Desde la versión actual el cliente `CognitoIdentityProviderClient` se mantiene abierto para evitar fallos por cierre inesperado.

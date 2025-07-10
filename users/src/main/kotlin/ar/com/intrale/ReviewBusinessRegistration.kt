@@ -67,26 +67,23 @@ class ReviewBusinessRegistration (val config: UsersConfig, val logger: Logger,
 
             // Validar si el usuario que genera el request es un Platform Admin
             logger.debug("checking Platform Admin Profile")
-            cognito.use { identityProviderClient ->
-                val response = identityProviderClient.getUser {
-                    this.accessToken = headers["Authorization"]
-                }
+            val responseCognito = cognito.getUser {
+                this.accessToken = headers["Authorization"]
+            }
 
-                logger.debug("trying to get user $response")
-                val email = response.userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
-                val profile = response.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
+            logger.debug("trying to get user $responseCognito")
+            val email = responseCognito.userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
+            val profile = responseCognito.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
 
-                if (PLATFORM_ADMIN_PROFILE != profile) {
-                    return UnauthorizedException()
-                }
+            if (PLATFORM_ADMIN_PROFILE != profile) {
+                return UnauthorizedException()
+            }
 
-                // Validar el segundo factor para ese usuario
-                logger.debug("checking Two Factor")
-                val twoFactorResponse = twoFactorVerify.execute(business, function, headers, Gson().toJson(TwoFactorVerifyRequest (body.twoFactorCode)))
-                if (twoFactorResponse.statusCode?.value != 200) {
-                    return  twoFactorResponse
-                }
-
+            // Validar el segundo factor para ese usuario
+            logger.debug("checking Two Factor")
+            val twoFactorResponse = twoFactorVerify.execute(business, function, headers, Gson().toJson(TwoFactorVerifyRequest (body.twoFactorCode)))
+            if (twoFactorResponse.statusCode?.value != 200) {
+                return  twoFactorResponse
             }
 
             // Validar que el negocio se encuentre en estado pending
