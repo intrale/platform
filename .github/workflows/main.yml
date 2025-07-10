@@ -35,6 +35,7 @@ jobs:
           sed -i "s/SECRET_ACCESS_KEY/${ESCAPED_SECRET}/gi" application.conf
           sed -i "s/USER_POOL_ID/${USER_POOL_ID}/gi" application.conf
           sed -i "s/CLIENT_ID/${CLIENT_ID}/gi" application.conf
+          cd ../../../../
           chmod +x gradlew
           ./gradlew build
       - name: Deploy lambda
