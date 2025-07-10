@@ -22,14 +22,13 @@ class SignUpPlatformAdmin(override val config: UsersConfig, override val logger:
         // Validamos si ya existe algun usuario y lanzamos un error
         // Solo se permite utilizar en la creacion del primer usuario
         logger.info("Executing function $function")
-        cognito.use { identityProviderClient ->
-           val response = identityProviderClient.listUsers(ListUsersRequest{
+        val identityProviderClient = cognito
+        val response = identityProviderClient.listUsers(ListUsersRequest{
                userPoolId = config.awsCognitoUserPoolId
-           })
-           if (response.users?.isEmpty() == true){
+        })
+        if (response.users?.isEmpty() == true){
                logger.info("User signup")
                return super.execute(business, function, headers, textBody)
-           }
         }
         logger.warn("UnauthorizeExeption")
         return UnauthorizedException()
