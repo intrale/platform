@@ -2,7 +2,9 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig
+import com.codingfeline.buildkonfig.compiler.FieldSpec
+
+
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -11,7 +13,19 @@ plugins {
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.composeHotReload)
     alias(libs.plugins.kotlinx.serialization)
+    alias(libs.plugins.buildkonfig)
 }
+
+
+buildkonfig {
+    packageName = "ar.com.intrale"
+
+    defaultConfigs {
+        buildConfigField(FieldSpec.Type.STRING, "BASE_URL", "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/")
+        buildConfigField(FieldSpec.Type.STRING, "BUSINESS", "intrale")
+    }
+}
+
 
 kotlin {
     androidTarget {
@@ -34,19 +48,16 @@ kotlin {
     
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
-        outputModuleName.set("composeApp")
+        //outputModuleName.set("composeApp")
         browser {
-            val rootDirPath = project.rootDir.path
-            val projectDirPath = project.projectDir.path
             commonWebpackConfig {
                 outputFileName = "composeApp.js"
-                devServer = (devServer ?: KotlinWebpackConfig.DevServer()).apply {
-                    static = (static ?: mutableListOf()).apply {
-                        // Serve sources to debug inside browser
-                        add(rootDirPath)
-                        add(projectDirPath)
-                    }
-                }
+                devServer = devServer?.copy(
+                    static = listOf(
+                        project.rootDir.path,
+                        project.projectDir.path
+                    ) as MutableList<String>?
+                )
             }
         }
         binaries.executable()

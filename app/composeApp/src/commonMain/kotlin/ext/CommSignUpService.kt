@@ -1,5 +1,5 @@
 package ext
 
 interface CommSignUpService {
-    suspend fun execute(function:String, email:String)
+    suspend fun execute(email:String)
 }

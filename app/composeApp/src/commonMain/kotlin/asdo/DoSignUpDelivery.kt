@@ -4,6 +4,6 @@ import ext.CommSignUpService
 
 class DoSignUpDelivery(private val service: CommSignUpService) : ToDoSignUpDelivery {
     override suspend fun execute(email: String) {
-        service.execute("signupDelivery", email)
+        service.execute(/*"signupDelivery",*/ email)
     }
 }
