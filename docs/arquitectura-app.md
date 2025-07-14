@@ -204,7 +204,7 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(user: String, password: String): LoginResponse {
         val response: LoginResponse =
-            httpClient.post("https://66d32be4184dce1713cf7f64.mockapi.io/intrale/v1/login") {
+            httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/login") {
                 headers { }
                 setBody(LoginRequest(user, password))
             }.body()
