@@ -5,6 +5,7 @@ import io.ktor.client.call.body
 import io.ktor.client.request.headers
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import ar.com.intrale.BuildKonfig
 import io.ktor.utils.io.InternalAPI
 import kotlinx.serialization.Serializable
 import org.kodein.log.LoggerFactory
@@ -17,7 +18,7 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
     @OptIn(InternalAPI::class)
     override suspend fun execute(user: String, password: String): LoginResponse {
         val response: LoginResponse =
-            httpClient.post("https://66d32be4184dce1713cf7f64.mockapi.io/intrale/v1/login"){
+            httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/login") {
                 headers {
 
                 }
