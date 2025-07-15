@@ -66,7 +66,7 @@ fun TextField(label: StringResource,
             }
         )
 
-    Spacer(modifier = Modifier.fillMaxHeight())
+    Spacer(modifier = Modifier.weight(1f))
 
             AnimatedVisibility(!state.isValid){
                 Text(
