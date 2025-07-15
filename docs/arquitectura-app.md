@@ -106,6 +106,8 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
 
 La pantalla de login utiliza un `LoginViewModel` para manejar el estado y las validaciones. Cuando el usuario ingresa las credenciales y éstas son válidas, se invoca la acción `login()` y se navega a `HOME_PATH` si se obtiene un token válido.
 
+Si la llamada al servicio de autenticación falla, la interfaz despliega un `Snackbar` informando si las credenciales son inválidas o si ocurrió un problema de conexión.
+
 ```kotlin
 class Login() : Screen(LOGIN_PATH, Res.string.login) {
     @Composable override fun screen() { screenImplementation() }
