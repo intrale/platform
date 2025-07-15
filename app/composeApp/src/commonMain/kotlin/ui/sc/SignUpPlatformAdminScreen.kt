@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -29,7 +31,12 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
     @Composable
     private fun screenImpl(viewModel: SignUpPlatformAdminViewModel = viewModel { SignUpPlatformAdminViewModel() }) {
         val coroutine = rememberCoroutineScope()
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Spacer(modifier = Modifier.size(10.dp))
             TextField(
                 Res.string.email,
