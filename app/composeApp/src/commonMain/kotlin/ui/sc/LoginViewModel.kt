@@ -46,7 +46,7 @@ class LoginViewModel : ViewModel() {
     }
 
     // Features
-    suspend fun login(): String =
+    suspend fun login(): Result<String> =
         todoLogin.execute(
             user = state.user,
             password = state.password

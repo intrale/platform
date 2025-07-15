@@ -1,5 +1,5 @@
 package ext
 
 interface CommLoginService {
-    suspend fun execute(user:String, password:String): LoginResponse
+    suspend fun execute(user:String, password:String): Result<LoginResponse>
 }
