@@ -6,7 +6,6 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.utils.io.InternalAPI
 import kotlinx.serialization.Serializable
-import ext.AppConfig
 
 class ClientSignUpService(private val httpClient: HttpClient) : CommSignUpService {
     @OptIn(InternalAPI::class)

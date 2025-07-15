@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,7 +50,8 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
         forwardToHome(viewModel, coroutineScope, snackbarHostState, suspend  { viewModel.previousLogin()  } )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(modifier = Modifier.size(10.dp))
             TextField(
                 Res.string.username,

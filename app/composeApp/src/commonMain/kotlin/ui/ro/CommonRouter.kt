@@ -33,7 +33,7 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
     override fun routes(padding: PaddingValues) {
         var modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            //.verticalScroll(rememberScrollState())
             .padding(padding)
         NavHost(
             navController = navigator,
