@@ -28,12 +28,16 @@ import ui.rs.login
 import ui.rs.password
 import ui.rs.username
 import io.ktor.client.plugins.ClientRequestException
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 const val LOGIN_PATH = "/login"
 
 class Login() : Screen(LOGIN_PATH, Res.string.login){
 
     private lateinit var validationResult:ValidationResult<LoginViewModel>
+
+    private val logger = LoggerFactory.default.newLogger<Login>()
 
     @Composable
     override fun screen() {
@@ -74,6 +78,7 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                 label= stringResource(Res.string.login),
                 onClick = {
                     if (viewModel.isValid()) {
+                        logger.debug { "Formulario valido" }
                         forwardToHome(viewModel, coroutineScope, snackbarHostState, suspend { true })
                     }
                 }
@@ -93,14 +98,22 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
 
     ){
         coroutineScope.launch {
+            logger.debug { "Condicional" }
+            //TODO: revisar si es necesario el navigateDecision
             if (navigateDecision()) {
+                logger.debug { "Invocando login" }
                 val result = viewModel.login()
+                logger.debug { "Obteniendo resultado login" }
                 result.onSuccess {
                     navigate(HOME_PATH)
                 }.onFailure { error ->
                     val message = if (error is ClientRequestException) {
                         "Credenciales inválidas"
                     } else {
+                        logger.error {
+                            "Error de conexión: ${error.message} -> ${error.cause?.message}"
+                        }
+                        error.message
                         "Error de conexión"
                     }
                     snackbarHostState.showSnackbar(message)

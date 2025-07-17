@@ -21,10 +21,10 @@ import org.kodein.di.instance
 import ui.ro.CommonRouter
 import ui.ro.Router
 import ui.sc.*
+import io.ktor.client.plugins.logging.*
 
 
 public const val SCREENS = "screens"
-//public const val SCREENS2 = "screens2"
 
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -34,9 +34,6 @@ public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
 public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val SIGNUP_SALER = "signupSaler"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
-
-
-//private const val LOGIN_VIEW_MODEL = "loginViewModel"
 
 const val LOGIN_PATH = "/login"
 
@@ -81,12 +78,14 @@ class DIManager {
                                 Json { isLenient = true; ignoreUnknownKeys = true }
                             )
                         }
-                        //if (true) {
-                            install(Logging) {
-                                //logger = Logger.DEFAULT
-                                level = LogLevel.NONE
+                        install(Logging) {
+                            level = LogLevel.ALL // También podés usar HEADERS, BODY, etc.
+                            logger = object : Logger {
+                                override fun log(message: String) {
+                                    println("HTTP TRACE: $message") // o usá un logger real
+                                }
                             }
-                        //}
+                        }
                         install(DefaultRequest) {
                             header(HttpHeaders.ContentType, ContentType.Application.Json)
                         }

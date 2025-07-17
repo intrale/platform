@@ -12,8 +12,9 @@ class DoLogin(val commLogin: CommLoginService, val commKeyValueStorage: CommKeyV
         if (commKeyValueStorage.token==null) {
             val result: Result<LoginResponse> = commLogin.execute(user, password)
             return result.map { response ->
-                commKeyValueStorage.token = response.token
-                response.token
+                //TODO: revisar esta forma de retornar el token
+                commKeyValueStorage.token = response.accessToken
+                response.accessToken!!
             }
         }
 

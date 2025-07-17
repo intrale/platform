@@ -7,6 +7,9 @@ import aws.sdk.kotlin.services.cognitoidentityprovider.model.ChallengeNameType.N
 import com.google.gson.Gson
 import io.konform.validation.Validation
 import io.konform.validation.ValidationResult
+import io.konform.validation.jsonschema.maxLength
+import io.konform.validation.jsonschema.minLength
+import io.konform.validation.jsonschema.pattern
 import org.slf4j.Logger
 
 class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoIdentityProviderClient) : Function {
@@ -14,7 +17,11 @@ class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoId
 
     fun requestValidation(body:SignInRequest): Response? {
         val validation = Validation<SignInRequest> {
-            SignInRequest::email required {}
+            SignInRequest::email required {
+                minLength(5)
+                maxLength(254)
+                pattern("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$") hint "Email inválido"
+            }
             SignInRequest::password required {}
         }
         val validationResult: ValidationResult<Any> = try {

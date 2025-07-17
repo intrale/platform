@@ -20,7 +20,7 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
     override suspend fun execute(user: String, password: String): Result<LoginResponse> {
         return try {
             val response: LoginResponse =
-                httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/login") {
+                httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/signin") {
                     headers {
 
                     }
@@ -33,17 +33,17 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
 
             Result.success(response)
         } catch (e: ClientRequestException) {
-            logger.error { "client error: ${'$'}{e.message}" }
+            logger.error { "client error: ${e.message}" }
             Result.failure(e)
         } catch (e: Exception) {
-            logger.error { "login error: ${'$'}{e.message}" }
+            logger.error { "login error: ${e.message}" }
             Result.failure(e)
         }
     }
 }
 
 @Serializable
-data class LoginRequest(val user:String, val password: String)
+data class LoginRequest(val email:String, val password: String)
 
 @Serializable
-data class LoginResponse(val token:String)
+data class LoginResponse(val idToken: String?, val accessToken: String?, val refreshToken: String?)
