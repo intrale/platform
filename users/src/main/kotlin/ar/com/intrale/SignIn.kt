@@ -18,9 +18,9 @@ class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoId
     fun requestValidation(body:SignInRequest): Response? {
         val validation = Validation<SignInRequest> {
             SignInRequest::email required {
-                minLength(5)
+                /*minLength(5)
                 maxLength(254)
-                pattern("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$") hint "Email inválido"
+                patern("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$") hint "Email inválido" */
             }
             SignInRequest::password required {}
         }

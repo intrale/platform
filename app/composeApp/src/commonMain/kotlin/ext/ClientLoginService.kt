@@ -34,7 +34,8 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
                 logger.debug { "response body: $loginResponse" }
                 Result.success(loginResponse)
             } else {
-                logger.debug { "login failed with status ${response.status}: $bodyText" }
+                val exceptionResponse = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
+                logger.debug { "login failed with status: $exceptionResponse" }
                 Result.failure(Exception("Login fallido: $bodyText"))
             }
 
@@ -45,9 +46,14 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
     }
 }
 
-
 @Serializable
 data class LoginRequest(val email:String, val password: String)
 
 @Serializable
-data class LoginResponse(val idToken: String?, val accessToken: String?, val refreshToken: String?)
+data class StatusCode (val value: Int, val description: String?)
+
+@Serializable
+data class LoginResponse(val statusCode: StatusCode, val idToken: String, val accessToken: String, val refreshToken: String)
+
+@Serializable
+data class ExceptionResponse(val statusCode: StatusCode, val message: String?)
