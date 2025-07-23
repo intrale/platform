@@ -19,6 +19,8 @@ import kotlinx.coroutines.launch
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Scaffold
+import asdo.DoLoginException
+import asdo.DoLoginResult
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import ui.cp.Button
@@ -103,20 +105,39 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
             if (navigateDecision()) {
                 logger.debug { "Invocando login" }
                 val result = viewModel.login()
+
+
+
                 logger.debug { "Obteniendo resultado login" }
                 result.onSuccess {
                     navigate(HOME_PATH)
                 }.onFailure { error ->
-                    val message = if (error is ClientRequestException) {
-                        "Credenciales inválidas"
-                    } else {
-                        logger.error {
-                            "Error de conexión: ${error.message} -> ${error.cause?.message}"
+                    logger.error { "Error al iniciar sesión: ${error.message}" }
+                    if (error is DoLoginException) {
+                        val loginError:DoLoginException = error as DoLoginException
+                        if (loginError.statusCode.value == 401) {
+                            logger.debug { "Credenciales inválidas" }
+                            val userKey = LoginViewModel.LoginUIState::user.name
+                            val passKey = LoginViewModel.LoginUIState::password.name
+
+                            viewModel.inputsStates[userKey]?.let {
+                                it.value = it.value.copy(
+                                    isValid = false,
+                                    details = "Usuario o contraseña incorrectos"
+                                )
+                            }
+
+                            viewModel.inputsStates[passKey]?.let {
+                                it.value = it.value.copy(
+                                    isValid = false,
+                                    details = "Usuario o contraseña incorrectos"
+                                )
+                            }
+                        } else {
+                            logger.error { "Error de conexión: ${loginError.message} -> ${loginError.cause?.message}" }
+                            snackbarHostState.showSnackbar("Error de comunicación, intente mas tarde" )
                         }
-                        error.message
-                        "Error de conexión"
-                    }
-                    snackbarHostState.showSnackbar(message)
+                    }else snackbarHostState.showSnackbar(error.message ?: "Error")
                 }
             }
         }

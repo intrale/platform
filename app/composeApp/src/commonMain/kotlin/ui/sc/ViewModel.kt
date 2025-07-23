@@ -6,13 +6,14 @@ import androidx.compose.runtime.setValue
 import io.konform.validation.Validation
 import io.konform.validation.ValidationResult
 import ui.cp.InputState
+import androidx.compose.runtime.MutableState
 
 abstract class ViewModel: androidx.lifecycle.ViewModel(){
 
     //var logger = LoggerFactory.default.newLogger(Logger.Tag("ui.cp", "ViewModel"))
 
     lateinit var validation : Validation<Any>
-    var inputsStates by mutableStateOf(mutableMapOf<String, InputState>())
+    var inputsStates by mutableStateOf(mutableMapOf<String, MutableState<InputState>>())
 
     abstract fun getState():Any
 
@@ -25,26 +26,31 @@ abstract class ViewModel: androidx.lifecycle.ViewModel(){
         initInputState()
 
         validationResult.errors.forEach {
-            var inputState:InputState = this[it.dataPath.substring(1)]
-            inputState.isValid = false
-            inputState.details = it.message
+            val key = it.dataPath.substring(1)
+            val current = inputsStates[key]?.value ?: InputState(key)
+            inputsStates[key] = mutableStateOf(current.copy(
+                isValid = false,
+                details = it.message
+            ))
         }
+
+
         return validationResult.isValid
     }
 
-    operator fun  get(propertyName: String):InputState {
-        //logger.info { "get value with string" }
-        var inputState: InputState? = inputsStates[propertyName]
-        if (inputState==null){
+    operator fun get(propertyName: String): InputState {
+        var inputState = inputsStates[propertyName]?.value
+        if (inputState == null) {
             inputState = InputState(propertyName)
-            inputsStates[propertyName] = inputState
+            inputsStates[propertyName] = mutableStateOf(inputState)
         }
         return inputState
     }
 
+
     abstract fun initInputState()
 
-    fun entry(key: String) = key to InputState(key)
+    fun entry(key: String) = key to mutableStateOf(InputState(key))
 
 
    /* operator fun  get(property: KMutableProperty1<Any, MutableState<Any>>):InputState{

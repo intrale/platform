@@ -36,12 +36,12 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
             } else {
                 val exceptionResponse = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 logger.debug { "login failed with status: $exceptionResponse" }
-                Result.failure(Exception("Login fallido: $bodyText"))
+                Result.failure(exceptionResponse)
             }
 
         } catch (e: Exception) {
             logger.error { "login error: ${e.message}" }
-            Result.failure(e)
+            Result.failure(e.toExceptionResponse())
         }
     }
 }
@@ -50,10 +50,15 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
 data class LoginRequest(val email:String, val password: String)
 
 @Serializable
-data class StatusCode (val value: Int, val description: String?)
+data class StatusCodeDTO (val value: Int, val description: String?)
 
 @Serializable
-data class LoginResponse(val statusCode: StatusCode, val idToken: String, val accessToken: String, val refreshToken: String)
+data class LoginResponse(val statusCode: StatusCodeDTO, val idToken: String, val accessToken: String, val refreshToken: String)
 
 @Serializable
-data class ExceptionResponse(val statusCode: StatusCode, val message: String?)
+data class ExceptionResponse(val statusCode: StatusCodeDTO, override val message: String? = null): Throwable(message)
+
+fun Exception.toExceptionResponse(): ExceptionResponse = ExceptionResponse(
+        statusCode = StatusCodeDTO(500, "Internal Server Error"),
+        message = this.message ?: "An unexpected error occurred"
+    )

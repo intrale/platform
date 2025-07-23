@@ -43,6 +43,7 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
             val di = getDi(appModule)
             val logger: Logger by di.instance()
 
+            //TODO: Validar si esto sigue siendo necesario
             for ((key, binding) in di.container.tree.bindings) {
                 val tipo = key.type.jvmType.typeName               // Nombre completo del tipo vinculado
                 val tag = key.tag?.toString() ?: "sin tag"

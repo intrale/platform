@@ -4,6 +4,7 @@ import DIManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import asdo.DoLoginResult
 import asdo.ToDoCheckPreviousLogin
 import asdo.ToDoLogin
 import io.konform.validation.Validation
@@ -27,6 +28,7 @@ class LoginViewModel : ViewModel() {
     init {
         validation = Validation<LoginUIState> {
 
+            //TODO: Externalizar mensajes
             LoginUIState::user required {
                 minLength(8) hint "Debe contener al menos 8 caracteres."
             }
@@ -46,7 +48,7 @@ class LoginViewModel : ViewModel() {
     }
 
     // Features
-    suspend fun login(): Result<String> =
+    suspend fun login(): Result<DoLoginResult> =
         todoLogin.execute(
             user = state.user,
             password = state.password
