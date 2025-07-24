@@ -15,3 +15,7 @@ Relacionado con #75.
 Se agregó la pantalla `SelectSignUpProfileScreen` que permite elegir el tipo de registro antes de mostrar la pantalla específica.
 Desde `Login` ahora aparece el botón **"Registrarme"** que navega a dicha pantalla.
 Cada opción lleva a `SignUpPlatformAdminScreen`, `SignUpDeliveryScreen` o `SignUpSalerScreen` según corresponda.
+
+### Manejo de respuestas
+Ahora cada pantalla de registro utiliza `callService` para mostrar mensajes de éxito o error.
+Los `ViewModel` devuelven `Result<DoSignUpResult>` permitiendo feedback consistente con el login.
