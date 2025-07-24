@@ -127,8 +127,13 @@ class Login() : Screen(LOGIN_PATH, Res.string.login) {
                       state = viewModel.inputsStates[LoginViewModel.LoginUIState::password.name]!!,
                       onValueChange = { value -> viewModel.state = viewModel.state.copy(password = value) })
             Spacer(modifier = Modifier.size(10.dp))
-            Button(label = stringResource(Res.string.login)) {
+            Button(
+                label = stringResource(Res.string.login),
+                loading = viewModel.loading,
+                enabled = !viewModel.loading
+            ) {
                 if (viewModel.isValid()) {
+                    viewModel.loading = true
                     forwardToHome(viewModel, coroutineScope, suspend { true })
                 }
             }
@@ -136,6 +141,7 @@ class Login() : Screen(LOGIN_PATH, Res.string.login) {
     }
 }
 ```
+Al presionar el botón se asigna `loading = true` para mostrar un indicador de progreso y deshabilitar el botón hasta finalizar la acción de login.
 【F:app/composeApp/src/commonMain/kotlin/ui/sc/Login.kt†L1-L70】
 
 ## 5. Vista Modelo y validaciones
