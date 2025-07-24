@@ -19,10 +19,8 @@ abstract class ViewModel: androidx.lifecycle.ViewModel(){
 
     fun isValid():Boolean {
 
-        var validationResult: ValidationResult<Any> = validation(getState())
+        val validationResult: ValidationResult<Any> = validation(getState())
 
-        //TODO: review what do we do with the last inputsStates
-        // reset all is an option
         initInputState()
 
         validationResult.errors.forEach {
@@ -33,7 +31,6 @@ abstract class ViewModel: androidx.lifecycle.ViewModel(){
                 details = it.message
             ))
         }
-
 
         return validationResult.isValid
     }

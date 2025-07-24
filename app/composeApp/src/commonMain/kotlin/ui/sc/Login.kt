@@ -20,7 +20,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Scaffold
 import asdo.DoLoginException
-import asdo.DoLoginResult
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import ui.cp.Button
@@ -29,9 +28,9 @@ import ui.rs.Res
 import ui.rs.login
 import ui.rs.password
 import ui.rs.username
-import io.ktor.client.plugins.ClientRequestException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.rs.error_credentials
 
 const val LOGIN_PATH = "/login"
 
@@ -50,10 +49,12 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
     @Composable
     private fun screenImplementation(viewModel: LoginViewModel = viewModel {LoginViewModel()} ) {
 
+        val errorCredentials = stringResource(Res.string.error_credentials)
+
         val coroutineScope = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
 
-        forwardToHome(viewModel, coroutineScope, snackbarHostState, suspend  { viewModel.previousLogin()  } )
+        callService(viewModel, coroutineScope, snackbarHostState, suspend  { viewModel.previousLogin()  }, errorCredentials )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -81,7 +82,7 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                 onClick = {
                     if (viewModel.isValid()) {
                         logger.debug { "Formulario valido" }
-                        forwardToHome(viewModel, coroutineScope, snackbarHostState, suspend { true })
+                        callService(viewModel, coroutineScope, snackbarHostState, suspend { true }, errorCredentials)
                     }
                 }
             )
@@ -91,14 +92,14 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
         }
     }
 
-
-    private fun forwardToHome(
+    private fun callService(
         viewModel: LoginViewModel,
         coroutineScope: CoroutineScope,
         snackbarHostState: SnackbarHostState,
-        navigateDecision: suspend () -> Boolean
-
+        navigateDecision: suspend () -> Boolean,
+        errorCredentials: String
     ){
+
         coroutineScope.launch {
             logger.debug { "Condicional" }
             //TODO: revisar si es necesario el navigateDecision
@@ -120,17 +121,17 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                             val userKey = LoginViewModel.LoginUIState::user.name
                             val passKey = LoginViewModel.LoginUIState::password.name
 
-                            viewModel.inputsStates[userKey]?.let {
+                            /*viewModel.inputsStates[userKey]?.let {
                                 it.value = it.value.copy(
                                     isValid = false,
                                     details = "Usuario o contraseña incorrectos"
                                 )
-                            }
+                            }*/
 
                             viewModel.inputsStates[passKey]?.let {
                                 it.value = it.value.copy(
                                     isValid = false,
-                                    details = "Usuario o contraseña incorrectos"
+                                    details = errorCredentials
                                 )
                             }
                         } else {

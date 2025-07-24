@@ -1,3 +1,4 @@
+<!-- Se define el nomnbre de la aplicacion Android  -->
 <resources>
-    <string name="app_name">app</string>
+    <string name="app_name">Intrale</string>
 </resources>

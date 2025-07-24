@@ -1,3 +1,4 @@
+<!-- Se definen las cadenas de texto que se utilizarán en la aplicación Compose -->
 <resources>
     <string name="app_name">Intrale</string>
     <string name="username">Usuario</string>
@@ -14,4 +15,6 @@
     <string name="signup_delivery">Registro Delivery</string>
     <string name="signup_saler">Registro Vendedor</string>
     <string name="email">Correo electrónico</string>
+
+    <string name="error_credentials">Usuario o contraseña incorrectos</string>
 </resources>
