@@ -91,6 +91,13 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                 }
             )
 
+            Button(
+                label = stringResource(Res.string.signup),
+                onClick = {
+                    navigate(SELECT_SIGNUP_PROFILE_PATH)
+                }
+            )
+
 
         }
         }
