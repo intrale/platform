@@ -28,9 +28,9 @@ import ui.rs.Res
 import ui.rs.login
 import ui.rs.password
 import ui.rs.username
+import io.ktor.client.plugins.ClientRequestException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.rs.error_credentials
 
 const val LOGIN_PATH = "/login"
 
@@ -48,8 +48,6 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
     @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImplementation(viewModel: LoginViewModel = viewModel {LoginViewModel()} ) {
-
-        val errorCredentials = stringResource(Res.string.error_credentials)
 
         val coroutineScope = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
@@ -78,10 +76,13 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
             )
             Spacer(modifier = Modifier.size(10.dp))
             Button(
-                label= stringResource(Res.string.login),
+                label = stringResource(Res.string.login),
+                loading = viewModel.loading,
+                enabled = !viewModel.loading,
                 onClick = {
                     if (viewModel.isValid()) {
                         logger.debug { "Formulario valido" }
+                        viewModel.loading = true
                         callService(viewModel, coroutineScope, snackbarHostState, suspend { true }, errorCredentials)
                     }
                 }
@@ -121,17 +122,17 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                             val userKey = LoginViewModel.LoginUIState::user.name
                             val passKey = LoginViewModel.LoginUIState::password.name
 
-                            /*viewModel.inputsStates[userKey]?.let {
+                            viewModel.inputsStates[userKey]?.let {
                                 it.value = it.value.copy(
                                     isValid = false,
                                     details = "Usuario o contraseña incorrectos"
                                 )
-                            }*/
+                            }
 
                             viewModel.inputsStates[passKey]?.let {
                                 it.value = it.value.copy(
                                     isValid = false,
-                                    details = errorCredentials
+                                    details = "Usuario o contraseña incorrectos"
                                 )
                             }
                         } else {

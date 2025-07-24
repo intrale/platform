@@ -18,6 +18,7 @@ class LoginViewModel : ViewModel() {
 
     // data state initialize
     var state by mutableStateOf(LoginUIState())
+    var loading by mutableStateOf(false)
     data class LoginUIState (
         val user: String = "",
         val password: String = ""
