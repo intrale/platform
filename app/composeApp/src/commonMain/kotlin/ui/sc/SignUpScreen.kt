@@ -45,11 +45,14 @@ class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
                 onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
             )
             Spacer(modifier = Modifier.size(10.dp))
-            Button(label = stringResource(Res.string.signup)) {
+            Button(label = stringResource(Res.string.signup),
+                loading = viewModel.loading,
+                enabled = !viewModel.loading,
+                onClick = {
                 if (viewModel.isValid()) {
                     coroutine.launch { viewModel.signup() }
                 }
-            }
+            })
         }
     }
 }

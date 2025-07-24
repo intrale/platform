@@ -28,17 +28,29 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
     private fun screenImpl() {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(modifier = Modifier.size(10.dp))
-            Button(label = stringResource(Res.string.signup_platform_admin)) {
-                navigate(SIGNUP_PLATFORM_ADMIN_PATH)
-            }
+            Button(
+                label = stringResource(Res.string.signup_platform_admin),
+                loading = false,
+                enabled = true,
+                onClick = {
+                    navigate(SIGNUP_PLATFORM_ADMIN_PATH)
+                })
             Spacer(modifier = Modifier.size(10.dp))
-            Button(label = stringResource(Res.string.signup_delivery)) {
-                navigate(SIGNUP_DELIVERY_PATH)
-            }
+            Button(
+                label = stringResource(Res.string.signup_delivery),
+                loading = false,
+                enabled = true,
+                onClick = {
+                    navigate(SIGNUP_DELIVERY_PATH)
+                })
             Spacer(modifier = Modifier.size(10.dp))
-            Button(label = stringResource(Res.string.signup_saler)) {
-                navigate(SIGNUP_SALER_PATH)
-            }
+            Button(
+                label = stringResource(Res.string.signup_saler),
+                loading = false,
+                enabled = true,
+                onClick = {
+                    navigate(SIGNUP_SALER_PATH)
+                })
         }
     }
 }

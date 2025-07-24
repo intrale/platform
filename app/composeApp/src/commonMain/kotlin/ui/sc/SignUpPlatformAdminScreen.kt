@@ -45,11 +45,14 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
                 onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
             )
             Spacer(modifier = Modifier.size(10.dp))
-            Button(label = stringResource(Res.string.signup_platform_admin)) {
+            Button(label = stringResource(Res.string.signup_platform_admin),
+                loading = viewModel.loading,
+                enabled = !viewModel.loading,
+                onClick =  {
                 if (viewModel.isValid()) {
                     coroutine.launch { viewModel.signup() }
                 }
-            }
+            })
         }
     }
 }

@@ -45,11 +45,15 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                 onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
             )
             Spacer(modifier = Modifier.size(10.dp))
-            Button(label = stringResource(Res.string.signup_delivery)) {
+            Button(
+                label = stringResource(Res.string.signup_delivery),
+                loading = viewModel.loading,
+                enabled = !viewModel.loading,
+                onClick =  {
                 if (viewModel.isValid()) {
                     coroutine.launch { viewModel.signup() }
                 }
-            }
+            })
         }
     }
 }

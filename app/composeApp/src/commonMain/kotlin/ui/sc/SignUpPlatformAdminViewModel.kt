@@ -13,6 +13,7 @@ class SignUpPlatformAdminViewModel : ViewModel() {
     private val toDoSignUp: ToDoSignUpPlatformAdmin by DIManager.di.instance()
 
     var state by mutableStateOf(SignUpUIState())
+    var loading by mutableStateOf(false)
     data class SignUpUIState(val email: String = "")
     override fun getState(): Any = state
 

@@ -31,6 +31,7 @@ import ui.rs.username
 import io.ktor.client.plugins.ClientRequestException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.rs.error_credentials
 
 const val LOGIN_PATH = "/login"
 
@@ -48,6 +49,8 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
     @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImplementation(viewModel: LoginViewModel = viewModel {LoginViewModel()} ) {
+
+        val errorCredentials = stringResource(Res.string.error_credentials)
 
         val coroutineScope = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
@@ -108,13 +111,13 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                 logger.debug { "Invocando login" }
                 val result = viewModel.login()
 
-
-
                 logger.debug { "Obteniendo resultado login" }
                 result.onSuccess {
+                    viewModel.loading = false
                     navigate(HOME_PATH)
                 }.onFailure { error ->
                     logger.error { "Error al iniciar sesión: ${error.message}" }
+                    viewModel.loading = false
                     if (error is DoLoginException) {
                         val loginError:DoLoginException = error as DoLoginException
                         if (loginError.statusCode.value == 401) {
@@ -122,12 +125,12 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                             val userKey = LoginViewModel.LoginUIState::user.name
                             val passKey = LoginViewModel.LoginUIState::password.name
 
-                            viewModel.inputsStates[userKey]?.let {
+                            /*viewModel.inputsStates[userKey]?.let {
                                 it.value = it.value.copy(
                                     isValid = false,
                                     details = "Usuario o contraseña incorrectos"
                                 )
-                            }
+                            }*/
 
                             viewModel.inputsStates[passKey]?.let {
                                 it.value = it.value.copy(
