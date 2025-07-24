@@ -4,6 +4,7 @@ import DIManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import asdo.DoSignUpResult
 import asdo.ToDoSignUp
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
@@ -30,7 +31,6 @@ class SignUpViewModel : ViewModel() {
         inputsStates = mutableMapOf(entry(SignUpUIState::email.name))
     }
 
-    suspend fun signup() {
+    suspend fun signup(): Result<DoSignUpResult> =
         toDoSignUp.execute(state.email)
-    }
 }

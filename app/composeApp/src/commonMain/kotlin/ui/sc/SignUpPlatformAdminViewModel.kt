@@ -1,6 +1,7 @@
 package ui.sc
 
 import DIManager
+import asdo.DoSignUpResult
 import asdo.ToDoSignUpPlatformAdmin
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +31,6 @@ class SignUpPlatformAdminViewModel : ViewModel() {
         inputsStates = mutableMapOf(entry(SignUpUIState::email.name))
     }
 
-    suspend fun signup() {
+    suspend fun signup(): Result<DoSignUpResult> =
         toDoSignUp.execute(state.email)
-    }
 }

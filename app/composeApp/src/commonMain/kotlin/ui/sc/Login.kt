@@ -28,6 +28,7 @@ import ui.rs.Res
 import ui.rs.login
 import ui.rs.password
 import ui.rs.username
+import ui.rs.signup
 import io.ktor.client.plugins.ClientRequestException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
