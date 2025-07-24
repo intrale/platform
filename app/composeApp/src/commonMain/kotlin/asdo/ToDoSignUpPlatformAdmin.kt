@@ -1,3 +1,3 @@
 package asdo
 
-interface ToDoSignUpPlatformAdmin { suspend fun execute(email:String) }
+interface ToDoSignUpPlatformAdmin { suspend fun execute(email:String): Result<DoSignUpResult> }
