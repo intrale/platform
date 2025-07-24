@@ -7,11 +7,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Scaffold
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
@@ -20,6 +24,8 @@ import ui.cp.TextField
 import ui.rs.Res
 import ui.rs.email
 import ui.rs.signup_delivery
+import ui.sc.callService
+import LOGIN_PATH
 
 const val SIGNUP_DELIVERY_PATH = "/signupDelivery"
 
@@ -31,6 +37,9 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
     @Composable
     private fun screenImpl(viewModel: SignUpDeliveryViewModel = viewModel { SignUpDeliveryViewModel() }) {
         val coroutine = rememberCoroutineScope()
+        val snackbarHostState = remember { SnackbarHostState() }
+
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -51,9 +60,16 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                 enabled = !viewModel.loading,
                 onClick =  {
                 if (viewModel.isValid()) {
-                    coroutine.launch { viewModel.signup() }
+                    callService(
+                        coroutineScope = coroutine,
+                        snackbarHostState = snackbarHostState,
+                        setLoading = { viewModel.loading = it },
+                        serviceCall = { viewModel.signup() },
+                        onSuccess = { navigate(LOGIN_PATH) }
+                    )
                 }
             })
+        }
         }
     }
 }
