@@ -77,10 +77,13 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
             )
             Spacer(modifier = Modifier.size(10.dp))
             Button(
-                label= stringResource(Res.string.login),
+                label = stringResource(Res.string.login),
+                loading = viewModel.loading,
+                enabled = !viewModel.loading,
                 onClick = {
                     if (viewModel.isValid()) {
                         logger.debug { "Formulario valido" }
+                        viewModel.loading = true
                         forwardToHome(viewModel, coroutineScope, snackbarHostState, suspend { true })
                     }
                 }
@@ -139,6 +142,7 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                         }
                     }else snackbarHostState.showSnackbar(error.message ?: "Error")
                 }
+                viewModel.loading = false
             }
         }
 
