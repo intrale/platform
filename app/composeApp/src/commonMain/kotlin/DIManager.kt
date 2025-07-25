@@ -96,6 +96,9 @@ class DIManager {
                 bindSingleton<CommKeyValueStorage> { KeyValueStorageService() }
                 bindSingleton<CommLoginService> { ClientLoginService(instance()) }
                 bindSingleton<CommSignUpService> { ClientSignUpService(instance()) }
+                bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
+                bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
+                bindSingleton<CommSignUpSalerService> { ClientSignUpSalerService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }

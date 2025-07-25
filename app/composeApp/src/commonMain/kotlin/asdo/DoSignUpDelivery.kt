@@ -1,9 +1,9 @@
 package asdo
 
-import ext.CommSignUpService
+import ext.CommSignUpDeliveryService
 import ext.ExceptionResponse
 
-class DoSignUpDelivery(private val service: CommSignUpService) : ToDoSignUpDelivery {
+class DoSignUpDelivery(private val service: CommSignUpDeliveryService) : ToDoSignUpDelivery {
     override suspend fun execute(email: String): Result<DoSignUpResult> {
         return try {
             service.execute(/*"signupDelivery",*/ email).fold(
