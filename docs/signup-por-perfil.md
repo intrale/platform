@@ -7,6 +7,9 @@ Cada una muestra un campo para ingresar el correo electrónico y un botón **"Re
 
 Al presionar el botón se invoca la acción correspondiente del paquete `asdo`,
 la cual consume los endpoints expuestos por el módulo `users`.
+Cada acción utiliza un servicio HTTP específico:
+`ClientSignUpPlatformAdminService`, `ClientSignUpDeliveryService` y
+`ClientSignUpSalerService` según el perfil seleccionado.
 
 ## Flujo de selección de perfil
 
