@@ -11,7 +11,7 @@ import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
 
 class SignUpPlatformAdminViewModel : ViewModel() {
-    private val toDoSignUp: ToDoSignUpPlatformAdmin by DIManager.di.instance()
+    private val toDoSignUpPlatformAdmin: ToDoSignUpPlatformAdmin by DIManager.di.instance()
 
     var state by mutableStateOf(SignUpUIState())
     var loading by mutableStateOf(false)
@@ -32,5 +32,5 @@ class SignUpPlatformAdminViewModel : ViewModel() {
     }
 
     suspend fun signup(): Result<DoSignUpResult> =
-        toDoSignUp.execute(state.email)
+        toDoSignUpPlatformAdmin.execute(state.email)
 }
