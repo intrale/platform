@@ -32,7 +32,8 @@ class DoLogin(val commLogin: CommLoginService, val commKeyValueStorage: CommKeyV
 
                             .recoverCatching { e ->
                                 logger.error { "recoverCatching Error during login: ${e.message}" }
-                                throw (e as ExceptionResponse).toDoLoginException()
+                                throw (e as? ExceptionResponse)?.toDoLoginException()
+                                    ?: e.toDoLoginException()
                              }
             }
             return Result.success(commKeyValueStorage.toDoLoginResult())
