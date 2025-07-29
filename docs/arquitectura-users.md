@@ -17,6 +17,7 @@ Gestiona el ciclo de vida de los usuarios finales: registro, autenticación y ad
 ## 3. Funcionalidades implementadas
 
 - Registro e inicio de sesión de usuarios mediante Cognito.
+- Persistencia de la relación usuario-negocio-perfil en la tabla `userbusinessprofile`.
 - Recuperación y confirmación de contraseña.
 - Registro y revisión de negocios asociados.
 - Configuración y verificación de autenticación en dos pasos.

@@ -13,6 +13,13 @@ import io.ktor.server.testing.*
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClientExtension
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
+import software.amazon.awssdk.enhanced.dynamodb.Key
+import software.amazon.awssdk.enhanced.dynamodb.TableSchema
+import software.amazon.awssdk.enhanced.dynamodb.model.Page
+import software.amazon.awssdk.enhanced.dynamodb.model.PageIterable
+import software.amazon.awssdk.core.pagination.sync.SdkIterable
 import org.kodein.di.*
 import org.kodein.di.ktor.closestDI
 import org.kodein.di.ktor.di
@@ -26,6 +33,21 @@ class SignUpDeliveryIntegrationTest {
         return DI.Module(name = "test", allowSilentOverride = true) {
             bind<UsersConfig>(overrides = true) { singleton { config } }
             bind<CognitoIdentityProviderClient>(overrides = true) { singleton { cognito } }
+            bind<DynamoDbTable<UserBusinessProfile>>(overrides = true) {
+                singleton {
+                    object : DynamoDbTable<UserBusinessProfile> {
+                        val items = mutableListOf<UserBusinessProfile>()
+                        override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
+                        override fun tableSchema(): TableSchema<UserBusinessProfile> = TableSchema.fromBean(UserBusinessProfile::class.java)
+                        override fun tableName() = "profiles"
+                        override fun keyFrom(item: UserBusinessProfile) = Key.builder().partitionValue(item.compositeKey).build()
+                        override fun index(indexName: String) = throw UnsupportedOperationException()
+                        override fun putItem(item: UserBusinessProfile) { items.add(item) }
+                        override fun scan(): PageIterable<UserBusinessProfile> = PageIterable.create(SdkIterable { mutableListOf(Page.create(items)).iterator() })
+                        override fun getItem(key: Key): UserBusinessProfile? = null
+                    }
+                }
+            }
         }
     }
 

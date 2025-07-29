@@ -73,11 +73,12 @@ class ReviewBusinessRegistration (val config: UsersConfig, val logger: Logger,
 
             logger.debug("trying to get user $responseCognito")
             val email = responseCognito.userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
-            val profile = responseCognito.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
-
-            if (PLATFORM_ADMIN_PROFILE != profile) {
+            if (email == null) {
                 return UnauthorizedException()
             }
+            val adminProfile = tableProfiles.scan().items().firstOrNull {
+                it.email == email && it.business == business && it.profile == PLATFORM_ADMIN_PROFILE && it.state == BusinessState.APPROVED
+            } ?: return UnauthorizedException()
 
             // Validar el segundo factor para ese usuario
             logger.debug("checking Two Factor")

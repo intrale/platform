@@ -126,19 +126,19 @@ val appModule = DI.Module("appModule") {
     }
 
     bind<Function> (tag="signup") {
-        singleton  { SignUp(instance(), instance(), instance()) }
+        singleton  { SignUp(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="signupPlatformAdmin") {
-        singleton  { SignUpPlatformAdmin(instance(), instance(), instance()) }
+        singleton  { SignUpPlatformAdmin(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="signupDelivery") {
-        singleton  { SignUpDelivery(instance(), instance(), instance()) }
-    }    
+        singleton  { SignUpDelivery(instance(), instance(), instance(), instance()) }
+    }
     bind<Function> (tag="signupSaler") {
-        singleton  { SignUpSaler(instance(), instance(), instance()) }
+        singleton  { SignUpSaler(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="signin") {
-        singleton {  SignIn(instance(), instance(), instance()) }
+        singleton {  SignIn(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="validate") {
         singleton {  Validate(instance(), instance()) }
@@ -179,6 +179,6 @@ val appModule = DI.Module("appModule") {
         singleton { ReviewJoinBusiness(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="configAutoAcceptDeliveries") {
-        singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance()) }
+        singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance(), instance()) }
     }
 }
