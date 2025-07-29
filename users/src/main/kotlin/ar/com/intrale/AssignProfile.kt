@@ -50,13 +50,12 @@ class AssignProfile(
         val validationResponse = requestValidation(body)
         if (validationResponse != null) return validationResponse
 
-        val response = cognito.getUser {
-            this.accessToken = headers["Authorization"]
-        }
-        val profile = response.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
-        if (PLATFORM_ADMIN_PROFILE != profile) {
-            return UnauthorizedException()
-        }
+        val emailCaller = cognito.getUser { this.accessToken = headers["Authorization"] }
+            .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
+            ?: return UnauthorizedException()
+        val adminProfile = tableProfiles.scan().items().firstOrNull {
+            it.email == emailCaller && it.business == business && it.profile == PLATFORM_ADMIN_PROFILE && it.state == BusinessState.APPROVED
+        } ?: return UnauthorizedException()
 
         val userProfile = UserBusinessProfile().apply {
             email = body.email

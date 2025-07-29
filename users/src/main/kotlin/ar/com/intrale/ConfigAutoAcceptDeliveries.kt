@@ -5,12 +5,14 @@ import aws.sdk.kotlin.services.cognitoidentityprovider.getUser
 import com.google.gson.Gson
 import org.slf4j.Logger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
+import ar.com.intrale.UserBusinessProfile
 
 class ConfigAutoAcceptDeliveries(
     override val config: UsersConfig,
     override val logger: Logger,
     private val cognito: CognitoIdentityProviderClient,
-    private val tableBusiness: DynamoDbTable<Business>
+    private val tableBusiness: DynamoDbTable<Business>,
+    private val tableProfiles: DynamoDbTable<UserBusinessProfile>
 ) : SecuredFunction(config = config, logger = logger) {
 
     override suspend fun securedExecute(
@@ -24,9 +26,13 @@ class ConfigAutoAcceptDeliveries(
         if (textBody.isEmpty()) return RequestValidationException("Request body not found")
         val body = Gson().fromJson(textBody, ConfigAutoAcceptDeliveriesRequest::class.java)
 
-        val user = cognito.getUser { this.accessToken = headers["Authorization"] }
-        val profile = user.userAttributes?.firstOrNull { it.name == PROFILE_ATT_NAME }?.value
-        if (PROFILE_BUSINESS_ADMIN != profile) {
+        val email = cognito.getUser { this.accessToken = headers["Authorization"] }
+            .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
+            ?: return UnauthorizedException()
+        val profiles = tableProfiles.scan().items().filter {
+            it.email == email && it.business == business && it.profile == PROFILE_BUSINESS_ADMIN && it.state == BusinessState.APPROVED
+        }
+        if (profiles.isEmpty()) {
             return UnauthorizedException()
         }
 
