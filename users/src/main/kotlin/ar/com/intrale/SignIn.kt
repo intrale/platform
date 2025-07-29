@@ -11,8 +11,14 @@ import io.konform.validation.jsonschema.maxLength
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import org.slf4j.Logger
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 
-class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoIdentityProviderClient) : Function {
+class SignIn(
+    val config: UsersConfig,
+    val logger: Logger,
+    val cognito: CognitoIdentityProviderClient,
+    private val tableProfiles: DynamoDbTable<UserBusinessProfile>
+) : Function {
 
 
     fun requestValidation(body:SignInRequest): Response? {
@@ -120,16 +126,11 @@ class SignIn(val config: UsersConfig, val logger: Logger, val cognito: CognitoId
 
                 }
 
-                // Obtenemos la informacion del usuario
-                logger.info("Obtenemos la informacion del usuario")
-                val user = identityProviderClient.adminGetUser(AdminGetUserRequest {
-                    userPoolId = config.awsCognitoUserPoolId
-                    username = body.email
-                })
-
-                val businesses = user.userAttributes?.find { it.name == BUSINESS_ATT_NAME }?.value
-                logger.info("businesses: $businesses")
-                if (businesses?.contains(business) == false){
+                logger.info("Verificando pertenencia del usuario al negocio")
+                val profiles = tableProfiles.scan().items().filter {
+                    it.email == body.email && it.business == business && it.state == BusinessState.APPROVED
+                }
+                if (profiles.isEmpty()) {
                     return UnauthorizedException()
                 }
 

@@ -7,8 +7,28 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.slf4j.helpers.NOPLogger
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClientExtension
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
+import software.amazon.awssdk.enhanced.dynamodb.Key
+import software.amazon.awssdk.enhanced.dynamodb.TableSchema
+import software.amazon.awssdk.enhanced.dynamodb.model.Page
+import software.amazon.awssdk.enhanced.dynamodb.model.PageIterable
+import software.amazon.awssdk.core.pagination.sync.SdkIterable
 import kotlin.test.Test
 import kotlin.test.assertEquals
+
+class DummySignInTableIntg : DynamoDbTable<UserBusinessProfile> {
+    val items = mutableListOf<UserBusinessProfile>()
+    override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
+    override fun tableSchema(): TableSchema<UserBusinessProfile> = TableSchema.fromBean(UserBusinessProfile::class.java)
+    override fun tableName(): String = "profiles"
+    override fun keyFrom(item: UserBusinessProfile): Key = Key.builder().partitionValue(item.compositeKey).build()
+    override fun index(indexName: String) = throw UnsupportedOperationException()
+    override fun putItem(item: UserBusinessProfile) { items.add(item) }
+    override fun scan(): PageIterable<UserBusinessProfile> =
+        PageIterable.create(SdkIterable { mutableListOf(Page.create(items)).iterator() })
+    override fun getItem(key: Key): UserBusinessProfile? = items.find { it.compositeKey == key.partitionKeyValue().s() }
+}
 
 class SignInIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
@@ -16,6 +36,14 @@ class SignInIntegrationTest {
 
     @Test
     fun `ingreso exitoso`() = runBlocking {
+        val table = DummySignInTableIntg().apply {
+            items.add(UserBusinessProfile().apply {
+                email = "user@test.com"
+                business = "biz"
+                profile = PROFILE_CLIENT
+                state = BusinessState.APPROVED
+            })
+        }
         val cognito = mockk<CognitoIdentityProviderClient>()
         coEvery { cognito.adminInitiateAuth(any()) } returns AdminInitiateAuthResponse {
             authenticationResult = AuthenticationResultType {
@@ -29,7 +57,7 @@ class SignInIntegrationTest {
             userAttributes = listOf(AttributeType { name = BUSINESS_ATT_NAME; value = "biz" })
         }
         coEvery { cognito.close() } returns Unit
-        val signIn = SignIn(config, logger, cognito)
+        val signIn = SignIn(config, logger, cognito, table)
 
         val resp = signIn.execute(
             business = "biz",
@@ -45,6 +73,14 @@ class SignInIntegrationTest {
 
     @Test
     fun `cambio de contrasena requerido`() = runBlocking {
+        val table = DummySignInTableIntg().apply {
+            items.add(UserBusinessProfile().apply {
+                email = "user@test.com"
+                business = "biz"
+                profile = PROFILE_CLIENT
+                state = BusinessState.APPROVED
+            })
+        }
         val cognito = mockk<CognitoIdentityProviderClient>()
         coEvery { cognito.adminInitiateAuth(any()) } returnsMany listOf(
             AdminInitiateAuthResponse { challengeName = ChallengeNameType.NewPasswordRequired; session = "sess" },
@@ -57,7 +93,7 @@ class SignInIntegrationTest {
             userAttributes = listOf(AttributeType { name = BUSINESS_ATT_NAME; value = "biz" })
         }
         coEvery { cognito.close() } returns Unit
-        val signIn = SignIn(config, logger, cognito)
+        val signIn = SignIn(config, logger, cognito, table)
 
         val resp = signIn.execute(
             business = "biz",
@@ -74,10 +110,11 @@ class SignInIntegrationTest {
 
     @Test
     fun `credenciales invalidas retornan no autorizado`() = runBlocking {
+        val table = DummySignInTableIntg()
         val cognito = mockk<CognitoIdentityProviderClient>()
         coEvery { cognito.adminInitiateAuth(any()) } throws NotAuthorizedException { }
         coEvery { cognito.close() } returns Unit
-        val signIn = SignIn(config, logger, cognito)
+        val signIn = SignIn(config, logger, cognito, table)
 
         val resp = signIn.execute(
             business = "biz",

@@ -7,13 +7,19 @@ import io.konform.validation.Validation
 import io.konform.validation.ValidationResult
 import io.konform.validation.jsonschema.pattern
 import org.slf4j.Logger
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 
 const val PROFILE_ATT_NAME = "profile"
 const val BUSINESS_ATT_NAME = "locale"
 const val EMAIL_ATT_NAME = "email"
 const val DEFAULT_PROFILE = "DEFAULT"
 
-open class SignUp (open val config: UsersConfig, open val logger: Logger, open val cognito: CognitoIdentityProviderClient): Function {
+open class SignUp (
+    open val config: UsersConfig,
+    open val logger: Logger,
+    open val cognito: CognitoIdentityProviderClient,
+    private val tableProfiles: DynamoDbTable<UserBusinessProfile>
+) : Function {
 
     open fun getProfile() : String {
         return DEFAULT_PROFILE
@@ -48,17 +54,6 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
                 this.value = email
             })
 
-            //TODO: Esto deberia estar en la tabla de relaciones de usuarios perfiles y negocios
-            attrs.add(AttributeType {
-                this.name = PROFILE_ATT_NAME
-                this.value = getProfile()
-            })
-
-            attrs.add(AttributeType {
-                this.name = BUSINESS_ATT_NAME
-                this.value = business
-            })
-
             try {
                 logger.info("Call to Cognito to create user with email $email")
                 cognito.adminCreateUser(
@@ -68,38 +63,19 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
                                 userAttributes = attrs
                             })
             } catch (e:UsernameExistsException) {
-                // Obtenemos la informacion del usuario
-
-                //TODO: Si ya sabemos que el usuario existe, deberiamos validar que el usuario no este asociado al negocio que se intenta relacionar
-                //TODO: Si el usuario ya esta asociado al negocio, deberia solo permitirle asociarse con un perfil diferente
-                logger.info("Obtenemos la informacion del usuario")
-                val user = cognito.adminGetUser(AdminGetUserRequest {
-                    userPoolId = config.awsCognitoUserPoolId
-                    username = body.email
-                })
-                val businesses = user.userAttributes?.find { it.name == BUSINESS_ATT_NAME }?.value
-                logger.info("businesses: $businesses")
-                if (businesses?.contains(business) == true){
-                    return ExceptionResponse(e.message ?: "Internal Server Error")
-                }
-
-                logger.debug("Actualizamos el usuario con el nuevo negocio")
-                //Actualizamos la informacion de negocio para el usuario
-                val updateUserAttributesResponse = cognito.adminUpdateUserAttributes (
-                    AdminUpdateUserAttributesRequest {
-                        userPoolId = config.awsCognitoUserPoolId
-                        username = body.email
-                        userAttributes = listOf(
-                            AttributeType {
-                                name = BUSINESS_ATT_NAME
-                                value = businesses + "," + business
-                            }
-                        )
-                    })
+                logger.info("Usuario ya existe, se omitirá creación en Cognito")
             } catch (e:Exception) {
                 logger.error("Error creating user", e)
                 return ExceptionResponse(e.message ?: "Internal Server Error")
             }
+
+            val userProfile = UserBusinessProfile().apply {
+                this.email = email
+                this.business = business
+                this.profile = getProfile()
+                this.state = BusinessState.APPROVED
+            }
+            tableProfiles.putItem(userProfile)
 
             return Response()
         }

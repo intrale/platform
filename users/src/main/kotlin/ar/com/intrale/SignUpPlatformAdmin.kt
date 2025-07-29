@@ -4,10 +4,16 @@ import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderCl
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.ListUsersRequest
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.UnauthorizedException
 import org.slf4j.Logger
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 import kotlin.math.log
 
-class SignUpPlatformAdmin(override val config: UsersConfig, override val logger: Logger, override val cognito: CognitoIdentityProviderClient) :
-                SignUp(config = config, logger = logger, cognito = cognito) {
+class SignUpPlatformAdmin(
+    override val config: UsersConfig,
+    override val logger: Logger,
+    override val cognito: CognitoIdentityProviderClient,
+    tableProfiles: DynamoDbTable<UserBusinessProfile>
+) :
+                SignUp(config = config, logger = logger, cognito = cognito, tableProfiles = tableProfiles) {
 
     override fun getProfile() : String {
         return PROFILE_PLATFORM_ADMIN
