@@ -18,7 +18,7 @@ fun ExceptionResponse.toDoSignUpException() = DoSignUpException(
     message ?: "Error desconocido durante el registro"
 )
 
-fun Exception.toDoSignUpException() = DoSignUpException(
+fun Throwable.toDoSignUpException() = DoSignUpException(
     SignUpStatusCode(500, "Internal Server Error"),
     message ?: "Error desconocido durante la operación"
 )

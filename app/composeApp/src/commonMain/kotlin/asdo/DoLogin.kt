@@ -64,7 +64,7 @@ fun CommKeyValueStorage.toDoLoginResult(): DoLoginResult = DoLoginResult(
     accessToken = this.token
 )
 
-fun Exception.toDoLoginException(): DoLoginException = DoLoginException(
+fun Throwable.toDoLoginException(): DoLoginException = DoLoginException(
     statusCode = StatusCode(500, "Internal Server Error"),
     message = message ?: "Error desconocido durante la operación"
 )

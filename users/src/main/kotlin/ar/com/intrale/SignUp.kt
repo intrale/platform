@@ -47,10 +47,13 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
                 this.name = EMAIL_ATT_NAME
                 this.value = email
             })
+
+            //TODO: Esto deberia estar en la tabla de relaciones de usuarios perfiles y negocios
             attrs.add(AttributeType {
                 this.name = PROFILE_ATT_NAME
                 this.value = getProfile()
             })
+
             attrs.add(AttributeType {
                 this.name = BUSINESS_ATT_NAME
                 this.value = business
@@ -66,6 +69,9 @@ open class SignUp (open val config: UsersConfig, open val logger: Logger, open v
                             })
             } catch (e:UsernameExistsException) {
                 // Obtenemos la informacion del usuario
+
+                //TODO: Si ya sabemos que el usuario existe, deberiamos validar que el usuario no este asociado al negocio que se intenta relacionar
+                //TODO: Si el usuario ya esta asociado al negocio, deberia solo permitirle asociarse con un perfil diferente
                 logger.info("Obtenemos la informacion del usuario")
                 val user = cognito.adminGetUser(AdminGetUserRequest {
                     userPoolId = config.awsCognitoUserPoolId
