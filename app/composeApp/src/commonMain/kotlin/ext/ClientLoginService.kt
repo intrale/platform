@@ -17,14 +17,20 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
 
     private val logger = LoggerFactory.default.newLogger<ClientLoginService>()
 
-    override suspend fun execute(user: String, password: String): Result<LoginResponse> {
+    override suspend fun execute(
+        user: String,
+        password: String,
+        newPassword: String?,
+        name: String?,
+        familyName: String?
+    ): Result<LoginResponse> {
         return try {
             val response: HttpResponse =
                 httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/signin") {
                     headers {
                         // Agregá headers si los necesitás
                     }
-                    setBody(LoginRequest(user, password))
+                    setBody(LoginRequest(user, password, newPassword, name, familyName))
                 }
 
             val bodyText = response.bodyAsText()
@@ -47,7 +53,13 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
 }
 
 @Serializable
-data class LoginRequest(val email:String, val password: String)
+data class LoginRequest(
+    val email: String,
+    val password: String,
+    val newPassword: String? = null,
+    val name: String? = null,
+    val familyName: String? = null
+)
 
 @Serializable
 data class StatusCodeDTO (val value: Int, val description: String?)

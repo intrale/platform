@@ -10,16 +10,31 @@ import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import kotlin.Result
 
-class DoLogin(val commLogin: CommLoginService, val commKeyValueStorage: CommKeyValueStorage) : ToDoLogin{
+class DoLogin(
+    val commLogin: CommLoginService,
+    val commKeyValueStorage: CommKeyValueStorage
+) : ToDoLogin{
 
     private val logger = LoggerFactory.default.newLogger<DoLogin>()
 
-    override suspend fun execute(user: String, password: String): Result<DoLoginResult> {
+    override suspend fun execute(
+        user: String,
+        password: String,
+        newPassword: String?,
+        name: String?,
+        familyName: String?
+    ): Result<DoLoginResult> {
         try {
             if (commKeyValueStorage.token == null) {
                 logger.info { "token is null" }
 
-                val result:Result<LoginResponse> = commLogin.execute(user, password)
+                val result: Result<LoginResponse> = commLogin.execute(
+                    user,
+                    password,
+                    newPassword,
+                    name,
+                    familyName
+                )
                                         .onSuccess { response ->
                                             logger.debug { "Login successful, storing token" }
                                             commKeyValueStorage.token = response.accessToken
