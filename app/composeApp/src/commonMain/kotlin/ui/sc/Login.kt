@@ -28,6 +28,10 @@ import ui.rs.Res
 import ui.rs.login
 import ui.rs.password
 import ui.rs.username
+import ui.rs.new_password
+import ui.rs.name
+import ui.rs.family_name
+import ui.rs.update_password
 import ui.rs.signup
 import io.ktor.client.plugins.ClientRequestException
 import org.kodein.log.LoggerFactory
@@ -78,12 +82,40 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                 onValueChange = { value ->
                                     viewModel.state = viewModel.state.copy(password = value)}
             )
+            if (viewModel.changePasswordRequired) {
+                Spacer(modifier = Modifier.size(10.dp))
+                TextField(
+                    Res.string.new_password,
+                    visualTransformation = true,
+                    value = viewModel.state.newPassword,
+                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::newPassword.name]!!,
+                    onValueChange = { value ->
+                                        viewModel.state = viewModel.state.copy(newPassword = value) }
+                )
+                Spacer(modifier = Modifier.size(10.dp))
+                TextField(
+                    Res.string.name,
+                    value = viewModel.state.name,
+                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::name.name]!!,
+                    onValueChange = { value ->
+                                        viewModel.state = viewModel.state.copy(name = value) }
+                )
+                Spacer(modifier = Modifier.size(10.dp))
+                TextField(
+                    Res.string.family_name,
+                    value = viewModel.state.familyName,
+                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::familyName.name]!!,
+                    onValueChange = { value ->
+                                        viewModel.state = viewModel.state.copy(familyName = value) }
+                )
+            }
             Spacer(modifier = Modifier.size(10.dp))
             Button(
-                label = stringResource(Res.string.login),
+                label = stringResource(if (viewModel.changePasswordRequired) Res.string.update_password else Res.string.login),
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick = {
+                    viewModel.setupValidation()
                     if (viewModel.isValid()) {
                         logger.debug { "Formulario valido" }
                         viewModel.loading = true
@@ -146,6 +178,10 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                                     details = "Usuario o contraseña incorrectos"
                                 )
                             }
+                        } else if (loginError.message?.contains("newPassword is required") == true) {
+                            viewModel.changePasswordRequired = true
+                            viewModel.setupValidation()
+                            snackbarHostState.showSnackbar("Actualizá tu contraseña para continuar")
                         } else {
                             logger.error { "Error de conexión: ${loginError.message} -> ${loginError.cause?.message}" }
                             snackbarHostState.showSnackbar("Error de comunicación, intente mas tarde" )

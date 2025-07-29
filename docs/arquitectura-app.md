@@ -108,6 +108,8 @@ La pantalla de login utiliza un `LoginViewModel` para manejar el estado y las va
 
 Si la llamada al servicio de autenticación falla, la interfaz despliega un `Snackbar` informando si las credenciales son inválidas o si ocurrió un problema de conexión.
 
+En caso de recibir la respuesta `newPassword is required`, la pantalla muestra campos adicionales para ingresar la nueva contraseña, nombre y apellido. Al completarlos se vuelve a invocar `login()` enviando estos datos.
+
 ```kotlin
 class Login() : Screen(LOGIN_PATH, Res.string.login) {
     @Composable override fun screen() { screenImplementation() }
