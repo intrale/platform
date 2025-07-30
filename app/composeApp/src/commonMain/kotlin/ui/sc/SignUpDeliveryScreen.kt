@@ -6,9 +6,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -53,6 +56,26 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                 state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::email.name]!!,
                 onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
             )
+            Spacer(modifier = Modifier.size(10.dp))
+            var expanded by remember { mutableStateOf(false) }
+            TextField(
+                Res.string.business,
+                value = viewModel.state.business,
+                state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::business.name]!!,
+                onValueChange = {
+                    viewModel.state = viewModel.state.copy(business = it)
+                    coroutine.launch { viewModel.searchBusinesses(it) }
+                    expanded = true
+                }
+            )
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                viewModel.suggestions.forEach { name ->
+                    DropdownMenuItem(text = { androidx.compose.material3.Text(name) }, onClick = {
+                        viewModel.state = viewModel.state.copy(business = name)
+                        expanded = false
+                    })
+                }
+            }
             Spacer(modifier = Modifier.size(10.dp))
             Button(
                 label = stringResource(Res.string.signup_delivery),

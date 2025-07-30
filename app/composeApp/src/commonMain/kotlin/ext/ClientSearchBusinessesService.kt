@@ -8,19 +8,20 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-class ClientSignUpDeliveryService(private val httpClient: HttpClient) : CommSignUpDeliveryService {
+class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSearchBusinessesService {
     @OptIn(InternalAPI::class)
-    override suspend fun execute(business: String, email: String): Result<SignUpResponse> {
+    override suspend fun execute(query: String): Result<SearchBusinessesResponse> {
         return try {
-            val response: HttpResponse = httpClient.post("${BuildKonfig.BASE_URL}$business/signupDelivery") {
-                setBody(SignUpRequest(email))
+            val response: HttpResponse = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/searchBusinesses") {
+                setBody(SearchBusinessesRequest(query))
             }
             if (response.status.isSuccess()) {
-                Result.success(
-                    SignUpResponse(StatusCodeDTO(response.status.value, response.status.description))
-                )
+                val bodyText = response.bodyAsText()
+                val result = Json.decodeFromString(SearchBusinessesResponse.serializer(), bodyText)
+                Result.success(result)
             } else {
                 val bodyText = response.bodyAsText()
                 val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
@@ -31,3 +32,9 @@ class ClientSignUpDeliveryService(private val httpClient: HttpClient) : CommSign
         }
     }
 }
+
+@Serializable
+data class SearchBusinessesRequest(val query: String)
+
+@Serializable
+data class SearchBusinessesResponse(val businesses: List<String>)
