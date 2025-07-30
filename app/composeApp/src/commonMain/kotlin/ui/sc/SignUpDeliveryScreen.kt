@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenu
+import androidx.compose.material3.menuAnchor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,22 +63,26 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
             )
             Spacer(modifier = Modifier.size(10.dp))
             var expanded by remember { mutableStateOf(false) }
-            TextField(
-                Res.string.business,
-                value = viewModel.state.business,
-                state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::business.name]!!,
-                onValueChange = {
-                    viewModel.state = viewModel.state.copy(business = it)
-                    coroutine.launch { viewModel.searchBusinesses(it) }
-                    expanded = true
-                }
-            )
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                viewModel.suggestions.forEach { name ->
-                    DropdownMenuItem(text = { androidx.compose.material3.Text(name) }, onClick = {
-                        viewModel.state = viewModel.state.copy(business = name)
-                        expanded = false
-                    })
+            val showMenu = expanded && viewModel.suggestions.isNotEmpty()
+            ExposedDropdownMenuBox(expanded = showMenu, onExpandedChange = { expanded = it }) {
+                TextField(
+                    Res.string.business,
+                    value = viewModel.state.business,
+                    state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::business.name]!!,
+                    modifier = Modifier.menuAnchor(),
+                    onValueChange = {
+                        viewModel.state = viewModel.state.copy(business = it)
+                        coroutine.launch { viewModel.searchBusinesses(it) }
+                        expanded = true
+                    }
+                )
+                ExposedDropdownMenu(expanded = showMenu, onDismissRequest = { expanded = false }) {
+                    viewModel.suggestions.forEach { name ->
+                        DropdownMenuItem(text = { androidx.compose.material3.Text(name) }, onClick = {
+                            viewModel.state = viewModel.state.copy(business = name)
+                            expanded = false
+                        })
+                    }
                 }
             }
             Spacer(modifier = Modifier.size(10.dp))
