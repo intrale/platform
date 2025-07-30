@@ -34,6 +34,7 @@ fun TextField(label: StringResource,
               state: MutableState<InputState>,
               visualTransformation: Boolean = false,
               onValueChange:(value:String) -> Unit = {},
+              modifier: Modifier = Modifier
                   ){
 
     var logger = LoggerFactory.default.newLogger(Logger.Tag("ui.cp", "TextField"))
@@ -50,6 +51,7 @@ fun TextField(label: StringResource,
             onValueChange={
                           onValueChange(it)
             }, label = { Text(labelString) },
+            modifier = modifier,
             visualTransformation = if (isVisible)
                             VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
