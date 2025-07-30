@@ -34,6 +34,7 @@ public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
 public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val SIGNUP_SALER = "signupSaler"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
+public const val CHANGE_PASSWORD = "changePassword"
 
 const val LOGIN_PATH = "/login"
 
@@ -57,6 +58,7 @@ class DIManager {
                 bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
                 bindSingleton(tag = SIGNUP_SALER) { SignUpSalerScreen() }
                 bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
+                bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>(
@@ -67,7 +69,8 @@ class DIManager {
                         instance(tag = SELECT_SIGNUP_PROFILE),
                         instance(tag = SIGNUP_PLATFORM_ADMIN),
                         instance(tag = SIGNUP_DELIVERY),
-                        instance(tag = SIGNUP_SALER)
+                        instance(tag = SIGNUP_SALER),
+                        instance(tag = CHANGE_PASSWORD)
                     )
                 }
 
@@ -100,6 +103,7 @@ class DIManager {
                 bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
                 bindSingleton<CommSignUpSalerService> { ClientSignUpSalerService(instance()) }
                 bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
+                bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -109,6 +113,7 @@ class DIManager {
                 bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
                 bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
                 bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
+                bindSingleton<ToDoChangePassword> { DoChangePassword(instance(), instance()) }
 
             }
     }
