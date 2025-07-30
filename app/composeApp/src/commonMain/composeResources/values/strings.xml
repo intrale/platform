@@ -22,5 +22,6 @@
     <string name="old_password">Contraseña actual</string>
     <string name="name">Nombre</string>
     <string name="family_name">Apellido</string>
+    <string name="change_password">Cambiar contraseña</string>
     <string name="update_password">Actualizar contraseña</string>
 </resources>
