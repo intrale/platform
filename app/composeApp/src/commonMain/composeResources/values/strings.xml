@@ -19,6 +19,7 @@
 
     <string name="error_credentials">Usuario o contraseña incorrectos</string>
     <string name="new_password">Nueva contraseña</string>
+    <string name="old_password">Contraseña actual</string>
     <string name="name">Nombre</string>
     <string name="family_name">Apellido</string>
     <string name="update_password">Actualizar contraseña</string>
