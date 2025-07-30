@@ -10,6 +10,7 @@ import asdo.ToDoLogin
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import org.kodein.di.instance
+import ui.cp.InputState
 
 class LoginViewModel : ViewModel() {
 
@@ -58,13 +59,16 @@ class LoginViewModel : ViewModel() {
    override fun initInputState() {
        inputsStates = mutableMapOf(
             entry(LoginUIState::user.name),
-            entry(LoginUIState::password.name)
+            entry(LoginUIState::password.name),
+            entry(LoginUIState::newPassword.name),
+            entry(LoginUIState::name.name),
+            entry(LoginUIState::familyName.name),
        )
-       if (changePasswordRequired) {
+       /*if (changePasswordRequired) {
             inputsStates[LoginUIState::newPassword.name] = mutableStateOf(InputState(LoginUIState::newPassword.name))
             inputsStates[LoginUIState::name.name] = mutableStateOf(InputState(LoginUIState::name.name))
             inputsStates[LoginUIState::familyName.name] = mutableStateOf(InputState(LoginUIState::familyName.name))
-       }
+       }*/
     }
 
     // Features
