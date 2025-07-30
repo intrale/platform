@@ -52,3 +52,20 @@ WM-NetworkStateTracker:
 s.messaging:rcs:
 ProactiveSuggestionsHolderManager:
 ddri    :
+AppOpService:
+AiAiClearcutLogger:
+JobInfo :
+ProfileInstaller:
+NearbyDiscovery:
+InputManager-JNI:
+CoreBackPreview:
+WindowOnBackDispatcher:
+FontLog :
+StatsLog:
+StateManager:
+BaseDepthController:
+AidlLazyServiceRegistrar:
+BpBinder:
+CompatChangeReporter:
+FrewleTileCacheManagerV:
+WCollector:

@@ -1,7 +1,7 @@
 package ar.com.intrale
 
 data class UsersConfig(
-    override val businesses: Set<String>,
+    override var businesses: Set<String>,
     override val region: String,
     val accessKeyId: String,
     val secretAccessKey: String,
