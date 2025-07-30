@@ -19,6 +19,7 @@ import ui.rs.app_name
 import ui.rs.login
 import ui.rs.logout
 import ui.rs.signup
+import ui.rs.change_password
 
 
 const val HOME_PATH = "/home"
@@ -46,6 +47,13 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
                 label = stringResource(Res.string.login),
                 onClick = {
                     navigate(SECUNDARY_PATH)
+                }
+            )
+
+            Button(
+                label = stringResource(Res.string.change_password),
+                onClick = {
+                    navigate(CHANGE_PASSWORD_PATH)
                 }
             )
 
