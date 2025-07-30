@@ -2,15 +2,10 @@ package ar.com.intrale
 
 import com.google.gson.Gson
 import org.slf4j.Logger
-import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
-import ar.com.intrale.BusinessState
-import kotlin.collections.plus
-
 
 class SearchBusinesses(
     val config: UsersConfig,
-    val logger: Logger,
-    private val tableBusiness: DynamoDbTable<Business>
+    val logger: Logger
 ) : Function {
 
     override suspend fun execute(
@@ -25,9 +20,13 @@ class SearchBusinesses(
         } else {
             SearchBusinessesRequest()
         }
-        val items = tableBusiness.scan().items().filter { it.state == BusinessState.APPROVED }
-        val filtered = if (body.query.isBlank()) items else items.filter { it.name?.contains(body.query, ignoreCase = true) == true }
-        var names = filtered.mapNotNull { it.name }.toTypedArray()
+        val businesses = config.businesses
+        val filtered = if (body.query.isBlank()) {
+            businesses
+        } else {
+            businesses.filter { it.contains(body.query, ignoreCase = true) }
+        }
+        val names = filtered.toTypedArray()
         logger.debug("return search businesses $function")
         return SearchBusinessesResponse(names)
     }
