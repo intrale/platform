@@ -22,3 +22,11 @@ Cada opción lleva a `SignUpPlatformAdminScreen`, `SignUpDeliveryScreen` o `Sign
 ### Manejo de respuestas
 Ahora cada pantalla de registro utiliza `callService` para mostrar mensajes de éxito o error.
 Los `ViewModel` devuelven `Result<DoSignUpResult>` permitiendo feedback consistente con el login.
+
+## Registro de Delivery por negocio
+
+Relacionado con #137.
+
+El formulario de `SignUpDeliveryScreen` ahora incluye un campo adicional para seleccionar el negocio. Este campo posee búsqueda dinámica y sugiere en tiempo real los negocios disponibles mediante el servicio `searchBusinesses` del módulo `users`.
+
+Al enviar el registro se valida que el correo no esté ya registrado como Delivery para el negocio elegido. Si existe, se informa un mensaje de error. De lo contrario, el usuario queda en estado `PENDING` hasta que el Business Admin apruebe su solicitud.

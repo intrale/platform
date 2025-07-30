@@ -99,12 +99,14 @@ class DIManager {
                 bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
                 bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
                 bindSingleton<CommSignUpSalerService> { ClientSignUpSalerService(instance()) }
+                bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
                 bindSingleton<ToDoSignUpPlatformAdmin> { DoSignUpPlatformAdmin(instance()) }
                 bindSingleton<ToDoSignUpDelivery> { DoSignUpDelivery(instance()) }
                 bindSingleton<ToDoSignUpSaler> { DoSignUpSaler(instance()) }
+                bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
                 bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
                 bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
 
