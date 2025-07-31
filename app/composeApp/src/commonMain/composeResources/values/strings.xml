@@ -24,4 +24,7 @@
     <string name="family_name">Apellido</string>
     <string name="change_password">Cambiar contraseña</string>
     <string name="update_password">Actualizar contraseña</string>
+    <string name="password_recovery">Recuperar contraseña</string>
+    <string name="confirm_password_recovery">Confirmar recuperación</string>
+    <string name="code">Código</string>
 </resources>

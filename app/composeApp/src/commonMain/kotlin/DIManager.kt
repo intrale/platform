@@ -35,6 +35,8 @@ public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val SIGNUP_SALER = "signupSaler"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
+public const val PASSWORD_RECOVERY = "passwordRecovery"
+public const val CONFIRM_PASSWORD_RECOVERY = "confirmPasswordRecovery"
 
 const val LOGIN_PATH = "/login"
 
@@ -59,6 +61,8 @@ class DIManager {
                 bindSingleton(tag = SIGNUP_SALER) { SignUpSalerScreen() }
                 bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
                 bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
+                bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
+                bindSingleton(tag = CONFIRM_PASSWORD_RECOVERY) { ConfirmPasswordRecoveryScreen() }
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>(
@@ -70,7 +74,9 @@ class DIManager {
                         instance(tag = SIGNUP_PLATFORM_ADMIN),
                         instance(tag = SIGNUP_DELIVERY),
                         instance(tag = SIGNUP_SALER),
-                        instance(tag = CHANGE_PASSWORD)
+                        instance(tag = CHANGE_PASSWORD),
+                        instance(tag = PASSWORD_RECOVERY),
+                        instance(tag = CONFIRM_PASSWORD_RECOVERY)
                     )
                 }
 
@@ -104,6 +110,7 @@ class DIManager {
                 bindSingleton<CommSignUpSalerService> { ClientSignUpSalerService(instance()) }
                 bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
                 bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
+                bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -114,6 +121,8 @@ class DIManager {
                 bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
                 bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
                 bindSingleton<ToDoChangePassword> { DoChangePassword(instance(), instance()) }
+                bindSingleton<ToDoPasswordRecovery> { DoPasswordRecovery(instance()) }
+                bindSingleton<ToDoConfirmPasswordRecovery> { DoConfirmPasswordRecovery(instance()) }
 
             }
     }
