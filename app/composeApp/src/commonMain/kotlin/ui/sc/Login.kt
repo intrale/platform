@@ -37,6 +37,10 @@ import io.ktor.client.plugins.ClientRequestException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.rs.error_credentials
+import ui.rs.password_recovery
+import ui.rs.confirm_password_recovery
+import ui.sc.PASSWORD_RECOVERY_PATH
+import ui.sc.CONFIRM_PASSWORD_RECOVERY_PATH
 
 const val LOGIN_PATH = "/login"
 
@@ -128,6 +132,20 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                 label = stringResource(Res.string.signup),
                 onClick = {
                     navigate(SELECT_SIGNUP_PROFILE_PATH)
+                }
+            )
+
+            Button(
+                label = stringResource(Res.string.password_recovery),
+                onClick = {
+                    navigate(PASSWORD_RECOVERY_PATH)
+                }
+            )
+
+            Button(
+                label = stringResource(Res.string.confirm_password_recovery),
+                onClick = {
+                    navigate(CONFIRM_PASSWORD_RECOVERY_PATH)
                 }
             )
 
