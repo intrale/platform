@@ -14,6 +14,15 @@ Este documento describe el proceso que permite registrar un nuevo negocio dentro
 - Este proceso está relacionado con la funcionalidad principal detallada en el issue #13.
 - Los detalles de implementación y pruebas se encuentran en la documentación del módulo `users`.
 
+## Interfaz en la aplicación
+
+La aplicación móvil incorpora la pantalla `RegisterBusinessScreen` que permite:
+
+1. Registrar un negocio indicando nombre, correo del administrador y descripción.
+2. Consultar las solicitudes en estado `PENDING` y aprobarlas o rechazarlas mediante el servicio `reviewBusiness`.
+
+La navegación hacia esta pantalla se encuentra disponible desde el menú principal.
+
 
 ## Revisión y aprobación de registros
 
@@ -26,4 +35,4 @@ Cuando un negocio queda registrado en estado `PENDING`, un usuario con perfil *P
 
 Para más detalles consultar la clase `ReviewBusinessRegistration` en `/workspace/users/src/main/kotlin/ar/com/intrale/ReviewBusinessRegistration.kt`.
 
-Relacionado con #64.
+Relacionado con #63.

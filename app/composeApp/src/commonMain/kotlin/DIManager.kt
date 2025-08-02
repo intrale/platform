@@ -37,6 +37,7 @@ public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
 public const val CONFIRM_PASSWORD_RECOVERY = "confirmPasswordRecovery"
+public const val REGISTER_BUSINESS = "registerBusiness"
 
 const val LOGIN_PATH = "/login"
 
@@ -63,6 +64,7 @@ class DIManager {
                 bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
                 bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
                 bindSingleton(tag = CONFIRM_PASSWORD_RECOVERY) { ConfirmPasswordRecoveryScreen() }
+                bindSingleton(tag = REGISTER_BUSINESS) { RegisterBusinessScreen() }
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>(
@@ -76,7 +78,8 @@ class DIManager {
                         instance(tag = SIGNUP_SALER),
                         instance(tag = CHANGE_PASSWORD),
                         instance(tag = PASSWORD_RECOVERY),
-                        instance(tag = CONFIRM_PASSWORD_RECOVERY)
+                        instance(tag = CONFIRM_PASSWORD_RECOVERY),
+                        instance(tag = REGISTER_BUSINESS)
                     )
                 }
 
@@ -111,6 +114,8 @@ class DIManager {
                 bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
                 bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
                 bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
+                bindSingleton<CommRegisterBusinessService> { ClientRegisterBusinessService(instance()) }
+                bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -123,6 +128,8 @@ class DIManager {
                 bindSingleton<ToDoChangePassword> { DoChangePassword(instance(), instance()) }
                 bindSingleton<ToDoPasswordRecovery> { DoPasswordRecovery(instance()) }
                 bindSingleton<ToDoConfirmPasswordRecovery> { DoConfirmPasswordRecovery(instance()) }
+                bindSingleton<ToDoRegisterBusiness> { DoRegisterBusiness(instance()) }
+                bindSingleton<ToDoReviewBusinessRegistration> { DoReviewBusinessRegistration(instance()) }
 
             }
     }
