@@ -1,16 +1,32 @@
 package ui.sc
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.konform.validation.ValidationResult
@@ -19,6 +35,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
 import asdo.DoLoginException
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
@@ -64,93 +81,135 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
         val coroutineScope = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
 
-        callService(viewModel, coroutineScope, snackbarHostState, suspend  { viewModel.previousLogin()  }, errorCredentials )
+        callService(viewModel, coroutineScope, snackbarHostState, suspend { viewModel.previousLogin() }, errorCredentials)
 
-        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally) {
-            Spacer(modifier = Modifier.size(10.dp))
-            TextField(
-                Res.string.username,
-                value = viewModel.state.user,
-                state = viewModel.inputsStates[LoginViewModel.LoginUIState::user.name]!!,
-                onValueChange = { value ->
-                                    viewModel.state = viewModel.state.copy(user = value)}
-            )
-            Spacer(modifier = Modifier.size(10.dp))
-            TextField(
-                Res.string.password,
-                visualTransformation = true,
-                value = viewModel.state.password,
-                state = viewModel.inputsStates[LoginViewModel.LoginUIState::password.name]!!,
-                onValueChange = { value ->
-                                    viewModel.state = viewModel.state.copy(password = value)}
-            )
-            if (viewModel.changePasswordRequired) {
-                Spacer(modifier = Modifier.size(10.dp))
-                TextField(
-                    Res.string.new_password,
-                    visualTransformation = true,
-                    value = viewModel.state.newPassword,
-                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::newPassword.name]!!,
-                    onValueChange = { value ->
-                                        viewModel.state = viewModel.state.copy(newPassword = value) }
-                )
-                Spacer(modifier = Modifier.size(10.dp))
-                TextField(
-                    Res.string.name,
-                    value = viewModel.state.name,
-                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::name.name]!!,
-                    onValueChange = { value ->
-                                        viewModel.state = viewModel.state.copy(name = value) }
-                )
-                Spacer(modifier = Modifier.size(10.dp))
-                TextField(
-                    Res.string.family_name,
-                    value = viewModel.state.familyName,
-                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::familyName.name]!!,
-                    onValueChange = { value ->
-                                        viewModel.state = viewModel.state.copy(familyName = value) }
-                )
-            }
-            Spacer(modifier = Modifier.size(10.dp))
-            Button(
-                label = stringResource(if (viewModel.changePasswordRequired) Res.string.update_password else Res.string.login),
-                loading = viewModel.loading,
-                enabled = !viewModel.loading,
-                onClick = {
-                    viewModel.setupValidation()
-                    if (viewModel.isValid()) {
-                        logger.debug { "Formulario valido" }
-                        viewModel.loading = true
-                        callService(viewModel, coroutineScope, snackbarHostState, suspend { true }, errorCredentials)
+        val background = Brush.verticalGradient(listOf(Color(0xFFB2E5F9), Color(0xFF5AA9E6)))
+
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(background)
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .background(Color(0xFF2C71C7), shape = CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Filled.Code, contentDescription = null, tint = Color.White)
+                    }
+                    Spacer(modifier = Modifier.size(16.dp))
+                    Text(
+                        text = "Plataforma",
+                        color = Color.White,
+                        style = MaterialTheme.typography.headlineSmall,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.size(32.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 32.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Spacer(modifier = Modifier.size(16.dp))
+                            TextField(
+                                Res.string.username,
+                                value = viewModel.state.user,
+                                state = viewModel.inputsStates[LoginViewModel.LoginUIState::user.name]!!,
+                                onValueChange = { value ->
+                                    viewModel.state = viewModel.state.copy(user = value)
+                                }
+                            )
+                            Spacer(modifier = Modifier.size(16.dp))
+                            TextField(
+                                Res.string.password,
+                                visualTransformation = true,
+                                value = viewModel.state.password,
+                                state = viewModel.inputsStates[LoginViewModel.LoginUIState::password.name]!!,
+                                onValueChange = { value ->
+                                    viewModel.state = viewModel.state.copy(password = value)
+                                }
+                            )
+                            if (viewModel.changePasswordRequired) {
+                                Spacer(modifier = Modifier.size(16.dp))
+                                TextField(
+                                    Res.string.new_password,
+                                    visualTransformation = true,
+                                    value = viewModel.state.newPassword,
+                                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::newPassword.name]!!,
+                                    onValueChange = { value ->
+                                        viewModel.state = viewModel.state.copy(newPassword = value)
+                                    }
+                                )
+                                Spacer(modifier = Modifier.size(16.dp))
+                                TextField(
+                                    Res.string.name,
+                                    value = viewModel.state.name,
+                                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::name.name]!!,
+                                    onValueChange = { value ->
+                                        viewModel.state = viewModel.state.copy(name = value)
+                                    }
+                                )
+                                Spacer(modifier = Modifier.size(16.dp))
+                                TextField(
+                                    Res.string.family_name,
+                                    value = viewModel.state.familyName,
+                                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::familyName.name]!!,
+                                    onValueChange = { value ->
+                                        viewModel.state = viewModel.state.copy(familyName = value)
+                                    }
+                                )
+                            }
+                            Spacer(modifier = Modifier.size(16.dp))
+                            Button(
+                                label = stringResource(if (viewModel.changePasswordRequired) Res.string.update_password else Res.string.login),
+                                loading = viewModel.loading,
+                                enabled = !viewModel.loading,
+                                onClick = {
+                                    viewModel.setupValidation()
+                                    if (viewModel.isValid()) {
+                                        logger.debug { "Formulario valido" }
+                                        viewModel.loading = true
+                                        callService(viewModel, coroutineScope, snackbarHostState, suspend { true }, errorCredentials)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C71C7), contentColor = Color.White)
+                            )
+                            Spacer(modifier = Modifier.size(16.dp))
+                            Button(
+                                label = stringResource(Res.string.signup),
+                                onClick = { navigate(SELECT_SIGNUP_PROFILE_PATH) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color(0xFF2C71C7))
+                            )
+                            Spacer(modifier = Modifier.size(16.dp))
+                            Button(
+                                label = stringResource(Res.string.password_recovery),
+                                onClick = { navigate(PASSWORD_RECOVERY_PATH) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color(0xFF4D84CC))
+                            )
+                            Spacer(modifier = Modifier.size(16.dp))
+                            Button(
+                                label = stringResource(Res.string.confirm_password_recovery),
+                                onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color(0xFF4D84CC))
+                            )
+                            Spacer(modifier = Modifier.size(16.dp))
+                        }
                     }
                 }
-            )
-
-            Button(
-                label = stringResource(Res.string.signup),
-                onClick = {
-                    navigate(SELECT_SIGNUP_PROFILE_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.password_recovery),
-                onClick = {
-                    navigate(PASSWORD_RECOVERY_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.confirm_password_recovery),
-                onClick = {
-                    navigate(CONFIRM_PASSWORD_RECOVERY_PATH)
-                }
-            )
-
-
-        }
+            }
         }
     }
 
