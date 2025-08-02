@@ -27,4 +27,10 @@
     <string name="password_recovery">Recuperar contraseña</string>
     <string name="confirm_password_recovery">Confirmar recuperación</string>
     <string name="code">Código</string>
+    <string name="register_business">Registrar negocio</string>
+    <string name="description">Descripción</string>
+    <string name="email_admin">Correo del administrador</string>
+    <string name="pending_requests">Solicitudes pendientes</string>
+    <string name="approve">Aprobar</string>
+    <string name="reject">Rechazar</string>
 </resources>
