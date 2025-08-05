@@ -3,8 +3,12 @@ package ui.sc
 import DIManager
 import asdo.ToDoResetLoginCache
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 class HomeViewModel : ViewModel()  {
+
+    private val logger = LoggerFactory.default.newLogger<HomeViewModel>()
 
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
 
@@ -14,6 +18,13 @@ class HomeViewModel : ViewModel()  {
     override fun initInputState() { /* Do nothing */ }
 
     suspend fun logout(){
-        toDoResetLoginCache.execute()
+        logger.info { "Ejecutando logout" }
+        try {
+            toDoResetLoginCache.execute()
+            logger.info { "Logout completado" }
+        } catch (e: Throwable) {
+            logger.error(e) { "Error al ejecutar logout" }
+            throw e
+        }
     }
 }

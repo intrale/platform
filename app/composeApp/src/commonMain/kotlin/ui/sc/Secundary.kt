@@ -15,6 +15,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.rs.Res
 import ui.rs.compose_multiplatform
@@ -28,9 +30,11 @@ import org.jetbrains.compose.resources.stringResource
 const val SECUNDARY_PATH = "/secundary"
 
 class Secundary : Screen (SECUNDARY_PATH, Res.string.secundary) {
+    private val logger = LoggerFactory.default.newLogger<Secundary>()
     @OptIn(ExperimentalResourceApi::class)
     @Composable
     override fun screen() {
+        logger.debug { "Renderizando pantalla Secundary" }
         var showContent by remember { mutableStateOf(false) }
 
         Column(
@@ -44,6 +48,7 @@ class Secundary : Screen (SECUNDARY_PATH, Res.string.secundary) {
             Button(
                 label = stringResource(Res.string.login),
                 onClick = {
+                    logger.info { "Mostrando contenido alternativo" }
                     showContent = !showContent
                 }
             )
