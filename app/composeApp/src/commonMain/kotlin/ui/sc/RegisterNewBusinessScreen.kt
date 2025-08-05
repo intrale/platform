@@ -11,26 +11,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.cp.TextField
 import ui.rs.Res
-import ui.rs.register_business
 import ui.rs.name
 import ui.rs.email_admin
 import ui.rs.description
-import ui.rs.pending_requests
-import ui.rs.approve
-import ui.rs.reject
-import ui.rs.code
-import org.kodein.log.LoggerFactory
-import org.kodein.log.newLogger
+import ui.rs.register_business
+import ui.rs.register_business_sent
 
-const val REGISTER_BUSINESS_PATH = "/registerBusiness"
+const val REGISTER_NEW_BUSINESS_PATH = "/registerNewBusiness"
 
-class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.register_business) {
-    private val logger = LoggerFactory.default.newLogger<RegisterBusinessScreen>()
+class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.register_business) {
+    private val logger = LoggerFactory.default.newLogger<RegisterNewBusinessScreen>()
+
     @Composable
     override fun screen() { screenImpl() }
 
@@ -80,12 +79,17 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
-                                serviceCall = { viewModel.register() }
+                                serviceCall = { viewModel.register() },
+                                onSuccess = {
+                                    coroutine.launch { snackbarHostState.showSnackbar(stringResource(Res.string.register_business_sent)) }
+                                    viewModel.state = RegisterBusinessViewModel.UIState()
+                                    viewModel.initInputState()
+                                }
                             )
                         }
                     }
                 )
-                Spacer(Modifier.size(20.dp))
+                Spacer(Modifier.size(10.dp))
             }
         }
     }
