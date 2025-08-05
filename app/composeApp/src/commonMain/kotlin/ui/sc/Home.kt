@@ -13,12 +13,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.rs.Res
 import ui.rs.app_name
 import ui.rs.login
 import ui.rs.logout
-import ui.rs.signup
 import ui.rs.change_password
 import ui.rs.register_business
 
@@ -27,8 +28,11 @@ const val HOME_PATH = "/home"
 
 class Home() : Screen(HOME_PATH, Res.string.app_name){
 
+    private val logger = LoggerFactory.default.newLogger<Home>()
+
     @Composable
     override fun screen() {
+        logger.info { "Renderizando Home" }
         screenImplementation()
     }
 
@@ -47,6 +51,7 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             Button(
                 label = stringResource(Res.string.login),
                 onClick = {
+                    logger.info { "Navegando a Secundary" }
                     navigate(SECUNDARY_PATH)
                 }
             )
@@ -54,6 +59,7 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             Button(
                 label = stringResource(Res.string.change_password),
                 onClick = {
+                    logger.info { "Navegando a ChangePassword" }
                     navigate(CHANGE_PASSWORD_PATH)
                 }
             )
@@ -61,6 +67,7 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             Button(
                 label = stringResource(Res.string.register_business),
                 onClick = {
+                    logger.info { "Navegando a RegisterBusiness" }
                     navigate(REGISTER_BUSINESS_PATH)
                 }
             )
@@ -69,8 +76,14 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
                 label = stringResource(Res.string.logout),
                 onClick = {
                     coroutineScope.launch {
-                        viewModel.logout()
-                        navigate(LOGIN_PATH)
+                        logger.info { "Solicitando logout" }
+                        try {
+                            viewModel.logout()
+                            logger.info { "Logout exitoso" }
+                            navigate(LOGIN_PATH)
+                        } catch (e: Exception) {
+                            logger.error(e) { "Error en logout" }
+                        }
                     }
 
                 }

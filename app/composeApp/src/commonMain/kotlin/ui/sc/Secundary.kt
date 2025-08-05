@@ -23,14 +23,20 @@ import ui.rs.secundary
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 
 const val SECUNDARY_PATH = "/secundary"
 
 class Secundary : Screen (SECUNDARY_PATH, Res.string.secundary) {
+
+    private val logger = LoggerFactory.default.newLogger<Secundary>()
+
     @OptIn(ExperimentalResourceApi::class)
     @Composable
     override fun screen() {
+        logger.info { "Renderizando Secundary" }
         var showContent by remember { mutableStateOf(false) }
 
         Column(
@@ -45,6 +51,7 @@ class Secundary : Screen (SECUNDARY_PATH, Res.string.secundary) {
                 label = stringResource(Res.string.login),
                 onClick = {
                     showContent = !showContent
+                    logger.info { "Mostrar contenido adicional: $showContent" }
                 }
             )
 
