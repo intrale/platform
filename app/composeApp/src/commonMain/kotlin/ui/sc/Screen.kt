@@ -7,16 +7,16 @@ import org.kodein.log.newLogger
 
 abstract class Screen (val route: String, val title: StringResource) {
 
-    protected val logger = LoggerFactory.default.newLogger<Screen>()
+    protected val screenLogger = LoggerFactory.default.newLogger<Screen>()
 
     lateinit var navigator: (route:String) -> Unit
 
     fun navigate(route:String){
-        logger.info { "Navegando a $route" }
+        screenLogger.info { "Navegando a $route" }
         try {
             navigator(route)
         }catch (e: Exception){
-            logger.error(e) { "Error al navegar a $route" }
+            screenLogger.error(e) { "Error al navegar a $route" }
         }
     }
 

@@ -126,7 +126,7 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
                             loading = viewModel.loading,
                             enabled = !viewModel.loading,
                             onClick = {
-                                logger.warn { "Rechazando negocio $biz" }
+                                logger.warning { "Rechazando negocio $biz" }
                                 callService(
                                     coroutineScope = coroutine,
                                     snackbarHostState = snackbarHostState,

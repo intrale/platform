@@ -62,9 +62,6 @@ data class LoginRequest(
 )
 
 @Serializable
-data class StatusCodeDTO (val value: Int, val description: String?)
-
-@Serializable
 data class LoginResponse(val statusCode: StatusCodeDTO, val idToken: String, val accessToken: String, val refreshToken: String)
 
 @Serializable

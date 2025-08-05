@@ -8,7 +8,6 @@ import org.kodein.log.newLogger
 
 class HomeViewModel : ViewModel()  {
 
-    private val logger = LoggerFactory.default.newLogger<HomeViewModel>()
 
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
 

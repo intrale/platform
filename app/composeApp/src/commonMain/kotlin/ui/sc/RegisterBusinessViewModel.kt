@@ -62,7 +62,7 @@ class RegisterBusinessViewModel : ViewModel() {
 
     suspend fun reject(business: String) =
         review.execute(business, "rejected", state.twoFactorCode)
-            .onSuccess { logger.warn { "Negocio rechazado: ${'$'}business" } }
+            .onSuccess { logger.warning { "Negocio rechazado: ${'$'}business" } }
             .onFailure { error -> logger.error { "Error rechazando ${'$'}business: ${'$'}{error.message}" } }
 
     suspend fun loadPending() {

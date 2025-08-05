@@ -16,7 +16,7 @@ class ClientChangePasswordService(private val httpClient: HttpClient) : CommChan
     @OptIn(InternalAPI::class)
     override suspend fun execute(oldPassword: String, newPassword: String, token: String): Result<ChangePasswordResponse> {
         return try {
-            val response: HttpResponse = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/change-password") {
+            val response: HttpResponse = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/changePassword") {
                 headers { append("Authorization", token) }
                 setBody(ChangePasswordRequest(oldPassword, newPassword))
             }

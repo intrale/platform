@@ -15,7 +15,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.rs.Res
@@ -26,7 +25,6 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
-import org.kodein.log.newLogger
 
 
 const val SECUNDARY_PATH = "/secundary"

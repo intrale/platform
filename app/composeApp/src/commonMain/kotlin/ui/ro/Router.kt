@@ -11,8 +11,6 @@ import org.kodein.log.newLogger
 
 abstract class Router (var navigator: NavHostController){
 
-    protected val logger = LoggerFactory.default.newLogger<Router>()
-
     @Composable
     abstract fun routes()
 

@@ -8,8 +8,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenu
-import androidx.compose.material3.menuAnchor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -29,8 +27,8 @@ import ui.cp.TextField
 import ui.rs.Res
 import ui.rs.email
 import ui.rs.signup_delivery
-import ui.sc.callService
 import LOGIN_PATH
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import ui.rs.business
@@ -44,7 +42,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
+    @OptIn(ExperimentalResourceApi::class, ExperimentalMaterial3Api::class)
     @Composable
     private fun screenImpl(viewModel: SignUpDeliveryViewModel = viewModel { SignUpDeliveryViewModel() }) {
         val coroutine = rememberCoroutineScope()
