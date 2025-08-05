@@ -9,10 +9,13 @@ import asdo.ToDoChangePassword
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 class ChangePasswordViewModel : ViewModel() {
 
     private val toDoChangePassword: ToDoChangePassword by DIManager.di.instance()
+    private val logger = LoggerFactory.default.newLogger<ChangePasswordViewModel>()
 
     var state by mutableStateOf(ChangePasswordUIState())
     var loading by mutableStateOf(false)
@@ -47,6 +50,11 @@ class ChangePasswordViewModel : ViewModel() {
         )
     }
 
-    suspend fun changePassword(): Result<DoChangePasswordResult> =
-        toDoChangePassword.execute(state.oldPassword, state.newPassword)
+    suspend fun changePassword(): Result<DoChangePasswordResult> {
+        logger.debug { "Ejecutando cambio de contraseña" }
+        val result = toDoChangePassword.execute(state.oldPassword, state.newPassword)
+        result.onSuccess { logger.debug { "Cambio de contraseña exitoso" } }
+            .onFailure { error -> logger.error { "Error al cambiar contraseña: ${error.message}" } }
+        return result
+    }
 }

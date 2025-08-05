@@ -10,12 +10,15 @@ import asdo.ToDoLogin
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.cp.InputState
 
 class LoginViewModel : ViewModel() {
 
     private val todoLogin: ToDoLogin by DIManager.di.instance()
     private val toDoCheckPreviousLogin: ToDoCheckPreviousLogin by DIManager.di.instance()
+    private val logger = LoggerFactory.default.newLogger<LoginViewModel>()
 
     // data state initialize
     var state by mutableStateOf(LoginUIState())
@@ -73,18 +76,25 @@ class LoginViewModel : ViewModel() {
 
     // Features
     suspend fun login(): Result<DoLoginResult> {
+        logger.debug { "Iniciando login" }
         setupValidation()
-        return todoLogin.execute(
+        val result = todoLogin.execute(
             user = state.user,
             password = state.password,
             newPassword = if (changePasswordRequired) state.newPassword else null,
             name = if (changePasswordRequired) state.name else null,
             familyName = if (changePasswordRequired) state.familyName else null
         )
+        result.onSuccess { logger.debug { "Login exitoso" } }
+            .onFailure { error -> logger.error { "Error al iniciar sesión: ${error.message}" } }
+        return result
     }
 
-    suspend fun  previousLogin(): Boolean = toDoCheckPreviousLogin.execute()
-
+    suspend fun previousLogin(): Boolean {
+        logger.debug { "Verificando inicio de sesión previo" }
+        val result = toDoCheckPreviousLogin.execute()
+        logger.debug { "Resultado verificación: $result" }
+        return result
+    }
 }
-
 

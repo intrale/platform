@@ -20,6 +20,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.cp.TextField
 import ui.rs.Res
@@ -29,6 +31,9 @@ import ui.rs.password_recovery
 const val PASSWORD_RECOVERY_PATH = "/passwordRecovery"
 
 class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.password_recovery) {
+
+    private val logger = LoggerFactory.default.newLogger<PasswordRecoveryScreen>()
+
     @Composable
     override fun screen() { screenImpl() }
 
@@ -60,12 +65,18 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.passwor
                     enabled = !viewModel.loading,
                     onClick = {
                         if (viewModel.isValid()) {
+                            logger.debug { "Formulario válido" }
+                            logger.debug { "Solicitando recuperación de contraseña" }
                             callService(
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.recovery() },
-                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Correo enviado") } }
+                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Correo enviado") } },
+                                onError = { error ->
+                                    logger.error { "Error en recuperación de contraseña: ${error.message}" }
+                                    snackbarHostState.showSnackbar(error.message ?: "Error")
+                                }
                             )
                         }
                     }
