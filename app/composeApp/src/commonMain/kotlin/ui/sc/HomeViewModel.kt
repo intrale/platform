@@ -8,6 +8,8 @@ import org.kodein.log.newLogger
 
 class HomeViewModel : ViewModel()  {
 
+    private val logger = LoggerFactory.default.newLogger<HomeViewModel>()
+
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
 
     private val logger = LoggerFactory.default.newLogger<HomeViewModel>()
@@ -22,8 +24,8 @@ class HomeViewModel : ViewModel()  {
         try {
             toDoResetLoginCache.execute()
             logger.info { "Logout completado" }
-        } catch (e: Exception){
-            logger.error(e) { "Error al cerrar sesión" }
+        } catch (e: Throwable) {
+            logger.error(e) { "Error al ejecutar logout" }
             throw e
         }
     }

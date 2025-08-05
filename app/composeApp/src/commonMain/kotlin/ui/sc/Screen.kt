@@ -7,7 +7,7 @@ import org.kodein.log.newLogger
 
 abstract class Screen (val route: String, val title: StringResource) {
 
-    private val logger = LoggerFactory.default.newLogger<Screen>()
+    protected val logger = LoggerFactory.default.newLogger<Screen>()
 
     lateinit var navigator: (route:String) -> Unit
 

@@ -17,16 +17,25 @@ fun <T> callService(
     onError: suspend (Throwable) -> Unit = { snackbarHostState.showSnackbar(it.message ?: "Error") }
 ) {
     coroutineScope.launch {
-        logger.info { "Iniciando llamada de servicio" }
+        logger.info { "Iniciando llamada a servicio" }
         setLoading(true)
-        val result = serviceCall()
+        val result = try {
+            serviceCall()
+        } catch (e: Throwable) {
+            logger.error(e) { "Error inesperado al invocar servicio" }
+            setLoading(false)
+            onError(e)
+            return@launch
+        }
         result.onSuccess {
             logger.info { "Servicio exitoso" }
             setLoading(false)
+            logger.info { "Servicio ejecutado con éxito" }
             onSuccess(it)
         }.onFailure { error ->
             logger.error(error) { "Error en servicio" }
             setLoading(false)
+            logger.error(error) { "Error en servicio: ${error.message}" }
             onError(error)
         }
     }

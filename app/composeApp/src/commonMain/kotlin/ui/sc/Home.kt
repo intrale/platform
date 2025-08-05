@@ -51,7 +51,7 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             Button(
                 label = stringResource(Res.string.login),
                 onClick = {
-                    logger.info { "Navegando a Secundary" }
+                    logger.info { "Navegando a $SECUNDARY_PATH" }
                     navigate(SECUNDARY_PATH)
                 }
             )
@@ -59,7 +59,7 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             Button(
                 label = stringResource(Res.string.change_password),
                 onClick = {
-                    logger.info { "Navegando a ChangePassword" }
+                    logger.info { "Navegando a $CHANGE_PASSWORD_PATH" }
                     navigate(CHANGE_PASSWORD_PATH)
                 }
             )
@@ -67,7 +67,7 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             Button(
                 label = stringResource(Res.string.register_business),
                 onClick = {
-                    logger.info { "Navegando a RegisterBusiness" }
+                    logger.info { "Navegando a $REGISTER_BUSINESS_PATH" }
                     navigate(REGISTER_BUSINESS_PATH)
                 }
             )
@@ -81,8 +81,8 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
                             viewModel.logout()
                             logger.info { "Logout exitoso" }
                             navigate(LOGIN_PATH)
-                        } catch (e: Exception) {
-                            logger.error(e) { "Error en logout" }
+                        } catch (e: Throwable) {
+                            logger.error(e) { "Error durante logout" }
                         }
                     }
 
