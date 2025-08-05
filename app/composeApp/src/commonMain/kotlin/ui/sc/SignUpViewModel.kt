@@ -9,8 +9,11 @@ import asdo.ToDoSignUp
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 class SignUpViewModel : ViewModel() {
+    private val logger = LoggerFactory.default.newLogger<SignUpViewModel>()
     private val toDoSignUpGeneric: ToDoSignUp by DIManager.di.instance()
 
     var state by mutableStateOf(SignUpUIState())
@@ -33,4 +36,6 @@ class SignUpViewModel : ViewModel() {
 
     suspend fun signup(): Result<DoSignUpResult> =
         toDoSignUpGeneric.execute(state.email)
+            .onSuccess { logger.info { "Usuario registrado: ${'$'}{state.email}" } }
+            .onFailure { error -> logger.error { "Error registro usuario: ${'$'}{error.message}" } }
 }

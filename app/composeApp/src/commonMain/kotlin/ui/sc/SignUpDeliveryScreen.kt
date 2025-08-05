@@ -34,10 +34,13 @@ import LOGIN_PATH
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import ui.rs.business
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 const val SIGNUP_DELIVERY_PATH = "/signupDelivery"
 
 class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_delivery) {
+    private val logger = LoggerFactory.default.newLogger<SignUpDeliveryScreen>()
     @Composable
     override fun screen() { screenImpl() }
 
@@ -48,6 +51,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
         val snackbarHostState = remember { SnackbarHostState() }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        logger.debug { "Mostrando SignUpDeliveryScreen" }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -72,6 +76,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                     modifier = Modifier.menuAnchor(),
                     onValueChange = {
                         viewModel.state = viewModel.state.copy(business = it)
+                        logger.debug { "Buscando negocios con $it" }
                         coroutine.launch { viewModel.searchBusinesses(it) }
                         expanded = true
                     }
@@ -91,6 +96,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick =  {
+                logger.info { "Intento de registro Delivery" }
                 if (viewModel.isValid()) {
                     callService(
                         coroutineScope = coroutine,

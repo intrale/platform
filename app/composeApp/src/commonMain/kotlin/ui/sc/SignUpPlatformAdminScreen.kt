@@ -26,10 +26,13 @@ import ui.rs.email
 import ui.rs.signup_platform_admin
 import ui.sc.callService
 import LOGIN_PATH
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 const val SIGNUP_PLATFORM_ADMIN_PATH = "/signupPlatformAdmin"
 
 class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.signup_platform_admin) {
+    private val logger = LoggerFactory.default.newLogger<SignUpPlatformAdminScreen>()
     @Composable
     override fun screen() { screenImpl() }
 
@@ -40,6 +43,7 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
         val snackbarHostState = remember { SnackbarHostState() }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        logger.debug { "Mostrando SignUpPlatformAdminScreen" }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -58,6 +62,7 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick =  {
+                logger.info { "Intento de registro PlatformAdmin" }
                 if (viewModel.isValid()) {
                     callService(
                         coroutineScope = coroutine,

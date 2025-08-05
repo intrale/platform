@@ -26,10 +26,13 @@ import ui.rs.email
 import ui.rs.signup
 import ui.sc.callService
 import LOGIN_PATH
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 const val SIGNUP_PATH = "/signup"
 
 class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
+    private val logger = LoggerFactory.default.newLogger<SignUpScreen>()
     @Composable
     override fun screen() { screenImpl() }
 
@@ -40,6 +43,7 @@ class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
         val snackbarHostState = remember { SnackbarHostState() }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        logger.debug { "Mostrando SignUpScreen" }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -58,6 +62,7 @@ class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick = {
+                logger.info { "Intento de registro genérico" }
                 if (viewModel.isValid()) {
                     callService(
                         coroutineScope = coroutine,

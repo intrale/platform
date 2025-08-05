@@ -16,16 +16,20 @@ import ui.rs.signup
 import ui.rs.signup_platform_admin
 import ui.rs.signup_delivery
 import ui.rs.signup_saler
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 const val SELECT_SIGNUP_PROFILE_PATH = "/selectSignupProfile"
 
 class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.signup) {
+    private val logger = LoggerFactory.default.newLogger<SelectSignUpProfileScreen>()
     @Composable
     override fun screen() { screenImpl() }
 
     @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl() {
+        logger.debug { "Mostrando SelectSignUpProfileScreen" }
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(modifier = Modifier.size(10.dp))
             Button(
@@ -33,6 +37,7 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                 loading = false,
                 enabled = true,
                 onClick = {
+                    logger.info { "Seleccionado perfil PlatformAdmin" }
                     navigate(SIGNUP_PLATFORM_ADMIN_PATH)
                 })
             Spacer(modifier = Modifier.size(10.dp))
@@ -41,6 +46,7 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                 loading = false,
                 enabled = true,
                 onClick = {
+                    logger.info { "Seleccionado perfil Delivery" }
                     navigate(SIGNUP_DELIVERY_PATH)
                 })
             Spacer(modifier = Modifier.size(10.dp))
@@ -49,6 +55,7 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                 loading = false,
                 enabled = true,
                 onClick = {
+                    logger.info { "Seleccionado perfil Saler" }
                     navigate(SIGNUP_SALER_PATH)
                 })
         }
