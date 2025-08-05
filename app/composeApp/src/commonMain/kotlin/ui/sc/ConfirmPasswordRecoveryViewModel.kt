@@ -10,9 +10,12 @@ import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 class ConfirmPasswordRecoveryViewModel : ViewModel() {
     private val toDoConfirmPasswordRecovery: ToDoConfirmPasswordRecovery by DIManager.di.instance()
+    private val logger = LoggerFactory.default.newLogger<ConfirmPasswordRecoveryViewModel>()
 
     var state by mutableStateOf(ConfirmPasswordRecoveryUIState())
     var loading by mutableStateOf(false)
@@ -50,6 +53,11 @@ class ConfirmPasswordRecoveryViewModel : ViewModel() {
         )
     }
 
-    suspend fun confirm(): Result<DoConfirmPasswordRecoveryResult> =
-        toDoConfirmPasswordRecovery.execute(state.email, state.code, state.password)
+    suspend fun confirm(): Result<DoConfirmPasswordRecoveryResult> {
+        logger.debug { "Ejecutando confirmación de recuperación" }
+        val result = toDoConfirmPasswordRecovery.execute(state.email, state.code, state.password)
+        result.onSuccess { logger.debug { "Confirmación de recuperación exitosa" } }
+            .onFailure { error -> logger.error { "Error en confirmación de recuperación: ${error.message}" } }
+        return result
+    }
 }

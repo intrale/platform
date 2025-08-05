@@ -20,6 +20,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.cp.TextField
 import ui.rs.Res
@@ -30,6 +32,9 @@ import ui.rs.update_password
 const val CHANGE_PASSWORD_PATH = "/change-password"
 
 class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH, Res.string.update_password) {
+
+    private val logger = LoggerFactory.default.newLogger<ChangePasswordScreen>()
+
     @Composable
     override fun screen() { screenImpl() }
 
@@ -70,12 +75,18 @@ class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH, Res.string.update_pass
                     enabled = !viewModel.loading,
                     onClick = {
                         if (viewModel.isValid()) {
+                            logger.debug { "Formulario válido" }
+                            logger.debug { "Invocando cambio de contraseña" }
                             callService(
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.changePassword() },
-                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Contraseña actualizada") } }
+                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Contraseña actualizada") } },
+                                onError = { error ->
+                                    logger.error { "Error al cambiar contraseña: ${error.message}" }
+                                    snackbarHostState.showSnackbar(error.message ?: "Error")
+                                }
                             )
                         }
                     }
