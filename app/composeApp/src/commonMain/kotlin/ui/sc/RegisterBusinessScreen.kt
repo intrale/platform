@@ -18,10 +18,6 @@ import ui.cp.Button
 import ui.cp.TextField
 import kotlinx.coroutines.launch
 import ui.rs.Res
-import ui.rs.register_business
-import ui.rs.name
-import ui.rs.email_admin
-import ui.rs.description
 import ui.rs.pending_requests
 import ui.rs.approve
 import ui.rs.reject
@@ -55,45 +51,6 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Spacer(Modifier.size(10.dp))
-                TextField(
-                    Res.string.name,
-                    value = viewModel.state.name,
-                    state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::name.name]!!,
-                    onValueChange = { viewModel.state = viewModel.state.copy(name = it) }
-                )
-                Spacer(Modifier.size(10.dp))
-                TextField(
-                    Res.string.email_admin,
-                    value = viewModel.state.email,
-                    state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::email.name]!!,
-                    onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
-                )
-                Spacer(Modifier.size(10.dp))
-                TextField(
-                    Res.string.description,
-                    value = viewModel.state.description,
-                    state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::description.name]!!,
-                    onValueChange = { viewModel.state = viewModel.state.copy(description = it) }
-                )
-                Spacer(Modifier.size(10.dp))
-                Button(
-                    label = stringResource(Res.string.register_business),
-                    loading = viewModel.loading,
-                    enabled = !viewModel.loading,
-                    onClick = {
-                        if (viewModel.isValid()) {
-                            logger.info { "Intento de registro de negocio" }
-                            callService(
-                                coroutineScope = coroutine,
-                                snackbarHostState = snackbarHostState,
-                                setLoading = { viewModel.loading = it },
-                                serviceCall = { viewModel.register() },
-                                onSuccess = { coroutine.launch { viewModel.loadPending() } }
-                            )
-                        }
-                    }
-                )
-                Spacer(Modifier.size(20.dp))
                 Text(stringResource(Res.string.pending_requests))
                 Spacer(Modifier.size(10.dp))
                 TextField(

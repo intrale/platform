@@ -16,12 +16,12 @@ Este documento describe el proceso que permite registrar un nuevo negocio dentro
 
 ## Interfaz en la aplicación
 
-La aplicación móvil incorpora la pantalla `RegisterBusinessScreen` que permite:
+La aplicación móvil incorpora dos pantallas relacionadas:
 
-1. Registrar un negocio indicando nombre, correo del administrador y descripción.
-2. Consultar las solicitudes en estado `PENDING` y aprobarlas o rechazarlas mediante el servicio `reviewBusiness`.
+1. `RegisterNewBusinessScreen` permite registrar un negocio indicando nombre, correo del administrador y descripción. Está disponible desde la pantalla de login y no requiere autenticación. Al enviarse la solicitud se muestra una confirmación y los campos se limpian.
+2. `RegisterBusinessScreen` permite consultar las solicitudes en estado `PENDING` y aprobarlas o rechazarlas mediante el servicio `reviewBusiness`.
 
-La navegación hacia esta pantalla se encuentra disponible desde el menú principal.
+El formulario público se navega desde el login, mientras que la pantalla de revisión queda disponible desde el menú principal.
 
 
 ## Revisión y aprobación de registros
