@@ -17,12 +17,16 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.sc.LOGIN_PATH
 import ui.sc.Screen
 
 class CommonRouter(navigator: NavHostController) : Router(navigator) {
 
     val screens: List<Screen> by DIManager.di.instance<List<Screen>>(tag = SCREENS)
+
+    private val logger = LoggerFactory.default.newLogger<CommonRouter>()
 
     @Composable
     override fun routes(){
@@ -35,27 +39,34 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
             .fillMaxSize()
             //.verticalScroll(rememberScrollState())
             .padding(padding)
+
+        logger.info { "Inicializando rutas" }
+
         NavHost(
             navController = navigator,
             startDestination = screens.first().route,
             modifier = modifier
         ) {
 
-
             val iterator = screens.listIterator()
-            while (iterator.hasNext()){
+            while (iterator.hasNext()) {
 
                 // sharing the navigator for navigate into the screen composable
                 val actual = iterator.next()
-                actual.navigate = {route: String -> navigator.navigate(route)}
+                actual.navigate = { route: String ->
+                    logger.info { "Navegando a $route" }
+                    try {
+                        navigator.navigate(route)
+                    } catch (e: Exception) {
+                        logger.error(e) { "Error al navegar a $route" }
+                    }
+                }
 
                 // relationship between screen and route
                 composable(route = actual.route) {
                     actual.screen()
                 }
             }
-
-
 
         }
 
@@ -77,9 +88,14 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
 
 
     override fun canNavigateBack():Boolean  {
-        return navigator.previousBackStackEntry != null
+        val canNavigate = navigator.previousBackStackEntry != null
+        logger.info { "Puede navegar hacia atrás: $canNavigate" }
+        return canNavigate
     }
 
-    override fun navigateUp(): Boolean = navigator.navigateUp()
+    override fun navigateUp(): Boolean {
+        logger.info { "Navegación hacia arriba solicitada" }
+        return navigator.navigateUp()
+    }
 
 }
