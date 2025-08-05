@@ -25,6 +25,8 @@ import ui.rs.secundary
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 
 const val SECUNDARY_PATH = "/secundary"
@@ -50,6 +52,7 @@ class Secundary : Screen (SECUNDARY_PATH, Res.string.secundary) {
                 onClick = {
                     logger.info { "Mostrando contenido alternativo" }
                     showContent = !showContent
+                    logger.info { "Mostrar contenido adicional: $showContent" }
                 }
             )
 

@@ -20,6 +20,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.cp.TextField
 import ui.rs.Res
@@ -31,6 +33,9 @@ import ui.rs.confirm_password_recovery
 const val CONFIRM_PASSWORD_RECOVERY_PATH = "/confirmPasswordRecovery"
 
 class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res.string.confirm_password_recovery) {
+
+    private val logger = LoggerFactory.default.newLogger<ConfirmPasswordRecoveryScreen>()
+
     @Composable
     override fun screen() { screenImpl() }
 
@@ -77,12 +82,18 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                     enabled = !viewModel.loading,
                     onClick = {
                         if (viewModel.isValid()) {
+                            logger.debug { "Formulario válido" }
+                            logger.debug { "Confirmando recuperación de contraseña" }
                             callService(
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.confirm() },
-                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Contraseña actualizada") } }
+                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Contraseña actualizada") } },
+                                onError = { error ->
+                                    logger.error { "Error al confirmar recuperación: ${error.message}" }
+                                    snackbarHostState.showSnackbar(error.message ?: "Error")
+                                }
                             )
                         }
                     }

@@ -12,6 +12,8 @@ class HomeViewModel : ViewModel()  {
 
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
 
+    private val logger = LoggerFactory.default.newLogger<HomeViewModel>()
+
     // data state initialize
     override fun getState(): Any  = Unit
 

@@ -9,7 +9,16 @@ abstract class Screen (val route: String, val title: StringResource) {
 
     protected val logger = LoggerFactory.default.newLogger<Screen>()
 
-    lateinit var navigate: (route:String) -> Unit
+    lateinit var navigator: (route:String) -> Unit
+
+    fun navigate(route:String){
+        logger.info { "Navegando a $route" }
+        try {
+            navigator(route)
+        }catch (e: Exception){
+            logger.error(e) { "Error al navegar a $route" }
+        }
+    }
 
     @Composable
     abstract fun screen()

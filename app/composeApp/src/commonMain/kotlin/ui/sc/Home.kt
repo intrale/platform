@@ -20,7 +20,6 @@ import ui.rs.Res
 import ui.rs.app_name
 import ui.rs.login
 import ui.rs.logout
-import ui.rs.signup
 import ui.rs.change_password
 import ui.rs.register_business
 
@@ -33,7 +32,7 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
 
     @Composable
     override fun screen() {
-        logger.debug { "Renderizando pantalla Home" }
+        logger.info { "Renderizando Home" }
         screenImplementation()
     }
 

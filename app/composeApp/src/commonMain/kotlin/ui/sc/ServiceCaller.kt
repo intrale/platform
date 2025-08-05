@@ -28,10 +28,12 @@ fun <T> callService(
             return@launch
         }
         result.onSuccess {
+            logger.info { "Servicio exitoso" }
             setLoading(false)
             logger.info { "Servicio ejecutado con éxito" }
             onSuccess(it)
         }.onFailure { error ->
+            logger.error(error) { "Error en servicio" }
             setLoading(false)
             logger.error(error) { "Error en servicio: ${error.message}" }
             onError(error)
