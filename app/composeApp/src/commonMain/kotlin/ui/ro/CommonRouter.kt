@@ -53,13 +53,8 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
 
                 // sharing the navigator for navigate into the screen composable
                 val actual = iterator.next()
-                actual.navigate = { route: String ->
-                    logger.info { "Navegando a $route" }
-                    try {
-                        navigator.navigate(route)
-                    } catch (e: Exception) {
-                        logger.error(e) { "Error al navegar a $route" }
-                    }
+                actual.navigator = { route: String ->
+                    navigator.navigate(route)
                 }
 
                 // relationship between screen and route
