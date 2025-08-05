@@ -10,8 +10,11 @@ import androidx.compose.runtime.setValue
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 class SignUpDeliveryViewModel : ViewModel() {
+    private val logger = LoggerFactory.default.newLogger<SignUpDeliveryViewModel>()
     private val toDoSignUpDelivery: ToDoSignUpDelivery by DIManager.di.instance()
     private val toGetBusinesses: ToGetBusinesses by DIManager.di.instance()
 
@@ -37,8 +40,13 @@ class SignUpDeliveryViewModel : ViewModel() {
 
     suspend fun signup(): Result<DoSignUpResult> =
         toDoSignUpDelivery.execute(state.business, state.email)
+            .onSuccess { logger.info { "Delivery registrado: ${'$'}{state.email}" } }
+            .onFailure { error -> logger.error { "Error registro delivery: ${'$'}{error.message}" } }
 
     suspend fun searchBusinesses(query: String) {
-        toGetBusinesses.execute(query).onSuccess { suggestions = it.businesses }
+        logger.debug { "Buscando negocios con ${'$'}query" }
+        toGetBusinesses.execute(query)
+            .onSuccess { suggestions = it.businesses }
+            .onFailure { error -> logger.error { "Error buscando negocios: ${'$'}{error.message}" } }
     }
 }

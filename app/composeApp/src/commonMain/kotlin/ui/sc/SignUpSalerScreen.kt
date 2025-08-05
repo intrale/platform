@@ -26,10 +26,13 @@ import ui.rs.email
 import ui.rs.signup_saler
 import ui.sc.callService
 import LOGIN_PATH
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 const val SIGNUP_SALER_PATH = "/signupSaler"
 
 class SignUpSalerScreen : Screen(SIGNUP_SALER_PATH, Res.string.signup_saler) {
+    private val logger = LoggerFactory.default.newLogger<SignUpSalerScreen>()
     @Composable
     override fun screen() { screenImpl() }
 
@@ -40,6 +43,7 @@ class SignUpSalerScreen : Screen(SIGNUP_SALER_PATH, Res.string.signup_saler) {
         val snackbarHostState = remember { SnackbarHostState() }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        logger.debug { "Mostrando SignUpSalerScreen" }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -58,6 +62,7 @@ class SignUpSalerScreen : Screen(SIGNUP_SALER_PATH, Res.string.signup_saler) {
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick =  {
+                logger.info { "Intento de registro Saler" }
                 if (viewModel.isValid()) {
                     callService(
                         coroutineScope = coroutine,

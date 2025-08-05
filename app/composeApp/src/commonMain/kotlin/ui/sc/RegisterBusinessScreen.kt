@@ -26,10 +26,13 @@ import ui.rs.pending_requests
 import ui.rs.approve
 import ui.rs.reject
 import ui.rs.code
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 const val REGISTER_BUSINESS_PATH = "/registerBusiness"
 
 class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.register_business) {
+    private val logger = LoggerFactory.default.newLogger<RegisterBusinessScreen>()
     @Composable
     override fun screen() { screenImpl() }
 
@@ -39,7 +42,10 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
 
-        LaunchedEffect(true) { viewModel.loadPending() }
+        LaunchedEffect(true) {
+            logger.debug { "Cargando solicitudes pendientes" }
+            viewModel.loadPending()
+        }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
             Column(
@@ -76,6 +82,7 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
                     enabled = !viewModel.loading,
                     onClick = {
                         if (viewModel.isValid()) {
+                            logger.info { "Intento de registro de negocio" }
                             callService(
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
@@ -103,6 +110,7 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
                             loading = viewModel.loading,
                             enabled = !viewModel.loading,
                             onClick = {
+                                logger.info { "Aprobando negocio $biz" }
                                 callService(
                                     coroutineScope = coroutine,
                                     snackbarHostState = snackbarHostState,
@@ -118,6 +126,7 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
                             loading = viewModel.loading,
                             enabled = !viewModel.loading,
                             onClick = {
+                                logger.warn { "Rechazando negocio $biz" }
                                 callService(
                                     coroutineScope = coroutine,
                                     snackbarHostState = snackbarHostState,

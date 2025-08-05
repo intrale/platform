@@ -10,8 +10,11 @@ import androidx.compose.runtime.setValue
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 
 class RegisterBusinessViewModel : ViewModel() {
+    private val logger = LoggerFactory.default.newLogger<RegisterBusinessViewModel>()
     private val register: ToDoRegisterBusiness by DIManager.di.instance()
     private val review: ToDoReviewBusinessRegistration by DIManager.di.instance()
     private val getBusinesses: ToGetBusinesses by DIManager.di.instance()
@@ -47,13 +50,28 @@ class RegisterBusinessViewModel : ViewModel() {
         )
     }
 
-    suspend fun register() = register.execute(state.name, state.email, state.description)
+    suspend fun register() =
+        register.execute(state.name, state.email, state.description)
+            .onSuccess { logger.info { "Negocio registrado: ${'$'}{state.name}" } }
+            .onFailure { error -> logger.error { "Error registrando negocio: ${'$'}{error.message}" } }
 
-    suspend fun approve(business: String) = review.execute(business, "approved", state.twoFactorCode)
+    suspend fun approve(business: String) =
+        review.execute(business, "approved", state.twoFactorCode)
+            .onSuccess { logger.info { "Negocio aprobado: ${'$'}business" } }
+            .onFailure { error -> logger.error { "Error aprobando ${'$'}business: ${'$'}{error.message}" } }
 
-    suspend fun reject(business: String) = review.execute(business, "rejected", state.twoFactorCode)
+    suspend fun reject(business: String) =
+        review.execute(business, "rejected", state.twoFactorCode)
+            .onSuccess { logger.warn { "Negocio rechazado: ${'$'}business" } }
+            .onFailure { error -> logger.error { "Error rechazando ${'$'}business: ${'$'}{error.message}" } }
 
     suspend fun loadPending() {
-        getBusinesses.execute("PENDING").onSuccess { pending = it.businesses }
+        logger.debug { "Cargando negocios pendientes" }
+        getBusinesses.execute("PENDING")
+            .onSuccess {
+                pending = it.businesses
+                logger.info { "Pendientes obtenidos: ${'$'}{pending.size}" }
+            }
+            .onFailure { error -> logger.error { "Error cargando pendientes: ${'$'}{error.message}" } }
     }
 }
