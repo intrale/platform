@@ -22,6 +22,12 @@ import ui.rs.pending_requests
 import ui.rs.approve
 import ui.rs.reject
 import ui.rs.code
+import ui.rs.select_all
+import ui.rs.approve_selected
+import ui.rs.reject_selected
+import ui.rs.description
+import ui.rs.email_admin
+import ui.rs.auto_accept_deliveries
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -61,42 +67,106 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                     onValueChange = { viewModel.state = viewModel.state.copy(twoFactorCode = it) }
                 )
                 Spacer(Modifier.size(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = viewModel.selected.size == viewModel.pending.size && viewModel.pending.isNotEmpty(),
+                        onCheckedChange = { checked ->
+                            if (checked) viewModel.selectAll() else viewModel.clearSelection()
+                        }
+                    )
+                    Text(stringResource(Res.string.select_all))
+                }
+                Spacer(Modifier.size(10.dp))
                 viewModel.pending.forEach { biz ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(biz, modifier = Modifier.weight(1f))
-                        Button(
-                            label = stringResource(Res.string.approve),
-                            loading = viewModel.loading,
-                            enabled = !viewModel.loading,
-                            onClick = {
-                                logger.info { "Aprobando negocio $biz" }
-                                callService(
-                                    coroutineScope = coroutine,
-                                    snackbarHostState = snackbarHostState,
-                                    setLoading = { viewModel.loading = it },
-                                    serviceCall = { viewModel.approve(biz) },
-                                    onSuccess = { coroutine.launch { viewModel.loadPending() } }
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        colors = CardDefaults.cardColors()
+                    ) {
+                        Row(
+                            Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = viewModel.selected.contains(biz.id),
+                                onCheckedChange = { viewModel.toggleSelection(biz.id) }
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(biz.name)
+                                Text("${stringResource(Res.string.description)}: ${biz.description}")
+                                Text("${stringResource(Res.string.email_admin)}: ${biz.emailAdmin}")
+                                Text("${stringResource(Res.string.auto_accept_deliveries)}: ${biz.autoAcceptDeliveries}")
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Button(
+                                    label = stringResource(Res.string.approve),
+                                    loading = viewModel.loading,
+                                    enabled = !viewModel.loading,
+                                    onClick = {
+                                        logger.info { "Aprobando negocio ${biz.id}" }
+                                        callService(
+                                            coroutineScope = coroutine,
+                                            snackbarHostState = snackbarHostState,
+                                            setLoading = { viewModel.loading = it },
+                                            serviceCall = { viewModel.approve(biz.id) },
+                                            onSuccess = { coroutine.launch { viewModel.loadPending() } }
+                                        )
+                                    }
+                                )
+                                Spacer(Modifier.size(4.dp))
+                                Button(
+                                    label = stringResource(Res.string.reject),
+                                    loading = viewModel.loading,
+                                    enabled = !viewModel.loading,
+                                    onClick = {
+                                        logger.warning { "Rechazando negocio ${biz.id}" }
+                                        callService(
+                                            coroutineScope = coroutine,
+                                            snackbarHostState = snackbarHostState,
+                                            setLoading = { viewModel.loading = it },
+                                            serviceCall = { viewModel.reject(biz.id) },
+                                            onSuccess = { coroutine.launch { viewModel.loadPending() } }
+                                        )
+                                    }
                                 )
                             }
-                        )
-                        Spacer(Modifier.size(4.dp))
-                        Button(
-                            label = stringResource(Res.string.reject),
-                            loading = viewModel.loading,
-                            enabled = !viewModel.loading,
-                            onClick = {
-                                logger.warning { "Rechazando negocio $biz" }
-                                callService(
-                                    coroutineScope = coroutine,
-                                    snackbarHostState = snackbarHostState,
-                                    setLoading = { viewModel.loading = it },
-                                    serviceCall = { viewModel.reject(biz) },
-                                    onSuccess = { coroutine.launch { viewModel.loadPending() } }
-                                )
-                            }
-                        )
+                        }
                     }
-                    Spacer(Modifier.size(8.dp))
+                }
+                Spacer(Modifier.size(10.dp))
+                Row {
+                    Button(
+                        label = stringResource(Res.string.approve_selected),
+                        loading = viewModel.loading,
+                        enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
+                        onClick = {
+                            logger.info { "Aprobando seleccionados" }
+                            callService(
+                                coroutineScope = coroutine,
+                                snackbarHostState = snackbarHostState,
+                                setLoading = { viewModel.loading = it },
+                                serviceCall = { viewModel.approveSelected() },
+                                onSuccess = { coroutine.launch { viewModel.loadPending() } }
+                            )
+                        }
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    Button(
+                        label = stringResource(Res.string.reject_selected),
+                        loading = viewModel.loading,
+                        enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
+                        onClick = {
+                            logger.warning { "Rechazando seleccionados" }
+                            callService(
+                                coroutineScope = coroutine,
+                                snackbarHostState = snackbarHostState,
+                                setLoading = { viewModel.loading = it },
+                                serviceCall = { viewModel.rejectSelected() },
+                                onSuccess = { coroutine.launch { viewModel.loadPending() } }
+                            )
+                        }
+                    )
                 }
             }
         }

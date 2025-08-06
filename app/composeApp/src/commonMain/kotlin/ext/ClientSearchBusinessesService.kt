@@ -18,10 +18,15 @@ class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSe
     private val logger = LoggerFactory.default.newLogger<ClientSearchBusinessesService>()
 
     @OptIn(InternalAPI::class)
-    override suspend fun execute(query: String): Result<SearchBusinessesResponse> {
+    override suspend fun execute(
+        query: String,
+        status: String?,
+        limit: Int?,
+        lastKey: String?
+    ): Result<SearchBusinessesResponse> {
         return try {
             val response: HttpResponse = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/searchBusinesses") {
-                setBody(SearchBusinessesRequest(query))
+                setBody(SearchBusinessesRequest(query, status, limit, lastKey))
             }
             if (response.status.isSuccess()) {
                 val bodyText = response.bodyAsText()
@@ -42,7 +47,9 @@ class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSe
 }
 
 @Serializable
-data class SearchBusinessesRequest(val query: String)
-
-@Serializable
-data class SearchBusinessesResponse(val statusCode: StatusCodeDTO, val businesses: List<String>)
+data class SearchBusinessesRequest(
+    val query: String = "",
+    val status: String? = null,
+    val limit: Int? = null,
+    val lastKey: String? = null
+)

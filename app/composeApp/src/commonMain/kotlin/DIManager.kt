@@ -37,7 +37,6 @@ public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
 public const val CONFIRM_PASSWORD_RECOVERY = "confirmPasswordRecovery"
-public const val REGISTER_BUSINESS = "registerBusiness"
 public const val REVIEW_BUSINESS = "reviewBusiness"
 public const val REGISTER_NEW_BUSINESS = "registerNewBusiness"
 
@@ -67,7 +66,6 @@ class DIManager {
                 bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
                 bindSingleton(tag = CONFIRM_PASSWORD_RECOVERY) { ConfirmPasswordRecoveryScreen() }
                 bindSingleton(tag = REGISTER_NEW_BUSINESS) { RegisterNewBusinessScreen() }
-                bindSingleton(tag = REGISTER_BUSINESS) { RegisterBusinessScreen() }
                 bindSingleton(tag = REVIEW_BUSINESS) { ReviewBusinessScreen() }
 
                 bindSingleton (tag = SCREENS) {
@@ -83,10 +81,8 @@ class DIManager {
                         instance(tag = CHANGE_PASSWORD),
                         instance(tag = PASSWORD_RECOVERY),
                         instance(tag = CONFIRM_PASSWORD_RECOVERY),
-                        instance(tag = REGISTER_BUSINESS),
                         instance(tag = REVIEW_BUSINESS),
-                        instance(tag = REGISTER_NEW_BUSINESS),
-                        instance(tag = REGISTER_BUSINESS)
+                        instance(tag = REGISTER_NEW_BUSINESS)
                     )
                 }
 

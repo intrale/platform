@@ -21,13 +21,21 @@ class SearchBusinesses(
             SearchBusinessesRequest()
         }
         val businesses = config.businesses
-        val filtered = if (body.query.isBlank()) {
-            businesses
-        } else {
-            businesses.filter { it.contains(body.query, ignoreCase = true) }
-        }
-        val names = filtered.toTypedArray()
+        val filtered = businesses
+            .filter { body.query.isBlank() || it.contains(body.query, ignoreCase = true) }
+            .map {
+                BusinessDTO(
+                    id = it,
+                    name = it,
+                    description = "",
+                    emailAdmin = "${it}@admin.com",
+                    autoAcceptDeliveries = false,
+                    status = "PENDING"
+                )
+            }
+            .filter { body.status == null || it.status.equals(body.status, ignoreCase = true) }
+        val limited = if (body.limit != null) filtered.take(body.limit) else filtered
         logger.debug("return search businesses $function")
-        return SearchBusinessesResponse(names)
+        return SearchBusinessesResponse(limited.toTypedArray(), null)
     }
 }
