@@ -38,6 +38,7 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
     private fun screenImpl(viewModel: RegisterBusinessViewModel = viewModel { RegisterBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
+        val registerBusinessSent = stringResource(Res.string.register_business_sent)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
             Column(
@@ -81,7 +82,7 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.register() },
                                 onSuccess = {
-                                    coroutine.launch { snackbarHostState.showSnackbar(stringResource(Res.string.register_business_sent)) }
+                                    coroutine.launch { snackbarHostState.showSnackbar(registerBusinessSent) }
                                     viewModel.state = RegisterBusinessViewModel.UIState()
                                     viewModel.initInputState()
                                 }

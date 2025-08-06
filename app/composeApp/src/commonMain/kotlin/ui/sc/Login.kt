@@ -198,7 +198,7 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                             Spacer(modifier = Modifier.size(16.dp))
                             Button(
                                 label = stringResource(Res.string.register_business),
-                                onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) },
+                                onClick = { navigate(REVIEW_BUSINESS_PATH) },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color(0xFF2C71C7))
                             )
                             Spacer(modifier = Modifier.size(16.dp))

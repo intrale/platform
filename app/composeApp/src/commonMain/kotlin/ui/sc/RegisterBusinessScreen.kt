@@ -80,7 +80,9 @@ class RegisterBusinessScreen : Screen(REGISTER_BUSINESS_PATH, Res.string.registe
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
-                                serviceCall = { viewModel.register() }
+                                serviceCall = { viewModel.register() },
+                                onSuccess = TODO(),
+                                onError = TODO()
                             )
                         }
                     }

@@ -84,7 +84,7 @@ class DIManager {
                         instance(tag = PASSWORD_RECOVERY),
                         instance(tag = CONFIRM_PASSWORD_RECOVERY),
                         instance(tag = REGISTER_BUSINESS),
-                        instance(tag = REVIEW_BUSINESS)
+                        instance(tag = REVIEW_BUSINESS),
                         instance(tag = REGISTER_NEW_BUSINESS),
                         instance(tag = REGISTER_BUSINESS)
                     )

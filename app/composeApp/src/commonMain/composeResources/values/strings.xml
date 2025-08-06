@@ -29,6 +29,7 @@
     <string name="code">Código</string>
     <string name="register_business">Registrar negocio</string>
     <string name="register_business_sent">Solicitud enviada</string>
+    <string name="review_business">Revisar solicitudes de negocio pendientes</string>
     <string name="description">Descripción</string>
     <string name="email_admin">Correo del administrador</string>
     <string name="pending_requests">Solicitudes pendientes</string>
