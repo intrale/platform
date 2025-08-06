@@ -35,4 +35,8 @@
     <string name="pending_requests">Solicitudes pendientes</string>
     <string name="approve">Aprobar</string>
     <string name="reject">Rechazar</string>
+    <string name="select_all">Seleccionar todo</string>
+    <string name="approve_selected">Aprobar seleccionados</string>
+    <string name="reject_selected">Rechazar seleccionados</string>
+    <string name="auto_accept_deliveries">Auto acepta entregas</string>
 </resources>

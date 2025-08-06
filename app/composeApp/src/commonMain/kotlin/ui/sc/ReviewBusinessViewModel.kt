@@ -6,6 +6,7 @@ import asdo.ToGetBusinesses
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import ext.BusinessDTO
 import io.konform.validation.Validation
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
@@ -18,7 +19,8 @@ class ReviewBusinessViewModel : ViewModel() {
 
     var state by mutableStateOf(UIState())
     var loading by mutableStateOf(false)
-    var pending by mutableStateOf(listOf<String>())
+    var pending by mutableStateOf(listOf<BusinessDTO>())
+    var selected by mutableStateOf(setOf<String>())
 
     data class UIState(
         val twoFactorCode: String = ""
@@ -39,21 +41,42 @@ class ReviewBusinessViewModel : ViewModel() {
         )
     }
 
-    suspend fun approve(business: String) =
-        review.execute(business, "approved", state.twoFactorCode)
-            .onSuccess { logger.info { "Negocio aprobado: ${'$'}business" } }
-            .onFailure { error -> logger.error { "Error aprobando ${'$'}business: ${'$'}{error.message}" } }
+    suspend fun approve(id: String) =
+        review.execute(id, "approved", state.twoFactorCode)
+            .onSuccess { logger.info { "Negocio aprobado: ${'$'}id" } }
+            .onFailure { error -> logger.error { "Error aprobando ${'$'}id: ${'$'}{error.message}" } }
 
-    suspend fun reject(business: String) =
-        review.execute(business, "rejected", state.twoFactorCode)
-            .onSuccess { logger.warning { "Negocio rechazado: ${'$'}business" } }
-            .onFailure { error -> logger.error { "Error rechazando ${'$'}business: ${'$'}{error.message}" } }
+    suspend fun reject(id: String) =
+        review.execute(id, "rejected", state.twoFactorCode)
+            .onSuccess { logger.warning { "Negocio rechazado: ${'$'}id" } }
+            .onFailure { error -> logger.error { "Error rechazando ${'$'}id: ${'$'}{error.message}" } }
+
+    suspend fun approveSelected() {
+        selected.forEach { approve(it) }
+    }
+
+    suspend fun rejectSelected() {
+        selected.forEach { reject(it) }
+    }
+
+    fun toggleSelection(id: String) {
+        selected = if (selected.contains(id)) selected - id else selected + id
+    }
+
+    fun selectAll() {
+        selected = pending.map { it.id }.toSet()
+    }
+
+    fun clearSelection() {
+        selected = emptySet()
+    }
 
     suspend fun loadPending() {
         logger.debug { "Cargando negocios pendientes" }
-        getBusinesses.execute("PENDING")
+        getBusinesses.execute(status = "PENDING")
             .onSuccess {
                 pending = it.businesses
+                selected = emptySet()
                 logger.info { "Pendientes obtenidos: ${'$'}{pending.size}" }
             }
             .onFailure { error -> logger.error { "Error cargando pendientes: ${'$'}{error.message}" } }

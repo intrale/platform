@@ -45,8 +45,8 @@ class SignUpDeliveryViewModel : ViewModel() {
 
     suspend fun searchBusinesses(query: String) {
         logger.debug { "Buscando negocios con ${'$'}query" }
-        toGetBusinesses.execute(query)
-            .onSuccess { suggestions = it.businesses }
+        toGetBusinesses.execute(query = query)
+            .onSuccess { suggestions = it.businesses.map { biz -> biz.name } }
             .onFailure { error -> logger.error { "Error buscando negocios: ${'$'}{error.message}" } }
     }
 }
