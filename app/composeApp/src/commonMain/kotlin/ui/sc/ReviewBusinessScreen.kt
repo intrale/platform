@@ -146,7 +146,13 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
-                                serviceCall = { viewModel.approveSelected() },
+                                serviceCall = {
+                                    try {
+                                        viewModel.approveSelected()
+                                        Result.success(Unit)
+                                    } catch (e: Throwable) {
+                                        Result.failure(e)
+                                    }},
                                 onSuccess = { coroutine.launch { viewModel.loadPending() } }
                             )
                         }
@@ -162,7 +168,13 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                 coroutineScope = coroutine,
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
-                                serviceCall = { viewModel.rejectSelected() },
+                                serviceCall = {
+                                    try {
+                                    viewModel.rejectSelected()
+                                        Result.success(Unit)
+                                    } catch (e: Throwable) {
+                                        Result.failure(e)
+                                    }},
                                 onSuccess = { coroutine.launch { viewModel.loadPending() } }
                             )
                         }
