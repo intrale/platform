@@ -29,6 +29,7 @@ class RegisterBusinessIntegrationTest {
         override fun keyFrom(item: Business): Key = Key.builder().partitionValue(item.name).build()
         override fun index(indexName: String) = throw UnsupportedOperationException()
         override fun putItem(item: Business) { items.add(item) }
+        override fun getItem(item: Business): Business? = items.find { it.name == item.name }
     }
 
     private fun testModule(table: DummyBusinessTable): DI.Module {
@@ -147,6 +148,67 @@ class RegisterBusinessIntegrationTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         assertEquals(0, table.items.size)
+    }
+
+    @Test
+    fun `registro duplicado retorna error`() = testApplication {
+        val table = DummyBusinessTable()
+
+        application {
+            di {
+                import(appModule, allowOverride = true)
+                import(testModule(table), allowOverride = true)
+            }
+            routing {
+                post("/{business}/{function}") {
+                    val di = closestDI()
+                    val logger: org.slf4j.Logger by di.instance()
+
+                    val businessName = call.parameters["business"]
+                    val functionName = call.parameters["function"]
+
+                    val functionResponse: Response = if (businessName == null) {
+                        RequestValidationException("No business defined on path")
+                    } else {
+                        val config = di.direct.instance<Config>()
+                        logger.info("config.businesses: ${'$'}{config.businesses}")
+                        if (!config.businesses.contains(businessName)) {
+                            ExceptionResponse("Business not available with name ${'$'}businessName")
+                        } else if (functionName == null) {
+                            RequestValidationException("No function defined on path")
+                        } else {
+                            try {
+                                val function = di.direct.instance<Function>(tag = functionName)
+                                val headers = call.request.headers.entries().associate { it.key to it.value.joinToString(",") }
+                                function.execute(businessName, functionName, headers, call.receiveText())
+                            } catch (e: DI.NotFoundException) {
+                                ExceptionResponse("No function with name ${'$'}functionName found")
+                            }
+                        }
+                    }
+
+                    call.respondText(
+                        text = Gson().toJson(functionResponse),
+                        contentType = ContentType.Application.Json,
+                        status = functionResponse.statusCode
+                    )
+                }
+            }
+        }
+
+        val body = "{\"name\":\"Biz\",\"emailAdmin\":\"biz@test.com\",\"description\":\"desc\"}"
+        val first = client.post("/biz/registerBusiness") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json)
+            setBody(body)
+        }
+        assertEquals(HttpStatusCode.OK, first.status)
+
+        val second = client.post("/biz/registerBusiness") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json)
+            setBody(body)
+        }
+        assertEquals(HttpStatusCode.BadRequest, second.status)
+        assertEquals(1, table.items.size)
     }
 }
 

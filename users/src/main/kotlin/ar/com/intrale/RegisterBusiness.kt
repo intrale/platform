@@ -20,6 +20,7 @@ import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import java.security.SecureRandom
 import kotlin.math.log
+import io.ktor.http.HttpStatusCode
 
 class RegisterBusiness (val config: UsersConfig, val logger: Logger, val tableBusiness: DynamoDbTable<Business>) :
     Function {
@@ -48,30 +49,35 @@ class RegisterBusiness (val config: UsersConfig, val logger: Logger, val tableBu
         return null
     }
 
-        override suspend fun execute(
+    override suspend fun execute(
         business: String,
         function: String,
         headers: Map<String, String>,
         textBody: String
     ): Response {
-            logger.debug("starting register business $function")
+        logger.debug("starting register business $function")
 
-            // Validacion del request
-            if (textBody.isEmpty()) return RequestValidationException("Request body not found")
-            val body = Gson().fromJson(textBody, RegisterBusinessRequest::class.java)
-            val response = requestValidation(body)
-            if (response!=null) return response
+        // Validacion del request
+        if (textBody.isEmpty()) return RequestValidationException("Request body not found")
+        val body = Gson().fromJson(textBody, RegisterBusinessRequest::class.java)
+        val response = requestValidation(body)
+        if (response != null) return response
 
-            val business = Business (
-                name = body.name,
-                description = body.description,
-                emailAdmin =  body.emailAdmin,
-                autoAcceptDeliveries = body.autoAcceptDeliveries,
-            )
-            logger.debug("persisting business $business")
-            tableBusiness.putItem(business)
-            logger.debug ("return register business $function")
-            return Response()
+        val existing = tableBusiness.getItem(Business().apply { name = body.name })
+        if (existing != null && existing.state == BusinessState.PENDING && existing.emailAdmin == body.emailAdmin) {
+            return ExceptionResponse("Negocio pendiente con mismo nombre y administrador", HttpStatusCode.BadRequest)
+        }
+
+        val newBusiness = Business(
+            name = body.name,
+            description = body.description,
+            emailAdmin = body.emailAdmin,
+            autoAcceptDeliveries = body.autoAcceptDeliveries,
+        )
+        logger.debug("persisting business $newBusiness")
+        tableBusiness.putItem(newBusiness)
+        logger.debug("return register business $function")
+        return Response()
     }
 
 }

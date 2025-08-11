@@ -17,6 +17,7 @@ class DummyTable : DynamoDbTable<Business> {
     override fun keyFrom(item: Business): Key = Key.builder().partitionValue(item.name).build()
     override fun index(indexName: String) = throw UnsupportedOperationException()
     override fun putItem(item: Business) { items.add(item) }
+    override fun getItem(item: Business): Business? = items.find { it.name == item.name }
 }
 
 class RegisterBusinessTest {
@@ -44,6 +45,15 @@ class RegisterBusinessTest {
         val body = "{\"name\":\"Biz\",\"emailAdmin\":\"biz@test.com\",\"description\":\"desc\",\"autoAcceptDeliveries\":false}"
         val resp = register.execute("test","register", emptyMap(), body)
         assertEquals(HttpStatusCode.OK, resp.statusCode)
+        assertEquals(1, table.items.size)
+    }
+
+    @Test
+    fun duplicatePendingBusinessReturnsError() = runBlocking {
+        table.items.add(Business().apply { name = "Biz"; emailAdmin = "biz@test.com"; state = BusinessState.PENDING })
+        val body = "{\"name\":\"Biz\",\"emailAdmin\":\"biz@test.com\",\"description\":\"desc\",\"autoAcceptDeliveries\":false}"
+        val resp = register.execute("test","register", emptyMap(), body)
+        assertEquals(HttpStatusCode.BadRequest, resp.statusCode)
         assertEquals(1, table.items.size)
     }
 }
