@@ -14,6 +14,7 @@ Este documento describe el proceso que permite registrar un nuevo negocio dentro
 - Este proceso está relacionado con la funcionalidad principal detallada en el issue #13.
 - Los detalles de implementación y pruebas se encuentran en la documentación del módulo `users`.
 - Si existe un negocio en estado `PENDING` con igual nombre y correo de administrador, se rechaza un nuevo registro. Relacionado con #184.
+- Los nombres de negocios aprobados son únicos sin diferenciar mayúsculas/minúsculas. Relacionado con #185.
 
 ## Interfaz en la aplicación
 

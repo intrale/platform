@@ -102,6 +102,13 @@ class ReviewBusinessRegistration (val config: UsersConfig, val logger: Logger,
 
             // Cambiar el estado del negocio segun la bandera de aceptado o rechazado
             if (body.decision.uppercase() == "APPROVED") {
+                val existing = tableBusiness.scan().items().firstOrNull {
+                    it.name.equals(body.name, ignoreCase = true) && it.state == BusinessState.APPROVED
+                }
+                if (existing != null) {
+                    return ExceptionResponse("El nombre del negocio ya existe")
+                }
+
                 businessData.state = BusinessState.APPROVED
                 // Si el negocio es aceptado, Validar si el usuario Business Admin ya se encuentra registrado en intrale en caso de que No, enviar mail para signup del usuario
                 logger.debug("checking User Business Admin")
