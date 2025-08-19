@@ -64,7 +64,7 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
             val username = userResponse.username
 
                 if (email != null) {
-                   var user = User(
+                   var user: User? = User(
                         email = email,
                     )
                     logger.debug("getting user $user")
