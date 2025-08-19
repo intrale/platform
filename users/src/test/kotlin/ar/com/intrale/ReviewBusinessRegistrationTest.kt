@@ -141,7 +141,7 @@ class ReviewBusinessRegistrationTest {
         }
 
         val req = ReviewBusinessRegistrationRequest("tienda", "approved", "123456")
-        val resp = review.execute("biz", "review", mapOf("Authorization" to "token"), Gson().toJson(req))
+        val resp = review.securedExecute("biz", "review", mapOf("Authorization" to "token"), Gson().toJson(req))
 
         assertEquals("El nombre del negocio ya existe", (resp as ExceptionResponse).message)
     }
