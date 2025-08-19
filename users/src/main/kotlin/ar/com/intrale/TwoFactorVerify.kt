@@ -70,6 +70,11 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
                     logger.debug("getting user $user")
                     user = tableUsers.getItem(user)
 
+                    if (user == null || user.secret.isNullOrEmpty()) {
+                        logger.error("two factor secret not found for user $email")
+                        return ExceptionResponse("two factor secret not found for user $email")
+                    }
+
                     val generator = TimeBasedOneTimePasswordGenerator()
                     val key = SecretKeySpec(Base32().decode(user.secret), "HmacSHA1")
 
