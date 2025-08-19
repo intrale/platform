@@ -19,6 +19,7 @@ import io.mockk.every
 import org.kodein.di.*
 import org.kodein.di.ktor.closestDI
 import org.kodein.di.ktor.di
+import ar.com.intrale.SecuredFunction
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClientExtension
@@ -140,7 +141,11 @@ class ReviewBusinessRegistrationIntegrationTest {
                             try {
                                 val function = di.direct.instance<Function>(tag = functionName)
                                 val headers = call.request.headers.entries().associate { it.key to it.value.joinToString(",") }
-                                function.execute(businessName, functionName, headers, call.receiveText())
+                                if (function is SecuredFunction) {
+                                    function.securedExecute(businessName, functionName, headers, call.receiveText())
+                                } else {
+                                    function.execute(businessName, functionName, headers, call.receiveText())
+                                }
                             } catch (e: DI.NotFoundException) {
                                 ExceptionResponse("No function with name $functionName found")
                             }
@@ -215,7 +220,11 @@ class ReviewBusinessRegistrationIntegrationTest {
                             try {
                                 val function = di.direct.instance<Function>(tag = functionName)
                                 val headers = call.request.headers.entries().associate { it.key to it.value.joinToString(",") }
-                                function.execute(businessName, functionName, headers, call.receiveText())
+                                if (function is SecuredFunction) {
+                                    function.securedExecute(businessName, functionName, headers, call.receiveText())
+                                } else {
+                                    function.execute(businessName, functionName, headers, call.receiveText())
+                                }
                             } catch (e: DI.NotFoundException) {
                                 ExceptionResponse("No function with name $functionName found")
                             }
