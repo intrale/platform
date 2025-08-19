@@ -9,8 +9,6 @@ import io.konform.validation.jsonschema.pattern
 import org.slf4j.Logger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 
-const val PLATFORM_ADMIN_PROFILE = "PLATFORM_ADMIN"
-
 class ReviewBusinessRegistration(
     override val config: UsersConfig,
     override val logger: Logger,
@@ -71,7 +69,7 @@ class ReviewBusinessRegistration(
             return UnauthorizedException()
         }
         val adminProfile = tableProfiles.scan().items().firstOrNull {
-            it.email == email && it.business == business && it.profile == PLATFORM_ADMIN_PROFILE && it.state == BusinessState.APPROVED
+            it.email == email && it.business == business && it.profile == PROFILE_PLATFORM_ADMIN && it.state == BusinessState.APPROVED
         } ?: return UnauthorizedException()
 
         // Validar el segundo factor para ese usuario

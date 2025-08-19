@@ -132,7 +132,7 @@ class ReviewBusinessRegistrationTest {
         tableProfiles.putItem(UserBusinessProfile().apply {
             email = "admin@biz.com"
             business = "biz"
-            profile = PLATFORM_ADMIN_PROFILE
+            profile = PROFILE_PLATFORM_ADMIN
             state = BusinessState.APPROVED
         })
         coEvery { cognito.getUser(any()) } returns GetUserResponse {

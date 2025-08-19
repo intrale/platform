@@ -1,6 +1,5 @@
 package ar.com.intrale
 
-import net.datafaker.Faker
 import org.slf4j.Logger
 
 const val PROFILE_PLATFORM_ADMIN = "PlatformAdmin"

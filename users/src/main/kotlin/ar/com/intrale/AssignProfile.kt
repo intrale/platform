@@ -54,7 +54,7 @@ class AssignProfile(
             .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
             ?: return UnauthorizedException()
         val adminProfile = tableProfiles.scan().items().firstOrNull {
-            it.email == emailCaller && it.business == business && it.profile == PLATFORM_ADMIN_PROFILE && it.state == BusinessState.APPROVED
+            it.email == emailCaller && it.business == business && it.profile == PROFILE_PLATFORM_ADMIN && it.state == BusinessState.APPROVED
         } ?: return UnauthorizedException()
 
         val userProfile = UserBusinessProfile().apply {
