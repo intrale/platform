@@ -9,6 +9,7 @@ import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import org.slf4j.Logger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
+import software.amazon.awssdk.enhanced.dynamodb.Key
 
 class ReviewBusinessRegistration(
     override val config: UsersConfig,
@@ -111,7 +112,12 @@ class ReviewBusinessRegistration(
             businessData.state = BusinessState.APPROVED
             // Si el negocio es aceptado, Validar si el usuario Business Admin ya se encuentra registrado en intrale en caso de que No, enviar mail para signup del usuario
             logger.debug("checking User Business Admin")
-            val businessAdminUser = tableUsers.getItem { User(email = businessData.emailAdmin) }
+
+            //val businessAdminUser = tableUsers.getItem { User(email = businessData.emailAdmin) }
+            val businessAdminUser = tableUsers.getItem { b ->
+                b.key(Key.builder().partitionValue(businessData.emailAdmin).build())
+            }
+
             if (businessAdminUser == null) {
                 logger.debug("SignUp User Business Admin")
                 val signUpResponse = signUp.execute(
