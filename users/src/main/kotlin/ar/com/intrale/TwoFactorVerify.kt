@@ -6,6 +6,7 @@ import com.eatthepath.otp.TimeBasedOneTimePasswordGenerator
 import com.google.gson.Gson
 import io.konform.validation.Validation
 import io.konform.validation.ValidationResult
+import io.konform.validation.jsonschema.minLength
 import org.apache.commons.codec.binary.Base32
 import org.slf4j.Logger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
@@ -19,7 +20,9 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
 
     fun requestValidation(body:TwoFactorVerifyRequest): Response? {
         val validation = Validation<TwoFactorVerifyRequest> {
-            TwoFactorVerifyRequest::code required {}
+            TwoFactorVerifyRequest::code required {
+                minLength(6)
+            }
         }
         val validationResult: ValidationResult<Any> = try {
             validation(body)

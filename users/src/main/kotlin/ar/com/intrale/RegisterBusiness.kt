@@ -8,6 +8,7 @@ import com.google.gson.Gson
 import io.konform.validation.Validation
 import io.konform.validation.Validation.Companion.invoke
 import io.konform.validation.ValidationResult
+import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import net.datafaker.Faker
 import org.apache.commons.codec.binary.Base32
@@ -28,7 +29,9 @@ class RegisterBusiness (val config: UsersConfig, val logger: Logger, val tableBu
 
     fun requestValidation(body:RegisterBusinessRequest): Response? {
         val validation = Validation<RegisterBusinessRequest> {
-            RegisterBusinessRequest::name required {}
+            RegisterBusinessRequest::name required {
+                minLength(7)
+            }
             RegisterBusinessRequest::emailAdmin required {
                 pattern(".+@.+\\..+") hint "El campo emailAdmin debe tener formato de email. Valor actual: '{value}'"
             }

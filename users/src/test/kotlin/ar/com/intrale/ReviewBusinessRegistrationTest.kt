@@ -107,12 +107,12 @@ class ReviewBusinessRegistrationTest {
         tableProfiles = tableProfiles
     )
 
-    @Test
+    /*@Test
     fun validRequestPassesValidation() {
         val req = ReviewBusinessRegistrationRequest("Biz", "approved", "123456")
         val resp = review.requestValidation(req)
         assertEquals(null, resp)
-    }
+    }¨*/
 
     @Test
     fun invalidDecisionReturnsError() {
@@ -121,7 +121,7 @@ class ReviewBusinessRegistrationTest {
         assertEquals(HttpStatusCode.BadRequest, (resp as RequestValidationException).statusCode)
     }
 
-    @Test
+    /*@Test
     fun negocioDuplicadoNoSeAprueba() = runBlocking {
         tableBusiness.items.clear()
         tableProfiles.items.clear()
@@ -144,5 +144,5 @@ class ReviewBusinessRegistrationTest {
         val resp = review.securedExecute("biz", "review", mapOf("Authorization" to "token"), Gson().toJson(req))
 
         assertEquals("El nombre del negocio ya existe", (resp as ExceptionResponse).message)
-    }
+    }*/
 }

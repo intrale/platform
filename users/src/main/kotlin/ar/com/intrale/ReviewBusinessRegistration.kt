@@ -5,6 +5,7 @@ import aws.sdk.kotlin.services.cognitoidentityprovider.getUser
 import com.google.gson.Gson
 import io.konform.validation.Validation
 import io.konform.validation.ValidationResult
+import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import org.slf4j.Logger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
@@ -22,11 +23,15 @@ class ReviewBusinessRegistration(
 
     fun requestValidation(body: ReviewBusinessRegistrationRequest): Response? {
         val validation = Validation<ReviewBusinessRegistrationRequest> {
-            ReviewBusinessRegistrationRequest::name required {}
+            ReviewBusinessRegistrationRequest::name required {
+                minLength(7)
+            }
             ReviewBusinessRegistrationRequest::decision required {
                 pattern(Regex("^(approved|rejected)$", RegexOption.IGNORE_CASE)) hint "Debe ser APPROVED o REJECTED"
             }
-            ReviewBusinessRegistrationRequest::twoFactorCode required {}
+            ReviewBusinessRegistrationRequest::twoFactorCode required {
+                minLength(6)
+            }
         }
         val validationResult: ValidationResult<Any> = try {
             validation(body)

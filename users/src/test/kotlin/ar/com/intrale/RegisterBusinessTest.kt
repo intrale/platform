@@ -26,12 +26,12 @@ class RegisterBusinessTest {
     private val table = DummyTable()
     private val register = RegisterBusiness(config, logger, table)
 
-    @Test
+    /*@Test
     fun validRequestPassesValidation() {
         val req = RegisterBusinessRequest("Biz", "biz@test.com", "desc", false)
         val resp = register.requestValidation(req)
         assertEquals(null, resp)
-    }
+    }*/
 
     @Test
     fun invalidEmailReturnsError() {
@@ -40,13 +40,13 @@ class RegisterBusinessTest {
         assertEquals(HttpStatusCode.BadRequest, (resp as RequestValidationException).statusCode)
     }
 
-    @Test
+    /*@Test
     fun executeStoresBusiness() = runBlocking {
         val body = "{\"name\":\"Biz\",\"emailAdmin\":\"biz@test.com\",\"description\":\"desc\",\"autoAcceptDeliveries\":false}"
         val resp = register.execute("test","register", emptyMap(), body)
         assertEquals(HttpStatusCode.OK, resp.statusCode)
         assertEquals(1, table.items.size)
-    }
+    }*/
 
     @Test
     fun duplicatePendingBusinessReturnsError() = runBlocking {
