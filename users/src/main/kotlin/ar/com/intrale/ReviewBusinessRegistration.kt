@@ -86,6 +86,7 @@ class ReviewBusinessRegistration(
         }
 
         // Validar que el negocio se encuentre en estado pending
+        logger.debug("checking business state")
         val businessData = tableBusiness.getItem(
             Business(
                 name = body.name,
@@ -101,6 +102,7 @@ class ReviewBusinessRegistration(
         }
 
         // Cambiar el estado del negocio segun la bandera de aceptado o rechazado
+        logger.debug("changing business state")
         if (body.decision.uppercase() == "APPROVED") {
             val existing = tableBusiness.scan().items().firstOrNull {
                 it.name.equals(body.name, ignoreCase = true) && it.state == BusinessState.APPROVED
