@@ -22,6 +22,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import java.security.SecureRandom
 import kotlin.math.log
 import io.ktor.http.HttpStatusCode
+import java.util.UUID
+import java.text.Normalizer
 
 class RegisterBusiness (val config: UsersConfig, val logger: Logger, val tableBusiness: DynamoDbTable<Business>) :
     Function {
@@ -71,7 +73,14 @@ class RegisterBusiness (val config: UsersConfig, val logger: Logger, val tableBu
             return ExceptionResponse("Negocio pendiente con mismo nombre y administrador", HttpStatusCode.BadRequest)
         }
 
+        var slug = slugify(body.name)
+        if (tableBusiness.scan().items().any { it.publicId == slug }) {
+            slug += "-" + UUID.randomUUID().toString().take(8)
+        }
+
         val newBusiness = Business(
+            businessId = UUID.randomUUID().toString(),
+            publicId = slug,
             name = body.name,
             description = body.description,
             emailAdmin = body.emailAdmin,
@@ -83,4 +92,10 @@ class RegisterBusiness (val config: UsersConfig, val logger: Logger, val tableBu
         return Response()
     }
 
+    private fun slugify(value: String): String {
+        val normalized = Normalizer.normalize(value.lowercase(), Normalizer.Form.NFD)
+        return normalized.replace("\\p{InCombiningDiacriticalMarks}+".toRegex(), "")
+            .replace("[^a-z0-9]+".toRegex(), "-")
+            .trim('-')
+    }
 }

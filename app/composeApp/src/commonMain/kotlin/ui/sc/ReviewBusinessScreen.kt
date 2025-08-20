@@ -89,8 +89,8 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(
-                                checked = viewModel.selected.contains(biz.id),
-                                onCheckedChange = { viewModel.toggleSelection(biz.id) }
+                                checked = viewModel.selected.contains(biz.publicId),
+                                onCheckedChange = { viewModel.toggleSelection(biz.publicId) }
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(biz.name)
@@ -104,12 +104,12 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                     loading = viewModel.loading,
                                     enabled = !viewModel.loading,
                                     onClick = {
-                                        logger.info { "Aprobando negocio ${biz.id}" }
+                                        logger.info { "Aprobando negocio ${biz.publicId}" }
                                         callService(
                                             coroutineScope = coroutine,
                                             snackbarHostState = snackbarHostState,
                                             setLoading = { viewModel.loading = it },
-                                            serviceCall = { viewModel.approve(biz.id) },
+                                            serviceCall = { viewModel.approve(biz.publicId) },
                                             onSuccess = { coroutine.launch { viewModel.loadPending() } }
                                         )
                                     }
@@ -120,12 +120,12 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                     loading = viewModel.loading,
                                     enabled = !viewModel.loading,
                                     onClick = {
-                                        logger.warning { "Rechazando negocio ${biz.id}" }
+                                        logger.warning { "Rechazando negocio ${biz.publicId}" }
                                         callService(
                                             coroutineScope = coroutine,
                                             snackbarHostState = snackbarHostState,
                                             setLoading = { viewModel.loading = it },
-                                            serviceCall = { viewModel.reject(biz.id) },
+                                            serviceCall = { viewModel.reject(biz.publicId) },
                                             onSuccess = { coroutine.launch { viewModel.loadPending() } }
                                         )
                                     }

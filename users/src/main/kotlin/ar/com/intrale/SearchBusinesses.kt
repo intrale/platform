@@ -45,7 +45,8 @@ class SearchBusinesses(
 
         val responseItems = paged.map {
             BusinessDTO(
-                id = it.name ?: "",
+                businessId = it.businessId ?: "",
+                publicId = it.publicId ?: "",
                 name = it.name ?: "",
                 description = it.description ?: "",
                 emailAdmin = it.emailAdmin ?: "",

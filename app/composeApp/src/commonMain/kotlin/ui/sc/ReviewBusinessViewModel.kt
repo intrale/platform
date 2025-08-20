@@ -41,15 +41,15 @@ class ReviewBusinessViewModel : ViewModel() {
         )
     }
 
-    suspend fun approve(id: String) =
-        review.execute(id, "approved", state.twoFactorCode)
-            .onSuccess { logger.info { "Negocio aprobado: ${'$'}id" } }
-            .onFailure { error -> logger.error { "Error aprobando ${'$'}id: ${'$'}{error.message}" } }
+    suspend fun approve(publicId: String) =
+        review.execute(publicId, "approved", state.twoFactorCode)
+            .onSuccess { logger.info { "Negocio aprobado: ${'$'}publicId" } }
+            .onFailure { error -> logger.error { "Error aprobando ${'$'}publicId: ${'$'}{error.message}" } }
 
-    suspend fun reject(id: String) =
-        review.execute(id, "rejected", state.twoFactorCode)
-            .onSuccess { logger.warning { "Negocio rechazado: ${'$'}id" } }
-            .onFailure { error -> logger.error { "Error rechazando ${'$'}id: ${'$'}{error.message}" } }
+    suspend fun reject(publicId: String) =
+        review.execute(publicId, "rejected", state.twoFactorCode)
+            .onSuccess { logger.warning { "Negocio rechazado: ${'$'}publicId" } }
+            .onFailure { error -> logger.error { "Error rechazando ${'$'}publicId: ${'$'}{error.message}" } }
 
     suspend fun approveSelected() {
         selected.forEach { approve(it) }
@@ -59,12 +59,12 @@ class ReviewBusinessViewModel : ViewModel() {
         selected.forEach { reject(it) }
     }
 
-    fun toggleSelection(id: String) {
-        selected = if (selected.contains(id)) selected - id else selected + id
+    fun toggleSelection(publicId: String) {
+        selected = if (selected.contains(publicId)) selected - publicId else selected + publicId
     }
 
     fun selectAll() {
-        selected = pending.map { it.id }.toSet()
+        selected = pending.map { it.publicId }.toSet()
     }
 
     fun clearSelection() {

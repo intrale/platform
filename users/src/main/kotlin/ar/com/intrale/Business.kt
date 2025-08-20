@@ -5,6 +5,8 @@ import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbParti
 
 @DynamoDbBean
 class Business(
+    var businessId: String? = null,
+    var publicId: String? = null,
     @get:DynamoDbPartitionKey
     var name: String? = null,
     var emailAdmin: String? = null,

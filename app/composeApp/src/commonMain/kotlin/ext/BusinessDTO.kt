@@ -4,7 +4,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class BusinessDTO(
-    val id: String,
+    val businessId: String,
+    val publicId: String,
     val name: String,
     val description: String,
     val emailAdmin: String,
