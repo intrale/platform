@@ -1,6 +1,11 @@
 package ar.com.intrale
 
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient
+import aws.sdk.kotlin.services.cognitoidentityprovider.model.AdminCreateUserResponse
+import aws.sdk.kotlin.services.cognitoidentityprovider.model.ListUsersResponse
+import io.mockk.coEvery
+import io.mockk.mockk
+import kotlinx.coroutines.runBlocking
 import org.slf4j.helpers.NOPLogger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClientExtension
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
@@ -14,7 +19,7 @@ import kotlin.test.assertEquals
 
 class SignUpPlatformAdminTest {
     private val config = UsersConfig(setOf("test"), "us-east-1", "key", "secret", "pool", "client")
-    private val cognito = CognitoIdentityProviderClient { region = config.region }
+    private val cognito = mockk<CognitoIdentityProviderClient>()
     private val table = object : DynamoDbTable<UserBusinessProfile> {
         val items = mutableListOf<UserBusinessProfile>()
         override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
@@ -22,7 +27,10 @@ class SignUpPlatformAdminTest {
         override fun tableName(): String = "profiles"
         override fun keyFrom(item: UserBusinessProfile): Key = Key.builder().partitionValue(item.compositeKey).build()
         override fun index(indexName: String) = throw UnsupportedOperationException()
-        override fun putItem(item: UserBusinessProfile) { items.add(item) }
+        override fun putItem(item: UserBusinessProfile) {
+            items.removeIf { it.compositeKey == item.compositeKey }
+            items.add(item)
+        }
         override fun scan(): PageIterable<UserBusinessProfile> = PageIterable.create(SdkIterable { mutableListOf(Page.create(items)).iterator() })
         override fun getItem(key: Key): UserBusinessProfile? = null
     }
@@ -31,5 +39,20 @@ class SignUpPlatformAdminTest {
     @Test
     fun profileIsPlatformAdmin() {
         assertEquals(PROFILE_PLATFORM_ADMIN, signUp.getProfile())
+    }
+
+    @Test
+    fun `crea relacion aprobada e idempotente`() = runBlocking {
+        coEvery { cognito.listUsers(any()) } returns ListUsersResponse { users = listOf() }
+        coEvery { cognito.adminCreateUser(any()) } returns AdminCreateUserResponse {}
+
+        val body = com.google.gson.Gson().toJson(SignUpRequest("admin@test.com"))
+        signUp.execute("biz", "signupPlatformAdmin", emptyMap(), body)
+        signUp.execute("biz", "signupPlatformAdmin", emptyMap(), body)
+
+        val saved = table.items.first()
+        assertEquals(PROFILE_PLATFORM_ADMIN, saved.profile)
+        assertEquals(BusinessState.APPROVED, saved.state)
+        assertEquals(1, table.items.size)
     }
 }
