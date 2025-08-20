@@ -13,10 +13,10 @@ import kotlinx.serialization.json.Json
 
 class ClientReviewBusinessRegistrationService(private val httpClient: HttpClient) : CommReviewBusinessRegistrationService {
     @OptIn(InternalAPI::class)
-    override suspend fun execute(name: String, decision: String, twoFactorCode: String): Result<ReviewBusinessRegistrationResponse> {
+    override suspend fun execute(publicId: String, decision: String, twoFactorCode: String): Result<ReviewBusinessRegistrationResponse> {
         return try {
             val response: HttpResponse = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/reviewBusiness") {
-                setBody(ReviewBusinessRegistrationRequest(name, decision, twoFactorCode))
+                setBody(ReviewBusinessRegistrationRequest(publicId, decision, twoFactorCode))
             }
             if (response.status.isSuccess()) {
                 Result.success(ReviewBusinessRegistrationResponse(StatusCodeDTO(response.status.value, response.status.description)))
@@ -32,7 +32,7 @@ class ClientReviewBusinessRegistrationService(private val httpClient: HttpClient
 }
 
 @Serializable
-data class ReviewBusinessRegistrationRequest(val name: String, val decision: String, val twoFactorCode: String)
+data class ReviewBusinessRegistrationRequest(val publicId: String, val decision: String, val twoFactorCode: String)
 
 @Serializable
 data class ReviewBusinessRegistrationResponse(val statusCode: StatusCodeDTO)
