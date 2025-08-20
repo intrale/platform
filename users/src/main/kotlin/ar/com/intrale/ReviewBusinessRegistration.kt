@@ -24,7 +24,7 @@ class ReviewBusinessRegistration(
 
     fun requestValidation(body: ReviewBusinessRegistrationRequest): Response? {
         val validation = Validation<ReviewBusinessRegistrationRequest> {
-            ReviewBusinessRegistrationRequest::name required {
+            ReviewBusinessRegistrationRequest::publicId required {
                 minLength(7)
             }
             ReviewBusinessRegistrationRequest::decision required {
@@ -87,15 +87,8 @@ class ReviewBusinessRegistration(
 
         // Validar que el negocio se encuentre en estado pending
         logger.debug("checking business state")
-        val businessData = tableBusiness.getItem(
-            Business(
-                name = body.name,
-            )
-        )
-
-        if (businessData == null) {
-            return ExceptionResponse("Business not found")
-        }
+        val businessData = tableBusiness.scan().items().firstOrNull { it.publicId == body.publicId }
+            ?: return ExceptionResponse("Business not found")
 
         if (businessData.state != BusinessState.PENDING) {
             return ExceptionResponse("Business is in wrong state")
@@ -105,7 +98,7 @@ class ReviewBusinessRegistration(
         logger.debug("changing business state")
         if (body.decision.uppercase() == "APPROVED") {
             val existing = tableBusiness.scan().items().firstOrNull {
-                it.name.equals(body.name, ignoreCase = true) && it.state == BusinessState.APPROVED
+                it.publicId == body.publicId && it.state == BusinessState.APPROVED
             }
             if (existing != null) {
                 return ExceptionResponse("El nombre del negocio ya existe")
@@ -137,7 +130,7 @@ class ReviewBusinessRegistration(
             logger.debug("Profile Assigned Business Admin")
             val userBusinessProfile = UserBusinessProfile()
             userBusinessProfile.email = businessData.emailAdmin!!
-            userBusinessProfile.business = business
+            userBusinessProfile.business = businessData.publicId!!
             userBusinessProfile.profile = "BUSINESS_ADMIN"
             tableProfiles.putItem(userBusinessProfile)
 
