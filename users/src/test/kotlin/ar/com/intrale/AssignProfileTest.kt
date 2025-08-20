@@ -6,8 +6,14 @@ import software.amazon.awssdk.enhanced.dynamodb.TableSchema
 import software.amazon.awssdk.enhanced.dynamodb.Key
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClientExtension
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient
-import aws.sdk.kotlin.runtime.auth.credentials.StaticCredentialsProvider
-import aws.smithy.kotlin.runtime.auth.awscredentials.Credentials
+import aws.sdk.kotlin.services.cognitoidentityprovider.model.AttributeType
+import aws.sdk.kotlin.services.cognitoidentityprovider.model.GetUserResponse
+import io.mockk.*
+import kotlinx.coroutines.runBlocking
+import com.google.gson.Gson
+import software.amazon.awssdk.enhanced.dynamodb.model.Page
+import software.amazon.awssdk.enhanced.dynamodb.model.PageIterable
+import software.amazon.awssdk.core.pagination.sync.SdkIterable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -19,16 +25,15 @@ class DummyAssignProfileTable : DynamoDbTable<UserBusinessProfile> {
     override fun keyFrom(item: UserBusinessProfile): Key = Key.builder().partitionValue(item.compositeKey).build()
     override fun index(indexName: String) = throw UnsupportedOperationException()
     override fun putItem(item: UserBusinessProfile) { items.add(item) }
+    override fun scan(): PageIterable<UserBusinessProfile> =
+        PageIterable.create(SdkIterable { mutableListOf(Page.create(items)).iterator() })
 }
 
 class AssignProfileTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
     private val table = DummyAssignProfileTable()
-    private val cognito = CognitoIdentityProviderClient {
-        region = config.region
-        credentialsProvider = StaticCredentialsProvider(Credentials(accessKeyId = "key", secretAccessKey = "secret"))
-    }
+    private val cognito = mockk<CognitoIdentityProviderClient>()
     private val assign = AssignProfile(config, logger, cognito, table)
 
     @Test
@@ -43,5 +48,25 @@ class AssignProfileTest {
         val req = AssignProfileRequest("invalid", "CLIENT")
         val resp = assign.requestValidation(req)
         assertEquals(HttpStatusCode.BadRequest, (resp as RequestValidationException).statusCode)
+    }
+
+    @Test
+    fun asignaPerfilConEstadoApproved() = runBlocking {
+        table.items.clear()
+        table.items.add(UserBusinessProfile().apply {
+            email = "admin@test.com"
+            business = "biz"
+            profile = PROFILE_PLATFORM_ADMIN
+            state = BusinessState.APPROVED
+        })
+        coEvery { cognito.getUser(any()) } returns GetUserResponse {
+            username = "admin"
+            userAttributes = listOf(AttributeType { name = EMAIL_ATT_NAME; value = "admin@test.com" })
+        }
+        val body = Gson().toJson(AssignProfileRequest("user@test.com", PROFILE_CLIENT))
+        val response = assign.securedExecute("biz", "assign", mapOf("Authorization" to "token"), body)
+        assertEquals(HttpStatusCode.OK, response.statusCode)
+        val saved = table.items.last()
+        assertEquals(BusinessState.APPROVED, saved.state)
     }
 }

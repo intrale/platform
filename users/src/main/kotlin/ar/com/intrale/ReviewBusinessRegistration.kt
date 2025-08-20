@@ -128,11 +128,14 @@ class ReviewBusinessRegistration(
 
             // Si el negocio es aceptado, Registrar al usuario con el perfil de Business Admin para el negocio para el cual se registra
             logger.debug("Profile Assigned Business Admin")
-            val userBusinessProfile = UserBusinessProfile()
-            userBusinessProfile.email = businessData.emailAdmin!!
-            userBusinessProfile.business = businessData.publicId!!
-            userBusinessProfile.profile = PROFILE_BUSINESS_ADMIN
-            tableProfiles.putItem(userBusinessProfile)
+            val relationState = UserBusinessProfileUtils.computeRelationState(tableProfiles, businessData.emailAdmin!!)
+            UserBusinessProfileUtils.upsertUserBusinessProfile(
+                tableProfiles,
+                businessData.emailAdmin!!,
+                businessData.publicId!!,
+                PROFILE_BUSINESS_ADMIN,
+                relationState
+            )
 
             // Se actualiza el config con el nuevo negocio
             config.businesses += setOf(businessData.name!!)

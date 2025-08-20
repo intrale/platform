@@ -57,13 +57,14 @@ class AssignProfile(
             it.email == emailCaller && it.business == business && it.profile == PROFILE_PLATFORM_ADMIN && it.state == BusinessState.APPROVED
         } ?: return UnauthorizedException()
 
-        val userProfile = UserBusinessProfile().apply {
-            email = body.email
-            this.business = business
-            this.profile = body.profile
-        }
-        logger.debug("persisting profile $userProfile")
-        tableProfiles.putItem(userProfile)
+        UserBusinessProfileUtils.upsertUserBusinessProfile(
+            tableProfiles,
+            body.email,
+            business,
+            body.profile,
+            BusinessState.APPROVED
+        )
+        logger.debug("persisting profile for ${body.email}")
         logger.debug("return assign profile $function")
         return Response()
     }

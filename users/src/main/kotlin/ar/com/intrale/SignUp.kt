@@ -69,13 +69,14 @@ open class SignUp (
                 return ExceptionResponse(e.message ?: "Internal Server Error")
             }
 
-            val userProfile = UserBusinessProfile().apply {
-                this.email = email
-                this.business = business
-                this.profile = getProfile()
-                this.state = BusinessState.APPROVED
-            }
-            tableProfiles.putItem(userProfile)
+            val state = UserBusinessProfileUtils.computeRelationState(tableProfiles, email)
+            UserBusinessProfileUtils.upsertUserBusinessProfile(
+                tableProfiles,
+                email,
+                business,
+                getProfile(),
+                state
+            )
 
             return Response()
         }
