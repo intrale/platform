@@ -69,20 +69,23 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
             ExposedDropdownMenuBox(expanded = showMenu, onExpandedChange = { expanded = it }) {
                 TextField(
                     Res.string.business,
-                    value = viewModel.state.business,
-                    state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::business.name]!!,
+                    value = viewModel.state.businessName,
+                    state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::businessPublicId.name]!!,
                     modifier = Modifier.menuAnchor(),
                     onValueChange = {
-                        viewModel.state = viewModel.state.copy(business = it)
+                        viewModel.state = viewModel.state.copy(businessPublicId = it)
                         logger.debug { "Buscando negocios con $it" }
                         coroutine.launch { viewModel.searchBusinesses(it) }
                         expanded = true
                     }
                 )
                 ExposedDropdownMenu(expanded = showMenu, onDismissRequest = { expanded = false }) {
-                    viewModel.suggestions.forEach { name ->
-                        DropdownMenuItem(text = { androidx.compose.material3.Text(name) }, onClick = {
-                            viewModel.state = viewModel.state.copy(business = name)
+                    viewModel.suggestions.forEach { business ->
+                        DropdownMenuItem(text = { androidx.compose.material3.Text(business.name) }, onClick = {
+                            viewModel.state = viewModel.state.copy(
+                                businessPublicId = business.publicId,
+                                businessName = business.name
+                            )
                             expanded = false
                         })
                     }

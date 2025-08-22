@@ -19,9 +19,9 @@ class SignUpDeliveryViewModel : ViewModel() {
     private val toGetBusinesses: ToGetBusinesses by DIManager.di.instance()
 
     var state by mutableStateOf(SignUpUIState())
-    var suggestions by mutableStateOf(listOf<String>())
+    var suggestions by mutableStateOf(listOf<BusinessView>())
     var loading by mutableStateOf(false)
-    data class SignUpUIState(val email: String = "", val business: String = "")
+    data class SignUpUIState(val email: String = "", val businessPublicId: String = "", val businessName: String = "")
     override fun getState(): Any = state
 
     init {
@@ -29,24 +29,27 @@ class SignUpDeliveryViewModel : ViewModel() {
             SignUpUIState::email required {
                 pattern(".+@.+\\..+") hint "Correo inválido"
             }
-            SignUpUIState::business required {}
+            SignUpUIState::businessPublicId required {}
         } as Validation<Any>
         initInputState()
     }
 
     override fun initInputState() {
-        inputsStates = mutableMapOf(entry(SignUpUIState::email.name), entry(SignUpUIState::business.name))
+        inputsStates = mutableMapOf(
+            entry(SignUpUIState::email.name),
+            entry(SignUpUIState::businessPublicId.name),
+            entry(SignUpUIState::businessName.name))
     }
 
     suspend fun signup(): Result<DoSignUpResult> =
-        toDoSignUpDelivery.execute(state.business, state.email)
+        toDoSignUpDelivery.execute(state.businessPublicId, state.email)
             .onSuccess { logger.info { "Delivery registrado: ${'$'}{state.email}" } }
             .onFailure { error -> logger.error { "Error registro delivery: ${'$'}{error.message}" } }
 
     suspend fun searchBusinesses(query: String) {
         logger.debug { "Buscando negocios con ${'$'}query" }
         toGetBusinesses.execute(query = query)
-            .onSuccess { suggestions = it.businesses.map { biz -> biz.name } }
+            .onSuccess { suggestions = it.businesses.map { biz -> BusinessView(biz.publicId, biz.name )} }
             .onFailure { error -> logger.error { "Error buscando negocios: ${'$'}{error.message}" } }
     }
 }
