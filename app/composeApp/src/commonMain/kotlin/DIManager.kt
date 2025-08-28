@@ -39,6 +39,8 @@ public const val PASSWORD_RECOVERY = "passwordRecovery"
 public const val CONFIRM_PASSWORD_RECOVERY = "confirmPasswordRecovery"
 public const val REVIEW_BUSINESS = "reviewBusiness"
 public const val REGISTER_NEW_BUSINESS = "registerNewBusiness"
+public const val REQUEST_JOIN_BUSINESS = "requestJoinBusiness"
+public const val REVIEW_JOIN_BUSINESS = "reviewJoinBusiness"
 
 const val LOGIN_PATH = "/login"
 
@@ -67,6 +69,8 @@ class DIManager {
                 bindSingleton(tag = CONFIRM_PASSWORD_RECOVERY) { ConfirmPasswordRecoveryScreen() }
                 bindSingleton(tag = REGISTER_NEW_BUSINESS) { RegisterNewBusinessScreen() }
                 bindSingleton(tag = REVIEW_BUSINESS) { ReviewBusinessScreen() }
+                bindSingleton(tag = REQUEST_JOIN_BUSINESS) { RequestJoinBusinessScreen() }
+                bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>(
@@ -82,7 +86,9 @@ class DIManager {
                         instance(tag = PASSWORD_RECOVERY),
                         instance(tag = CONFIRM_PASSWORD_RECOVERY),
                         instance(tag = REVIEW_BUSINESS),
-                        instance(tag = REGISTER_NEW_BUSINESS)
+                        instance(tag = REGISTER_NEW_BUSINESS),
+                        instance(tag = REQUEST_JOIN_BUSINESS),
+                        instance(tag = REVIEW_JOIN_BUSINESS)
                     )
                 }
 
@@ -119,6 +125,8 @@ class DIManager {
                 bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
                 bindSingleton<CommRegisterBusinessService> { ClientRegisterBusinessService(instance()) }
                 bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
+                bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
+                bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -133,6 +141,8 @@ class DIManager {
                 bindSingleton<ToDoConfirmPasswordRecovery> { DoConfirmPasswordRecovery(instance()) }
                 bindSingleton<ToDoRegisterBusiness> { DoRegisterBusiness(instance()) }
                 bindSingleton<ToDoReviewBusinessRegistration> { DoReviewBusinessRegistration(instance()) }
+                bindSingleton<ToDoRequestJoinBusiness> { DoRequestJoinBusiness(instance()) }
+                bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
 
             }
     }

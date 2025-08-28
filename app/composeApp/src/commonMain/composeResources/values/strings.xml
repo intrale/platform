@@ -39,4 +39,9 @@
     <string name="approve_selected">Aprobar seleccionados</string>
     <string name="reject_selected">Rechazar seleccionados</string>
     <string name="auto_accept_deliveries">Auto acepta entregas</string>
+    <string name="request_join_business">Solicitar unión</string>
+    <string name="request_join_business_sent">Solicitud enviada</string>
+    <string name="review_join_business">Revisar solicitudes de unión</string>
+    <string name="review_join_business_approved">Aprobar</string>
+    <string name="review_join_business_rejected">Rechazar</string>
 </resources>
