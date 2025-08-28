@@ -9,6 +9,7 @@ import org.kodein.di.DI
 import org.kodein.di.bind
 import org.kodein.di.instance
 import org.kodein.di.singleton
+import org.kodein.di.provider
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
@@ -95,7 +96,7 @@ val appModule = DI.Module("appModule") {
     }
 
     bind <UsersConfig> {
-        singleton {
+        provider {
             val configFactory = ConfigFactory.load()
 
             val acceptedBusinessNames: Set<String> = instance<DynamoDbTable<Business>>().scan()
