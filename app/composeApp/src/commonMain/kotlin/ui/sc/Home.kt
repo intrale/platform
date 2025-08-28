@@ -23,6 +23,7 @@ import ui.rs.logout
 import ui.rs.change_password
 import ui.rs.register_business
 import ui.rs.review_business
+import ui.rs.review_join_business
 
 
 const val HOME_PATH = "/home"
@@ -70,6 +71,14 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
                 onClick = {
                     logger.info { "Navegando a $REVIEW_BUSINESS_PATH" }
                     navigate(REVIEW_BUSINESS_PATH)
+                }
+            )
+
+            Button(
+                label = stringResource(Res.string.review_join_business),
+                onClick = {
+                    logger.info { "Navegando a $REVIEW_JOIN_BUSINESS_PATH" }
+                    navigate(REVIEW_JOIN_BUSINESS_PATH)
                 }
             )
 
