@@ -50,6 +50,7 @@ import ui.rs.name
 import ui.rs.family_name
 import ui.rs.update_password
 import ui.rs.signup
+import ui.rs.signup_delivery
 import ui.rs.register_business
 import io.ktor.client.plugins.ClientRequestException
 import org.kodein.log.LoggerFactory
@@ -60,6 +61,7 @@ import ui.rs.confirm_password_recovery
 import ui.sc.PASSWORD_RECOVERY_PATH
 import ui.sc.CONFIRM_PASSWORD_RECOVERY_PATH
 import ui.sc.REGISTER_NEW_BUSINESS_PATH
+import ui.sc.SIGNUP_DELIVERY_PATH
 
 const val LOGIN_PATH = "/login"
 
@@ -199,6 +201,12 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                             Button(
                                 label = stringResource(Res.string.register_business),
                                 onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color(0xFF2C71C7))
+                            )
+                            Spacer(modifier = Modifier.size(16.dp))
+                            Button(
+                                label = stringResource(Res.string.signup_delivery),
+                                onClick = { navigate(SIGNUP_DELIVERY_PATH) },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color(0xFF2C71C7))
                             )
                             Spacer(modifier = Modifier.size(16.dp))
