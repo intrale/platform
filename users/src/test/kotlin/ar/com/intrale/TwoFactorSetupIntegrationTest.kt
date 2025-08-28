@@ -36,7 +36,7 @@ class DummyTwoFactorSetupUserTable : DynamoDbTable<User> {
 
 class TwoFactorSetupIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
 
     @Test
     fun `setup exitoso guarda usuario y retorna uri`() = runBlocking {

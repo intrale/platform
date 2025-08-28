@@ -14,7 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ModulesTest {
-    private val testConfig = UsersConfig(setOf("intrale"), "us-east-1", "key", "secret", "pool", "client")
+    private val testConfig = testConfig("intrale")
 
     private val di = DI {
         import(appModule, allowOverride = true)

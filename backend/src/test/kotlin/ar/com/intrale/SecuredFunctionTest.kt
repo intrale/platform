@@ -25,7 +25,9 @@ class SecuredFunctionTest {
 
     @Test
     fun invalidTokenReturnsUnauthorized() {
-        val cfg = Config(setOf("biz"), "us-east-1", "pool", "client")
+        val cfg = object : Config("us-east-1", "pool", "client") {
+            override fun businesses() = setOf("biz")
+        }
         val func = DummySecuredFunction(cfg)
         val resp = runBlocking { func.execute("biz", "func", emptyMap(), "body") }
         assertTrue(resp is UnauthorizedException)
@@ -56,7 +58,9 @@ class SecuredFunctionTest {
         every { decoded.getClaim("token_use").asString() } returns "access"
         every { decoded.getClaim("client_id").asString() } returns "client"
 
-        val cfg = Config(setOf("biz"), "us-east-1", "pool", "client")
+        val cfg = object : Config("us-east-1", "pool", "client") {
+            override fun businesses() = setOf("biz")
+        }
         val func = DummySecuredFunction(cfg)
         val resp = runBlocking { func.execute("biz", "func", mapOf("Authorization" to "token"), "body") }
 

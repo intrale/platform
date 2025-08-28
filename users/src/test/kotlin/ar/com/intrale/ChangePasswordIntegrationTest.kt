@@ -13,7 +13,7 @@ import kotlin.test.assertEquals
 
 class ChangePasswordIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
 
     @Test
     fun `cambio exitoso de contrasena`() = runBlocking {

@@ -80,7 +80,7 @@ class DummyProfileTable : DynamoDbTable<UserBusinessProfile> {
 
 class ReviewBusinessRegistrationTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
     private val tableBusiness = DummyBusinessTable()
     private val tableUsers = DummyUserTable()
     private val tableProfiles = DummyProfileTable()

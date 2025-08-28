@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 
 class TestDynamoDBTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
     private val faker = Faker()
     private val testDynamo = TestDynamoDB(config, faker, logger)
 

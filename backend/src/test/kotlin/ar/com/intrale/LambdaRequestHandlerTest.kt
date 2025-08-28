@@ -11,6 +11,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class LambdaRequestHandlerTest {
+    private fun cfg(vararg businesses: String) = object : Config("us-east-1", "pool", "client") {
+        override fun businesses() = businesses.toSet()
+    }
     private class HelloFunction : Function {
         override suspend fun execute(business: String, function: String, headers: Map<String, String>, textBody: String): Response {
             return Response(HttpStatusCode.Created)
@@ -27,7 +30,7 @@ class LambdaRequestHandlerTest {
     fun executesExistingFunction() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<Config>() with singleton { Config(setOf("biz"), "us-east-1", "pool", "client") }
+            bind<Config>() with singleton { cfg("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = TestHandler(module)
@@ -46,7 +49,7 @@ class LambdaRequestHandlerTest {
     fun missingFunctionReturnsError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<Config>() with singleton { Config(setOf("biz"), "us-east-1", "pool", "client") }
+            bind<Config>() with singleton { cfg("biz") }
         }
         val handler = TestHandler(module)
         val request = APIGatewayProxyRequestEvent().apply {
@@ -77,7 +80,7 @@ class LambdaRequestHandlerTest {
     fun unknownBusinessReturnsError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<Config>() with singleton { Config(setOf("biz"), "us-east-1", "pool", "client") }
+            bind<Config>() with singleton { cfg("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = TestHandler(module)
@@ -96,7 +99,7 @@ class LambdaRequestHandlerTest {
     fun missingBusinessReturnsError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<Config>() with singleton { Config(setOf("biz"), "us-east-1", "pool", "client") }
+            bind<Config>() with singleton { cfg("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = TestHandler(module)
@@ -115,7 +118,7 @@ class LambdaRequestHandlerTest {
     fun nullBodyReturnsValidationError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<Config>() with singleton { Config(setOf("biz"), "us-east-1", "pool", "client") }
+            bind<Config>() with singleton { cfg("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = TestHandler(module)

@@ -137,9 +137,6 @@ class ReviewBusinessRegistration(
                 relationState
             )
 
-            // Se actualiza el config con el nuevo negocio
-            config.businesses += setOf(businessData.name!!)
-
             // Informar al usuario que ya se encuentra disponible su negocio
             //TODO: Informar al usuario que ya se encuentra disponible su negocio
 

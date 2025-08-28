@@ -8,7 +8,7 @@ import ar.com.intrale.RequestValidationException
 
 class ChangePasswordTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
     private val change = ChangePassword(config, logger, CognitoIdentityProviderClient { region = "us-east-1" })
 
     @Test

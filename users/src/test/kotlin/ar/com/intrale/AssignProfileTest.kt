@@ -31,7 +31,7 @@ class DummyAssignProfileTable : DynamoDbTable<UserBusinessProfile> {
 
 class AssignProfileTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
     private val table = DummyAssignProfileTable()
     private val cognito = mockk<CognitoIdentityProviderClient>()
     private val assign = AssignProfile(config, logger, cognito, table)

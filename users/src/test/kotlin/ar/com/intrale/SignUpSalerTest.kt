@@ -13,7 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class SignUpSalerTest {
-    private val config = UsersConfig(setOf("test"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("test")
     private val cognito = CognitoIdentityProviderClient { region = config.region }
     private val table = object : DynamoDbTable<UserBusinessProfile> {
         val items = mutableListOf<UserBusinessProfile>()

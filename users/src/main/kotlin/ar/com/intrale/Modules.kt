@@ -95,23 +95,16 @@ val appModule = DI.Module("appModule") {
         }
     }
 
-    bind <UsersConfig> {
-        provider {
+    bind<UsersConfig> {
+        singleton {
             val configFactory = ConfigFactory.load()
-
-            val acceptedBusinessNames: Set<String> = instance<DynamoDbTable<Business>>().scan()
-                .items()
-                .filter { it.state == BusinessState.APPROVED }
-                .mapNotNull { it.name }
-                .toSet() + setOf("intrale")
-
             UsersConfig(
-                businesses = acceptedBusinessNames,
                 region = System.getenv(LOCAL_AWS_REGION) ?: configFactory.getString(AWS_REGION),
                 accessKeyId = System.getenv(LOCAL_AWS_ACCESS_KEY_ID) ?: configFactory.getString(AWS_ACCESS_KEY_ID),
                 secretAccessKey = System.getenv(LOCAL_AWS_SECRET_ACCESS_KEY) ?: configFactory.getString(AWS_SECRET_ACCESS_KEY),
                 awsCognitoUserPoolId = System.getenv(LOCAL_AWS_COGNITO_USER_POOL_ID) ?: configFactory.getString(AWS_COGNITO_USER_POOL_ID),
                 awsCognitoClientId = System.getenv(LOCAL_AWS_COGNITO_CLIENT_ID) ?: configFactory.getString(AWS_COGNITO_CLIENT_ID),
+                tableBusiness = instance()
             )
         }
     }

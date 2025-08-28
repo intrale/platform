@@ -86,7 +86,8 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                         functionResponse = RequestValidationException("No business defined on path")
                     } else {
                         val config by di.instance<Config>()
-                        if (!config.businesses.contains(businessName)){
+                        val businesses = config.businesses()
+                        if (!businesses.contains(businessName)){
                             logger.info("Business not avaiable with name $businessName")
                             functionResponse = ExceptionResponse("Business not avaiable with name $businessName")
                         } else {

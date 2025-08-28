@@ -48,8 +48,9 @@ fun start(appModule: DI.Module) {
                     functionResponse = RequestValidationException("No business defined on path")
                 } else {
                     val config = di.direct.instance<Config>()
-                    logger.info("config.businesses: ${config.businesses}")
-                    if (!config.businesses.contains(businessName)){
+                    val businesses = config.businesses()
+                    logger.info("config.businesses: ${businesses}")
+                    if (!businesses.contains(businessName)){
                         functionResponse = ExceptionResponse("Business not avaiable with name $businessName")
                     } else {
                         if (functionName == null) {
