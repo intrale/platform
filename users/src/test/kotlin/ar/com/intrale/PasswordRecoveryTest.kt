@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 
 class PasswordRecoveryTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
     private val recovery = PasswordRecovery(config, logger, CognitoIdentityProviderClient { region = config.region })
 
     @Test

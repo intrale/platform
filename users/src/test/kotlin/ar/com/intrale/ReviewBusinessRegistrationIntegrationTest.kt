@@ -75,7 +75,7 @@ class ReviewBusinessRegistrationIntegrationTest {
         users: DynamoDbTable<User>,
         profiles: DummyProfileTable
     ): DI.Module {
-        val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+        val config = testConfig("biz")
         return DI.Module(name = "test", allowSilentOverride = true) {
             bind<UsersConfig>(overrides = true) { singleton { config } }
             bind<Function>(tag = "2faverify", overrides = true) { singleton { twoFactor } }
@@ -131,9 +131,9 @@ class ReviewBusinessRegistrationIntegrationTest {
                     val functionResponse: Response = if (businessName == null) {
                         RequestValidationException("No business defined on path")
                     } else {
-                        val config = di.direct.instance<Config>()
-                        logger.info("config.businesses: ${'$'}{config.businesses}")
-                        if (!config.businesses.contains(businessName)) {
+                        val config = di.direct.instance<Config>() as UsersConfig
+                        logger.info("config.businesses: ${config.businesses()}")
+                        if (!config.businesses().contains(businessName)) {
                             ExceptionResponse("Business not available with name $businessName")
                         } else if (functionName == null) {
                             RequestValidationException("No function defined on path")
@@ -210,9 +210,9 @@ class ReviewBusinessRegistrationIntegrationTest {
                     val functionResponse: Response = if (businessName == null) {
                         RequestValidationException("No business defined on path")
                     } else {
-                        val config = di.direct.instance<Config>()
-                        logger.info("config.businesses: ${'$'}{config.businesses}")
-                        if (!config.businesses.contains(businessName)) {
+                        val config = di.direct.instance<Config>() as UsersConfig
+                        logger.info("config.businesses: ${config.businesses()}")
+                        if (!config.businesses().contains(businessName)) {
                             ExceptionResponse("Business not available with name $businessName")
                         } else if (functionName == null) {
                             RequestValidationException("No function defined on path")

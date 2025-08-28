@@ -23,12 +23,12 @@ import kotlin.test.Ignore
 
 class ConfigAutoAcceptDeliveriesIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
 
     @Test
     @Ignore("Falla por UnsupportedOperationException de DynamoDbTable")
     fun `configuracion exitosa`() = runBlocking {
-        val table = DummyBusinessConfigTable().apply { item = Business().apply { name = "biz" } }
+        val table = DummyBusinessTable().apply { items.add(Business().apply { name = "biz" }) }
         val profiles = object : DynamoDbTable<UserBusinessProfile> {
             val items = mutableListOf<UserBusinessProfile>()
             override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
@@ -63,6 +63,6 @@ class ConfigAutoAcceptDeliveriesIntegrationTest {
 
         assertEquals(HttpStatusCode.OK, response1.statusCode)
         assertEquals(HttpStatusCode.OK, response2.statusCode)
-        assertEquals(true, table.item?.autoAcceptDeliveries)
+        assertEquals(true, table.items.firstOrNull()?.autoAcceptDeliveries)
     }
 }

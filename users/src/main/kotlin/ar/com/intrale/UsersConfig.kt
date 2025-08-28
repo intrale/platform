@@ -1,13 +1,22 @@
 package ar.com.intrale
 
-data class UsersConfig(
-    override var businesses: Set<String>,
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
+
+class UsersConfig(
     override val region: String,
     val accessKeyId: String,
     val secretAccessKey: String,
     override val awsCognitoUserPoolId: String,
-    override val awsCognitoClientId: String) :
-                            Config (businesses = businesses,
-                                    region = region,
-                                    awsCognitoUserPoolId=awsCognitoUserPoolId,
-                                    awsCognitoClientId=awsCognitoClientId)
+    override val awsCognitoClientId: String,
+    private val tableBusiness: DynamoDbTable<Business>
+) : Config(
+    region = region,
+    awsCognitoUserPoolId = awsCognitoUserPoolId,
+    awsCognitoClientId = awsCognitoClientId
+) {
+    override fun businesses(): Set<String> =
+        tableBusiness.scan().items()
+            .filter { it.state == BusinessState.APPROVED }
+            .mapNotNull { it.name }
+            .toSet() + setOf("intrale")
+}

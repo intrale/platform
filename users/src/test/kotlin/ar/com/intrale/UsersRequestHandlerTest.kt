@@ -21,7 +21,7 @@ class UsersRequestHandlerTest {
     fun executesExistingFunction() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<UsersConfig>() with singleton { UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client") }
+            bind<UsersConfig>() with singleton { testConfig("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = UsersRequestHandler()
@@ -40,7 +40,7 @@ class UsersRequestHandlerTest {
     fun missingFunctionReturnsError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<UsersConfig>() with singleton { UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client") }
+            bind<UsersConfig>() with singleton { testConfig("biz") }
         }
         val handler = UsersRequestHandler()
         val request = APIGatewayProxyRequestEvent().apply {
@@ -71,7 +71,7 @@ class UsersRequestHandlerTest {
     fun unknownBusinessReturnsError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<UsersConfig>() with singleton { UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client") }
+            bind<UsersConfig>() with singleton { testConfig("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = UsersRequestHandler()
@@ -90,7 +90,7 @@ class UsersRequestHandlerTest {
     fun missingBusinessReturnsError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<UsersConfig>() with singleton { UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client") }
+            bind<UsersConfig>() with singleton { testConfig("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = UsersRequestHandler()
@@ -108,7 +108,7 @@ class UsersRequestHandlerTest {
     fun nullBodyReturnsValidationError() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<UsersConfig>() with singleton { UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client") }
+            bind<UsersConfig>() with singleton { testConfig("biz") }
             bind<Function>(tag = "hello") with singleton { HelloFunction() }
         }
         val handler = UsersRequestHandler()

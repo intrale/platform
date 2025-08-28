@@ -22,7 +22,7 @@ class DummyTable : DynamoDbTable<Business> {
 
 class RegisterBusinessTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("test"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("test")
     private val table = DummyTable()
     private val register = RegisterBusiness(config, logger, table)
 

@@ -24,7 +24,9 @@ class HealthFunctionalTest {
     fun healthEndpointWorks() = testApplication {
         val module = DI.Module("test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
-            bind<Config>() with singleton { Config(setOf("biz"), "us-east-1", "pool", "client") }
+            bind<Config>() with singleton { object : Config("us-east-1", "pool", "client") {
+                override fun businesses() = setOf("biz")
+            } }
         }
 
         application {

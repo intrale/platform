@@ -31,18 +31,13 @@ class UsersConfigDynamicBusinessIntegrationTest {
     }
 
     private fun buildConfig(table: DummyBusinessTable): UsersConfig {
-        val names = table.scan()
-            .items()
-            .filter { it.state == BusinessState.APPROVED }
-            .mapNotNull { it.name }
-            .toSet() + setOf("intrale")
         return UsersConfig(
-            businesses = names,
             region = "us-east-1",
             accessKeyId = "key",
             secretAccessKey = "secret",
             awsCognitoUserPoolId = "pool",
             awsCognitoClientId = "client",
+            tableBusiness = table
         )
     }
 
@@ -62,7 +57,7 @@ class UsersConfigDynamicBusinessIntegrationTest {
                     val config = buildConfig(table)
                     val functionResponse: Response = if (businessName == null) {
                         RequestValidationException("No business defined on path")
-                    } else if (!config.businesses.contains(businessName)) {
+                    } else if (!config.businesses().contains(businessName)) {
                         ExceptionResponse("Business not available with name $businessName")
                     } else if (functionName == null) {
                         RequestValidationException("No function defined on path")

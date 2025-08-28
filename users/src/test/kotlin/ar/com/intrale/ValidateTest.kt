@@ -11,14 +11,7 @@ import kotlin.test.assertEquals
 class ValidateTest {
     private val faker = Faker()
     private val logger: Logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(
-        businesses = setOf("test"),
-        region = "us-east-1",
-        accessKeyId = "key",
-        secretAccessKey = "secret",
-        awsCognitoUserPoolId = "pool",
-        awsCognitoClientId = "client"
-    )
+    private val config = testConfig("test")
 
     @Test
     fun returnsOk() = runBlocking {

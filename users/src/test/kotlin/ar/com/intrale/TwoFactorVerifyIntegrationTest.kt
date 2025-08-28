@@ -38,7 +38,7 @@ class DummyVerifyTable : DynamoDbTable<User> {
 
 class TwoFactorVerifyIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
 
    /* @Test
     fun `codigo valido retorna exito`() = runBlocking {

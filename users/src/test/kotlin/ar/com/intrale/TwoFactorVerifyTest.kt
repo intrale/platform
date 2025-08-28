@@ -23,7 +23,7 @@ class DummyTwoFactorUserTable : DynamoDbTable<User> {
 
 class TwoFactorVerifyTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
     private val table = DummyTwoFactorUserTable()
     private val cognito = CognitoIdentityProviderClient { region = config.region }
     private val verify = TwoFactorVerify(config, logger, cognito, table)

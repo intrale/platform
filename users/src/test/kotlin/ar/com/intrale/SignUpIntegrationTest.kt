@@ -30,7 +30,7 @@ import kotlin.test.assertEquals
 class SignUpIntegrationTest {
 
     private fun testModule(cognito: CognitoIdentityProviderClient): DI.Module {
-        val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+        val config = testConfig("biz")
         return DI.Module(name = "test", allowSilentOverride = true) {
             bind<UsersConfig>(overrides = true) { singleton { config } }
             bind<CognitoIdentityProviderClient>(overrides = true) { singleton { cognito } }
@@ -74,9 +74,9 @@ class SignUpIntegrationTest {
                     val functionResponse: Response = if (businessName == null) {
                         RequestValidationException("No business defined on path")
                     } else {
-                        val config = di.direct.instance<Config>()
-                        logger.info("config.businesses: ${config.businesses}")
-                        if (!config.businesses.contains(businessName)) {
+                        val config = di.direct.instance<Config>() as UsersConfig
+                        logger.info("config.businesses: ${config.businesses()}")
+                        if (!config.businesses().contains(businessName)) {
                             ExceptionResponse("Business not available with name $businessName")
                         } else if (functionName == null) {
                             RequestValidationException("No function defined on path")

@@ -20,7 +20,7 @@ import kotlin.test.assertEquals
 
 class ValidateIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
-    private val config = UsersConfig(setOf("biz"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("biz")
 
     @Test
     fun `token valido retorna ok`() = runBlocking {

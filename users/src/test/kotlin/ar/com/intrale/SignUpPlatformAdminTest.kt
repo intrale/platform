@@ -18,7 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class SignUpPlatformAdminTest {
-    private val config = UsersConfig(setOf("test"), "us-east-1", "key", "secret", "pool", "client")
+    private val config = testConfig("test")
     private val cognito = mockk<CognitoIdentityProviderClient>()
     private val table = object : DynamoDbTable<UserBusinessProfile> {
         val items = mutableListOf<UserBusinessProfile>()
