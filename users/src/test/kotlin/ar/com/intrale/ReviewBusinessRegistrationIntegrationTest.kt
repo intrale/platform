@@ -106,7 +106,13 @@ class ReviewBusinessRegistrationIntegrationTest {
         coEvery { cognito.close() } returns Unit
 
         val businessTable = DummyBusinessTable().apply {
-            putItem(Business(name = "Biz", emailAdmin = "admin@biz.com"))
+            putItem(
+                Business(
+                    name = "biz",
+                    publicId = "biz",
+                    emailAdmin = "admin@biz.com"
+                )
+            )
         }
         val userTable = mockk<DynamoDbTable<User>>()
         every { userTable.getItem(any<User>()) } returns null
@@ -185,7 +191,13 @@ class ReviewBusinessRegistrationIntegrationTest {
         coEvery { cognito.close() } returns Unit
 
         val businessTable = DummyBusinessTable().apply {
-            putItem(Business(name = "Biz", emailAdmin = "admin@biz.com"))
+            putItem(
+                Business(
+                    name = "biz",
+                    publicId = "biz",
+                    emailAdmin = "admin@biz.com"
+                )
+            )
         }
         val userTable = mockk<DynamoDbTable<User>>()
         every { userTable.getItem(any<User>()) } returns null

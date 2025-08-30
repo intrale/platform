@@ -7,8 +7,20 @@ class UsersConfigTest {
     @Test
     fun `calcula negocios aprobados dinamicamente`() {
         val table = DummyBusinessTable().apply {
-            items.add(Business(name = "biz", state = BusinessState.APPROVED))
-            items.add(Business(name = "pending", state = BusinessState.PENDING))
+            items.add(
+                Business(
+                    name = "bizName",
+                    publicId = "biz",
+                    state = BusinessState.APPROVED
+                )
+            )
+            items.add(
+                Business(
+                    name = "pendingName",
+                    publicId = "pending",
+                    state = BusinessState.PENDING
+                )
+            )
         }
         val config = UsersConfig(
             region = "us-east-1",
