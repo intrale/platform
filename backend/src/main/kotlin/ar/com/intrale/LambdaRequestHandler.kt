@@ -87,6 +87,7 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                     } else {
                         val config by di.instance<Config>()
                         val businesses = config.businesses()
+                        logger.info("Available businesses are $businesses")
                         if (!businesses.contains(businessName)){
                             logger.info("Business not avaiable with name $businessName")
                             functionResponse = ExceptionResponse("Business not avaiable with name $businessName")
