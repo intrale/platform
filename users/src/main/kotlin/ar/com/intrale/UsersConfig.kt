@@ -17,6 +17,6 @@ class UsersConfig(
     override fun businesses(): Set<String> =
         tableBusiness.scan().items()
             .filter { it.state == BusinessState.APPROVED }
-            .mapNotNull { it.name }
+            .mapNotNull { it.publicId }
             .toSet() + setOf("intrale")
 }
