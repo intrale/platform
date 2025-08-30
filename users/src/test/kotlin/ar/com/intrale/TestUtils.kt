@@ -19,7 +19,15 @@ class DummyBusinessTable : DynamoDbTable<Business> {
 
 fun testConfig(vararg businesses: String): UsersConfig {
     val table = DummyBusinessTable().apply {
-        businesses.forEach { items.add(Business(name = it, state = BusinessState.APPROVED)) }
+        businesses.forEach {
+            items.add(
+                Business(
+                    name = it,
+                    publicId = it,
+                    state = BusinessState.APPROVED
+                )
+            )
+        }
     }
     return UsersConfig(
         region = "us-east-1",

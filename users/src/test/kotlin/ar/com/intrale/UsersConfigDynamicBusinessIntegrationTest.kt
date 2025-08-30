@@ -80,7 +80,13 @@ class UsersConfigDynamicBusinessIntegrationTest {
         }
         assertEquals(HttpStatusCode.InternalServerError, before.status)
 
-        table.putItem(Business(name = "biz", state = BusinessState.APPROVED))
+        table.putItem(
+            Business(
+                name = "biz",
+                publicId = "biz",
+                state = BusinessState.APPROVED
+            )
+        )
 
         val after = client.post("/biz/dummy") {
             header(HttpHeaders.ContentType, ContentType.Application.Json)
