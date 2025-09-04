@@ -44,4 +44,6 @@
     <string name="review_join_business">Revisar solicitudes de unión</string>
     <string name="review_join_business_approved">Aprobar</string>
     <string name="review_join_business_rejected">Rechazar</string>
+    <string name="two_factor_setup">Configurar autenticación en dos pasos</string>
+    <string name="two_factor_verify">Verificar autenticación en dos pasos</string>
 </resources>
