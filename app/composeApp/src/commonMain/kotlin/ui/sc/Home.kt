@@ -24,6 +24,8 @@ import ui.rs.change_password
 import ui.rs.register_business
 import ui.rs.review_business
 import ui.rs.review_join_business
+import ui.rs.two_factor_setup
+import ui.rs.two_factor_verify
 
 
 const val HOME_PATH = "/home"
@@ -63,6 +65,22 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
                 onClick = {
                     logger.info { "Navegando a $CHANGE_PASSWORD_PATH" }
                     navigate(CHANGE_PASSWORD_PATH)
+                }
+            )
+
+            Button(
+                label = stringResource(Res.string.two_factor_setup),
+                onClick = {
+                    logger.info { "Navegando a $TWO_FACTOR_SETUP_PATH" }
+                    navigate(TWO_FACTOR_SETUP_PATH)
+                }
+            )
+
+            Button(
+                label = stringResource(Res.string.two_factor_verify),
+                onClick = {
+                    logger.info { "Navegando a $TWO_FACTOR_VERIFY_PATH" }
+                    navigate(TWO_FACTOR_VERIFY_PATH)
                 }
             )
 
