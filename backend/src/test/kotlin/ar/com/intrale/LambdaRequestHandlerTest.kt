@@ -115,7 +115,7 @@ class LambdaRequestHandlerTest {
     }
 
     @Test
-    fun nullBodyReturnsValidationError() {
+    fun nullBodyReturnsCreated() {
         val module = DI.Module(name = "test") {
             bind<org.slf4j.Logger>() with singleton { LoggerFactory.getLogger("test") }
             bind<Config>() with singleton { cfg("biz") }
@@ -130,6 +130,6 @@ class LambdaRequestHandlerTest {
             path = "/biz/hello"
         }
         val response = handler.handle(module, request, null)
-        assertEquals(500, response.statusCode)
+        assertEquals(201, response.statusCode)
     }
 }
