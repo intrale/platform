@@ -12,7 +12,6 @@ import org.kodein.di.instance
 import org.kodein.di.ktor.closestDI
 import org.kodein.type.jvmType
 import org.slf4j.Logger
-import java.lang.NullPointerException
 import org.slf4j.LoggerFactory
 import kotlin.collections.component1
 import kotlin.collections.component2
@@ -100,20 +99,24 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                                     logger.info("Injecting Function $functionName")
                                     val function by di.instance<Function>(tag = functionName)
                                     return runBlocking {
-                                        var requestBody:String = ""
+                                        var requestBody: String = ""
                                         try {
-                                            requestBody = String(Base64.Default.decode(requestEvent.body));
-                                            logger.info("Request body is $requestBody")
-                                            functionResponse = function.execute(businessName, functionName, requestEvent.headers, requestBody)
-                                        } catch (e: NullPointerException){
-                                            logger.info("NullPointerException is thrown")
-                                            if (e.message.toString().contains("\"textBody\" is null")){
-                                                logger.info("Request body not found")
-                                                functionResponse = RequestValidationException("Request body not found")
+                                            val encoded = requestEvent.body
+                                            if (encoded != null) {
+                                                requestBody = String(Base64.Default.decode(encoded))
+                                                logger.info("Request body is $requestBody")
                                             } else {
-                                                logger.info(e.message)
-                                                functionResponse = ExceptionResponse(e.message.toString())
+                                                logger.info("Request body not found")
                                             }
+                                            functionResponse = function.execute(
+                                                businessName,
+                                                functionName,
+                                                requestEvent.headers,
+                                                requestBody
+                                            )
+                                        } catch (e: Exception) {
+                                            logger.info(e.message)
+                                            functionResponse = ExceptionResponse(e.message.toString())
                                         }
                                         logger.info("Returning function response $functionResponse")
                                         return@runBlocking APIGatewayProxyResponseEvent().apply {

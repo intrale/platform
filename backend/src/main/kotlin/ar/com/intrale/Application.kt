@@ -64,7 +64,12 @@ fun start(appModule: DI.Module) {
                                 val headers: Map<String, String> = call.request.headers.entries().associate {
                                     it.key to it.value.joinToString(",")
                                 }
-                                functionResponse = function.execute(businessName, functionName, headers, call.receiveText())
+                                val requestBody = try {
+                                    call.receiveText()
+                                } catch (e: Exception) {
+                                    ""
+                                }
+                                functionResponse = function.execute(businessName, functionName, headers, requestBody)
                             } catch (e: DI.NotFoundException) {
                                 functionResponse = ExceptionResponse("No function with name $functionName found")
                             }
