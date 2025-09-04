@@ -41,6 +41,8 @@ public const val REVIEW_BUSINESS = "reviewBusiness"
 public const val REGISTER_NEW_BUSINESS = "registerNewBusiness"
 public const val REQUEST_JOIN_BUSINESS = "requestJoinBusiness"
 public const val REVIEW_JOIN_BUSINESS = "reviewJoinBusiness"
+public const val TWO_FACTOR_SETUP = "twoFactorSetup"
+public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 
 const val LOGIN_PATH = "/login"
 
@@ -71,6 +73,8 @@ class DIManager {
                 bindSingleton(tag = REVIEW_BUSINESS) { ReviewBusinessScreen() }
                 bindSingleton(tag = REQUEST_JOIN_BUSINESS) { RequestJoinBusinessScreen() }
                 bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
+                bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
+                bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>(
@@ -88,7 +92,9 @@ class DIManager {
                         instance(tag = REVIEW_BUSINESS),
                         instance(tag = REGISTER_NEW_BUSINESS),
                         instance(tag = REQUEST_JOIN_BUSINESS),
-                        instance(tag = REVIEW_JOIN_BUSINESS)
+                        instance(tag = REVIEW_JOIN_BUSINESS),
+                        instance(tag = TWO_FACTOR_SETUP),
+                        instance(tag = TWO_FACTOR_VERIFY)
                     )
                 }
 
@@ -127,6 +133,8 @@ class DIManager {
                 bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
                 bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
                 bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
+                bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
+                bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -143,6 +151,8 @@ class DIManager {
                 bindSingleton<ToDoReviewBusinessRegistration> { DoReviewBusinessRegistration(instance()) }
                 bindSingleton<ToDoRequestJoinBusiness> { DoRequestJoinBusiness(instance()) }
                 bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
+                bindSingleton<ToDoTwoFactorSetup> { DoTwoFactorSetup(instance(), instance()) }
+                bindSingleton<ToDoTwoFactorVerify> { DoTwoFactorVerify(instance(), instance()) }
 
             }
     }
