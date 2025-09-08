@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Scaffold
@@ -15,6 +16,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -37,6 +41,8 @@ class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH, Res.string.two_factor
     private fun screenImpl(viewModel: TwoFactorSetupViewModel = viewModel { TwoFactorSetupViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
+        val uriHandler = LocalUriHandler.current
+        val clipboardManager = LocalClipboardManager.current
 
         LaunchedEffect(Unit) {
             logger.debug { "Invocando setup de 2FA" }
@@ -45,8 +51,20 @@ class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH, Res.string.two_factor
                 snackbarHostState = snackbarHostState,
                 setLoading = { viewModel.loading = it },
                 serviceCall = { viewModel.setup() },
-                onSuccess = { result -> viewModel.state = viewModel.state.copy(otpAuthUri = result.otpAuthUri) }
+                onSuccess = { result -> viewModel.onOtpAuthUri(result.otpAuthUri) }
             )
+        }
+
+        LaunchedEffect(viewModel.state.otpAuthUri) {
+            val uri = viewModel.state.otpAuthUri
+            if (uri.isNotEmpty() && !viewModel.state.deepLinkTried) {
+                try {
+                    uriHandler.openUri(uri)
+                    viewModel.onDeepLinkResult(true)
+                } catch (e: Throwable) {
+                    viewModel.onDeepLinkResult(false)
+                }
+            }
         }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
@@ -57,8 +75,24 @@ class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH, Res.string.two_factor
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (viewModel.state.otpAuthUri.isNotEmpty()) {
-                    androidx.compose.material3.Text(viewModel.state.otpAuthUri)
+                if (viewModel.state.showQr) {
+                    Text("QR pendiente")
+                    Text(viewModel.state.issuerAccount)
+                    Text(viewModel.state.secretMasked)
+                    Button(onClick = { clipboardManager.setText(AnnotatedString(viewModel.copySecret())) }) {
+                        Text("Copiar clave")
+                    }
+                    Button(onClick = { clipboardManager.setText(AnnotatedString(viewModel.copyLink())) }) {
+                        Text("Copiar enlace")
+                    }
+                    Button(onClick = {
+                        uriHandler.openUri("https://play.google.com/store/search?q=authenticator")
+                    }) {
+                        Text("Buscar autenticador")
+                    }
+                    Button(onClick = { uriHandler.openUri(viewModel.copyLink()) }) {
+                        Text("Compartir")
+                    }
                 }
             }
         }
