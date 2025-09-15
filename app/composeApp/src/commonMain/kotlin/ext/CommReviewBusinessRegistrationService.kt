@@ -1,5 +1,10 @@
 package ext
 
 interface CommReviewBusinessRegistrationService {
-    suspend fun execute(publicId: String, decision: String, twoFactorCode: String): Result<ReviewBusinessRegistrationResponse>
+    suspend fun execute(
+        publicId: String,
+        decision: String,
+        twoFactorCode: String,
+        token: String
+    ): Result<ReviewBusinessRegistrationResponse>
 }

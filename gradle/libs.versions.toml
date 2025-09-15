@@ -64,6 +64,7 @@ ktor-client-serialization = { group = "io.ktor", name = "ktor-client-serializati
 ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor-wasm2" }
 ktor-client-android = { group = "io.ktor", name = "ktor-client-android", version.ref = "ktor-wasm2" }
 ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor-wasm2" }
+ktor-client-mock = { group = "io.ktor", name = "ktor-client-mock", version.ref = "ktor-wasm2" }
 
 kodein-di = { module = "org.kodein.di:kodein-di", version.ref = "kodein" }
 kodein-di-framework-ktor-server-jvm = { module = "org.kodein.di:kodein-di-framework-ktor-server-jvm", version.ref = "kodein" }
@@ -114,6 +115,7 @@ canard = { module = "org.kodein.log:canard", version.ref = "canard" }
 settings-no-arg = { module = "com.russhwolf:multiplatform-settings-no-arg", version.ref = "russhwolf" }
 settings-serialization = { module = "com.russhwolf:multiplatform-settings-serialization", version.ref = "russhwolf" }
 settings-coroutines = { module = "com.russhwolf:multiplatform-settings-coroutines", version.ref = "russhwolf" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
 
 [bundles]
 ktor-common = ["ktor-client-core", "ktor-client-json", "ktor-client-logging", "ktor-client-serialization", "ktor-client-content-negotiation", "ktor-serialization-kotlinx-json"]
