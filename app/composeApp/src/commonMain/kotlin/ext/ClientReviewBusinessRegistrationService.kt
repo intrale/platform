@@ -2,6 +2,7 @@ package ext
 
 import ar.com.intrale.BuildKonfig
 import io.ktor.client.HttpClient
+import io.ktor.client.request.headers
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -13,9 +14,15 @@ import kotlinx.serialization.json.Json
 
 class ClientReviewBusinessRegistrationService(private val httpClient: HttpClient) : CommReviewBusinessRegistrationService {
     @OptIn(InternalAPI::class)
-    override suspend fun execute(publicId: String, decision: String, twoFactorCode: String): Result<ReviewBusinessRegistrationResponse> {
+    override suspend fun execute(
+        publicId: String,
+        decision: String,
+        twoFactorCode: String,
+        token: String
+    ): Result<ReviewBusinessRegistrationResponse> {
         return try {
             val response: HttpResponse = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/reviewBusiness") {
+                headers { append("Authorization", token) }
                 setBody(ReviewBusinessRegistrationRequest(publicId, decision, twoFactorCode))
             }
             if (response.status.isSuccess()) {

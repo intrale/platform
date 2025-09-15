@@ -16,7 +16,12 @@ class RegisterBusinessIntegrationTest {
     }
 
     private class FakeReviewService : CommReviewBusinessRegistrationService {
-        override suspend fun execute(name: String, decision: String, twoFactorCode: String): Result<ReviewBusinessRegistrationResponse> {
+        override suspend fun execute(
+            name: String,
+            decision: String,
+            twoFactorCode: String,
+            token: String
+        ): Result<ReviewBusinessRegistrationResponse> {
             return Result.success(ReviewBusinessRegistrationResponse(StatusCodeDTO(200, "OK")))
         }
     }

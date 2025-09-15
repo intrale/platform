@@ -148,7 +148,7 @@ class DIManager {
                 bindSingleton<ToDoPasswordRecovery> { DoPasswordRecovery(instance()) }
                 bindSingleton<ToDoConfirmPasswordRecovery> { DoConfirmPasswordRecovery(instance()) }
                 bindSingleton<ToDoRegisterBusiness> { DoRegisterBusiness(instance()) }
-                bindSingleton<ToDoReviewBusinessRegistration> { DoReviewBusinessRegistration(instance()) }
+                bindSingleton<ToDoReviewBusinessRegistration> { DoReviewBusinessRegistration(instance(), instance()) }
                 bindSingleton<ToDoRequestJoinBusiness> { DoRequestJoinBusiness(instance()) }
                 bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
                 bindSingleton<ToDoTwoFactorSetup> { DoTwoFactorSetup(instance(), instance()) }
