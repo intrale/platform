@@ -20,13 +20,8 @@ class ClientTwoFactorSetupService(private val httpClient: HttpClient) : CommTwoF
             }
             val bodyText = response.bodyAsText()
             if (response.status.isSuccess()) {
-                val dto = Json.decodeFromString(TwoFactorSetupResponseDTO.serializer(), bodyText)
-                Result.success(
-                    TwoFactorSetupResponse(
-                        statusCode = StatusCodeDTO(response.status.value, response.status.description),
-                        otpAuthUri = dto.otpAuthUri
-                    )
-                )
+                val twoFactorSetupResponse = Json.decodeFromString(TwoFactorSetupResponse.serializer(), bodyText)
+                Result.success(twoFactorSetupResponse )
             } else {
                 val exception = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
                 Result.failure(exception)
@@ -36,9 +31,6 @@ class ClientTwoFactorSetupService(private val httpClient: HttpClient) : CommTwoF
         }
     }
 }
-
-@Serializable
-private data class TwoFactorSetupResponseDTO(val otpAuthUri: String)
 
 @Serializable
 data class TwoFactorSetupResponse(val statusCode: StatusCodeDTO, val otpAuthUri: String)
