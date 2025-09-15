@@ -24,6 +24,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import kotlinx.coroutines.launch
 import ui.rs.Res
 import ui.rs.two_factor_setup
 
@@ -86,11 +87,27 @@ class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH, Res.string.two_factor
                         Text("Copiar enlace")
                     }
                     Button(onClick = {
-                        uriHandler.openUri("https://play.google.com/store/search?q=authenticator")
+                        try {
+                            uriHandler.openUri("https://play.google.com/store/search?q=authenticator")
+                        } catch (e: Throwable) {
+                            logger.error(e) { "No fue posible abrir la aplicación de autenticación" }
+                            coroutine.launch {
+                                snackbarHostState.showSnackbar("No fue posible abrir la aplicación de autenticación")
+                            }
+                        }
                     }) {
                         Text("Buscar autenticador")
                     }
-                    Button(onClick = { uriHandler.openUri(viewModel.copyLink()) }) {
+                    Button(onClick = {
+                        try {
+                            uriHandler.openUri(viewModel.copyLink())
+                        } catch (e: Throwable) {
+                            logger.error(e) { "No se pudo compartir el enlace" }
+                            coroutine.launch {
+                                snackbarHostState.showSnackbar("No se pudo compartir el enlace")
+                            }
+                        }
+                    }) {
                         Text("Compartir")
                     }
                 }
