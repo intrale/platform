@@ -1,0 +1,16 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bg_logout" x1="4" y1="4" x2="60" y2="4" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#0A3D91"/>
+            <stop offset="1" stop-color="#1FB6FF"/>
+        </linearGradient>
+        <linearGradient id="accent_logout" x1="52" y1="4" x2="60" y2="12" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#1FB6FF"/>
+            <stop offset="1" stop-color="#A4E3FF"/>
+        </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg_logout)"/>
+    <polygon points="52,4 60,4 60,12" fill="url(#accent_logout)"/>
+    <rect x="18" y="18" width="8" height="28" rx="2" fill="#FFFFFF" opacity="0.75"/>
+    <polygon points="36,18 42,24 34,32 50,32 50,36 34,36 42,44 36,50 22,34" fill="#FFFFFF"/>
+</svg>

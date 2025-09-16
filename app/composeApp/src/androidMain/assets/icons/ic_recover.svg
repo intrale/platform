@@ -1,0 +1,15 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bg_recover" x1="4" y1="4" x2="60" y2="4" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#0A3D91"/>
+            <stop offset="1" stop-color="#1FB6FF"/>
+        </linearGradient>
+        <linearGradient id="accent_recover" x1="52" y1="4" x2="60" y2="12" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#1FB6FF"/>
+            <stop offset="1" stop-color="#A4E3FF"/>
+        </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg_recover)"/>
+    <polygon points="52,4 60,4 60,12" fill="url(#accent_recover)"/>
+    <path d="M32 18C23.7157 18 17 24.7157 17 33C17 41.2843 23.7157 48 32 48C37.5243 48 42.3283 45.0438 44.9495 40.5H39.5C36.1863 43.1586 31.4534 43.0416 28.25 40.25C24.4033 36.8839 24.4033 30.8624 28.25 27.4963C32.0967 24.1302 38.0976 24.1302 41.9443 27.4963L45.5 24V34H35.5L39.3244 30.7679C36.9521 28.7477 33.354 28.6856 30.9155 30.6165C28.477 32.5473 27.9756 36.0089 29.6847 38.6679C31.3939 41.327 34.917 42.4162 37.8772 41.0374L45.2017 37.6299C43.0275 44.1749 37.0579 49 30 49C21.1634 49 14 41.8366 14 33C14 24.1634 21.1634 17 30 17C35.1031 17 39.7081 19.3632 42.8091 23H38.5C35.7444 20.9341 31.9598 20.6228 28.966 22.3403C25.9722 24.0578 24.3613 27.5538 24.9058 31.0249" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,19 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bg_seller" x1="4" y1="4" x2="60" y2="4" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#0A3D91"/>
+            <stop offset="1" stop-color="#1FB6FF"/>
+        </linearGradient>
+        <linearGradient id="accent_seller" x1="52" y1="4" x2="60" y2="12" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#1FB6FF"/>
+            <stop offset="1" stop-color="#A4E3FF"/>
+        </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg_seller)"/>
+    <polygon points="52,4 60,4 60,12" fill="url(#accent_seller)"/>
+    <path d="M18 22L22 16H42L46 22V30C46 32.2091 44.2091 34 42 34H22C19.7909 34 18 32.2091 18 30V22Z" fill="#FFFFFF"/>
+    <rect x="18" y="34" width="28" height="14" fill="#FFFFFF" opacity="0.85"/>
+    <rect x="23" y="36" width="8" height="12" fill="#1FB6FF" rx="2"/>
+    <rect x="34" y="36" width="8" height="6" rx="2" fill="#0A3D91" opacity="0.6"/>
+    <rect x="34" y="44" width="8" height="4" rx="2" fill="#0A3D91" opacity="0.4"/>
+</svg>

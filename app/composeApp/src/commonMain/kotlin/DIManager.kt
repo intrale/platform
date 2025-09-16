@@ -28,6 +28,7 @@ public const val SCREENS = "screens"
 
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
+public const val BUTTONS_PREVIEW = "buttonsPreview"
 public const val SECUNDARY = "secundary"
 public const val SIGNUP = "signup"
 public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
@@ -60,6 +61,7 @@ class DIManager {
 
                 bindSingleton(tag = INIT) { Login() }
                 bindSingleton(tag = DASHBOARD) { Home() }
+                bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
                 bindSingleton(tag = SECUNDARY) { Secundary() }
                 bindSingleton(tag = SIGNUP) { SignUpScreen() }
                 bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
@@ -80,6 +82,7 @@ class DIManager {
                     arrayListOf<Screen>(
                         instance(tag = INIT),
                         instance(tag = DASHBOARD),
+                        instance(tag = BUTTONS_PREVIEW),
                         instance(tag = SECUNDARY),
                         instance(tag = SIGNUP),
                         instance(tag = SELECT_SIGNUP_PROFILE),
