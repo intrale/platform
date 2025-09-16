@@ -128,8 +128,8 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="signupDelivery") {
         singleton  { SignUpDelivery(instance(), instance(), instance(), instance()) }
     }
-    bind<Function> (tag="signupSaler") {
-        singleton  { SignUpSaler(instance(), instance(), instance(), instance()) }
+    bind<Function> (tag="registerSaler") {
+        singleton  { RegisterSaler(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="signin") {
         singleton {  SignIn(instance(), instance(), instance(), instance()) }

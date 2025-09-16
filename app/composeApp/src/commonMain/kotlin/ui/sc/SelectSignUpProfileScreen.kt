@@ -15,7 +15,6 @@ import ui.rs.Res
 import ui.rs.signup
 import ui.rs.signup_platform_admin
 import ui.rs.signup_delivery
-import ui.rs.signup_saler
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -48,15 +47,6 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                 onClick = {
                     logger.info { "Seleccionado perfil Delivery" }
                     navigate(SIGNUP_DELIVERY_PATH)
-                })
-            Spacer(modifier = Modifier.size(10.dp))
-            Button(
-                label = stringResource(Res.string.signup_saler),
-                loading = false,
-                enabled = true,
-                onClick = {
-                    logger.info { "Seleccionado perfil Saler" }
-                    navigate(SIGNUP_SALER_PATH)
                 })
         }
     }
