@@ -18,6 +18,7 @@ import org.kodein.log.newLogger
 import ui.cp.Button
 import ui.rs.Res
 import ui.rs.app_name
+import ui.rs.buttons_preview
 import ui.rs.login
 import ui.rs.logout
 import ui.rs.change_password
@@ -52,6 +53,14 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("This is the home screen")
+
+            Button(
+                label = stringResource(Res.string.buttons_preview),
+                onClick = {
+                    logger.info { "Navegando a $BUTTONS_PREVIEW_PATH" }
+                    navigate(BUTTONS_PREVIEW_PATH)
+                }
+            )
 
             Button(
                 label = stringResource(Res.string.login),

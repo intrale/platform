@@ -1,0 +1,22 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bg_delivery" x1="4" y1="4" x2="60" y2="4" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#0A3D91"/>
+            <stop offset="1" stop-color="#1FB6FF"/>
+        </linearGradient>
+        <linearGradient id="accent_delivery" x1="52" y1="4" x2="60" y2="12" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#1FB6FF"/>
+            <stop offset="1" stop-color="#A4E3FF"/>
+        </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg_delivery)"/>
+    <polygon points="52,4 60,4 60,12" fill="url(#accent_delivery)"/>
+    <rect x="14" y="28" width="24" height="16" rx="3" fill="#FFFFFF"/>
+    <path d="M38 28H48L52 36V44H38V28Z" fill="#FFFFFF" opacity="0.9"/>
+    <rect x="40" y="32" width="7" height="6" rx="1.5" fill="#0A3D91" opacity="0.6"/>
+    <circle cx="24" cy="46" r="5" fill="#0A3D91"/>
+    <circle cx="46" cy="46" r="5" fill="#0A3D91"/>
+    <circle cx="24" cy="46" r="2.5" fill="#FFFFFF"/>
+    <circle cx="46" cy="46" r="2.5" fill="#FFFFFF"/>
+    <rect x="18" y="24" width="12" height="3" rx="1.5" fill="#FFFFFF" opacity="0.5"/>
+</svg>

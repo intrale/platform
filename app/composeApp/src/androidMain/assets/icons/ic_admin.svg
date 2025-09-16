@@ -1,0 +1,18 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bg_admin" x1="4" y1="4" x2="60" y2="4" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#0A3D91"/>
+            <stop offset="1" stop-color="#1FB6FF"/>
+        </linearGradient>
+        <linearGradient id="accent_admin" x1="52" y1="4" x2="60" y2="12" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#1FB6FF"/>
+            <stop offset="1" stop-color="#A4E3FF"/>
+        </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg_admin)"/>
+    <polygon points="52,4 60,4 60,12" fill="url(#accent_admin)"/>
+    <path d="M32 14L18 20V30C18 40.0457 24.2843 47.866 32 50C39.7157 47.866 46 40.0457 46 30V20L32 14Z" fill="#FFFFFF"/>
+    <path d="M32 44C26.4772 41.866 22 35.8551 22 30.1665V23.2501L32 19.25L42 23.2501V30.1665C42 35.8551 37.5228 41.866 32 44Z" fill="#1FB6FF" opacity="0.85"/>
+    <path d="M32 26L35 31H29L32 26Z" fill="#FFFFFF"/>
+    <rect x="30" y="31" width="4" height="10" rx="2" fill="#FFFFFF"/>
+</svg>

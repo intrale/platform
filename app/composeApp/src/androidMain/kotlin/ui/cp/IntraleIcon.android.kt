@@ -1,0 +1,31 @@
+package ui.cp
+
+import androidx.compose.foundation.Image
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import coil.compose.rememberAsyncImagePainter
+import coil.decode.SvgDecoder
+import coil.request.ImageRequest
+
+@Composable
+actual fun IntraleIcon(
+    assetName: String,
+    contentDesc: String?,
+    modifier: Modifier
+) {
+    val context = LocalContext.current
+    val request = remember(assetName, context) {
+        ImageRequest.Builder(context)
+            .data("file:///android_asset/icons/$assetName")
+            .decoderFactory(SvgDecoder.Factory())
+            .build()
+    }
+    val painter = rememberAsyncImagePainter(model = request)
+    Image(
+        painter = painter,
+        contentDescription = contentDesc,
+        modifier = modifier
+    )
+}
