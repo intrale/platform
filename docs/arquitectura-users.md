@@ -9,7 +9,7 @@ Gestiona el ciclo de vida de los usuarios finales: registro, autenticación y ad
 ## 2. Estructura del proyecto
 
 - **Modelos de dominio**: `User`, `Profile`, `UserBusinessProfile`, `Business`, `BusinessState`.
-- **Funciones principales**: `SignUp`, `SignIn`, `SignUpPlatformAdmin`, `PasswordRecovery`, `ConfirmPasswordRecovery`, `RegisterBusiness`, `ReviewBusinessRegistration`, `TwoFactorSetup`, `TwoFactorVerify`.
+- **Funciones principales**: `SignUp`, `SignIn`, `SignUpPlatformAdmin`, `RegisterSaler`, `PasswordRecovery`, `ConfirmPasswordRecovery`, `RegisterBusiness`, `ReviewBusinessRegistration`, `TwoFactorSetup`, `TwoFactorVerify`.
 - **Clases de solicitud y respuesta**: `SignUpRequest`, `SignInRequest`, `SignInResponse`, `PasswordRecoveryRequest`, `ConfirmPasswordRecoveryRequest`, `RegisterBusinessRequest`, `ReviewBusinessRegistrationRequest`, `TwoFactorSetupResponse`, `TwoFactorVerifyRequest`, `ProfilesResponse`.
 - **Infraestructura**: `UsersApplication.kt` para Netty, `UsersRequestHandler.kt` para AWS Lambda, configuración específica en `UsersConfig.kt` y bindings en `Modules.kt`.
 - **Utilidades**: helpers de validación y pruebas (por ejemplo `TestDynamoDB.kt`).
@@ -38,4 +38,5 @@ Gestiona el ciclo de vida de los usuarios finales: registro, autenticación y ad
 ## 6. Seguridad e inyección de dependencias
 
 El módulo utiliza `SecuredFunction` para proteger funciones sensibles y registra sus componentes en Kodein DI, permitiendo su ejecución tanto embebida como en AWS Lambda.
+- `RegisterSaler` exige un token válido, verifica que el solicitante posea el perfil `BusinessAdmin` aprobado y actualiza la relación `UserBusinessProfile` del vendedor en estado `APPROVED`.
 

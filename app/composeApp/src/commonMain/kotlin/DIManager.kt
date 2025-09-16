@@ -32,7 +32,7 @@ public const val SECUNDARY = "secundary"
 public const val SIGNUP = "signup"
 public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
 public const val SIGNUP_DELIVERY = "signupDelivery"
-public const val SIGNUP_SALER = "signupSaler"
+public const val REGISTER_SALER = "registerSaler"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
@@ -64,7 +64,7 @@ class DIManager {
                 bindSingleton(tag = SIGNUP) { SignUpScreen() }
                 bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
                 bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
-                bindSingleton(tag = SIGNUP_SALER) { SignUpSalerScreen() }
+                bindSingleton(tag = REGISTER_SALER) { RegisterSalerScreen() }
                 bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
                 bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
                 bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
@@ -85,7 +85,7 @@ class DIManager {
                         instance(tag = SELECT_SIGNUP_PROFILE),
                         instance(tag = SIGNUP_PLATFORM_ADMIN),
                         instance(tag = SIGNUP_DELIVERY),
-                        instance(tag = SIGNUP_SALER),
+                        instance(tag = REGISTER_SALER),
                         instance(tag = CHANGE_PASSWORD),
                         instance(tag = PASSWORD_RECOVERY),
                         instance(tag = CONFIRM_PASSWORD_RECOVERY),
@@ -125,7 +125,7 @@ class DIManager {
                 bindSingleton<CommSignUpService> { ClientSignUpService(instance()) }
                 bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
                 bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
-                bindSingleton<CommSignUpSalerService> { ClientSignUpSalerService(instance()) }
+                bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance()) }
                 bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
                 bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
                 bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
@@ -140,7 +140,7 @@ class DIManager {
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
                 bindSingleton<ToDoSignUpPlatformAdmin> { DoSignUpPlatformAdmin(instance()) }
                 bindSingleton<ToDoSignUpDelivery> { DoSignUpDelivery(instance()) }
-                bindSingleton<ToDoSignUpSaler> { DoSignUpSaler(instance()) }
+                bindSingleton<ToDoRegisterSaler> { DoRegisterSaler(instance(), instance()) }
                 bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
                 bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
                 bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }

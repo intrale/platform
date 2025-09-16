@@ -24,6 +24,7 @@ import ui.rs.change_password
 import ui.rs.register_business
 import ui.rs.review_business
 import ui.rs.review_join_business
+import ui.rs.register_saler
 import ui.rs.two_factor_setup
 import ui.rs.two_factor_verify
 
@@ -97,6 +98,14 @@ class Home() : Screen(HOME_PATH, Res.string.app_name){
                 onClick = {
                     logger.info { "Navegando a $REVIEW_JOIN_BUSINESS_PATH" }
                     navigate(REVIEW_JOIN_BUSINESS_PATH)
+                }
+            )
+
+            Button(
+                label = stringResource(Res.string.register_saler),
+                onClick = {
+                    logger.info { "Navegando a $REGISTER_SALER_PATH" }
+                    navigate(REGISTER_SALER_PATH)
                 }
             )
 

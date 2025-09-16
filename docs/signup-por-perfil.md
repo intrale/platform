@@ -1,15 +1,16 @@
 # Registro de usuario por perfil
 Relacionado con #59.
 
-Se añadieron cuatro pantallas en el módulo `app`:
-`SignUpScreen`, `SignUpPlatformAdminScreen`, `SignUpDeliveryScreen` y `SignUpSalerScreen`.
+Se añadieron tres pantallas principales en el módulo `app`:
+`SignUpScreen`, `SignUpPlatformAdminScreen` y `SignUpDeliveryScreen`.
 Cada una muestra un campo para ingresar el correo electrónico y un botón **"Registrarme"**.
 
 Al presionar el botón se invoca la acción correspondiente del paquete `asdo`,
 la cual consume los endpoints expuestos por el módulo `users`.
 Cada acción utiliza un servicio HTTP específico:
-`ClientSignUpPlatformAdminService`, `ClientSignUpDeliveryService` y
-`ClientSignUpSalerService` según el perfil seleccionado.
+`ClientSignUpPlatformAdminService` y `ClientSignUpDeliveryService` según el perfil seleccionado.
+El alta de vendedores (`RegisterSalerScreen`) se ejecuta desde el Home de Business Admin y usa `ClientRegisterSalerService`,
+que adjunta el token en el header `Authorization`.
 
 ## Flujo de selección de perfil
 
@@ -17,7 +18,8 @@ Relacionado con #75.
 
 Se agregó la pantalla `SelectSignUpProfileScreen` que permite elegir el tipo de registro antes de mostrar la pantalla específica.
 Desde `Login` ahora aparece el botón **"Registrarme"** que navega a dicha pantalla.
-Cada opción lleva a `SignUpPlatformAdminScreen`, `SignUpDeliveryScreen` o `SignUpSalerScreen` según corresponda.
+Cada opción lleva a `SignUpPlatformAdminScreen` o `SignUpDeliveryScreen` según corresponda. El registro de vendedores dejó de ser
+público y ahora se realiza desde `RegisterSalerScreen`, accesible únicamente para Business Admin autenticados.
 
 ### Manejo de respuestas
 Ahora cada pantalla de registro utiliza `callService` para mostrar mensajes de éxito o error.
