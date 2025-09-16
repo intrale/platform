@@ -1,0 +1,46 @@
+package ui.cp
+
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+
+@Composable
+fun IntraleGhostButton(
+    text: String,
+    iconAsset: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    iconContentDescription: String? = null
+) {
+    val logger = IntraleButtonDefaults.rememberLogger("IntraleGhostButton")
+    val isInteractive = IntraleButtonDefaults.isInteractive(enabled, loading)
+
+    Surface(
+        onClick = {
+            logger.info { "IntraleGhostButton tap: $text" }
+            onClick()
+        },
+        modifier = IntraleButtonDefaults.baseModifier(modifier, isInteractive),
+        enabled = isInteractive,
+        shape = IntraleButtonDefaults.SHAPE,
+        color = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.primary
+    ) {
+        IntraleButtonLayout(modifier = Modifier.fillMaxSize()) {
+            IntraleButtonContent(
+                text = text,
+                iconAsset = iconAsset,
+                iconContentDescription = iconContentDescription,
+                loading = loading,
+                textColor = MaterialTheme.colorScheme.primary,
+                progressColor = MaterialTheme.colorScheme.primary,
+                iconTint = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}

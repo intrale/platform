@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -18,7 +19,8 @@ import androidx.compose.ui.unit.dp
 actual fun IntraleIcon(
     assetName: String,
     contentDesc: String?,
-    modifier: Modifier
+    modifier: Modifier,
+    tint: Color?
 ) {
     Box(
         modifier = modifier
@@ -29,7 +31,7 @@ actual fun IntraleIcon(
         Text(
             text = assetName.removeSuffix(".svg"),
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = tint ?: MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
