@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Lock
@@ -31,9 +33,7 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardActions
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -46,6 +46,31 @@ import org.kodein.log.newLogger
 import ui.cp.IntralePrimaryButton
 import ui.cp.TextField
 import ui.rs.Res
+import ui.rs.confirm_password_recovery
+import ui.rs.error_credentials
+import ui.rs.family_name
+import ui.rs.login
+import ui.rs.login_change_password_description
+import ui.rs.login_change_password_required
+import ui.rs.login_change_password_title
+import ui.rs.login_email_placeholder
+import ui.rs.login_family_name_placeholder
+import ui.rs.login_generic_error
+import ui.rs.login_name_placeholder
+import ui.rs.login_new_password_placeholder
+import ui.rs.login_password_icon_content_description
+import ui.rs.login_password_placeholder
+import ui.rs.login_subtitle
+import ui.rs.login_title
+import ui.rs.login_user_icon_content_description
+import ui.rs.name
+import ui.rs.new_password
+import ui.rs.password
+import ui.rs.password_recovery
+import ui.rs.register_business
+import ui.rs.signup
+import ui.rs.signup_delivery
+import ui.rs.username
 import ui.sc.callService
 
 const val LOGIN_PATH = "/login"

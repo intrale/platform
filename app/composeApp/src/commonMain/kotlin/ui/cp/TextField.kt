@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
+import ui.rs.text_field_hide_password
+import ui.rs.text_field_show_password
 
 @OptIn(ExperimentalResourceApi::class)
 @Composable
@@ -48,7 +50,7 @@ fun TextField(
 
     val labelString = stringResource(label)
     val placeholderString = placeholder?.let { stringResource(it) }
-    val showPassword = stringResource(ui.rs.Res.string.text_field_show_password)
+    val showPassword = stringResource(ui.rs.Res.string.text_field_show_password )
     val hidePassword = stringResource(ui.rs.Res.string.text_field_hide_password)
     val errorMessage = state.value.details.takeIf { !state.value.isValid }
 
