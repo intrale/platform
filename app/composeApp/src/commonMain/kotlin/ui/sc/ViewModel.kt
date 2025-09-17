@@ -21,15 +21,20 @@ abstract class ViewModel: androidx.lifecycle.ViewModel(){
 
         val validationResult: ValidationResult<Any> = validation(getState())
 
-        initInputState()
+        inputsStates.forEach { (_, state) ->
+            state.value = state.value.copy(
+                isValid = true,
+                details = ""
+            )
+        }
 
         validationResult.errors.forEach {
             val key = it.dataPath.substring(1)
-            val current = inputsStates[key]?.value ?: InputState(key)
-            inputsStates[key] = mutableStateOf(current.copy(
+            val mutableState = inputsStates.getOrPut(key) { mutableStateOf(InputState(key)) }
+            mutableState.value = mutableState.value.copy(
                 isValid = false,
                 details = it.message
-            ))
+            )
         }
 
         return validationResult.isValid
