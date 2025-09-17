@@ -247,7 +247,7 @@ class Login() : Screen(LOGIN_PATH, Res.string.login){
                 logger.debug { "Obteniendo resultado login" }
                 result.onSuccess {
                     viewModel.loading = false
-                    navigate(HOME_PATH)
+                    navigate(DASHBOARD_PATH)
                 }.onFailure { error ->
                     logger.error { "Error al iniciar sesión: ${error.message}" }
                     viewModel.loading = false

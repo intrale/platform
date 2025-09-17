@@ -9,7 +9,7 @@ Al presionar el botón se invoca la acción correspondiente del paquete `asdo`,
 la cual consume los endpoints expuestos por el módulo `users`.
 Cada acción utiliza un servicio HTTP específico:
 `ClientSignUpPlatformAdminService` y `ClientSignUpDeliveryService` según el perfil seleccionado.
-El alta de vendedores (`RegisterSalerScreen`) se ejecuta desde el Home de Business Admin y usa `ClientRegisterSalerService`,
+El alta de vendedores (`RegisterSalerScreen`) se ejecuta desde `DashboardScreen` (menú interno post-login) y usa `ClientRegisterSalerService`,
 que adjunta el token en el header `Authorization`.
 
 ## Flujo de selección de perfil
@@ -17,7 +17,7 @@ que adjunta el token en el header `Authorization`.
 Relacionado con #75.
 
 Se agregó la pantalla `SelectSignUpProfileScreen` que permite elegir el tipo de registro antes de mostrar la pantalla específica.
-Desde `Login` ahora aparece el botón **"Registrarme"** que navega a dicha pantalla.
+Desde `Login` ahora aparece el botón **"Registrarme"** que navega a dicha pantalla y, tras autenticarse, el usuario aterriza en `DashboardScreen` para continuar con la gestión interna.
 Cada opción lleva a `SignUpPlatformAdminScreen` o `SignUpDeliveryScreen` según corresponda. El registro de vendedores dejó de ser
 público y ahora se realiza desde `RegisterSalerScreen`, accesible únicamente para Business Admin autenticados.
 

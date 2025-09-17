@@ -26,10 +26,10 @@ import io.ktor.client.plugins.logging.*
 
 public const val SCREENS = "screens"
 
+public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
 public const val BUTTONS_PREVIEW = "buttonsPreview"
-public const val SECUNDARY = "secundary"
 public const val SIGNUP = "signup"
 public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
 public const val SIGNUP_DELIVERY = "signupDelivery"
@@ -59,10 +59,10 @@ class DIManager {
                     navigator -> CommonRouter(navigator)
                 }
 
+                bindSingleton(tag = HOME) { Home() }
                 bindSingleton(tag = INIT) { Login() }
-                bindSingleton(tag = DASHBOARD) { Home() }
+                bindSingleton(tag = DASHBOARD) { DashboardScreen() }
                 bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
-                bindSingleton(tag = SECUNDARY) { Secundary() }
                 bindSingleton(tag = SIGNUP) { SignUpScreen() }
                 bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
                 bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
@@ -80,10 +80,10 @@ class DIManager {
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>(
+                        instance(tag = HOME),
                         instance(tag = INIT),
                         instance(tag = DASHBOARD),
                         instance(tag = BUTTONS_PREVIEW),
-                        instance(tag = SECUNDARY),
                         instance(tag = SIGNUP),
                         instance(tag = SELECT_SIGNUP_PROFILE),
                         instance(tag = SIGNUP_PLATFORM_ADMIN),

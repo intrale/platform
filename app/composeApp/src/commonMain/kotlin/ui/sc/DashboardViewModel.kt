@@ -6,19 +6,17 @@ import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
-class HomeViewModel : ViewModel()  {
-
+class DashboardViewModel : ViewModel() {
 
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
 
-    private val logger = LoggerFactory.default.newLogger<HomeViewModel>()
+    private val logger = LoggerFactory.default.newLogger<DashboardViewModel>()
 
-    // data state initialize
-    override fun getState(): Any  = Unit
+    override fun getState(): Any = Unit
 
-    override fun initInputState() { /* Do nothing */ }
+    override fun initInputState() { /* No-op */ }
 
-    suspend fun logout(){
+    suspend fun logout() {
         logger.info { "Ejecutando logout" }
         try {
             toDoResetLoginCache.execute()

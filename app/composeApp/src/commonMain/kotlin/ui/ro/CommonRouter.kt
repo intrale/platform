@@ -19,7 +19,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.sc.LOGIN_PATH
 import ui.sc.Screen
 
 class CommonRouter(navigator: NavHostController) : Router(navigator) {
@@ -70,8 +69,7 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
     @Composable
     override fun currentScreen():Screen{
         val backStackEntry by currentBackStackEntryAsState()
-        //TODO: replace LOGIN_PATH TO screens.first().route
-        val currentPath = backStackEntry?.destination?.route ?: LOGIN_PATH
+        val currentPath = backStackEntry?.destination?.route ?: screens.first().route
 
         return screens.map { it.route to it }.toMap().get(currentPath)!!
     }

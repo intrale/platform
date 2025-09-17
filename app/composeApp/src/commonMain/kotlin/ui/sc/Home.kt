@@ -1,151 +1,102 @@
 package ui.sc
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.launch
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.cp.Button
+import ui.cp.IntralePrimaryButton
 import ui.rs.Res
-import ui.rs.app_name
-import ui.rs.buttons_preview
+import ui.rs.home
+import ui.rs.home_headline
+import ui.rs.home_subtitle
 import ui.rs.login
-import ui.rs.logout
-import ui.rs.change_password
-import ui.rs.register_business
-import ui.rs.review_business
-import ui.rs.review_join_business
-import ui.rs.register_saler
-import ui.rs.two_factor_setup
-import ui.rs.two_factor_verify
-
+import ui.rs.signup
 
 const val HOME_PATH = "/home"
 
-class Home() : Screen(HOME_PATH, Res.string.app_name){
+class Home : Screen(HOME_PATH, Res.string.home) {
 
     private val logger = LoggerFactory.default.newLogger<Home>()
 
     @Composable
     override fun screen() {
         logger.info { "Renderizando Home" }
-        screenImplementation()
+        ScreenContent()
     }
 
     @OptIn(ExperimentalResourceApi::class)
     @Composable
-    private fun screenImplementation(viewModel: HomeViewModel = viewModel {HomeViewModel()} ) {
-        val coroutineScope = rememberCoroutineScope()
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
+    private fun ScreenContent() {
+        val scrollState = rememberScrollState()
+        val loginLabel = stringResource(Res.string.login)
+        val signupLabel = stringResource(Res.string.signup)
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 32.dp, vertical = 48.dp)
         ) {
-            Text("This is the home screen")
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                Text(
+                    text = stringResource(Res.string.home_headline),
+                    style = MaterialTheme.typography.headlineMedium,
+                    textAlign = TextAlign.Center
+                )
 
-            Button(
-                label = stringResource(Res.string.buttons_preview),
-                onClick = {
-                    logger.info { "Navegando a $BUTTONS_PREVIEW_PATH" }
-                    navigate(BUTTONS_PREVIEW_PATH)
-                }
-            )
+                Text(
+                    text = stringResource(Res.string.home_subtitle),
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center
+                )
 
-            Button(
-                label = stringResource(Res.string.login),
-                onClick = {
-                    logger.info { "Navegando a $SECUNDARY_PATH" }
-                    navigate(SECUNDARY_PATH)
-                }
-            )
+                Spacer(modifier = Modifier.height(16.dp))
 
-            Button(
-                label = stringResource(Res.string.change_password),
-                onClick = {
-                    logger.info { "Navegando a $CHANGE_PASSWORD_PATH" }
-                    navigate(CHANGE_PASSWORD_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.two_factor_setup),
-                onClick = {
-                    logger.info { "Navegando a $TWO_FACTOR_SETUP_PATH" }
-                    navigate(TWO_FACTOR_SETUP_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.two_factor_verify),
-                onClick = {
-                    logger.info { "Navegando a $TWO_FACTOR_VERIFY_PATH" }
-                    navigate(TWO_FACTOR_VERIFY_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.review_business),
-                onClick = {
-                    logger.info { "Navegando a $REVIEW_BUSINESS_PATH" }
-                    navigate(REVIEW_BUSINESS_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.review_join_business),
-                onClick = {
-                    logger.info { "Navegando a $REVIEW_JOIN_BUSINESS_PATH" }
-                    navigate(REVIEW_JOIN_BUSINESS_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.register_saler),
-                onClick = {
-                    logger.info { "Navegando a $REGISTER_SALER_PATH" }
-                    navigate(REGISTER_SALER_PATH)
-                }
-            )
-
-            Button(
-                label = stringResource(Res.string.logout),
-                onClick = {
-                    coroutineScope.launch {
-                        logger.info { "Solicitando logout" }
-                        try {
-                            viewModel.logout()
-                            logger.info { "Logout exitoso" }
-                            navigate(LOGIN_PATH)
-                        } catch (e: Throwable) {
-                            logger.error(e) { "Error durante logout" }
-                        }
+                IntralePrimaryButton(
+                    text = loginLabel,
+                    iconAsset = "ic_login.svg",
+                    iconContentDescription = loginLabel,
+                    modifier = Modifier.fillMaxWidth(0.9f),
+                    onClick = {
+                        logger.info { "Navegando a $LOGIN_PATH" }
+                        navigate(LOGIN_PATH)
                     }
+                )
 
-                }
-            )
-
+                IntralePrimaryButton(
+                    text = signupLabel,
+                    iconAsset = "ic_register.svg",
+                    iconContentDescription = signupLabel,
+                    modifier = Modifier.fillMaxWidth(0.9f),
+                    onClick = {
+                        logger.info { "Navegando a $SELECT_SIGNUP_PROFILE_PATH" }
+                        navigate(SELECT_SIGNUP_PROFILE_PATH)
+                    }
+                )
+            }
         }
     }
-
 }
-
-
-/*@OptIn(ExperimentalResourceApi::class)
-@Composable
-@Preview
-fun Home() {
-
-    Text("This is the home screen")
-
-}*/
