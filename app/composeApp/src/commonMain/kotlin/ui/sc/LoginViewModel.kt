@@ -9,6 +9,7 @@ import asdo.ToDoCheckPreviousLogin
 import asdo.ToDoLogin
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
+import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -22,8 +23,11 @@ class LoginViewModel : ViewModel() {
 
     // data state initialize
     var state by mutableStateOf(LoginUIState())
+        private set
     var loading by mutableStateOf(false)
     var changePasswordRequired by mutableStateOf(false)
+        private set
+    private var loginValidation: Validation<LoginUIState> = buildValidation()
 
     data class LoginUIState (
         val user: String = "",
@@ -42,22 +46,8 @@ class LoginViewModel : ViewModel() {
    }
 
     fun setupValidation() {
-        validation = Validation<LoginUIState> {
-            //TODO: Externalizar mensajes
-            LoginUIState::user required {
-                minLength(8) hint "Debe contener al menos 8 caracteres."
-            }
-            LoginUIState::password required {
-                minLength(8) hint "Debe contener al menos 8 caracteres."
-            }
-            if (changePasswordRequired) {
-                LoginUIState::newPassword required {
-                    minLength(8) hint "Debe contener al menos 8 caracteres."
-                }
-                LoginUIState::name required {}
-                LoginUIState::familyName required {}
-            }
-        } as Validation<Any>
+        loginValidation = buildValidation()
+        validation = loginValidation as Validation<Any>
     }
    override fun initInputState() {
        inputsStates = mutableMapOf(
@@ -78,6 +68,7 @@ class LoginViewModel : ViewModel() {
     suspend fun login(): Result<DoLoginResult> {
         logger.debug { "Iniciando login" }
         setupValidation()
+        validateCurrentState()
         val result = todoLogin.execute(
             user = state.user,
             password = state.password,
@@ -95,6 +86,85 @@ class LoginViewModel : ViewModel() {
         val result = toDoCheckPreviousLogin.execute()
         logger.debug { "Resultado verificación: $result" }
         return result
+    }
+
+    fun onUserChange(value: String) {
+        state = state.copy(user = value)
+        validateCurrentState()
+    }
+
+    fun onPasswordChange(value: String) {
+        state = state.copy(password = value)
+        validateCurrentState()
+    }
+
+    fun onNewPasswordChange(value: String) {
+        state = state.copy(newPassword = value)
+        validateCurrentState()
+    }
+
+    fun onNameChange(value: String) {
+        state = state.copy(name = value)
+        validateCurrentState()
+    }
+
+    fun onFamilyNameChange(value: String) {
+        state = state.copy(familyName = value)
+        validateCurrentState()
+    }
+
+    fun markCredentialsAsInvalid(message: String) {
+        listOf(LoginUIState::user.name, LoginUIState::password.name).forEach { key ->
+            inputsStates[key]?.let {
+                it.value = it.value.copy(isValid = false, details = message)
+            }
+        }
+    }
+
+    fun requirePasswordChange() {
+        if (!changePasswordRequired) {
+            changePasswordRequired = true
+            setupValidation()
+        }
+        validateCurrentState()
+    }
+
+    private fun validateCurrentState() {
+        inputsStates.forEach { (_, inputState) ->
+            inputState.value = inputState.value.copy(isValid = true, details = "")
+        }
+        val result = loginValidation(state)
+        result.errors.forEach { error ->
+            val key = error.dataPath.substring(1)
+            val mutableState = inputsStates.getOrPut(key) { mutableStateOf(InputState(key)) }
+            mutableState.value = mutableState.value.copy(
+                isValid = false,
+                details = error.message
+            )
+        }
+    }
+
+    private fun buildValidation(): Validation<LoginUIState> = Validation {
+        LoginUIState::user required {
+            minLength(1) hint "Ingresá tu correo electrónico"
+            pattern(".+@.+\\..+") hint "Ingresá un correo electrónico válido"
+        }
+        LoginUIState::password required {
+            minLength(1) hint "Ingresá tu contraseña"
+            minLength(8) hint "Debe contener al menos 8 caracteres"
+        }
+        if (changePasswordRequired) {
+            LoginUIState::newPassword required {
+                minLength(1) hint "Ingresá tu nueva contraseña"
+                minLength(8) hint "Debe contener al menos 8 caracteres"
+            }
+            LoginUIState::name required {
+                minLength(1) hint "Ingresá tu nombre"
+            }
+            LoginUIState::familyName required {
+                minLength(1) hint "Ingresá tu apellido"
+            }
+        }
     }
 }
 
