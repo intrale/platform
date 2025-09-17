@@ -37,16 +37,23 @@ El archivo `DIManager.kt` configura Kodein y registra las dependencias necesaria
 ```kotlin
 var di = DI {
     bindFactory<NavHostController, Router> { navigator -> CommonRouter(navigator) }
+    bindSingleton(tag = HOME) { Home() }
     bindSingleton(tag = INIT) { Login() }
-    bindSingleton(tag = DASHBOARD) { Home() }
-    bindSingleton(tag = SECUNDARY) { Secundary() }
+    bindSingleton(tag = DASHBOARD) { DashboardScreen() }
+    bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
     bindSingleton(tag = SCREENS) {
-        arrayListOf<Screen>(instance(tag = INIT), instance(tag = DASHBOARD), instance(tag = SECUNDARY))
+        arrayListOf(
+            instance(tag = HOME),
+            instance(tag = INIT),
+            instance(tag = DASHBOARD),
+            instance(tag = BUTTONS_PREVIEW),
+            // ...resto de las pantallas
+        )
     }
     bindSingleton<HttpClient> {
-        HttpClient(CIO) {
+        HttpClient() {
             install(ContentNegotiation) { json(Json { isLenient = true; ignoreUnknownKeys = true }) }
-            install(Logging) { level = LogLevel.NONE }
+            install(Logging) { level = LogLevel.ALL }
             install(DefaultRequest) { header(HttpHeaders.ContentType, ContentType.Application.Json) }
         }
     }
@@ -57,11 +64,11 @@ var di = DI {
     bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
 }
 ```
-【F:app/composeApp/src/commonMain/kotlin/DIManager.kt†L37-L101】
+【F:app/composeApp/src/commonMain/kotlin/DIManager.kt†L35-L118】
 
 ## 4. Pantallas y navegación
 
-La navegación se gestiona mediante `Router` y su implementación `CommonRouter`. Cada pantalla extiende la clase `Screen`, donde define su ruta y título. `CommonRouter` expone el `NavHost` y comparte el controlador de navegación con cada pantalla.
+La navegación se gestiona mediante `Router` y su implementación `CommonRouter`. Cada pantalla extiende la clase `Screen`, donde define su ruta y título. Tras la nueva landing pública, la aplicación inicia en `Home` con los CTA de acceso y delega el resto de acciones en `DashboardScreen`. `CommonRouter` expone el `NavHost`, comparte el controlador de navegación con cada pantalla y usa la primera pantalla registrada (Home) como `startDestination`.
 
 ```kotlin
 abstract class Router(var navigator: NavHostController) {
@@ -78,73 +85,63 @@ abstract class Router(var navigator: NavHostController) {
 ```kotlin
 class CommonRouter(navigator: NavHostController) : Router(navigator) {
     val screens: List<Screen> by DIManager.di.instance<List<Screen>>(tag = SCREENS)
-    @Composable override fun routes() { routes(PaddingValues()) }
-    @Composable override fun routes(padding: PaddingValues) {
-        val modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(padding)
-        NavHost(navController = navigator, startDestination = screens.first().route, modifier = modifier) {
+
+    @Composable
+    override fun routes() {
+        routes(PaddingValues())
+    }
+
+    @Composable
+    override fun routes(padding: PaddingValues) {
+        val modifier = Modifier
+            .fillMaxSize()
+            .padding(padding)
+
+        NavHost(
+            navController = navigator,
+            startDestination = screens.first().route,
+            modifier = modifier
+        ) {
             val iterator = screens.listIterator()
             while (iterator.hasNext()) {
                 val actual = iterator.next()
-                actual.navigate = { route: String -> navigator.navigate(route) }
+                actual.navigator = { route: String -> navigator.navigate(route) }
                 composable(route = actual.route) { actual.screen() }
             }
         }
     }
-    @Composable override fun currentScreen(): Screen {
+
+    @Composable
+    override fun currentScreen(): Screen {
         val backStackEntry by currentBackStackEntryAsState()
-        val currentPath = backStackEntry?.destination?.route ?: LOGIN_PATH
-        return screens.map { it.route to it }.toMap().get(currentPath)!!
+        val currentPath = backStackEntry?.destination?.route ?: screens.first().route
+        return screens.associateBy { it.route }.getValue(currentPath)
     }
-    @Composable override fun currentBackStackEntryAsState(): State<NavBackStackEntry?> = navigator.currentBackStackEntryAsState()
-    override fun canNavigateBack(): Boolean = navigator.previousBackStackEntry != null
-    override fun navigateUp(): Boolean = navigator.navigateUp()
+
+    // ...
 }
 ```
 【F:app/composeApp/src/commonMain/kotlin/ui/ro/CommonRouter.kt†L1-L83】
 
 ### Ejemplo de pantalla: `Login`
 
-La pantalla de login utiliza un `LoginViewModel` para manejar el estado y las validaciones. Cuando el usuario ingresa las credenciales y éstas son válidas, se invoca la acción `login()` y se navega a `HOME_PATH` si se obtiene un token válido.
+La pantalla de login utiliza un `LoginViewModel` para manejar el estado y las validaciones. Cuando el usuario ingresa las credenciales y éstas son válidas, se invoca la acción `login()` y, con el token persistido, se navega a `DASHBOARD_PATH` para mostrar el menú autenticado.
 
 Si la llamada al servicio de autenticación falla, la interfaz despliega un `Snackbar` informando si las credenciales son inválidas o si ocurrió un problema de conexión.
 
 En caso de recibir la respuesta `newPassword is required`, la pantalla muestra campos adicionales para ingresar la nueva contraseña, nombre y apellido. Al completarlos se vuelve a invocar `login()` enviando estos datos.
 
 ```kotlin
-class Login() : Screen(LOGIN_PATH, Res.string.login) {
-    @Composable override fun screen() { screenImplementation() }
-    @OptIn(ExperimentalResourceApi::class)
-    @Composable
-    private fun screenImplementation(viewModel: LoginViewModel = viewModel { LoginViewModel() }) {
-        val coroutineScope = rememberCoroutineScope()
-        forwardToHome(viewModel, coroutineScope, suspend { viewModel.previousLogin() })
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Spacer(modifier = Modifier.size(10.dp))
-            TextField(Res.string.username, value = viewModel.state.user,
-                      state = viewModel.inputsStates[LoginViewModel.LoginUIState::user.name]!!,
-                      onValueChange = { value -> viewModel.state = viewModel.state.copy(user = value) })
-            Spacer(modifier = Modifier.size(10.dp))
-            TextField(Res.string.password, visualTransformation = true,
-                      value = viewModel.state.password,
-                      state = viewModel.inputsStates[LoginViewModel.LoginUIState::password.name]!!,
-                      onValueChange = { value -> viewModel.state = viewModel.state.copy(password = value) })
-            Spacer(modifier = Modifier.size(10.dp))
-            Button(
-                label = stringResource(Res.string.login),
-                loading = viewModel.loading,
-                enabled = !viewModel.loading
-            ) {
-                if (viewModel.isValid()) {
-                    viewModel.loading = true
-                    forwardToHome(viewModel, coroutineScope, suspend { true })
-                }
-            }
-        }
-    }
+result.onSuccess {
+    viewModel.loading = false
+    navigate(DASHBOARD_PATH)
+}.onFailure { error ->
+    // Manejo de errores y mensajes de snack bar
 }
 ```
-Al presionar el botón se asigna `loading = true` para mostrar un indicador de progreso y deshabilitar el botón hasta finalizar la acción de login.
-【F:app/composeApp/src/commonMain/kotlin/ui/sc/Login.kt†L1-L70】
+【F:app/composeApp/src/commonMain/kotlin/ui/sc/Login.kt†L229-L256】
+
+Al presionar el botón principal se valida el formulario, se ejecuta `login()` y, si la respuesta es exitosa, la navegación lleva al nuevo panel interno sin pasar por la landing pública.
 
 ## 5. Vista Modelo y validaciones
 

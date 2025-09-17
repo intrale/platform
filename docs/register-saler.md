@@ -21,7 +21,7 @@ tabla `userbusinessprofile` con perfil `BusinessAdmin`.
 
 ## Aplicación Compose
 - Pantalla interna: `/workspace/platform/app/composeApp/src/commonMain/kotlin/ui/sc/RegisterSalerScreen.kt`.
-  - Disponible desde el Home de Business Admin y reutiliza `callService` para mostrar feedback.
+  - Disponible desde `DashboardScreen`, el nuevo menú autenticado que reemplaza al Home administrativo, y reutiliza `callService` para mostrar feedback.
   - Al completar el registro limpia el formulario y muestra un `Snackbar` de confirmación.
 - ViewModel: `/workspace/platform/app/composeApp/src/commonMain/kotlin/ui/sc/RegisterSalerViewModel.kt` con validación de correo.
 - Caso de uso: `/workspace/platform/app/composeApp/src/commonMain/kotlin/asdo/DoRegisterSaler.kt`, que toma el token guardado en

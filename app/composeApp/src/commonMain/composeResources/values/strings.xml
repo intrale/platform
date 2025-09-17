@@ -9,8 +9,10 @@
     <string name="buttons_preview">Demo de botones Intrale</string>
 
 
-    <string name="home">Home</string>
-    <string name="secundary">Pantalla secundaria</string>
+    <string name="home">Inicio</string>
+    <string name="home_headline">Impulsamos tu operación con Intrale</string>
+    <string name="home_subtitle">Ingresá o registrate para centralizar tu negocio y la gestión de tu red comercial.</string>
+    <string name="dashboard">Panel principal</string>
     <string name="signup">Registrarme</string>
     <string name="signup_platform_admin">Registro Platform Admin</string>
     <string name="signup_delivery">Registro Delivery</string>
