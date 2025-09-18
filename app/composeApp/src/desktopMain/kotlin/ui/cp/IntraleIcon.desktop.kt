@@ -29,7 +29,7 @@ actual fun IntraleIcon(
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = assetName.removeSuffix(".svg"),
+            text = assetName.substringAfterLast('/').removeSuffix(".svg"),
             style = MaterialTheme.typography.labelSmall,
             color = tint ?: MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
