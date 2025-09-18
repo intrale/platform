@@ -1,6 +1,7 @@
 package ui.th
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -105,3 +106,7 @@ fun IntraleTheme(
         )
     }
 }
+
+internal val lightScheme: ColorScheme = IntraleLightColorScheme
+
+internal val darkScheme: ColorScheme = IntraleDarkColorScheme
