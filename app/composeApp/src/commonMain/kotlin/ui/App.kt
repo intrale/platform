@@ -24,8 +24,7 @@ import org.kodein.log.newLogger
 import ui.ro.Router
 import ui.rs.Res
 import ui.rs.back_button
-import ui.th.darkScheme
-import ui.th.lightScheme
+import ui.th.IntraleTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,41 +56,28 @@ fun AppBar(
             }
         }
     )
-
 }
 
-//@OptIn( ExperimentalResourceApi::class)
-//@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-//@Preview
 fun App() {
-
     val logger = LoggerFactory.default.newLogger("ui", "App")
-
-    val router:Router by DIManager.di.instance(arg = rememberNavController())
-
-    val colorScheme =
-        if (!isSystemInDarkTheme()) {
-            lightScheme
-        } else {
-            darkScheme
-        }
+    val router: Router by DIManager.di.instance(arg = rememberNavController())
+    val useDarkTheme = isSystemInDarkTheme()
 
     logger.info { "Starting Intrale" }
 
-    MaterialTheme(
-        colorScheme = colorScheme
-    ){
-        Scaffold (
-                topBar = {
-                    AppBar(
-                        title = router.currentScreen().title,
-                        canNavigateBack =  router.canNavigateBack(),
-                        onClick =  { router.navigateUp() }
-                    )
-                }
-            ) { innerPadding -> router.routes(innerPadding)
+    IntraleTheme(useDarkTheme = useDarkTheme) {
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                AppBar(
+                    title = router.currentScreen().title,
+                    canNavigateBack = router.canNavigateBack(),
+                    onClick = { router.navigateUp() }
+                )
             }
+        ) { innerPadding ->
+            router.routes(innerPadding)
         }
-
+    }
 }

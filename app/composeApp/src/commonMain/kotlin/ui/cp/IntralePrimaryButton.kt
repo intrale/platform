@@ -1,7 +1,6 @@
 package ui.cp
 
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -10,6 +9,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -20,9 +20,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import ui.th.spacing
 
 @Composable
 fun IntralePrimaryButton(
@@ -54,11 +54,7 @@ fun IntralePrimaryButton(
         label = "intralePrimaryButtonShimmerOffset"
     )
 
-    val gradientBrush = remember {
-        Brush.horizontalGradient(
-            colors = listOf(Color(0xFF0A3D91), Color(0xFF1FB6FF))
-        )
-    }
+    val gradientBrush = IntraleButtonDefaults.primaryBrush()
 
     var buttonModifier = IntraleButtonDefaults
         .baseModifier(modifier, isInteractive)
@@ -66,7 +62,7 @@ fun IntralePrimaryButton(
             scaleX = scale
             scaleY = scale
         }
-        .clip(IntraleButtonDefaults.SHAPE)
+        .clip(MaterialTheme.shapes.large)
         .background(gradientBrush)
 
     if (isInteractive) {
@@ -93,9 +89,9 @@ fun IntralePrimaryButton(
             drawRect(
                 brush = Brush.linearGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0f),
-                        Color.White.copy(alpha = 0.25f),
-                        Color.White.copy(alpha = 0f)
+                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0f),
+                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.25f),
+                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0f)
                     ),
                     start = Offset(shimmerOffset, 0f),
                     end = Offset(shimmerOffset + size.width / 3f, size.height)
@@ -108,9 +104,9 @@ fun IntralePrimaryButton(
             iconAsset = iconAsset,
             iconContentDescription = iconContentDescription,
             loading = loading,
-            textColor = Color.White,
-            progressColor = Color.White,
-            iconTint = null
+            textColor = IntraleButtonDefaults.primaryContentColor(),
+            progressColor = IntraleButtonDefaults.primaryContentColor(),
+            iconTint = IntraleButtonDefaults.primaryContentColor()
         )
     }
 }

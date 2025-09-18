@@ -14,7 +14,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -34,6 +33,7 @@ import ui.rs.review_business
 import ui.rs.review_join_business
 import ui.rs.two_factor_setup
 import ui.rs.two_factor_verify
+import ui.th.spacing
 
 const val DASHBOARD_PATH = "/dashboard"
 
@@ -55,17 +55,20 @@ class DashboardScreen : Screen(DASHBOARD_PATH, Res.string.dashboard) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 32.dp)
+                .padding(
+                    horizontal = MaterialTheme.spacing.x3,
+                    vertical = MaterialTheme.spacing.x4
+                )
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
         ) {
             Text(
                 text = stringResource(Res.string.dashboard),
-                style = MaterialTheme.typography.headlineSmall
+                style = MaterialTheme.typography.headlineMedium
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(MaterialTheme.spacing.x1))
 
             Button(
                 label = stringResource(Res.string.buttons_preview),

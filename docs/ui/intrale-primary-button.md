@@ -37,7 +37,7 @@ IntraleIcon(
 > ℹ️ En Desktop/iOS/Wasm se renderiza un placeholder con el nombre del asset hasta que se provean loaders nativos.
 
 ### `IntralePrimaryButton`
-Botón composable con gradiente `#0A3D91 -> #1FB6FF`, shimmer en loop y rebote al presionar.
+Botón composable que toma los colores desde `MaterialTheme.colorScheme` (gradiente entre `primary` y `primaryContainer`), aplica shimmer en loop y rebote al presionar.
 
 ```kotlin
 IntralePrimaryButton(
@@ -51,6 +51,7 @@ Parámetros relevantes:
 - `enabled`: desactiva interacciones y reduce opacidad.
 - `loading`: muestra `CircularProgressIndicator` y pausa los clics.
 - `iconContentDescription`: opcional para accesibilidad (por defecto usa `text`).
+- El alto, padding e iconos usan los tokens de `MaterialTheme.spacing`, por lo que cualquier ajuste del grid de 8 dp se propaga automáticamente.
 
 ## 🖥️ Pantalla de demostración
 `ButtonsPreviewScreen` se encuentra registrada en `DIManager` y accesible desde el Home. Presenta tres estados:
