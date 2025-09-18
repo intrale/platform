@@ -23,6 +23,7 @@ buildkonfig {
     defaultConfigs {
         buildConfigField(FieldSpec.Type.STRING, "BASE_URL", "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/")
         buildConfigField(FieldSpec.Type.STRING, "BUSINESS", "intrale")
+        buildConfigField(FieldSpec.Type.BOOLEAN, "ENABLE_BUTTON_STRESS_TEST", "false")
     }
 }
 
@@ -72,6 +73,7 @@ kotlin {
             implementation(libs.ktor.client.android)
             implementation("io.coil-kt:coil-compose:2.6.0")
             implementation("io.coil-kt:coil-svg:2.6.0")
+            implementation(libs.androidx.metrics.performance)
         }
         commonMain.dependencies {
             implementation(compose.runtime)
@@ -96,6 +98,7 @@ kotlin {
 
             implementation(libs.konform)
 
+            implementation(libs.kotlinx.coroutines.core)
 
         }
         commonTest.dependencies {

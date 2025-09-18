@@ -14,6 +14,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +32,9 @@ internal object IntraleButtonDefaults {
     val HEIGHT = 54.dp
     val SHAPE = RoundedCornerShape(18.dp)
     private const val DISABLED_ALPHA = 0.6f
+    const val SHIMMER_HIGHLIGHT_ALPHA = 0.12f
+    const val STRESS_TAP_PERIOD_MILLIS = 160L
+    const val STRESS_PRESS_DURATION_MILLIS = 90L
 
     fun isInteractive(enabled: Boolean, loading: Boolean): Boolean = enabled && !loading
 
@@ -98,5 +102,15 @@ internal fun IntraleButtonContent(
                 fontSize = 16.sp
             )
         )
+    }
+}
+
+@Immutable
+data class IntraleButtonStressTestState(
+    val active: Boolean = false,
+    val tick: Int = 0
+) {
+    companion object {
+        val Disabled = IntraleButtonStressTestState(false, 0)
     }
 }

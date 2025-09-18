@@ -10,7 +10,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -23,6 +25,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.delay
+import ui.accessibility.rememberMotionPreferences
+import ui.th.rememberIntralePrimaryGradient
 
 @Composable
 fun IntralePrimaryButton(
@@ -32,33 +37,43 @@ fun IntralePrimaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     loading: Boolean = false,
-    iconContentDescription: String? = null
+    iconContentDescription: String? = null,
+    stressTestState: IntraleButtonStressTestState = IntraleButtonStressTestState.Disabled
 ) {
     val logger = IntraleButtonDefaults.rememberLogger("IntralePrimaryButton")
     val isInteractive = IntraleButtonDefaults.isInteractive(enabled, loading)
+    val motionPreferences = rememberMotionPreferences()
 
     var pressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (pressed && isInteractive) 0.98f else 1f,
-        animationSpec = tween(durationMillis = 120),
-        label = "intralePrimaryButtonScale"
-    )
-
-    val shimmerTransition = rememberInfiniteTransition(label = "intralePrimaryButtonShimmer")
-    val shimmerOffset by shimmerTransition.animateFloat(
-        initialValue = -300f,
-        targetValue = 300f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1600, easing = LinearEasing)
-        ),
-        label = "intralePrimaryButtonShimmerOffset"
-    )
-
-    val gradientBrush = remember {
-        Brush.horizontalGradient(
-            colors = listOf(Color(0xFF0A3D91), Color(0xFF1FB6FF))
-        )
+    val scale = if (motionPreferences.reduceMotion || !isInteractive) {
+        1f
+    } else {
+        val targetScale = if (pressed) 0.98f else 1f
+        animateFloatAsState(
+            targetValue = targetScale,
+            animationSpec = tween(durationMillis = 120),
+            label = "intralePrimaryButtonScale"
+        ).value
     }
+
+    val shimmerEnabled = isInteractive && !motionPreferences.reduceMotion
+    val shimmerOffset: Float = if (shimmerEnabled) {
+        val shimmerTransition = rememberInfiniteTransition(label = "intralePrimaryButtonShimmer")
+        val offset by shimmerTransition.animateFloat(
+            initialValue = -300f,
+            targetValue = 300f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1600, easing = LinearEasing)
+            ),
+            label = "intralePrimaryButtonShimmerOffset"
+        )
+        offset
+    } else {
+        0f
+    }
+
+    val gradientBrush = rememberIntralePrimaryGradient()
+    val shimmerHighlight = MaterialTheme.colorScheme.onPrimary.copy(alpha = IntraleButtonDefaults.SHIMMER_HIGHLIGHT_ALPHA)
 
     var buttonModifier = IntraleButtonDefaults
         .baseModifier(modifier, isInteractive)
@@ -68,6 +83,19 @@ fun IntralePrimaryButton(
         }
         .clip(IntraleButtonDefaults.SHAPE)
         .background(gradientBrush)
+
+    LaunchedEffect(stressTestState.active, stressTestState.tick, isInteractive) {
+        if (stressTestState.active && isInteractive) {
+            pressed = true
+            logger.info { "IntralePrimaryButton stress tap: $text" }
+            onClick()
+            try {
+                delay(IntraleButtonDefaults.STRESS_PRESS_DURATION_MILLIS)
+            } finally {
+                pressed = false
+            }
+        }
+    }
 
     if (isInteractive) {
         buttonModifier = buttonModifier.pointerInput(text, iconAsset) {
@@ -89,28 +117,30 @@ fun IntralePrimaryButton(
     }
 
     IntraleButtonLayout(modifier = buttonModifier) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0f),
-                        Color.White.copy(alpha = 0.25f),
-                        Color.White.copy(alpha = 0f)
+        if (shimmerEnabled) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            shimmerHighlight,
+                            Color.Transparent
+                        ),
+                        start = Offset(shimmerOffset, 0f),
+                        end = Offset(shimmerOffset + size.width / 3f, size.height)
                     ),
-                    start = Offset(shimmerOffset, 0f),
-                    end = Offset(shimmerOffset + size.width / 3f, size.height)
-                ),
-                blendMode = BlendMode.Lighten
-            )
+                    blendMode = BlendMode.SrcOver
+                )
+            }
         }
         IntraleButtonContent(
             text = text,
             iconAsset = iconAsset,
             iconContentDescription = iconContentDescription,
             loading = loading,
-            textColor = Color.White,
-            progressColor = Color.White,
-            iconTint = null
+            textColor = MaterialTheme.colorScheme.onPrimary,
+            progressColor = MaterialTheme.colorScheme.onPrimary,
+            iconTint = MaterialTheme.colorScheme.onPrimary
         )
     }
 }

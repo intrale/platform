@@ -37,6 +37,17 @@ val surfaceContainerLight = Color(0xFFEDEDF4)
 val surfaceContainerHighLight = Color(0xFFE7E8EE)
 val surfaceContainerHighestLight = Color(0xFFE2E2E9)
 
+// Gradientes accesibles para componentes corporativos
+val intralePrimaryGradientLightStart = Color(0xFF0C2D6B)
+val intralePrimaryGradientLightEnd = Color(0xFF1E4CA1)
+val intralePrimaryGradientDarkStart = Color(0xFF0B224F)
+val intralePrimaryGradientDarkEnd = Color(0xFF173B80)
+
+val intraleLoginGradientLightTop = Color(0xFF001B3E)
+val intraleLoginGradientLightBottom = Color(0xFF234373)
+val intraleLoginGradientDarkTop = Color(0xFF000D23)
+val intraleLoginGradientDarkBottom = Color(0xFF0F264F)
+
 val primaryLightMediumContrast = Color(0xFF234373)
 val onPrimaryLightMediumContrast = Color(0xFFFFFFFF)
 val primaryContainerLightMediumContrast = Color(0xFF5875A8)

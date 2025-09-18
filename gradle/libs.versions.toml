@@ -50,6 +50,7 @@ ktor-wasm2 = "3.0.0-wasm2"
 canard = "1.2.0"
 russhwolf = "1.2.0"
 buildkonfig = "0.13.3"
+androidx-metrics = "1.0.0-beta01"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -116,6 +117,8 @@ settings-no-arg = { module = "com.russhwolf:multiplatform-settings-no-arg", vers
 settings-serialization = { module = "com.russhwolf:multiplatform-settings-serialization", version.ref = "russhwolf" }
 settings-coroutines = { module = "com.russhwolf:multiplatform-settings-coroutines", version.ref = "russhwolf" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+androidx-metrics-performance = { module = "androidx.metrics:metrics-performance", version.ref = "androidx-metrics" }
 
 [bundles]
 ktor-common = ["ktor-client-core", "ktor-client-json", "ktor-client-logging", "ktor-client-serialization", "ktor-client-content-negotiation", "ktor-serialization-kotlinx-json"]
