@@ -12,6 +12,9 @@ import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.Font
 import ui.rs.Res
+import ui.rs.intrale_medium
+import ui.rs.intrale_regular
+import ui.rs.intrale_semibold
 
 @Composable
 fun IntraleTypography(): Typography {
