@@ -23,7 +23,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
@@ -64,7 +63,7 @@ fun TextField(
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
-            label = { Text(labelString) },
+            label = { Text(labelString, style = MaterialTheme.typography.labelMedium) },
             modifier = fieldModifier,
             leadingIcon = leadingIcon,
             trailingIcon = if (visualTransformation) {
@@ -81,6 +80,7 @@ fun TextField(
             isError = errorMessage != null,
             enabled = enabled,
             singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge,
             visualTransformation = if (visualTransformation && !isVisible) {
                 PasswordVisualTransformation()
             } else {
@@ -89,20 +89,27 @@ fun TextField(
             keyboardOptions = keyboardOptions,
             keyboardActions = keyboardActions,
             placeholder = placeholderString?.let { placeholderText ->
-                { Text(text = placeholderText) }
+                {
+                    Text(
+                        text = placeholderText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             },
             supportingText = {
                 when {
                     errorMessage != null -> Text(
                         text = errorMessage,
                         color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                        style = MaterialTheme.typography.labelSmall,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     supportingText != null -> supportingText()
                 }
-            }
+            },
+            shape = MaterialTheme.shapes.medium
         )
     }
 }
