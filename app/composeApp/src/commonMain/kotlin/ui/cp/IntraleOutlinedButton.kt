@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import ui.th.rememberIntralePrimaryGradient
+import ui.th.spacing
 
 @Composable
 fun IntraleOutlinedButton(
@@ -32,10 +33,10 @@ fun IntraleOutlinedButton(
         },
         modifier = IntraleButtonDefaults.baseModifier(modifier, isInteractive),
         enabled = isInteractive,
-        shape = IntraleButtonDefaults.SHAPE,
+        shape = MaterialTheme.shapes.large,
         color = Color.Transparent,
-        contentColor = MaterialTheme.colorScheme.primary,
-        border = BorderStroke(2.dp, borderBrush)
+        contentColor = IntraleButtonDefaults.outlinedContentColor(),
+        border = BorderStroke(MaterialTheme.spacing.x0_5 / 2, IntraleButtonDefaults.outlinedBrush())
     ) {
         IntraleButtonLayout(modifier = Modifier.fillMaxSize()) {
             IntraleButtonContent(
@@ -43,9 +44,9 @@ fun IntraleOutlinedButton(
                 iconAsset = iconAsset,
                 iconContentDescription = iconContentDescription,
                 loading = loading,
-                textColor = MaterialTheme.colorScheme.primary,
-                progressColor = MaterialTheme.colorScheme.primary,
-                iconTint = MaterialTheme.colorScheme.primary
+                textColor = IntraleButtonDefaults.outlinedContentColor(),
+                progressColor = IntraleButtonDefaults.outlinedContentColor(),
+                iconTint = IntraleButtonDefaults.outlinedContentColor()
             )
         }
     }

@@ -1,7 +1,6 @@
 package ui.cp
 
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -22,12 +21,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.delay
 import ui.accessibility.rememberMotionPreferences
 import ui.th.rememberIntralePrimaryGradient
+import ui.th.spacing
 
 @Composable
 fun IntralePrimaryButton(
@@ -81,7 +80,7 @@ fun IntralePrimaryButton(
             scaleX = scale
             scaleY = scale
         }
-        .clip(IntraleButtonDefaults.SHAPE)
+        .clip(MaterialTheme.shapes.large)
         .background(gradientBrush)
 
     LaunchedEffect(stressTestState.active, stressTestState.tick, isInteractive) {

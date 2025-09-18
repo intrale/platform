@@ -27,9 +27,9 @@ fun IntraleGhostButton(
         },
         modifier = IntraleButtonDefaults.baseModifier(modifier, isInteractive),
         enabled = isInteractive,
-        shape = IntraleButtonDefaults.SHAPE,
+        shape = MaterialTheme.shapes.large,
         color = Color.Transparent,
-        contentColor = MaterialTheme.colorScheme.primary
+        contentColor = IntraleButtonDefaults.ghostContentColor()
     ) {
         IntraleButtonLayout(modifier = Modifier.fillMaxSize()) {
             IntraleButtonContent(
@@ -37,9 +37,9 @@ fun IntraleGhostButton(
                 iconAsset = iconAsset,
                 iconContentDescription = iconContentDescription,
                 loading = loading,
-                textColor = MaterialTheme.colorScheme.primary,
-                progressColor = MaterialTheme.colorScheme.primary,
-                iconTint = MaterialTheme.colorScheme.primary
+                textColor = IntraleButtonDefaults.ghostContentColor(),
+                progressColor = IntraleButtonDefaults.ghostContentColor(),
+                iconTint = IntraleButtonDefaults.ghostContentColor()
             )
         }
     }

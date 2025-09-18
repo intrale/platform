@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -15,7 +16,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -29,6 +29,7 @@ import ui.rs.email
 import ui.rs.code
 import ui.rs.password
 import ui.rs.confirm_password_recovery
+import ui.th.spacing
 
 const val CONFIRM_PASSWORD_RECOVERY_PATH = "/confirmPasswordRecovery"
 
@@ -50,24 +51,28 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                 Modifier
                     .padding(padding)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = MaterialTheme.spacing.x3,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(modifier = Modifier.size(10.dp))
+                Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
-                Spacer(modifier = Modifier.size(10.dp))
+                Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.code,
                     value = viewModel.state.code,
                     state = viewModel.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::code.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(code = it) }
                 )
-                Spacer(modifier = Modifier.size(10.dp))
+                Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.password,
                     visualTransformation = true,
@@ -75,7 +80,7 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                     state = viewModel.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::password.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(password = it) }
                 )
-                Spacer(modifier = Modifier.size(10.dp))
+                Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
                     label = stringResource(Res.string.confirm_password_recovery),
                     loading = viewModel.loading,

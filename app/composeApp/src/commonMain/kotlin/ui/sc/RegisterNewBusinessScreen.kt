@@ -1,15 +1,21 @@
 package ui.sc
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -24,6 +30,7 @@ import ui.rs.email_admin
 import ui.rs.description
 import ui.rs.register_business
 import ui.rs.register_business_sent
+import ui.th.spacing
 
 const val REGISTER_NEW_BUSINESS_PATH = "/registerNewBusiness"
 
@@ -40,35 +47,40 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
         val snackbarHostState = remember { SnackbarHostState() }
         val registerBusinessSent = stringResource(Res.string.register_business_sent)
 
-        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
                 Modifier
+                    .padding(padding)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = MaterialTheme.spacing.x3,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.name,
                     value = viewModel.state.name,
                     state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::name.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(name = it) }
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.email_admin,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.description,
                     value = viewModel.state.description,
                     state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::description.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(description = it) }
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
                     label = stringResource(Res.string.register_business),
                     loading = viewModel.loading,
@@ -90,7 +102,7 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
                         }
                     }
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
             }
         }
     }

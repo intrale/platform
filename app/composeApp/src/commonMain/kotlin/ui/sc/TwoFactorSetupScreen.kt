@@ -1,10 +1,12 @@
 package ui.sc
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -19,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
@@ -27,6 +28,7 @@ import org.kodein.log.newLogger
 import kotlinx.coroutines.launch
 import ui.rs.Res
 import ui.rs.two_factor_setup
+import ui.th.spacing
 
 const val TWO_FACTOR_SETUP_PATH = "/twoFactorSetup"
 
@@ -73,8 +75,13 @@ class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH, Res.string.two_factor
                 Modifier
                     .padding(padding)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = MaterialTheme.spacing.x3,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
             ) {
                 if (viewModel.state.showQr) {
                     Text("QR pendiente")

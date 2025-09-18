@@ -1,15 +1,23 @@
 package ui.sc
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -23,6 +31,7 @@ import ui.rs.email
 import ui.rs.review_join_business
 import ui.rs.review_join_business_approved
 import ui.rs.review_join_business_rejected
+import ui.th.spacing
 
 const val REVIEW_JOIN_BUSINESS_PATH = "/reviewJoinBusiness"
 
@@ -40,22 +49,29 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
         val approvedMsg = stringResource(Res.string.review_join_business_approved)
         val rejectedMsg = stringResource(Res.string.review_join_business_rejected)
 
-        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
                 Modifier
+                    .padding(padding)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = MaterialTheme.spacing.x3,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[ReviewJoinBusinessViewModel.UIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
-                Spacer(Modifier.size(10.dp))
-                Row {
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
+                ) {
                     Button(
                         label = stringResource(Res.string.review_join_business_approved),
                         loading = viewModel.loading,
@@ -77,7 +93,6 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                             }
                         }
                     )
-                    Spacer(Modifier.size(10.dp))
                     Button(
                         label = stringResource(Res.string.review_join_business_rejected),
                         loading = viewModel.loading,
@@ -100,7 +115,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                         }
                     )
                 }
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
             }
         }
     }

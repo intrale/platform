@@ -34,7 +34,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -77,6 +76,8 @@ import ui.rs.signup_delivery
 import ui.rs.username
 import ui.sc.callService
 import ui.th.rememberLoginBackgroundGradient
+import ui.th.elevations
+import ui.th.spacing
 
 const val LOGIN_PATH = "/login"
 
@@ -193,17 +194,16 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             textAlign = TextAlign.Center
                         )
                     }
-
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    tonalElevation = 4.dp,
+                    tonalElevation = MaterialTheme.elevations.level2,
                     shape = MaterialTheme.shapes.large
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(24.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .padding(MaterialTheme.spacing.x3),
+                        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                     ) {
                         TextField(
                             label = Res.string.username,
@@ -255,12 +255,12 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                         AnimatedVisibility(visible = viewModel.changePasswordRequired) {
                             Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                             ) {
                                 Divider()
                                 Text(
                                     text = stringResource(Res.string.login_change_password_title),
-                                    style = MaterialTheme.typography.titleMedium
+                                    style = MaterialTheme.typography.titleLarge
                                 )
                                 Text(
                                     text = stringResource(Res.string.login_change_password_description),
@@ -326,7 +326,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
 
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     TextButton(

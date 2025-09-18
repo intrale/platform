@@ -1,15 +1,22 @@
 package ui.sc
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -22,6 +29,7 @@ import ui.rs.Res
 import ui.rs.business
 import ui.rs.request_join_business
 import ui.rs.request_join_business_sent
+import ui.th.spacing
 
 const val REQUEST_JOIN_BUSINESS_PATH = "/requestJoinBusiness"
 
@@ -38,21 +46,26 @@ class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.
         val snackbarHostState = remember { SnackbarHostState() }
         val requestSent = stringResource(Res.string.request_join_business_sent)
 
-        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
                 Modifier
+                    .padding(padding)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = MaterialTheme.spacing.x3,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.business,
                     value = viewModel.state.business,
                     state = viewModel.inputsStates[RequestJoinBusinessViewModel.UIState::business.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(business = it) }
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
                     label = stringResource(Res.string.request_join_business),
                     loading = viewModel.loading,
@@ -74,7 +87,7 @@ class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.
                         }
                     }
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
             }
         }
     }

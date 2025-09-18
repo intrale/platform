@@ -3,11 +3,12 @@ package ui.sc
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.material3.MaterialTheme
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import ui.cp.Button
@@ -17,6 +18,7 @@ import ui.rs.signup_platform_admin
 import ui.rs.signup_delivery
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.th.spacing
 
 const val SELECT_SIGNUP_PROFILE_PATH = "/selectSignupProfile"
 
@@ -29,8 +31,16 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
     @Composable
     private fun screenImpl() {
         logger.debug { "Mostrando SelectSignUpProfileScreen" }
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Spacer(modifier = Modifier.size(10.dp))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = MaterialTheme.spacing.x3,
+                    vertical = MaterialTheme.spacing.x4
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
                 label = stringResource(Res.string.signup_platform_admin),
                 loading = false,
@@ -39,7 +49,7 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                     logger.info { "Seleccionado perfil PlatformAdmin" }
                     navigate(SIGNUP_PLATFORM_ADMIN_PATH)
                 })
-            Spacer(modifier = Modifier.size(10.dp))
+            Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
                 label = stringResource(Res.string.signup_delivery),
                 loading = false,

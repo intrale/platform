@@ -1,16 +1,28 @@
 package ui.sc
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Card
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -30,6 +42,7 @@ import ui.rs.email_admin
 import ui.rs.auto_accept_deliveries
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.th.spacing
 
 const val REVIEW_BUSINESS_PATH = "/reviewBusiness"
 
@@ -50,24 +63,32 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
         }
 
         // TODO: restringir acceso solo a administradores
-        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) {
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
                 Modifier
+                    .padding(padding)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = MaterialTheme.spacing.x3,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 Text(stringResource(Res.string.pending_requests))
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.code,
                     value = viewModel.state.twoFactorCode,
                     state = viewModel.inputsStates[ReviewBusinessViewModel.UIState::twoFactorCode.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(twoFactorCode = it) }
                 )
-                Spacer(Modifier.size(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                ) {
                     Checkbox(
                         checked = viewModel.selected.size == viewModel.pending.size && viewModel.pending.isNotEmpty(),
                         onCheckedChange = { checked ->
@@ -76,16 +97,16 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                     )
                     Text(stringResource(Res.string.select_all))
                 }
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 viewModel.pending.forEach { biz ->
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(8.dp),
+                            .padding(MaterialTheme.spacing.x1),
                         colors = CardDefaults.cardColors()
                     ) {
                         Row(
-                            Modifier.padding(8.dp),
+                            Modifier.padding(MaterialTheme.spacing.x1),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(
@@ -114,7 +135,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                         )
                                     }
                                 )
-                                Spacer(Modifier.size(4.dp))
+                                Spacer(Modifier.size(MaterialTheme.spacing.x0_5))
                                 Button(
                                     label = stringResource(Res.string.reject),
                                     loading = viewModel.loading,
@@ -134,8 +155,10 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                         }
                     }
                 }
-                Spacer(Modifier.size(10.dp))
-                Row {
+                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                ) {
                     Button(
                         label = stringResource(Res.string.approve_selected),
                         loading = viewModel.loading,
@@ -157,7 +180,6 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             )
                         }
                     )
-                    Spacer(Modifier.size(4.dp))
                     Button(
                         label = stringResource(Res.string.reject_selected),
                         loading = viewModel.loading,

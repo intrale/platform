@@ -36,6 +36,7 @@ import ui.rs.buttons_preview
 import ui.rs.login
 import ui.rs.logout
 import ui.rs.signup
+import ui.th.spacing
 
 const val BUTTONS_PREVIEW_PATH = "/demo/buttons"
 
@@ -76,13 +77,16 @@ class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_pre
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+                .padding(
+                    horizontal = MaterialTheme.spacing.x3,
+                    vertical = MaterialTheme.spacing.x4
+                ),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
                 text = stringResource(Res.string.buttons_preview),
-                style = MaterialTheme.typography.headlineSmall
+                style = MaterialTheme.typography.headlineMedium
             )
 
             if (stressControlsEnabled) {

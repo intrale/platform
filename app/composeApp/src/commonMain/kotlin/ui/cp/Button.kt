@@ -1,12 +1,14 @@
 package ui.cp
 
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.th.spacing
 
 @Composable
 fun Button(
@@ -14,7 +16,7 @@ fun Button(
     onClick: () -> Unit = {},
     loading: Boolean = false,
     enabled: Boolean = true,
-    colors: ButtonColors = ButtonDefaults.buttonColors()
+    colors: androidx.compose.material3.ButtonColors = IntraleButtonDefaults.primaryButtonColors()
 ) {
     val logger = LoggerFactory.default.newLogger("ui.cp", "Button")
 
@@ -24,13 +26,25 @@ fun Button(
             onClick()
         },
         enabled = enabled && !loading,
-        colors = colors
+        colors = colors,
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(
+            horizontal = MaterialTheme.spacing.x2,
+            vertical = MaterialTheme.spacing.x1_5
+        )
     ) {
         if (loading) {
             logger.info { "Mostrando indicador de progreso" }
-            CircularProgressIndicator()
+            CircularProgressIndicator(
+                strokeWidth = MaterialTheme.spacing.x0_5 / 2,
+                modifier = Modifier.size(MaterialTheme.spacing.x3),
+                color = colors.contentColor(enabled = true).value
+            )
         } else {
-            Text(label)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge
+            )
         }
     }
 }
