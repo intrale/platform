@@ -1,7 +1,9 @@
 package ui.sc
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +38,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.DoLoginException
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -70,6 +75,7 @@ import ui.rs.signup
 import ui.rs.signup_delivery
 import ui.rs.username
 import ui.sc.callService
+import ui.th.rememberLoginBackgroundGradient
 import ui.th.elevations
 import ui.th.spacing
 
@@ -148,38 +154,46 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
             }
         }
 
-        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .imePadding()
-                    .verticalScroll(scrollState)
-                    .padding(
-                        horizontal = MaterialTheme.spacing.x3,
-                        vertical = MaterialTheme.spacing.x4
-                    ),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x4),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
-                ) {
-                    Text(
-                        text = stringResource(Res.string.login_title),
-                        style = MaterialTheme.typography.headlineMedium,
-                        textAlign = TextAlign.Center
-                    )
-                    Text(
-                        text = stringResource(Res.string.login_subtitle),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
+        val backgroundBrush = rememberLoginBackgroundGradient()
 
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(backgroundBrush)
+        ) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = Color.Transparent,
+                snackbarHost = { SnackbarHost(snackbarHostState) }
+            ) { padding ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .imePadding()
+                        .verticalScroll(scrollState)
+                        .padding(horizontal = 24.dp, vertical = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = stringResource(Res.string.login_title),
+                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = stringResource(Res.string.login_subtitle),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     tonalElevation = MaterialTheme.elevations.level2,
@@ -303,7 +317,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
 
                 IntralePrimaryButton(
                     text = loginText,
-                    iconAsset = "icons/ic_login.svg",
+                    iconAsset = "ic_login.svg",
                     onClick = submitLogin,
                     enabled = !viewModel.loading,
                     loading = viewModel.loading,
@@ -315,23 +329,39 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    TextButton(onClick = { navigate(SELECT_SIGNUP_PROFILE_PATH) }) {
+                    TextButton(
+                        onClick = { navigate(SELECT_SIGNUP_PROFILE_PATH) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimary)
+                    ) {
                         Text(text = stringResource(Res.string.signup))
                     }
-                    TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
+                    TextButton(
+                        onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimary)
+                    ) {
                         Text(text = stringResource(Res.string.register_business))
                     }
-                    TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
+                    TextButton(
+                        onClick = { navigate(SIGNUP_DELIVERY_PATH) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimary)
+                    ) {
                         Text(text = stringResource(Res.string.signup_delivery))
                     }
-                    TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
+                    TextButton(
+                        onClick = { navigate(PASSWORD_RECOVERY_PATH) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimary)
+                    ) {
                         Text(text = stringResource(Res.string.password_recovery))
                     }
-                    TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
+                    TextButton(
+                        onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimary)
+                    ) {
                         Text(text = stringResource(Res.string.confirm_password_recovery))
                     }
                 }
             }
         }
     }
+}
 }

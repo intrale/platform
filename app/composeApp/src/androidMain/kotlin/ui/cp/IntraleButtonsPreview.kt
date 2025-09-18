@@ -46,7 +46,7 @@ private fun IntraleButtonsPreviewContent() {
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Contraste AA validado: primary vs fondo claro ≈ 6.42:1, primary vs fondo oscuro ≈ 10.90:1.
+        // Contraste AA validado con el gradiente accesible y texto blanco en ambos extremos.
         IntralePrimaryButton(
             text = "Primario",
             iconAsset = "ic_login.svg",
