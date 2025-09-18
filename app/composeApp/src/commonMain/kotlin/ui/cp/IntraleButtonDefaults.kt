@@ -112,19 +112,28 @@ internal fun IntraleButtonContent(
                 color = progressColor,
                 modifier = Modifier.size(MaterialTheme.spacing.x3)
             )
+
+            Spacer(modifier = Modifier.width(MaterialTheme.spacing.x2))
+            Text(
+                text = text,
+                color = textColor,
+                style = MaterialTheme.typography.labelLarge
+            )
         } else {
-            IntraleIcon(
-                assetName = iconAsset,
-                contentDesc = iconContentDescription ?: text,
-                modifier = Modifier.size(MaterialTheme.spacing.x3),
-                tint = iconTint
+            if (iconAsset.isNotBlank()) {
+                IntraleIcon(
+                    assetName = iconAsset,
+                    contentDesc = iconContentDescription ?: text,
+                    modifier = Modifier.size(MaterialTheme.spacing.x3),
+                    tint = iconTint
+                )
+                Spacer(modifier = Modifier.width(MaterialTheme.spacing.x2))
+            }
+            Text(
+                text = text,
+                color = textColor,
+                style = MaterialTheme.typography.labelLarge
             )
         }
-        Spacer(modifier = Modifier.width(MaterialTheme.spacing.x2))
-        Text(
-            text = text,
-            color = textColor,
-            style = MaterialTheme.typography.labelLarge
-        )
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.platform.LocalContext
+import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import coil.decode.SvgDecoder
 import coil.request.ImageRequest
@@ -19,17 +20,22 @@ actual fun IntraleIcon(
     tint: Color?
 ) {
     val context = LocalContext.current
-    val request = remember(assetName, context) {
+    val normalizedAssetName = remember(assetName) {
+        assetName.substringAfterLast('/').ifEmpty { assetName }
+    }
+    val request = remember(normalizedAssetName, context) {
         ImageRequest.Builder(context)
-            .data("file:///android_asset/icons/$assetName")
+            .data("file:///android_asset/icons/$normalizedAssetName")
             .decoderFactory(SvgDecoder.Factory())
             .build()
     }
     val painter = rememberAsyncImagePainter(model = request)
-    Image(
-        painter = painter,
-        contentDescription = contentDesc,
-        modifier = modifier,
-        colorFilter = tint?.let(ColorFilter::tint)
-    )
+    if (painter.state is AsyncImagePainter.State.Success) {
+        Image(
+            painter = painter,
+            contentDescription = contentDesc,
+            modifier = modifier,
+            colorFilter = tint?.let(ColorFilter::tint)
+        )
+    }
 }
