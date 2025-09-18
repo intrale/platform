@@ -99,7 +99,7 @@ fun IntraleTheme(
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = IntraleTypography,
+            typography = IntraleTypography(),
             shapes = IntraleShapes,
             content = content
         )

@@ -1,6 +1,7 @@
 package ui.cp
 
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -38,7 +39,7 @@ fun Button(
             CircularProgressIndicator(
                 strokeWidth = MaterialTheme.spacing.x0_5 / 2,
                 modifier = Modifier.size(MaterialTheme.spacing.x3),
-                color = colors.contentColor(enabled = true).value
+                color = MaterialTheme.colorScheme.onPrimary
             )
         } else {
             Text(

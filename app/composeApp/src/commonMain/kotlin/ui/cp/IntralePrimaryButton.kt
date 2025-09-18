@@ -1,6 +1,7 @@
 package ui.cp
 
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -55,6 +56,14 @@ fun IntralePrimaryButton(
     )
 
     val gradientBrush = IntraleButtonDefaults.primaryBrush()
+    val colorScheme = MaterialTheme.colorScheme
+    val shimmerColors = remember(colorScheme) {
+        listOf(
+            colorScheme.onPrimary.copy(alpha = 0f),
+            colorScheme.onPrimary.copy(alpha = 0.25f),
+            colorScheme.onPrimary.copy(alpha = 0f)
+        )
+    }
 
     var buttonModifier = IntraleButtonDefaults
         .baseModifier(modifier, isInteractive)
@@ -88,11 +97,7 @@ fun IntralePrimaryButton(
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(
                 brush = Brush.linearGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0f),
-                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.25f),
-                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0f)
-                    ),
+                    colors = shimmerColors,
                     start = Offset(shimmerOffset, 0f),
                     end = Offset(shimmerOffset + size.width / 3f, size.height)
                 ),
