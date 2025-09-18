@@ -5,11 +5,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import ui.th.rememberIntralePrimaryGradient
 
 @Composable
 fun IntraleOutlinedButton(
@@ -24,11 +23,7 @@ fun IntraleOutlinedButton(
     val logger = IntraleButtonDefaults.rememberLogger("IntraleOutlinedButton")
     val isInteractive = IntraleButtonDefaults.isInteractive(enabled, loading)
 
-    val borderBrush = remember {
-        Brush.horizontalGradient(
-            colors = listOf(Color(0xFF0A3D91), Color(0xFF1FB6FF))
-        )
-    }
+    val borderBrush = rememberIntralePrimaryGradient()
 
     Surface(
         onClick = {

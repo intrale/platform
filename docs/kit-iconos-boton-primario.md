@@ -26,11 +26,11 @@ Relacionado con #221.
 - Implementar `IntraleIcon` en `app/composeApp/src/commonMain/kotlin/ui/cp/IntraleIcon.kt` como declaración `expect` que expone `assetName`, `contentDesc` y `modifier`; su `actual` de Android vivirá en `app/composeApp/src/androidMain/kotlin/ui/cp/IntraleIcon.android.kt` usando `rememberAsyncImagePainter`, `ImageRequest` y `SvgDecoder` para leer desde `file:///android_asset/icons/$assetName`.
 - Implementar un `actual` para Desktop/iOS (aunque sea un placeholder con `painterResource`) o dejar documentado que mostrará un recuadro vacío hasta contar con soporte multiplataforma.
 - Crear `IntralePrimaryButton` en `app/composeApp/src/commonMain/kotlin/ui/cp/IntralePrimaryButton.kt` reutilizando `IntraleIcon`, aplicando:
-  - Gradiente horizontal `#0A3D91 -> #1FB6FF` con esquinas de `18.dp` y ancho por defecto del 90% del contenedor.
-  - Capa `Canvas` con animación shimmer diagonal controlada por `rememberInfiniteTransition`.
+  - Gradiente horizontal accesible definido en `ui/th/Gradients.kt` (`#0C2D6B -> #1E4CA1` en tema claro / `#0B224F -> #173B80` en tema oscuro) con esquinas de `18.dp` y ancho por defecto del 90% del contenedor.
+  - Capa `Canvas` con animación shimmer diagonal controlada por `rememberInfiniteTransition` y desactivada cuando `rememberMotionPreferences().reduceMotion` sea `true`.
   - Rebote al presionar usando `pointerInput` + `detectTapGestures` y `animateFloatAsState` para escalar entre `0.98f` y `1f`.
   - Registro en logger (`LoggerFactory`) para depurar eventos de click, siguiendo el patrón del botón actual.
-  - Parámetros opcionales: `enabled`, `modifier`, `loading` (si se considera necesario) y `iconAsset`.
+  - Parámetros opcionales: `enabled`, `modifier`, `loading` (si se considera necesario), `iconAsset` y `stressTestState` para el modo automático de stress test.
 
 ### Pantalla de demostración y navegación
 - Crear `app/composeApp/src/commonMain/kotlin/ui/sc/ButtonsPreviewScreen.kt` con la clase `ButtonsPreviewScreen` que extienda `Screen`, defina `BUTTONS_PREVIEW_PATH` y renderice tres botones (`Ingresar`, `Registrarme`, `Salir`) usando los íconos correspondientes.

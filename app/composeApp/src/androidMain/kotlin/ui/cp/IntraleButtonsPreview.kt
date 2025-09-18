@@ -46,7 +46,7 @@ private fun IntraleButtonsPreviewContent() {
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Contraste AA validado: gradiente primario vs texto blanco ≈ 13.10:1 (inicio) y 8.07:1 (fin).
+        // Contraste AA validado con el gradiente accesible y texto blanco en ambos extremos.
         IntralePrimaryButton(
             text = "Primario",
             iconAsset = "ic_login.svg",

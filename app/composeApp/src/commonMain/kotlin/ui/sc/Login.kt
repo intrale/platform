@@ -317,7 +317,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
 
                 IntralePrimaryButton(
                     text = loginText,
-                    iconAsset = "icons/ic_login.svg",
+                    iconAsset = "ic_login.svg",
                     onClick = submitLogin,
                     enabled = !viewModel.loading,
                     loading = viewModel.loading,
