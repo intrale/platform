@@ -1,10 +1,9 @@
+import ar.com.intrale.branding.SyncBrandingIconsTask
+import com.codingfeline.buildkonfig.compiler.FieldSpec
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import com.codingfeline.buildkonfig.compiler.FieldSpec
-
-
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -162,12 +161,10 @@ compose.resources {
     generateResClass = always
 }
 
-val syncBrandingIcons by tasks.registering {
-    val script = rootProject.layout.projectDirectory.file("tools/branding/sync_icons.py")
-    val packDir = rootProject.layout.projectDirectory.dir("docs/branding/icon-pack")
-
-    inputs.file(script)
-    inputs.dir(packDir)
+val syncBrandingIcons by tasks.registering(SyncBrandingIconsTask::class) {
+    description = "Genera los íconos oficiales a partir de los archivos Base64"
+    packDirectory.set(rootProject.layout.projectDirectory.dir("docs/branding/icon-pack"))
+    projectRoot.set(rootProject.layout.projectDirectory)
 
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-hdpi"))
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-mdpi"))
@@ -176,12 +173,6 @@ val syncBrandingIcons by tasks.registering {
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-xxxhdpi"))
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/wasmJsMain/resources"))
     outputs.dir(rootProject.layout.projectDirectory.dir("app/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset"))
-
-    doLast {
-        exec {
-            commandLine("python3", script.asFile.absolutePath)
-        }
-    }
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
