@@ -22,7 +22,7 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.cp.buttons.Button
+import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
 import ui.rs.Res
 import ui.rs.email
@@ -66,8 +66,11 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.passwor
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                Button(
-                    label = stringResource(Res.string.password_recovery),
+                val recoveryLabel = stringResource(Res.string.password_recovery)
+                IntralePrimaryButton(
+                    text = recoveryLabel,
+                    iconAsset = "ic_recover.svg",
+                    iconContentDescription = recoveryLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

@@ -23,7 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
-import ui.cp.buttons.Button
+import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
 import ui.rs.Res
 import ui.rs.email
@@ -101,8 +101,11 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                     }
                 }
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                Button(
-                    label = stringResource(Res.string.signup_delivery),
+                val signupDeliveryLabel = stringResource(Res.string.signup_delivery)
+                IntralePrimaryButton(
+                    text = signupDeliveryLabel,
+                    iconAsset = "ic_delivery.svg",
+                    iconContentDescription = signupDeliveryLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
