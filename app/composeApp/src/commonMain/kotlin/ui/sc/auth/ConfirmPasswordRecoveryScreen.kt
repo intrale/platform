@@ -22,7 +22,7 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.cp.buttons.Button
+import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
 import ui.rs.Res
 import ui.rs.email
@@ -83,8 +83,11 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                     onValueChange = { viewModel.state = viewModel.state.copy(password = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                Button(
-                    label = stringResource(Res.string.confirm_password_recovery),
+                val confirmLabel = stringResource(Res.string.confirm_password_recovery)
+                IntralePrimaryButton(
+                    text = confirmLabel,
+                    iconAsset = "ic_recover.svg",
+                    iconContentDescription = confirmLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

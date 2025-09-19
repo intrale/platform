@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import org.kodein.log.Logger
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.cp.icons.IntraleIcon
 import ui.th.spacing
 
 internal object IntraleButtonDefaults {
@@ -95,6 +96,7 @@ internal fun IntraleButtonLayout(
 @Composable
 internal fun IntraleButtonContent(
     text: String,
+    iconAssetName: String?,
     leadingIcon: ImageVector?,
     leadingPainter: Painter?,
     iconContentDescription: String?,
@@ -125,6 +127,16 @@ internal fun IntraleButtonContent(
             )
         } else {
             when {
+                iconAssetName != null -> {
+                    IntraleIcon(
+                        assetName = iconAssetName,
+                        contentDesc = iconContentDescription ?: text,
+                        modifier = Modifier.size(MaterialTheme.spacing.x3),
+                        tint = iconTint ?: textColor
+                    )
+                    Spacer(modifier = Modifier.width(MaterialTheme.spacing.x2))
+                }
+
                 leadingIcon != null -> {
                     Icon(
                         imageVector = leadingIcon,

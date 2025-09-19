@@ -32,6 +32,7 @@ fun IntralePrimaryButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    iconAsset: String? = null,
     leadingIcon: ImageVector? = null,
     leadingPainter: Painter? = null,
     enabled: Boolean = true,
@@ -109,6 +110,7 @@ fun IntralePrimaryButton(
         }
         IntraleButtonContent(
             text = text,
+            iconAssetName = iconAsset,
             leadingIcon = leadingIcon,
             leadingPainter = leadingPainter,
             iconContentDescription = iconContentDescription,

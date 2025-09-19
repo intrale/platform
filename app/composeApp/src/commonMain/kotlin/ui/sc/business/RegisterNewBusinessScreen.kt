@@ -22,7 +22,7 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.cp.buttons.Button
+import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
 import ui.rs.Res
 import ui.rs.name
@@ -83,8 +83,11 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
                     onValueChange = { viewModel.state = viewModel.state.copy(description = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                Button(
-                    label = stringResource(Res.string.register_business),
+                val registerLabel = stringResource(Res.string.register_business)
+                IntralePrimaryButton(
+                    text = registerLabel,
+                    iconAsset = "ic_register_business.svg",
+                    iconContentDescription = registerLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
