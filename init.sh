@@ -21,7 +21,7 @@ sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
 echo "✅ Android SDK instalado correctamente."
 
-echo "🎨 Sincronizando íconos oficiales..."
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
-./gradlew :app:composeApp:syncBrandingIcons
+#echo "🎨 Sincronizando íconos oficiales..."
+#SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+#cd "$SCRIPT_DIR"
+#./gradlew :app:composeApp:syncBrandingIcons
