@@ -63,6 +63,10 @@ kotlin {
     }
     
     sourceSets {
+        val commonMain by getting {
+            val generatedSources = layout.buildDirectory.dir("generated/compose/resourceGenerator/kotlin")
+            kotlin.srcDir(generatedSources)
+        }
         val desktopMain by getting
 
         androidMain.dependencies {

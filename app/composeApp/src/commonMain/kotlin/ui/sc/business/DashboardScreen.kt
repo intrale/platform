@@ -40,7 +40,20 @@ import ui.cp.buttons.Button
 import ui.cp.menu.MainMenuItem
 import ui.cp.menu.MenuState
 import ui.cp.menu.SemiCircularHamburgerMenu
-import ui.rs.Res
+import ui.rs.buttons_preview
+import ui.rs.change_password
+import ui.rs.dashboard
+import ui.rs.dashboard_menu_hint
+import ui.rs.logout
+import ui.rs.register_business
+import ui.rs.register_saler
+import ui.rs.request_join_business
+import ui.rs.review_business
+import ui.rs.review_join_business
+import ui.rs.semi_circular_menu_close
+import ui.rs.semi_circular_menu_open
+import ui.rs.two_factor_setup
+import ui.rs.two_factor_verify
 import ui.th.spacing
 import ui.sc.auth.CHANGE_PASSWORD_PATH
 import ui.sc.auth.TWO_FACTOR_SETUP_PATH
@@ -53,7 +66,7 @@ import ui.sc.signup.REGISTER_SALER_PATH
 const val DASHBOARD_PATH = "/dashboard"
 private const val ENABLE_SEMI_CIRCULAR_MENU = true
 
-class DashboardScreen : Screen(DASHBOARD_PATH, Res.string.dashboard) {
+class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
 
     private val logger = LoggerFactory.default.newLogger<DashboardScreen>()
 
@@ -75,7 +88,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH, Res.string.dashboard) {
                 item.requiredRoles.isEmpty() || currentUserRole?.let { role -> role in item.requiredRoles } == true
             }
         }
-        val dashboardTitle = stringResource(Res.string.dashboard)
+        val dashboardTitle = stringResource(dashboard)
 
         if (ENABLE_SEMI_CIRCULAR_MENU) {
             DashboardMenuWithSemiCircle(
@@ -96,9 +109,9 @@ class DashboardScreen : Screen(DASHBOARD_PATH, Res.string.dashboard) {
         items: List<MainMenuItem>,
         title: String,
     ) {
-        val openDescription = stringResource(Res.string.semi_circular_menu_open)
-        val closeDescription = stringResource(Res.string.semi_circular_menu_close)
-        val hint = stringResource(Res.string.dashboard_menu_hint)
+        val openDescription = stringResource(semi_circular_menu_open)
+        val closeDescription = stringResource(semi_circular_menu_close)
+        val hint = stringResource(dashboard_menu_hint)
 
         Box(
             modifier = Modifier
@@ -186,16 +199,16 @@ class DashboardScreen : Screen(DASHBOARD_PATH, Res.string.dashboard) {
         viewModel: DashboardViewModel,
         coroutineScope: CoroutineScope
     ): List<MainMenuItem> {
-        val buttonsPreviewLabel = stringResource(Res.string.buttons_preview)
-        val changePasswordLabel = stringResource(Res.string.change_password)
-        val setupTwoFactorLabel = stringResource(Res.string.two_factor_setup)
-        val verifyTwoFactorLabel = stringResource(Res.string.two_factor_verify)
-        val registerBusinessLabel = stringResource(Res.string.register_business)
-        val requestJoinLabel = stringResource(Res.string.request_join_business)
-        val reviewBusinessLabel = stringResource(Res.string.review_business)
-        val reviewJoinLabel = stringResource(Res.string.review_join_business)
-        val registerSalerLabel = stringResource(Res.string.register_saler)
-        val logoutLabel = stringResource(Res.string.logout)
+        val buttonsPreviewLabel = stringResource(buttons_preview)
+        val changePasswordLabel = stringResource(change_password)
+        val setupTwoFactorLabel = stringResource(two_factor_setup)
+        val verifyTwoFactorLabel = stringResource(two_factor_verify)
+        val registerBusinessLabel = stringResource(register_business)
+        val requestJoinLabel = stringResource(request_join_business)
+        val reviewBusinessLabel = stringResource(review_business)
+        val reviewJoinLabel = stringResource(review_join_business)
+        val registerSalerLabel = stringResource(register_saler)
+        val logoutLabel = stringResource(logout)
 
         return remember(
             buttonsPreviewLabel,
