@@ -1,0 +1,28 @@
+<!-- icon_master.svg · Intrale · basado en el ícono #1 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Fondo -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0A1C36"/>
+      <stop offset="100%" stop-color="#0D274D"/>
+    </linearGradient>
+    <!-- Símbolo -->
+    <linearGradient id="symGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle de fondo (como el ícono #1) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="200" fill="url(#bgGrad)"/>
+
+  <!-- A-triángulo exterior (equilátero, centrado) -->
+  <!-- s=784 ⇒ vértices: (512,59.357), (120,738.321), (904,738.321) -->
+  <g fill="none" stroke="url(#symGrad)" stroke-width="84" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M512 59.357 L120 738.321 L904 738.321 Z"/>
+  </g>
+
+  <!-- Triángulo interno (equilátero, centrado) -->
+  <!-- s=220 ⇒ vértices: (512,384.983), (402,575.508), (622,575.508) -->
+  <polygon points="512,384.983 402,575.508 622,575.508" fill="url(#symGrad)"/>
+</svg>
