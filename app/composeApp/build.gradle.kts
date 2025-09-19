@@ -161,3 +161,33 @@ compose.resources {
     packageOfResClass = "ui.rs"
     generateResClass = always
 }
+
+val syncBrandingIcons by tasks.registering {
+    val script = rootProject.layout.projectDirectory.file("tools/branding/sync_icons.py")
+    val packDir = rootProject.layout.projectDirectory.dir("docs/branding/icon-pack")
+
+    inputs.file(script)
+    inputs.dir(packDir)
+
+    outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-hdpi"))
+    outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-mdpi"))
+    outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-xhdpi"))
+    outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-xxhdpi"))
+    outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-xxxhdpi"))
+    outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/wasmJsMain/resources"))
+    outputs.dir(rootProject.layout.projectDirectory.dir("app/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset"))
+
+    doLast {
+        exec {
+            commandLine("python3", script.asFile.absolutePath)
+        }
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(syncBrandingIcons)
+}
+
+tasks.matching { it.name.endsWith("ProcessResources") }.configureEach {
+    dependsOn(syncBrandingIcons)
+}

@@ -20,3 +20,6 @@ yes | sdkmanager --licenses
 sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
 echo "✅ Android SDK instalado correctamente."
+
+echo "🎨 Sincronizando íconos oficiales..."
+"$(dirname "$0")"/tools/branding/sync_icons.py
