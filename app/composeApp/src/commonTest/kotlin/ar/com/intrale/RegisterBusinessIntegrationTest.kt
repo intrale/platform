@@ -1,10 +1,14 @@
 package ar.com.intrale
 
-import asdo.DoRegisterBusiness
-import asdo.DoReviewBusinessRegistration
-import asdo.ToDoRegisterBusiness
-import asdo.ToDoReviewBusinessRegistration
-import ext.*
+import asdo.business.DoRegisterBusiness
+import asdo.business.DoReviewBusinessRegistration
+import asdo.business.ToDoRegisterBusiness
+import asdo.business.ToDoReviewBusinessRegistration
+import ext.business.CommRegisterBusinessService
+import ext.business.CommReviewBusinessRegistrationService
+import ext.business.RegisterBusinessResponse
+import ext.business.ReviewBusinessRegistrationResponse
+import ext.dto.StatusCodeDTO
 import kotlin.test.Test
 import kotlin.test.assertTrue
 

@@ -1,0 +1,127 @@
+package ui.sc.auth
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Button
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.lifecycle.viewmodel.compose.viewModel
+import org.jetbrains.compose.resources.ExperimentalResourceApi
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
+import kotlinx.coroutines.launch
+import ui.rs.Res
+import ui.rs.two_factor_setup
+import ui.th.spacing
+import ui.sc.shared.Screen
+import ui.sc.shared.callService
+
+const val TWO_FACTOR_SETUP_PATH = "/twoFactorSetup"
+
+class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH, Res.string.two_factor_setup) {
+
+    private val logger = LoggerFactory.default.newLogger<TwoFactorSetupScreen>()
+
+    @Composable
+    override fun screen() { screenImpl() }
+
+    @OptIn(ExperimentalResourceApi::class)
+    @Composable
+    private fun screenImpl(viewModel: TwoFactorSetupViewModel = viewModel { TwoFactorSetupViewModel() }) {
+        val coroutine = rememberCoroutineScope()
+        val snackbarHostState = remember { SnackbarHostState() }
+        val uriHandler = LocalUriHandler.current
+        val clipboardManager = LocalClipboardManager.current
+
+        LaunchedEffect(Unit) {
+            logger.debug { "Invocando setup de 2FA" }
+            callService(
+                coroutineScope = coroutine,
+                snackbarHostState = snackbarHostState,
+                setLoading = { viewModel.loading = it },
+                serviceCall = { viewModel.setup() },
+                onSuccess = { result -> viewModel.onOtpAuthUri(result.otpAuthUri) }
+            )
+        }
+
+        LaunchedEffect(viewModel.state.otpAuthUri) {
+            val uri = viewModel.state.otpAuthUri
+            if (uri.isNotEmpty() && !viewModel.state.deepLinkTried) {
+                try {
+                    uriHandler.openUri(uri)
+                    viewModel.onDeepLinkResult(true)
+                } catch (e: Throwable) {
+                    viewModel.onDeepLinkResult(false)
+                }
+            }
+        }
+
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
+            Column(
+                Modifier
+                    .padding(padding)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = MaterialTheme.spacing.x3,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+            ) {
+                if (viewModel.state.showQr) {
+                    Text("QR pendiente")
+                    Text(viewModel.state.issuerAccount)
+                    Text(viewModel.state.secretMasked)
+                    Button(onClick = { clipboardManager.setText(AnnotatedString(viewModel.copySecret())) }) {
+                        Text("Copiar clave")
+                    }
+                    Button(onClick = { clipboardManager.setText(AnnotatedString(viewModel.copyLink())) }) {
+                        Text("Copiar enlace")
+                    }
+                    Button(onClick = {
+                        try {
+                            uriHandler.openUri("https://play.google.com/store/search?q=authenticator")
+                        } catch (e: Throwable) {
+                            logger.error(e) { "No fue posible abrir la aplicación de autenticación" }
+                            coroutine.launch {
+                                snackbarHostState.showSnackbar("No fue posible abrir la aplicación de autenticación")
+                            }
+                        }
+                    }) {
+                        Text("Buscar autenticador")
+                    }
+                    Button(onClick = {
+                        try {
+                            uriHandler.openUri(viewModel.copyLink())
+                        } catch (e: Throwable) {
+                            logger.error(e) { "No se pudo compartir el enlace" }
+                            coroutine.launch {
+                                snackbarHostState.showSnackbar("No se pudo compartir el enlace")
+                            }
+                        }
+                    }) {
+                        Text("Compartir")
+                    }
+                }
+            }
+        }
+    }
+}
+
