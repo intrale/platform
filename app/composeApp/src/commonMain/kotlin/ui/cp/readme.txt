@@ -9,7 +9,8 @@ Esta capa contiene componentes reutilizables para las pantallas.
 Características compartidas:
 
 - Ancho relativo al contenedor del 90 % y altura fija de 54 dp.
-- Soporte para icono SVG mediante `IntraleIcon` en tamaño 22 dp.
+- Soporte opcional para íconos mediante `ImageVector` o `Painter`, respetando el color del contenido sin mostrar monogramas de
+  respaldo.
 - Propiedades `enabled` y `loading` que desactivan la interacción y muestran un indicador circular cuando corresponde.
 - Registro de interacción en `org.kodein.log` con el nombre del componente.
 - Estado deshabilitado con opacidad reducida (~0.6) aplicado de forma consistente.

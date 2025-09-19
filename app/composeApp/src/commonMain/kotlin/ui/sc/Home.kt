@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.HowToReg
+import androidx.compose.material.icons.filled.Login
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -80,24 +83,24 @@ class Home : Screen(HOME_PATH, Res.string.home) {
 
                 IntralePrimaryButton(
                     text = loginLabel,
-                    iconAsset = "ic_login.svg",
-                    iconContentDescription = loginLabel,
-                    modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         logger.info { "Navegando a $LOGIN_PATH" }
                         navigate(LOGIN_PATH)
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = Icons.Filled.Login,
+                    iconContentDescription = loginLabel
                 )
 
                 IntralePrimaryButton(
                     text = signupLabel,
-                    iconAsset = "ic_register.svg",
-                    iconContentDescription = signupLabel,
-                    modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         logger.info { "Navegando a $SELECT_SIGNUP_PROFILE_PATH" }
                         navigate(SELECT_SIGNUP_PROFILE_PATH)
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = Icons.Filled.HowToReg,
+                    iconContentDescription = signupLabel
                 )
             }
         }

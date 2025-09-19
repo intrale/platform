@@ -4,6 +4,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.HowToReg
+import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,22 +54,22 @@ class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_pre
 
             IntralePrimaryButton(
                 text = stringResource(Res.string.login),
-                iconAsset = "ic_login.svg",
-                onClick = { logger.info { "Vista previa: ingresar" } }
+                onClick = { logger.info { "Vista previa: ingresar" } },
+                leadingIcon = Icons.Filled.Login
             )
 
             IntralePrimaryButton(
                 text = stringResource(Res.string.signup),
-                iconAsset = "ic_register.svg",
-                loading = true,
-                onClick = { logger.info { "Vista previa: registrarme (loading)" } }
+                onClick = { logger.info { "Vista previa: registrarme (loading)" } },
+                leadingIcon = Icons.Filled.HowToReg,
+                loading = true
             )
 
             IntralePrimaryButton(
                 text = stringResource(Res.string.logout),
-                iconAsset = "ic_logout.svg",
-                enabled = false,
-                onClick = { logger.info { "Vista previa: salir" } }
+                onClick = { logger.info { "Vista previa: salir" } },
+                leadingIcon = Icons.Filled.Logout,
+                enabled = false
             )
         }
     }

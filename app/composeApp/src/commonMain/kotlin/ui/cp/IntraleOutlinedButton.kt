@@ -7,14 +7,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.ImageVector
 import ui.th.spacing
 
 @Composable
 fun IntraleOutlinedButton(
     text: String,
-    iconAsset: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    leadingIcon: ImageVector? = null,
+    leadingPainter: Painter? = null,
     enabled: Boolean = true,
     loading: Boolean = false,
     iconContentDescription: String? = null
@@ -37,7 +40,8 @@ fun IntraleOutlinedButton(
         IntraleButtonLayout(modifier = Modifier.fillMaxSize()) {
             IntraleButtonContent(
                 text = text,
-                iconAsset = iconAsset,
+                leadingIcon = leadingIcon,
+                leadingPainter = leadingPainter,
                 iconContentDescription = iconContentDescription,
                 loading = loading,
                 textColor = IntraleButtonDefaults.outlinedContentColor(),
