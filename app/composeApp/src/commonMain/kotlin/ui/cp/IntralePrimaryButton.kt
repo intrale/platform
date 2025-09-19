@@ -22,15 +22,18 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import ui.th.spacing
 
 @Composable
 fun IntralePrimaryButton(
     text: String,
-    iconAsset: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    leadingIcon: ImageVector? = null,
+    leadingPainter: Painter? = null,
     enabled: Boolean = true,
     loading: Boolean = false,
     iconContentDescription: String? = null
@@ -75,7 +78,7 @@ fun IntralePrimaryButton(
         .background(gradientBrush)
 
     if (isInteractive) {
-        buttonModifier = buttonModifier.pointerInput(text, iconAsset) {
+        buttonModifier = buttonModifier.pointerInput(text, leadingIcon, leadingPainter, enabled, loading) {
             detectTapGestures(
                 onPress = {
                     pressed = true
@@ -106,7 +109,8 @@ fun IntralePrimaryButton(
         }
         IntraleButtonContent(
             text = text,
-            iconAsset = iconAsset,
+            leadingIcon = leadingIcon,
+            leadingPainter = leadingPainter,
             iconContentDescription = iconContentDescription,
             loading = loading,
             textColor = IntraleButtonDefaults.primaryContentColor(),

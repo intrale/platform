@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Divider
@@ -303,11 +304,11 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
 
                 IntralePrimaryButton(
                     text = loginText,
-                    iconAsset = "ic_login.svg",
                     onClick = submitLogin,
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = Icons.Filled.Login,
                     enabled = !viewModel.loading,
-                    loading = viewModel.loading,
-                    modifier = Modifier.fillMaxWidth()
+                    loading = viewModel.loading
                 )
 
                 Column(

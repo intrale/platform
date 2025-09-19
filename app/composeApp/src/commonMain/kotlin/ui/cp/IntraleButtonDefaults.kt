@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.ImageVector
 import org.kodein.log.Logger
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -92,7 +95,8 @@ internal fun IntraleButtonLayout(
 @Composable
 internal fun IntraleButtonContent(
     text: String,
-    iconAsset: String,
+    leadingIcon: ImageVector?,
+    leadingPainter: Painter?,
     iconContentDescription: String?,
     loading: Boolean,
     textColor: Color,
@@ -120,14 +124,26 @@ internal fun IntraleButtonContent(
                 style = MaterialTheme.typography.labelLarge
             )
         } else {
-            if (iconAsset.isNotBlank()) {
-                IntraleIcon(
-                    assetName = iconAsset,
-                    contentDesc = iconContentDescription ?: text,
-                    modifier = Modifier.size(MaterialTheme.spacing.x3),
-                    tint = iconTint
-                )
-                Spacer(modifier = Modifier.width(MaterialTheme.spacing.x2))
+            when {
+                leadingIcon != null -> {
+                    Icon(
+                        imageVector = leadingIcon,
+                        contentDescription = iconContentDescription ?: text,
+                        modifier = Modifier.size(MaterialTheme.spacing.x3),
+                        tint = iconTint ?: textColor
+                    )
+                    Spacer(modifier = Modifier.width(MaterialTheme.spacing.x2))
+                }
+
+                leadingPainter != null -> {
+                    Icon(
+                        painter = leadingPainter,
+                        contentDescription = iconContentDescription ?: text,
+                        modifier = Modifier.size(MaterialTheme.spacing.x3),
+                        tint = iconTint ?: textColor
+                    )
+                    Spacer(modifier = Modifier.width(MaterialTheme.spacing.x2))
+                }
             }
             Text(
                 text = text,

@@ -5,6 +5,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.HowToReg
+import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -49,50 +53,50 @@ private fun IntraleButtonsPreviewContent() {
         // Contraste AA validado: primary vs fondo claro ≈ 6.42:1, primary vs fondo oscuro ≈ 10.90:1.
         IntralePrimaryButton(
             text = "Primario",
-            iconAsset = "ic_login.svg",
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.Login
         )
         IntralePrimaryButton(
             text = "Primario deshabilitado",
-            iconAsset = "ic_login.svg",
             enabled = false,
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.Login
         )
 
         IntraleOutlinedButton(
             text = "Outlined",
-            iconAsset = "ic_register.svg",
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.HowToReg
         )
         IntraleOutlinedButton(
             text = "Outlined cargando",
-            iconAsset = "ic_register.svg",
             loading = true,
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.HowToReg
         )
         IntraleOutlinedButton(
             text = "Outlined deshabilitado",
-            iconAsset = "ic_register.svg",
             enabled = false,
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.HowToReg
         )
 
         IntraleGhostButton(
             text = "Ghost",
-            iconAsset = "ic_logout.svg",
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.Logout
         )
         IntraleGhostButton(
             text = "Ghost cargando",
-            iconAsset = "ic_logout.svg",
             loading = true,
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.Logout
         )
         IntraleGhostButton(
             text = "Ghost deshabilitado",
-            iconAsset = "ic_logout.svg",
             enabled = false,
-            onClick = {}
+            onClick = {},
+            leadingIcon = Icons.Filled.Logout
         )
     }
 }
