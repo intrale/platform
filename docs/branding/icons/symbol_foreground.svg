@@ -1,0 +1,13 @@
+<!-- symbol_foreground.svg · solo símbolo -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="symGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#symGrad)" stroke-width="84" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M512 59.357 L120 738.321 L904 738.321 Z"/>
+  </g>
+  <polygon points="512,384.983 402,575.508 622,575.508" fill="url(#symGrad)"/>
+</svg>
