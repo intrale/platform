@@ -3,6 +3,7 @@ package ui.sc
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import ui.sc.business.ReviewJoinBusinessViewModel
 
 class ReviewJoinBusinessViewModelTest {
     @Test

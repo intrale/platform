@@ -19,7 +19,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.sc.Screen
+import ui.sc.shared.Screen
 
 class CommonRouter(navigator: NavHostController) : Router(navigator) {
 
