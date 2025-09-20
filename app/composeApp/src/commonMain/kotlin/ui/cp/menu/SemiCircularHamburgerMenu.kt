@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package ui.cp.menu
 
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -10,6 +12,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.clickable
@@ -48,7 +51,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -164,14 +166,14 @@ fun SemiCircularHamburgerMenu(
     val displayedProgress = if (isDragging) dragProgress else if (expanded) 1f else 0f
 
     val infiniteTransition = rememberInfiniteTransition(label = "semiCircularMenuGlow")
-    val glowProgress by infiniteTransition.animateFloat(
+    val glowRotationDegrees by infiniteTransition.animateFloat(
         initialValue = 0f,
-        targetValue = 1f,
+        targetValue = 360f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "semiCircularMenuGlowProgress"
+        label = "semiCircularMenuGlowRotation"
     )
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -323,30 +325,26 @@ fun SemiCircularHamburgerMenu(
                         displayedProgress.coerceIn(0f, 1f)
                     )
 
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .drawBehind {
-                                val rotationDegrees = glowProgress * 360f
-                                val brush = Brush.sweepGradient(
-                                    colors = listOf(
-                                        tintedPrimary.copy(alpha = 0.95f),
-                                        MaterialTheme.colorScheme.primaryContainer,
-                                        tintedPrimary.copy(alpha = 0.9f),
-                                        tintedPrimary.copy(alpha = 0.95f)
-                                    ),
-                                    center = Offset(size.width / 2f, size.height / 2f)
-                                )
-                                rotate(degrees = rotationDegrees) {
-                                    drawSemiCircle(
-                                        anchorCorner = anchorCorner,
-                                        startAngle = startAngleDegrees,
-                                        sweepAngle = sweepAngle.coerceIn(0f, effectiveArcDegrees),
-                                        brush = brush
-                                    )
-                                }
-                            }
+                    val shimmerColors = listOf(
+                        tintedPrimary.copy(alpha = 0.96f),
+                        MaterialTheme.colorScheme.primaryContainer,
+                        tintedPrimary.copy(alpha = 0.96f)
                     )
+
+                    Canvas(modifier = Modifier.matchParentSize()) {
+                        val brush = Brush.sweepGradient(
+                            colors = shimmerColors,
+                            center = Offset(size.width / 2f, size.height / 2f)
+                        )
+                        rotate(degrees = glowRotationDegrees) {
+                            drawSemiCircle(
+                                anchorCorner = anchorCorner,
+                                startAngle = startAngleDegrees,
+                                sweepAngle = sweepAngle.coerceIn(0f, effectiveArcDegrees),
+                                brush = brush
+                            )
+                        }
+                    }
 
                     MenuToggleIcon(
                         expanded = expanded,
@@ -481,8 +479,10 @@ private fun BoxScope.RadialMenuItems(
                     .fillMaxSize()
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surface)
-                    .indication(interactionSource, null)
-                    .ripple(bounded = true, radius = itemSize / 2)
+                    .indication(
+                        interactionSource = interactionSource,
+                        indication = ripple(bounded = true)
+                    )
                     .clickable(
                         interactionSource = interactionSource,
                         indication = null,

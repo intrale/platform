@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package ui.sc.business
 
 import androidx.compose.foundation.layout.Arrangement
@@ -25,7 +27,6 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.VerifiedUser
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -114,7 +115,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         }
     }
 
-    @OptIn(ExperimentalResourceApi::class, ExperimentalMaterial3Api::class)
+    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun DashboardMenuWithSemiCircle(
         items: List<MainMenuItem>,
