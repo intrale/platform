@@ -2,12 +2,16 @@ package ui.sc.business
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -22,13 +26,18 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -37,6 +46,7 @@ import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
+import ui.cp.menu.Corner
 import ui.cp.menu.MainMenuItem
 import ui.cp.menu.MenuState
 import ui.cp.menu.SemiCircularHamburgerMenu
@@ -112,51 +122,77 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         val openDescription = stringResource(semi_circular_menu_open)
         val closeDescription = stringResource(semi_circular_menu_close)
         val hint = stringResource(dashboard_menu_hint)
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(MaterialTheme.spacing.x3)
-        ) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = MaterialTheme.spacing.x6)
-                    .fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.headlineMedium,
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = hint,
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1
+                        )
+                    },
+                    colors = TopAppBarDefaults.smallTopAppBarColors(),
+                    windowInsets = WindowInsets.statusBars
                 )
             }
-
-            SemiCircularHamburgerMenu(
-                items = items,
-                collapsedContentDescription = openDescription,
-                expandedContentDescription = closeDescription,
+        ) { innerPadding ->
+            val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(MaterialTheme.spacing.x2),
-                onStateChange = { state ->
-                    when (state) {
-                        MenuState.Expanding -> logger.info { "SemiCircularHamburgerMenu abriendo" }
-                        MenuState.Expanded -> logger.info { "SemiCircularHamburgerMenu expandido" }
-                        MenuState.Collapsing -> logger.info { "SemiCircularHamburgerMenu cerrando" }
-                        MenuState.Collapsed -> logger.info { "SemiCircularHamburgerMenu colapsado" }
-                    }
-                },
-                onItemSelected = { item ->
-                    logger.info { "SemiCircularHamburgerMenu item seleccionado: ${item.id}" }
+                    .padding(innerPadding)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .fillMaxWidth()
+                        .padding(horizontal = MaterialTheme.spacing.x3)
+                        .padding(top = statusBarPadding + 8.dp)
+                        .padding(bottom = MaterialTheme.spacing.x3),
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        textAlign = TextAlign.Start,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Start,
+                        maxLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
-            )
+
+                SemiCircularHamburgerMenu(
+                    items = items,
+                    collapsedContentDescription = openDescription,
+                    expandedContentDescription = closeDescription,
+                    anchorCorner = Corner.TopRight,
+                    windowInsets = WindowInsets.systemBars,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(WindowInsets.statusBars.asPaddingValues())
+                        .padding(top = MaterialTheme.spacing.x2, end = MaterialTheme.spacing.x2)
+                        .zIndex(10f),
+                    onStateChange = { state ->
+                        when (state) {
+                            MenuState.Expanding -> logger.info { "SemiCircularHamburgerMenu abriendo" }
+                            MenuState.Expanded -> logger.info { "SemiCircularHamburgerMenu expandido" }
+                            MenuState.Collapsing -> logger.info { "SemiCircularHamburgerMenu cerrando" }
+                            MenuState.Collapsed -> logger.info { "SemiCircularHamburgerMenu colapsado" }
+                        }
+                    },
+                    onItemSelected = { item ->
+                        logger.info { "SemiCircularHamburgerMenu item seleccionado: ${item.id}" }
+                    }
+                )
+            }
         }
     }
 
