@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -113,7 +114,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         }
     }
 
-    @OptIn(ExperimentalResourceApi::class)
+    @OptIn(ExperimentalResourceApi::class, ExperimentalMaterial3Api::class)
     @Composable
     private fun DashboardMenuWithSemiCircle(
         items: List<MainMenuItem>,
@@ -133,7 +134,12 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                             maxLines = 1
                         )
                     },
-                    colors = TopAppBarDefaults.smallTopAppBarColors(),
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                        navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
                     windowInsets = WindowInsets.statusBars
                 )
             }
