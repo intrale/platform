@@ -11,6 +11,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -36,7 +37,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material.ripple.rememberRipple
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,6 +55,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -325,22 +327,24 @@ fun SemiCircularHamburgerMenu(
                         modifier = Modifier
                             .matchParentSize()
                             .drawBehind {
+                                val rotationDegrees = glowProgress * 360f
                                 val brush = Brush.sweepGradient(
-                                    colorStops = arrayOf(
-                                        0f to tintedPrimary.copy(alpha = 0.95f),
-                                        0.4f to MaterialTheme.colorScheme.primaryContainer,
-                                        0.7f to tintedPrimary.copy(alpha = 0.9f),
-                                        1f to tintedPrimary.copy(alpha = 0.95f)
+                                    colors = listOf(
+                                        tintedPrimary.copy(alpha = 0.95f),
+                                        MaterialTheme.colorScheme.primaryContainer,
+                                        tintedPrimary.copy(alpha = 0.9f),
+                                        tintedPrimary.copy(alpha = 0.95f)
                                     ),
-                                    center = Offset(size.width / 2f, size.height / 2f),
-                                    rotation = glowProgress * 360f
+                                    center = Offset(size.width / 2f, size.height / 2f)
                                 )
-                                drawSemiCircle(
-                                    anchorCorner = anchorCorner,
-                                    startAngle = startAngleDegrees,
-                                    sweepAngle = sweepAngle.coerceIn(0f, effectiveArcDegrees),
-                                    brush = brush
-                                )
+                                rotate(degrees = rotationDegrees) {
+                                    drawSemiCircle(
+                                        anchorCorner = anchorCorner,
+                                        startAngle = startAngleDegrees,
+                                        sweepAngle = sweepAngle.coerceIn(0f, effectiveArcDegrees),
+                                        brush = brush
+                                    )
+                                }
                             }
                     )
 
@@ -456,7 +460,7 @@ private fun BoxScope.RadialMenuItems(
             label = "menuItemScale$index"
         )
 
-        val interactionSource = remember { MutableInteractionSource() }
+        val interactionSource = remember(item.id) { MutableInteractionSource() }
 
         Surface(
             modifier = Modifier
@@ -477,9 +481,11 @@ private fun BoxScope.RadialMenuItems(
                     .fillMaxSize()
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surface)
+                    .indication(interactionSource, null)
+                    .ripple(bounded = true, radius = itemSize / 2)
                     .clickable(
                         interactionSource = interactionSource,
-                        indication = rememberRipple(bounded = true, radius = itemSize / 2),
+                        indication = null,
                         enabled = enableItems,
                         role = Role.Button
                     ) { onItemClick(item) },
