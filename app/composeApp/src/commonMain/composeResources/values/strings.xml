@@ -1,6 +1,7 @@
 <!-- Se definen las cadenas de texto que se utilizarán en la aplicación Compose -->
 <resources>
     <string name="app_name">Intrale</string>
+
     <string name="username">Usuario</string>
     <string name="password">Contraseña</string>
     <string name="login">Ingresar</string>
@@ -17,26 +18,31 @@
     <string name="login_generic_error">Ocurrió un error al iniciar sesión. Intentá nuevamente.</string>
     <string name="login_user_icon_content_description">Icono de usuario</string>
     <string name="login_password_icon_content_description">Icono de contraseña</string>
+
     <string name="text_field_show_password">Mostrar contraseña</string>
     <string name="text_field_hide_password">Ocultar contraseña</string>
+
     <string name="logout">Salir</string>
     <string name="back_button">Volver</string>
     <string name="buttons_preview">Demo de botones Intrale</string>
 
-
     <string name="home">Inicio</string>
     <string name="home_headline">Impulsamos tu operación con Intrale</string>
     <string name="home_subtitle">Ingresá o registrate para centralizar tu negocio y la gestión de tu red comercial.</string>
+
     <string name="dashboard">Panel principal</string>
     <string name="semi_circular_menu_open">Menú. Deslizá a la derecha para volver. Deslizá hacia abajo para abrir. Tocá para abrir o cerrar.</string>
     <string name="semi_circular_menu_close">Cerrar menú de acciones</string>
     <string name="semi_circular_menu_long_press_hint">Deslizá a la derecha para volver · hacia abajo para abrir</string>
     <string name="dashboard_menu_hint">Desplegá el menú para acceder a las acciones principales.</string>
+
     <string name="signup">Registrarme</string>
     <string name="signup_platform_admin">Registro Platform Admin</string>
     <string name="signup_delivery">Registro Delivery</string>
+
     <string name="register_saler">Registrar vendedor</string>
     <string name="register_saler_success">Vendedor registrado correctamente</string>
+
     <string name="email">Correo electrónico</string>
     <string name="business">Negocio</string>
 
@@ -50,6 +56,7 @@
     <string name="password_recovery">Recuperar contraseña</string>
     <string name="confirm_password_recovery">Confirmar recuperación</string>
     <string name="code">Código</string>
+
     <string name="register_business">Registrar negocio</string>
     <string name="register_business_sent">Solicitud enviada</string>
     <string name="review_business">Revisar solicitudes de negocio pendientes</string>
@@ -61,12 +68,14 @@
     <string name="select_all">Seleccionar todo</string>
     <string name="approve_selected">Aprobar seleccionados</string>
     <string name="reject_selected">Rechazar seleccionados</string>
+
     <string name="auto_accept_deliveries">Auto acepta entregas</string>
     <string name="request_join_business">Solicitar unión</string>
     <string name="request_join_business_sent">Solicitud enviada</string>
     <string name="review_join_business">Revisar solicitudes de unión</string>
     <string name="review_join_business_approved">Aprobar</string>
     <string name="review_join_business_rejected">Rechazar</string>
+
     <string name="two_factor_setup">Configurar autenticación en dos pasos</string>
     <string name="two_factor_verify">Verificar autenticación en dos pasos</string>
 </resources>
