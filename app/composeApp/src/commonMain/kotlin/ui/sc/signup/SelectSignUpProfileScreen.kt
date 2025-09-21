@@ -10,7 +10,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.material3.MaterialTheme
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import ui.cp.buttons.Button
 import ui.rs.Res
 import ui.rs.signup
@@ -20,6 +19,7 @@ import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.th.spacing
 import ui.sc.shared.Screen
+import ui.util.safeString
 
 const val SELECT_SIGNUP_PROFILE_PATH = "/selectSignupProfile"
 
@@ -43,7 +43,7 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
         ) {
             Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
-                label = stringResource(Res.string.signup_platform_admin),
+                label = safeString(Res.string.signup_platform_admin),
                 loading = false,
                 enabled = true,
                 onClick = {
@@ -52,7 +52,7 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                 })
             Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
-                label = stringResource(Res.string.signup_delivery),
+                label = safeString(Res.string.signup_delivery),
                 loading = false,
                 enabled = true,
                 onClick = {

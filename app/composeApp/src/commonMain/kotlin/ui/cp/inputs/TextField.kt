@@ -25,9 +25,9 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.StringResource
-import org.jetbrains.compose.resources.stringResource
 import ui.rs.text_field_hide_password
 import ui.rs.text_field_show_password
+import ui.util.safeString
 
 @OptIn(ExperimentalResourceApi::class)
 @Composable
@@ -47,10 +47,10 @@ fun TextField(
 ) {
     var isVisible by remember { mutableStateOf(!visualTransformation) }
 
-    val labelString = stringResource(label)
-    val placeholderString = placeholder?.let { stringResource(it) }
-    val showPassword = stringResource(ui.rs.Res.string.text_field_show_password )
-    val hidePassword = stringResource(ui.rs.Res.string.text_field_hide_password)
+    val labelString = safeString(label)
+    val placeholderString = placeholder?.let { safeString(it) }
+    val showPassword = safeString(ui.rs.Res.string.text_field_show_password)
+    val hidePassword = safeString(ui.rs.Res.string.text_field_hide_password)
     val errorMessage = state.value.details.takeIf { !state.value.isValid }
 
     val fieldModifier = if (errorMessage != null) {

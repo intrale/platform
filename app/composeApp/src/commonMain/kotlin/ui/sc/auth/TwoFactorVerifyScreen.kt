@@ -18,7 +18,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import kotlinx.coroutines.launch
@@ -30,6 +29,7 @@ import ui.rs.two_factor_verify
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val TWO_FACTOR_VERIFY_PATH = "/twoFactorVerify"
 
@@ -67,7 +67,7 @@ class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH, Res.string.two_fact
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = stringResource(Res.string.two_factor_verify),
+                    label = safeString(Res.string.two_factor_verify),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

@@ -22,7 +22,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.MaterialTheme
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
 import ui.rs.Res
@@ -38,6 +37,7 @@ import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val SIGNUP_DELIVERY_PATH = "/signupDelivery"
 
@@ -101,7 +101,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                     }
                 }
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val signupDeliveryLabel = stringResource(Res.string.signup_delivery)
+                val signupDeliveryLabel = safeString(Res.string.signup_delivery)
                 IntralePrimaryButton(
                     text = signupDeliveryLabel,
                     iconAsset = "ic_delivery.svg",

@@ -26,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import ui.rs.Res
@@ -45,6 +44,7 @@ import org.kodein.log.newLogger
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val REVIEW_BUSINESS_PATH = "/reviewBusiness"
 
@@ -78,7 +78,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                Text(stringResource(Res.string.pending_requests))
+                Text(safeString(Res.string.pending_requests))
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.code,
@@ -97,7 +97,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             if (checked) viewModel.selectAll() else viewModel.clearSelection()
                         }
                     )
-                    Text(stringResource(Res.string.select_all))
+                    Text(safeString(Res.string.select_all))
                 }
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 viewModel.pending.forEach { biz ->
@@ -117,13 +117,13 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(biz.name)
-                                Text("${stringResource(Res.string.description)}: ${biz.description}")
-                                Text("${stringResource(Res.string.email_admin)}: ${biz.emailAdmin}")
-                                Text("${stringResource(Res.string.auto_accept_deliveries)}: ${biz.autoAcceptDeliveries}")
+                                Text("${safeString(Res.string.description)}: ${biz.description}")
+                                Text("${safeString(Res.string.email_admin)}: ${biz.emailAdmin}")
+                                Text("${safeString(Res.string.auto_accept_deliveries)}: ${biz.autoAcceptDeliveries}")
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Button(
-                                    label = stringResource(Res.string.approve),
+                                    label = safeString(Res.string.approve),
                                     loading = viewModel.loading,
                                     enabled = !viewModel.loading,
                                     onClick = {
@@ -139,7 +139,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                 )
                                 Spacer(Modifier.size(MaterialTheme.spacing.x0_5))
                                 Button(
-                                    label = stringResource(Res.string.reject),
+                                    label = safeString(Res.string.reject),
                                     loading = viewModel.loading,
                                     enabled = !viewModel.loading,
                                     onClick = {
@@ -162,7 +162,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
                     Button(
-                        label = stringResource(Res.string.approve_selected),
+                        label = safeString(Res.string.approve_selected),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
                         onClick = {
@@ -183,7 +183,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                         }
                     )
                     Button(
-                        label = stringResource(Res.string.reject_selected),
+                        label = safeString(Res.string.reject_selected),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
                         onClick = {

@@ -15,9 +15,20 @@ private val safeStringLogger: Logger = LoggerFactory.default.newLogger("ui.util"
 @OptIn(ExperimentalResourceApi::class)
 @Composable
 fun safeString(id: StringResource, fallback: String = "—"): String =
-    runCatching { stringResource(id) }
-        .onFailure { error ->
-            safeStringLogger.error(error) { "Falla Base64 en id=$id" }
+    safeResource(
+        load = { stringResource(id) },
+        fallback = fallback,
+        onFailure = { error ->
+            safeStringLogger.error(error) { "[RES_FALLBACK] fallo al decodificar id=$id" }
         }
+    )
+
+internal inline fun <T> safeResource(
+    load: () -> T,
+    fallback: T,
+    onFailure: (Throwable) -> Unit,
+): T =
+    runCatching(load)
+        .onFailure(onFailure)
         .getOrElse { fallback }
 

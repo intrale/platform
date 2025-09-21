@@ -17,7 +17,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import org.jetbrains.compose.resources.StringResource
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -25,6 +24,7 @@ import ui.ro.Router
 import ui.rs.Res
 import ui.rs.back_button
 import ui.th.IntraleTheme
+import ui.util.safeString
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,7 +35,7 @@ fun AppBar(
     modifier: Modifier = Modifier
 ) {
     TopAppBar(
-        title = { Text(stringResource(title)) },
+        title = { Text(safeString(title)) },
         colors = TopAppBarDefaults.mediumTopAppBarColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer
         ),
@@ -45,13 +45,13 @@ fun AppBar(
                 IconButton(onClick = onClick) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = stringResource(Res.string.back_button)
+                        contentDescription = safeString(Res.string.back_button)
                     )
                 }
             } else {
                 Icon(
                     imageVector = Icons.Default.Home,
-                    contentDescription = stringResource(Res.string.back_button)
+                    contentDescription = safeString(Res.string.back_button)
                 )
             }
         }
