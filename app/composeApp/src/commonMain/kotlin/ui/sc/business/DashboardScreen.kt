@@ -60,6 +60,7 @@ import ui.rs.request_join_business
 import ui.rs.review_business
 import ui.rs.review_join_business
 import ui.rs.semi_circular_menu_close
+import ui.rs.semi_circular_menu_long_press_hint
 import ui.rs.semi_circular_menu_open
 import ui.rs.two_factor_setup
 import ui.rs.two_factor_verify
@@ -120,6 +121,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
     ) {
         val openDescription = stringResource(semi_circular_menu_open)
         val closeDescription = stringResource(semi_circular_menu_close)
+        val longPressHint = stringResource(semi_circular_menu_long_press_hint)
         val hint = stringResource(dashboard_menu_hint)
         val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
 
@@ -155,6 +157,8 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                     .padding(start = 12.dp, top = 8.dp)
                     .align(Alignment.TopStart)
                     .zIndex(10f),
+                onBack = { goBack() },
+                collapsedLongPressHint = longPressHint,
                 onStateChange = { state ->
                     when (state) {
                         MenuState.Expanding -> logger.info { "SemiCircularHamburgerMenu abriendo" }
