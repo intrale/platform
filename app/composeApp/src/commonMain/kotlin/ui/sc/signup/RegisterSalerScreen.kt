@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
@@ -31,6 +30,7 @@ import ui.rs.register_saler_success
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val REGISTER_SALER_PATH = "/registerSaler"
 
@@ -45,7 +45,7 @@ class RegisterSalerScreen : Screen(REGISTER_SALER_PATH, Res.string.register_sale
     private fun screenImpl(viewModel: RegisterSalerViewModel = viewModel { RegisterSalerViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val successMessage = stringResource(Res.string.register_saler_success)
+        val successMessage = safeString(Res.string.register_saler_success)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { paddingValues ->
             logger.debug { "Mostrando RegisterSalerScreen" }
@@ -69,7 +69,7 @@ class RegisterSalerScreen : Screen(REGISTER_SALER_PATH, Res.string.register_sale
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = stringResource(Res.string.register_saler),
+                    label = safeString(Res.string.register_saler),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -30,6 +29,7 @@ import ui.rs.password_recovery
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val PASSWORD_RECOVERY_PATH = "/passwordRecovery"
 
@@ -66,7 +66,7 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.passwor
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val recoveryLabel = stringResource(Res.string.password_recovery)
+                val recoveryLabel = safeString(Res.string.password_recovery)
                 IntralePrimaryButton(
                     text = recoveryLabel,
                     iconAsset = "ic_recover.svg",

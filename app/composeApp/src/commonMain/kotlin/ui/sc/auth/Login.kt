@@ -39,7 +39,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.auth.DoLoginException
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -78,6 +77,7 @@ import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
 import ui.sc.signup.SIGNUP_DELIVERY_PATH
 import ui.th.elevations
 import ui.th.spacing
+import ui.util.safeString
 
 const val LOGIN_PATH = "/login"
 
@@ -98,10 +98,10 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
         val focusManager = LocalFocusManager.current
         val scrollState = rememberScrollState()
 
-        val loginText = stringResource(Res.string.login)
-        val errorCredentials = stringResource(Res.string.error_credentials)
-        val changePasswordMessage = stringResource(Res.string.login_change_password_required)
-        val genericError = stringResource(Res.string.login_generic_error)
+        val loginText = safeString(Res.string.login)
+        val errorCredentials = safeString(Res.string.error_credentials)
+        val changePasswordMessage = safeString(Res.string.login_change_password_required)
+        val genericError = safeString(Res.string.login_generic_error)
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
@@ -174,12 +174,12 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
                     Text(
-                        text = stringResource(Res.string.login_title),
+                        text = safeString(Res.string.login_title),
                         style = MaterialTheme.typography.headlineMedium,
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = stringResource(Res.string.login_subtitle),
+                        text = safeString(Res.string.login_subtitle),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -206,7 +206,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Outlined.Person,
-                                    contentDescription = stringResource(Res.string.login_user_icon_content_description)
+                                    contentDescription = safeString(Res.string.login_user_icon_content_description)
                                 )
                             },
                             keyboardOptions = KeyboardOptions.Default.copy(
@@ -228,7 +228,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Outlined.Lock,
-                                    contentDescription = stringResource(Res.string.login_password_icon_content_description)
+                                    contentDescription = safeString(Res.string.login_password_icon_content_description)
                                 )
                             },
                             keyboardOptions = KeyboardOptions.Default.copy(
@@ -251,11 +251,11 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             ) {
                                 Divider()
                                 Text(
-                                    text = stringResource(Res.string.login_change_password_title),
+                                    text = safeString(Res.string.login_change_password_title),
                                     style = MaterialTheme.typography.titleLarge
                                 )
                                 Text(
-                                    text = stringResource(Res.string.login_change_password_description),
+                                    text = safeString(Res.string.login_change_password_description),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -322,19 +322,19 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     TextButton(onClick = { navigate(SELECT_SIGNUP_PROFILE_PATH) }) {
-                        Text(text = stringResource(Res.string.signup))
+                        Text(text = safeString(Res.string.signup))
                     }
                     TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
-                        Text(text = stringResource(Res.string.register_business))
+                        Text(text = safeString(Res.string.register_business))
                     }
                     TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
-                        Text(text = stringResource(Res.string.signup_delivery))
+                        Text(text = safeString(Res.string.signup_delivery))
                     }
                     TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
-                        Text(text = stringResource(Res.string.password_recovery))
+                        Text(text = safeString(Res.string.password_recovery))
                     }
                     TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                        Text(text = stringResource(Res.string.confirm_password_recovery))
+                        Text(text = safeString(Res.string.confirm_password_recovery))
                     }
                 }
             }

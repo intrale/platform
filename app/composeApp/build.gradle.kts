@@ -1,10 +1,12 @@
 import ar.com.intrale.branding.SyncBrandingIconsTask
 import com.codingfeline.buildkonfig.compiler.FieldSpec
+import compose.ValidateComposeResourcesTask
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -193,10 +195,36 @@ compose.resources {
     generateResClass = always
 }
 
+val preparedComposeResources = layout.buildDirectory.dir("generated/compose/resourceGenerator/preparedResources")
+
+val validateComposeResources by tasks.registering(ValidateComposeResourcesTask::class) {
+    resourcesRoot.set(preparedComposeResources)
+}
+
+validateComposeResources.configure {
+    dependsOn(
+        tasks.named("generateExpectResourceCollectorsForCommonMain"),
+        tasks.named("prepareComposeResourcesTaskForCommonMain"),
+        tasks.named("generateResourceAccessorsForCommonMain")
+    )
+    dependsOn(tasks.matching { it.name.startsWith("prepareComposeResourcesTaskFor") })
+    dependsOn(tasks.matching { it.name.startsWith("convertXmlValueResourcesFor") })
+    dependsOn(tasks.matching { it.name.startsWith("copyNonXmlValueResourcesFor") })
+}
+
 tasks.matching { task ->
     task.name == "compileCommonMainKotlinMetadata" || task.name == "compileKotlinMetadata"
 }.configureEach {
-    dependsOn("generateExpectResourceCollectorsForCommonMain")
+    dependsOn(
+        "generateExpectResourceCollectorsForCommonMain",
+        "prepareComposeResourcesTaskForCommonMain",
+        "generateResourceAccessorsForCommonMain",
+        validateComposeResources
+    )
+}
+
+tasks.withType(KotlinCompilationTask::class).configureEach {
+    dependsOn(validateComposeResources)
 }
 
 val syncBrandingIcons by tasks.registering(SyncBrandingIconsTask::class) {

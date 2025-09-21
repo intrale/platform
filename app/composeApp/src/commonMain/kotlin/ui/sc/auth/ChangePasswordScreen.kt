@@ -19,7 +19,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
@@ -31,6 +30,7 @@ import ui.rs.update_password
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val CHANGE_PASSWORD_PATH = "/change-password"
 
@@ -77,7 +77,7 @@ class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH, Res.string.update_pass
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = stringResource(Res.string.update_password),
+                    label = safeString(Res.string.update_password),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import ui.rs.Res
@@ -31,6 +30,7 @@ import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val SIGNUP_PLATFORM_ADMIN_PATH = "/signupPlatformAdmin"
 
@@ -67,7 +67,7 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = stringResource(Res.string.signup_platform_admin),
+                    label = safeString(Res.string.signup_platform_admin),
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick =  {
