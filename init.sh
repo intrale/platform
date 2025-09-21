@@ -17,7 +17,7 @@ export ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT"
 export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
 yes | sdkmanager --licenses
-sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+yes | sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
 echo "✅ Android SDK instalado correctamente."
 
