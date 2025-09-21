@@ -40,7 +40,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
@@ -72,6 +71,7 @@ import ui.sc.shared.BUTTONS_PREVIEW_PATH
 import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.signup.REGISTER_SALER_PATH
+import ui.util.safeString
 
 const val DASHBOARD_PATH = "/dashboard"
 private const val ENABLE_SEMI_CIRCULAR_MENU = true
@@ -98,7 +98,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                 item.requiredRoles.isEmpty() || currentUserRole?.let { role -> role in item.requiredRoles } == true
             }
         }
-        val dashboardTitle = stringResource(dashboard)
+        val dashboardTitle = safeString(dashboard, "Panel principal")
 
         if (ENABLE_SEMI_CIRCULAR_MENU) {
             DashboardMenuWithSemiCircle(
@@ -119,10 +119,22 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         items: List<MainMenuItem>,
         title: String,
     ) {
-        val openDescription = stringResource(semi_circular_menu_open)
-        val closeDescription = stringResource(semi_circular_menu_close)
-        val longPressHint = stringResource(semi_circular_menu_long_press_hint)
-        val hint = stringResource(dashboard_menu_hint)
+        val openDescription = safeString(
+            semi_circular_menu_open,
+            "Menú. Deslizá a la derecha para volver. Deslizá hacia abajo para abrir. Tocá para abrir o cerrar."
+        )
+        val closeDescription = safeString(
+            semi_circular_menu_close,
+            "Cerrar menú de acciones"
+        )
+        val longPressHint = safeString(
+            semi_circular_menu_long_press_hint,
+            "Deslizá a la derecha para volver · hacia abajo para abrir"
+        )
+        val hint = safeString(
+            dashboard_menu_hint,
+            "Desplegá el menú para acceder a las acciones principales."
+        )
         val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
 
         Box(modifier = Modifier.fillMaxSize()) {
@@ -213,17 +225,17 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         viewModel: DashboardViewModel,
         coroutineScope: CoroutineScope
     ): List<MainMenuItem> {
-        val backLabel = stringResource(back_button)
-        val buttonsPreviewLabel = stringResource(buttons_preview)
-        val changePasswordLabel = stringResource(change_password)
-        val setupTwoFactorLabel = stringResource(two_factor_setup)
-        val verifyTwoFactorLabel = stringResource(two_factor_verify)
-        val registerBusinessLabel = stringResource(register_business)
-        val requestJoinLabel = stringResource(request_join_business)
-        val reviewBusinessLabel = stringResource(review_business)
-        val reviewJoinLabel = stringResource(review_join_business)
-        val registerSalerLabel = stringResource(register_saler)
-        val logoutLabel = stringResource(logout)
+        val backLabel = safeString(back_button, "Volver")
+        val buttonsPreviewLabel = safeString(buttons_preview, "Demo de botones Intrale")
+        val changePasswordLabel = safeString(change_password, "Cambiar contraseña")
+        val setupTwoFactorLabel = safeString(two_factor_setup, "Configurar autenticación en dos pasos")
+        val verifyTwoFactorLabel = safeString(two_factor_verify, "Verificar autenticación en dos pasos")
+        val registerBusinessLabel = safeString(register_business, "Registrar negocio")
+        val requestJoinLabel = safeString(request_join_business, "Solicitar unión")
+        val reviewBusinessLabel = safeString(review_business, "Revisar solicitudes de negocio pendientes")
+        val reviewJoinLabel = safeString(review_join_business, "Revisar solicitudes de unión")
+        val registerSalerLabel = safeString(register_saler, "Registrar vendedor")
+        val logoutLabel = safeString(logout, "Salir")
 
         return remember(
             backLabel,
