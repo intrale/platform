@@ -27,6 +27,25 @@ sabes como lo reactivo
     - Comentar el motivo del bloqueo y adjuntar el **stacktrace** si aplica.
 
 ---
+
+## 🗂️ Gestión del tablero `intrale`
+
+Para mantener la trazabilidad completa en el tablero operativo de la organización, el agente debe cumplir con las siguientes
+reglas en todo momento:
+
+- **Creación de issues nuevos:**
+    - Cada issue (principal o derivado) debe agregarse inmediatamente al tablero `intrale` en la vista de proyecto que corresponda.
+    - Los issues recién creados deben ubicarse en la columna **"Todo"**.
+    - No se permite dejar issues sin tablero o sin columna definida.
+- **Progresión del flujo:**
+    - Antes de iniciar el trabajo, mover el issue a **"In Progress"**, respetando la regla ya indicada en este documento.
+    - Si surge un impedimento, mover el issue a **"Blocked"** y comentar el motivo técnico.
+    - Una vez creado el PR y asignado correctamente, mover el issue a **"Ready"**.
+- **Revisión continua:**
+    - Verificar que el estado del tablero coincida con la etapa real del trabajo antes y después de cada acción relevante.
+    - Documentar en el comentario del issue cualquier cambio de estado, incluyendo enlaces a PRs, registros o stacktraces.
+
+---
 ## 🔁 Ejecución de Tareas Automáticas
 
 1. **Antes de cualquier otra acción**, el agente debe intentar mover el issue a la columna **"In Progress"**.
