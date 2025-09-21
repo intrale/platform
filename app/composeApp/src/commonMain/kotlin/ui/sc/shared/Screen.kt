@@ -10,6 +10,7 @@ abstract class Screen (val route: String, val title: StringResource) {
     protected val screenLogger = LoggerFactory.default.newLogger<Screen>()
 
     lateinit var navigator: (route:String) -> Unit
+    var navigateBack: (() -> Boolean)? = null
 
     fun navigate(route:String){
         screenLogger.info { "Navegando a $route" }
@@ -17,6 +18,16 @@ abstract class Screen (val route: String, val title: StringResource) {
             navigator(route)
         }catch (e: Exception){
             screenLogger.error(e) { "Error al navegar a $route" }
+        }
+    }
+
+    fun goBack(): Boolean {
+        screenLogger.info { "Solicitando navegación hacia atrás" }
+        return try {
+            navigateBack?.invoke() ?: false
+        } catch (e: Exception) {
+            screenLogger.error(e) { "Error al navegar hacia atrás" }
+            false
         }
     }
 
