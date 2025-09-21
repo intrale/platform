@@ -55,6 +55,7 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
                 actual.navigator = { route: String ->
                     navigator.navigate(route)
                 }
+                actual.navigateBack = { navigator.popBackStack() }
 
                 // relationship between screen and route
                 composable(route = actual.route) {

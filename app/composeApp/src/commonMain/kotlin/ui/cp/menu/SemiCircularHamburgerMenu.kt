@@ -14,11 +14,11 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.indication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -53,12 +53,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.consumePositionChange
@@ -77,7 +76,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -222,6 +223,7 @@ fun SemiCircularHamburgerMenu(
             animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
             label = "semiCircularMenuSweep"
         )
+        val currentSweepDegrees = sweepAngle.coerceIn(0f, effectiveArcDegrees)
 
         val toggleRotation by animateFloatAsState(
             targetValue = if (expanded) 0f else -90f,
@@ -319,30 +321,40 @@ fun SemiCircularHamburgerMenu(
                             }
                         }
                 ) {
-                    val tintedPrimary = lerpColor(
-                        MaterialTheme.colorScheme.primary,
-                        MaterialTheme.colorScheme.tertiary,
-                        displayedProgress.coerceIn(0f, 1f)
-                    )
-
-                    val shimmerColors = listOf(
-                        tintedPrimary.copy(alpha = 0.96f),
-                        MaterialTheme.colorScheme.primaryContainer,
-                        tintedPrimary.copy(alpha = 0.96f)
-                    )
-
                     Canvas(modifier = Modifier.matchParentSize()) {
-                        val brush = Brush.sweepGradient(
-                            colors = shimmerColors,
-                            center = Offset(size.width / 2f, size.height / 2f)
+                        val arcCenter = Offset(size.width / 2f, size.height / 2f)
+                        val primaryColor = MaterialTheme.colorScheme.primary
+
+                        fun Color.mix(other: Color, t: Float) = Color(
+                            red = red * (1 - t) + other.red * t,
+                            green = green * (1 - t) + other.green * t,
+                            blue = blue * (1 - t) + other.blue * t,
+                            alpha = alpha * (1 - t) + other.alpha * t
                         )
+
+                        val colors = listOf(
+                            primaryColor.mix(Color.White, 0.18f).copy(alpha = 0.95f),
+                            primaryColor,
+                            primaryColor.mix(Color.Black, 0.12f).copy(alpha = 0.95f)
+                        )
+
+                        val sweepBrush = Brush.sweepGradient(
+                            colors = colors,
+                            center = arcCenter
+                        )
+
+                        val (resolvedStart, resolvedSweep) = anchorCorner.orientArc(startAngleDegrees, currentSweepDegrees)
+                        val path = buildWavyArcPath(
+                            center = arcCenter,
+                            radius = size.minDimension / 2f,
+                            startDeg = resolvedStart,
+                            sweepDeg = resolvedSweep,
+                            waves = 12,
+                            amplitudePx = 12.dp.toPx()
+                        )
+
                         rotate(degrees = glowRotationDegrees) {
-                            drawSemiCircle(
-                                anchorCorner = anchorCorner,
-                                startAngle = startAngleDegrees,
-                                sweepAngle = sweepAngle.coerceIn(0f, effectiveArcDegrees),
-                                brush = brush
-                            )
+                            drawPath(path = path, brush = sweepBrush)
                         }
                     }
 
@@ -357,9 +369,10 @@ fun SemiCircularHamburgerMenu(
                         items = filteredItems,
                         progress = displayedProgress,
                         radius = radius,
-                        arcDegrees = effectiveArcDegrees,
                         startAngleDegrees = startAngleDegrees,
-                        anchorCorner = anchorCorner
+                        currentSweepDegrees = currentSweepDegrees,
+                        anchorCorner = anchorCorner,
+                        beamRotationDegrees = glowRotationDegrees
                     ) { item ->
                         collapseMenu()
                         onItemSelected?.invoke(item)
@@ -371,22 +384,47 @@ fun SemiCircularHamburgerMenu(
     }
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSemiCircle(
-    anchorCorner: Corner,
-    startAngle: Float,
-    sweepAngle: Float,
-    brush: Brush,
-) {
-    val diameter = min(size.width, size.height)
-    val (resolvedStart, resolvedSweep) = anchorCorner.orientArc(startAngle, sweepAngle)
-    drawArc(
-        brush = brush,
-        startAngle = resolvedStart,
-        sweepAngle = resolvedSweep,
-        useCenter = true,
-        size = Size(diameter, diameter),
-        topLeft = Offset.Zero
-    )
+private fun buildWavyArcPath(
+    center: Offset,
+    radius: Float,
+    startDeg: Float,
+    sweepDeg: Float,
+    waves: Int,
+    amplitudePx: Float
+): Path {
+    val path = Path()
+    val startRad = startDeg.toDouble() * PI / 180.0
+    val endRad = (startDeg + sweepDeg).toDouble() * PI / 180.0
+    val steps = max(36, waves * 12)
+
+    path.moveTo(center.x, center.y)
+
+    for (i in 0..steps) {
+        val t = i / steps.toFloat()
+        val angle = startRad + (endRad - startRad) * t
+        val wave = sin(2.0 * PI * t * waves).toFloat()
+        val r = radius + wave * amplitudePx
+        val x = center.x + cos(angle).toFloat() * r
+        val y = center.y + sin(angle).toFloat() * r
+        path.lineTo(x, y)
+    }
+
+    path.close()
+    return path
+}
+
+private fun polarToCartesian(center: Offset, radius: Float, deg: Float): Offset {
+    val rad = deg.toDouble() * PI / 180.0
+    val x = center.x + cos(rad).toFloat() * radius
+    val y = center.y + sin(rad).toFloat() * radius
+    return Offset(x, y)
+}
+
+private fun angularDistance(a: Float, b: Float): Float {
+    var delta = (a - b) % 360f
+    if (delta < -180f) delta += 360f
+    if (delta > 180f) delta -= 360f
+    return abs(delta)
 }
 
 @Composable
@@ -421,53 +459,63 @@ private fun BoxScope.RadialMenuItems(
     items: List<MainMenuItem>,
     progress: Float,
     radius: Dp,
-    arcDegrees: Float,
     startAngleDegrees: Float,
+    currentSweepDegrees: Float,
     anchorCorner: Corner,
+    beamRotationDegrees: Float,
     onItemClick: (MainMenuItem) -> Unit
 ) {
     if (items.isEmpty()) return
 
     val density = LocalDensity.current
     val radiusPx = with(density) { radius.toPx() }
+    val arcCenter = Offset(radiusPx, radiusPx)
     val itemSize = MenuItemSize
     val itemSizePx = with(density) { itemSize.toPx() }
     val innerPaddingPx = with(density) { MenuItemPadding.toPx() }
     val showItems = progress > 0.1f
     val enableItems = progress > 0.6f
-    val iconRadius = (radiusPx - itemSizePx / 2f - innerPaddingPx).coerceAtLeast(0f)
-    val maxOffsetPx = max(radiusPx * 2f - itemSizePx, 0f)
+    val ringRadius = (radiusPx - itemSizePx / 2f - innerPaddingPx).coerceAtLeast(0f)
+    val orientedBeam = anchorCorner.orientAngle(startAngleDegrees + beamRotationDegrees)
+    val sigma = 24f
 
     items.forEachIndexed { index, item ->
-        val fraction = if (items.size <= 1) 0.5f else index.toFloat() / (items.size - 1).coerceAtLeast(1)
-        val orientedAngle = anchorCorner.orientAngle(startAngleDegrees + arcDegrees * fraction)
-        val radian = orientedAngle * PI.toFloat() / 180f
-        val rawX = radiusPx + cos(radian) * iconRadius - itemSizePx / 2f
-        val rawY = radiusPx + sin(radian) * iconRadius - itemSizePx / 2f
-        val clampedX = rawX.coerceIn(0f, maxOffsetPx)
-        val clampedY = rawY.coerceIn(0f, maxOffsetPx)
+        val angularStep = currentSweepDegrees / (items.size + 1)
+        val baseAngle = startAngleDegrees + (index + 1) * angularStep
+        val orientedAngle = anchorCorner.orientAngle(baseAngle)
+        val position = polarToCartesian(arcCenter, ringRadius, orientedAngle)
+        val offset = IntOffset(
+            (position.x - itemSizePx / 2f).roundToInt(),
+            (position.y - itemSizePx / 2f).roundToInt()
+        )
 
-        val alpha by animateFloatAsState(
+        val baseAlpha by animateFloatAsState(
             targetValue = if (showItems) 1f else 0f,
             animationSpec = tween(durationMillis = 200, delayMillis = index * 35, easing = FastOutSlowInEasing),
             label = "menuItemAlpha$index"
         )
-        val scale by animateFloatAsState(
+        val baseScale by animateFloatAsState(
             targetValue = if (showItems) 1f else 0.6f,
             animationSpec = tween(durationMillis = 220, delayMillis = index * 35, easing = FastOutSlowInEasing),
             label = "menuItemScale$index"
         )
 
+        val delta = angularDistance(orientedAngle, orientedBeam)
+        val intensity = exp(-(delta * delta) / (2f * sigma * sigma))
+        val highlightScale = 0.96f + 0.10f * intensity
+        val highlightAlpha = 0.80f + 0.20f * intensity
+
         val interactionSource = remember(item.id) { MutableInteractionSource() }
 
         Surface(
             modifier = Modifier
-                .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
+                .offset { offset }
                 .size(itemSize)
                 .graphicsLayer {
-                    this.alpha = alpha
-                    this.scaleX = scale
-                    this.scaleY = scale
+                    val appliedScale = baseScale * highlightScale
+                    this.alpha = baseAlpha * highlightAlpha
+                    this.scaleX = appliedScale
+                    this.scaleY = appliedScale
                 }
                 .focusable(enabled = enableItems),
             shape = CircleShape,
