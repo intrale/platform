@@ -20,7 +20,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -33,6 +32,7 @@ import ui.rs.signup
 import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
+import ui.util.safeString
 
 const val HOME_PATH = "/home"
 
@@ -50,8 +50,8 @@ class Home : Screen(HOME_PATH, Res.string.home) {
     @Composable
     private fun ScreenContent() {
         val scrollState = rememberScrollState()
-        val loginLabel = stringResource(Res.string.login)
-        val signupLabel = stringResource(Res.string.signup)
+        val loginLabel = safeString(Res.string.login)
+        val signupLabel = safeString(Res.string.signup)
 
         Box(
             modifier = Modifier
@@ -70,13 +70,13 @@ class Home : Screen(HOME_PATH, Res.string.home) {
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
             ) {
                 Text(
-                    text = stringResource(Res.string.home_headline),
+                    text = safeString(Res.string.home_headline),
                     style = MaterialTheme.typography.headlineMedium,
                     textAlign = TextAlign.Center
                 )
 
                 Text(
-                    text = stringResource(Res.string.home_subtitle),
+                    text = safeString(Res.string.home_subtitle),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center
                 )

@@ -13,7 +13,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -23,6 +22,7 @@ import ui.rs.login
 import ui.rs.logout
 import ui.rs.signup
 import ui.th.spacing
+import ui.util.safeString
 
 const val BUTTONS_PREVIEW_PATH = "/demo/buttons"
 
@@ -48,25 +48,25 @@ class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_pre
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = stringResource(Res.string.buttons_preview),
+                text = safeString(Res.string.buttons_preview),
                 style = MaterialTheme.typography.headlineMedium
             )
 
             IntralePrimaryButton(
-                text = stringResource(Res.string.login),
+                text = safeString(Res.string.login),
                 onClick = { logger.info { "Vista previa: ingresar" } },
                 leadingIcon = Icons.Filled.Login
             )
 
             IntralePrimaryButton(
-                text = stringResource(Res.string.signup),
+                text = safeString(Res.string.signup),
                 onClick = { logger.info { "Vista previa: registrarme (loading)" } },
                 leadingIcon = Icons.Filled.HowToReg,
                 loading = true
             )
 
             IntralePrimaryButton(
-                text = stringResource(Res.string.logout),
+                text = safeString(Res.string.logout),
                 onClick = { logger.info { "Vista previa: salir" } },
                 leadingIcon = Icons.Filled.Logout,
                 enabled = false

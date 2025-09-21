@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -32,6 +31,7 @@ import ui.rs.confirm_password_recovery
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val CONFIRM_PASSWORD_RECOVERY_PATH = "/confirmPasswordRecovery"
 
@@ -83,7 +83,7 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                     onValueChange = { viewModel.state = viewModel.state.copy(password = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val confirmLabel = stringResource(Res.string.confirm_password_recovery)
+                val confirmLabel = safeString(Res.string.confirm_password_recovery)
                 IntralePrimaryButton(
                     text = confirmLabel,
                     iconAsset = "ic_recover.svg",

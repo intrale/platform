@@ -20,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
@@ -32,6 +31,7 @@ import ui.rs.request_join_business_sent
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val REQUEST_JOIN_BUSINESS_PATH = "/requestJoinBusiness"
 
@@ -46,7 +46,7 @@ class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.
     private fun screenImpl(viewModel: RequestJoinBusinessViewModel = viewModel { RequestJoinBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val requestSent = stringResource(Res.string.request_join_business_sent)
+        val requestSent = safeString(Res.string.request_join_business_sent)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -69,7 +69,7 @@ class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = stringResource(Res.string.request_join_business),
+                    label = safeString(Res.string.request_join_business),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

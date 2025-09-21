@@ -21,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
@@ -34,6 +33,7 @@ import ui.rs.review_join_business_rejected
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.util.safeString
 
 const val REVIEW_JOIN_BUSINESS_PATH = "/reviewJoinBusiness"
 
@@ -48,8 +48,8 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
     private fun screenImpl(viewModel: ReviewJoinBusinessViewModel = viewModel { ReviewJoinBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val approvedMsg = stringResource(Res.string.review_join_business_approved)
-        val rejectedMsg = stringResource(Res.string.review_join_business_rejected)
+        val approvedMsg = safeString(Res.string.review_join_business_approved)
+        val rejectedMsg = safeString(Res.string.review_join_business_rejected)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -75,7 +75,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
                 ) {
                     Button(
-                        label = stringResource(Res.string.review_join_business_approved),
+                        label = safeString(Res.string.review_join_business_approved),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,
                         onClick = {
@@ -96,7 +96,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                         }
                     )
                     Button(
-                        label = stringResource(Res.string.review_join_business_rejected),
+                        label = safeString(Res.string.review_join_business_rejected),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,
                         onClick = {
