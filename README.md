@@ -21,6 +21,8 @@ Este proyecto se organiza como un monorepo con arquitectura modular. Incluye ser
    - **Web (Wasm)**: inicia el servidor de desarrollo con `./gradlew :app:composeApp:wasmJsBrowserDevelopmentRun`.
    - **iOS**: genera el framework para simulador con `./gradlew :app:composeApp:linkDebugFrameworkIosX64` y ábrelo desde `app/iosApp` en Xcode.
 
+El backend expone una ruta dinámica `/{business}/{function}` para todas las operaciones de negocio, documentada en `docs/arquitectura-backend.md` y en las guías específicas dentro de `docs/`.
+
 ## Estructura de carpetas
 - `backend/` - infraestructura y lógica común del servidor HTTP y el runtime serverless.
 - `users/` - extensiones de negocio para gestión de usuarios, perfiles y 2FA.
