@@ -30,16 +30,21 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,9 +67,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.consumePositionChange
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -73,17 +81,21 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import org.jetbrains.compose.ui.tooling.preview.Preview
+import kotlinx.coroutines.delay
 
 /**
  * Representa una acción dentro del menú semicircular.
@@ -116,6 +128,23 @@ enum class Corner {
     BottomRight,
 }
 
+private data class DragSample(val dx: Float, val dy: Float, val velocity: Float) {
+    companion object {
+        val Zero = DragSample(0f, 0f, 0f)
+    }
+}
+
+private fun angleDeg(dx: Float, dy: Float): Float =
+    atan2(dy, dx) * (180f / PI.toFloat())
+
+private fun magnitude(dx: Float, dy: Float): Float = hypot(dx, dy)
+
+private fun isRightSwipe(dx: Float, dy: Float, minDist: Float, angle: Float): Boolean =
+    magnitude(dx, dy) >= minDist && angle in -35f..35f
+
+private fun isDownSwipe(dx: Float, dy: Float, minDist: Float, angle: Float): Boolean =
+    magnitude(dx, dy) >= minDist && angle in 55f..125f
+
 /**
  * Muestra un menú en forma de semicírculo anclado a una esquina del contenedor.
  */
@@ -134,6 +163,8 @@ fun SemiCircularHamburgerMenu(
     initiallyExpanded: Boolean = false,
     onStateChange: ((MenuState) -> Unit)? = null,
     onItemSelected: ((MainMenuItem) -> Unit)? = null,
+    onBack: (() -> Unit)? = null,
+    collapsedLongPressHint: String? = null,
 ) {
     val filteredItems = remember(items) { items.distinctBy(MainMenuItem::id) }
     val hapticFeedback = LocalHapticFeedback.current
@@ -142,6 +173,8 @@ fun SemiCircularHamburgerMenu(
     var dragProgress by remember { mutableStateOf(if (initiallyExpanded) 1f else 0f) }
     var isDragging by remember { mutableStateOf(false) }
     var menuState by remember { mutableStateOf(if (initiallyExpanded) MenuState.Expanded else MenuState.Collapsed) }
+    var focusFirstItem by remember { mutableStateOf(initiallyExpanded) }
+    var showLongPressHint by remember { mutableStateOf(false) }
 
     fun updateState(state: MenuState) {
         if (menuState != state) {
@@ -154,6 +187,8 @@ fun SemiCircularHamburgerMenu(
         expanded = false
         dragProgress = 0f
         isDragging = false
+        focusFirstItem = false
+        showLongPressHint = false
         updateState(MenuState.Collapsing)
     }
 
@@ -161,6 +196,8 @@ fun SemiCircularHamburgerMenu(
         expanded = true
         dragProgress = 1f
         isDragging = false
+        focusFirstItem = true
+        showLongPressHint = false
         updateState(MenuState.Expanding)
     }
 
@@ -234,6 +271,8 @@ fun SemiCircularHamburgerMenu(
         val dragRangePx = remember(collapsedRadius, effectiveExpandedRadius) {
             max(1f, with(density) { (effectiveExpandedRadius - collapsedRadius).coerceAtLeast(0.dp).toPx() })
         }
+        val minSwipeDistancePx = with(density) { MinSwipeDistance.toPx() }
+        val minFlingVelocity = MinFlingVelocity
 
         LaunchedEffect(expanded, displayedProgress, isDragging) {
             if (!isDragging) {
@@ -247,6 +286,13 @@ fun SemiCircularHamburgerMenu(
                         updateState(MenuState.Collapsed)
                     }
                 }
+            }
+        }
+
+        LaunchedEffect(showLongPressHint) {
+            if (showLongPressHint) {
+                delay(2200)
+                showLongPressHint = false
             }
         }
 
@@ -282,48 +328,116 @@ fun SemiCircularHamburgerMenu(
                                 true
                             }
                         }
-                        .pointerInput(expanded) {
-                            detectTapGestures {
-                                if (expanded) collapseMenu() else expandMenu()
-                            }
+                        .pointerInput(expanded, collapsedLongPressHint) {
+                            detectTapGestures(
+                                onTap = {
+                                    showLongPressHint = false
+                                    if (expanded) collapseMenu() else expandMenu()
+                                },
+                                onLongPress = {
+                                    if (!expanded && collapsedLongPressHint != null) {
+                                        showLongPressHint = true
+                                    }
+                                }
+                            )
                         }
-                        .pointerInput(dragRangePx, expanded) {
+                        .pointerInput(
+                            dragRangePx,
+                            expanded,
+                            anchorCorner,
+                            minSwipeDistancePx,
+                            minFlingVelocity,
+                            onBack
+                        ) {
+                            var dragSample = DragSample.Zero
+                            var gestureHandled = false
+                            var velocityTracker: VelocityTracker? = null
+
+                            fun handleBackGesture() {
+                                gestureHandled = true
+                                showLongPressHint = false
+                                expanded = false
+                                dragProgress = 0f
+                                isDragging = false
+                                updateState(MenuState.Collapsed)
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                velocityTracker = null
+                                onBack?.invoke()
+                            }
+
+                            fun handleOpenGesture() {
+                                gestureHandled = true
+                                showLongPressHint = false
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                velocityTracker = null
+                                expandMenu()
+                            }
+
                             detectDragGestures(
                                 onDragStart = {
                                     isDragging = true
                                     dragProgress = if (expanded) 1f else 0f
                                     updateState(if (expanded) MenuState.Collapsing else MenuState.Expanding)
+                                    dragSample = DragSample.Zero
+                                    gestureHandled = false
+                                    velocityTracker = VelocityTracker()
+                                    showLongPressHint = false
                                 },
                                 onDragEnd = {
-                                    isDragging = false
-                                    val shouldExpand = dragProgress > 0.4f
-                                    if (shouldExpand) {
-                                        expanded = true
-                                        dragProgress = 1f
-                                        updateState(MenuState.Expanding)
-                                    } else {
-                                        expanded = false
-                                        dragProgress = 0f
-                                        updateState(MenuState.Collapsing)
+                                    velocityTracker = null
+                                    if (!gestureHandled) {
+                                        isDragging = false
+                                        val shouldExpand = dragProgress > 0.4f
+                                        if (shouldExpand) {
+                                            expandMenu()
+                                        } else {
+                                            collapseMenu()
+                                        }
                                     }
                                 },
                                 onDragCancel = {
+                                    velocityTracker = null
                                     isDragging = false
-                                    dragProgress = if (expanded) 1f else 0f
-                                    updateState(if (expanded) MenuState.Expanded else MenuState.Collapsed)
+                                    if (!gestureHandled) {
+                                        dragProgress = if (expanded) 1f else 0f
+                                        updateState(if (expanded) MenuState.Expanded else MenuState.Collapsed)
+                                    }
                                 }
                             ) { change, dragAmount ->
-                                val weightedDelta =
-                                    dragAmount.x * 0.7f * anchorCorner.horizontalDirection() +
-                                        dragAmount.y * 0.3f * anchorCorner.verticalDirection()
-                                dragProgress = (dragProgress + weightedDelta / dragRangePx).coerceIn(0f, 1f)
+                                velocityTracker?.addPosition(change.uptimeMillis, change.position)
+                                val velocityMagnitude = velocityTracker?.calculateVelocity()?.distance() ?: 0f
+
+                                dragSample = DragSample(
+                                    dx = dragSample.dx + dragAmount.x,
+                                    dy = dragSample.dy + dragAmount.y,
+                                    velocity = velocityMagnitude
+                                )
+
+                                if (!expanded && !gestureHandled) {
+                                    val angle = angleDeg(dragSample.dx, dragSample.dy)
+                                    val fast = dragSample.velocity >= minFlingVelocity
+                                    when {
+                                        fast && angle in -35f..35f -> handleBackGesture()
+                                        fast && angle in 55f..125f -> handleOpenGesture()
+                                        isRightSwipe(dragSample.dx, dragSample.dy, minSwipeDistancePx, angle) -> handleBackGesture()
+                                        isDownSwipe(dragSample.dx, dragSample.dy, minSwipeDistancePx, angle) -> handleOpenGesture()
+                                    }
+                                }
+
+                                if (!gestureHandled) {
+                                    val weightedDelta =
+                                        dragAmount.x * 0.7f * anchorCorner.horizontalDirection() +
+                                            dragAmount.y * 0.3f * anchorCorner.verticalDirection()
+                                    dragProgress = (dragProgress + weightedDelta / dragRangePx).coerceIn(0f, 1f)
+                                }
                                 change.consumePositionChange()
                             }
                         }
                 ) {
+                    val primaryColor = MaterialTheme.colorScheme.primary
+
                     Canvas(modifier = Modifier.matchParentSize()) {
                         val arcCenter = Offset(size.width / 2f, size.height / 2f)
-                        val primaryColor = MaterialTheme.colorScheme.primary
 
                         fun Color.mix(other: Color, t: Float) = Color(
                             red = red * (1 - t) + other.red * t,
@@ -365,6 +479,13 @@ fun SemiCircularHamburgerMenu(
                         expandedContentDescription = expandedContentDescription
                     )
 
+                    if (!expanded && showLongPressHint && collapsedLongPressHint != null) {
+                        LongPressHint(
+                            message = collapsedLongPressHint,
+                            anchorCorner = anchorCorner
+                        )
+                    }
+
                     RadialMenuItems(
                         items = filteredItems,
                         progress = displayedProgress,
@@ -372,7 +493,9 @@ fun SemiCircularHamburgerMenu(
                         startAngleDegrees = startAngleDegrees,
                         currentSweepDegrees = currentSweepDegrees,
                         anchorCorner = anchorCorner,
-                        beamRotationDegrees = glowRotationDegrees
+                        beamRotationDegrees = glowRotationDegrees,
+                        focusFirstItem = focusFirstItem,
+                        onFirstItemFocused = { focusFirstItem = false }
                     ) { item ->
                         collapseMenu()
                         onItemSelected?.invoke(item)
@@ -434,22 +557,85 @@ private fun BoxScope.MenuToggleIcon(
     collapsedContentDescription: String,
     expandedContentDescription: String,
 ) {
+    val nudgeAlpha by rememberInfiniteTransition(label = "menuNudge")
+        .animateFloat(
+            initialValue = 0.15f,
+            targetValue = 0.45f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "menuNudgeAlpha"
+        )
+
+    Box(modifier = Modifier.align(Alignment.Center)) {
+        Surface(
+            modifier = Modifier.size(MenuToggleSize),
+            shape = CircleShape,
+            tonalElevation = 4.dp,
+            color = MaterialTheme.colorScheme.primaryContainer
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.Close else Icons.Default.Menu,
+                contentDescription = if (expanded) expandedContentDescription else collapsedContentDescription,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(MenuIconPadding)
+                    .rotate(rotation)
+            )
+        }
+
+        if (!expanded) {
+            val tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = nudgeAlpha)
+            Icon(
+                imageVector = Icons.Default.KeyboardArrowRight,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .offset(x = MenuNudgeOffset)
+            )
+            Icon(
+                imageVector = Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .offset(y = MenuNudgeOffset)
+            )
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.LongPressHint(
+    message: String,
+    anchorCorner: Corner,
+) {
+    val alignment = if (anchorCorner.isTop()) Alignment.TopCenter else Alignment.BottomCenter
+    val verticalOffset = if (anchorCorner.isTop()) -MenuToggleSize else MenuToggleSize
+    val horizontalOffset = when {
+        anchorCorner.isLeft() -> MenuToggleSize / 2
+        anchorCorner.isRight() -> -(MenuToggleSize / 2)
+        else -> 0.dp
+    }
+
     Surface(
         modifier = Modifier
-            .align(Alignment.Center)
-            .size(MenuToggleSize),
-        shape = CircleShape,
+            .align(alignment)
+            .offset(x = horizontalOffset, y = verticalOffset)
+            .wrapContentSize(),
+        shape = RoundedCornerShape(12.dp),
         tonalElevation = 4.dp,
-        color = MaterialTheme.colorScheme.primaryContainer
+        shadowElevation = 8.dp,
+        color = MaterialTheme.colorScheme.surfaceVariant
     ) {
-        Icon(
-            imageVector = if (expanded) Icons.Default.Close else Icons.Default.Menu,
-            contentDescription = if (expanded) expandedContentDescription else collapsedContentDescription,
-            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(MenuIconPadding)
-                .rotate(rotation)
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
         )
     }
 }
@@ -463,6 +649,8 @@ private fun BoxScope.RadialMenuItems(
     currentSweepDegrees: Float,
     anchorCorner: Corner,
     beamRotationDegrees: Float,
+    focusFirstItem: Boolean,
+    onFirstItemFocused: () -> Unit,
     onItemClick: (MainMenuItem) -> Unit
 ) {
     if (items.isEmpty()) return
@@ -506,6 +694,17 @@ private fun BoxScope.RadialMenuItems(
         val highlightAlpha = 0.80f + 0.20f * intensity
 
         val interactionSource = remember(item.id) { MutableInteractionSource() }
+        val focusRequester = if (index == 0) remember { FocusRequester() } else null
+        val shouldRequestFocus = focusFirstItem && index == 0 && enableItems
+
+        if (focusRequester != null) {
+            LaunchedEffect(shouldRequestFocus) {
+                if (shouldRequestFocus) {
+                    focusRequester.requestFocus()
+                    onFirstItemFocused()
+                }
+            }
+        }
 
         Surface(
             modifier = Modifier
@@ -517,6 +716,7 @@ private fun BoxScope.RadialMenuItems(
                     this.scaleX = appliedScale
                     this.scaleY = appliedScale
                 }
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .focusable(enabled = enableItems),
             shape = CircleShape,
             tonalElevation = 3.dp,
@@ -554,6 +754,9 @@ private val MenuItemPadding = 12.dp
 private val MenuToggleSize = 56.dp
 private val MenuIconPadding = 12.dp
 private val MenuOuterMargin = 32.dp
+private val MenuNudgeOffset = 28.dp
+private val MinSwipeDistance = 24.dp
+private const val MinFlingVelocity = 1200f
 
 private fun Corner.horizontalDirection(): Float = when (this) {
     Corner.TopLeft, Corner.BottomLeft -> 1f
@@ -564,6 +767,12 @@ private fun Corner.verticalDirection(): Float = when (this) {
     Corner.TopLeft, Corner.TopRight -> 1f
     Corner.BottomLeft, Corner.BottomRight -> -1f
 }
+
+private fun Corner.isTop(): Boolean = this == Corner.TopLeft || this == Corner.TopRight
+
+private fun Corner.isLeft(): Boolean = this == Corner.TopLeft || this == Corner.BottomLeft
+
+private fun Corner.isRight(): Boolean = !isLeft()
 
 private fun Corner.orientAngle(angle: Float): Float = when (this) {
     Corner.TopLeft -> angle
@@ -592,6 +801,8 @@ private fun normalizeAngle(value: Float): Float {
     return result
 }
 
+private fun Velocity.distance(): Float = hypot(x.toDouble(), y.toDouble()).toFloat()
+
 @Preview
 @Composable
 private fun SemiCircularHamburgerMenuPreview() {
@@ -601,6 +812,8 @@ private fun SemiCircularHamburgerMenuPreview() {
                 items = previewMenuItems(),
                 collapsedContentDescription = "Abrir menú",
                 expandedContentDescription = "Cerrar menú",
+                onBack = {},
+                collapsedLongPressHint = "Desliza a la derecha para volver · hacia abajo para abrir",
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 16.dp, end = 16.dp)
@@ -619,6 +832,8 @@ private fun SemiCircularHamburgerMenuExpandedPreview() {
                 collapsedContentDescription = "Abrir menú",
                 expandedContentDescription = "Cerrar menú",
                 initiallyExpanded = true,
+                onBack = {},
+                collapsedLongPressHint = "Desliza a la derecha para volver · hacia abajo para abrir",
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 16.dp, end = 16.dp)

@@ -20,6 +20,10 @@ val dashboard: StringResource by lazy {
     )
 }
 
+val back_button: StringResource by lazy {
+    Res.string.back_button
+}
+
 val semi_circular_menu_open: StringResource by lazy {
     StringResource(
         "string:semi_circular_menu_open",
@@ -38,6 +42,10 @@ val semi_circular_menu_close: StringResource by lazy {
             ResourceItem(setOf(), "${RESOURCE_PREFIX}values/strings.commonMain.cvr", 3012, 64)
         )
     )
+}
+
+val semi_circular_menu_long_press_hint: StringResource by lazy {
+    Res.string.semi_circular_menu_long_press_hint
 }
 
 val dashboard_menu_hint: StringResource by lazy {

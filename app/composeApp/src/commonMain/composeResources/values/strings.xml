@@ -28,8 +28,9 @@
     <string name="home_headline">Impulsamos tu operación con Intrale</string>
     <string name="home_subtitle">Ingresá o registrate para centralizar tu negocio y la gestión de tu red comercial.</string>
     <string name="dashboard">Panel principal</string>
-    <string name="semi_circular_menu_open">Abrir menú de acciones</string>
+    <string name="semi_circular_menu_open">Menú. Desliza a la derecha para volver. Desliza hacia abajo para abrir. Toca para abrir o cerrar.</string>
     <string name="semi_circular_menu_close">Cerrar menú de acciones</string>
+    <string name="semi_circular_menu_long_press_hint">Desliza a la derecha para volver · hacia abajo para abrir</string>
     <string name="dashboard_menu_hint">Desplegá el menú para acceder a las acciones principales.</string>
     <string name="signup">Registrarme</string>
     <string name="signup_platform_admin">Registro Platform Admin</string>
