@@ -40,6 +40,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
+import org.jetbrains.compose.resources.StringResource
+import org.jetbrains.compose.resources.stringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
@@ -71,10 +73,9 @@ import ui.sc.shared.BUTTONS_PREVIEW_PATH
 import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.signup.REGISTER_SALER_PATH
-import ui.util.safeString
 
 const val DASHBOARD_PATH = "/dashboard"
-private const val ENABLE_SEMI_CIRCULAR_MENU = true
+private const val DASHBOARD_ANIMATIONS_ENABLED = false
 
 class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
 
@@ -98,9 +99,9 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                 item.requiredRoles.isEmpty() || currentUserRole?.let { role -> role in item.requiredRoles } == true
             }
         }
-        val dashboardTitle = safeString(dashboard, "Panel principal")
+        val dashboardTitle = stringOrFallback(dashboard, "Panel principal")
 
-        if (ENABLE_SEMI_CIRCULAR_MENU) {
+        if (DASHBOARD_ANIMATIONS_ENABLED) {
             DashboardMenuWithSemiCircle(
                 items = visibleItems,
                 title = dashboardTitle
@@ -119,19 +120,19 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         items: List<MainMenuItem>,
         title: String,
     ) {
-        val openDescription = safeString(
+        val openDescription = stringOrFallback(
             semi_circular_menu_open,
             "Menú. Deslizá a la derecha para volver. Deslizá hacia abajo para abrir. Tocá para abrir o cerrar."
         )
-        val closeDescription = safeString(
+        val closeDescription = stringOrFallback(
             semi_circular_menu_close,
             "Cerrar menú de acciones"
         )
-        val longPressHint = safeString(
+        val longPressHint = stringOrFallback(
             semi_circular_menu_long_press_hint,
             "Deslizá a la derecha para volver · hacia abajo para abrir"
         )
-        val hint = safeString(
+        val hint = stringOrFallback(
             dashboard_menu_hint,
             "Desplegá el menú para acceder a las acciones principales."
         )
@@ -225,17 +226,17 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         viewModel: DashboardViewModel,
         coroutineScope: CoroutineScope
     ): List<MainMenuItem> {
-        val backLabel = safeString(back_button, "Volver")
-        val buttonsPreviewLabel = safeString(buttons_preview, "Demo de botones Intrale")
-        val changePasswordLabel = safeString(change_password, "Cambiar contraseña")
-        val setupTwoFactorLabel = safeString(two_factor_setup, "Configurar autenticación en dos pasos")
-        val verifyTwoFactorLabel = safeString(two_factor_verify, "Verificar autenticación en dos pasos")
-        val registerBusinessLabel = safeString(register_business, "Registrar negocio")
-        val requestJoinLabel = safeString(request_join_business, "Solicitar unión")
-        val reviewBusinessLabel = safeString(review_business, "Revisar solicitudes de negocio pendientes")
-        val reviewJoinLabel = safeString(review_join_business, "Revisar solicitudes de unión")
-        val registerSalerLabel = safeString(register_saler, "Registrar vendedor")
-        val logoutLabel = safeString(logout, "Salir")
+        val backLabel = stringOrFallback(back_button, "Volver")
+        val buttonsPreviewLabel = stringOrFallback(buttons_preview, "Demo de botones Intrale")
+        val changePasswordLabel = stringOrFallback(change_password, "Cambiar contraseña")
+        val setupTwoFactorLabel = stringOrFallback(two_factor_setup, "Configurar autenticación en dos pasos")
+        val verifyTwoFactorLabel = stringOrFallback(two_factor_verify, "Verificar autenticación en dos pasos")
+        val registerBusinessLabel = stringOrFallback(register_business, "Registrar negocio")
+        val requestJoinLabel = stringOrFallback(request_join_business, "Solicitar unión")
+        val reviewBusinessLabel = stringOrFallback(review_business, "Revisar solicitudes de negocio pendientes")
+        val reviewJoinLabel = stringOrFallback(review_join_business, "Revisar solicitudes de unión")
+        val registerSalerLabel = stringOrFallback(register_saler, "Registrar vendedor")
+        val logoutLabel = stringOrFallback(logout, "Salir")
 
         return remember(
             backLabel,
@@ -368,3 +369,8 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         }
     }
 }
+
+@OptIn(ExperimentalResourceApi::class)
+@Composable
+private fun stringOrFallback(id: StringResource, fallback: String): String =
+    runCatching { stringResource(id) }.getOrElse { fallback }
