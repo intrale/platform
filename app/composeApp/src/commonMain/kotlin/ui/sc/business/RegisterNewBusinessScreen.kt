@@ -33,7 +33,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val REGISTER_NEW_BUSINESS_PATH = "/registerNewBusiness"
 
@@ -48,9 +49,9 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
     private fun screenImpl(viewModel: RegisterBusinessViewModel = viewModel { RegisterBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val registerBusinessSent = resStringOr(
-            Res.string.register_business_sent,
-            RES_ERROR_PREFIX + "Registro enviado"
+        val registerBusinessSent = resString(
+            composeId = Res.string.register_business_sent,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registro enviado"),
         )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
@@ -87,9 +88,9 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
                     onValueChange = { viewModel.state = viewModel.state.copy(description = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                val registerLabel = resStringOr(
-                    Res.string.register_business,
-                    RES_ERROR_PREFIX + "Registrar negocio"
+                val registerLabel = resString(
+                    composeId = Res.string.register_business,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
                 )
                 IntralePrimaryButton(
                     text = registerLabel,

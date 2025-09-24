@@ -30,7 +30,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val TWO_FACTOR_VERIFY_PATH = "/twoFactorVerify"
 
@@ -68,9 +69,9 @@ class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH, Res.string.two_fact
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = resStringOr(
-                        Res.string.two_factor_verify,
-                        RES_ERROR_PREFIX + "Verificar código"
+                    label = resString(
+                        composeId = Res.string.two_factor_verify,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Verificar codigo"),
                     ),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,

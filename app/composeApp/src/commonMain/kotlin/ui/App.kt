@@ -30,7 +30,8 @@ import ui.rs.Res
 import ui.rs.back_button
 import ui.th.IntraleTheme
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,7 +42,14 @@ fun AppBar(
     modifier: Modifier = Modifier
 ) {
     TopAppBar(
-        title = { Text(resStringOr(title, RES_ERROR_PREFIX + "Pantalla sin título")) },
+        title = {
+            Text(
+                resString(
+                    composeId = title,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Pantalla sin titulo"),
+                )
+            )
+        },
         colors = TopAppBarDefaults.mediumTopAppBarColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer
         ),
@@ -51,18 +59,18 @@ fun AppBar(
                 IconButton(onClick = onClick) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = resStringOr(
-                            Res.string.back_button,
-                            RES_ERROR_PREFIX + "Acción volver"
+                        contentDescription = resString(
+                            composeId = Res.string.back_button,
+                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Accion volver"),
                         )
                     )
                 }
             } else {
                 Icon(
                     imageVector = Icons.Default.Home,
-                    contentDescription = resStringOr(
-                        Res.string.back_button,
-                        RES_ERROR_PREFIX + "Acción volver"
+                    contentDescription = resString(
+                        composeId = Res.string.back_button,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Accion volver"),
                     )
                 )
             }

@@ -32,7 +32,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val CONFIRM_PASSWORD_RECOVERY_PATH = "/confirmPasswordRecovery"
 
@@ -84,9 +85,9 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                     onValueChange = { viewModel.state = viewModel.state.copy(password = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val confirmLabel = resStringOr(
-                    Res.string.confirm_password_recovery,
-                    RES_ERROR_PREFIX + "Confirmar recuperación"
+                val confirmLabel = resString(
+                    composeId = Res.string.confirm_password_recovery,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Confirmar recuperacion"),
                 )
                 IntralePrimaryButton(
                     text = confirmLabel,

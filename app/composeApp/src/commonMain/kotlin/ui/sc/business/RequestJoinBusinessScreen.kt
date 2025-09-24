@@ -32,7 +32,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val REQUEST_JOIN_BUSINESS_PATH = "/requestJoinBusiness"
 
@@ -47,9 +48,9 @@ class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.
     private fun screenImpl(viewModel: RequestJoinBusinessViewModel = viewModel { RequestJoinBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val requestSent = resStringOr(
-            Res.string.request_join_business_sent,
-            RES_ERROR_PREFIX + "Solicitud enviada"
+        val requestSent = resString(
+            composeId = Res.string.request_join_business_sent,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitud enviada"),
         )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
@@ -73,9 +74,9 @@ class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = resStringOr(
-                        Res.string.request_join_business,
-                        RES_ERROR_PREFIX + "Solicitar unión"
+                    label = resString(
+                        composeId = Res.string.request_join_business,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitar union"),
                     ),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,

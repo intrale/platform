@@ -20,7 +20,8 @@ import org.kodein.log.newLogger
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val SELECT_SIGNUP_PROFILE_PATH = "/selectSignupProfile"
 
@@ -44,9 +45,9 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
         ) {
             Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
-                label = resStringOr(
-                    Res.string.signup_platform_admin,
-                    RES_ERROR_PREFIX + "Registrar administrador"
+                label = resString(
+                    composeId = Res.string.signup_platform_admin,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar administrador"),
                 ),
                 loading = false,
                 enabled = true,
@@ -56,9 +57,9 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                 })
             Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
-                label = resStringOr(
-                    Res.string.signup_delivery,
-                    RES_ERROR_PREFIX + "Registrar repartidor"
+                label = resString(
+                    composeId = Res.string.signup_delivery,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar repartidor"),
                 ),
                 loading = false,
                 enabled = true,

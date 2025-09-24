@@ -72,7 +72,8 @@ import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.signup.REGISTER_SALER_PATH
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val DASHBOARD_PATH = "/dashboard"
 
@@ -103,7 +104,10 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                 item.requiredRoles.isEmpty() || currentUserRole?.let { role -> role in item.requiredRoles } == true
             }
         }
-        val dashboardTitle = resStringOr(dashboard, RES_ERROR_PREFIX + "Panel principal")
+        val dashboardTitle = resString(
+            composeId = dashboard,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Panel principal"),
+        )
 
         if (DASHBOARD_ANIMATIONS_ENABLED) {
             DashboardMenuWithSemiCircle(
@@ -124,21 +128,21 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         items: List<MainMenuItem>,
         title: String,
     ) {
-        val openDescription = resStringOr(
-            semi_circular_menu_open,
-            RES_ERROR_PREFIX + "Menú. Deslizá a la derecha para volver. Deslizá hacia abajo para abrir. Tocá para abrir o cerrar."
+        val openDescription = resString(
+            composeId = semi_circular_menu_open,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Menu. Desliza a la derecha para volver. Desliza hacia abajo para abrir. Toca para abrir o cerrar."),
         )
-        val closeDescription = resStringOr(
-            semi_circular_menu_close,
-            RES_ERROR_PREFIX + "Cerrar menú de acciones"
+        val closeDescription = resString(
+            composeId = semi_circular_menu_close,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cerrar menu de acciones"),
         )
-        val longPressHint = resStringOr(
-            semi_circular_menu_long_press_hint,
-            RES_ERROR_PREFIX + "Deslizá a la derecha para volver · hacia abajo para abrir"
+        val longPressHint = resString(
+            composeId = semi_circular_menu_long_press_hint,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Desliza a la derecha para volver - hacia abajo para abrir"),
         )
-        val hint = resStringOr(
-            dashboard_menu_hint,
-            RES_ERROR_PREFIX + "Desplegá el menú para acceder a las acciones principales."
+        val hint = resString(
+            composeId = dashboard_menu_hint,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Desplega el menu para acceder a las acciones principales."),
         )
         val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
 
@@ -230,17 +234,50 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         viewModel: DashboardViewModel,
         coroutineScope: CoroutineScope
     ): List<MainMenuItem> {
-        val backLabel = resStringOr(back_button, RES_ERROR_PREFIX + "Volver")
-        val buttonsPreviewLabel = resStringOr(buttons_preview, RES_ERROR_PREFIX + "Demo de botones Intrale")
-        val changePasswordLabel = resStringOr(change_password, RES_ERROR_PREFIX + "Cambiar contraseña")
-        val setupTwoFactorLabel = resStringOr(two_factor_setup, RES_ERROR_PREFIX + "Configurar autenticación en dos pasos")
-        val verifyTwoFactorLabel = resStringOr(two_factor_verify, RES_ERROR_PREFIX + "Verificar autenticación en dos pasos")
-        val registerBusinessLabel = resStringOr(register_business, RES_ERROR_PREFIX + "Registrar negocio")
-        val requestJoinLabel = resStringOr(request_join_business, RES_ERROR_PREFIX + "Solicitar unión")
-        val reviewBusinessLabel = resStringOr(review_business, RES_ERROR_PREFIX + "Revisar solicitudes de negocio pendientes")
-        val reviewJoinLabel = resStringOr(review_join_business, RES_ERROR_PREFIX + "Revisar solicitudes de unión")
-        val registerSalerLabel = resStringOr(register_saler, RES_ERROR_PREFIX + "Registrar vendedor")
-        val logoutLabel = resStringOr(logout, RES_ERROR_PREFIX + "Salir")
+        val backLabel = resString(
+            composeId = back_button,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Volver"),
+        )
+        val buttonsPreviewLabel = resString(
+            composeId = buttons_preview,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Demo de botones Intrale"),
+        )
+        val changePasswordLabel = resString(
+            composeId = change_password,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cambiar contrasena"),
+        )
+        val setupTwoFactorLabel = resString(
+            composeId = two_factor_setup,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Configurar autenticacion en dos pasos"),
+        )
+        val verifyTwoFactorLabel = resString(
+            composeId = two_factor_verify,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Verificar autenticacion en dos pasos"),
+        )
+        val registerBusinessLabel = resString(
+            composeId = register_business,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
+        )
+        val requestJoinLabel = resString(
+            composeId = request_join_business,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitar union"),
+        )
+        val reviewBusinessLabel = resString(
+            composeId = review_business,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Revisar solicitudes de negocio pendientes"),
+        )
+        val reviewJoinLabel = resString(
+            composeId = review_join_business,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Revisar solicitudes de union"),
+        )
+        val registerSalerLabel = resString(
+            composeId = register_saler,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar vendedor"),
+        )
+        val logoutLabel = resString(
+            composeId = logout,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Salir"),
+        )
 
         return remember(
             backLabel,

@@ -31,7 +31,8 @@ import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val SIGNUP_PLATFORM_ADMIN_PATH = "/signupPlatformAdmin"
 
@@ -61,31 +62,31 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                Res.string.email,
-                value = viewModel.state.email,
-                state = viewModel.inputsStates[SignUpPlatformAdminViewModel.SignUpUIState::email.name]!!,
-                onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
+                    Res.string.email,
+                    value = viewModel.state.email,
+                    state = viewModel.inputsStates[SignUpPlatformAdminViewModel.SignUpUIState::email.name]!!,
+                    onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = resStringOr(
-                        Res.string.signup_platform_admin,
-                        RES_ERROR_PREFIX + "Registrar administrador"
+                    label = resString(
+                        composeId = Res.string.signup_platform_admin,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar administrador"),
                     ),
-                loading = viewModel.loading,
-                enabled = !viewModel.loading,
-                onClick =  {
-                logger.info { "Intento de registro PlatformAdmin" }
-                if (viewModel.isValid()) {
-                    callService(
-                        coroutineScope = coroutine,
-                        snackbarHostState = snackbarHostState,
-                        setLoading = { viewModel.loading = it },
-                        serviceCall = { viewModel.signup() },
-                        onSuccess = { navigate(LOGIN_PATH) }
-                    )
-                }
-                }
+                    loading = viewModel.loading,
+                    enabled = !viewModel.loading,
+                    onClick = {
+                        logger.info { "Intento de registro PlatformAdmin" }
+                        if (viewModel.isValid()) {
+                            callService(
+                                coroutineScope = coroutine,
+                                snackbarHostState = snackbarHostState,
+                                setLoading = { viewModel.loading = it },
+                                serviceCall = { viewModel.signup() },
+                                onSuccess = { navigate(LOGIN_PATH) }
+                            )
+                        }
+                    }
                 )
             }
         }

@@ -1,26 +1,26 @@
 package ui.util
 
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class SafeResourceTest {
 
     @Test
-    fun `safeString expone mensaje de deprecacion hacia resStringOr`() {
+    fun `safeString expone mensaje de deprecacion hacia resString`() {
         assertEquals(
-            "Usar resStringOr(...) con fallback explícito",
-            SAFE_STRING_DEPRECATION_MESSAGE
+            "Usar resString(...) con fb(\"...\") para fallbacks ASCII-safe",
+            SAFE_STRING_DEPRECATION_MESSAGE,
         )
     }
 
     @Test
-    fun `resolveOrFallback no altera cadenas similares a codificaciones`() = runTest {
+    fun `resolveOrFallback no altera cadenas similares a codificaciones`() {
         val payload = "RGFzaGJvYXJk"
 
         val result = resolveOrFallback(
+            identifier = "composeId=test",
             resolver = { payload },
-            fallback = "fallback"
+            fallback = RES_ERROR_PREFIX + fb("fallback"),
         ) { error ->
             throw AssertionError("No se esperaba fallo", error)
         }

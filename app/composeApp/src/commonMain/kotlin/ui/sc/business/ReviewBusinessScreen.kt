@@ -45,7 +45,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val REVIEW_BUSINESS_PATH = "/reviewBusiness"
 
@@ -80,9 +81,9 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 Text(
-                    resStringOr(
-                        Res.string.pending_requests,
-                        RES_ERROR_PREFIX + "Solicitudes pendientes"
+                    resString(
+                        composeId = Res.string.pending_requests,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitudes pendientes"),
                     )
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
@@ -104,9 +105,9 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                         }
                     )
                     Text(
-                        resStringOr(
-                            Res.string.select_all,
-                            RES_ERROR_PREFIX + "Seleccionar todo"
+                        resString(
+                            composeId = Res.string.select_all,
+                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Seleccionar todo"),
                         )
                     )
                 }
@@ -128,26 +129,26 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(biz.name)
-                                val descriptionLabel = resStringOr(
-                                    Res.string.description,
-                                    RES_ERROR_PREFIX + "Descripción"
+                                val descriptionLabel = resString(
+                                    composeId = Res.string.description,
+                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Descripcion"),
                                 )
-                                val emailLabel = resStringOr(
-                                    Res.string.email_admin,
-                                    RES_ERROR_PREFIX + "Correo administrador"
+                                val emailLabel = resString(
+                                    composeId = Res.string.email_admin,
+                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Correo administrador"),
                                 )
-                                val autoAcceptLabel = resStringOr(
-                                    Res.string.auto_accept_deliveries,
-                                    RES_ERROR_PREFIX + "Auto aceptar entregas"
+                                val autoAcceptLabel = resString(
+                                    composeId = Res.string.auto_accept_deliveries,
+                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Auto aceptar entregas"),
                                 )
                                 Text("$descriptionLabel: ${biz.description}")
                                 Text("$emailLabel: ${biz.emailAdmin}")
                                 Text("$autoAcceptLabel: ${biz.autoAcceptDeliveries}")
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                val approveLabel = resStringOr(
-                                    Res.string.approve,
-                                    RES_ERROR_PREFIX + "Aprobar"
+                                val approveLabel = resString(
+                                    composeId = Res.string.approve,
+                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Aprobar"),
                                 )
                                 Button(
                                     label = approveLabel,
@@ -165,9 +166,9 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                     }
                                 )
                                 Spacer(Modifier.size(MaterialTheme.spacing.x0_5))
-                                val rejectLabel = resStringOr(
-                                    Res.string.reject,
-                                    RES_ERROR_PREFIX + "Rechazar"
+                                val rejectLabel = resString(
+                                    composeId = Res.string.reject,
+                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Rechazar"),
                                 )
                                 Button(
                                     label = rejectLabel,
@@ -192,9 +193,9 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
-                    val approveSelectedLabel = resStringOr(
-                        Res.string.approve_selected,
-                        RES_ERROR_PREFIX + "Aprobar seleccionados"
+                    val approveSelectedLabel = resString(
+                        composeId = Res.string.approve_selected,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Aprobar seleccionados"),
                     )
                     Button(
                         label = approveSelectedLabel,
@@ -217,9 +218,9 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             )
                         }
                     )
-                    val rejectSelectedLabel = resStringOr(
-                        Res.string.reject_selected,
-                        RES_ERROR_PREFIX + "Rechazar seleccionados"
+                    val rejectSelectedLabel = resString(
+                        composeId = Res.string.reject_selected,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Rechazar seleccionados"),
                     )
                     Button(
                         label = rejectSelectedLabel,

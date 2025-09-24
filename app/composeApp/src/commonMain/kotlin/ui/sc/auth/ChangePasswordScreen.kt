@@ -31,7 +31,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val CHANGE_PASSWORD_PATH = "/change-password"
 
@@ -78,9 +79,9 @@ class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH, Res.string.update_pass
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = resStringOr(
-                        Res.string.update_password,
-                        RES_ERROR_PREFIX + "Actualizar contraseña"
+                    label = resString(
+                        composeId = Res.string.update_password,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Actualizar contrasena"),
                     ),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
