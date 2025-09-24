@@ -109,6 +109,7 @@ kotlin {
             includeGeneratedCollectors("androidMainResourceCollectors")
 
             dependencies {
+                implementation(platform(libs.androidx.compose.bom.get()))
                 implementation(compose.preview)
                 implementation(libs.androidx.activity.compose)
                 implementation(libs.ktor.client.android)
@@ -120,6 +121,7 @@ kotlin {
         @OptIn(ExperimentalComposeLibrary::class)
         val androidInstrumentedTest by getting {
             dependencies {
+                implementation(platform(libs.androidx.compose.bom.get()))
                 implementation(libs.androidx.testExt.junit)
                 implementation(libs.androidx.espresso.core)
                 implementation(compose.uiTestJUnit4)
@@ -197,6 +199,7 @@ android {
 }
 
 dependencies {
+    debugImplementation(platform(libs.androidx.compose.bom.get()))
     debugImplementation(compose.uiTooling)
 }
 
@@ -247,6 +250,14 @@ tasks.matching { task ->
 }
 
 tasks.withType(KotlinCompilationTask::class).configureEach {
+    dependsOn(validateComposeResources)
+}
+
+tasks.named("check").configure {
+    dependsOn(validateComposeResources)
+}
+
+tasks.named("assemble").configure {
     dependsOn(validateComposeResources)
 }
 
