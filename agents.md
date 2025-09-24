@@ -1,3 +1,4 @@
+<!-- AGENTS_MD_VERSION: 2025-09-24T00:51:43Z -->
 # agents.md
 
 ## 📘 Descripción General
@@ -262,3 +263,19 @@ Esto indicará al agente que debe buscar todos los issues en estado "Todo" y eje
 ### 🔹 Recomendaciones adicionales
 - No deben utilizarse comandos ambiguos como solo `"refinar"` o `"trabajar"` sin contexto, ya que el agente puede solicitar información adicional.
 - Si se desea refinar o trabajar un issue puntual, se debe indicar el número del issue de forma explícita.
+
+---
+
+## 🛡️ Sentinel de diagnóstico para preflight
+
+Estos elementos permiten validar rápidamente que el archivo `agents.md` correcto fue cargado por Codex sin interferir con el flujo normal.
+
+### agent: diag-echo
+- description: Diagnóstico: debe imprimir un texto fijo si agents.md fue cargado.
+- run:
+  - echo "DIAG_OK from agents.md"
+
+### task: diag-echo-task
+- agent: diag-echo
+- steps:
+  - run: echo "DIAG_TASK_OK"
