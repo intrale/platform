@@ -37,7 +37,8 @@ import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val SIGNUP_DELIVERY_PATH = "/signupDelivery"
 
@@ -101,7 +102,10 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                     }
                 }
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val signupDeliveryLabel = safeString(Res.string.signup_delivery)
+                val signupDeliveryLabel = resStringOr(
+                    Res.string.signup_delivery,
+                    RES_ERROR_PREFIX + "Registrar repartidor"
+                )
                 IntralePrimaryButton(
                     text = signupDeliveryLabel,
                     iconAsset = "ic_delivery.svg",

@@ -33,7 +33,8 @@ import ui.rs.review_join_business_rejected
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val REVIEW_JOIN_BUSINESS_PATH = "/reviewJoinBusiness"
 
@@ -48,8 +49,14 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
     private fun screenImpl(viewModel: ReviewJoinBusinessViewModel = viewModel { ReviewJoinBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val approvedMsg = safeString(Res.string.review_join_business_approved)
-        val rejectedMsg = safeString(Res.string.review_join_business_rejected)
+        val approvedMsg = resStringOr(
+            Res.string.review_join_business_approved,
+            RES_ERROR_PREFIX + "Unión aprobada"
+        )
+        val rejectedMsg = resStringOr(
+            Res.string.review_join_business_rejected,
+            RES_ERROR_PREFIX + "Unión rechazada"
+        )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -75,7 +82,10 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
                 ) {
                     Button(
-                        label = safeString(Res.string.review_join_business_approved),
+                        label = resStringOr(
+                            Res.string.review_join_business_approved,
+                            RES_ERROR_PREFIX + "Aprobar unión"
+                        ),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,
                         onClick = {
@@ -96,7 +106,10 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                         }
                     )
                     Button(
-                        label = safeString(Res.string.review_join_business_rejected),
+                        label = resStringOr(
+                            Res.string.review_join_business_rejected,
+                            RES_ERROR_PREFIX + "Rechazar unión"
+                        ),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,
                         onClick = {

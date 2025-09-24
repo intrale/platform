@@ -13,13 +13,14 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import ui.cp.buttons.Button
 import ui.rs.Res
 import ui.rs.signup
-import ui.rs.signup_platform_admin
 import ui.rs.signup_delivery
+import ui.rs.signup_platform_admin
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.th.spacing
 import ui.sc.shared.Screen
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val SELECT_SIGNUP_PROFILE_PATH = "/selectSignupProfile"
 
@@ -43,7 +44,10 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
         ) {
             Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
-                label = safeString(Res.string.signup_platform_admin),
+                label = resStringOr(
+                    Res.string.signup_platform_admin,
+                    RES_ERROR_PREFIX + "Registrar administrador"
+                ),
                 loading = false,
                 enabled = true,
                 onClick = {
@@ -52,7 +56,10 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH, Res.string.
                 })
             Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
             Button(
-                label = safeString(Res.string.signup_delivery),
+                label = resStringOr(
+                    Res.string.signup_delivery,
+                    RES_ERROR_PREFIX + "Registrar repartidor"
+                ),
                 loading = false,
                 enabled = true,
                 onClick = {

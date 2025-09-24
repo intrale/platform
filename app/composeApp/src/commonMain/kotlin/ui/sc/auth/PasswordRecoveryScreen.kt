@@ -29,7 +29,8 @@ import ui.rs.password_recovery
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val PASSWORD_RECOVERY_PATH = "/passwordRecovery"
 
@@ -66,7 +67,10 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.passwor
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val recoveryLabel = safeString(Res.string.password_recovery)
+                val recoveryLabel = resStringOr(
+                    Res.string.password_recovery,
+                    RES_ERROR_PREFIX + "Recuperar contraseña"
+                )
                 IntralePrimaryButton(
                     text = recoveryLabel,
                     iconAsset = "ic_recover.svg",

@@ -30,7 +30,8 @@ import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val SIGNUP_PATH = "/signup"
 
@@ -67,7 +68,10 @@ class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = safeString(Res.string.signup),
+                    label = resStringOr(
+                        Res.string.signup,
+                        RES_ERROR_PREFIX + "Crear cuenta"
+                    ),
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick = {

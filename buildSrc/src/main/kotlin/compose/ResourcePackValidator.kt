@@ -77,4 +77,29 @@ object ResourcePackValidator {
 
         return ResourcePackValidationResult(validatedFiles = validatedFiles, errors = errors)
     }
+
+    fun detectForbiddenBase64(uiRoot: File): List<ResourceValidationError> {
+        if (!uiRoot.exists()) return emptyList()
+
+        val forbiddenPattern = Regex("kotlin\\.io\\.encoding\\.Base64")
+        val violations = mutableListOf<ResourceValidationError>()
+
+        uiRoot.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .forEach { file ->
+                file.useLines { lines ->
+                    lines.forEachIndexed { index, rawLine ->
+                        if (forbiddenPattern.containsMatchIn(rawLine)) {
+                            violations += ResourceValidationError(
+                                file = file,
+                                lineNumber = index + 1,
+                                reason = "Uso prohibido de kotlin.io.encoding.Base64 en la capa UI.",
+                            )
+                        }
+                    }
+                }
+            }
+
+        return violations
+    }
 }

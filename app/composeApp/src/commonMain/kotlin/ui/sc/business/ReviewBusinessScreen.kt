@@ -29,22 +29,23 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import ui.rs.Res
-import ui.rs.pending_requests
 import ui.rs.approve
-import ui.rs.reject
-import ui.rs.code
-import ui.rs.select_all
 import ui.rs.approve_selected
-import ui.rs.reject_selected
+import ui.rs.auto_accept_deliveries
+import ui.rs.code
 import ui.rs.description
 import ui.rs.email_admin
-import ui.rs.auto_accept_deliveries
+import ui.rs.pending_requests
+import ui.rs.reject
+import ui.rs.reject_selected
+import ui.rs.select_all
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val REVIEW_BUSINESS_PATH = "/reviewBusiness"
 
@@ -78,7 +79,12 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                Text(safeString(Res.string.pending_requests))
+                Text(
+                    resStringOr(
+                        Res.string.pending_requests,
+                        RES_ERROR_PREFIX + "Solicitudes pendientes"
+                    )
+                )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     Res.string.code,
@@ -97,7 +103,12 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             if (checked) viewModel.selectAll() else viewModel.clearSelection()
                         }
                     )
-                    Text(safeString(Res.string.select_all))
+                    Text(
+                        resStringOr(
+                            Res.string.select_all,
+                            RES_ERROR_PREFIX + "Seleccionar todo"
+                        )
+                    )
                 }
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 viewModel.pending.forEach { biz ->
@@ -117,13 +128,29 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(biz.name)
-                                Text("${safeString(Res.string.description)}: ${biz.description}")
-                                Text("${safeString(Res.string.email_admin)}: ${biz.emailAdmin}")
-                                Text("${safeString(Res.string.auto_accept_deliveries)}: ${biz.autoAcceptDeliveries}")
+                                val descriptionLabel = resStringOr(
+                                    Res.string.description,
+                                    RES_ERROR_PREFIX + "Descripción"
+                                )
+                                val emailLabel = resStringOr(
+                                    Res.string.email_admin,
+                                    RES_ERROR_PREFIX + "Correo administrador"
+                                )
+                                val autoAcceptLabel = resStringOr(
+                                    Res.string.auto_accept_deliveries,
+                                    RES_ERROR_PREFIX + "Auto aceptar entregas"
+                                )
+                                Text("$descriptionLabel: ${biz.description}")
+                                Text("$emailLabel: ${biz.emailAdmin}")
+                                Text("$autoAcceptLabel: ${biz.autoAcceptDeliveries}")
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                val approveLabel = resStringOr(
+                                    Res.string.approve,
+                                    RES_ERROR_PREFIX + "Aprobar"
+                                )
                                 Button(
-                                    label = safeString(Res.string.approve),
+                                    label = approveLabel,
                                     loading = viewModel.loading,
                                     enabled = !viewModel.loading,
                                     onClick = {
@@ -138,8 +165,12 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                     }
                                 )
                                 Spacer(Modifier.size(MaterialTheme.spacing.x0_5))
+                                val rejectLabel = resStringOr(
+                                    Res.string.reject,
+                                    RES_ERROR_PREFIX + "Rechazar"
+                                )
                                 Button(
-                                    label = safeString(Res.string.reject),
+                                    label = rejectLabel,
                                     loading = viewModel.loading,
                                     enabled = !viewModel.loading,
                                     onClick = {
@@ -161,8 +192,12 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
+                    val approveSelectedLabel = resStringOr(
+                        Res.string.approve_selected,
+                        RES_ERROR_PREFIX + "Aprobar seleccionados"
+                    )
                     Button(
-                        label = safeString(Res.string.approve_selected),
+                        label = approveSelectedLabel,
                         loading = viewModel.loading,
                         enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
                         onClick = {
@@ -182,8 +217,12 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             )
                         }
                     )
+                    val rejectSelectedLabel = resStringOr(
+                        Res.string.reject_selected,
+                        RES_ERROR_PREFIX + "Rechazar seleccionados"
+                    )
                     Button(
-                        label = safeString(Res.string.reject_selected),
+                        label = rejectSelectedLabel,
                         loading = viewModel.loading,
                         enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
                         onClick = {

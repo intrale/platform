@@ -24,13 +24,14 @@ import org.kodein.log.newLogger
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import ui.rs.Res
-import ui.rs.old_password
 import ui.rs.new_password
+import ui.rs.old_password
 import ui.rs.update_password
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val CHANGE_PASSWORD_PATH = "/change-password"
 
@@ -77,7 +78,10 @@ class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH, Res.string.update_pass
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = safeString(Res.string.update_password),
+                    label = resStringOr(
+                        Res.string.update_password,
+                        RES_ERROR_PREFIX + "Actualizar contraseña"
+                    ),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

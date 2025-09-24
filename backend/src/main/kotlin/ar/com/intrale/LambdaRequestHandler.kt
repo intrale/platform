@@ -5,7 +5,6 @@ import com.amazonaws.services.lambda.runtime.RequestHandler
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent
 import com.google.gson.Gson
-
 import kotlinx.coroutines.runBlocking
 import org.kodein.di.DI
 import org.kodein.di.instance
@@ -13,12 +12,11 @@ import org.kodein.di.ktor.closestDI
 import org.kodein.type.jvmType
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import ar.com.intrale.util.decodeBase64OrNull
 import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.collections.iterator
 import kotlin.getValue
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 
 abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
 
@@ -35,7 +33,6 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
 
 
     // The request limit most be assigned on Api Gateway
-    @OptIn(ExperimentalEncodingApi::class)
     fun handle(appModule: DI.Module, requestEvent: APIGatewayProxyRequestEvent?, context: Context?): APIGatewayProxyResponseEvent  /*= APIGatewayProxyResponseEvent().apply */{
         try {
 
@@ -103,8 +100,14 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                                         try {
                                             val encoded = requestEvent.body
                                             if (encoded != null) {
-                                                requestBody = String(Base64.Default.decode(encoded))
-                                                logger.info("Request body is $requestBody")
+                                                val decoded = decodeBase64OrNull(encoded)
+                                                if (decoded != null) {
+                                                    requestBody = decoded
+                                                    logger.info("Request body is $requestBody")
+                                                } else {
+                                                    logger.warn("Request body no es Base64 válido, se usará el valor original")
+                                                    requestBody = encoded
+                                                }
                                             } else {
                                                 logger.info("Request body not found")
                                             }

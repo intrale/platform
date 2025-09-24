@@ -1,38 +1,30 @@
 package ui.util
 
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class SafeResourceTest {
 
-    @OptIn(ExperimentalEncodingApi::class)
     @Test
-    fun `decodeIfBase64OrReturn decodes valid payload`() {
-        val original = "Dashboard"
-        val encoded = Base64.encode(original.encodeToByteArray())
-
-        val result = decodeIfBase64OrReturn(encoded)
-
-        assertEquals(original, result)
+    fun `safeString expone mensaje de deprecacion hacia resStringOr`() {
+        assertEquals(
+            "Usar resStringOr(...) con fallback explícito",
+            SAFE_STRING_DEPRECATION_MESSAGE
+        )
     }
 
     @Test
-    fun `decodeIfBase64OrReturn returns original when input is not Base64`() {
-        val original = "Texto plano sin codificar"
+    fun `resolveOrFallback no altera cadenas similares a codificaciones`() = runTest {
+        val payload = "RGFzaGJvYXJk"
 
-        val result = decodeIfBase64OrReturn(original)
+        val result = resolveOrFallback(
+            resolver = { payload },
+            fallback = "fallback"
+        ) { error ->
+            throw AssertionError("No se esperaba fallo", error)
+        }
 
-        assertEquals(original, result)
-    }
-
-    @Test
-    fun `decodeIfBase64OrReturn ignora cadenas inválidas`() {
-        val invalid = "Zm9vYmFy==\n"
-
-        val result = decodeIfBase64OrReturn(invalid)
-
-        assertEquals(invalid, result)
+        assertEquals(payload, result)
     }
 }

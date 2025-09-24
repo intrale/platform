@@ -77,7 +77,8 @@ import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
 import ui.sc.signup.SIGNUP_DELIVERY_PATH
 import ui.th.elevations
 import ui.th.spacing
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val LOGIN_PATH = "/login"
 
@@ -98,10 +99,63 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
         val focusManager = LocalFocusManager.current
         val scrollState = rememberScrollState()
 
-        val loginText = safeString(Res.string.login)
-        val errorCredentials = safeString(Res.string.error_credentials)
-        val changePasswordMessage = safeString(Res.string.login_change_password_required)
-        val genericError = safeString(Res.string.login_generic_error)
+        val loginText = resStringOr(Res.string.login, RES_ERROR_PREFIX + "Iniciar sesión")
+        val errorCredentials = resStringOr(
+            Res.string.error_credentials,
+            RES_ERROR_PREFIX + "Credenciales inválidas"
+        )
+        val changePasswordMessage = resStringOr(
+            Res.string.login_change_password_required,
+            RES_ERROR_PREFIX + "Cambio de contraseña requerido"
+        )
+        val genericError = resStringOr(
+            Res.string.login_generic_error,
+            RES_ERROR_PREFIX + "Error inesperado en login"
+        )
+        val loginTitle = resStringOr(
+            Res.string.login_title,
+            RES_ERROR_PREFIX + "Título de ingreso"
+        )
+        val loginSubtitle = resStringOr(
+            Res.string.login_subtitle,
+            RES_ERROR_PREFIX + "Descripción de ingreso"
+        )
+        val userIconDescription = resStringOr(
+            Res.string.login_user_icon_content_description,
+            RES_ERROR_PREFIX + "Icono usuario"
+        )
+        val passwordIconDescription = resStringOr(
+            Res.string.login_password_icon_content_description,
+            RES_ERROR_PREFIX + "Icono contraseña"
+        )
+        val changePasswordTitle = resStringOr(
+            Res.string.login_change_password_title,
+            RES_ERROR_PREFIX + "Actualizar contraseña"
+        )
+        val changePasswordDescription = resStringOr(
+            Res.string.login_change_password_description,
+            RES_ERROR_PREFIX + "Instrucciones para actualizar"
+        )
+        val signupLinkLabel = resStringOr(
+            Res.string.signup,
+            RES_ERROR_PREFIX + "Crear cuenta"
+        )
+        val registerBusinessLinkLabel = resStringOr(
+            Res.string.register_business,
+            RES_ERROR_PREFIX + "Registrar negocio"
+        )
+        val signupDeliveryLinkLabel = resStringOr(
+            Res.string.signup_delivery,
+            RES_ERROR_PREFIX + "Registrar repartidor"
+        )
+        val passwordRecoveryLinkLabel = resStringOr(
+            Res.string.password_recovery,
+            RES_ERROR_PREFIX + "Recuperar contraseña"
+        )
+        val confirmRecoveryLinkLabel = resStringOr(
+            Res.string.confirm_password_recovery,
+            RES_ERROR_PREFIX + "Confirmar recuperación"
+        )
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
@@ -174,12 +228,12 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
                     Text(
-                        text = safeString(Res.string.login_title),
+                        text = loginTitle,
                         style = MaterialTheme.typography.headlineMedium,
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = safeString(Res.string.login_subtitle),
+                        text = loginSubtitle,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -206,7 +260,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Outlined.Person,
-                                    contentDescription = safeString(Res.string.login_user_icon_content_description)
+                                    contentDescription = userIconDescription
                                 )
                             },
                             keyboardOptions = KeyboardOptions.Default.copy(
@@ -228,7 +282,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Outlined.Lock,
-                                    contentDescription = safeString(Res.string.login_password_icon_content_description)
+                                    contentDescription = passwordIconDescription
                                 )
                             },
                             keyboardOptions = KeyboardOptions.Default.copy(
@@ -251,11 +305,11 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             ) {
                                 Divider()
                                 Text(
-                                    text = safeString(Res.string.login_change_password_title),
+                                    text = changePasswordTitle,
                                     style = MaterialTheme.typography.titleLarge
                                 )
                                 Text(
-                                    text = safeString(Res.string.login_change_password_description),
+                                    text = changePasswordDescription,
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -322,19 +376,19 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     TextButton(onClick = { navigate(SELECT_SIGNUP_PROFILE_PATH) }) {
-                        Text(text = safeString(Res.string.signup))
+                        Text(text = signupLinkLabel)
                     }
                     TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
-                        Text(text = safeString(Res.string.register_business))
+                        Text(text = registerBusinessLinkLabel)
                     }
                     TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
-                        Text(text = safeString(Res.string.signup_delivery))
+                        Text(text = signupDeliveryLinkLabel)
                     }
                     TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
-                        Text(text = safeString(Res.string.password_recovery))
+                        Text(text = passwordRecoveryLinkLabel)
                     }
                     TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                        Text(text = safeString(Res.string.confirm_password_recovery))
+                        Text(text = confirmRecoveryLinkLabel)
                     }
                 }
             }

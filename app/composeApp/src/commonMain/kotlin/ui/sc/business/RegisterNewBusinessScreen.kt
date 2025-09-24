@@ -24,15 +24,16 @@ import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
 import ui.rs.Res
-import ui.rs.name
-import ui.rs.email_admin
 import ui.rs.description
+import ui.rs.email_admin
+import ui.rs.name
 import ui.rs.register_business
 import ui.rs.register_business_sent
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val REGISTER_NEW_BUSINESS_PATH = "/registerNewBusiness"
 
@@ -47,7 +48,10 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
     private fun screenImpl(viewModel: RegisterBusinessViewModel = viewModel { RegisterBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val registerBusinessSent = safeString(Res.string.register_business_sent)
+        val registerBusinessSent = resStringOr(
+            Res.string.register_business_sent,
+            RES_ERROR_PREFIX + "Registro enviado"
+        )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -83,7 +87,10 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
                     onValueChange = { viewModel.state = viewModel.state.copy(description = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                val registerLabel = safeString(Res.string.register_business)
+                val registerLabel = resStringOr(
+                    Res.string.register_business,
+                    RES_ERROR_PREFIX + "Registrar negocio"
+                )
                 IntralePrimaryButton(
                     text = registerLabel,
                     iconAsset = "ic_register_business.svg",
