@@ -30,7 +30,8 @@ import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val SIGNUP_PLATFORM_ADMIN_PATH = "/signupPlatformAdmin"
 
@@ -67,7 +68,10 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = safeString(Res.string.signup_platform_admin),
+                    label = resStringOr(
+                        Res.string.signup_platform_admin,
+                        RES_ERROR_PREFIX + "Registrar administrador"
+                    ),
                 loading = viewModel.loading,
                 enabled = !viewModel.loading,
                 onClick =  {

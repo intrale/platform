@@ -22,6 +22,7 @@ Este módulo utiliza `compose.resources` para empaquetar strings, fuentes y asse
 - Usá `resStringOr(res, fallback)` como helper oficial para componer textos. Internamente utiliza `rememberResourceState` y registra en los logs `[RES_FALLBACK]` cuando aplica un fallback.
 - Prefijá todos los fallbacks visibles con `RES_ERROR_PREFIX` (`⚠ `). Así el usuario final entiende que se trata de un contenido alternativo y los analistas pueden detectarlo rápidamente en capturas o sesiones de testing.
 - `safeString` se mantiene disponible para casos puntuales (por ejemplo, ViewModels que sólo muestran placeholders), pero la navegación debe migrar a `resStringOr` para garantizar recomposición segura.
+- La capa de UI no debe importar `kotlin.io.encoding.Base64`. Si necesitás decodificar payloads hacelo en dominio/datos con helpers dedicados (por ejemplo `decodeBase64OrNull`) y pasá los resultados ya procesados a la UI.
 - Revisá los logs de CI buscando `[RES_FALLBACK]` y la métrica `total=` para saber cuántos recursos están devolviendo fallbacks.
 
 ## Checklist al editar recursos

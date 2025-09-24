@@ -24,14 +24,15 @@ import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
 import ui.rs.Res
-import ui.rs.email
 import ui.rs.code
-import ui.rs.password
 import ui.rs.confirm_password_recovery
+import ui.rs.email
+import ui.rs.password
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val CONFIRM_PASSWORD_RECOVERY_PATH = "/confirmPasswordRecovery"
 
@@ -83,7 +84,10 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                     onValueChange = { viewModel.state = viewModel.state.copy(password = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val confirmLabel = safeString(Res.string.confirm_password_recovery)
+                val confirmLabel = resStringOr(
+                    Res.string.confirm_password_recovery,
+                    RES_ERROR_PREFIX + "Confirmar recuperación"
+                )
                 IntralePrimaryButton(
                     text = confirmLabel,
                     iconAsset = "ic_recover.svg",

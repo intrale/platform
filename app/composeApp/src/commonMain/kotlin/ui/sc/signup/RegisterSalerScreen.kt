@@ -30,7 +30,8 @@ import ui.rs.register_saler_success
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val REGISTER_SALER_PATH = "/registerSaler"
 
@@ -45,7 +46,10 @@ class RegisterSalerScreen : Screen(REGISTER_SALER_PATH, Res.string.register_sale
     private fun screenImpl(viewModel: RegisterSalerViewModel = viewModel { RegisterSalerViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val successMessage = safeString(Res.string.register_saler_success)
+        val successMessage = resStringOr(
+            Res.string.register_saler_success,
+            RES_ERROR_PREFIX + "Registro enviado"
+        )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { paddingValues ->
             logger.debug { "Mostrando RegisterSalerScreen" }
@@ -69,7 +73,10 @@ class RegisterSalerScreen : Screen(REGISTER_SALER_PATH, Res.string.register_sale
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = safeString(Res.string.register_saler),
+                    label = resStringOr(
+                        Res.string.register_saler,
+                        RES_ERROR_PREFIX + "Registrar vendedor"
+                    ),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

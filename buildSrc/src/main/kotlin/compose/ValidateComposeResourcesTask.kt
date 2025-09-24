@@ -18,11 +18,14 @@ abstract class ValidateComposeResourcesTask : DefaultTask() {
     fun validate() {
         val directory = resourcesRoot.get().asFile
         val result = ResourcePackValidator.validate(directory)
+        val uiRoot = project.rootProject.layout.projectDirectory.dir("app/composeApp/src").asFile
+        val forbiddenImports = ResourcePackValidator.detectForbiddenBase64(uiRoot)
+        val allErrors = result.errors + forbiddenImports
 
-        if (result.errors.isNotEmpty()) {
+        if (allErrors.isNotEmpty()) {
             val details = buildString {
                 appendLine("Se encontraron errores en los recursos generados por compose.resources:")
-                result.errors.forEach { error ->
+                allErrors.forEach { error ->
                     append(" - ")
                     append(error.file.relativeToOrSelf(project.projectDir))
                     if (error.lineNumber > 0) {
@@ -35,6 +38,8 @@ abstract class ValidateComposeResourcesTask : DefaultTask() {
             throw GradleException(details.trim())
         }
 
-        logger.lifecycle("Validated ${result.validatedFiles} Compose resource pack(s) in ${directory.relativeToOrSelf(project.projectDir)}")
+        logger.lifecycle(
+            "Validated ${result.validatedFiles} Compose resource pack(s) in ${directory.relativeToOrSelf(project.projectDir)}"
+        )
     }
 }

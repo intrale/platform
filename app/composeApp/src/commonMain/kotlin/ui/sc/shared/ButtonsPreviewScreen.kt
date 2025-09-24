@@ -22,7 +22,8 @@ import ui.rs.login
 import ui.rs.logout
 import ui.rs.signup
 import ui.th.spacing
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val BUTTONS_PREVIEW_PATH = "/demo/buttons"
 
@@ -48,25 +49,37 @@ class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_pre
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = safeString(Res.string.buttons_preview),
+                text = resStringOr(
+                    Res.string.buttons_preview,
+                    RES_ERROR_PREFIX + "Vista previa de botones"
+                ),
                 style = MaterialTheme.typography.headlineMedium
             )
 
             IntralePrimaryButton(
-                text = safeString(Res.string.login),
+                text = resStringOr(
+                    Res.string.login,
+                    RES_ERROR_PREFIX + "Iniciar sesión"
+                ),
                 onClick = { logger.info { "Vista previa: ingresar" } },
                 leadingIcon = Icons.Filled.Login
             )
 
             IntralePrimaryButton(
-                text = safeString(Res.string.signup),
+                text = resStringOr(
+                    Res.string.signup,
+                    RES_ERROR_PREFIX + "Crear cuenta"
+                ),
                 onClick = { logger.info { "Vista previa: registrarme (loading)" } },
                 leadingIcon = Icons.Filled.HowToReg,
                 loading = true
             )
 
             IntralePrimaryButton(
-                text = safeString(Res.string.logout),
+                text = resStringOr(
+                    Res.string.logout,
+                    RES_ERROR_PREFIX + "Cerrar sesión"
+                ),
                 onClick = { logger.info { "Vista previa: salir" } },
                 leadingIcon = Icons.Filled.Logout,
                 enabled = false

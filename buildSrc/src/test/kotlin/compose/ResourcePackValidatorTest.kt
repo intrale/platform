@@ -47,4 +47,24 @@ class ResourcePackValidatorTest {
         assertTrue(result.errors.isNotEmpty())
         assertTrue(result.errors.first().reason.contains("No se encontraron archivos"))
     }
+
+    @Test
+    fun `detectForbiddenBase64 encuentra usos en ui`() {
+        val tmp = createTempDirectory().toFile()
+        val source = File(tmp, "Sample.kt")
+        source.writeText(
+            """
+            package sample
+
+            import kotlin.io.encoding.Base64
+
+            fun sample() = Base64
+            """.trimIndent()
+        )
+
+        val violations = ResourcePackValidator.detectForbiddenBase64(tmp)
+
+        assertEquals(1, violations.size)
+        assertTrue(violations.first().reason.contains("Uso prohibido"))
+    }
 }

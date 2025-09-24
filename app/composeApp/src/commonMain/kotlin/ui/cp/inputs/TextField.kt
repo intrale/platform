@@ -27,7 +27,8 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.StringResource
 import ui.rs.text_field_hide_password
 import ui.rs.text_field_show_password
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 @OptIn(ExperimentalResourceApi::class)
 @Composable
@@ -47,10 +48,18 @@ fun TextField(
 ) {
     var isVisible by remember { mutableStateOf(!visualTransformation) }
 
-    val labelString = safeString(label)
-    val placeholderString = placeholder?.let { safeString(it) }
-    val showPassword = safeString(ui.rs.Res.string.text_field_show_password)
-    val hidePassword = safeString(ui.rs.Res.string.text_field_hide_password)
+    val labelString = resStringOr(label, RES_ERROR_PREFIX + "Etiqueta de campo")
+    val placeholderString = placeholder?.let {
+        resStringOr(it, RES_ERROR_PREFIX + "Placeholder de campo")
+    }
+    val showPassword = resStringOr(
+        ui.rs.Res.string.text_field_show_password,
+        RES_ERROR_PREFIX + "Mostrar contraseña"
+    )
+    val hidePassword = resStringOr(
+        ui.rs.Res.string.text_field_hide_password,
+        RES_ERROR_PREFIX + "Ocultar contraseña"
+    )
     val errorMessage = state.value.details.takeIf { !state.value.isValid }
 
     val fieldModifier = if (errorMessage != null) {

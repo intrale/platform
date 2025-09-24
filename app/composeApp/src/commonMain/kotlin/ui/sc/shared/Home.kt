@@ -32,7 +32,8 @@ import ui.rs.signup
 import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
-import ui.util.safeString
+import ui.util.RES_ERROR_PREFIX
+import ui.util.resStringOr
 
 const val HOME_PATH = "/home"
 
@@ -50,8 +51,14 @@ class Home : Screen(HOME_PATH, Res.string.home) {
     @Composable
     private fun ScreenContent() {
         val scrollState = rememberScrollState()
-        val loginLabel = safeString(Res.string.login)
-        val signupLabel = safeString(Res.string.signup)
+        val loginLabel = resStringOr(
+            Res.string.login,
+            RES_ERROR_PREFIX + "Iniciar sesión"
+        )
+        val signupLabel = resStringOr(
+            Res.string.signup,
+            RES_ERROR_PREFIX + "Crear cuenta"
+        )
 
         Box(
             modifier = Modifier
@@ -70,13 +77,19 @@ class Home : Screen(HOME_PATH, Res.string.home) {
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
             ) {
                 Text(
-                    text = safeString(Res.string.home_headline),
+                    text = resStringOr(
+                        Res.string.home_headline,
+                        RES_ERROR_PREFIX + "Mensaje principal"
+                    ),
                     style = MaterialTheme.typography.headlineMedium,
                     textAlign = TextAlign.Center
                 )
 
                 Text(
-                    text = safeString(Res.string.home_subtitle),
+                    text = resStringOr(
+                        Res.string.home_subtitle,
+                        RES_ERROR_PREFIX + "Detalle introductorio"
+                    ),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center
                 )
