@@ -2,10 +2,30 @@
 
 Este módulo utiliza `compose.resources` para empaquetar strings, fuentes y assets en archivos `.cvr` codificados en Base64. Para evitar regresiones como las que bloqueaban el acceso al Dashboard, seguí estas recomendaciones:
 
+## Auditoría periódica de catálogos
+
+- Revisá `app/composeApp/src/commonMain/composeResources/values/strings.xml` y verificá que los textos sensibles del Dashboard sigan legibles. Las entradas auditadas al 24/09/2025 fueron:
+  - `dashboard_menu_hint`
+  - `semi_circular_menu_open`
+  - `semi_circular_menu_close`
+  - `semi_circular_menu_long_press_hint`
+  - `buttons_preview`
+- Regenerá los packs con:
+  ```bash
+  ./gradlew clean
+  rm -rf app/composeApp/build/generated/compose
+  ./gradlew :app:composeApp:assembleDebug
+  ```
+  Esto asegura que los artefactos `.cvr` reflejen los cambios y queden listos para validarse en CI.
+- Si necesitás conservar artefactos generados, agregalos al `.gitignore` en lugar de commitearlos.
+
 ## Validación obligatoria en build/CI
 
-- Ejecutá `./gradlew :app:composeApp:validateComposeResources` siempre antes de compilar. El pipeline de Gradle ya la encadena automáticamente a todas las tareas de compilación, pero podés correrla manualmente tras editar `strings.xml` u otros recursos.
-- Si la validación detecta Base64 inválido o packs incompletos, el build falla con un error indicando el archivo y la línea problemática.
+- Ejecutá `./gradlew :app:composeApp:validateComposeResources` siempre antes de compilar. El pipeline de Gradle ya la encadena automáticamente a todas las tareas de compilación, además de `check` y `assemble`.
+- La validación ahora falla cuando encuentra:
+  - Base64 inválido en los `.cvr` generados.
+  - Cadenas decodificadas que contienen caracteres no imprimibles.
+  - Valores que parecen ser Base64 incrustado (por ejemplo, `U29tZQ==`).
 - Ante un fallo, corregí el recurso y volvé a generar los collectors con `./gradlew :app:composeApp:generateResourceAccessorsForCommonMain` antes de intentar compilar otra vez.
 
 ## Orden de tareas y dependencias
@@ -15,7 +35,7 @@ Este módulo utiliza `compose.resources` para empaquetar strings, fuentes y asse
   2. `prepareComposeResourcesTaskForCommonMain`
   3. `generateResourceAccessorsForCommonMain`
   4. `validateComposeResources`
-- No elimines estas dependencias: garantizan que los packs `.cvr` se encuentren completos y validados antes de compilar cualquier target multiplataforma.
+- No elimines estas dependencias: garantizan que los packs `.cvr` se encuentren completos y validados antes de compilar cualquier target multiplataforma o ejecutar pruebas.
 
 ## Fallback seguro en runtime
 

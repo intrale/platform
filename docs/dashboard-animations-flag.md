@@ -33,3 +33,11 @@ invocar el componente `SemiCircularHamburgerMenu` que depende de animaciones com
 
 > ⚠️ Mantener esta bandera en `false` hasta completar una solución definitiva para las
 > animaciones del Dashboard.
+
+## Guardia automática de recursos
+
+- El test instrumental `DashboardGuardTest` (ubicado en `app/composeApp/src/androidInstrumentedTest/...`) monta la pantalla del Dashboard y falla si detecta nodos que contengan el prefijo `RES_ERROR_PREFIX` (`⚠`).
+- Cuando ese test falle:
+  1. Revisá los logs de la ejecución (`adb logcat` o reporte de CI) buscando entradas `[RES_FALLBACK]`.
+  2. Corregí los recursos involucrados en `strings.xml` o en los catálogos `.cvr` regenerando con `./gradlew :app:composeApp:assembleDebug`.
+  3. Ejecutá `./gradlew :app:composeApp:connectedAndroidTest` para validar el fix antes de subir el cambio.

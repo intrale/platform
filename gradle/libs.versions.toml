@@ -42,6 +42,7 @@ androidx-lifecycle = "2.9.1"
 androidx-testExt = "1.2.1"
 composeHotReload = "1.0.0-alpha11"
 composeMultiplatform = "1.8.2"
+androidx-compose-bom = "2024.09.02"
 junit = "4.13.2"
 kotlin-multiplatform = "2.2.0"
 kotlinx-coroutines = "1.10.2"
@@ -111,6 +112,7 @@ androidx-lifecycle-viewmodel = { module = "org.jetbrains.androidx.lifecycle:life
 androidx-lifecycle-runtimeCompose = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
 androidx-navigation-compose = { module = "org.jetbrains.androidx.navigation:navigation-compose", version.ref = "androidx-navigation" }
 kotlinx-coroutinesSwing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "androidx-compose-bom" }
 canard = { module = "org.kodein.log:canard", version.ref = "canard" }
 settings-no-arg = { module = "com.russhwolf:multiplatform-settings-no-arg", version.ref = "russhwolf" }
 settings-serialization = { module = "com.russhwolf:multiplatform-settings-serialization", version.ref = "russhwolf" }

@@ -1,7 +1,6 @@
 package ui.sc.business
 
 import androidx.activity.ComponentActivity
-import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -10,17 +9,18 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.test.assertEquals
 import ui.util.RES_ERROR_PREFIX
 
 @RunWith(AndroidJUnit4::class)
-class DashboardSmokeTest {
+class DashboardGuardTest {
 
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     @OptIn(ExperimentalResourceApi::class)
     @Test
-    fun dashboardFirstFrame_withoutFallbacks() {
+    fun dashboardGuard_withoutFallbackPrefix() {
         composeRule.setContent {
             DashboardScreen().screen()
         }
@@ -28,8 +28,13 @@ class DashboardSmokeTest {
         composeRule.waitForIdle()
 
         composeRule.onNodeWithText("Panel principal").assertExists()
-        composeRule
-            .onAllNodesWithText(RES_ERROR_PREFIX, substring = true)
-            .assertCountEquals(0)
+
+        val fallbackNodes = composeRule.onAllNodesWithText(RES_ERROR_PREFIX, substring = true)
+        val fallbackCount = fallbackNodes.fetchSemanticsNodes().size
+        assertEquals(
+            0,
+            fallbackCount,
+            "Se detectaron $fallbackCount textos con prefijo de fallback en Dashboard."
+        )
     }
 }
