@@ -38,7 +38,8 @@ import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val SIGNUP_DELIVERY_PATH = "/signupDelivery"
 
@@ -102,9 +103,9 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                     }
                 }
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val signupDeliveryLabel = resStringOr(
-                    Res.string.signup_delivery,
-                    RES_ERROR_PREFIX + "Registrar repartidor"
+                val signupDeliveryLabel = resString(
+                    composeId = Res.string.signup_delivery,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar repartidor"),
                 )
                 IntralePrimaryButton(
                     text = signupDeliveryLabel,

@@ -22,6 +22,7 @@ Este módulo utiliza `compose.resources` para empaquetar strings, fuentes y asse
 ## Validación obligatoria en build/CI
 
 - Ejecutá `./gradlew :app:composeApp:validateComposeResources` siempre antes de compilar. El pipeline de Gradle ya la encadena automáticamente a todas las tareas de compilación, además de `check` y `assemble`.
+- `./gradlew :app:composeApp:scanNonAsciiFallbacks` se ejecuta junto con `check` y falla cuando detecta `fb("…")` con caracteres fuera del rango ASCII. Mantené los literales sanitizados para que la verificación pase en CI.
 - La validación ahora falla cuando encuentra:
   - Base64 inválido en los `.cvr` generados.
   - Cadenas decodificadas que contienen caracteres no imprimibles.
@@ -39,9 +40,9 @@ Este módulo utiliza `compose.resources` para empaquetar strings, fuentes y asse
 
 ## Fallback seguro en runtime
 
-- Usá `resStringOr(res, fallback)` como helper oficial para componer textos. Internamente utiliza `rememberResourceState` y registra en los logs `[RES_FALLBACK]` cuando aplica un fallback.
-- Prefijá todos los fallbacks visibles con `RES_ERROR_PREFIX` (`⚠ `). Así el usuario final entiende que se trata de un contenido alternativo y los analistas pueden detectarlo rápidamente en capturas o sesiones de testing.
-- `safeString` se mantiene disponible para casos puntuales (por ejemplo, ViewModels que sólo muestran placeholders), pero la navegación debe migrar a `resStringOr` para garantizar recomposición segura.
+- Usá `resString(composeId = …, fallbackAsciiSafe = RES_ERROR_PREFIX + fb("…"))` como helper oficial para componer textos. El helper prioriza los recursos nativos de cada plataforma, valida que el fallback sea ASCII-safe y registra en los logs `[RES_FALLBACK]` cuando aplica una cadena alternativa.
+- Prefijá todos los fallbacks visibles con `RES_ERROR_PREFIX` (`⚠ `) y sanitizá el contenido legible con `fb("…")`. Así el usuario final entiende que se trata de un contenido alternativo y los analistas pueden detectarlo rápidamente en capturas o sesiones de testing.
+- `safeString` se mantiene disponible para casos puntuales (por ejemplo, ViewModels que sólo muestran placeholders), pero la navegación debe migrar a `resString` + `fb` para garantizar verificaciones ASCII y logging consistente.
 - La capa de UI no debe importar `kotlin.io.encoding.Base64`. Si necesitás decodificar payloads hacelo en dominio/datos con helpers dedicados (por ejemplo `decodeBase64OrNull`) y pasá los resultados ya procesados a la UI.
 - Revisá los logs de CI buscando `[RES_FALLBACK]` y la métrica `total=` para saber cuántos recursos están devolviendo fallbacks.
 

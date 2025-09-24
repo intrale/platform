@@ -23,7 +23,8 @@ import ui.rs.logout
 import ui.rs.signup
 import ui.th.spacing
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val BUTTONS_PREVIEW_PATH = "/demo/buttons"
 
@@ -49,26 +50,26 @@ class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_pre
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = resStringOr(
-                    Res.string.buttons_preview,
-                    RES_ERROR_PREFIX + "Vista previa de botones"
+                text = resString(
+                    composeId = Res.string.buttons_preview,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Vista previa de botones"),
                 ),
                 style = MaterialTheme.typography.headlineMedium
             )
 
             IntralePrimaryButton(
-                text = resStringOr(
-                    Res.string.login,
-                    RES_ERROR_PREFIX + "Iniciar sesión"
+                text = resString(
+                    composeId = Res.string.login,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Iniciar sesion"),
                 ),
                 onClick = { logger.info { "Vista previa: ingresar" } },
                 leadingIcon = Icons.Filled.Login
             )
 
             IntralePrimaryButton(
-                text = resStringOr(
-                    Res.string.signup,
-                    RES_ERROR_PREFIX + "Crear cuenta"
+                text = resString(
+                    composeId = Res.string.signup,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
                 ),
                 onClick = { logger.info { "Vista previa: registrarme (loading)" } },
                 leadingIcon = Icons.Filled.HowToReg,
@@ -76,9 +77,9 @@ class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_pre
             )
 
             IntralePrimaryButton(
-                text = resStringOr(
-                    Res.string.logout,
-                    RES_ERROR_PREFIX + "Cerrar sesión"
+                text = resString(
+                    composeId = Res.string.logout,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cerrar sesion"),
                 ),
                 onClick = { logger.info { "Vista previa: salir" } },
                 leadingIcon = Icons.Filled.Logout,

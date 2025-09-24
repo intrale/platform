@@ -1,14 +1,7 @@
-@file:OptIn(org.jetbrains.compose.resources.ExperimentalResourceApi::class)
-@file:Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
-
 package ui.util
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import org.jetbrains.compose.resources.ResourceEnvironment
 import org.jetbrains.compose.resources.StringResource
-import org.jetbrains.compose.resources.getString
-import org.jetbrains.compose.resources.rememberResourceState
 import org.kodein.log.Logger
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -26,41 +19,57 @@ private object ResStringFallbackMetrics {
     }
 }
 
-internal var resourceStringResolver: suspend (ResourceEnvironment, StringResource) -> String =
-    { environment, res -> getString(environment, res) }
-
 @Composable
-fun resStringOr(res: StringResource, fallback: String): String {
-    val resolved by rememberResourceState(res, fallback, { fallback }) { environment ->
-        resolveOrFallback(environment, res, fallback)
+expect fun resString(
+    androidId: Int? = null,
+    composeId: StringResource? = null,
+    fallbackAsciiSafe: String,
+): String
+
+fun fb(asciiSafe: String): String {
+    asciiSafe.forEach { char ->
+        require(char.code in 0..127) {
+            "fb(...) solo admite caracteres ASCII (0-127). Se recibió U+%04X".format(char.code)
+        }
     }
-    return resolved
+    return asciiSafe
 }
 
-internal suspend fun resolveOrFallback(
-    resolver: suspend () -> String,
+internal fun resolveOrFallback(
+    identifier: String,
+    resolver: () -> String,
     fallback: String,
-    onFailure: (Throwable) -> Unit = {}
+    onFailure: (Throwable) -> Unit = {},
 ): String {
-    return runCatching { resolver() }
+    return runCatching(resolver)
         .getOrElse { error ->
             onFailure(error)
-            fallback
+            logFallback(identifier, fallback, error)
         }
 }
 
-internal suspend fun resolveOrFallback(
-    environment: ResourceEnvironment,
-    res: StringResource,
-    fallback: String
+internal fun logFallback(
+    identifier: String,
+    fallback: String,
+    error: Throwable? = null,
 ): String {
-    return resolveOrFallback(
-        resolver = { resourceStringResolver(environment, res) },
-        fallback = fallback
-    ) { error ->
-        val total = ResStringFallbackMetrics.registerFallback()
+    val total = ResStringFallbackMetrics.registerFallback()
+    val sanitizedFallback = fallback.sanitizeForLog()
+    if (error != null) {
         resStringLogger.error(error) {
-            "[RES_FALLBACK] id=${res} total=$total fallback=\"$fallback\""
+            "[RES_FALLBACK] $identifier total=$total fallback=\"$sanitizedFallback\""
+        }
+    } else {
+        resStringLogger.warning {
+            "[RES_FALLBACK] $identifier total=$total fallback=\"$sanitizedFallback\""
         }
     }
+    return fallback
+}
+
+internal fun String.sanitizeForLog(): String {
+    return this
+        .removePrefix(RES_ERROR_PREFIX)
+        .filter { it.code in 32..126 }
+        .trim()
 }

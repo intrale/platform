@@ -31,7 +31,8 @@ import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val SIGNUP_PATH = "/signup"
 
@@ -61,31 +62,31 @@ class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                Res.string.email,
-                value = viewModel.state.email,
-                state = viewModel.inputsStates[SignUpViewModel.SignUpUIState::email.name]!!,
-                onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
+                    Res.string.email,
+                    value = viewModel.state.email,
+                    state = viewModel.inputsStates[SignUpViewModel.SignUpUIState::email.name]!!,
+                    onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = resStringOr(
-                        Res.string.signup,
-                        RES_ERROR_PREFIX + "Crear cuenta"
+                    label = resString(
+                        composeId = Res.string.signup,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
                     ),
-                loading = viewModel.loading,
-                enabled = !viewModel.loading,
-                onClick = {
-                logger.info { "Intento de registro genérico" }
-                if (viewModel.isValid()) {
-                    callService(
-                        coroutineScope = coroutine,
-                        snackbarHostState = snackbarHostState,
-                        setLoading = { viewModel.loading = it },
-                        serviceCall = { viewModel.signup() },
-                        onSuccess = { navigate(LOGIN_PATH) }
-                    )
-                }
-                }
+                    loading = viewModel.loading,
+                    enabled = !viewModel.loading,
+                    onClick = {
+                        logger.info { "Intento de registro generico" }
+                        if (viewModel.isValid()) {
+                            callService(
+                                coroutineScope = coroutine,
+                                snackbarHostState = snackbarHostState,
+                                setLoading = { viewModel.loading = it },
+                                serviceCall = { viewModel.signup() },
+                                onSuccess = { navigate(LOGIN_PATH) }
+                            )
+                        }
+                    }
                 )
             }
         }

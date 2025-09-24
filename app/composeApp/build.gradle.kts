@@ -198,6 +198,65 @@ android {
     }
 }
 
+val scanNonAsciiFallbacks by tasks.registering {
+    group = "verification"
+    description = "Verifica que las llamadas a fb(\"…\") permanezcan en ASCII seguro"
+
+    val sourcesDir = layout.projectDirectory.dir("src")
+    inputs.dir(sourcesDir)
+
+    doLast {
+        val violations = mutableListOf<String>()
+        sourcesDir.asFileTree.matching { include("**/*.kt") }.forEach { file ->
+            val content = file.readText()
+            var index = content.indexOf("fb(\"")
+            while (index != -1) {
+                var cursor = index + 4
+                val literal = StringBuilder()
+                var escaped = false
+                while (cursor < content.length) {
+                    val ch = content[cursor]
+                    if (!escaped && ch == '\\') {
+                        escaped = true
+                        literal.append(ch)
+                    } else if (!escaped && ch == '"') {
+                        break
+                    } else {
+                        literal.append(ch)
+                        escaped = false
+                    }
+                    cursor += 1
+                }
+
+                if (cursor >= content.length || content[cursor] != '"') {
+                    break
+                }
+
+                val offending = literal.firstOrNull { it.code > 127 }
+                if (offending != null) {
+                    val line = content.take(index).count { it == '\n' } + 1
+                    val relative = file.relativeTo(project.projectDir)
+                    violations += "${relative.path}:$line contiene U+%04X en fb(\"…\")".format(offending.code)
+                }
+
+                index = content.indexOf("fb(\"", cursor + 1)
+            }
+        }
+
+        if (violations.isNotEmpty()) {
+            val message = buildString {
+                appendLine("Se detectaron literales no ASCII en fb(\"…\"): ")
+                violations.forEach { appendLine(" - $it") }
+            }
+            throw org.gradle.api.GradleException(message)
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(scanNonAsciiFallbacks)
+}
+
 dependencies {
     debugImplementation(platform(libs.androidx.compose.bom.get()))
     debugImplementation(compose.uiTooling)

@@ -34,7 +34,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val REVIEW_JOIN_BUSINESS_PATH = "/reviewJoinBusiness"
 
@@ -49,13 +50,13 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
     private fun screenImpl(viewModel: ReviewJoinBusinessViewModel = viewModel { ReviewJoinBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val approvedMsg = resStringOr(
-            Res.string.review_join_business_approved,
-            RES_ERROR_PREFIX + "Unión aprobada"
+        val approvedMsg = resString(
+            composeId = Res.string.review_join_business_approved,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Union aprobada"),
         )
-        val rejectedMsg = resStringOr(
-            Res.string.review_join_business_rejected,
-            RES_ERROR_PREFIX + "Unión rechazada"
+        val rejectedMsg = resString(
+            composeId = Res.string.review_join_business_rejected,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Union rechazada"),
         )
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
@@ -82,9 +83,9 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
                 ) {
                     Button(
-                        label = resStringOr(
-                            Res.string.review_join_business_approved,
-                            RES_ERROR_PREFIX + "Aprobar unión"
+                        label = resString(
+                            composeId = Res.string.review_join_business_approved,
+                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Aprobar union"),
                         ),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,
@@ -106,9 +107,9 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                         }
                     )
                     Button(
-                        label = resStringOr(
-                            Res.string.review_join_business_rejected,
-                            RES_ERROR_PREFIX + "Rechazar unión"
+                        label = resString(
+                            composeId = Res.string.review_join_business_rejected,
+                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Rechazar union"),
                         ),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,

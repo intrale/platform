@@ -78,7 +78,8 @@ import ui.sc.signup.SIGNUP_DELIVERY_PATH
 import ui.th.elevations
 import ui.th.spacing
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val LOGIN_PATH = "/login"
 
@@ -99,62 +100,65 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
         val focusManager = LocalFocusManager.current
         val scrollState = rememberScrollState()
 
-        val loginText = resStringOr(Res.string.login, RES_ERROR_PREFIX + "Iniciar sesión")
-        val errorCredentials = resStringOr(
-            Res.string.error_credentials,
-            RES_ERROR_PREFIX + "Credenciales inválidas"
+        val loginText = resString(
+            composeId = Res.string.login,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Iniciar sesion"),
         )
-        val changePasswordMessage = resStringOr(
-            Res.string.login_change_password_required,
-            RES_ERROR_PREFIX + "Cambio de contraseña requerido"
+        val errorCredentials = resString(
+            composeId = Res.string.error_credentials,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Credenciales invalidas"),
         )
-        val genericError = resStringOr(
-            Res.string.login_generic_error,
-            RES_ERROR_PREFIX + "Error inesperado en login"
+        val changePasswordMessage = resString(
+            composeId = Res.string.login_change_password_required,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cambio de contrasena requerido"),
         )
-        val loginTitle = resStringOr(
-            Res.string.login_title,
-            RES_ERROR_PREFIX + "Título de ingreso"
+        val genericError = resString(
+            composeId = Res.string.login_generic_error,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Error inesperado en login"),
         )
-        val loginSubtitle = resStringOr(
-            Res.string.login_subtitle,
-            RES_ERROR_PREFIX + "Descripción de ingreso"
+        val loginTitle = resString(
+            composeId = Res.string.login_title,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Titulo de ingreso"),
         )
-        val userIconDescription = resStringOr(
-            Res.string.login_user_icon_content_description,
-            RES_ERROR_PREFIX + "Icono usuario"
+        val loginSubtitle = resString(
+            composeId = Res.string.login_subtitle,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Descripcion de ingreso"),
         )
-        val passwordIconDescription = resStringOr(
-            Res.string.login_password_icon_content_description,
-            RES_ERROR_PREFIX + "Icono contraseña"
+        val userIconDescription = resString(
+            composeId = Res.string.login_user_icon_content_description,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Icono usuario"),
         )
-        val changePasswordTitle = resStringOr(
-            Res.string.login_change_password_title,
-            RES_ERROR_PREFIX + "Actualizar contraseña"
+        val passwordIconDescription = resString(
+            composeId = Res.string.login_password_icon_content_description,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Icono contrasena"),
         )
-        val changePasswordDescription = resStringOr(
-            Res.string.login_change_password_description,
-            RES_ERROR_PREFIX + "Instrucciones para actualizar"
+        val changePasswordTitle = resString(
+            composeId = Res.string.login_change_password_title,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Actualizar contrasena"),
         )
-        val signupLinkLabel = resStringOr(
-            Res.string.signup,
-            RES_ERROR_PREFIX + "Crear cuenta"
+        val changePasswordDescription = resString(
+            composeId = Res.string.login_change_password_description,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Instrucciones para actualizar"),
         )
-        val registerBusinessLinkLabel = resStringOr(
-            Res.string.register_business,
-            RES_ERROR_PREFIX + "Registrar negocio"
+        val signupLinkLabel = resString(
+            composeId = Res.string.signup,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
         )
-        val signupDeliveryLinkLabel = resStringOr(
-            Res.string.signup_delivery,
-            RES_ERROR_PREFIX + "Registrar repartidor"
+        val registerBusinessLinkLabel = resString(
+            composeId = Res.string.register_business,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
         )
-        val passwordRecoveryLinkLabel = resStringOr(
-            Res.string.password_recovery,
-            RES_ERROR_PREFIX + "Recuperar contraseña"
+        val signupDeliveryLinkLabel = resString(
+            composeId = Res.string.signup_delivery,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar repartidor"),
         )
-        val confirmRecoveryLinkLabel = resStringOr(
-            Res.string.confirm_password_recovery,
-            RES_ERROR_PREFIX + "Confirmar recuperación"
+        val passwordRecoveryLinkLabel = resString(
+            composeId = Res.string.password_recovery,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Recuperar contrasena"),
+        )
+        val confirmRecoveryLinkLabel = resString(
+            composeId = Res.string.confirm_password_recovery,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Confirmar recuperacion"),
         )
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->

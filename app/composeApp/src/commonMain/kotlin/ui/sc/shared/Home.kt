@@ -33,7 +33,8 @@ import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val HOME_PATH = "/home"
 
@@ -51,13 +52,13 @@ class Home : Screen(HOME_PATH, Res.string.home) {
     @Composable
     private fun ScreenContent() {
         val scrollState = rememberScrollState()
-        val loginLabel = resStringOr(
-            Res.string.login,
-            RES_ERROR_PREFIX + "Iniciar sesión"
+        val loginLabel = resString(
+            composeId = Res.string.login,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Iniciar sesion"),
         )
-        val signupLabel = resStringOr(
-            Res.string.signup,
-            RES_ERROR_PREFIX + "Crear cuenta"
+        val signupLabel = resString(
+            composeId = Res.string.signup,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
         )
 
         Box(
@@ -77,18 +78,18 @@ class Home : Screen(HOME_PATH, Res.string.home) {
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
             ) {
                 Text(
-                    text = resStringOr(
-                        Res.string.home_headline,
-                        RES_ERROR_PREFIX + "Mensaje principal"
+                    text = resString(
+                        composeId = Res.string.home_headline,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Mensaje principal"),
                     ),
                     style = MaterialTheme.typography.headlineMedium,
                     textAlign = TextAlign.Center
                 )
 
                 Text(
-                    text = resStringOr(
-                        Res.string.home_subtitle,
-                        RES_ERROR_PREFIX + "Detalle introductorio"
+                    text = resString(
+                        composeId = Res.string.home_subtitle,
+                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Detalle introductorio"),
                     ),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center

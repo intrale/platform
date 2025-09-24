@@ -30,7 +30,8 @@ import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.util.RES_ERROR_PREFIX
-import ui.util.resStringOr
+import ui.util.fb
+import ui.util.resString
 
 const val PASSWORD_RECOVERY_PATH = "/passwordRecovery"
 
@@ -67,9 +68,9 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.passwor
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val recoveryLabel = resStringOr(
-                    Res.string.password_recovery,
-                    RES_ERROR_PREFIX + "Recuperar contraseña"
+                val recoveryLabel = resString(
+                    composeId = Res.string.password_recovery,
+                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Recuperar contrasena"),
                 )
                 IntralePrimaryButton(
                     text = recoveryLabel,
