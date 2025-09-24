@@ -2,6 +2,10 @@ package ui.ro
 
 import DIManager
 import SCREENS
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -22,6 +26,8 @@ import org.kodein.log.newLogger
 import ui.sc.shared.Screen
 
 class CommonRouter(navigator: NavHostController) : Router(navigator) {
+
+    override var animationsEnabled: Boolean = true
 
     val screens: List<Screen> by DIManager.di.instance<List<Screen>>(tag = SCREENS)
 
@@ -44,7 +50,19 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
         NavHost(
             navController = navigator,
             startDestination = screens.first().route,
-            modifier = modifier
+            modifier = modifier,
+            enterTransition = {
+                if (animationsEnabled) fadeIn() else EnterTransition.None
+            },
+            exitTransition = {
+                if (animationsEnabled) fadeOut() else ExitTransition.None
+            },
+            popEnterTransition = {
+                if (animationsEnabled) fadeIn() else EnterTransition.None
+            },
+            popExitTransition = {
+                if (animationsEnabled) fadeOut() else ExitTransition.None
+            }
         ) {
 
             val iterator = screens.listIterator()

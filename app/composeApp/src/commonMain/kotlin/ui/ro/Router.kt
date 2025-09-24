@@ -6,10 +6,10 @@ import androidx.compose.runtime.State
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import ui.sc.shared.Screen
-import org.kodein.log.LoggerFactory
-import org.kodein.log.newLogger
 
 abstract class Router (var navigator: NavHostController){
+
+    open var animationsEnabled: Boolean = true
 
     @Composable
     abstract fun routes()
