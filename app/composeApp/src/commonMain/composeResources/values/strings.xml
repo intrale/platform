@@ -1,40 +1,40 @@
-<!-- Se definen las cadenas de texto que se utilizarán en la aplicación Compose -->
+<!-- Se definen las cadenas de texto que se utilizar\u00e1n en la aplicaci\u00f3n Compose -->
 <resources>
     <string name="app_name">Intrale</string>
 
     <string name="username">Usuario</string>
-    <string name="password">Contraseña</string>
+    <string name="password">Contrase\u00f1a</string>
     <string name="login">Ingresar</string>
     <string name="login_title">Bienvenido a Intrale</string>
-    <string name="login_subtitle">Ingresá con tu correo corporativo para continuar.</string>
+    <string name="login_subtitle">Ingres\u00e1 con tu correo corporativo para continuar.</string>
     <string name="login_email_placeholder">correo@intrale.com</string>
-    <string name="login_password_placeholder">Tu contraseña</string>
-    <string name="login_new_password_placeholder">Nueva contraseña segura</string>
+    <string name="login_password_placeholder">Tu contrase\u00f1a</string>
+    <string name="login_new_password_placeholder">Nueva contrase\u00f1a segura</string>
     <string name="login_name_placeholder">Nombre</string>
     <string name="login_family_name_placeholder">Apellido</string>
-    <string name="login_change_password_title">Actualizá tu contraseña</string>
-    <string name="login_change_password_description">Tu cuenta requiere actualizar la contraseña antes de ingresar.</string>
-    <string name="login_change_password_required">Actualizá tu contraseña para continuar</string>
-    <string name="login_generic_error">Ocurrió un error al iniciar sesión. Intentá nuevamente.</string>
-    <string name="login_user_icon_content_description">Icono de usuario</string>
-    <string name="login_password_icon_content_description">Icono de contraseña</string>
+    <string name="login_change_password_title">Actualiz\u00e1 tu contrase\u00f1a</string>
+    <string name="login_change_password_description">Tu cuenta requiere actualizar la contrase\u00f1a antes de ingresar.</string>
+    <string name="login_change_password_required">Actualiz\u00e1 tu contrase\u00f1a para continuar</string>
+    <string name="login_generic_error">Ocurri\u00f3 un error al iniciar sesi\u00f3n. Intent\u00e1 nuevamente.</string>
+    <string name="login_user_icon_content_description">\u00cdcono de usuario</string>
+    <string name="login_password_icon_content_description">\u00cdcono de contrase\u00f1a</string>
 
-    <string name="text_field_show_password">Mostrar contraseña</string>
-    <string name="text_field_hide_password">Ocultar contraseña</string>
+    <string name="text_field_show_password">Mostrar contrase\u00f1a</string>
+    <string name="text_field_hide_password">Ocultar contrase\u00f1a</string>
 
     <string name="logout">Salir</string>
     <string name="back_button">Volver</string>
     <string name="buttons_preview">Demo de botones Intrale</string>
 
     <string name="home">Inicio</string>
-    <string name="home_headline">Impulsamos tu operación con Intrale</string>
-    <string name="home_subtitle">Ingresá o registrate para centralizar tu negocio y la gestión de tu red comercial.</string>
+    <string name="home_headline">Impulsamos tu operaci\u00f3n con Intrale</string>
+    <string name="home_subtitle">Ingres\u00e1 o registrate para centralizar tu negocio y la gesti\u00f3n de tu red comercial.</string>
 
     <string name="dashboard">Panel principal</string>
-    <string name="semi_circular_menu_open">Menú. Deslizá a la derecha para volver. Deslizá hacia abajo para abrir. Tocá para abrir o cerrar.</string>
-    <string name="semi_circular_menu_close">Cerrar menú de acciones</string>
-    <string name="semi_circular_menu_long_press_hint">Deslizá a la derecha para volver · hacia abajo para abrir</string>
-    <string name="dashboard_menu_hint">Desplegá el menú para acceder a las acciones principales.</string>
+    <string name="semi_circular_menu_open">Men\u00fa. Desliz\u00e1 a la derecha para volver. Desliz\u00e1 hacia abajo para abrir. Toc\u00e1 para abrir o cerrar.</string>
+    <string name="semi_circular_menu_close">Cerrar men\u00fa de acciones</string>
+    <string name="semi_circular_menu_long_press_hint">Desliz\u00e1 a la derecha para volver \u00b7 hacia abajo para abrir</string>
+    <string name="dashboard_menu_hint">Despleg\u00e1 el men\u00fa para acceder a las acciones principales.</string>
 
     <string name="signup">Registrarme</string>
     <string name="signup_platform_admin">Registro Platform Admin</string>
@@ -43,24 +43,24 @@
     <string name="register_saler">Registrar vendedor</string>
     <string name="register_saler_success">Vendedor registrado correctamente</string>
 
-    <string name="email">Correo electrónico</string>
+    <string name="email">Correo electr\u00f3nico</string>
     <string name="business">Negocio</string>
 
-    <string name="error_credentials">Usuario o contraseña incorrectos</string>
-    <string name="new_password">Nueva contraseña</string>
-    <string name="old_password">Contraseña actual</string>
+    <string name="error_credentials">Usuario o contrase\u00f1a incorrectos</string>
+    <string name="new_password">Nueva contrase\u00f1a</string>
+    <string name="old_password">Contrase\u00f1a actual</string>
     <string name="name">Nombre</string>
     <string name="family_name">Apellido</string>
-    <string name="change_password">Cambiar contraseña</string>
-    <string name="update_password">Actualizar contraseña</string>
-    <string name="password_recovery">Recuperar contraseña</string>
-    <string name="confirm_password_recovery">Confirmar recuperación</string>
-    <string name="code">Código</string>
+    <string name="change_password">Cambiar contrase\u00f1a</string>
+    <string name="update_password">Actualizar contrase\u00f1a</string>
+    <string name="password_recovery">Recuperar contrase\u00f1a</string>
+    <string name="confirm_password_recovery">Confirmar recuperaci\u00f3n</string>
+    <string name="code">C\u00f3digo</string>
 
     <string name="register_business">Registrar negocio</string>
     <string name="register_business_sent">Solicitud enviada</string>
     <string name="review_business">Revisar solicitudes de negocio pendientes</string>
-    <string name="description">Descripción</string>
+    <string name="description">Descripci\u00f3n</string>
     <string name="email_admin">Correo del administrador</string>
     <string name="pending_requests">Solicitudes pendientes</string>
     <string name="approve">Aprobar</string>
@@ -70,12 +70,12 @@
     <string name="reject_selected">Rechazar seleccionados</string>
 
     <string name="auto_accept_deliveries">Auto acepta entregas</string>
-    <string name="request_join_business">Solicitar unión</string>
+    <string name="request_join_business">Solicitar uni\u00f3n</string>
     <string name="request_join_business_sent">Solicitud enviada</string>
-    <string name="review_join_business">Revisar solicitudes de unión</string>
+    <string name="review_join_business">Revisar solicitudes de uni\u00f3n</string>
     <string name="review_join_business_approved">Aprobar</string>
     <string name="review_join_business_rejected">Rechazar</string>
 
-    <string name="two_factor_setup">Configurar autenticación en dos pasos</string>
-    <string name="two_factor_verify">Verificar autenticación en dos pasos</string>
+    <string name="two_factor_setup">Configurar autenticaci\u00f3n en dos pasos</string>
+    <string name="two_factor_verify">Verificar autenticaci\u00f3n en dos pasos</string>
 </resources>
