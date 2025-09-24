@@ -14,6 +14,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import org.jetbrains.compose.resources.StringResource
@@ -63,8 +68,15 @@ fun App() {
     val logger = LoggerFactory.default.newLogger("ui", "App")
     val router: Router by DIManager.di.instance(arg = rememberNavController())
     val useDarkTheme = isSystemInDarkTheme()
+    var animationsEnabled by remember { mutableStateOf(false) }
 
     logger.info { "Starting Intrale" }
+
+    LaunchedEffect(Unit) {
+        // Habilitamos animaciones luego del primer frame para evitar crashes cuando
+        // DASHBOARD_ANIMATIONS_ENABLED permanece en false por recursos corruptos.
+        animationsEnabled = true
+    }
 
     IntraleTheme(useDarkTheme = useDarkTheme) {
         Scaffold(
@@ -77,6 +89,7 @@ fun App() {
                 )
             }
         ) { innerPadding ->
+            router.animationsEnabled = animationsEnabled
             router.routes(innerPadding)
         }
     }

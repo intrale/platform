@@ -2,6 +2,7 @@ import ar.com.intrale.branding.SyncBrandingIconsTask
 import com.codingfeline.buildkonfig.compiler.FieldSpec
 import compose.ValidateComposeResourcesTask
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.compose.ExperimentalComposeLibrary
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -61,6 +62,10 @@ kotlin {
                     ) as MutableList<String>?
                 )
             }
+            testTask {
+                // Requiere Chrome headless; se deshabilita en entornos sin navegador.
+                enabled = false
+            }
         }
         binaries.executable()
     }
@@ -112,6 +117,15 @@ kotlin {
             }
         }
 
+        @OptIn(ExperimentalComposeLibrary::class)
+        val androidInstrumentedTest by getting {
+            dependencies {
+                implementation(libs.androidx.testExt.junit)
+                implementation(libs.androidx.espresso.core)
+                implementation(compose.uiTestJUnit4)
+            }
+        }
+
         val desktopMain by getting {
             includeGeneratedCollectors("desktopMainResourceCollectors")
 
@@ -121,11 +135,19 @@ kotlin {
             }
         }
 
+        val desktopTest by getting {
+            dependencies {
+                implementation(compose.desktop.currentOs)
+            }
+        }
+
+        @OptIn(ExperimentalComposeLibrary::class)
         val commonTest by getting {
             dependencies {
                 implementation(libs.kotlin.test)
                 implementation(libs.ktor.client.mock)
                 implementation(libs.kotlinx.coroutines.test)
+                implementation(compose.uiTest)
             }
         }
 
@@ -153,6 +175,7 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     packaging {
         resources {

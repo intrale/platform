@@ -25,5 +25,11 @@ invocar el componente `SemiCircularHamburgerMenu` que depende de animaciones com
    `safeString` o `ComposeRuntimeError`.
 4. Confirmar que el menú semicircular funciona correctamente antes de liberar el cambio.
 
+## Kill-switch enrutador
+
+- `App.kt` expone un `animationsEnabled` que se habilita con `LaunchedEffect(Unit)` tras el primer frame. Mientras la bandera global siga en `false`, el router dibuja el primer frame sin animaciones y recién después vuelve a activarlas automáticamente.
+- `CommonRouter` envuelve `enterTransition`, `exitTransition`, `popEnterTransition` y `popExitTransition` para que devuelvan `EnterTransition.None` / `ExitTransition.None` hasta que `animationsEnabled` sea `true`.
+- Este kill-switch permite desplegar nuevamente animaciones de navegación una vez validados los recursos, sin tocar `DASHBOARD_ANIMATIONS_ENABLED`.
+
 > ⚠️ Mantener esta bandera en `false` hasta completar una solución definitiva para las
 > animaciones del Dashboard.
