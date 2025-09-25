@@ -3,4 +3,12 @@
     <string name="app_name">Intrale</string>
     <string name="two_factor_setup">Configurar autenticación en dos pasos</string>
     <string name="two_factor_verify">Verificar autenticación en dos pasos</string>
+
+    <!-- Menú semicircular (accesibilidad / hints) -->
+    <string name="semi_circular_menu_open">
+        Menú. Desliza a la derecha para volver. Desliza hacia abajo para abrir. Toca para abrir o cerrar.
+    </string>
+    <string name="semi_circular_menu_close">Cerrar menú de acciones</string>
+    <string name="semi_circular_menu_long_press_hint">Desliza a la derecha para volver - hacia abajo para abrir</string>
+    <string name="dashboard_menu_hint">Desplegá el menú para acceder a las acciones principales.</string>
 </resources>
