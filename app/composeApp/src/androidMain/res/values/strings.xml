@@ -1,4 +1,6 @@
 <!-- Se define el nomnbre de la aplicacion Android  -->
 <resources>
     <string name="app_name">Intrale</string>
+    <string name="two_factor_setup">Configurar autenticación en dos pasos</string>
+    <string name="two_factor_verify">Verificar autenticación en dos pasos</string>
 </resources>

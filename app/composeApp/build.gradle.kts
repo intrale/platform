@@ -198,6 +198,43 @@ android {
     }
 }
 
+tasks.register("forbidDirectComposeStringResource") {
+    group = "verification"
+    description = "Falla si existen usos directos de compose stringResource fuera de ui/util/ResStrings"
+
+    doLast {
+        val moduleRoot = project.projectDir
+        val files = moduleRoot
+            .walkTopDown()
+            .onEnter { it.name != "build" }
+            .filter { it.isFile && it.extension in listOf("kt", "kts") }
+            .toList()
+
+        val forbidden = Regex("""org\.jetbrains\.compose\.resources\.stringResource\s*\(""")
+        val whitelist = Regex("""ui/util/ResStrings.*\.kt$""")
+
+        val offenders = files.filter { file ->
+            val relativePath = file.relativeTo(moduleRoot).path.replace('\\', '/')
+            if (whitelist.containsMatchIn(relativePath)) {
+                return@filter false
+            }
+            forbidden.containsMatchIn(file.readText())
+        }
+
+        if (offenders.isNotEmpty()) {
+            val details = offenders.joinToString("\n") { offender ->
+                val relativePath = offender.relativeTo(moduleRoot).path.replace('\\', '/')
+                "- $relativePath"
+            }
+            error("Uso directo de compose stringResource prohibido en:\n$details")
+        }
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("forbidDirectComposeStringResource")
+}
+
 val brandingOut = layout.buildDirectory.dir("generated/branding")
 
 val ensureBrandingOut by tasks.registering {

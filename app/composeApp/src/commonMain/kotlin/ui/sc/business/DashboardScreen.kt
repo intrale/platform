@@ -72,6 +72,7 @@ import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.signup.REGISTER_SALER_PATH
 import ui.util.RES_ERROR_PREFIX
+import ui.util.androidStringId
 import ui.util.fb
 import ui.util.resString
 
@@ -247,10 +248,12 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cambiar contrasena"),
         )
         val setupTwoFactorLabel = resString(
+            androidId = androidStringId("two_factor_setup"),
             composeId = two_factor_setup,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Configurar autenticacion en dos pasos"),
         )
         val verifyTwoFactorLabel = resString(
+            androidId = androidStringId("two_factor_verify"),
             composeId = two_factor_verify,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Verificar autenticacion en dos pasos"),
         )

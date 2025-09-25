@@ -45,7 +45,7 @@ internal fun resolveOrFallback(
     fallback: String,
     onFailure: (Throwable) -> Unit = {},
 ): String {
-    return runCatching(resolver)
+    return runCatching { resolver() }
         .getOrElse { error ->
             onFailure(error)
             logFallback(identifier, fallback, error)
@@ -59,13 +59,14 @@ internal fun logFallback(
 ): String {
     val total = ResStringFallbackMetrics.registerFallback()
     val sanitizedFallback = fallback.sanitizeForLog()
+    val logMessage = "[RES_FALLBACK] $identifier total=$total fallback=\"$sanitizedFallback\""
     if (error != null) {
-        resStringLogger.error(error) {
-            "[RES_FALLBACK] $identifier total=$total fallback=\"$sanitizedFallback\""
+        runCatching {
+            resStringLogger.error(error) { logMessage }
         }
     } else {
-        resStringLogger.warning {
-            "[RES_FALLBACK] $identifier total=$total fallback=\"$sanitizedFallback\""
+        runCatching {
+            resStringLogger.warning { logMessage }
         }
     }
     return fallback
