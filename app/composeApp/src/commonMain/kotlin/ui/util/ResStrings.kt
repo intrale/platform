@@ -26,14 +26,18 @@ expect fun resString(
     fallbackAsciiSafe: String,
 ): String
 
-fun fb(asciiSafe: String): String {
-    asciiSafe.forEach { char ->
-        require(char.code in 0..127) {
-            "fb(...) solo admite caracteres ASCII (0-127). Se recibió U+%04X".format(char.code)
+fun fb(asciiSafe: String): String =
+    buildString(asciiSafe.length) {
+        asciiSafe.forEach { ch ->
+            if (ch.code in 0..0x7F) {
+                append(ch)
+            } else {
+                append("\\u")
+                append(ch.code.toString(16).uppercase().padStart(4, '0'))
+            }
         }
     }
-    return asciiSafe
-}
+
 
 internal fun resolveOrFallback(
     identifier: String,
