@@ -198,12 +198,24 @@ android {
     }
 }
 
+val brandingOut = layout.buildDirectory.dir("generated/branding")
+
+val ensureBrandingOut by tasks.registering {
+    outputs.dir(brandingOut)
+    doLast {
+        brandingOut.get().asFile.mkdirs()
+    }
+}
+
 val scanNonAsciiFallbacks by tasks.registering {
     group = "verification"
     description = "Verifica que las llamadas a fb(\"…\") permanezcan en ASCII seguro"
 
     val sourcesDir = layout.projectDirectory.dir("src")
     inputs.dir(sourcesDir)
+    inputs.files(brandingOut).skipWhenEmpty()
+
+    dependsOn(ensureBrandingOut)
 
     doLast {
         val violations = mutableListOf<String>()
@@ -325,6 +337,7 @@ val syncBrandingIcons by tasks.registering(SyncBrandingIconsTask::class) {
     packDirectory.set(rootProject.layout.projectDirectory.dir("docs/branding/icon-pack"))
     projectRoot.set(rootProject.layout.projectDirectory)
 
+    outputs.dir(brandingOut)
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-hdpi"))
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-mdpi"))
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-xhdpi"))
@@ -332,6 +345,17 @@ val syncBrandingIcons by tasks.registering(SyncBrandingIconsTask::class) {
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/androidMain/res/mipmap-xxxhdpi"))
     outputs.dir(rootProject.layout.projectDirectory.dir("app/composeApp/src/wasmJsMain/resources"))
     outputs.dir(rootProject.layout.projectDirectory.dir("app/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset"))
+
+    dependsOn(ensureBrandingOut)
+
+    doFirst {
+        delete(brandingOut)
+        brandingOut.get().asFile.mkdirs()
+    }
+}
+
+scanNonAsciiFallbacks.configure {
+    dependsOn(syncBrandingIcons)
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
