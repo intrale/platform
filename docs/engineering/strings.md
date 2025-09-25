@@ -1,6 +1,6 @@
 # Buenas prácticas de strings (Android/Compose MPP)
 
-Relacionado con #304.
+Relacionado con #304 y #306.
 
 ## Motivación
 
@@ -43,3 +43,23 @@ recurso y un contador acumulado. Esto permite auditar problemas de empaquetado s
 Si un bundle de Compose se distribuye con claves corruptas, se puede habilitar un _kill-switch_ (por ejemplo, desde `BuildConfig` o
 propiedades de gradle) para forzar el uso del fallback en claves específicas mientras se publica un hotfix del recurso. Este
 switch debe respetar las reglas anteriores: nunca exponer `stringResource` directamente y siempre delegar en `resString(...)`.
+
+## Caso Dashboard (menú semicircular)
+
+Como seguimiento al incidente de `DashboardMenuWithSemiCircle` (#306) se agregaron claves nativas en
+`app/composeApp/src/androidMain/res/values/strings.xml` para las descripciones de accesibilidad del menú. El consumo desde
+`DashboardScreen` queda así:
+
+```kotlin
+val openDescription = resString(
+    androidId = androidStringId("semi_circular_menu_open"),
+    composeId = semi_circular_menu_open,
+    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Menu. Desliza a la derecha para volver. Desliza hacia abajo para abrir. Toca para abrir o cerrar."),
+)
+```
+
+Puntos clave:
+
+1. El `androidId` apunta a la clave real de `strings.xml`, garantizando compatibilidad con lectores de pantalla.
+2. Las versiones multiplataforma siguen usando los `StringResource` de Compose.
+3. El fallback ASCII mantiene la app estable incluso si `stringResource` vuelve a fallar.

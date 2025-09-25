@@ -24,11 +24,27 @@ actual fun resString(
     }
 
     composeId?.let { cid ->
-        return runCatching { composeStringResource(cid) }
-            .getOrElse { error ->
-                logFallback(identifier, fallbackAsciiSafe, error)
-            }
+        return resolveComposeOrFallback(
+            identifier = identifier,
+            fallback = fallbackAsciiSafe,
+        ) {
+            composeStringResource(cid)
+        }
     }
 
     return logFallback(identifier, fallbackAsciiSafe)
+}
+
+@Composable
+private fun resolveComposeOrFallback(
+    identifier: String,
+    fallback: String,
+    onFailure: (Throwable) -> Unit = {},
+    resolver: @Composable () -> String,
+): String {
+    return runCatching { resolver() }
+        .getOrElse { error ->
+            onFailure(error)
+            logFallback(identifier, fallback, error)
+        }
 }

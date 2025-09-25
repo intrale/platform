@@ -130,18 +130,22 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         title: String,
     ) {
         val openDescription = resString(
+            androidId = androidStringId("semi_circular_menu_open"),
             composeId = semi_circular_menu_open,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Menu. Desliza a la derecha para volver. Desliza hacia abajo para abrir. Toca para abrir o cerrar."),
         )
         val closeDescription = resString(
+            androidId = androidStringId("semi_circular_menu_close"),
             composeId = semi_circular_menu_close,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cerrar menu de acciones"),
         )
         val longPressHint = resString(
+            androidId = androidStringId("semi_circular_menu_long_press_hint"),
             composeId = semi_circular_menu_long_press_hint,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Desliza a la derecha para volver - hacia abajo para abrir"),
         )
         val hint = resString(
+            androidId = androidStringId("dashboard_menu_hint"),
             composeId = dashboard_menu_hint,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Desplega el menu para acceder a las acciones principales."),
         )
