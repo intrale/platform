@@ -32,6 +32,7 @@ val brandId: String = providers.trimmedProperty("brandId")
     )
 
 val appIdSuffix: String = providers.trimmedProperty("appIdSuffix") ?: brandId
+val normalizedAppIdSuffix = appIdSuffix.trim().trimStart('.')
 
 val brandName: String = providers.trimmedProperty("brandName") ?: brandId.replaceFirstChar { char ->
     if (char.isLowerCase()) char.titlecase(Locale.getDefault()) else char.toString()
@@ -41,9 +42,12 @@ val deeplinkHost: String = providers.trimmedProperty("deeplinkHost") ?: "$brandI
 
 val brandingEndpoint: String? = providers.trimmedProperty("brandingEndpoint")
 
+val applicationIdSuffixValue = ".${normalizedAppIdSuffix}"
+val escapedBrandIdForBuildConfig = brandId.replace("\"", "\\\"")
+
 logger.lifecycle("Parámetros de branding aplicados:")
 logger.lifecycle(" - brandId: $brandId")
-logger.lifecycle(" - appIdSuffix: $appIdSuffix")
+logger.lifecycle(" - appIdSuffix: $normalizedAppIdSuffix")
 logger.lifecycle(" - brandName: $brandName")
 logger.lifecycle(" - deeplinkHost: $deeplinkHost")
 logger.lifecycle(
@@ -52,7 +56,7 @@ logger.lifecycle(
 
 extra.apply {
     set("brandId", brandId)
-    set("appIdSuffix", appIdSuffix)
+    set("appIdSuffix", normalizedAppIdSuffix)
     set("brandName", brandName)
     set("deeplinkHost", deeplinkHost)
     brandingEndpoint?.let { set("brandingEndpoint", it) }
@@ -211,12 +215,16 @@ android {
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "ar.com.intrale"
+        applicationId = "ar.com.intrale.platform"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "BRAND_ID", "\"$escapedBrandIdForBuildConfig\"")
+    }
+    buildFeatures {
+        buildConfig = true
     }
     packaging {
         resources {
@@ -224,8 +232,12 @@ android {
         }
     }
     buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = applicationIdSuffixValue
+        }
         getByName("release") {
             isMinifyEnabled = false
+            applicationIdSuffix = applicationIdSuffixValue
         }
     }
     compileOptions {
