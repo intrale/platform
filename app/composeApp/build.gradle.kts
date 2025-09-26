@@ -222,6 +222,10 @@ android {
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BRAND_ID", "\"$escapedBrandIdForBuildConfig\"")
+        manifestPlaceholders += mapOf(
+            "appLabel" to brandName,
+            "deeplinkHost" to deeplinkHost
+        )
     }
     buildFeatures {
         buildConfig = true
