@@ -252,7 +252,60 @@ Su funcionamiento correcto es clave para garantizar trazabilidad, claridad y flu
 
 Para garantizar que el agente `leitocodexbot` interprete correctamente las acciones definidas en este documento, se recomienda utilizar las siguientes instrucciones explícitas al momento de interactuar con Codex:
 
-###  Refinamiento de tareas
+##
+
+##  Intenciones de comando (mapeo explícito)
+
+Para evitar ambiguedades, el agente debe interpretar estas palabras clave de forma deterministica:
+
+- "trabajar" / "start" / "iniciar" / "poner manos a la obra"
+    1) Asegurar que el issue este en el Project (agregar si falta) y **obtener/persistir ITEM_ID**.
+    2) **Mover a "In Progress"** con updateProjectV2ItemFieldValue.
+    3) Ejecutar el **flujo de Refinamiento** (comentario + PATCH del body con la estructura estandar).
+    4) Si se abre PR o queda ejecutable, dejar "Ready"; si queda como epica, "Todo"; ante error, "Blocked".
+    5) Comentar la accion realizada y el estado final.
+
+- "bloquear" / "blocked" → mover a "Blocked" y comentar motivo tecnico reproducible.
+- "listo" / "ready" → mover a "Ready" solo si existe PR abierto o criterios cumplidos.
+- "pendiente" / "todo" / "backlog" → mover a "Todo" o "Backlog" segun corresponda.
+
+### Plantillas necesarias para el mapeo de "trabajar"
+
+(a) Agregar al Project y obtener ITEM_ID (idempotente):
+```bash
+# Requiere: PROJECT_ID, ISSUE_NODE_ID
+curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json"  -d '{
+  "query":"mutation($project:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$contentId}){item{id}}}",
+  "variables":{"project":"'"$PROJECT_ID"'", "contentId":"'"$ISSUE_NODE_ID"'"}
+}'
+# El agente debe almacenar el item.id en ITEM_ID para los pasos siguientes.
+```
+
+(b) Mover a "In Progress":
+```bash
+# Requiere: PROJECT_ID, ITEM_ID, STATUS_FIELD_ID, STATUS_OPTION_INPROGRESS
+curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json"  -d '{
+  "query":"mutation($project:ID!,$item:ID!,$field:ID!,$optionID:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$optionID}}){clientMutationId}}",
+  "variables":{"project":"'"$PROJECT_ID"'", "item":"'"$ITEM_ID"'", "field":"'"$STATUS_FIELD_ID"'", "optionID":"'"$STATUS_OPTION_INPROGRESS"'"}
+}'
+```
+
+(c) Confirmar estado (opcional, para trazabilidad):
+```bash
+# Requiere: ITEM_ID
+curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json"  -d '{
+  "query":"query($id:ID!){node(id:$id){... on ProjectV2Item{fieldValueByName(name:\"Status\"){__typename ... on ProjectV2ItemFieldSingleSelectValue{name optionId}}}}}",
+  "variables":{"id":"'"$ITEM_ID"'"}
+}'
+```
+
+(d) Comentar confirmacion en el issue:
+```bash
+# Requiere: <repo>, <issue_number>
+curl -sS -X POST   -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json"   -d '{"body":"codex: Estado actualizado a \"In Progress\". Iniciando refinamiento y actualizacion del body segun estructura estandar."}'   https://api.github.com/repos/intrale/<repo>/issues/<issue_number>/comments
+```
+
+#  Refinamiento de tareas
 Para que el agente ejecute el refinamiento de todas las tareas pendientes en el tablero, se debe utilizar la instrucción: "refinar todas las tareas pendientes en el tablero de intrale"
 Esto indicará al agente que debe buscar todos los issues en estado "Todo" y aplicar el flujo de refinamiento definido en este documento.
 
