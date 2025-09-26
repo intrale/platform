@@ -1,6 +1,8 @@
 import ar.com.intrale.branding.SyncBrandingIconsTask
 import com.codingfeline.buildkonfig.compiler.FieldSpec
 import compose.ValidateComposeResourcesTask
+import org.gradle.api.GradleException
+import org.gradle.api.provider.ProviderFactory
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.ExperimentalComposeLibrary
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
@@ -8,6 +10,7 @@ import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
+import java.util.Locale
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -17,6 +20,42 @@ plugins {
     alias(libs.plugins.composeHotReload)
     alias(libs.plugins.kotlinx.serialization)
     alias(libs.plugins.buildkonfig)
+}
+
+
+fun ProviderFactory.trimmedProperty(name: String): String? =
+    gradleProperty(name).orNull?.trim()?.takeIf { it.isNotEmpty() }
+
+val brandId: String = providers.trimmedProperty("brandId")
+    ?: throw GradleException(
+        "Falta el parámetro obligatorio -PbrandId. Ejecutá el build con -PbrandId=<identificador>."
+    )
+
+val appIdSuffix: String = providers.trimmedProperty("appIdSuffix") ?: brandId
+
+val brandName: String = providers.trimmedProperty("brandName") ?: brandId.replaceFirstChar { char ->
+    if (char.isLowerCase()) char.titlecase(Locale.getDefault()) else char.toString()
+}
+
+val deeplinkHost: String = providers.trimmedProperty("deeplinkHost") ?: "$brandId.intrale.app"
+
+val brandingEndpoint: String? = providers.trimmedProperty("brandingEndpoint")
+
+logger.lifecycle("Parámetros de branding aplicados:")
+logger.lifecycle(" - brandId: $brandId")
+logger.lifecycle(" - appIdSuffix: $appIdSuffix")
+logger.lifecycle(" - brandName: $brandName")
+logger.lifecycle(" - deeplinkHost: $deeplinkHost")
+logger.lifecycle(
+    " - brandingEndpoint: ${brandingEndpoint ?: "(no definido)"}"
+)
+
+extra.apply {
+    set("brandId", brandId)
+    set("appIdSuffix", appIdSuffix)
+    set("brandName", brandName)
+    set("deeplinkHost", deeplinkHost)
+    brandingEndpoint?.let { set("brandingEndpoint", it) }
 }
 
 
