@@ -81,7 +81,7 @@ const val DASHBOARD_PATH = "/dashboard"
 // Mantener en `false` mientras se validan recursos corruptos. Una vez que `App.animationsEnabled`
 // pasa a `true` tras el primer frame, el kill-switch del router permite reactivar animaciones sin
 // tocar esta constante.
-private const val DASHBOARD_ANIMATIONS_ENABLED = false
+private const val DASHBOARD_ANIMATIONS_ENABLED = true
 
 class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
 

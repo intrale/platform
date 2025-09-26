@@ -1,15 +1,15 @@
 <!-- AGENTS_MD_VERSION: 2025-09-24T00:51:43Z -->
 # agents.md
 
-## 📘 Descripción General
+##  Descripción General
 
 Este documento define la configuración y comportamiento esperado del agente automatizado `leitocodexbot` en el entorno de desarrollo de la organización **`intrale`** en GitHub.
 
 `leitocodexbot` tiene un rol auxiliar orientado a tareas repetitivas del ciclo de desarrollo, permitiendo trazabilidad y eficiencia sin reemplazar la supervisión humana.
-sabes como lo reactivo
+
 ---
 
-## 🔧 Consideraciones Iniciales
+##  Consideraciones Iniciales
 
 - Todos los comentarios, commits y PRs deben estar en **Español Latinoamericano**.
 - El entorno cuenta con `GITHUB_TOKEN` con permisos sobre toda la organización.
@@ -29,7 +29,7 @@ sabes como lo reactivo
 
 ---
 
-## 🗂️ Gestión del tablero `intrale`
+##  Gestión del tablero `intrale`
 
 Para mantener la trazabilidad completa en el tablero operativo de la organización, el agente debe cumplir con las siguientes
 reglas en todo momento:
@@ -47,7 +47,7 @@ reglas en todo momento:
     - Documentar en el comentario del issue cualquier cambio de estado, incluyendo enlaces a PRs, registros o stacktraces.
 
 ---
-## 🔁 Ejecución de Tareas Automáticas
+##  Ejecución de Tareas Automáticas
 
 1. **Antes de cualquier otra acción**, el agente debe intentar mover el issue a la columna **"In Progress"**.
 2. Si no puede moverlo por cualquier motivo (permisos insuficientes, error interno, inconsistencias), debe:
@@ -57,7 +57,7 @@ reglas en todo momento:
         - Stacktrace o mensaje de error recibido, si aplica.
 3. Solo si logra mover el issue a **"In Progress"**:
     - Analizar el título y la descripción.
-    - Crear una rama con el nombre relacionado al issue, siguiendo la nomenclatura de ramas definida en la sección **🌱 Nomenclatura de Ramas**.
+    - Crear una rama con el nombre relacionado al issue, siguiendo la nomenclatura de ramas definida en la sección ** Nomenclatura de Ramas**.
     - Si la rama ya existe:
         - Comentar en el issue que la rama ya fue creada previamente.
         - Actualizar el repositorio local con los últimos cambios de esa rama.
@@ -76,12 +76,12 @@ reglas en todo momento:
     - Comentar el motivo y adjuntar el **stacktrace** si aplica.
 6. Validar que no haya dependencias activas no resueltas (por ejemplo, campo `Blocked by #n` en la descripción o etiquetas).
 
-> 📌 Si no se genera un Pull Request, la tarea se considerará incompleta, incluso si los cambios fueron aplicados localmente.
+>  Si no se genera un Pull Request, la tarea se considerará incompleta, incluso si los cambios fueron aplicados localmente.
 
 ---
 
-## 🔄 Generación de Pull Requests al ejecutar tareas
-Tener en cuenta que los Pull Requests deben generarse con 
+##  Generación de Pull Requests al ejecutar tareas
+Tener en cuenta que los Pull Requests deben generarse con
 curl -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json" \
 -d '{"title":"<titulo>","head":"<rama>","base":"main","body":"Closes #<issue_number>"}' \
 https://api.github.com/repos/intrale/<repo>/pulls
@@ -106,11 +106,11 @@ Siempre que la ejecución de una tarea involucre cambios en el código fuente o 
         - Enlace directo al registro de ejecucion de codex.
         - Enlace directo al PR creado.
     - Mover el issue a **"Ready"**.
-6. ❌ **No debe hacer merge del PR automáticamente.**
+6.  **No debe hacer merge del PR automáticamente.**
 
 ---
 
-## 🔄 Flujo de refinamiento de tareas
+##  Flujo de refinamiento de tareas
 
 Cuando se indique que el agente debe **"refinar"**, debe seguir estrictamente este flujo:
 
@@ -127,44 +127,44 @@ Cuando se indique que el agente debe **"refinar"**, debe seguir estrictamente es
         - Indicar de forma clara y **técnica** el **nombre exacto** de los componentes, clases, funciónes o endpoints involucrados.
         - Para determinar componentes a crear, logica de negocio, pruebas unitarias, pruebas de integracion, documentacion y todo lo necesarios para cumplir con la funcionalidad, utilizar la estructura del workspace y el código fuente existente.
         - Incluir las **rutas completas** dentro del workspace para ubicar los componentes (por ejemplo: `/workspace/platform/users/src/domain/usecase/RegisterUserUseCase.kt`).
-        - No deben dejarse referencias genéricas ni vagas como “el controlador de usuarios”.
-        - Redactar la descripción utilizando la estructura estándar definida en la sección **📝 Estructura de Issues Generadas Automáticamente**.
+        - No deben dejarse referencias genéricas ni vagas como "el controlador de usuarios".
+        - Redactar la descripción utilizando la estructura estándar definida en la sección ** Estructura de Issues Generadas Automáticamente**.
     - Agregar detalle para pruebas, documentación y configuración si corresponde.
     - Mover el issue a **"Todo"**.
 
 ---
 
-## 📝 Estructura de Issues Generadas Automáticamente
+##  Estructura de Issues Generadas Automáticamente
 
 Todo issue o sub-issue que sea creada automáticamente por el agente `leitocodexbot` debe seguir una estructura estandarizada en **Español Latinoamericano**, respetando el siguiente formato:
 
-#### ✅ Estructura:
+####  Estructura:
 
-- ## 🎯 Objetivo
+- ##  Objetivo
   Breve descripción del propósito de la tarea o funcionalidad.
 
-- ## 🧠 Contexto
+- ##  Contexto
   Antecedentes relevantes o descripción del comportamiento actual.
 
-- ## 🔧 Cambios requeridos
+- ##  Cambios requeridos
   Lista de acciones, componentes y archivos involucrados que deben modificarse.
 
-- ## ✅ Criterios de aceptación
+- ##  Criterios de aceptación
   Requisitos funcionales claros que deben cumplirse para considerar la tarea finalizada.
 
-- ## 📘 Notas técnicas
+- ##  Notas técnicas
   Guía para la implementación, consideraciones de estilo o decisiones de diseño/código específicas.
 
-> 📌 Esta estructura debe aplicarse **en todas las tareas** generadas automáticamente, incluyendo subtareas de refinamiento.  
+>  Esta estructura debe aplicarse **en todas las tareas** generadas automáticamente, incluyendo subtareas de refinamiento.
 > El contenido debe ser claro, técnico y sin ambigüedades, para facilitar su comprensión por cualquier desarrollador.
 
 ---
 
-## 📚 Generación y Actualización de Documentación
+##  Generación y Actualización de Documentación
 
 Cuando el agente genera o actualiza documentación, debe:
 
-1. **Ubicación obligatoria:**  
+1. **Ubicación obligatoria:**
     - Toda la documentación debe crearse o modificarse dentro del directorio `docs` del repositorio donde se realizaron los cambios funcionales asociados a la tarea.
 
 2. **Acciones permitidas:**
@@ -172,8 +172,8 @@ Cuando el agente genera o actualiza documentación, debe:
     - Actualizar documentos existentes si están dentro del directorio indicado.
 
 3. **Restricciones:**
-    - ❌ **No debe modificar** el archivo `agents.md` bajo ninguna circunstancia.
-    - ❌ No debe ejecutar pruebas unitarias si la tarea es exclusivamente de documentación.
+    -  **No debe modificar** el archivo `agents.md` bajo ninguna circunstancia.
+    -  No debe ejecutar pruebas unitarias si la tarea es exclusivamente de documentación.
 
 4. **Buenas prácticas al documentar:**
     - Incluir referencias claras al módulo o componente involucrado.
@@ -185,11 +185,11 @@ Cuando el agente genera o actualiza documentación, debe:
     - Relacionar el PR con el issue correspondiente mediante `Closes #n`.
     - Asignar el PR al usuario humano `leitolarreta`.
     - Comentar en el issue correspondiente con un resumen de los cambios y un enlace al PR generado.
-    - ❌ **No hacer merge del PR automáticamente**.
+    -  **No hacer merge del PR automáticamente**.
 
 ---
 
-## 🤖 Agente `leitocodexbot`
+##  Agente `leitocodexbot`
 
 ### Rol principal
 Automatizar tareas operativas: generación de código, ramas, PRs, comentarios, issues y gestión del tablero.
@@ -210,72 +210,131 @@ Automatizar tareas operativas: generación de código, ramas, PRs, comentarios, 
 - Ramas con nombres claros y descriptivos.
 
 ### Restricciones
-- ❌ No hacer merges automáticos.
-- ❌ No eliminar ramas remotas.
-- ❌ No modificar archivos críticos sin aprobación (`.env`, `settings.gradle`, etc.)
+-  No hacer merges automáticos.
+-  No eliminar ramas remotas.
+-  No modificar archivos críticos sin aprobación (`.env`, `settings.gradle`, etc.)
 
 ---
 
-## 🌱 Nomenclatura de Ramas
+##  Nomenclatura de Ramas
 - Considerar que si desde un issue se intenta crear una rama esta debe tener relacion al nombre del issue y al prefijo correspondiente.
 - Si el issue es una sub-tarea, la rama sobre la que trabajar debe ser la misma rama que la que utilizo el padre. Por lo tanto la nomenclatura de la rama debe provenir del padre para que todos los hijos puedan reutilizar la misma rama.
-| Tipo            | Prefijo            | Uso                                  |
-|-----------------|--------------------|---------------------------------------|
-| Funcionalidad   | `feature/<desc>`   | Nuevas características                |
-| Corrección      | `bugfix/<desc>`    | Correcciones de errores               |
-| Documentación   | `docs/<desc>`      | Actualizaciones de documentación      |
-| Refactorización | `refactor/<desc>`  | Reestructuración sin impacto externo  |
+  | Tipo            | Prefijo            | Uso                                  |
+  |-----------------|--------------------|---------------------------------------|
+  | Funcionalidad   | `feature/<desc>`   | Nuevas características                |
+  | Corrección      | `bugfix/<desc>`    | Correcciones de errores               |
+  | Documentación   | `docs/<desc>`      | Actualizaciones de documentación      |
+  | Refactorización | `refactor/<desc>`  | Reestructuración sin impacto externo  |
 
 ---
 
-## 📦 Pull Requests generados
+##  Pull Requests generados
 
 - Título: `[auto] <descripción>`
 - Descripción técnica clara.
 - Relacionado con un issue.
 - Asignado a `leitolarreta`.
 - Comentar en el issue con link al PR.
-- ❌ No hacer merge del PR por parte del bot.
+-  No hacer merge del PR por parte del bot.
 
 ---
 
-## ✅ Consideraciones Finales
+##  Consideraciones Finales
 
-El agente `leitocodexbot` es un asistente automatizado que potencia la eficiencia del equipo, pero **nunca reemplaza la revisión ni la decisión humana**.  
-Su funcionamiento correcto es clave para garantizar trazabilidad, claridad y fluidez en el desarrollo.  
-**Toda ejecución que implique cambios debe generar obligatoriamente un Pull Request.**  
-**Toda tarea que no pueda moverse a "In Progress" debe bloquearse de inmediato con su motivo técnico.**  
+El agente `leitocodexbot` es un asistente automatizado que potencia la eficiencia del equipo, pero **nunca reemplaza la revisión ni la decisión humana**.
+Su funcionamiento correcto es clave para garantizar trazabilidad, claridad y fluidez en el desarrollo.
+**Toda ejecución que implique cambios debe generar obligatoriamente un Pull Request.**
+**Toda tarea que no pueda moverse a "In Progress" debe bloquearse de inmediato con su motivo técnico.**
 **Las ejecuciones del agente deben ser únicas y no simultáneas.**
 ---
 
-## 🛠️ Instrucciones Operativas para Invocar Acciones
+##  Instrucciones Operativas para Invocar Acciones
 
 Para garantizar que el agente `leitocodexbot` interprete correctamente las acciones definidas en este documento, se recomienda utilizar las siguientes instrucciones explícitas al momento de interactuar con Codex:
 
-### 🔹 Refinamiento de tareas
+###  Refinamiento de tareas
 Para que el agente ejecute el refinamiento de todas las tareas pendientes en el tablero, se debe utilizar la instrucción: "refinar todas las tareas pendientes en el tablero de intrale"
 Esto indicará al agente que debe buscar todos los issues en estado "Todo" y aplicar el flujo de refinamiento definido en este documento.
 
-### 🔹 Ejecución de tareas
+###  Ejecución de tareas
 Para que el agente procese todas las tareas pendientes, se debe utilizar la instrucción: "trabajar todas las tareas pendientes en el tablero de intrale"
 Esto indicará al agente que debe buscar todos los issues en estado "Todo" y ejecutar las acciones correspondientes, según lo definido en este documento.
 
-### 🔹 Recomendaciones adicionales
+###  Recomendaciones adicionales
 - No deben utilizarse comandos ambiguos como solo `"refinar"` o `"trabajar"` sin contexto, ya que el agente puede solicitar información adicional.
 - Si se desea refinar o trabajar un issue puntual, se debe indicar el número del issue de forma explícita.
 
 ---
 
-## 🛡️ Sentinel de diagnóstico para preflight
+##  Persistencia de resultados de refinamiento (obligatoria)
 
-Estos elementos permiten validar rápidamente que el archivo `agents.md` correcto fue cargado por Codex sin interferir con el flujo normal.
+- El resultado del **refinamiento** SIEMPRE se deja **dentro del issue**:
+    1) **Comentario** en el issue con el detalle (estructura estándar del proyecto).
+    2) **Actualización** del **body** del issue incorporando: * Objetivo /  Contexto /  Cambios /  Criterios de Aceptación /  Notas*.
+-  **Prohibido** crear archivos `.md` para refinamientos (excepto si el issue lo solicita explícitamente).
 
-### agent: diag-echo
-- description: Diagnóstico: debe imprimir un texto fijo si agents.md fue cargado.
-- run:
-  - echo "DIAG_OK from agents.md"
+**Comandos (plantillas):**
+```bash
+# 1) Comentar el resultado del refinamiento
+curl -sS -X POST   -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json"   -d '{"body":"<AQUÍ CONTENIDO REFINADO EN FORMATO ESTÁNDAR>"}'   https://api.github.com/repos/intrale/<repo>/issues/<issue_number>/comments
 
-### task: diag-echo-task
-- agent: diag-echo
-- steps:
-  - run: echo "DIAG_TASK_OK"
+# 2) Actualizar el body del issue (merge no destructivo del contenido)
+curl -sS -X PATCH   -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json"   -d '{"body":"<BODY COMPLETO ACTUALIZADO CON SECCIONES ESTÁNDAR>"}'   https://api.github.com/repos/intrale/<repo>/issues/<issue_number>
+```
+
+
+
+##  Projects v2 - IDs y mutaciones requeridas
+
+Definí los siguientes valores **reales** (como variables de entorno o en este mismo archivo para que el agente los lea) para la organización `intrale` y el tablero "intrale":
+
+```bash
+PROJECT_ID="PVT_kwDOBTzBoc4AyMGf"
+STATUS_FIELD_ID="PVTSSF_lADOBTzBoc4AyMGfzgoLqjg"
+STATUS_OPTION_BACKLOG="f75ad846"
+STATUS_OPTION_TODO="57a3a001"
+STATUS_OPTION_INPROGRESS="47fc9ee4"
+STATUS_OPTION_READY="9570f89c"
+STATUS_OPTION_DONE="98236657"
+STATUS_OPTION_BLOCKED="d95d52cc"
+```
+
+**Agregar issue al Project (si no está) y obtener `itemId`:**
+```bash
+curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json"  -d '{
+  "query":"mutation($project:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$contentId}){item{id}}}",
+  "variables":{"project":"'"$PROJECT_ID"'", "contentId":"<ISSUE_NODE_ID>"}
+}'
+# Guardar el id devuelto en $ITEM_ID
+```
+
+**Mover estado (mutación GraphQL):**
+```bash
+curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json"  -d '{
+  "query":"mutation($project:ID!,$item:ID!,$field:ID!,$optionID:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$optionID}}){clientMutationId}}",
+  "variables":{"project":"'"$PROJECT_ID"'", "item":"'"$ITEM_ID"'", "field":"'"$STATUS_FIELD_ID"'", "optionID":"'"$STATUS_OPTION_INPROGRESS"'" }
+}'
+# Reemplazar por STATUS_OPTION_TODO / BLOCKED / READY según corresponda
+```
+
+
+
+##  Flujo operativo de refinamiento
+
+1. **Antes de trabajar**: mover el issue a **In Progress** (mutación GraphQL anterior).
+2. **Publicar** un **comentario** con el resultado del refinamiento **y** hacer **PATCH** del body del issue con la estructura estándar.
+3. Si el refinamiento detecta trabajo divisible:
+    - **Crear sub-issues** (cada uno en **Todo**) y linkearlos desde el comentario del refinamiento.
+4. Dejar el issue original:
+    - en **Todo** si queda como épica contenedora, **o**
+    - en **Ready** si el refinamiento dejó acciones ejecutables inmediatas y (cuando aplique) se abrió el PR correspondiente.
+5. Si falla mover estado o la operación: cambiar a **Blocked** y comentar el error técnico reproducible.
+
+
+
+##  Regla de documentación para refinamientos
+
+- La documentación general puede residir en `docs/` **pero** los **refinamientos de issues** **no** generan archivos en `docs/` por defecto.
+- Los refinamientos **siempre** viven **dentro del issue** (comentarios + actualización del body).
+- Solo si el issue indica explícitamente "crear doc en /docs/...", se crea un archivo adicional.
+

@@ -18,6 +18,18 @@ export ANDROID_HOME="$ANDROID_SDK_ROOT"
 export ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT"
 export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
+# === Project v2 (org: intrale / number: 1) ===
+export PROJECT_ID="PVT_kwDOBTzBoc4AyMGf"
+export STATUS_FIELD_ID="PVTSSF_lADOBTzBoc4AyMGfzgoLqjg"
+
+# === Opciones del campo Status ===
+export STATUS_OPTION_BACKLOG="f75ad846"
+export STATUS_OPTION_TODO="57a3a001"
+export STATUS_OPTION_INPROGRESS="47fc9ee4"
+export STATUS_OPTION_READY="9570f89c"
+export STATUS_OPTION_DONE="98236657"
+export STATUS_OPTION_BLOCKED="d95d52cc"
+
 yes | sdkmanager --licenses
 yes | sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
