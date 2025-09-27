@@ -327,6 +327,8 @@ val scanNonAsciiFallbacks by tasks.registering {
     inputs.files(brandingOut).skipWhenEmpty()
 
     dependsOn(ensureBrandingOut)
+    dependsOn(generateBrandResources)
+    inputs.dir(generateBrandResources.flatMap { it.outputResDirectory })
 
     doLast {
         val violations = mutableListOf<String>()
