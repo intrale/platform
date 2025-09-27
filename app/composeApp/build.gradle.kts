@@ -1,3 +1,4 @@
+import ar.com.intrale.branding.GenerateBrandResourcesTask
 import ar.com.intrale.branding.SyncBrandingIconsTask
 import com.codingfeline.buildkonfig.compiler.FieldSpec
 import compose.ValidateComposeResourcesTask
@@ -286,16 +287,34 @@ tasks.register("forbidDirectComposeStringResource") {
     }
 }
 
-tasks.named("preBuild").configure {
-    dependsOn("forbidDirectComposeStringResource")
-}
-
 val brandingOut = layout.buildDirectory.dir("generated/branding")
 
 val ensureBrandingOut by tasks.registering {
     outputs.dir(brandingOut)
     doLast {
         brandingOut.get().asFile.mkdirs()
+    }
+}
+
+val generateBrandResources by tasks.registering(GenerateBrandResourcesTask::class) {
+    group = "branding"
+    description = "Genera recursos de marca para strings de la aplicación"
+    dependsOn(ensureBrandingOut)
+    brandIdentifier.set(brandId)
+    appDisplayName.set(brandName)
+    brandStorageDirectory.set(brandingOut.map { it.dir(brandId).dir("res") })
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("forbidDirectComposeStringResource", generateBrandResources)
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.res?.addGeneratedSourceDirectory(
+            generateBrandResources,
+            GenerateBrandResourcesTask::outputResDirectory
+        )
     }
 }
 
