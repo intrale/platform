@@ -6,6 +6,8 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
 }
 
+val ktorClientVersion = libs.ktor.client.core.jvm.stable.get().versionConstraint.requiredVersion.removeSuffix("-wasm2")
+
 repositories {
     mavenCentral()
     gradlePluginPortal()
@@ -18,8 +20,8 @@ dependencies {
     testImplementation(libs.kotlin.test.base)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.ktor.client.core.jvm.stable)
-    implementation(libs.ktor.client.cio.stable)
+    implementation("io.ktor:ktor-client-core:$ktorClientVersion")
+    implementation("io.ktor:ktor-client-cio:$ktorClientVersion")
 }
 
 tasks.test {
