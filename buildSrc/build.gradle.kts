@@ -1,5 +1,9 @@
+@file:Suppress("UnstableApiUsage")
+
+// Nota: Las versiones deben gestionarse exclusivamente desde gradle/libs.versions.toml.
+
 plugins {
-    `kotlin-dsl`
+    alias(libs.plugins.kotlin.jvm)
 }
 
 repositories {
@@ -8,7 +12,14 @@ repositories {
 }
 
 dependencies {
-    testImplementation(kotlin("test"))
+    implementation(gradleApi())
+    implementation(localGroovy())
+    implementation(libs.kotlin.stdlib.jvm)
+    testImplementation(libs.kotlin.test.base)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.ktor.client.core.jvm.stable)
+    implementation(libs.ktor.client.cio.stable)
 }
 
 tasks.test {

@@ -66,6 +66,10 @@ ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-conte
 ktor-client-android = { group = "io.ktor", name = "ktor-client-android", version.ref = "ktor-wasm2" }
 ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor-wasm2" }
 ktor-client-mock = { group = "io.ktor", name = "ktor-client-mock", version.ref = "ktor-wasm2" }
+ktor-client-core-jvm = { module = "io.ktor:ktor-client-core", version.ref = "ktor-wasm2" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor-wasm2" }
+ktor-client-core-jvm-stable = { module = "io.ktor:ktor-client-core", version.ref = "ktor-wasm2" }
+ktor-client-cio-stable = { module = "io.ktor:ktor-client-cio", version.ref = "ktor-wasm2" }
 
 kodein-di = { module = "org.kodein.di:kodein-di", version.ref = "kodein" }
 kodein-di-framework-ktor-server-jvm = { module = "org.kodein.di:kodein-di-framework-ktor-server-jvm", version.ref = "kodein" }
@@ -75,6 +79,7 @@ logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "lo
 
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization-json" }
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 
 aws-sdk-dynamodb = { module = "software.amazon.awssdk:dynamodb", version.ref = "aws-sdk-java" }
 aws-sdk-dynamodb-enhanced = { module = "software.amazon.awssdk:dynamodb-enhanced", version.ref = "aws-sdk-java" }
@@ -94,6 +99,8 @@ jwks-rsa = { module = "com.auth0:jwks-rsa", version.ref = "jwks-rsa" }
 eatthepath-java-otp = { module = "com.eatthepath:java-otp", version.ref = "java-otp" }
 commons-codec = { module = "commons-codec:commons-codec", version.ref = "commons-codec" }
 
+kotlin-stdlib-jvm = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
+kotlin-test-base = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 datafaker = { module = "net.datafaker:datafaker", version.ref = "datafaker" }
