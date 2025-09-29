@@ -41,7 +41,8 @@ val brandName: String = providers.trimmedProperty("brandName") ?: brandId.replac
 
 val deeplinkHost: String = providers.trimmedProperty("deeplinkHost") ?: "$brandId.intrale.app"
 
-val brandingEndpoint: String? = providers.trimmedProperty("brandingEndpoint")
+val brandingEndpointParam: String? = providers.trimmedProperty("brandingEndpoint")
+val brandingPreviewVersionParam: String? = providers.trimmedProperty("brandingPreviewVersion")
 
 val applicationIdSuffixValue = ".${normalizedAppIdSuffix}"
 val escapedBrandIdForBuildConfig = brandId.replace("\"", "\\\"")
@@ -52,7 +53,10 @@ logger.lifecycle(" - appIdSuffix: $normalizedAppIdSuffix")
 logger.lifecycle(" - brandName: $brandName")
 logger.lifecycle(" - deeplinkHost: $deeplinkHost")
 logger.lifecycle(
-    " - brandingEndpoint: ${brandingEndpoint ?: "(no definido)"}"
+    " - brandingEndpoint: ${brandingEndpointParam ?: "(no definido)"}"
+)
+logger.lifecycle(
+    " - brandingPreviewVersion: ${brandingPreviewVersionParam ?: "(no definido)"}"
 )
 
 extra.apply {
@@ -60,7 +64,8 @@ extra.apply {
     set("appIdSuffix", normalizedAppIdSuffix)
     set("brandName", brandName)
     set("deeplinkHost", deeplinkHost)
-    brandingEndpoint?.let { set("brandingEndpoint", it) }
+    brandingEndpointParam?.let { set("brandingEndpoint", it) }
+    brandingPreviewVersionParam?.let { set("brandingPreviewVersion", it) }
 }
 
 
@@ -303,6 +308,8 @@ val generateBrandResources by tasks.registering(GenerateBrandResourcesTask::clas
     brandIdentifier.set(brandId)
     appDisplayName.set(brandName)
     brandStorageDirectory.set(brandingOut.map { it.dir(brandId).dir("res") })
+    brandingEndpointParam?.let { endpoint -> brandingEndpoint.set(endpoint) }
+    brandingPreviewVersionParam?.let { preview -> brandingPreviewVersion.set(preview) }
 }
 
 tasks.named("preBuild").configure {
