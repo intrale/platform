@@ -76,6 +76,33 @@ El wrapper mantiene intactos el resto de los parámetros (`-destination`, `-arch
  etc.) por lo que puede integrarse en los workflows existentes. Si el proyecto ya define
 `Branding.xcconfig` como *Base Configuration* no es necesario pasar `-xcconfig` manualmente.
 
+## Script de Pre-Build para Xcode
+
+Para automatizar la generación dentro del propio proyecto Xcode se incluye el script
+`ios/scripts/prebuild_generate_branding.sh`. Este script está pensado para ejecutarse en
+una fase **Run Script** configurada como *Pre-build* y aplica el siguiente flujo:
+
+1. Valida que la variable de entorno `BRAND_ID` esté presente. Si falta, aborta la build
+   con un mensaje claro.
+2. Lee, cuando están disponibles, los valores de `BUNDLE_ID_SUFFIX`, `BRAND_NAME`,
+   `DEEPLINK_HOST`, `BRANDING_ENDPOINT`, `BRANDING_PREVIEW_VERSION`,
+   `PRODUCT_BUNDLE_IDENTIFIER` y `DISPLAY_NAME`.
+3. Invoca `generate_branding_xcconfig.py` para renderizar `ios/Branding.xcconfig` a partir
+   de la plantilla.
+4. Reporta la ruta del archivo generado para facilitar el diagnóstico en los logs.
+
+Ejemplo de configuración de la fase Run Script:
+
+```bash
+export BRAND_ID=${BRAND_ID:?Debe definirse BRAND_ID}
+export BRAND_NAME="Intrale Demo"
+export BUNDLE_ID_SUFFIX=demo
+"${SRCROOT}/../ios/scripts/prebuild_generate_branding.sh"
+```
+
+Al ejecutarse antes de `Compile Sources`, el proyecto siempre utilizará la versión más
+reciente de `Branding.xcconfig` sin requerir intervención manual.
+
 ## Validaciones esperadas en CI
 
 - Los logs de `xcodebuild` deben listar las variables inyectadas en `OTHER_CFLAGS` o en el
