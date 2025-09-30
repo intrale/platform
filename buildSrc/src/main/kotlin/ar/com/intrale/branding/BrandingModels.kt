@@ -9,7 +9,8 @@ data class BrandingEnvelope(
 data class BrandingConfigMinimal(
     val appName: String,
     val palette: BrandingPalette? = null,
-    val typography: BrandingTypography? = null
+    val typography: BrandingTypography? = null,
+    val images: BrandingImages? = null,
 )
 
 data class BrandingPalette(
@@ -24,4 +25,13 @@ data class BrandingTypography(
     val headline: String? = null,
     val body: String? = null,
     val caption: String? = null
+)
+
+data class BrandingImages(
+    val logo: BrandingImage? = null,
+)
+
+data class BrandingImage(
+    val url: String? = null,
+    val mimeType: String? = null,
 )

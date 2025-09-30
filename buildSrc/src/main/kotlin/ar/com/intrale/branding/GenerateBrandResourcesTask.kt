@@ -39,7 +39,7 @@ abstract class GenerateBrandResourcesTask : DefaultTask() {
         val previewVersion = brandingPreviewVersion.orNull?.takeIf { it.isNotBlank() }
 
         var appliedAppName = fallbackName
-        var downloadedJson: String? = null
+        var fetchResult: BrandingFetchResult? = null
 
         if (endpoint != null) {
             try {
@@ -49,7 +49,7 @@ abstract class GenerateBrandResourcesTask : DefaultTask() {
                     previewVersion = previewVersion,
                     timeout = Duration.ofSeconds(10)
                 )
-                downloadedJson = result.rawJson
+                fetchResult = result
                 val remoteAppName = result.envelope.payload.appName.trim()
                 if (remoteAppName.isNotEmpty()) {
                     appliedAppName = remoteAppName
@@ -70,7 +70,10 @@ abstract class GenerateBrandResourcesTask : DefaultTask() {
             }
         }
 
-        val valuesDir = outputResDirectory.get().dir("values").asFile.also { it.mkdirs() }
+        val outputRoot = outputResDirectory.get().asFile.also { it.mkdirs() }
+        val storageRoot = brandStorageDirectory.get().asFile.also { it.mkdirs() }
+
+        val valuesDir = outputRoot.resolve("values").also { it.mkdirs() }
         val stringsFile = valuesDir.resolve("strings.xml")
 
         val content = """
@@ -83,16 +86,28 @@ abstract class GenerateBrandResourcesTask : DefaultTask() {
         logger.lifecycle("Generando recursos de marca para $brandId en ${stringsFile.absolutePath}")
         stringsFile.writeText(content)
 
-        val brandValuesDir = brandStorageDirectory.get().dir("values").asFile.also { it.mkdirs() }
+        val brandValuesDir = storageRoot.resolve("values").also { it.mkdirs() }
         brandValuesDir.resolve("strings.xml").writeText(content)
 
-        downloadedJson?.let { raw ->
-            val storageRoot = brandValuesDir.parentFile ?: brandValuesDir
+        fetchResult?.rawJson?.let { raw ->
             val jsonFile = storageRoot.resolve("branding.json")
             jsonFile.parentFile?.mkdirs()
             jsonFile.writeText(raw)
             logger.lifecycle("Branding remoto almacenado en ${jsonFile.absolutePath}")
         }
+
+        val iconGenerator = BrandingIconGenerator(logger)
+        iconGenerator.generate(
+            resourcesDir = outputRoot,
+            storageDir = storageRoot,
+            params = IconGenerationParams(
+                brandId = brandId,
+                displayName = appliedAppName,
+                fallbackName = fallbackName,
+                palette = fetchResult?.envelope?.payload?.palette,
+                logo = fetchResult?.envelope?.payload?.images?.logo,
+            )
+        )
     }
 
     private fun String.escapeForXmlText(): String = this
