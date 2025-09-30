@@ -46,6 +46,7 @@ val brandingPreviewVersionParam: String? = providers.trimmedProperty("brandingPr
 
 val applicationIdSuffixValue = ".${normalizedAppIdSuffix}"
 val escapedBrandIdForBuildConfig = brandId.replace("\"", "\\\"")
+val escapedDeeplinkHostForBuildConfig = deeplinkHost.replace("\"", "\\\"")
 
 logger.lifecycle("Parámetros de branding aplicados:")
 logger.lifecycle(" - brandId: $brandId")
@@ -228,6 +229,7 @@ android {
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BRAND_ID", "\"$escapedBrandIdForBuildConfig\"")
+        buildConfigField("String", "DEEPLINK_HOST", "\"$escapedDeeplinkHostForBuildConfig\"")
         manifestPlaceholders += mapOf(
             "appLabel" to brandName,
             "deeplinkHost" to deeplinkHost

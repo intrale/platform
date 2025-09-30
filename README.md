@@ -29,3 +29,6 @@ El backend expone una ruta dinámica `/{business}/{function}` para todas las ope
 - `app/` - cliente Compose Multiplatform con código compartido y targets específicos.
 - `docs/` - documentación técnica de la plataforma.
 - `gradle/` y archivos `*.gradle.kts` - configuración de construcción y catálogo de dependencias.
+
+## Guías de QA
+- [Smoke test de deeplinks parametrizados](docs/engineering/deeplink-smoke-test.md)
