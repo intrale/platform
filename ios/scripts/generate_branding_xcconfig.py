@@ -166,6 +166,10 @@ def main() -> int:
             if env_value is not None:
                 value = env_value
             else:
+                if key == "BRAND_ID":
+                    raise ValueError(
+                        "BRAND_ID debe definirse mediante variable de entorno o --set"
+                    )
                 value = defaults.get(key, "")
 
         if value is None:
