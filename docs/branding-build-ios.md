@@ -29,8 +29,9 @@ El script `ios/scripts/generate_branding_xcconfig.py` aplica el siguiente flujo:
 
 1. Lee la plantilla conservando comentarios y orden de claves.
 2. Reemplaza los valores mediante variables de entorno o parámetros `--set KEY=VALUE`.
-3. Valida que `BRAND_ID`, `DEEPLINK_HOST` y `BRANDING_ENDPOINT` no sean vacíos y que
-   `BUNDLE_ID_SUFFIX` no contenga espacios ni puntos duplicados.
+3. Exige que `BRAND_ID` esté definido vía entorno o `--set` y valida que `DEEPLINK_HOST`
+   y `BRANDING_ENDPOINT` no sean vacíos y que `BUNDLE_ID_SUFFIX` no contenga espacios ni
+   puntos duplicados.
 4. Emite `ios/Branding.xcconfig` listo para ser consumido por el proyecto Xcode y muestra
    en consola el resumen de parámetros finales.
 
