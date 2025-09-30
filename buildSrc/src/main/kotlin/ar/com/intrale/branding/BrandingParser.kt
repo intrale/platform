@@ -56,6 +56,16 @@ class BrandingParser(
                         typography.caption?.let { put("caption", it) }
                     }
                 }
+                envelope.payload.images?.let { images ->
+                    putJsonObject("images") {
+                        images.logo?.let { logo ->
+                            putJsonObject("logo") {
+                                logo.url?.let { put("url", it) }
+                                logo.mimeType?.let { put("mimeType", it) }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -65,12 +75,14 @@ class BrandingParser(
     private fun parsePayload(payload: JsonObject): BrandingConfigMinimal {
         val palette = payload["palette"]?.jsonObject?.let(::parsePalette)
         val typography = payload["typography"]?.jsonObject?.let(::parseTypography)
+        val images = payload["images"]?.jsonObject?.let(::parseImages)
 
         return BrandingConfigMinimal(
             appName = payload["appName"]?.jsonPrimitive?.content
                 ?: error("El campo appName es obligatorio en el payload"),
             palette = palette,
-            typography = typography
+            typography = typography,
+            images = images,
         )
     }
 
@@ -94,6 +106,17 @@ class BrandingParser(
             headline = typography["headline"]?.jsonPrimitive?.contentOrNull(),
             body = typography["body"]?.jsonPrimitive?.contentOrNull(),
             caption = typography["caption"]?.jsonPrimitive?.contentOrNull()
+        )
+
+    private fun parseImages(images: JsonObject): BrandingImages {
+        val logo = images["logo"]?.jsonObject?.let(::parseImage)
+        return BrandingImages(logo = logo)
+    }
+
+    private fun parseImage(image: JsonObject): BrandingImage =
+        BrandingImage(
+            url = image["url"]?.jsonPrimitive?.contentOrNull(),
+            mimeType = image["mimeType"]?.jsonPrimitive?.contentOrNull(),
         )
 }
 

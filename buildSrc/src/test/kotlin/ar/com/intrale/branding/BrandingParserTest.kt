@@ -23,6 +23,12 @@ class BrandingParserTest {
                 "typography": {
                   "headline": "Roboto",
                   "body": "Inter"
+                },
+                "images": {
+                  "logo": {
+                    "url": "https://cdn.intrale.dev/logo.png",
+                    "mimeType": "image/png"
+                  }
                 }
               },
               "meta": {
@@ -36,6 +42,7 @@ class BrandingParserTest {
         assertEquals(3, envelope.version, "La version del sobre debe parsearse correctamente")
         assertEquals("Intrale", envelope.payload.appName)
         assertEquals("#FF0000", envelope.payload.palette?.primary)
+        assertEquals("https://cdn.intrale.dev/logo.png", envelope.payload.images?.logo?.url)
 
         val serialized = parser.toJson(envelope)
         val roundTrip = parser.parseEnvelope(serialized)
