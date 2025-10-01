@@ -64,8 +64,8 @@ function Get-AppPids([string]$pkg) {
     foreach ($ln in ($lines -split "`n")) {
       if (-not $ln.Trim()) { continue }
       $parts = $ln -split '\s+'
-      $pid = $parts | Where-Object { $_ -match '^\d+$' } | Select-Object -First 1
-      if ($pid) { $pids += $pid }
+      $procId = $parts | Where-Object { $_ -match '^\d+$' } | Select-Object -First 1
+      if ($procId) { $pids += $procId }
     }
     if ($pids.Count -gt 0) { return $pids | Select-Object -Unique }
   }
