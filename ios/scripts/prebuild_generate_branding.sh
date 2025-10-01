@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE_PATH="$PROJECT_ROOT/BrandingTemplate.xcconfig"
 OUTPUT_PATH="$PROJECT_ROOT/Branding.xcconfig"
 PYTHON_SCRIPT="$SCRIPT_DIR/generate_branding_xcconfig.py"
+FETCH_SCRIPT="$SCRIPT_DIR/fetch_branding_json.sh"
 
 REQUIRED_VARS=(
   BRAND_ID
@@ -26,6 +27,14 @@ for var_name in "${REQUIRED_VARS[@]}"; do
     exit 1
   fi
 done
+
+if [[ -x "$FETCH_SCRIPT" ]]; then
+  if ! "$FETCH_SCRIPT"; then
+    echo "[Branding] WARNING: No se pudo actualizar el cache de branding" >&2
+  fi
+else
+  echo "[Branding] WARNING: Script de fetch no disponible en $FETCH_SCRIPT" >&2
+fi
 
 if [[ ! -f "$TEMPLATE_PATH" ]]; then
   echo "[Branding] No se encontró la plantilla en $TEMPLATE_PATH" >&2
