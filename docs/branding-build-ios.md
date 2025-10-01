@@ -3,106 +3,100 @@
 Este procedimiento permite compilar el cliente iOS inyectando la configuración de marca
 (identificador, sufijos de bundle, nombre visible y endpoints) sin necesidad de mantener
 `schemes` por cada marca. La generación del archivo `Branding.xcconfig` se realiza en
-runtime antes de invocar `xcodebuild`.
+runtime antes de invocar `xcodebuild` y alimenta tanto el proyecto Xcode como los scripts
+de assets.
 
-## Plantilla de parámetros
+## Comandos rápidos
 
-El repositorio incorpora `ios/BrandingTemplate.xcconfig` como base con valores por defecto:
-
-```
-BRAND_ID = default
-BUNDLE_ID_SUFFIX = default
-BRAND_NAME = Default
-DEEPLINK_HOST = default.intrale.app
-BRANDING_ENDPOINT = https://branding.intrale.app/default
-BRANDING_PREVIEW_VERSION =
-PRODUCT_BUNDLE_IDENTIFIER = ar.com.intrale.platform.$(BUNDLE_ID_SUFFIX)
-DISPLAY_NAME = $(BRAND_NAME)
-```
-
-La plantilla no se modifica directamente. El pipeline genera `ios/Branding.xcconfig` a
-partir de este archivo aplicando los parámetros recibidos.
-
-## Script de generación
-
-El script `ios/scripts/generate_branding_xcconfig.py` aplica el siguiente flujo:
-
-1. Lee la plantilla conservando comentarios y orden de claves.
-2. Reemplaza los valores mediante variables de entorno o parámetros `--set KEY=VALUE`.
-3. Exige que `BRAND_ID` esté definido vía entorno o `--set` y valida que `DEEPLINK_HOST`
-   y `BRANDING_ENDPOINT` no sean vacíos y que `BUNDLE_ID_SUFFIX` no contenga espacios ni
-   puntos duplicados.
-4. Emite `ios/Branding.xcconfig` listo para ser consumido por el proyecto Xcode y muestra
-   en consola el resumen de parámetros finales.
-
-Se puede ejecutar de forma aislada:
-
-```bash
-BRAND_ID=acme \
-BUNDLE_ID_SUFFIX=acme \
-BRAND_NAME="Acme" \
-DEEPLINK_HOST=acme.intrale.app \
-BRANDING_ENDPOINT="https://api.intrale.app/branding/acme" \
-BRANDING_PREVIEW_VERSION=latest \
-python ios/scripts/generate_branding_xcconfig.py \
-  --template ios/BrandingTemplate.xcconfig \
-  --output ios/Branding.xcconfig
-```
-
-## Wrapper de xcodebuild
-
-Para CI/CD se incluye `ios/scripts/xcodebuild_with_branding.sh`, que automatiza el flujo:
-
-1. Detecta parámetros `KEY=VALUE` compatibles con branding dentro de los argumentos
-   entregados a `xcodebuild` y los exporta como variables de entorno.
-2. Ejecuta el script anterior para regenerar `Branding.xcconfig` antes de compilar.
-3. Inyecta el `-xcconfig ios/Branding.xcconfig` a la invocación de `xcodebuild` cuando el
-   comando original no lo especifica.
-
-Ejemplo de uso para una build Release:
+### Build "published" (entorno productivo)
 
 ```bash
 ./ios/scripts/xcodebuild_with_branding.sh \
   -scheme IntraleApp \
   -configuration Release \
+  -archivePath build/IntraleApp.xcarchive \
+  -allowProvisioningUpdates \
   BRAND_ID=acme \
   BUNDLE_ID_SUFFIX=acme \
   BRAND_NAME="Acme" \
   DEEPLINK_HOST=acme.intrale.app \
+  BRANDING_ENDPOINT="https://api.intrale.app/branding/acme"
+```
+
+Genera `Branding.xcconfig`, refresca los assets de branding (incluido `AppIcon`) y
+encadena la ejecución de `xcodebuild` utilizando los perfiles de firma configurados
+automáticamente (`-allowProvisioningUpdates`).
+
+### Build "preview" (con versión preliminar del branding)
+
+```bash
+./ios/scripts/xcodebuild_with_branding.sh \
+  -scheme IntraleApp \
+  -configuration Release \
+  -archivePath build/IntraleApp-preview.xcarchive \
+  BRAND_ID=acme \
+  BUNDLE_ID_SUFFIX=acme-preview \
+  BRAND_NAME="Acme Preview" \
   BRANDING_ENDPOINT="https://api.intrale.app/branding/acme" \
   BRANDING_PREVIEW_VERSION=latest
 ```
 
-El wrapper mantiene intactos el resto de los parámetros (`-destination`, `-archivePath`,
- etc.) por lo que puede integrarse en los workflows existentes. Si el proyecto ya define
-`Branding.xcconfig` como *Base Configuration* no es necesario pasar `-xcconfig` manualmente.
+El parámetro `BRANDING_PREVIEW_VERSION` fuerza al script a descargar la variante de
+branding indicada y a cachearla en `ios/build/branding/<brand_id>/branding.json`. Esto
+permite validar cambios en contenido antes de publicarlos.
 
-## Script de Pre-Build para Xcode
+## Variables y valores por defecto
 
-Para automatizar la generación dentro del propio proyecto Xcode se incluye el script
-`ios/scripts/prebuild_generate_branding.sh`. Este script está pensado para ejecutarse en
-una fase **Run Script** configurada como *Pre-build* y aplica el siguiente flujo:
+| Variable                       | Obligatoria | Valor por defecto / fallback                                           |
+| ------------------------------ | ----------- | ---------------------------------------------------------------------- |
+| `BRAND_ID`                     | Sí          | — (si falta, los scripts abortan)                                      |
+| `BUNDLE_ID_SUFFIX`             | No          | `default` (se concatena a `ar.com.intrale.platform.`)                  |
+| `BRAND_NAME`                   | No          | `Default` (utilizado como `DISPLAY_NAME` si este no se define)         |
+| `DEEPLINK_HOST`                | No          | `default.intrale.app`                                                  |
+| `BRANDING_ENDPOINT`            | No          | `https://branding.intrale.app/default`                                 |
+| `BRANDING_PREVIEW_VERSION`     | No          | Vacío (usa la versión "published" vigente)                             |
+| `PRODUCT_BUNDLE_IDENTIFIER`    | No          | Calculado como `ar.com.intrale.platform.$(BUNDLE_ID_SUFFIX)`           |
+| `DISPLAY_NAME`                 | No          | Fallback: `BRAND_NAME` → iniciales de `BRAND_ID`                       |
 
-1. Valida que la variable de entorno `BRAND_ID` esté presente. Si falta, aborta la build
-   con un mensaje claro.
-2. Lee, cuando están disponibles, los valores de `BUNDLE_ID_SUFFIX`, `BRAND_NAME`,
-   `DEEPLINK_HOST`, `BRANDING_ENDPOINT`, `BRANDING_PREVIEW_VERSION`,
-   `PRODUCT_BUNDLE_IDENTIFIER` y `DISPLAY_NAME`.
-3. Invoca `generate_branding_xcconfig.py` para renderizar `ios/Branding.xcconfig` a partir
-   de la plantilla.
-4. Reporta la ruta del archivo generado para facilitar el diagnóstico en los logs.
+Los valores anteriores provienen de `ios/BrandingTemplate.xcconfig` y del
+post-procesamiento aplicado por los scripts de branding.
 
-Ejemplo de configuración de la fase Run Script:
+## Secuencia de scripts en el pipeline
 
-```bash
-export BRAND_ID=${BRAND_ID:?Debe definirse BRAND_ID}
-export BRAND_NAME="Intrale Demo"
-export BUNDLE_ID_SUFFIX=demo
-"${SRCROOT}/../ios/scripts/prebuild_generate_branding.sh"
-```
+1. **Render de `Branding.xcconfig`** — `generate_branding_xcconfig.py` toma la plantilla
+   y aplica los parámetros recibidos (ya sea desde el wrapper o desde el entorno de CI).
+2. **Fetch y cache del JSON de branding** — `fetch_branding_json.sh` descarga y valida
+   el payload remoto; se invoca cuando `BRAND_ID` y `BRANDING_ENDPOINT` están disponibles.
+3. **Generación de íconos** — `generate_app_icon.swift` crea `AppIcon.appiconset` en base a
+   los datos cacheados y al nombre visible efectivo.
 
-Al ejecutarse antes de `Compile Sources`, el proyecto siempre utilizará la versión más
-reciente de `Branding.xcconfig` sin requerir intervención manual.
+El script `ios/scripts/prebuild_generate_branding.sh` ejecuta la cadena completa como fase
+*Run Script* dentro de Xcode. En CI es común utilizar el wrapper `xcodebuild_with_branding.sh`,
+que replica el mismo orden antes de delegar en `xcodebuild`.
+
+## Fallbacks y tolerancia a errores
+
+- **Nombre visible:** Si `DISPLAY_NAME` no está definido, el generador de íconos utiliza
+  `BRAND_NAME`; si tampoco existe, recurre a `BRAND_ID` para derivar las iniciales.
+- **Logo ausente o inválido:** Cuando el JSON de branding no incluye un logo válido (MIME
+  no soportado, tamaño excedido o descarga fallida) se genera un AppIcon placeholder con
+  las iniciales y un color derivado determinísticamente.
+- **Branding endpoint faltante:** El fetch se omite sin fallar la build, pero se registra
+  una advertencia y los íconos se generan con placeholder.
+- **Plantilla ausente o script no ejecutable:** Ambos scripts abortan con error explícito,
+  evitando builds inconsistentes.
+
+## Tips de firma y distribución
+
+- **Locales:** exporta `MATCH_TYPE` o configura certificados automáticos desde Xcode. Al
+  usar el wrapper, agrega `-allowProvisioningUpdates` para que Xcode gestione perfiles.
+- **CI (Fastlane opcional):** si se ejecuta dentro de Fastlane, invoca el wrapper desde una
+  acción `sh`. Mantén certificados en el llavero del runner (`xcode-select --print-path` y
+  `security find-identity -p codesigning`) y usa `fastlane match` solo si la build
+  requiere firma manual; el wrapper no interfiere con la sesión de Fastlane.
+- **ExportOptions:** después de generar el `.xcarchive`, ejecuta `xcodebuild -exportArchive`
+  reutilizando el mismo `Branding.xcconfig` para garantizar que los metadatos coincidan con
+  la marca.
 
 ## Validaciones esperadas en CI
 
@@ -110,4 +104,6 @@ reciente de `Branding.xcconfig` sin requerir intervención manual.
   entorno, confirmando que el wrapper propagó los parámetros.
 - El archivo `ios/Branding.xcconfig` debe regenerarse en cada ejecución del pipeline con
   los valores solicitados antes de que inicie la compilación.
+- El cache `build/branding/<brand>/branding.json` debe actualizarse cuando se especifica
+  `BRANDING_PREVIEW_VERSION`.
 - No se versiona el resultado final porque está ignorado vía `.gitignore`.
