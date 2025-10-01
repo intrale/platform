@@ -1,0 +1,348 @@
+// !$*UTF8*$!
+{
+archiveVersion = 1;
+classes = {
+};
+objectVersion = 56;
+objects = {
+
+/* Begin PBXBuildFile section */
+D4F909012C9C00A100F4A0D2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F908FC2C9C00A100F4A0D2 /* ContentView.swift */; };
+D4F909022C9C00A100F4A0D2 /* IntraleAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F908FD2C9C00A100F4A0D2 /* IntraleAppApp.swift */; };
+D4F909032C9C00A100F4A0D2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D4F908FF2C9C00A100F4A0D2 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+D4F908FB2C9C00A100F4A0D2 /* IntraleApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IntraleApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+D4F908FC2C9C00A100F4A0D2 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+D4F908FD2C9C00A100F4A0D2 /* IntraleAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntraleAppApp.swift; sourceTree = "<group>"; };
+D4F908FE2C9C00A100F4A0D2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+D4F908FF2C9C00A100F4A0D2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+D4F909002C9C00A100F4A0D2 /* Branding.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Branding.xcconfig; path = ../ios/Branding.xcconfig; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+D4F908F42C9C00A100F4A0D2 /* Frameworks */ = {
+isa = PBXFrameworksBuildPhase;
+buildActionMask = 2147483647;
+files = (
+);
+runOnlyForDeploymentPostprocessing = 0;
+};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+D4F908F72C9C00A100F4A0D2 = {
+isa = PBXGroup;
+children = (
+D4F908F92C9C00A100F4A0D2 /* IntraleApp */,
+D4F908FA2C9C00A100F4A0D2 /* Configuración */,
+D4F908F82C9C00A100F4A0D2 /* Products */,
+);
+sourceTree = "<group>";
+};
+D4F908F82C9C00A100F4A0D2 /* Products */ = {
+isa = PBXGroup;
+children = (
+D4F908FB2C9C00A100F4A0D2 /* IntraleApp.app */,
+);
+name = Products;
+sourceTree = "<group>";
+};
+D4F908F92C9C00A100F4A0D2 /* IntraleApp */ = {
+isa = PBXGroup;
+children = (
+D4F908FD2C9C00A100F4A0D2 /* IntraleAppApp.swift */,
+D4F908FC2C9C00A100F4A0D2 /* ContentView.swift */,
+D4F908FF2C9C00A100F4A0D2 /* Assets.xcassets */,
+D4F908FE2C9C00A100F4A0D2 /* Info.plist */,
+);
+path = iosApp;
+sourceTree = "<group>";
+};
+D4F908FA2C9C00A100F4A0D2 /* Configuración */ = {
+isa = PBXGroup;
+children = (
+D4F909002C9C00A100F4A0D2 /* Branding.xcconfig */,
+);
+name = Configuración;
+sourceTree = "<group>";
+};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+D4F908F22C9C00A100F4A0D2 /* IntraleApp */ = {
+isa = PBXNativeTarget;
+buildConfigurationList = D4F909092C9C00A100F4A0D2 /* Build configuration list for PBXNativeTarget "IntraleApp" */;
+buildPhases = (
+D4F908F62C9C00A100F4A0D2 /* Prebuild Branding */, 
+D4F908F32C9C00A100F4A0D2 /* Sources */,
+D4F908F42C9C00A100F4A0D2 /* Frameworks */,
+D4F908F52C9C00A100F4A0D2 /* Resources */,
+);
+buildRules = (
+);
+dependencies = (
+);
+name = IntraleApp;
+productName = IntraleApp;
+productReference = D4F908FB2C9C00A100F4A0D2 /* IntraleApp.app */;
+productType = "com.apple.product-type.application";
+};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+D4F908F12C9C00A100F4A0D2 /* Project object */ = {
+isa = PBXProject;
+attributes = {
+BuildIndependentTargetsInParallel = YES;
+LastSwiftUpdateCheck = 1530;
+LastUpgradeCheck = 1530;
+ORGANIZATIONNAME = Intrale;
+TargetAttributes = {
+D4F908F22C9C00A100F4A0D2 = {
+CreatedOnToolsVersion = 15.3;
+};
+};
+};
+buildConfigurationList = D4F909082C9C00A100F4A0D2 /* Build configuration list for PBXProject "IntraleApp" */;
+compatibilityVersion = "Xcode 15.0";
+developmentRegion = es;
+hasScannedForEncodings = 0;
+knownRegions = (
+es,
+en,
+Base,
+);
+mainGroup = D4F908F72C9C00A100F4A0D2;
+productRefGroup = D4F908F82C9C00A100F4A0D2 /* Products */;
+projectDirPath = "";
+projectRoot = "";
+targets = (
+D4F908F22C9C00A100F4A0D2 /* IntraleApp */,
+);
+};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+D4F908F52C9C00A100F4A0D2 /* Resources */ = {
+isa = PBXResourcesBuildPhase;
+buildActionMask = 2147483647;
+files = (
+D4F909032C9C00A100F4A0D2 /* Assets.xcassets in Resources */,
+);
+runOnlyForDeploymentPostprocessing = 0;
+};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+D4F908F62C9C00A100F4A0D2 /* Prebuild Branding */ = {
+isa = PBXShellScriptBuildPhase;
+buildActionMask = 2147483647;
+files = (
+);
+inputFileListPaths = (
+);
+inputPaths = (
+);
+name = "Prebuild Branding";
+outputFileListPaths = (
+);
+outputPaths = (
+);
+runOnlyForDeploymentPostprocessing = 0;
+shellPath = /bin/sh;
+shellScript = "\"$SRCROOT/../../ios/scripts/prebuild_generate_branding.sh\"\n";
+};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+D4F908F32C9C00A100F4A0D2 /* Sources */ = {
+isa = PBXSourcesBuildPhase;
+buildActionMask = 2147483647;
+files = (
+D4F909022C9C00A100F4A0D2 /* IntraleAppApp.swift in Sources */,
+D4F909012C9C00A100F4A0D2 /* ContentView.swift in Sources */,
+);
+runOnlyForDeploymentPostprocessing = 0;
+};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+D4F909042C9C00A100F4A0D2 /* Debug */ = {
+isa = XCBuildConfiguration;
+buildSettings = {
+ALWAYS_SEARCH_USER_PATHS = NO;
+CLANG_ANALYZER_NONNULL = YES;
+CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+CLANG_ENABLE_MODULES = YES;
+CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+CLANG_WARN_BOOL_CONVERSION = YES;
+CLANG_WARN_COMMA = YES;
+CLANG_WARN_CONSTANT_CONVERSION = YES;
+CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+CLANG_WARN_EMPTY_BODY = YES;
+CLANG_WARN_ENUM_CONVERSION = YES;
+CLANG_WARN_INFINITE_RECURSION = YES;
+CLANG_WARN_INT_CONVERSION = YES;
+CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+CLANG_WARN_STRICT_PROTOTYPES = YES;
+CLANG_WARN_SUSPICIOUS_MOVE = YES;
+CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+COPY_PHASE_STRIP = NO;
+DEAD_CODE_STRIPPING = YES;
+DEBUG_INFORMATION_FORMAT = dwarf;
+ENABLE_STRICT_OBJC_MSGSEND = YES;
+ENABLE_TESTABILITY = YES;
+GCC_C_LANGUAGE_STANDARD = gnu11;
+GCC_DYNAMIC_NO_PIC = NO;
+GCC_NO_COMMON_BLOCKS = YES;
+GCC_OPTIMIZATION_LEVEL = 0;
+GCC_PREPROCESSOR_DEFINITIONS = (
+"DEBUG=1",
+"$(inherited)",
+);
+GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+GCC_WARN_UNDECLARED_SELECTOR = YES;
+GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+GCC_WARN_UNUSED_FUNCTION = YES;
+GCC_WARN_UNUSED_VARIABLE = YES;
+ONLY_ACTIVE_ARCH = YES;
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+};
+name = Debug;
+};
+D4F909052C9C00A100F4A0D2 /* Release */ = {
+isa = XCBuildConfiguration;
+buildSettings = {
+ALWAYS_SEARCH_USER_PATHS = NO;
+CLANG_ANALYZER_NONNULL = YES;
+CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+CLANG_ENABLE_MODULES = YES;
+CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+CLANG_WARN_BOOL_CONVERSION = YES;
+CLANG_WARN_COMMA = YES;
+CLANG_WARN_CONSTANT_CONVERSION = YES;
+CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+CLANG_WARN_EMPTY_BODY = YES;
+CLANG_WARN_ENUM_CONVERSION = YES;
+CLANG_WARN_INFINITE_RECURSION = YES;
+CLANG_WARN_INT_CONVERSION = YES;
+CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+CLANG_WARN_STRICT_PROTOTYPES = YES;
+CLANG_WARN_SUSPICIOUS_MOVE = YES;
+CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+COPY_PHASE_STRIP = YES;
+DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+ENABLE_NS_ASSERTIONS = NO;
+ENABLE_STRICT_OBJC_MSGSEND = YES;
+GCC_C_LANGUAGE_STANDARD = gnu11;
+GCC_NO_COMMON_BLOCKS = YES;
+GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+GCC_WARN_UNDECLARED_SELECTOR = YES;
+GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+GCC_WARN_UNUSED_FUNCTION = YES;
+GCC_WARN_UNUSED_VARIABLE = YES;
+SWIFT_COMPILATION_MODE = wholemodule;
+SWIFT_OPTIMIZATION_LEVEL = "-O";
+};
+name = Release;
+};
+D4F909062C9C00A100F4A0D2 /* Debug */ = {
+isa = XCBuildConfiguration;
+baseConfigurationReference = D4F909002C9C00A100F4A0D2 /* Branding.xcconfig */;
+buildSettings = {
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+CODE_SIGN_STYLE = Automatic;
+CURRENT_PROJECT_VERSION = 1;
+DEVELOPMENT_ASSET_PATHS = "";
+DEVELOPMENT_TEAM = "";
+ENABLE_PREVIEWS = YES;
+GENERATE_INFOPLIST_FILE = NO;
+INFOPLIST_FILE = iosApp/Info.plist;
+IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+LD_RUNPATH_SEARCH_PATHS = (
+"$(inherited)",
+"@executable_path/Frameworks",
+);
+MARKETING_VERSION = 1.0;
+PRODUCT_BUNDLE_IDENTIFIER = "$(PRODUCT_BUNDLE_IDENTIFIER)";
+PRODUCT_NAME = "$(TARGET_NAME)";
+SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+SWIFT_EMIT_LOC_STRINGS = YES;
+SWIFT_VERSION = 5.0;
+TARGETED_DEVICE_FAMILY = "1,2";
+};
+name = Debug;
+};
+D4F909072C9C00A100F4A0D2 /* Release */ = {
+isa = XCBuildConfiguration;
+baseConfigurationReference = D4F909002C9C00A100F4A0D2 /* Branding.xcconfig */;
+buildSettings = {
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+CODE_SIGN_STYLE = Automatic;
+CURRENT_PROJECT_VERSION = 1;
+DEVELOPMENT_ASSET_PATHS = "";
+DEVELOPMENT_TEAM = "";
+ENABLE_PREVIEWS = YES;
+GENERATE_INFOPLIST_FILE = NO;
+INFOPLIST_FILE = iosApp/Info.plist;
+IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+LD_RUNPATH_SEARCH_PATHS = (
+"$(inherited)",
+"@executable_path/Frameworks",
+);
+MARKETING_VERSION = 1.0;
+PRODUCT_BUNDLE_IDENTIFIER = "$(PRODUCT_BUNDLE_IDENTIFIER)";
+PRODUCT_NAME = "$(TARGET_NAME)";
+SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+SWIFT_EMIT_LOC_STRINGS = YES;
+SWIFT_VERSION = 5.0;
+TARGETED_DEVICE_FAMILY = "1,2";
+};
+name = Release;
+};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+D4F909082C9C00A100F4A0D2 /* Build configuration list for PBXProject "IntraleApp" */ = {
+isa = XCConfigurationList;
+buildConfigurations = (
+D4F909042C9C00A100F4A0D2 /* Debug */,
+D4F909052C9C00A100F4A0D2 /* Release */,
+);
+defaultConfigurationIsVisible = 0;
+defaultConfigurationName = Release;
+};
+D4F909092C9C00A100F4A0D2 /* Build configuration list for PBXNativeTarget "IntraleApp" */ = {
+isa = XCConfigurationList;
+buildConfigurations = (
+D4F909062C9C00A100F4A0D2 /* Debug */,
+D4F909072C9C00A100F4A0D2 /* Release */,
+);
+defaultConfigurationIsVisible = 0;
+defaultConfigurationName = Release;
+};
+/* End XCConfigurationList section */
+};
+rootObject = D4F908F12C9C00A100F4A0D2 /* Project object */;
+}
