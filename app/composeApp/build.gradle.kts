@@ -2,8 +2,8 @@ import ar.com.intrale.branding.GenerateBrandResourcesTask
 import ar.com.intrale.branding.SyncBrandingIconsTask
 import com.codingfeline.buildkonfig.compiler.FieldSpec
 import compose.ValidateComposeResourcesTask
-import org.gradle.api.GradleException
 import org.gradle.api.provider.ProviderFactory
+import org.gradle.api.Project
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.ExperimentalComposeLibrary
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
@@ -12,6 +12,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import java.util.Locale
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -27,22 +28,47 @@ plugins {
 fun ProviderFactory.trimmedProperty(name: String): String? =
     gradleProperty(name).orNull?.trim()?.takeIf { it.isNotEmpty() }
 
-val brandId: String = providers.trimmedProperty("brandId")
-    ?: throw GradleException(
-        "Falta el parámetro obligatorio -PbrandId. Ejecutá el build con -PbrandId=<identificador>."
-    )
+fun ProviderFactory.trimmedEnvironment(name: String): String? =
+    environmentVariable(name).orNull?.trim()?.takeIf { it.isNotEmpty() }
 
-val appIdSuffix: String = providers.trimmedProperty("appIdSuffix") ?: brandId
+fun Project.trimmedLocalProperty(name: String): String? {
+    val propertiesFile = rootProject.file("local.properties")
+    if (!propertiesFile.exists()) return null
+
+    val properties = Properties()
+    propertiesFile.inputStream().use { properties.load(it) }
+    return properties.getProperty(name)?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+val defaultBrandId = "intrale"
+
+val brandId: String = providers.trimmedProperty("brandId")
+    ?: providers.trimmedEnvironment("BRAND_ID")
+    ?: project.trimmedLocalProperty("brandId")
+    ?: run {
+        logger.lifecycle("No se detectó brandId; usando la marca por defecto \"$defaultBrandId\".")
+        defaultBrandId
+    }
+
+val appIdSuffix: String = providers.trimmedProperty("appIdSuffix")
+    ?: project.trimmedLocalProperty("appIdSuffix")
+    ?: brandId
 val normalizedAppIdSuffix = appIdSuffix.trim().trimStart('.')
 
-val brandName: String = providers.trimmedProperty("brandName") ?: brandId.replaceFirstChar { char ->
+val brandName: String = providers.trimmedProperty("brandName")
+    ?: project.trimmedLocalProperty("brandName")
+    ?: brandId.replaceFirstChar { char ->
     if (char.isLowerCase()) char.titlecase(Locale.getDefault()) else char.toString()
 }
 
-val deeplinkHost: String = providers.trimmedProperty("deeplinkHost") ?: "$brandId.intrale.app"
+val deeplinkHost: String = providers.trimmedProperty("deeplinkHost")
+    ?: project.trimmedLocalProperty("deeplinkHost")
+    ?: "$brandId.intrale.app"
 
 val brandingEndpointParam: String? = providers.trimmedProperty("brandingEndpoint")
+    ?: project.trimmedLocalProperty("brandingEndpoint")
 val brandingPreviewVersionParam: String? = providers.trimmedProperty("brandingPreviewVersion")
+    ?: project.trimmedLocalProperty("brandingPreviewVersion")
 
 val applicationIdSuffixValue = ".${normalizedAppIdSuffix}"
 val escapedBrandIdForBuildConfig = brandId.replace("\"", "\\\"")
