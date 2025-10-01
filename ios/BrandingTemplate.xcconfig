@@ -5,6 +5,7 @@ BRAND_ID = default
 BUNDLE_ID_SUFFIX = default
 BRAND_NAME = Default
 DEEPLINK_HOST = default.intrale.app
+DEEPLINK_SCHEME = intrale
 BRANDING_ENDPOINT = https://branding.intrale.app/default
 BRANDING_PREVIEW_VERSION =
 PRODUCT_BUNDLE_IDENTIFIER = ar.com.intrale.platform.$(BUNDLE_ID_SUFFIX)
