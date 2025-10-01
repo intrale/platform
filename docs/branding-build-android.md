@@ -8,14 +8,36 @@ Todos los comandos se ejecutan desde la raíz del repositorio con `./gradlew`. E
 
 | Parámetro | Obligatorio | Descripción | Default |
 |-----------|-------------|-------------|---------|
-| `brandId` | ✅ | Identificador canónico de la marca. Se usa para componer `applicationId`, nombres de carpetas y para resolver el branding remoto. | _No tiene default_. Si falta se aborta el build. |
+| `brandId` | ✅ | Identificador canónico de la marca. Se usa para componer `applicationId`, nombres de carpetas y para resolver el branding remoto. | `intrale` (fallback automático si no se especifica). |
 | `appIdSuffix` | ⛔ | Sufijo adicional para el `applicationId`. Se normaliza (sin puntos iniciales). | `brandId` |
 | `brandName` | ⛔ | Nombre de la marca para mostrar en la app. | `brandId` con la primera letra capitalizada |
 | `deeplinkHost` | ⛔ | Host para deeplinks configurado en el `AndroidManifest`. | `<brandId>.intrale.app` |
 | `brandingEndpoint` | ⛔ | Endpoint HTTP que devuelve el JSON de branding. Puede incluir placeholders `{brandId}` o `%s`. | No definido → se usan solo los recursos locales |
 | `brandingPreviewVersion` | ⛔ | Cadena opcional para pedir una versión preview al endpoint remoto. | No definido |
 
-> 🔎 El script de Gradle registra los parámetros efectivos en la consola al inicio del build para facilitar auditorías. 【F:app/composeApp/build.gradle.kts†L30-L62】
+> 🔎 El script de Gradle registra los parámetros efectivos en la consola al inicio del build para facilitar auditorías. 【F:app/composeApp/build.gradle.kts†L30-L74】
+
+### Configuración persistente para entornos locales
+
+Para no repetir banderas en cada comando se puede definir la marca por defecto de dos maneras:
+
+1. **Variable de entorno**
+
+   ```bash
+   export BRAND_ID=intrale
+   ```
+
+Gradle prioriza el parámetro explícito (`-PbrandId`), luego la variable `BRAND_ID`, después `local.properties` y finalmente usa `intrale` como fallback. 【F:app/composeApp/build.gradle.kts†L30-L52】
+
+2. **Archivo `local.properties`**
+
+   Agregar la propiedad al archivo en la raíz del repo (no se versiona, pero sirve para desarrollos locales):
+
+   ```properties
+   brandId=intrale
+   ```
+
+   Las propiedades locales también pueden definir `appIdSuffix`, `brandName`, `deeplinkHost`, `brandingEndpoint` y `brandingPreviewVersion`. 【F:app/composeApp/build.gradle.kts†L35-L48】
 
 ## Comandos típicos
 
@@ -53,7 +75,7 @@ Todos los comandos se ejecutan desde la raíz del repositorio con `./gradlew`. E
 
 ## Secuencia interna del build
 
-1. **Normalización de parámetros.** Antes de configurar el módulo Android se validan y normalizan todos los `-P`. Si `brandId` falta, Gradle arroja un error explícito. 【F:app/composeApp/build.gradle.kts†L30-L47】
+1. **Normalización de parámetros.** Antes de configurar el módulo Android se validan y normalizan todos los `-P`. Si `brandId` falta, Gradle adopta `intrale` automáticamente y deja un mensaje en consola. 【F:app/composeApp/build.gradle.kts†L30-L52】
 2. **Sincronización de íconos base64.** La tarea `syncBrandingIcons` decodifica los assets en `docs/branding/icon-pack/*.b64` hacia los recursos nativos (Android, Web y iOS). Se ejecuta automáticamente antes de `preBuild`, pero se puede invocar manualmente con `./gradlew :app:composeApp:syncBrandingIcons`. 【F:app/composeApp/build.gradle.kts†L459-L479】【F:buildSrc/src/main/kotlin/ar/com/intrale/branding/SyncBrandingIconsTask.kt†L18-L56】
 3. **Generación de recursos dinámicos.** `GenerateBrandResourcesTask` crea `strings.xml` y recursos de íconos dentro de `build/generated/branding/<brandId>/res`. También persiste una copia en `build/generated/branding/<brandId>/branding.json` cuando el endpoint responde OK. 【F:buildSrc/src/main/kotlin/ar/com/intrale/branding/GenerateBrandResourcesTask.kt†L12-L83】
 4. **Registro en Android Gradle Plugin.** Los recursos generados se agregan al variant correspondiente vía `androidComponents`, por lo que no es necesario tocar `src/androidMain`. 【F:app/composeApp/build.gradle.kts†L321-L333】
@@ -80,7 +102,7 @@ Estos directorios se limpian con `./gradlew :app:composeApp:clean`. Guardar los 
 
 ## Depuración de errores comunes
 
-- **`Falta el parámetro obligatorio -PbrandId`:** agregar `-PbrandId=<id>` al comando; suele ocurrir en pipelines nuevos. 【F:app/composeApp/build.gradle.kts†L30-L34】
+- **No se especificó `brandId`:** se usará `intrale` como valor por defecto y el build registrará un mensaje informativo. Añadí `-PbrandId=<id>` si necesitás otra marca. 【F:app/composeApp/build.gradle.kts†L30-L52】
 - **Warnings de ícono placeholder:** revisar el log para confirmar si la URL del logo es correcta y respeta límite de 512 KB y MIME permitido. 【F:buildSrc/src/main/kotlin/ar/com/intrale/branding/BrandingIconGenerator.kt†L70-L103】
 - **Branding remoto inválido:** si el JSON no parsea, se usa el fallback local y se loguea el detalle. Validar la respuesta grabada en `branding.json` para reproducir el fallo.
 - **Cambios en el icon pack:** ejecutar `./gradlew :app:composeApp:syncBrandingIcons --rerun-tasks` para forzar la decodificación cuando se actualizan los `.b64`.
