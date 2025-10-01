@@ -171,6 +171,7 @@ runOnlyForDeploymentPostprocessing = 0;
 /* Begin XCBuildConfiguration section */
 D4F909042C9C00A100F4A0D2 /* Debug */ = {
 isa = XCBuildConfiguration;
+baseConfigurationReference = D4F909002C9C00A100F4A0D2 /* Branding.xcconfig */;
 buildSettings = {
 ALWAYS_SEARCH_USER_PATHS = NO;
 CLANG_ANALYZER_NONNULL = YES;
@@ -224,6 +225,7 @@ name = Debug;
 };
 D4F909052C9C00A100F4A0D2 /* Release */ = {
 isa = XCBuildConfiguration;
+baseConfigurationReference = D4F909002C9C00A100F4A0D2 /* Branding.xcconfig */;
 buildSettings = {
 ALWAYS_SEARCH_USER_PATHS = NO;
 CLANG_ANALYZER_NONNULL = YES;
