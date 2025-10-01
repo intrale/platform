@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE_PATH="$PROJECT_ROOT/BrandingTemplate.xcconfig"
 OUTPUT_PATH="$PROJECT_ROOT/Branding.xcconfig"
+APP_ICON_SCRIPT="$SCRIPT_DIR/generate_app_icon.swift"
+APP_ICONSET_DIR="$PROJECT_ROOT/GeneratedAssets/AppIcon.appiconset"
 
 BRANDING_KEYS=(
   BRAND_ID
@@ -54,6 +56,39 @@ if [[ ! -x "$PYTHON_SCRIPT" ]]; then
 fi
 
 "$PYTHON_SCRIPT" --template "$TEMPLATE_PATH" --output "$OUTPUT_PATH"
+
+if command -v swift >/dev/null 2>&1; then
+  if [[ ! -x "$APP_ICON_SCRIPT" ]]; then
+    echo "[Branding] WARNING: Script de AppIcon no disponible en $APP_ICON_SCRIPT" >&2
+  else
+    EFFECTIVE_BRAND_ID="${BRANDING_OVERRIDES[BRAND_ID]:-${BRAND_ID-}}"
+    if [[ -z "$EFFECTIVE_BRAND_ID" ]]; then
+      echo "[Branding] WARNING: No se pudo determinar BRAND_ID para generar AppIcon" >&2
+    else
+      ICON_ARGS=("--brand-id" "$EFFECTIVE_BRAND_ID" "--output" "$APP_ICONSET_DIR")
+      BRANDING_JSON_PATH="$PROJECT_ROOT/build/branding/$EFFECTIVE_BRAND_ID/branding.json"
+      if [[ -f "$BRANDING_JSON_PATH" ]]; then
+        ICON_ARGS+=("--branding-json" "$BRANDING_JSON_PATH")
+      fi
+      DISPLAY_VALUE="${BRANDING_OVERRIDES[DISPLAY_NAME]:-${DISPLAY_NAME-}}"
+      if [[ -n "$DISPLAY_VALUE" ]]; then
+        ICON_ARGS+=("--display-name" "$DISPLAY_VALUE")
+      else
+        BRAND_VALUE="${BRANDING_OVERRIDES[BRAND_NAME]:-${BRAND_NAME-}}"
+        if [[ -n "$BRAND_VALUE" ]]; then
+          ICON_ARGS+=("--display-name" "$BRAND_VALUE")
+        fi
+      fi
+      BRAND_VALUE="${BRANDING_OVERRIDES[BRAND_NAME]:-${BRAND_NAME-}}"
+      if [[ -n "$BRAND_VALUE" ]]; then
+        ICON_ARGS+=("--brand-name" "$BRAND_VALUE")
+      fi
+      "$APP_ICON_SCRIPT" "${ICON_ARGS[@]}"
+    fi
+  fi
+else
+  echo "[Branding] WARNING: Swift no está disponible; se omite la generación de AppIcon" >&2
+fi
 
 has_xcconfig=false
 for arg in "${FORWARDED_ARGS[@]}"; do
