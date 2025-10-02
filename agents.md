@@ -1,4 +1,4 @@
-<!-- AGENTS_MD_VERSION: 2025-09-24T00:51:43Z -->
+<!-- AGENTS_MD_VERSION: 2025-10-05T00:00:00Z -->
 # agents.md
 
 ##  Descripción General
@@ -254,6 +254,16 @@ Para garantizar que el agente `leitocodexbot` interprete correctamente las accio
 
 ##
 
+### Normalización y sinónimos permitidos
+
+- **Normalizar siempre** la entrada recibida: convertir a *lowercase*, remover tildes y espacios duplicados antes de mapear la intención.
+- Tratar como equivalentes:
+  - `tarea`, `tareas`, `historia`, `historias`, `issue`, `issues` → palabra clave **`issues`**.
+  - `intrale`, `Intrale`, `tablero intrale`, `proyecto intrale`, `project intrale`, `projecto intrale` → **Project v2 "intrale"**.
+  - Frases como `refinar todas las historias en todo`, `refinar todas las tareas en la columna todo`, `refinar todo lo de todo`, `refinar pendientes en el tablero intrale` → intención **"refinar todas las tareas pendientes en el tablero de intrale"**.
+  - Variantes como `trabajar todas las tareas`, `trabajar todo lo pendiente`, `procesar issues en todo`, `procesar historias en todo` → intención **"trabajar todas las tareas pendientes en el tablero de intrale"**.
+- Ante un término no reconocido, solicitar aclaración sin ejecutar acciones adicionales.
+
 ##  Intenciones de comando (mapeo explícito)
 
 Para evitar ambiguedades, el agente debe interpretar estas palabras clave de forma deterministica:
@@ -309,9 +319,23 @@ curl -sS -X POST   -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: applicat
 Para que el agente ejecute el refinamiento de todas las tareas pendientes en el tablero, se debe utilizar la instrucción: "refinar todas las tareas pendientes en el tablero de intrale"
 Esto indicará al agente que debe buscar todos los issues en estado "Todo" y aplicar el flujo de refinamiento definido en este documento.
 
+Frases equivalentes aceptadas:
+- "refinar todas las historias en todo"
+- "refinar todas las tareas del tablero intrale"
+- "refinar todo lo que esté en la columna todo"
+- "refinar pendientes en intrale"
+- "refinar issues en estado todo"
+
 ###  Ejecución de tareas
 Para que el agente procese todas las tareas pendientes, se debe utilizar la instrucción: "trabajar todas las tareas pendientes en el tablero de intrale"
 Esto indicará al agente que debe buscar todos los issues en estado "Todo" y ejecutar las acciones correspondientes, según lo definido en este documento.
+
+Frases equivalentes aceptadas:
+- "trabajar todas las historias en todo"
+- "procesar todas las tareas del tablero intrale"
+- "trabajar todo lo pendiente en intrale"
+- "ejecutar issues en estado todo"
+- "atender todas las tareas pendientes"
 
 ###  Recomendaciones adicionales
 - No deben utilizarse comandos ambiguos como solo `"refinar"` o `"trabajar"` sin contexto, ya que el agente puede solicitar información adicional.
@@ -352,6 +376,25 @@ STATUS_OPTION_DONE="98236657"
 STATUS_OPTION_BLOCKED="d95d52cc"
 ```
 
+### Descubrimiento de IDs cuando falte información
+
+Si alguno de los IDs anteriores no estuviera configurado en el entorno, el agente debe obtenerlo dinámicamente vía GraphQL **antes** de continuar:
+
+```bash
+# Consultar el campo "Status" y sus opciones disponibles
+curl -sS -X POST https://api.github.com/graphql \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query":"query($project:ID!){node(id:$project){... on ProjectV2{fields(first:20){nodes{... on ProjectV2FieldCommon{name id ... on ProjectV2SingleSelectField{options{ id name }}}}}}}}",
+    "variables":{"project":"'"$PROJECT_ID"'"}
+  }'
+```
+
+- Identificar el campo con `name == "Status"` para registrar `STATUS_FIELD_ID`.
+- Mapear cada `options[].name` con su `id` correspondiente y actualizar las variables `STATUS_OPTION_*`.
+- Persistir los nuevos valores antes de ejecutar mutaciones de estado.
+
 **Agregar issue al Project (si no está) y obtener `itemId`:**
 ```bash
 curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json"  -d '{
@@ -390,4 +433,21 @@ curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITH
 - La documentación general puede residir en `docs/` **pero** los **refinamientos de issues** **no** generan archivos en `docs/` por defecto.
 - Los refinamientos **siempre** viven **dentro del issue** (comentarios + actualización del body).
 - Solo si el issue indica explícitamente "crear doc en /docs/...", se crea un archivo adicional.
+
+##  Idempotencia y procesamiento por lotes
+
+- Procesar issues en tandas de **hasta 10 elementos** por ejecución para evitar timeouts y mantener trazabilidad.
+- Antes de actuar, verificar si el issue ya está refinado:
+  - Presencia de la etiqueta `refinado`, **o**
+  - Body con las secciones estándar (`## Objetivo`, `## Contexto`, `## Cambios requeridos`, `## Criterios de aceptación`, `## Notas técnicas`).
+- Si ya está refinado, registrarlo en la bitácora y omitirlo sin generar errores.
+- Al finalizar cada lote, dejar constancia en el comentario resumen del issue sobre cuántos items fueron procesados.
+
+##  Manejo de fallas educadas
+
+- Ante errores de permisos, tokens, IDs faltantes o respuestas HTTP/GraphQL fallidas:
+  - Mover el issue a **Blocked** utilizando los IDs reales documentados.
+  - Comentar el detalle técnico (endpoint, código, mensaje y pista de corrección).
+  - Detener el flujo automatizado hasta que un humano resuelva el inconveniente.
+- Evitar mensajes genéricos; toda falla debe dejar trazabilidad reproducible en el issue.
 
