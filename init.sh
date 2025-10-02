@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INIT_VERSION=2025-10-05 docs-first refine (no RO, path guards, autodiscover)
+# INIT_VERSION=2025-10-05 docs-first refine/work (autodiscover + jq fixes)
 set -euo pipefail
 
 GH_API="https://api.github.com"
@@ -7,12 +7,11 @@ ACCEPT_V3="Accept: application/vnd.github.v3+json"
 ACCEPT_GRAPHQL="Content-Type: application/json"
 API_VER="X-GitHub-Api-Version: 2022-11-28"
 
-# Defaults (Docs-first)
 : "${ORG:=intrale}"
 : "${PROJECT_ID:=PVT_kwDOBTzBoc4AyMGf}"
-: "${REFINE_WRITE_DOCS:=1}"       # Docs-first ON
-: "${REFINE_DOCS_OPEN_PR:=1}"     # PR de docs ON
-: "${ENFORCE_READONLY:=0}"        # NO RO en refinamiento
+: "${REFINE_WRITE_DOCS:=1}"
+: "${REFINE_DOCS_OPEN_PR:=1}"
+: "${ENFORCE_READONLY:=0}"
 : "${BATCH_MAX:=10}"
 
 log()  { echo -e "ℹ️  $*"; }
@@ -21,21 +20,17 @@ warn() { echo -e "⚠️  $*"; }
 err()  { echo -e "❌ $*" >&2; }
 
 normalize() {
-  tr '[:upper:]' '[:lower:]' | sed \
-    -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g' \
-    -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
+  tr '[:upper:]' '[:lower:]' | sed     -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g'     -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
 }
 
 detect_intent() {
   local utterance norm
   utterance="$*"
   norm="$(printf '%s' "$utterance" | normalize | xargs)"
-  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
-     || echo "$norm" | grep -Eq '^refinar todo$'; then
+  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^refinar todo$'; then
     echo "INTENT=REFINE_ALL_TODO"; return 0
   fi
-  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
-     || echo "$norm" | grep -Eq '^trabajar todo$'; then
+  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^trabajar todo$'; then
     echo "INTENT=WORK_ALL_TODO"; return 0
   fi
   echo "INTENT=UNKNOWN"; return 1
@@ -47,9 +42,7 @@ need_token() {
 
 graphql() {
   local q="$1"
-  curl -fsS "$GH_API/graphql" \
-    -H "Authorization: Bearer $GITHUB_TOKEN" \
-    -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
+  curl -fsS "$GH_API/graphql"     -H "Authorization: Bearer $GITHUB_TOKEN"     -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
 }
 
 usage() {
@@ -73,21 +66,25 @@ discover() {
   need_token
   : "${PROJECT_ID:?Falta PROJECT_ID}"
   local Q out FIELD
-  Q=$(jq -n --arg id "$PROJECT_ID" '{query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ fields(first:50){ nodes{ __typename ... on ProjectV2SingleSelectField{ id name options{ id name } } } } } } }",variables:{id:$id}}')
+  Q=$(jq -n --arg id "$PROJECT_ID" '{
+    query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ fields(first:50){ nodes{ __typename ... on ProjectV2SingleSelectField{ id name options{ id name } } } } } } }",
+    variables:{id:$id}}')
   out="$(graphql "$Q")"
   FIELD="$(printf '%s' "$out" | jq -r '.data.node.fields.nodes[] | select(.name=="Status")')"
+
   {
+    echo "export PROJECT_ID=$PROJECT_ID"
     echo "export STATUS_FIELD_ID=$(printf '%s' "$FIELD" | jq -r '.id')"
-    echo "export STATUS_OPTION_TODO=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Todo\") | .id')"
-    echo "export STATUS_OPTION_INPROGRESS=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"In Progress\") | .id')"
-    echo "export STATUS_OPTION_READY=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Ready\") | .id')"
-    echo "export STATUS_OPTION_BLOCKED=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Blocked\") | .id')"
+    echo "export STATUS_OPTION_TODO=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="Todo") | .id')"
+    echo "export STATUS_OPTION_INPROGRESS=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="In Progress") | .id')"
+    echo "export STATUS_OPTION_READY=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="Ready") | .id')"
+    echo "export STATUS_OPTION_BLOCKED=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="Blocked") | .id')"
   } | tee .codex_env >/dev/null
+
   ok "IDs escritos en .codex_env"
 }
 
 post_refine_guard() {
-  # Permitir SOLO docs/refinements/**
   local changed bad
   changed="$(git status --porcelain | awk '{print $2}')"
   [[ -z "$changed" ]] && return 0
@@ -105,11 +102,11 @@ auto() {
   local u="${CODEX_UTTERANCE:-}"
   [[ -n "$u" ]] || { warn "No hay CODEX_UTTERANCE"; exit 0; }
 
-  # Autodiscover de IDs si falta
   if [[ ! -f .codex_env ]]; then
     echo "ℹ️  .codex_env no encontrado, ejecutando discover…"
     ./init.sh discover || { err "No pude obtener IDs del Project"; exit 1; }
   fi
+  # shellcheck disable=SC1091
   source .codex_env
 
   local intent; intent="$(detect_intent "$u" || true)"

@@ -16,7 +16,8 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${STATUS_OPTION_READY:=}"
 : "${STATUS_OPTION_BLOCKED:?Falta STATUS_OPTION_BLOCKED}"
 
-: "${WORK_OPEN_PR:=0}"
+# Por defecto, abrir PR y usar documento de refinamiento
+: "${WORK_OPEN_PR:=1}"
 : "${PR_BASE:=main}"
 BATCH_MAX="${BATCH_MAX:-10}"
 
@@ -29,7 +30,7 @@ rest_post () { curl -fsS -X POST "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -
 list_todo_items() {
   local Q out
   Q=$(jq -n --arg id "$PROJECT_ID" '{
-    query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ items(first:100){ nodes{ id content{ __typename ... on Issue{ id number title repository{ name owner{ login } } } } fieldValueByName(name:\\"Status\\"){ ... on ProjectV2ItemFieldSingleSelectValue{ optionId } } } } } } }",
+    query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ items(first:100){ nodes{ id content{ __typename ... on Issue{ id number title repository{ name owner{ login } } } } fieldValueByName(name:\"Status\"){ ... on ProjectV2ItemFieldSingleSelectValue{ optionId } } } } } } }",
     variables:{id:$id}}')
   out="$(graphql "$Q")"
   printf '%s' "$out" | jq -r --arg opt "$STATUS_OPTION_TODO" '
@@ -46,10 +47,24 @@ open_pr () { # owner repo head_branch title body
   rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$4" --arg h "$3" --arg b "$5" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')" | jq -r '.html_url'
 }
 
+branch_name () {
+  local title="$1" num="$2"
+  local slug
+  slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' )"
+  slug="$(echo "$slug" | sed 's/^-*//; s/-*$//')"
+  printf 'feature/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
+}
 
+# Busca el .md de refinamiento en docs/refinements (variantes por si el runner cambia cwd)
 find_refinement_md () { # num -> path or empty
-  local num="$1"
-  ls -1 docs/refinements/issue-"${num}"-*.md 2>/dev/null | head -n1 || true
+  local num="$1" cand
+  shopt -s nullglob
+  for cand in     "docs/refinements/issue-${num}-"*.md     "./docs/refinements/issue-${num}-"*.md
+  do
+    [[ -f "$cand" ]] && { echo "$cand"; shopt -u nullglob; return 0; }
+  done
+  shopt -u nullglob
+  return 1
 }
 
 compose_pr_body () { # num -> string
@@ -57,20 +72,20 @@ compose_pr_body () { # num -> string
   if [[ "${WORK_USE_REFINEMENT_DOC}" == "1" ]]; then
     md="$(find_refinement_md "$num" || true)"
     if [[ -n "$md" && -f "$md" ]]; then
+      echo "ℹ️  Picked refinement MD: $md" >&2
       PR_TITLE_SUFFIX="[uses-refinement]"
-      body="Closes #${num}\n\n---\n**Refinamiento**: \`${md}\`\n\n$(sed -e 's/\r$//' "$md")"
+      body="Closes #${num}
+
+---
+**Refinamiento**: \`${md}\`
+
+$(sed -e 's/\r$//' "$md")"
       printf "%s" "$body"
       return 0
     fi
   fi
+  PR_TITLE_SUFFIX=""
   printf "Closes #%s" "$num"
-}
-branch_name () {
-  local title="$1" num="$2"
-  local slug
-  slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' )"
-  slug="$(echo "$slug" | sed 's/^-*//; s/-*$//')"
-  printf 'feature/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
 }
 
 process_issue () {
@@ -82,11 +97,24 @@ process_issue () {
     return 1
   fi
 
+  # Si exigís refinamiento previo
+  if [[ "${WORK_REQUIRE_REFINEMENT}" == "1" ]]; then
+    if ! find_refinement_md "$num" >/dev/null 2>&1; then
+      set_status "$item_id" "$STATUS_OPTION_BLOCKED" || true
+      return 1
+    fi
+  fi
+
   if [[ "${WORK_OPEN_PR}" == "1" ]]; then
-    local branch pr_url
+    local branch pr_url pr_body pr_title
     branch="$(branch_name "$title" "$num")"
     pr_body="$(compose_pr_body "$num")"
-    pr_url="$(open_pr "$owner" "$repo" "$branch" "[auto] $title" "$pr_body" || echo "")"
+    if [[ -n "${PR_TITLE_SUFFIX:-}" ]]; then
+      pr_title="[auto][uses-refinement] $title"
+    else
+      pr_title="[auto] $title"
+    fi
+    pr_url="$(open_pr "$owner" "$repo" "$branch" "$pr_title" "$pr_body" || echo "")"
     if [[ -n "$pr_url" ]]; then
       [[ -n "${STATUS_OPTION_READY}" ]] && set_status "$item_id" "$STATUS_OPTION_READY" || true
       return 0
@@ -98,7 +126,7 @@ process_issue () {
 
 main() {
   local count=0
-  list_todo_items | while IFS=$'\\t' read -r owner repo num node item title; do
+  list_todo_items | while IFS=$'\t' read -r owner repo num node item title; do
     process_issue "$owner" "$repo" "$num" "$node" "$item" "$title" || true
     count=$((count+1))
     [[ $count -ge $BATCH_MAX ]] && break
