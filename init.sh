@@ -24,6 +24,63 @@ BATCH_MAX="${BATCH_MAX:-20}"
 
 AUTHORIZATION_HEADER=""
 
+normalize() {
+  local text="$*"
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$text" <<'PY'
+import sys, unicodedata
+
+text = sys.argv[1]
+text = " ".join(text.split())
+normalized = unicodedata.normalize("NFD", text)
+normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+sys.stdout.write(normalized.lower())
+PY
+    return
+  fi
+
+  text="$(printf '%s' "$text" | sed \
+    -e 'y/ÁÀÄÂÃÅ/áàäâãå/' \
+    -e 'y/ÉÈËÊ/éèëê/' \
+    -e 'y/ÍÌÏÎ/íìïî/' \
+    -e 'y/ÓÒÖÔÕ/óòöôõ/' \
+    -e 'y/ÚÙÜÛ/úùüû/' \
+    -e 'y/Ñ/ñ/' )"
+  text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
+  text="$(printf '%s' "$text" | sed \
+    -e 's/[áàäâãå]/a/g' \
+    -e 's/[éèëê]/e/g' \
+    -e 's/[íìïî]/i/g' \
+    -e 's/[óòöôõ]/o/g' \
+    -e 's/[úùüû]/u/g' \
+    -e 's/ñ/n/g')"
+  text="$(printf '%s' "$text" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  printf '%s' "$text"
+}
+
+detect_intent() {
+  local phrase="$*"
+  local normalized
+  normalized="$(normalize "$phrase")"
+
+  local patterns=(
+    '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'
+    '^refinar todo$'
+  )
+
+  local pattern
+  for pattern in "${patterns[@]}"; do
+    if [[ "$normalized" =~ $pattern ]]; then
+      echo "INTENT=REFINE_ALL_TODO"
+      return 0
+    fi
+  done
+
+  echo "INTENT=UNKNOWN"
+  return 1
+}
+
 log_info() {
   echo "ℹ️  $*"
 }
@@ -399,12 +456,12 @@ refinement_template() {
 
 ## Contexto
 
-## Cambios Propuestos
+## Cambios requeridos
 
 ## Criterios de Aceptación
 
-## Notas
-- 
+## Notas técnicas
+-
 TEMPLATE
 }
 
@@ -496,6 +553,10 @@ _refinamiento aplicado automáticamente por init.sh (refine-batch)._"
     return 1
   fi
 
+  if ! comment_issue "$owner" "$repo" "$number" "Refinamiento aplicado. Estado devuelto a Todo."; then
+    log_warn "El comentario de confirmación no pudo publicarse en $owner/$repo#$number."
+  fi
+
   log_success "Refinamiento aplicado en $owner/$repo#$number."
 }
 
@@ -532,6 +593,7 @@ Uso: ./init.sh [comando]
 Comandos disponibles:
   android-sdk          Instala y configura el Android SDK como en versiones anteriores.
   sanity               Ejecuta las verificaciones de token y conectividad (/user, /rate_limit).
+  intent "frase"       Detecta el intent principal a partir de una frase libre.
   discover             Obtiene STATUS_FIELD_ID y optionId del campo Status del Project v2.
   refine-batch <tsv>   Procesa un lote de issues en formato TSV (columnas: owner, repo, number, node_id, item_id).
   help                 Muestra esta ayuda.
@@ -555,6 +617,13 @@ main() {
       ;;
     sanity)
       sanity_checks
+      ;;
+    intent)
+      if [ $# -lt 1 ]; then
+        log_error "Debes indicar la frase a analizar."
+        exit 1
+      fi
+      detect_intent "$*"
       ;;
     discover)
       discover_status_options
