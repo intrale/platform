@@ -14,10 +14,17 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${STATUS_FIELD_ID:?Falta STATUS_FIELD_ID}"
 : "${STATUS_OPTION_TODO:?Falta STATUS_OPTION_TODO}"
 : "${STATUS_OPTION_INPROGRESS:?Falta STATUS_OPTION_INPROGRESS}"
-: "${STATUS_OPTION_READY:?Falta STATUS_OPTION_READY}"
 : "${STATUS_OPTION_BLOCKED:?Falta STATUS_OPTION_BLOCKED}"
 
 BATCH_MAX="${BATCH_MAX:-20}"
+
+# ---- Guard REPO READ-ONLY para 'refinar' ----
+if [[ "${REFINE_READONLY:-1}" == "1" ]]; then
+  if git status --porcelain 2>/dev/null | grep -q .; then
+    echo "codex: REFINE_READONLY=1 → ejecución cancelada: hay cambios locales. Marco Blocked y dejo comentario."
+    exit 1
+  fi
+fi
 
 graphql () {
   local q="$1"
@@ -32,9 +39,9 @@ rest_patch () { curl -fsS -X PATCH "$1" -H "Authorization: Bearer $GITHUB_TOKEN"
 list_todo_items() {
   # Lista items del Project con Status == Todo (owner/repo/number/node_id/item_id) como TSV
   local Q out
-  Q=$(jq -n --arg id "$PROJECT_ID" --arg f "$STATUS_FIELD_ID" --arg opt "$STATUS_OPTION_TODO" '{
+  Q=$(jq -n --arg id "$PROJECT_ID" '{
     query: "
-      query($id:ID!,$f:ID!,$opt:String!){
+      query($id:ID!){
         node(id:$id){
           ... on ProjectV2{
             items(first:100){
@@ -47,7 +54,7 @@ list_todo_items() {
           }
         }
       }",
-    variables:{id:$id,f:$f,opt:$opt}}')
+    variables:{id:$id}}')
   out="$(graphql "$Q")"
   printf '%s' "$out" | jq -r --arg opt "$STATUS_OPTION_TODO" '
     .data.node.items.nodes[]

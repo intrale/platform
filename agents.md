@@ -11,18 +11,21 @@ Este documento define la configuración y comportamiento esperado del agente aut
 
 ##  Consideraciones Iniciales
 
+> Nota: Las tareas de **refinamiento** (comentario + PATCH del body del issue) **no requieren PR** si no hay cambios en código o documentación.
+
 - Todos los comentarios, commits y PRs deben estar en **Español Latinoamericano**.
 - El entorno cuenta con `GITHUB_TOKEN` con permisos sobre toda la organización.
 - Organización y tablero objetivo en GitHub: **`intrale`**
 - Toda tarea debe estar relacionada con un **issue** existente en el tablero.
 - Toda tarea se considera **"Ready"** cuando:
-    - Se ha creado un Pull Request (PR) asociado.
-    - El PR está asignado al usuario `leitolarreta`.
-    - El issue está vinculado al PR mediante `Closes #<número de issue>`.
-- Si no se genera un Pull Request, la tarea se considera **incompleta**, incluso si los cambios fueron aplicados localmente.
+    - Se ha creado un Pull Request (PR) asociado **(cuando hay cambios en código o documentación)**, o en el caso de **REFINE_ALL_TODO**, cuando el issue queda **ejecutable** sin cambios de repositorio.
+    - Si existe PR: debe estar asignado al usuario `leitolarreta`.
+    - Si existe PR: el issue debe estar vinculado mediante `Closes #<número de issue>`.
+- **PR obligatorio solo cuando hay cambios en código o documentación.** Para tareas de **refinamiento puro** (comentario + PATCH del body del issue) **no se requiere PR**.
+- Si la tarea **sí** involucra cambios en código o documentación y **no** se genera un Pull Request, la tarea se considera **incompleta**, incluso si los cambios fueron aplicados localmente.
 - Toda tarea que finalice con éxito debe:
     - Mover el issue a la columna **"Ready"**.
-    - Comentar en el issue con un resumen de lo realizado y un enlace al PR generado.
+    - Comentar en el issue con un resumen de lo realizado y, **si existe PR**, incluir el enlace.
 - Toda tarea que no pueda completarse debe:
     - Mover el issue a la columna **"Blocked"**.
     - Comentar el motivo del bloqueo y adjuntar el **stacktrace** si aplica.
@@ -67,34 +70,32 @@ reglas en todo momento:
 ---
 ##  Ejecución de Tareas Automáticas
 
-1. **Antes de cualquier otra acción**, el agente debe intentar mover el issue a la columna **"In Progress"**.
-2. Si no puede moverlo por cualquier motivo (permisos insuficientes, error interno, inconsistencias), debe:
-    - Mover el issue a la columna **"Blocked"** inmediatamente.
-    - Comentar en el issue indicando:
-        - Motivo técnico detallado del fallo.
-        - Stacktrace o mensaje de error recibido, si aplica.
-3. Solo si logra mover el issue a **"In Progress"**:
-    - Analizar el título y la descripción.
-    - Crear una rama con el nombre relacionado al issue, siguiendo la nomenclatura de ramas definida en la sección ** Nomenclatura de Ramas**.
+1. **Antes de cualquier otra acción**, mover el issue a **"In Progress"**.
+2. Si no puede moverlo (permisos/IDs/error):
+    - Mover a **"Blocked"**.
+    - Comentar el **motivo técnico** (endpoint, código, mensaje) y stacktrace si aplica.
+3. Solo si logra moverlo a **"In Progress"**:
+    - Analizar título y descripción.
+    - **Crear rama/PR únicamente si**:
+        - la intención es **`WORK_ALL_TODO`**, **o**
+        - la tarea **requiere cambios en el repositorio** (código o documentación).
+          Usar la nomenclatura definida en **Nomenclatura de Ramas**.
     - Si la rama ya existe:
-        - Comentar en el issue que la rama ya fue creada previamente.
-        - Actualizar el repositorio local con los últimos cambios de esa rama.
-        - Verificar si ya hay un Pull Request abierto con esa rama como `head`.
-            - Si existe, comentar en el issue que el PR ya está generado y evitar crear uno nuevo.
+        - Comentar en el issue que la rama ya fue creada.
+        - Actualizar el repo local.
+        - Verificar si ya hay PR para esa rama; si existe, comentarlo y **no** crear otro.
     - Determinar si puede resolver la tarea automáticamente.
 4. Si puede resolverla:
     - Asignar el issue a `leitocodexbot`.
-    - Ejecutar los cambios requeridos (código, pruebas o documentación).
-    - Comentar en el issue los pasos que va llevando adelante en tiempo real.
-    - Generar **obligatoriamente** un Pull Request con los cambios y asignarlo a `leitolarreta`.
-    - Si no se puede generar el PR, aplicar el protocolo de reintento.
-    - Mover el issue a **"Ready"** solo si el Pull Request fue creado correctamente.
+    - Ejecutar los cambios requeridos (si los hay).
+    - **Si hubo cambios en repo:** generar un **Pull Request** y asignarlo a `leitolarreta`.
+    - Mover el issue a **"Ready"** si el PR fue creado o si quedó **ejecutable sin PR** (solo refinamiento).
 5. Si no puede resolverla:
-    - Mover el issue a **"Blocked"**.
-    - Comentar el motivo y adjuntar el **stacktrace** si aplica.
-6. Validar que no haya dependencias activas no resueltas (por ejemplo, campo `Blocked by #n` en la descripción o etiquetas).
+    - Mover a **"Blocked"**.
+    - Comentar el motivo técnico y adjuntar stacktrace si aplica.
+6. Validar dependencias activas antes de cerrar el ciclo (labels/relaciones).
 
->  Si no se genera un Pull Request, la tarea se considerará incompleta, incluso si los cambios fueron aplicados localmente.
+> Si la tarea involucra cambios en código o documentación y no se genera un Pull Request, la tarea se considera **incompleta**. Las tareas de **refinamiento puro** (comentario + PATCH del body del issue) **no requieren PR**.
 
 ---
 
@@ -304,7 +305,8 @@ Automatizar tareas operativas: generación de código, ramas, PRs, comentarios, 
 
 El agente `leitocodexbot` es un asistente automatizado que potencia la eficiencia del equipo, pero **nunca reemplaza la revisión ni la decisión humana**.
 Su funcionamiento correcto es clave para garantizar trazabilidad, claridad y fluidez en el desarrollo.
-**Toda ejecución que implique cambios debe generar obligatoriamente un Pull Request.**
+**Si la ejecución implica cambios en código o documentación, debe generar un Pull Request.**  
+Las tareas de **refinamiento puro** (comentario + PATCH del body del issue) **no requieren PR**.
 **Toda tarea que no pueda moverse a "In Progress" debe bloquearse de inmediato con su motivo técnico.**
 **Las ejecuciones del agente deben ser únicas y no simultáneas.**
 ---
@@ -319,10 +321,10 @@ Para garantizar que el agente `leitocodexbot` interprete correctamente las accio
 
 - **Normalizar siempre** la entrada recibida: convertir a *lowercase*, remover tildes y espacios duplicados antes de mapear la intención.
 - Tratar como equivalentes:
-  - `tarea`, `tareas`, `historia`, `historias`, `issue`, `issues` → palabra clave **`issues`**.
-  - `intrale`, `Intrale`, `tablero intrale`, `proyecto intrale`, `project intrale`, `projecto intrale` → **Project v2 "intrale"**.
-  - Frases como `refinar todas las historias en todo`, `refinar todas las tareas en la columna todo`, `refinar todo lo de todo`, `refinar pendientes en el tablero intrale` → intención **"refinar todas las tareas pendientes en el tablero de intrale"**.
-  - Variantes como `trabajar todas las tareas`, `trabajar todo lo pendiente`, `procesar issues en todo`, `procesar historias en todo` → intención **"trabajar todas las tareas pendientes en el tablero de intrale"**.
+    - `tarea`, `tareas`, `historia`, `historias`, `issue`, `issues` → palabra clave **`issues`**.
+    - `intrale`, `Intrale`, `tablero intrale`, `proyecto intrale`, `project intrale`, `projecto intrale` → **Project v2 "intrale"**.
+    - Frases como `refinar todas las historias en todo`, `refinar todas las tareas en la columna todo`, `refinar todo lo de todo`, `refinar pendientes en el tablero intrale` → intención **"refinar todas las tareas pendientes en el tablero de intrale"**.
+    - Variantes como `trabajar todas las tareas`, `trabajar todo lo pendiente`, `procesar issues en todo`, `procesar historias en todo` → intención **"trabajar todas las tareas pendientes en el tablero de intrale"**.
 - Ante un término no reconocido, solicitar aclaración sin ejecutar acciones adicionales.
 
 ##  Intenciones de comando (mapeo explícito)
@@ -499,17 +501,17 @@ curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITH
 
 - Procesar issues en tandas de **hasta 10 elementos** por ejecución para evitar timeouts y mantener trazabilidad.
 - Antes de actuar, verificar si el issue ya está refinado:
-  - Presencia de la etiqueta `refinado`, **o**
-  - Body con las secciones estándar (`## Objetivo`, `## Contexto`, `## Cambios requeridos`, `## Criterios de aceptación`, `## Notas técnicas`).
+    - Presencia de la etiqueta `refinado`, **o**
+    - Body con las secciones estándar (`## Objetivo`, `## Contexto`, `## Cambios requeridos`, `## Criterios de aceptación`, `## Notas técnicas`).
 - Si ya está refinado, registrarlo en la bitácora y omitirlo sin generar errores.
 - Al finalizar cada lote, dejar constancia en el comentario resumen del issue sobre cuántos items fueron procesados.
 
 ##  Manejo de fallas educadas
 
 - Ante errores de permisos, tokens, IDs faltantes o respuestas HTTP/GraphQL fallidas:
-  - Mover el issue a **Blocked** utilizando los IDs reales documentados.
-  - Comentar el detalle técnico (endpoint, código, mensaje y pista de corrección).
-  - Detener el flujo automatizado hasta que un humano resuelva el inconveniente.
+    - Mover el issue a **Blocked** utilizando los IDs reales documentados.
+    - Comentar el detalle técnico (endpoint, código, mensaje y pista de corrección).
+    - Detener el flujo automatizado hasta que un humano resuelva el inconveniente.
 - Evitar mensajes genéricos; toda falla debe dejar trazabilidad reproducible en el issue.
 
 ## Router de Intenciones (Lenguaje natural → Acciones)
@@ -551,3 +553,26 @@ curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITH
 - Dejar en `Ready` si el issue queda ejecutable y/o con PR abierto.
 
 > Tablero por defecto: Project v2 “intrale” si no se menciona explícitamente.
+
+### Póliza de no-escritura de repositorio (INTENT: REFINE_ALL_TODO)
+**Obligatorio.** Cuando la intención detectada sea **REFINE_ALL_TODO** (“refinar …”):
+- El repositorio queda **SOLO LECTURA**. **Prohibido**: crear/editar/renombrar/borrar archivos, hacer commits, abrir PRs, cambiar scripts, tocar `init.sh`, `agents.md`, `scripts/**`, `.github/**`.
+- **ÚNICAS acciones permitidas**:
+    1) Operaciones contra API de GitHub (GraphQL/REST) sobre **Project v2** (agregar item, cambiar `Status`).
+    2) **Comentario** en el issue y **PATCH del body** del issue (refinamiento DENTRO del issue).
+- Si el agente “cree” que haría falta cambiar código o scripts:
+    - **NO** modificar nada. En su lugar:
+        - Dejar comentario técnico en el issue, y
+        - Crear **issue nuevo** titulado `[codex][propuesta] Ajuste script X` con el diagnóstico y sugerencia; asignarlo a personas, **NO** auto-mergear.
+
+**Regla de protección de paths (no tocar):**
+- `init.sh`
+- `agents.md`
+- `scripts/**`
+- `.github/**`
+- `**/*.md` (salvo el cuerpo del issue via API, no archivos del repo)
+
+**Resultado esperado de “refinar …”**:
+- `Todo → In Progress → (comentario + PATCH del body) → Todo/Ready`
+- Nunca PR. Nunca commit.
+

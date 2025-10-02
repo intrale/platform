@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INIT_VERSION=2025-10-02-router-min
+# INIT_VERSION=2025-10-05-router-min
 set -euo pipefail
 
 GH_API="https://api.github.com"
@@ -58,16 +58,11 @@ Uso:
   ./init.sh intent "frase"  -> muestra el intent detectado (REFINE_ALL_TODO / WORK_ALL_TODO)
   ./init.sh discover        -> imprime STATUS_FIELD_ID y optionId del campo Status (Project v2)
   ./init.sh auto            -> autodetecta intent desde CODEX_UTTERANCE y despacha scripts
-
-Notas:
-- Este init es un shim: por defecto no hace acciones costosas ni instala toolchains.
-- Los scripts reales viven en ./scripts/refine_all.sh y ./scripts/work_all.sh
 EOF
 }
 
 sanity() {
   need_token
-  log "Validando token/conectividad…"
   curl -fsS -H "$ACCEPT_V3" -H "$API_VER" -H "Authorization: Bearer $GITHUB_TOKEN" "$GH_API/user" >/dev/null
   curl -fsS -H "$ACCEPT_V3" -H "$API_VER" -H "Authorization: Bearer $GITHUB_TOKEN" "$GH_API/rate_limit" >/dev/null
   ok "Token OK y conectividad confirmada."
@@ -76,7 +71,6 @@ sanity() {
 discover() {
   need_token
   : "${PROJECT_ID:?Falta PROJECT_ID}"
-  log "Descubriendo IDs de Status en Project ($PROJECT_ID)…"
   local Q out FIELD
   Q=$(jq -n --arg id "$PROJECT_ID" '{query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ fields(first:50){ nodes{ __typename ... on ProjectV2SingleSelectField{ id name options{ id name } } } } } } }",variables:{id:$id}}')
   out="$(graphql "$Q")"
@@ -102,9 +96,17 @@ auto() {
   local intent
   intent="$(detect_intent "$u" || true)"
   case "$intent" in
-    INTENT=REFINE_ALL_TODO) exec bash ./scripts/refine_all.sh ;;
-    INTENT=WORK_ALL_TODO)   exec bash ./scripts/work_all.sh ;;
-    *) warn "Intent no reconocido. Frases válidas: 'refinar ...' / 'trabajar ...'"; exit 0 ;;
+    INTENT=REFINE_ALL_TODO)
+      export REFINE_READONLY=1
+      exec bash ./scripts/refine_all.sh
+      ;;
+    INTENT=WORK_ALL_TODO)
+      exec bash ./scripts/work_all.sh
+      ;;
+    *)
+      warn "Intent no reconocido. Frases válidas: 'refinar ...' / 'trabajar ...'"
+      exit 0
+      ;;
   esac
 }
 

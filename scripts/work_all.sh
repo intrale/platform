@@ -27,7 +27,9 @@ rest_patch () { curl -fsS -X PATCH "$1" -H "Authorization: Bearer $GITHUB_TOKEN"
 
 list_todo_items() {
   local Q out
-  Q=$(jq -n --arg id "$PROJECT_ID" '{query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ items(first:100){ nodes{ id content{ __typename ... on Issue{ id number title repository{ name owner{ login } } } } fieldValueByName(name:\"Status\"){ ... on ProjectV2ItemFieldSingleSelectValue{ optionId } } } } } } }",variables:{id:$id}}')
+  Q=$(jq -n --arg id "$PROJECT_ID" '{
+    query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ items(first:100){ nodes{ id content{ __typename ... on Issue{ id number title repository{ name owner{ login } } } } fieldValueByName(name:\"Status\"){ ... on ProjectV2ItemFieldSingleSelectValue{ optionId } } } } } } }",
+    variables:{id:$id}}')
   out="$(graphql "$Q")"
   printf '%s' "$out" | jq -r --arg opt "$STATUS_OPTION_TODO" '
     .data.node.items.nodes[]
@@ -88,11 +90,11 @@ process_issue () { # owner repo num node_id item_id title
   comment_issue "$owner" "$repo" "$num" "codex (trabajo: refinamiento + acciones):\n\n$body" || true
   patch_issue_body "$owner" "$repo" "$num" "$body" || true
 
-  if [[ "$WORK_OPEN_PR" == "1" ]]; then
-    # Rama “lógica” (solo nomenclatura; la creación real de commits queda para el pipeline/agent que corresponda)
-    local branch; branch="$(branch_name "$title" "$num")"
-    # Abrimos PR vacío apuntado a esa rama (suponiendo que exista en remoto por otro proceso/agent); si no existe, GitHub retornará error → lo registramos como comentario pero no rompemos el flujo.
-    local pr_url
+  if [[ "${WORK_OPEN_PR}" == "1" ]]; then
+    # Nota: la creación real de la rama/commits se realiza en otro proceso;
+    # aquí intentamos abrir el PR si la rama ya existe.
+    local branch pr_url
+    branch="$(branch_name "$title" "$num")"
     pr_url="$(open_pr "$owner" "$repo" "$branch" "[auto] $title" "Closes #$num" || echo "")"
     if [[ -n "$pr_url" ]]; then
       comment_issue "$owner" "$repo" "$num" "codex: PR abierto → $pr_url" || true
