@@ -70,7 +70,7 @@ set_status () {
 }
 
 comment_issue () { rest_post "$GH_API/repos/$1/$2/issues/$3/comments" "$(jq -nc --arg b "$4" '{body:$b}')" >/dev/null; }
-patch_issue_body () { rest_patch "$GH_API/repos/$1/$2/issues/$3" "$(jq -nc --arg b "$4" '{body:$b}')" >/devnull; }
+patch_issue_body () { rest_patch "$GH_API/repos/$1/$2/issues/$3" "$(jq -nc --arg b "$4" '{body:$b}')" >/dev/null; }
 
 refinement_template () {
 cat <<'EOF'

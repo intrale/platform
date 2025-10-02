@@ -89,11 +89,14 @@ discover() {
   Q=$(jq -n --arg id "$PROJECT_ID" '{query:"query($id:ID!){ node(id:$id){ ... on ProjectV2{ fields(first:50){ nodes{ __typename ... on ProjectV2SingleSelectField{ id name options{ id name } } } } } } }",variables:{id:$id}}')
   out="$(graphql "$Q")"
   FIELD="$(printf '%s' "$out" | jq -r '.data.node.fields.nodes[] | select(.name=="Status")')"
-  echo "STATUS_FIELD_ID=$(printf '%s' "$FIELD" | jq -r '.id')"
-  echo "STATUS_OPTION_TODO=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Todo\") | .id')"
-  echo "STATUS_OPTION_INPROGRESS=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"In Progress\") | .id')"
-  echo "STATUS_OPTION_READY=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Ready\") | .id')"
-  echo "STATUS_OPTION_BLOCKED=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Blocked\") | .id')"
+  {
+    echo "export STATUS_FIELD_ID=$(printf '%s' "$FIELD" | jq -r '.id')"
+    echo "export STATUS_OPTION_TODO=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Todo\") | .id')"
+    echo "export STATUS_OPTION_INPROGRESS=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"In Progress\") | .id')"
+    echo "export STATUS_OPTION_READY=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Ready\") | .id')"
+    echo "export STATUS_OPTION_BLOCKED=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Blocked\") | .id')"
+  } > .codex_env
+  echo "IDs escritos en .codex_env"
   ok "Listo."
 }
 
@@ -112,6 +115,9 @@ auto() {
   else
     readonly_off
   fi
+
+# si existe .codex_env, cargarlo
+[[ -f .codex_env ]] && source .codex_env
 
   case "$intent" in
     INTENT=REFINE_ALL_TODO)
