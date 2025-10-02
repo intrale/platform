@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INIT_VERSION=2025-10-05 guarded-refine (always read-only in REFINE)
+# INIT_VERSION=2025-10-05 docs-first refine (no RO, path guards, autodiscover)
 set -euo pipefail
 
 GH_API="https://api.github.com"
@@ -7,11 +7,13 @@ ACCEPT_V3="Accept: application/vnd.github.v3+json"
 ACCEPT_GRAPHQL="Content-Type: application/json"
 API_VER="X-GitHub-Api-Version: 2022-11-28"
 
+# Defaults (Docs-first)
 : "${ORG:=intrale}"
 : "${PROJECT_ID:=PVT_kwDOBTzBoc4AyMGf}"
-: "${ENFORCE_READONLY:=1}"
-: "${REFINE_DOCS_OPEN_PR:=1}"
-: "${REFINE_WRITE_DOCS:=0}"
+: "${REFINE_WRITE_DOCS:=1}"       # Docs-first ON
+: "${REFINE_DOCS_OPEN_PR:=1}"     # PR de docs ON
+: "${ENFORCE_READONLY:=0}"        # NO RO en refinamiento
+: "${BATCH_MAX:=10}"
 
 log()  { echo -e "ℹ️  $*"; }
 ok()   { echo -e "✅ $*"; }
@@ -19,38 +21,40 @@ warn() { echo -e "⚠️  $*"; }
 err()  { echo -e "❌ $*" >&2; }
 
 normalize() {
-  tr '[:upper:]' '[:lower:]' | sed     -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g'     -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
+  tr '[:upper:]' '[:lower:]' | sed \
+    -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g' \
+    -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
 }
 
 detect_intent() {
   local utterance norm
   utterance="$*"
   norm="$(printf '%s' "$utterance" | normalize | xargs)"
-  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^refinar todo$'; then
+  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
+     || echo "$norm" | grep -Eq '^refinar todo$'; then
     echo "INTENT=REFINE_ALL_TODO"; return 0
   fi
-  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^trabajar todo$'; then
+  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
+     || echo "$norm" | grep -Eq '^trabajar todo$'; then
     echo "INTENT=WORK_ALL_TODO"; return 0
   fi
   echo "INTENT=UNKNOWN"; return 1
 }
 
 need_token() {
-  if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    err "Falta GITHUB_TOKEN (PAT con scopes: repo, workflow, project, read:org)."
-    exit 1
-  fi
+  [[ -n "${GITHUB_TOKEN:-}" ]] || { err "Falta GITHUB_TOKEN (scopes: repo, project, read:org)"; exit 1; }
 }
 
 graphql() {
   local q="$1"
-  curl -fsS "$GH_API/graphql"     -H "Authorization: Bearer $GITHUB_TOKEN"     -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
+  curl -fsS "$GH_API/graphql" \
+    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
 }
 
 usage() {
   cat <<'EOF'
 Uso:
-  ./init.sh help
   ./init.sh sanity
   ./init.sh intent "frase"
   ./init.sh discover
@@ -63,23 +67,6 @@ sanity() {
   curl -fsS -H "$ACCEPT_V3" -H "$API_VER" -H "Authorization: Bearer $GITHUB_TOKEN" "$GH_API/user" >/dev/null
   curl -fsS -H "$ACCEPT_V3" -H "$API_VER" -H "Authorization: Bearer $GITHUB_TOKEN" "$GH_API/rate_limit" >/dev/null
   ok "Token OK y conectividad confirmada."
-}
-
-readonly_on() {
-  git restore --worktree --staged -q . 2>/dev/null || true
-  git clean -fdxq || true
-  find . -path ./.git -prune -o -type f -exec chmod a-w {} + 2>/dev/null || true
-  find . -path ./.git -prune -o -type d -exec chmod a-w {} + 2>/dev/null || true
-  touch .codex_readonly
-  ok "Protección de solo-lectura ACTIVADA."
-}
-readonly_off() {
-  if [[ -f .codex_readonly ]]; then
-    find . -path ./.git -prune -o -type f -exec chmod u+w {} + 2>/dev/null || true
-    find . -path ./.git -prune -o -type d -exec chmod u+w {} + 2>/dev/null || true
-    rm -f .codex_readonly || true
-    ok "Protección de solo-lectura DESACTIVADA."
-  fi
 }
 
 discover() {
@@ -95,41 +82,47 @@ discover() {
     echo "export STATUS_OPTION_INPROGRESS=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"In Progress\") | .id')"
     echo "export STATUS_OPTION_READY=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Ready\") | .id')"
     echo "export STATUS_OPTION_BLOCKED=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Blocked\") | .id')"
-  } > .codex_env
-  echo "IDs escritos en .codex_env"
-  ok "Listo."
+  } | tee .codex_env >/dev/null
+  ok "IDs escritos en .codex_env"
+}
+
+post_refine_guard() {
+  # Permitir SOLO docs/refinements/**
+  local changed bad
+  changed="$(git status --porcelain | awk '{print $2}')"
+  [[ -z "$changed" ]] && return 0
+  bad="$(echo "$changed" | grep -Ev '^docs/(refinements/|$)' || true)"
+  if [[ -n "$bad" ]]; then
+    echo "❌ Desvío fuera de docs/refinements durante REFINE" >&2
+    echo "$bad" | xargs -r git restore -q --worktree --staged -- || true
+    git clean -fdq || true
+    return 1
+  fi
 }
 
 auto() {
   need_token
   local u="${CODEX_UTTERANCE:-}"
-  if [[ -z "$u" ]]; then
-    warn "No hay CODEX_UTTERANCE; no se ejecuta nada."
-    exit 0
+  [[ -n "$u" ]] || { warn "No hay CODEX_UTTERANCE"; exit 0; }
+
+  # Autodiscover de IDs si falta
+  if [[ ! -f .codex_env ]]; then
+    echo "ℹ️  .codex_env no encontrado, ejecutando discover…"
+    ./init.sh discover || { err "No pude obtener IDs del Project"; exit 1; }
   fi
-  local intent
-  intent="$(detect_intent "$u" || true)"
+  source .codex_env
 
-  if [[ "$ENFORCE_READONLY" == "1" && "$intent" == "INTENT=REFINE_ALL_TODO" ]]; then
-    readonly_on   # SIEMPRE read-only en refinar
-  else
-    readonly_off
-  fi
-
-# si existe .codex_env, cargarlo
-[[ -f .codex_env ]] && source .codex_env
-
+  local intent; intent="$(detect_intent "$u" || true)"
   case "$intent" in
     INTENT=REFINE_ALL_TODO)
-      export REFINE_READONLY=1
-      exec bash ./scripts/refine_all.sh
+      bash ./scripts/refine_all.sh
+      post_refine_guard
       ;;
     INTENT=WORK_ALL_TODO)
-      readonly_off
       exec bash ./scripts/work_all.sh
       ;;
     *)
-      warn "Intent no reconocido. Frases válidas: 'refinar ...' / 'trabajar ...'"
+      warn "Intent no reconocido. Usá: 'refinar …' / 'trabajar …'"
       exit 0
       ;;
   esac
@@ -138,10 +131,9 @@ auto() {
 cmd="${1:-help}"
 shift || true
 case "$cmd" in
-  help) usage ;;
-  sanity) sanity ;;
-  intent) detect_intent "$@" ;;
+  sanity)   sanity ;;
+  intent)   detect_intent "$@" ;;
   discover) discover ;;
-  auto) auto ;;
-  *) warn "Comando desconocido: $cmd"; usage; exit 1 ;;
+  auto)     auto ;;
+  *) usage; exit 1 ;;
 esac
