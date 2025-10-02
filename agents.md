@@ -155,6 +155,10 @@ Cuando se indique que el agente debe **"refinar"**, debe seguir estrictamente es
     - Determinar el estado final del issue: volver a **"Todo"** si permanece como épica contenedora o mover a **"Ready"** si quedó ejecutable y, cuando aplique, se creó el PR correspondiente.
     - Nunca generar archivos `.md` de refinamiento salvo que el issue lo solicite explícitamente.
 
+**Cumplimiento estricto (hard stop):** En `REFINE_ALL_TODO` está **prohibido** editar/crear/borrar archivos, ejecutar linters o “mejoras” de scripts.  
+El entorno puede estar protegido en **solo lectura**; si se detecta la necesidad de tocar código, **no** se modifica el repo.  
+En su lugar, dejar comentario técnico y (opcional) abrir un issue de propuesta.
+
 ---
 
 ##  Fallas educadas en refinamiento

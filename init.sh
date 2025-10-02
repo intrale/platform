@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INIT_VERSION=2025-10-05-router-min
+# INIT_VERSION=2025-10-05-router-readonly
 set -euo pipefail
 
 GH_API="https://api.github.com"
@@ -9,6 +9,7 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 
 : "${ORG:=intrale}"
 : "${PROJECT_ID:=PVT_kwDOBTzBoc4AyMGf}"   # Ajustar si cambia
+: "${ENFORCE_READONLY:=1}"                 # 1 = activar protección automática en 'refinar'
 
 log()  { echo -e "ℹ️  $*"; }
 ok()   { echo -e "✅ $*"; }
@@ -68,6 +69,25 @@ sanity() {
   ok "Token OK y conectividad confirmada."
 }
 
+# --- Protección de solo-lectura (tripwire) ---
+readonly_on() {
+  # restaurar cualquier cambio accidental y bloquear escritura
+  git restore --worktree --staged -q . 2>/dev/null || true
+  git clean -fdxq || true
+  # proteger archivos del árbol de trabajo (excepto .git)
+  find . -type d -name .git -prune -o -type f -exec chmod a-w {} + 2>/dev/null || true
+  touch .codex_readonly
+  ok "Protección de solo-lectura ACTIVADA para esta corrida."
+}
+readonly_off() {
+  # permitir escritura si estaba bloqueado
+  if [[ -f .codex_readonly ]]; then
+    find . -type d -name .git -prune -o -type f -exec chmod u+w {} + 2>/dev/null || true
+    rm -f .codex_readonly || true
+    ok "Protección de solo-lectura DESACTIVADA."
+  fi
+}
+
 discover() {
   need_token
   : "${PROJECT_ID:?Falta PROJECT_ID}"
@@ -95,12 +115,22 @@ auto() {
   fi
   local intent
   intent="$(detect_intent "$u" || true)"
+
+  # Aplicar bloqueo tempranamente si corresponde
+  if [[ "$ENFORCE_READONLY" == "1" && "$intent" == "INTENT=REFINE_ALL_TODO" ]]; then
+    readonly_on
+  else
+    readonly_off
+  fi
+
   case "$intent" in
     INTENT=REFINE_ALL_TODO)
       export REFINE_READONLY=1
       exec bash ./scripts/refine_all.sh
       ;;
     INTENT=WORK_ALL_TODO)
+      # aseguramos permisos de escritura por si quedaron bloqueados de otra corrida
+      readonly_off
       exec bash ./scripts/work_all.sh
       ;;
     *)
