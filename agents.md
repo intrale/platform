@@ -29,6 +29,24 @@ Este documento define la configuración y comportamiento esperado del agente aut
 
 ---
 
+##  Sinónimos y Normalización de Comandos
+
+Para interpretar instrucciones verbales de refinamiento provenientes de humanos, el agente debe aplicar la siguiente normalización antes de decidir qué flujo ejecutar:
+
+- **Normalizar entrada**: convertir todo el texto a minúsculas y eliminar tildes u otros diacríticos antes de evaluar coincidencias.
+- **Variantes aceptadas**: las frases listadas a continuación se consideran equivalentes y deben mapearse internamente al comando `REFINE_ALL_TODO`:
+    - "refinar todas las historias pendientes"
+    - "refinar todas las tareas pendientes"
+    - "refinar todas las issues pendientes"
+    - "refinar todo"
+    - "refinar todas las historias en estado todo"
+- **Expresiones regulares sugeridas**: el agente puede utilizarlas para reconocer las variantes anteriores u otras equivalentes documentadas.
+    - `^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$`
+    - `^refinar todo$`
+- **Tablero por defecto**: si la instrucción no menciona explícitamente un tablero o proyecto, el agente debe asumir el Project v2 `intrale` y operar allí.
+
+---
+
 ##  Gestión del tablero `intrale`
 
 Para mantener la trazabilidad completa en el tablero operativo de la organización, el agente debe cumplir con las siguientes
@@ -115,22 +133,65 @@ Siempre que la ejecución de una tarea involucre cambios en el código fuente o 
 Cuando se indique que el agente debe **"refinar"**, debe seguir estrictamente este flujo:
 
 1. Revisar el issue que se intenta refinar.
-2. **Antes de cualquier otra acción**, el agente debe intentar mover el issue a la columna **"In Progress"**.
-3. Si no puede moverlo por cualquier motivo (permisos insuficientes, error interno, inconsistencias), debe:
+2. Asegurar que el issue esté agregado al Project v2 `intrale`; si no lo está, agregarlo antes de continuar.
+3. **Antes de cualquier otra acción**, mover el issue a la columna **"In Progress"**.
+4. Si no puede moverlo por cualquier motivo (permisos insuficientes, error interno, inconsistencias), debe:
     - Mover el issue a la columna **"Blocked"** inmediatamente.
     - Comentar en el issue indicando:
         - Motivo técnico detallado del fallo.
         - Stacktrace o mensaje de error recibido, si aplica.
-4. Solo si logra mover el issue a **"In Progress"**:
+        - Pistas concretas para resolver el inconveniente.
+5. Solo si logra mover el issue a **"In Progress"**:
     - Evaluar el título y la descripción para determinar viabilidad.
     - Analizar el issue a detalle y seguir la "Estructura de Issues Generadas Automáticamente":
-        - Indicar de forma clara y **técnica** el **nombre exacto** de los componentes, clases, funciónes o endpoints involucrados.
-        - Para determinar componentes a crear, logica de negocio, pruebas unitarias, pruebas de integracion, documentacion y todo lo necesarios para cumplir con la funcionalidad, utilizar la estructura del workspace y el código fuente existente.
+        - Indicar de forma clara y **técnica** el **nombre exacto** de los componentes, clases, funciones o endpoints involucrados.
+        - Para determinar componentes a crear, lógica de negocio, pruebas unitarias, pruebas de integración, documentación y todo lo necesario para cumplir con la funcionalidad, utilizar la estructura del workspace y el código fuente existente.
         - Incluir las **rutas completas** dentro del workspace para ubicar los componentes (por ejemplo: `/workspace/platform/users/src/domain/usecase/RegisterUserUseCase.kt`).
         - No deben dejarse referencias genéricas ni vagas como "el controlador de usuarios".
-        - Redactar la descripción utilizando la estructura estándar definida en la sección ** Estructura de Issues Generadas Automáticamente**.
+        - Redactar la descripción utilizando la estructura estándar definida en la sección **Estructura de Issues Generadas Automáticamente**.
     - Agregar detalle para pruebas, documentación y configuración si corresponde.
-    - Mover el issue a **"Todo"**.
+    - Publicar un **comentario** en el issue usando la **Plantilla estándar de refinamiento** y, a continuación, realizar un **PATCH** del **body** del issue con el mismo contenido (merge no destructivo).
+    - Determinar el estado final del issue: volver a **"Todo"** si permanece como épica contenedora o mover a **"Ready"** si quedó ejecutable y, cuando aplique, se creó el PR correspondiente.
+    - Nunca generar archivos `.md` de refinamiento salvo que el issue lo solicite explícitamente.
+
+---
+
+##  Fallas educadas en refinamiento
+
+- Ante cualquier error técnico (tokens inválidos, IDs inexistentes, permisos insuficientes o respuestas HTTP/GraphQL con fallos), mover el issue a **"Blocked"** utilizando los IDs documentados.
+- Registrar un comentario detallando el endpoint involucrado, el código de respuesta, el mensaje de error y una pista clara para corregirlo.
+- Detener el flujo automatizado hasta que un humano resuelva el inconveniente; nunca finalizar en silencio.
+
+---
+
+##  Idempotencia y procesamiento por lotes
+
+- Antes de iniciar un refinamiento masivo, verificar si cada issue ya fue refinado (presencia de etiqueta `refinado` o body con las secciones estándar) y, de ser así, omitirlo sin error.
+- Procesar issues en lotes de **10 a 20 elementos** como máximo por ejecución para evitar timeouts y mantener trazabilidad.
+- Documentar en el comentario final cuántos items fueron procesados en la corrida.
+
+---
+
+##  Plantilla estándar de refinamiento
+
+Utilizar el siguiente texto, sin modificaciones estructurales, tanto para el comentario como para el PATCH del body del issue:
+
+```
+## Objetivo
+- <describir el objetivo del refinamiento>
+
+## Contexto
+- <resumir el estado actual y antecedentes relevantes>
+
+## Cambios requeridos
+- <enumerar acciones concretas, componentes y rutas de archivos>
+
+## Criterios de aceptación
+- <listar criterios verificables que permitirán dar por cerrada la tarea>
+
+## Notas técnicas
+- <agregar decisiones técnicas, riesgos, dependencias y pruebas sugeridas>
+```
 
 ---
 
@@ -172,7 +233,7 @@ Cuando el agente genera o actualiza documentación, debe:
     - Actualizar documentos existentes si están dentro del directorio indicado.
 
 3. **Restricciones:**
-    -  **No debe modificar** el archivo `agents.md` bajo ninguna circunstancia.
+    -  **No debe modificar** el archivo `agents.md` salvo que un issue lo solicite explícitamente.
     -  No debe ejecutar pruebas unitarias si la tarea es exclusivamente de documentación.
 
 4. **Buenas prácticas al documentar:**
