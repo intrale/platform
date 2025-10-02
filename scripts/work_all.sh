@@ -20,6 +20,9 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${PR_BASE:=main}"
 BATCH_MAX="${BATCH_MAX:-10}"
 
+: "${WORK_USE_REFINEMENT_DOC:=1}"
+: "${WORK_REQUIRE_REFINEMENT:=0}"
+
 graphql () { curl -fsS "$GH_API/graphql" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$1"; }
 rest_post () { curl -fsS -X POST "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_V3" -H "$API_VER" -d "$2"; }
 
@@ -43,6 +46,25 @@ open_pr () { # owner repo head_branch title body
   rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$4" --arg h "$3" --arg b "$5" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')" | jq -r '.html_url'
 }
 
+
+find_refinement_md () { # num -> path or empty
+  local num="$1"
+  ls -1 docs/refinements/issue-"${num}"-*.md 2>/dev/null | head -n1 || true
+}
+
+compose_pr_body () { # num -> string
+  local num="$1" md body
+  if [[ "${WORK_USE_REFINEMENT_DOC}" == "1" ]]; then
+    md="$(find_refinement_md "$num" || true)"
+    if [[ -n "$md" && -f "$md" ]]; then
+      PR_TITLE_SUFFIX="[uses-refinement]"
+      body="Closes #${num}\n\n---\n**Refinamiento**: \`${md}\`\n\n$(sed -e 's/\r$//' "$md")"
+      printf "%s" "$body"
+      return 0
+    fi
+  fi
+  printf "Closes #%s" "$num"
+}
 branch_name () {
   local title="$1" num="$2"
   local slug
@@ -63,7 +85,8 @@ process_issue () {
   if [[ "${WORK_OPEN_PR}" == "1" ]]; then
     local branch pr_url
     branch="$(branch_name "$title" "$num")"
-    pr_url="$(open_pr "$owner" "$repo" "$branch" "[auto] $title" "Closes #$num" || echo "")"
+    pr_body="$(compose_pr_body "$num")"
+    pr_url="$(open_pr "$owner" "$repo" "$branch" "[auto] $title" "$pr_body" || echo "")"
     if [[ -n "$pr_url" ]]; then
       [[ -n "${STATUS_OPTION_READY}" ]] && set_status "$item_id" "$STATUS_OPTION_READY" || true
       return 0
