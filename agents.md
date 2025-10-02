@@ -512,3 +512,42 @@ curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITH
   - Detener el flujo automatizado hasta que un humano resuelva el inconveniente.
 - Evitar mensajes genéricos; toda falla debe dejar trazabilidad reproducible en el issue.
 
+## Router de Intenciones (Lenguaje natural → Acciones)
+
+> Normalizar entrada: lowercase + sin tildes.
+
+### Intent: REFINE_ALL_TODO
+**Frases equivalentes (regex):**
+- `^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$`
+- `^refinar todo$`
+
+**Plan de ejecución:**
+1. `./init.sh sanity`
+2. `./init.sh discover`
+3. `CODEX_UTTERANCE="$UTTERANCE" ./init.sh auto`  
+   (autodespacha a `scripts/refine_all.sh`)
+
+**Reglas:**
+- Refinar **siempre dentro del issue** (comentario + PATCH del body).
+- Estados: `Todo` → `In Progress` → (refina) → `Todo` (o `Ready` si así se requiere).
+- Falla educada: si falta token/ID/permiso → mover a `Blocked` + comentar error técnico.
+
+---
+
+### Intent: WORK_ALL_TODO
+**Frases equivalentes (regex):**
+- `^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$`
+- `^trabajar todo$`
+
+**Plan de ejecución:**
+1. `./init.sh sanity`
+2. `./init.sh discover`
+3. `CODEX_UTTERANCE="$UTTERANCE" ./init.sh auto`  
+   (autodespacha a `scripts/work_all.sh`)
+
+**Reglas adicionales:**
+- Igual que *refinar* + (opcional) **abrir rama/PR** si `WORK_OPEN_PR=1`.
+- PR no hace merge automático.
+- Dejar en `Ready` si el issue queda ejecutable y/o con PR abierto.
+
+> Tablero por defecto: Project v2 “intrale” si no se menciona explícitamente.
