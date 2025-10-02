@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INIT_VERSION=2025-10-05-router-readonly
+# INIT_VERSION=2025-10-05 router+readonly+docs-snapshot (PRs default ON)
 set -euo pipefail
 
 GH_API="https://api.github.com"
@@ -10,6 +10,8 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${ORG:=intrale}"
 : "${PROJECT_ID:=PVT_kwDOBTzBoc4AyMGf}"   # Ajustar si cambia
 : "${ENFORCE_READONLY:=1}"                 # 1 = activar protección automática en 'refinar'
+: "${REFINE_DOCS_OPEN_PR:=1}"              # por defecto, abrir PR al generar snapshot de docs
+: "${REFINE_WRITE_DOCS:=1}"                # 1 para habilitar snapshots a docs/refinements
 
 log()  { echo -e "ℹ️  $*"; }
 ok()   { echo -e "✅ $*"; }
@@ -17,21 +19,17 @@ warn() { echo -e "⚠️  $*"; }
 err()  { echo -e "❌ $*" >&2; }
 
 normalize() {
-  tr '[:upper:]' '[:lower:]' | sed \
-    -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g' \
-    -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
+  tr '[:upper:]' '[:lower:]' | sed     -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g'     -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
 }
 
 detect_intent() {
   local utterance norm
   utterance="$*"
   norm="$(printf '%s' "$utterance" | normalize | xargs)"
-  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
-     || echo "$norm" | grep -Eq '^refinar todo$'; then
+  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^refinar todo$'; then
     echo "INTENT=REFINE_ALL_TODO"; return 0
   fi
-  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
-     || echo "$norm" | grep -Eq '^trabajar todo$'; then
+  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^trabajar todo$'; then
     echo "INTENT=WORK_ALL_TODO"; return 0
   fi
   echo "INTENT=UNKNOWN"; return 1
@@ -46,9 +44,7 @@ need_token() {
 
 graphql() {
   local q="$1"
-  curl -fsS "$GH_API/graphql" \
-    -H "Authorization: Bearer $GITHUB_TOKEN" \
-    -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
+  curl -fsS "$GH_API/graphql"     -H "Authorization: Bearer $GITHUB_TOKEN"     -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
 }
 
 usage() {
@@ -88,7 +84,6 @@ readonly_off() {
   fi
 }
 
-
 discover() {
   need_token
   : "${PROJECT_ID:?Falta PROJECT_ID}"
@@ -117,20 +112,23 @@ auto() {
   local intent
   intent="$(detect_intent "$u" || true)"
 
-  # Aplicar bloqueo tempranamente si corresponde
+  # En refine: solo-lectura por defecto, salvo que pidamos snapshot en docs
   if [[ "$ENFORCE_READONLY" == "1" && "$intent" == "INTENT=REFINE_ALL_TODO" ]]; then
-    readonly_on
+    if [[ "${REFINE_WRITE_DOCS:-0}" == "1" ]]; then
+      readonly_off   # vamos a escribir SOLO en docs/refinements (guardas en refine_all.sh)
+    else
+      readonly_on
+    fi
   else
     readonly_off
   fi
 
   case "$intent" in
     INTENT=REFINE_ALL_TODO)
-      export REFINE_READONLY=1
+      export REFINE_READONLY=$(( "${REFINE_WRITE_DOCS:-0}" == "1" ? 0 : 1 ))
       exec bash ./scripts/refine_all.sh
       ;;
     INTENT=WORK_ALL_TODO)
-      # aseguramos permisos de escritura por si quedaron bloqueados de otra corrida
       readonly_off
       exec bash ./scripts/work_all.sh
       ;;

@@ -580,3 +580,9 @@ curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITH
 - `Todo → In Progress → (comentario + PATCH del body) → Todo/Ready`
 - Nunca PR. Nunca commit.
 
+# Addendum: Snapshots de refinamiento en `docs/` (opt-in)
+- Por defecto, los refinamientos viven **solo dentro del issue** (comentario + PATCH del body).
+- Si `REFINE_WRITE_DOCS=1`, además se genera un archivo Markdown en `docs/refinements/issue-<n>-<slug>.md` con el mismo contenido del refinamiento.
+- **Por defecto** (`REFINE_DOCS_OPEN_PR=1`) se abre un PR `[auto][docs] Refinamiento #<n>` con ese archivo (sin merge automático).
+- El bot **no** debe escribir fuera de `docs/refinements/` durante el refinamiento.
+- **BATCH_MAX por defecto: 10** (configurable).

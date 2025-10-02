@@ -51,8 +51,7 @@ comment_issue () { rest_post "$GH_API/repos/$1/$2/issues/$3/comments" "$(jq -nc 
 patch_issue_body () { rest_patch "$GH_API/repos/$1/$2/issues/$3" "$(jq -nc --arg b "$4" '{body:$b}')" >/dev/null; }
 
 open_pr () { # owner repo head_branch title body
-  rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$4" --arg h "$3" --arg b "$5" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')" \
-    | jq -r '.html_url'
+  rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$4" --arg h "$3" --arg b "$5" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')"     | jq -r '.html_url'
 }
 
 refinement_template () {
@@ -78,7 +77,7 @@ cat <<'EOF'
 EOF
 }
 
-branch_name () { # slug a partir del título + número
+branch_name () {
   local title="$1" num="$2"
   local slug
   slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' )"
@@ -86,8 +85,7 @@ branch_name () { # slug a partir del título + número
   printf 'feature/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
 }
 
-
-process_issue () { # owner repo num node_id item_id title
+process_issue () {
   local owner="$1" repo="$2" num="$3" node_id="$4" item_id="$5" title="$6"
   [[ -z "$item_id" || "$item_id" == "null" ]] && item_id="$(add_to_project "$node_id" || true)"
 
@@ -98,12 +96,12 @@ process_issue () { # owner repo num node_id item_id title
   fi
 
   local body; body="$(refinement_template)"
-  comment_issue "$owner" "$repo" "$num" "codex (trabajo: refinamiento + acciones):\n\n$body" || true
+  comment_issue "$owner" "$repo" "$num" "codex (trabajo: refinamiento + acciones):
+
+$body" || true
   patch_issue_body "$owner" "$repo" "$num" "$body" || true
 
   if [[ "${WORK_OPEN_PR}" == "1" ]]; then
-    # Nota: la creación real de la rama/commits se realiza en otro proceso;
-    # aquí intentamos abrir el PR si la rama ya existe.
     local branch pr_url
     branch="$(branch_name "$title" "$num")"
     pr_url="$(open_pr "$owner" "$repo" "$branch" "[auto] $title" "Closes #$num" || echo "")"
@@ -114,7 +112,6 @@ process_issue () { # owner repo num node_id item_id title
     fi
   fi
 
-  # Sin PR o fallo abriendo PR → dejar en Todo por defecto
   set_status "$item_id" "$STATUS_OPTION_TODO" || true
   comment_issue "$owner" "$repo" "$num" "codex: trabajo aplicado (refinamiento). Estado por defecto → **Todo**." || true
 }
