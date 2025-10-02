@@ -20,7 +20,7 @@ STATUS_OPTION_INPROGRESS="${STATUS_OPTION_INPROGRESS:-}"
 STATUS_OPTION_READY="${STATUS_OPTION_READY:-}"
 STATUS_OPTION_DONE="${STATUS_OPTION_DONE:-}"
 STATUS_OPTION_BLOCKED="${STATUS_OPTION_BLOCKED:-}"
-BATCH_MAX="${BATCH_MAX:-20}"
+BATCH_MAX="${BATCH_MAX:-10}"
 
 AUTHORIZATION_HEADER=""
 
@@ -365,6 +365,55 @@ find_project_item_id() {
   jq -r --arg project "$PROJECT_ID" '.data.node.projectItems.nodes[] | select(.project.id == $project) | .id' <<<"$body"
 }
 
+fetch_todo_items() {
+  require_env PROJECT_ID STATUS_FIELD_ID STATUS_OPTION_TODO
+
+  local query='query($project:ID!,$cursor:String){node(id:$project){... on ProjectV2{items(first:50,after:$cursor){nodes{id content{__typename ... on Issue{id number title url repository{name owner{login}}}} fieldValues(first:20){nodes{__typename ... on ProjectV2ItemFieldSingleSelectValue{optionId field{... on ProjectV2FieldCommon{id}}}}}} pageInfo{endCursor hasNextPage}}}}}'
+
+  local cursor=""
+  local variables body has_next end_cursor
+
+  while :; do
+    if [ -n "$cursor" ]; then
+      variables="$(jq -cn --arg project "$PROJECT_ID" --arg cursor "$cursor" '{project:$project, cursor:$cursor}')"
+    else
+      variables="$(jq -cn --arg project "$PROJECT_ID" '{project:$project, cursor:null}')"
+    fi
+
+    if ! body="$(graphql "$query" "$variables")"; then
+      return 1
+    fi
+
+    local node_exists
+    node_exists="$(jq -r '.data.node | type' <<<"$body" 2>/dev/null || echo "null")"
+    if [ "$node_exists" = "null" ]; then
+      log_error "El Project especificado ($PROJECT_ID) no está disponible o no es accesible."
+      return 1
+    fi
+
+    jq -r \
+      --arg status_field "$STATUS_FIELD_ID" \
+      --arg status_option "$STATUS_OPTION_TODO" \
+      '(.data.node.items.nodes // [])[]
+        | select(.content.__typename == "Issue")
+        | select(any((.fieldValues.nodes // [])[]?; .__typename == "ProjectV2ItemFieldSingleSelectValue" and .field.id == $status_field and .optionId == $status_option))
+        | [.content.repository.owner.login, .content.repository.name, (.content.number | tostring), .content.id, .id]
+        | @tsv' <<<"$body"
+
+    has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage // false' <<<"$body")"
+    if [ "$has_next" != "true" ]; then
+      break
+    fi
+
+    end_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' <<<"$body")"
+    if [ -z "$end_cursor" ]; then
+      break
+    fi
+
+    cursor="$end_cursor"
+  done
+}
+
 set_status() {
   local item_id="$1"
   local option_id="$2"
@@ -586,6 +635,49 @@ refine_batch() {
   log_info "Total procesado: $processed issues."
 }
 
+refine_all_todo() {
+  sanity_checks
+
+  require_env STATUS_OPTION_INPROGRESS STATUS_OPTION_BLOCKED
+
+  local -a items
+  if ! mapfile -t items < <(fetch_todo_items); then
+    log_error "No fue posible obtener las historias en estado Todo."
+    exit 1
+  fi
+
+  if [ "${#items[@]}" -eq 0 ]; then
+    log_info "No se encontraron historias pendientes en estado Todo."
+    return 0
+  fi
+
+  log_info "Se encontraron ${#items[@]} historias en Todo. Se procesarán hasta $BATCH_MAX elementos."
+
+  local processed=0
+  local line
+  for line in "${items[@]}"; do
+    IFS=$'\t' read -r owner repo number node_id item_id <<<"$line"
+
+    if [ -z "$owner" ] || [ -z "$repo" ] || [ -z "$number" ] || [ -z "$node_id" ]; then
+      log_warn "Se omitió una entrada incompleta: $line"
+      continue
+    fi
+
+    process_issue "$owner" "$repo" "$number" "$node_id" "$item_id"
+    processed=$((processed + 1))
+
+    if [ "$processed" -ge "$BATCH_MAX" ]; then
+      log_warn "Se alcanzó el límite BATCH_MAX=$BATCH_MAX."
+      break
+    fi
+  done
+
+  log_info "Total procesado automáticamente: $processed issues."
+  if [ "$processed" -lt "${#items[@]}" ]; then
+    log_warn "Quedaron pendientes $(( ${#items[@]} - processed )) issues para próximas ejecuciones."
+  fi
+}
+
 print_help() {
   cat <<'HELP'
 Uso: ./init.sh [comando]
@@ -595,6 +687,7 @@ Comandos disponibles:
   sanity               Ejecuta las verificaciones de token y conectividad (/user, /rate_limit).
   intent "frase"       Detecta el intent principal a partir de una frase libre.
   discover             Obtiene STATUS_FIELD_ID y optionId del campo Status del Project v2.
+  refine-all           Obtiene automáticamente las historias en Todo y ejecuta el refinamiento por lotes.
   refine-batch <tsv>   Procesa un lote de issues en formato TSV (columnas: owner, repo, number, node_id, item_id).
   help                 Muestra esta ayuda.
 
@@ -603,7 +696,7 @@ Variables relevantes:
   PROJECT_ID           ID del Project v2 a utilizar.
   STATUS_FIELD_ID      ID del campo Status (descubierto automáticamente con discover).
   STATUS_OPTION_*      optionId correspondientes a cada estado (BACKLOG, TODO, INPROGRESS, READY, DONE, BLOCKED).
-  BATCH_MAX            Máximo de issues por ejecución de refine-batch (default: 20).
+  BATCH_MAX            Máximo de issues por ejecución de refine-batch/refine-all (default: 10).
 HELP
 }
 
@@ -627,6 +720,9 @@ main() {
       ;;
     discover)
       discover_status_options
+      ;;
+    refine-all)
+      refine_all_todo
       ;;
     refine-batch)
       if [ $# -lt 1 ]; then
