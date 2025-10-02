@@ -19,10 +19,11 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${WORK_OPEN_PR:=0}"   # 1 para habilitar PRs
 : "${PR_BASE:=main}"
 
-BATCH_MAX="${BATCH_MAX:-20}"
+BATCH_MAX="${BATCH_MAX:-10}"
 
 # --- Desbloqueo por si el init dejó el repo en solo-lectura ---
 if [[ -f .codex_readonly ]]; then
+  find . -type d -name .git -prune -o -type d -exec chmod u+w {} + 2>/dev/null || true
   find . -type d -name .git -prune -o -type f -exec chmod u+w {} + 2>/dev/null || true
   rm -f .codex_readonly || true
 fi
@@ -79,8 +80,12 @@ EOF
 
 branch_name () { # slug a partir del título + número
   local title="$1" num="$2"
-  printf 'feature/issue-%s-%s' "$num" "$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*\|-*$//g' | cut -c1-40)"
+  local slug
+  slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' )"
+  slug="$(echo "$slug" | sed 's/^-*//; s/-*$//')"
+  printf 'feature/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
 }
+
 
 process_issue () { # owner repo num node_id item_id title
   local owner="$1" repo="$2" num="$3" node_id="$4" item_id="$5" title="$6"

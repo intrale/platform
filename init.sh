@@ -71,22 +71,23 @@ sanity() {
 
 # --- Protección de solo-lectura (tripwire) ---
 readonly_on() {
-  # restaurar cualquier cambio accidental y bloquear escritura
   git restore --worktree --staged -q . 2>/dev/null || true
   git clean -fdxq || true
-  # proteger archivos del árbol de trabajo (excepto .git)
-  find . -type d -name .git -prune -o -type f -exec chmod a-w {} + 2>/dev/null || true
+  # Bloquear archivos y directorios (excluyendo .git)
+  find . -path ./.git -prune -o -type f -exec chmod a-w {} + 2>/dev/null || true
+  find . -path ./.git -prune -o -type d -exec chmod a-w {} + 2>/dev/null || true
   touch .codex_readonly
-  ok "Protección de solo-lectura ACTIVADA para esta corrida."
+  ok "Protección de solo-lectura ACTIVADA (archivos y directorios)."
 }
 readonly_off() {
-  # permitir escritura si estaba bloqueado
   if [[ -f .codex_readonly ]]; then
-    find . -type d -name .git -prune -o -type f -exec chmod u+w {} + 2>/dev/null || true
+    find . -path ./.git -prune -o -type f -exec chmod u+w {} + 2>/dev/null || true
+    find . -path ./.git -prune -o -type d -exec chmod u+w {} + 2>/dev/null || true
     rm -f .codex_readonly || true
     ok "Protección de solo-lectura DESACTIVADA."
   fi
 }
+
 
 discover() {
   need_token

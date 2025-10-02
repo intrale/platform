@@ -16,7 +16,7 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${STATUS_OPTION_INPROGRESS:?Falta STATUS_OPTION_INPROGRESS}"
 : "${STATUS_OPTION_BLOCKED:?Falta STATUS_OPTION_BLOCKED}"
 
-BATCH_MAX="${BATCH_MAX:-20}"
+BATCH_MAX="${BATCH_MAX:-10}"
 
 # ---- Guard REPO READ-ONLY para 'refinar' ----
 if [[ "${REFINE_READONLY:-1}" == "1" ]]; then
@@ -35,6 +35,7 @@ graphql () {
 
 rest_post () { curl -fsS -X POST "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_V3" -H "$API_VER" -d "$2"; }
 rest_patch () { curl -fsS -X PATCH "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_V3" -H "$API_VER" -d "$2"; }
+rest_get () { curl -fsS "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_V3" -H "$API_VER"; }
 
 list_todo_items() {
   # Lista items del Project con Status == Todo (owner/repo/number/node_id/item_id) como TSV
@@ -112,11 +113,26 @@ process_issue () { # owner repo num issue_node_id item_id
   local owner="$1" repo="$2" num="$3" node_id="$4" item_id="$5"
   [[ -z "$item_id" || "$item_id" == "null" ]] && item_id="$(add_to_project "$node_id" || true)"
 
+
   if ! set_status "$item_id" "$STATUS_OPTION_INPROGRESS"; then
     comment_issue "$owner" "$repo" "$num" "codex: no pude mover a **In Progress**. Marco **Blocked**. Verificá IDs/permiso."
     set_status "$item_id" "$STATUS_OPTION_BLOCKED" || true
     return 1
   fi
+
+    # Idempotencia: omitir si el body ya tiene la plantilla estándar
+    local issue_json body_text
+    issue_json="$(rest_get "$GH_API/repos/$owner/$repo/issues/$num")" || true
+    body_text="$(echo "$issue_json" | jq -r '.body // ""')"
+    if echo "$body_text" | grep -qiE '^## Objetivo' && \
+       echo "$body_text" | grep -qiE '^## Contexto' && \
+       echo "$body_text" | grep -qiE '^## Cambios requeridos' && \
+       echo "$body_text" | grep -qiE '^## Criterios de aceptación' && \
+       echo "$body_text" | grep -qiE '^## Notas técnicas'; then
+      comment_issue "$owner" "$repo" "$num" "codex: ya estaba refinado previamente. Omito para no duplicar contenido." || true
+      set_status "$item_id" "$STATUS_OPTION_TODO" || true
+      return 0
+    fi
 
   local body; body="$(refinement_template)"
   comment_issue "$owner" "$repo" "$num" "codex (refinamiento):\n\n$body" || true

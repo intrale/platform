@@ -118,7 +118,7 @@ Siempre que la ejecución de una tarea involucre cambios en el código fuente o 
     - Realizar un pull de la rama para asegurarse de que está actualizada.
     - Traer los últimos cambios de la rama `main` del repositorio.
     - Asegurarse de que la rama local esté limpia, sin conflictos y que compile.
-    - Forzar la creación del Pull Request nuevamente.
+    - - Reintentar **una sola vez** la creación del Pull Request (con backoff breve) y registrar el error en el issue.
 5. Si el PR se crea correctamente:
     - Comentar en el issue ejecutado indicando:
         - Qué se hizo.
@@ -172,7 +172,7 @@ En su lugar, dejar comentario técnico y (opcional) abrir un issue de propuesta.
 ##  Idempotencia y procesamiento por lotes
 
 - Antes de iniciar un refinamiento masivo, verificar si cada issue ya fue refinado (presencia de etiqueta `refinado` o body con las secciones estándar) y, de ser así, omitirlo sin error.
-- Procesar issues en lotes de **10 a 20 elementos** como máximo por ejecución para evitar timeouts y mantener trazabilidad.
+- Procesar issues en lotes de **10 elementos** como máximo por ejecución para evitar timeouts y mantener trazabilidad.
 - Documentar en el comentario final cuántos items fueron procesados en la corrida.
 
 ---
@@ -453,7 +453,7 @@ curl -sS -X POST https://api.github.com/graphql \
   -H "Authorization: Bearer $GITHUB_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "query":"query($project:ID!){node(id:$project){... on ProjectV2{fields(first:20){nodes{... on ProjectV2FieldCommon{name id ... on ProjectV2SingleSelectField{options{ id name }}}}}}}}",
+    "query":"query($project:ID!){node(id:$project){... on ProjectV2{fields(first:10){nodes{... on ProjectV2FieldCommon{name id ... on ProjectV2SingleSelectField{options{ id name }}}}}}}}",
     "variables":{"project":"'"$PROJECT_ID"'"}
   }'
 ```
