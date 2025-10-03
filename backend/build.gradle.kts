@@ -1,3 +1,6 @@
+import java.io.InputStream
+import java.net.URL
+
 val artifactId = "backend"
 group = "ar.com.intrale"
 
@@ -14,7 +17,6 @@ kotlin {
 application {
     mainClass.set("$group.ApplicationKt")
 }
-
 
 dependencies {
     implementation(libs.ktor.server.core)
@@ -45,6 +47,12 @@ dependencies {
     implementation(libs.cognito.identity)
     implementation(libs.secretsmanager)
 
+    // DynamoDB
+    implementation(libs.aws.sdk.dynamodb)
+    implementation(libs.aws.sdk.dynamodb.enhanced)
+    implementation(libs.aws.sdk.regions)
+    implementation(libs.aws.sdk.auth)
+
     // serialization
     implementation(libs.kotlinx.serialization.json)
 
@@ -62,4 +70,39 @@ dependencies {
     implementation(libs.java.jwt)
     implementation(libs.jwks.rsa)
 
+}
+
+val dynamodbLocalDir = layout.buildDirectory.dir("dynamodb-local-libs")
+val dynamodbLocalLibDir = dynamodbLocalDir.map { it.dir("DynamoDBLocal_lib") }
+val dynamodbLocalArchive = layout.buildDirectory.file("dynamodb-local/dynamodb_local_latest.tar.gz")
+
+val downloadDynamoDbLocal by tasks.registering {
+    outputs.file(dynamodbLocalArchive)
+    doLast {
+        val archiveFile = dynamodbLocalArchive.get().asFile
+        if (!archiveFile.exists()) {
+            archiveFile.parentFile.mkdirs()
+            val url = URL("https://dynamodb-local.s3.amazonaws.com/dynamodb_local_latest.tar.gz")
+            url.openStream().use { input: InputStream ->
+                archiveFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+    }
+}
+
+val prepareDynamoDbLocal by tasks.registering(Sync::class) {
+    dependsOn(downloadDynamoDbLocal)
+    from(tarTree(resources.gzip(dynamodbLocalArchive)))
+    into(dynamodbLocalDir)
+    include("DynamoDBLocal.jar")
+    include("DynamoDBLocal_lib/**")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(prepareDynamoDbLocal)
+    systemProperty("sqlite4java.library.path", dynamodbLocalLibDir.get().asFile.absolutePath)
+    systemProperty("dynamodbLocalDir", dynamodbLocalDir.get().asFile.absolutePath)
 }
