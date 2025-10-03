@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INIT_VERSION=2025-10-05 docs-first refine/work (autodiscover + jq fixes)
+# INIT_VERSION=2025-10-05 docs-first refine/work (autodiscover + jq fixes) + graceful usage
 set -euo pipefail
 
 GH_API="https://api.github.com"
@@ -20,17 +20,21 @@ warn() { echo -e "⚠️  $*"; }
 err()  { echo -e "❌ $*" >&2; }
 
 normalize() {
-  tr '[:upper:]' '[:lower:]' | sed     -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g'     -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
+  tr '[:upper:]' '[:lower:]' | sed \
+    -e 's/[áàä]/a/g' -e 's/[éèë]/e/g' -e 's/[íìï]/i/g' \
+    -e 's/[óòö]/o/g' -e 's/[úùü]/u/g' -e 's/ñ/n/g'
 }
 
 detect_intent() {
   local utterance norm
   utterance="$*"
   norm="$(printf '%s' "$utterance" | normalize | xargs)"
-  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^refinar todo$'; then
+  if echo "$norm" | grep -Eq '^refinar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
+     || echo "$norm" | grep -Eq '^refinar todo$'; then
     echo "INTENT=REFINE_ALL_TODO"; return 0
   fi
-  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$'      || echo "$norm" | grep -Eq '^trabajar todo$'; then
+  if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?( en (estado )?todo)?( del tablero( intrale)?)?$' \
+     || echo "$norm" | grep -Eq '^trabajar todo$'; then
     echo "INTENT=WORK_ALL_TODO"; return 0
   fi
   echo "INTENT=UNKNOWN"; return 1
@@ -42,7 +46,9 @@ need_token() {
 
 graphql() {
   local q="$1"
-  curl -fsS "$GH_API/graphql"     -H "Authorization: Bearer $GITHUB_TOKEN"     -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
+  curl -fsS "$GH_API/graphql" \
+    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$q"
 }
 
 usage() {
@@ -53,6 +59,8 @@ Uso:
   ./init.sh discover
   ./init.sh auto
 EOF
+  # Importante: salimos con 0 para no romper la configuración del runner
+  exit 0
 }
 
 sanity() {
@@ -125,12 +133,12 @@ auto() {
   esac
 }
 
-cmd="${1:-help}"
+cmd="${1:-usage}"
 shift || true
 case "$cmd" in
   sanity)   sanity ;;
   intent)   detect_intent "$@" ;;
   discover) discover ;;
   auto)     auto ;;
-  *) usage; exit 1 ;;
+  *)        usage ;;
 esac

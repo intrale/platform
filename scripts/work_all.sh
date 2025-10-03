@@ -59,7 +59,6 @@ branch_name () {
   printf 'feature/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
 }
 
-# Busca el .md de refinamiento en docs/refinements (variantes por si el runner cambia cwd)
 find_refinement_md () { # num -> path or empty
   local num="$1" cand
   shopt -s nullglob
@@ -104,7 +103,6 @@ process_issue () {
     return 1
   fi
 
-  # Si exigís refinamiento previo
   if [[ "${WORK_REQUIRE_REFINEMENT}" == "1" ]]; then
     if ! find_refinement_md "$num" >/dev/null 2>&1; then
       set_status "$item_id" "$STATUS_OPTION_BLOCKED" || true
