@@ -16,7 +16,7 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${STATUS_OPTION_READY:=}"
 : "${STATUS_OPTION_BLOCKED:?Falta STATUS_OPTION_BLOCKED}"
 
-: "${WORK_OPEN_PR:=1}"
+: "${WORK_OPEN_PR:=1}"            # SIEMPRE PR
 : "${PR_BASE:=main}"
 BATCH_MAX="${BATCH_MAX:-10}"
 
@@ -25,7 +25,6 @@ BATCH_MAX="${BATCH_MAX:-10}"
 
 graphql () { curl -fsS "$GH_API/graphql" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$1"; }
 rest_post () { curl -fsS -X POST "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_V3" -H "$API_VER" -d "$2"; }
-
 issue_comment () { rest_post "$GH_API/repos/$1/$2/issues/$3/comments" "$(jq -nc --arg b "$4" '{body:$b}')" >/dev/null; }
 
 list_todo_items() {
@@ -35,23 +34,14 @@ list_todo_items() {
     variables:{id:$id}}')
   out="$(graphql "$Q")"
   printf '%s' "$out" | jq -r --arg opt "$STATUS_OPTION_TODO" '
-    .data.node.items.nodes[] | select(.fieldValueByName.optionId==$opt)
+    .data.node.items.nodes[]
+    | select(.fieldValueByName.optionId==$opt)
     | select(.content.__typename=="Issue")
     | [.content.repository.owner.login, .content.repository.name, .content.number, .content.id, .id, .content.title] | @tsv'
 }
 
 add_to_project () { local Q; Q=$(jq -n --arg p "$PROJECT_ID" --arg c "$1" '{query:"mutation($project:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$contentId}){item{id}}}",variables:{project:$p,contentId:$c}}'); graphql "$Q" | jq -r '.data.addProjectV2ItemById.item.id'; }
 set_status () { local Q; Q=$(jq -n --arg p "$PROJECT_ID" --arg i "$1" --arg f "$STATUS_FIELD_ID" --arg o "$2" '{query:"mutation($project:ID!,$item:ID!,$field:ID!,$optionID:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$optionID}}){clientMutationId}}",variables:{project:$p,item:$i,field:$f,optionID:$o}}'); graphql "$Q" >/dev/null; }
-
-open_pr () { rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$4" --arg h "$3" --arg b "$5" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')" | jq -r '.html_url'; }
-
-branch_name () {
-  local title="$1" num="$2"
-  local slug
-  slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' )"
-  slug="$(echo "$slug" | sed 's/^-*//; s/-*$//')"
-  printf 'feature/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
-}
 
 find_refinement_md () {
   local num="$1" cand
@@ -63,25 +53,78 @@ find_refinement_md () {
   return 1
 }
 
-compose_pr_body () {
-  local num="$1" md body
-  if [[ "${WORK_USE_REFINEMENT_DOC}" == "1" ]]; then
-    md="$(find_refinement_md "$num" || true)"
-    if [[ -n "$md" && -f "$md" ]]; then
-      echo "ℹ️  Picked refinement MD: $md" >&2
-      PR_TITLE_SUFFIX="[uses-refinement]"
-      body="Closes #${num}
+branch_name () {
+  local title="$1" num="$2"
+  local slug
+  slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' )"
+  slug="$(echo "$slug" | sed 's/^-*//; s/-*$//')"
+  printf 'auto/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
+}
 
----
-**Refinamiento**: \`${md}\`
+ensure_git_setup () {
+  git config user.name  "${GIT_AUTHOR_NAME:-codex-bot}"
+  git config user.email "${GIT_AUTHOR_EMAIL:-codex-bot@users.noreply.github.com}"
+}
 
-$(sed -e 's/\r$//' "$md")"
-      printf "%s" "$body"
-      return 0
-    fi
+ensure_remote_url () {
+  local owner="$1" repo="$2"
+  local url="https://x-access-token:${GITHUB_TOKEN}@github.com/${owner}/${repo}.git"
+  if git remote | grep -qx origin; then
+    git remote set-url origin "$url"
+  else
+    git remote add origin "$url"
   fi
-  PR_TITLE_SUFFIX=""
-  printf "Closes #%s" "$num"
+}
+
+create_commit_for_issue () {
+  local owner="$1" repo="$2" num="$3" title="$4"
+  local md_ref="$5" branch pr_file
+  branch="$(branch_name "$title" "$num")"
+  ensure_git_setup
+  ensure_remote_url "$owner" "$repo"
+  git fetch --quiet origin || true
+  git checkout -B "$branch" || git checkout -b "$branch"
+
+  mkdir -p docs/work
+  pr_file="docs/work/issue-${num}-worklog.md"
+  {
+    echo "# Worklog – Issue #$num"
+    echo
+    echo "Título: $title"
+    echo
+    if [[ -n "$md_ref" ]]; then
+      echo "- Refinamiento: \`$md_ref\`"
+    else
+      echo "- Refinamiento: (no encontrado)"
+    fi
+    echo "- Checklist (inicial):"
+    echo "  - [ ] Implementación"
+    echo "  - [ ] Pruebas"
+    echo "  - [ ] Documentación"
+  } > "$pr_file"
+
+  git add "$pr_file"
+  git commit -m "chore(worklog): issue #${num} – ${title}" >/dev/null
+  git push -u origin "$branch" >/dev/null
+  echo "$branch"
+}
+
+open_pr () {
+  local owner="$1" repo="$2" head_branch="$3" title="$4" body="$5"
+  rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$title" --arg h "$head_branch" --arg b "$body" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')"     | jq -r '.html_url'
+}
+
+compose_pr_body () {
+  local num="$1" md="$2"
+  if [[ -n "$md" ]]; then
+    printf "Closes #%s
+
+Documentación de refinamiento: \`%s\`" "$num" "$md"
+  else
+    printf "Closes #%s
+
+(Refinamiento no encontrado; se completará durante el PR)." "$num"
+  fi
 }
 
 process_issue () {
@@ -90,33 +133,24 @@ process_issue () {
 
   if ! set_status "$item_id" "$STATUS_OPTION_INPROGRESS"; then
     set_status "$item_id" "$STATUS_OPTION_BLOCKED" || true
-    issue_comment "$owner" "$repo" "$num" "codex: no pude mover a In Progress, queda en Blocked."
+    issue_comment "$owner" "$repo" "$num" "codex: no pude mover a In Progress (mutación GraphQL). Marco Blocked."
     return 1
   fi
 
-  if [[ "${WORK_REQUIRE_REFINEMENT}" == "1" ]]; then
-    if ! find_refinement_md "$num" >/dev/null 2>&1; then
-      set_status "$item_id" "$STATUS_OPTION_BLOCKED" || true
-      issue_comment "$owner" "$repo" "$num" "codex: no hay documento de refinamiento (.md). Marco Blocked."
-      return 1
-    fi
-  fi
+  local md=""; [[ "${WORK_USE_REFINEMENT_DOC}" == "1" ]] && md="$(find_refinement_md "$num" || true)"
+  issue_comment "$owner" "$repo" "$num" "codex: iniciando trabajo.
 
-  if [[ "${WORK_OPEN_PR}" == "1" ]]; then
-    local branch pr_url pr_body pr_title
-    branch="$(branch_name "$title" "$num")"
-    pr_body="$(compose_pr_body "$num")"
-    if [[ -n "${PR_TITLE_SUFFIX:-}" ]]; then
-      pr_title="[auto][uses-refinement] $title"
-    else
-      pr_title="[auto] $title"
-    fi
-    pr_url="$(open_pr "$owner" "$repo" "$branch" "$pr_title" "$pr_body" || echo "")"
-    if [[ -n "$pr_url" ]]; then
-      issue_comment "$owner" "$repo" "$num" "codex: PR abierto → ${pr_url}"
-      [[ -n "${STATUS_OPTION_READY}" ]] && set_status "$item_id" "$STATUS_OPTION_READY" || true
-      return 0
-    fi
+$( [[ -n "$md" ]] && echo "Se usará \`$md\`." || echo "No se encontró refinamiento. Se creará durante el PR.")"
+
+  local branch pr_url pr_title pr_body
+  branch="$(create_commit_for_issue "$owner" "$repo" "$num" "$title" "$md")"
+  pr_title="[auto] $title"
+  pr_body="$(compose_pr_body "$num" "$md")"
+  pr_url="$(open_pr "$owner" "$repo" "$branch" "$pr_title" "$pr_body" || echo "")"
+  if [[ -n "$pr_url" ]] ; then
+    issue_comment "$owner" "$repo" "$num" "codex: PR abierto → ${pr_url}"
+    [[ -n "${STATUS_OPTION_READY}" ]] && set_status "$item_id" "$STATUS_OPTION_READY" || true
+    return 0
   fi
 
   set_status "$item_id" "$STATUS_OPTION_TODO" || true
