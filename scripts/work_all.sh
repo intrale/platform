@@ -16,7 +16,6 @@ API_VER="X-GitHub-Api-Version: 2022-11-28"
 : "${STATUS_OPTION_READY:=}"
 : "${STATUS_OPTION_BLOCKED:?Falta STATUS_OPTION_BLOCKED}"
 
-# Por defecto, abrir PR y usar documento de refinamiento
 : "${WORK_OPEN_PR:=1}"
 : "${PR_BASE:=main}"
 BATCH_MAX="${BATCH_MAX:-10}"
@@ -27,9 +26,7 @@ BATCH_MAX="${BATCH_MAX:-10}"
 graphql () { curl -fsS "$GH_API/graphql" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$1"; }
 rest_post () { curl -fsS -X POST "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_V3" -H "$API_VER" -d "$2"; }
 
-issue_comment () { # owner repo number body
-  rest_post "$GH_API/repos/$1/$2/issues/$3/comments" "$(jq -nc --arg b "$4" '{body:$b}')" >/dev/null
-}
+issue_comment () { rest_post "$GH_API/repos/$1/$2/issues/$3/comments" "$(jq -nc --arg b "$4" '{body:$b}')" >/dev/null; }
 
 list_todo_items() {
   local Q out
@@ -38,8 +35,7 @@ list_todo_items() {
     variables:{id:$id}}')
   out="$(graphql "$Q")"
   printf '%s' "$out" | jq -r --arg opt "$STATUS_OPTION_TODO" '
-    .data.node.items.nodes[]
-    | select(.fieldValueByName.optionId==$opt)
+    .data.node.items.nodes[] | select(.fieldValueByName.optionId==$opt)
     | select(.content.__typename=="Issue")
     | [.content.repository.owner.login, .content.repository.name, .content.number, .content.id, .id, .content.title] | @tsv'
 }
@@ -47,9 +43,7 @@ list_todo_items() {
 add_to_project () { local Q; Q=$(jq -n --arg p "$PROJECT_ID" --arg c "$1" '{query:"mutation($project:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$contentId}){item{id}}}",variables:{project:$p,contentId:$c}}'); graphql "$Q" | jq -r '.data.addProjectV2ItemById.item.id'; }
 set_status () { local Q; Q=$(jq -n --arg p "$PROJECT_ID" --arg i "$1" --arg f "$STATUS_FIELD_ID" --arg o "$2" '{query:"mutation($project:ID!,$item:ID!,$field:ID!,$optionID:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$optionID}}){clientMutationId}}",variables:{project:$p,item:$i,field:$f,optionID:$o}}'); graphql "$Q" >/dev/null; }
 
-open_pr () { # owner repo head_branch title body
-  rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$4" --arg h "$3" --arg b "$5" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')" | jq -r '.html_url'
-}
+open_pr () { rest_post "$GH_API/repos/$1/$2/pulls" "$(jq -nc --arg t "$4" --arg h "$3" --arg b "$5" --arg base "${PR_BASE}" '{title:$t, head:$h, base:$base, body:$b}')" | jq -r '.html_url'; }
 
 branch_name () {
   local title="$1" num="$2"
@@ -59,20 +53,17 @@ branch_name () {
   printf 'feature/issue-%s-%s' "$num" "$(echo "$slug" | cut -c1-40)"
 }
 
-find_refinement_md () { # num -> path or empty
+find_refinement_md () {
   local num="$1" cand
   shopt -s nullglob
-  for cand in \
-    "docs/refinements/issue-${num}-"*.md \
-    "./docs/refinements/issue-${num}-"*.md
-  do
+  for cand in "docs/refinements/issue-${num}-"*.md "./docs/refinements/issue-${num}-"*.md; do
     [[ -f "$cand" ]] && { echo "$cand"; shopt -u nullglob; return 0; }
   done
   shopt -u nullglob
   return 1
 }
 
-compose_pr_body () { # num -> string
+compose_pr_body () {
   local num="$1" md body
   if [[ "${WORK_USE_REFINEMENT_DOC}" == "1" ]]; then
     md="$(find_refinement_md "$num" || true)"

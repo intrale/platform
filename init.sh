@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INIT_VERSION=2025-10-05 docs-first refine/work (autodiscover + jq fixes) + graceful usage
+# INIT_VERSION=2025-10-05 docs-first refine/work + graceful usage for Codex UI
 set -euo pipefail
 
 GH_API="https://api.github.com"
@@ -8,7 +8,7 @@ ACCEPT_GRAPHQL="Content-Type: application/json"
 API_VER="X-GitHub-Api-Version: 2022-11-28"
 
 : "${ORG:=intrale}"
-: "${PROJECT_ID:=PVT_kwDOBTzBoc4AyMGf}"
+: "${PROJECT_ID:=PVT_kwDOBTzBoc4AyMGf}"   # Cambiá si tu tablero tiene otro ID
 : "${REFINE_WRITE_DOCS:=1}"
 : "${REFINE_DOCS_OPEN_PR:=1}"
 : "${ENFORCE_READONLY:=0}"
@@ -59,7 +59,7 @@ Uso:
   ./init.sh discover
   ./init.sh auto
 EOF
-  # Importante: salimos con 0 para no romper la configuración del runner
+  # Importante para la UI de Codex: salir con 0 si se llama sin args
   exit 0
 }
 
@@ -83,10 +83,10 @@ discover() {
   {
     echo "export PROJECT_ID=$PROJECT_ID"
     echo "export STATUS_FIELD_ID=$(printf '%s' "$FIELD" | jq -r '.id')"
-    echo "export STATUS_OPTION_TODO=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="Todo") | .id')"
-    echo "export STATUS_OPTION_INPROGRESS=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="In Progress") | .id')"
-    echo "export STATUS_OPTION_READY=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="Ready") | .id')"
-    echo "export STATUS_OPTION_BLOCKED=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name=="Blocked") | .id')"
+    echo "export STATUS_OPTION_TODO=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Todo\") | .id')"
+    echo "export STATUS_OPTION_INPROGRESS=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"In Progress\") | .id')"
+    echo "export STATUS_OPTION_READY=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Ready\") | .id')"
+    echo "export STATUS_OPTION_BLOCKED=$(printf '%s' "$FIELD" | jq -r '.options[] | select(.name==\"Blocked\") | .id')"
   } | tee .codex_env >/dev/null
 
   ok "IDs escritos en .codex_env"
