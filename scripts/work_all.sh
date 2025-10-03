@@ -27,6 +27,10 @@ BATCH_MAX="${BATCH_MAX:-10}"
 graphql () { curl -fsS "$GH_API/graphql" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_GRAPHQL" -H "$API_VER" -d "$1"; }
 rest_post () { curl -fsS -X POST "$1" -H "Authorization: Bearer $GITHUB_TOKEN" -H "$ACCEPT_V3" -H "$API_VER" -d "$2"; }
 
+issue_comment () { # owner repo number body
+  rest_post "$GH_API/repos/$1/$2/issues/$3/comments" "$(jq -nc --arg b "$4" '{body:$b}')" >/dev/null
+}
+
 list_todo_items() {
   local Q out
   Q=$(jq -n --arg id "$PROJECT_ID" '{
@@ -59,7 +63,9 @@ branch_name () {
 find_refinement_md () { # num -> path or empty
   local num="$1" cand
   shopt -s nullglob
-  for cand in     "docs/refinements/issue-${num}-"*.md     "./docs/refinements/issue-${num}-"*.md
+  for cand in \
+    "docs/refinements/issue-${num}-"*.md \
+    "./docs/refinements/issue-${num}-"*.md
   do
     [[ -f "$cand" ]] && { echo "$cand"; shopt -u nullglob; return 0; }
   done
@@ -94,6 +100,7 @@ process_issue () {
 
   if ! set_status "$item_id" "$STATUS_OPTION_INPROGRESS"; then
     set_status "$item_id" "$STATUS_OPTION_BLOCKED" || true
+    issue_comment "$owner" "$repo" "$num" "codex: no pude mover a In Progress, queda en Blocked."
     return 1
   fi
 
@@ -101,6 +108,7 @@ process_issue () {
   if [[ "${WORK_REQUIRE_REFINEMENT}" == "1" ]]; then
     if ! find_refinement_md "$num" >/dev/null 2>&1; then
       set_status "$item_id" "$STATUS_OPTION_BLOCKED" || true
+      issue_comment "$owner" "$repo" "$num" "codex: no hay documento de refinamiento (.md). Marco Blocked."
       return 1
     fi
   fi
@@ -116,12 +124,14 @@ process_issue () {
     fi
     pr_url="$(open_pr "$owner" "$repo" "$branch" "$pr_title" "$pr_body" || echo "")"
     if [[ -n "$pr_url" ]]; then
+      issue_comment "$owner" "$repo" "$num" "codex: PR abierto → ${pr_url}"
       [[ -n "${STATUS_OPTION_READY}" ]] && set_status "$item_id" "$STATUS_OPTION_READY" || true
       return 0
     fi
   fi
 
   set_status "$item_id" "$STATUS_OPTION_TODO" || true
+  issue_comment "$owner" "$repo" "$num" "codex: no pude abrir PR. Vuelvo a Todo."
 }
 
 main() {
