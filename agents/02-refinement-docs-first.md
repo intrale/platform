@@ -56,3 +56,6 @@ Ruta: `docs/refinements/issue-<n>-<slug>.md`
 
 ## “Trabajar …”
 Se mantiene el comportamiento actual (posibilidad de PR de código si `WORK_OPEN_PR=1`). No interfiere con el flujo Docs-first.
+
+
+> **Nota:** el flujo **Self-test** reutiliza estas mismas reglas de estados y PRs, pero con contenido ficticio y seguro.

@@ -593,3 +593,18 @@ curl -sS -X POST https://api.github.com/graphql  -H "Authorization: Bearer $GITH
 - **Por defecto** (`REFINE_DOCS_OPEN_PR=1`) se abre un PR `[auto][docs] Refinamiento #<n>` con ese archivo (sin merge automático).
 - El bot **no** debe escribir fuera de `docs/refinements/` durante el refinamiento.
 - **BATCH_MAX por defecto: 10** (configurable).
+
+
+---
+
+## Intent: **SELF_TEST** (Probar ambiente)
+**Objetivo.** Verificar que el bot puede (a) crear un issue sandbox, (b) agregarlo al Project v2 y mover estados, (c) generar documentación mínima y (d) abrir un PR documental —sin tocar código de producción—.
+
+**Frases disparadoras:** `probar ambiente`, `self test`, `probar entorno`.
+
+**Plan:**
+1. Crear issue `[self-test]` en el repo actual.
+2. Agregar al Project v2 `intrale`, mover `Todo → In Progress`.
+3. Generar `docs/refinements/issue-<n>-selftest.md` y `docs/work/issue-<n>-worklog.md`.
+4. Rama `auto/selftest-<n>` + **PR** con `Closes #<n>`.
+5. Mover a `Ready` (si existe la opción) o `Todo` en su defecto; comentar URLs en el issue.

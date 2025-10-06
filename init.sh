@@ -26,6 +26,9 @@ detect_intent(){
   if echo "$norm" | grep -Eq '^trabajar (todas )?(las )?(historias|tareas|issues)( pendientes)?'; then
     echo "INTENT=WORK_ALL_TODO"; return 0
   fi
+  if echo "$norm" | grep -Eq '^(probar|testear|validar) (el )?ambiente|^self ?test$|^probar entorno$'; then
+    echo "INTENT=SELF_TEST"; return 0
+  fi
   echo "INTENT=UNKNOWN"; return 1
 }
 
@@ -36,6 +39,7 @@ Uso:
   ./init.sh discover
   ./init.sh intent "frase en lenguaje natural"
   ./init.sh auto   # usa CODEX_UTTERANCE
+  ./init.sh selftest
 EOF
   exit 0
 }
@@ -100,8 +104,13 @@ auto(){
   case "$intent" in
     INTENT=WORK_ALL_TODO) exec bash ./scripts/work_all.sh ;;
     INTENT=REFINE_ALL_TODO) exec bash ./scripts/refine_all.sh ;;
+    INTENT=SELF_TEST) exec bash ./scripts/self_test.sh ;;
     *) log "Intento no reconocido"; exit 0 ;;
   esac
+}
+
+selftest(){
+  CODEX_UTTERANCE="probar ambiente" ./init.sh auto
 }
 
 cmd="${1:-usage}"; shift || true
@@ -110,5 +119,6 @@ case "$cmd" in
   discover) discover ;;
   intent) detect_intent "$@" ;;
   auto) auto ;;
+  selftest) selftest ;;
   *) usage ;;
 esac
