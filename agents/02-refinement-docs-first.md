@@ -1,4 +1,3 @@
-<!-- GENERATED: 2025-10-02T21:44:04Z -->
 # 02 — Refinamiento (Modo único **Docs-first**)
 
 Este complemento **no reemplaza** al archivo base; lo **extiende**. Mantiene todo lo anterior y agrega el nuevo comportamiento acordado para “refinar …”.

@@ -122,9 +122,7 @@ EOF
   git push -u origin "$branch" >/dev/null
 
   local pr_title="[auto][selftest] Validación de ambiente"
-  local pr_body="Closes #${num}
-
-Documentación: \`$refmd\`"
+  local pr_body="Closes #${num}\n\nDocumentación: \`$refmd\`"
   local pr_url
   pr_url="$(rest_post "$GH_API/repos/$owner/$repo/pulls" "$(jq -nc --arg t "$pr_title" --arg h "$branch" --arg b "$pr_body" --arg base "main" '{title:$t, head:$h, base:$base, body:$b}') " | jq -r '.html_url')"
   ok "PR abierto: $pr_url"

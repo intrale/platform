@@ -128,13 +128,9 @@ open_pr () {
 compose_pr_body () {
   local num="$1" md="$2"
   if [[ -n "$md" ]]; then
-    printf "Closes #%s
-
-Documentación de refinamiento: \`%s\`" "$num" "$md"
+    printf "Closes #%s\n\nDocumentación de refinamiento: \`%s\`" "$num" "$md"
   else
-    printf "Closes #%s
-
-(Refinamiento no encontrado; se completará durante el PR)." "$num"
+    printf "Closes #%s\n\n(Refinamiento no encontrado; se completará durante el PR)." "$num"
   fi
 }
 
@@ -182,10 +178,10 @@ process_issue () {
 
 main() {
   local count=0
-  list_todo_items | while IFS=$'\t' read -r owner repo num issue_node item_id title; do
+  while IFS=$'\t' read -r owner repo num issue_node item_id title; do
     process_issue "$owner" "$repo" "$num" "$issue_node" "$item_id" "$title" || true
     count=$((count+1))
     [[ $count -ge $BATCH_MAX ]] && break
-  done
+  done < <(list_todo_items)
 }
 main "$@"

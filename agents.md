@@ -1,4 +1,4 @@
-<!-- AGENTS_MD_INDEX: 2025-10-02T21:44:04Z -->
+<!-- AGENTS_MD_INDEX -->
 # agents.md (Índice modular)
 
 Este repositorio utiliza un **formato modular** para facilitar el mantenimiento sin perder contenido histórico.

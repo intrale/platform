@@ -137,9 +137,7 @@ snapshot_to_docs () { # owner repo num title body
     git add "$md" >/dev/null 2>&1 || true
     git commit -m "[auto][docs] Snapshot de refinamiento para #${num}" >/dev/null 2>&1 || true
     git push -u origin "$branch" >/dev/null 2>&1 || true
-    if [[ "${REFINE_DOCS_OPEN_PR}" == "1" ]]; then
-      open_docs_pr "$owner" "$repo" "$branch" "$num" >/dev/null || true
-    fi
+    open_docs_pr "$owner" "$repo" "$branch" "$num" >/dev/null || true
   fi
 }
 
@@ -155,7 +153,7 @@ process_issue () {
   local body; body="$(refinement_template)"
   snapshot_to_docs "$owner" "$repo" "$num" "$title" "$body"
 
-  if [[ -n "${STATUS_OPTION_READY}" ]]; then
+  if [[ -n "${STATUS_OPTION_READY}" && "${STATUS_OPTION_READY}" != "null" ]]; then
     set_status "$item_id" "$STATUS_OPTION_READY" || set_status "$item_id" "$STATUS_OPTION_TODO" || true
   else
     set_status "$item_id" "$STATUS_OPTION_TODO" || true
@@ -164,10 +162,10 @@ process_issue () {
 
 main() {
   local count=0
-  list_todo_items | while IFS=$'\\t' read -r owner repo num node item title; do
+  while IFS=$'\t' read -r owner repo num node item title; do
     process_issue "$owner" "$repo" "$num" "$node" "$item" "$title" || true
     count=$((count+1))
     [[ $count -ge $BATCH_MAX ]] && break
-  done
+  done < <(list_todo_items)
 }
 main "$@"
