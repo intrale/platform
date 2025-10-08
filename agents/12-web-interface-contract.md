@@ -19,3 +19,8 @@ Criterios de aceptación (para considerarlo cumplido):
 
 En caso de incumplimiento:
 - Cancelar operación, mover issue a **Blocked** y explicar el desvío.
+
+Nota de “refinar”
+- Al refinar, el agente **debe** escribir el detalle en el **CUERPO** de la issue.
+- **No** debe publicar el refinamiento en comentarios ni crear/editar `docs/`.
+- Luego de persistir el cuerpo, mover a **Refined**.
