@@ -15,6 +15,7 @@ Paquete modular de reglas para `leitocodexbot`.
 - 09-pr-standards.md — Estándares de PR
 - 10-operational-instructions.md — Frases de invocación
 - 11-diagnostics.md — Sentinels de diagnóstico
+- 12-web-interface-contract.md - Contrato con interfaz web
 
 Notas:
 - Todos los módulos están bajo `./agents/`.
