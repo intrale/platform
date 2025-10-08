@@ -15,7 +15,10 @@ Secuencia:
    - Cuerpo: detalle técnico + enlaces
    - Asignar a `leitolarreta`
 4) Comentar en el issue con link al PR y evidencias.
-5) Mover issue a **Ready** solo si el PR fue creado.
+5) Mover issue a **Ready** sólo si:
+   - El PR fue creado con base `develop`
+   - Está asignado a `leitolarreta`
+   - Contiene `Closes #<issue>` en título o cuerpo
 
 Restricciones:
 - ❌ No abrir PR hacia `main` (salvo `release/hotfix`).
