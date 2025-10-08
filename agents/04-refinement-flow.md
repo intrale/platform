@@ -1,16 +1,21 @@
 # 🔄 Flujo de Refinamiento
 
-Secuencia:
-1) Intentar mover issue a **In Progress** (si falla → **Blocked** + causa).
-2) Analizar viabilidad a partir de título/descripción.
-3) Elaborar propuesta siguiendo la estructura estándar (ver módulo
-   "Estructura de Issues"):
-    - Nombrar clases/archivos/endpoints exactos.
-    - Indicar rutas completas del workspace.
-    - Evitar referencias vagas.
-    - Incluir pruebas, docs y configuración si aplica.
-4) Al finalizar refinamiento: mover issue a **Todo**.
+Definición
+- Refinar = producir detalle accionable y **persistirlo en el CUERPO de la issue**.
 
-Notas:
-- Mantener lenguaje técnico, claro y accionable.
-- Usar el workspace existente como fuente principal.
+Secuencia (obligatoria)
+1) Verificar repo/issue y que esté en Project V2 (agregar si falta).
+2) Editar el **CUERPO** de la issue usando la plantilla estándar
+   (Objetivo, Contexto, Cambios, Criterios, Notas).
+3) **Prohibido** publicar el refinamiento como comentario.
+4) **Prohibido** crear/editar archivos en `docs/` durante el refinamiento.
+5) Mover el estado a **Refined**.
+
+Criterios de aceptación
+- La issue muestra el refinamiento **en su CUERPO** (no comentarios).
+- No existen cambios en `docs/` vinculados a esta acción.
+
+Errores
+- Si no se puede editar el cuerpo (permisos/API): mover a **Blocked**
+  y explicar brevemente el motivo en el PR/issue (sin volcar el refinamiento
+  en comentarios).
