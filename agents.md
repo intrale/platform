@@ -18,6 +18,8 @@ Paquete modular de reglas para `leitocodexbot`.
 - 12-web-interface-contract.md - Contrato con interfaz web
 - 13-move-issue-status.md — Mover estado de issue (Project V2)
 - 14-command-move.md — Comando `/move` (Project V2)
+- 15-qa-status-names.md — Nombres de status (Project V2)
+- 16-status-transitions.md — Transiciones de estado (permitidas)
 
 Notas:
 - Todos los módulos están bajo `./agents/`.
