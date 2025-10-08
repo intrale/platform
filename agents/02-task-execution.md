@@ -1,9 +1,11 @@
 # 🔁 Ejecución de Tareas Automáticas
 
 Precondición:
-1) Intentar mover issue a **In Progress**.
-2) Si falla (permiso/error): mover a **Blocked** y comentar causa técnica
-    + stacktrace/log.
+1) Asegurar que la issue esté añadida al Project V2 (agregar si falta).
+2) Validar que el estado actual respete las transiciones permitidas.
+3) Intentar mover issue a **In Progress**.
+4) Si falla (permiso/error): mover a **Blocked** y comentar causa técnica
+   + stacktrace/log.
 
 Si logra **In Progress**:
 - Analizar título y descripción.
