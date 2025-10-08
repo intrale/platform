@@ -16,6 +16,8 @@ Paquete modular de reglas para `leitocodexbot`.
 - 10-operational-instructions.md — Frases de invocación
 - 11-diagnostics.md — Sentinels de diagnóstico
 - 12-web-interface-contract.md - Contrato con interfaz web
+- 13-move-issue-status.md — Mover estado de issue (Project V2)
+- 14-command-move.md — Comando `/move` (Project V2)
 
 Notas:
 - Todos los módulos están bajo `./agents/`.
