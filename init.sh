@@ -4,6 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Instalando Android SDK...
 echo "📦 Instalando Android SDK..."
+echo "ℹ️ generateBrandBuilds placeholder listo: ejecutar ./gradlew generateBrandBuilds"
 
 ANDROID_SDK_ROOT="/workspace/android-sdk"
 mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
