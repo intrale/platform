@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
@@ -67,6 +68,7 @@ import ui.th.spacing
 import ui.sc.auth.CHANGE_PASSWORD_PATH
 import ui.sc.auth.TWO_FACTOR_SETUP_PATH
 import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
+import ui.sc.branding.BRANDING_CUSTOMIZATION_PATH
 import ui.sc.shared.BUTTONS_PREVIEW_PATH
 import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
@@ -265,6 +267,9 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
             composeId = register_business,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
         )
+        val brandingLabel = resString(
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Personalizar branding")
+        )
         val requestJoinLabel = resString(
             composeId = request_join_business,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitar union"),
@@ -313,6 +318,15 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                             logger.info { "No fue posible navegar hacia atrás, regresando a $HOME_PATH" }
                             navigate(HOME_PATH)
                         }
+                    }
+                ),
+                MainMenuItem(
+                    id = "personalizar_branding",
+                    label = brandingLabel,
+                    icon = Icons.Default.Palette,
+                    onClick = {
+                        logger.info { "Navegando a $BRANDING_CUSTOMIZATION_PATH" }
+                        navigate(BRANDING_CUSTOMIZATION_PATH)
                     }
                 ),
                 MainMenuItem(
