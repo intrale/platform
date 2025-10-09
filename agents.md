@@ -21,6 +21,7 @@ Paquete modular de reglas para `leitocodexbot`.
 - 15-qa-status-names.md — Nombres de status (Project V2)
 - 16-status-transitions.md — Transiciones de estado (permitidas)
 - 17-short-commands.md — Comandos cortos (política por defecto)
+- 18-refinement-guards.md — Guardas de refinamiento
 
 Notas:
 - Todos los módulos están bajo `./agents/`.

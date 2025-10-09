@@ -34,3 +34,11 @@ Nota de “refinar”
 
 "Refinar las issues #<n1>, #<n2>, ...":
 - Aplicar la misma regla a cada issue y devolver links.
+
+## Mapa de intención (alta precedencia)
+
+Frase: "Refinar la issue #<n> [del repo <owner>/<repo>]"
+→ Intento: refinement.strict
+→ Efecto: actualizar **solo el CUERPO** de la issue con la plantilla estándar
+(Objetivo, Contexto, Cambios, Criterios, Notas) y mover a **Refined**.
+→ Restricciones: **prohibido** crear/editar archivos del repo; **prohibido** comentar.
