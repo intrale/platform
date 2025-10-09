@@ -25,15 +25,13 @@ Nota de “refinar”
 - **No** debe publicar el refinamiento en comentarios ni crear/editar `docs/`.
 - Luego de persistir el cuerpo, mover a **Refined**.
 
-## Atajos semánticos (lenguaje natural)
+## Atajos semánticos
 
-"Refinar la issue #<n>":
-- Editar el **CUERPO** de la issue con la plantilla estándar (Objetivo, Contexto, Cambios, Criterios, Notas).
-- **No** comentarios. **No** archivos en `docs/`.
-- Al terminar, mover a **Refined**.
-
-"Refinar las issues #<n1>, #<n2>, ...":
-- Aplicar la misma regla a cada issue y devolver links.
+"Refinar la issue #<n> [del repo <owner>/<repo>]":
+- Intento: refinement.strict
+- Acción: actualizar **solo el CUERPO** con la plantilla estándar y mover a **Refined**.
+- Restricciones: **NO** comentarios, **NO** cambios en el repo. Si no es posible,
+  marcar **Blocked** con diagnóstico breve.
 
 ## Mapa de intención (alta precedencia)
 
