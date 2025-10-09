@@ -46,6 +46,8 @@ import ext.auth.CommLoginService
 import ext.auth.CommPasswordRecoveryService
 import ext.auth.CommTwoFactorSetupService
 import ext.auth.CommTwoFactorVerifyService
+import ext.branding.ClientBrandingService
+import ext.branding.CommBrandingService
 import ext.business.ClientRegisterBusinessService
 import ext.business.ClientRequestJoinBusinessService
 import ext.business.ClientReviewBusinessRegistrationService
@@ -89,6 +91,7 @@ import ui.sc.auth.Login
 import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
+import ui.sc.branding.BrandingCustomizationScreen
 import ui.sc.business.DashboardScreen
 import ui.sc.business.RegisterNewBusinessScreen
 import ui.sc.business.RequestJoinBusinessScreen
@@ -109,6 +112,7 @@ public const val SCREENS = "screens"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
+public const val BRANDING_CUSTOMIZATION = "brandingCustomization"
 public const val BUTTONS_PREVIEW = "buttonsPreview"
 public const val SIGNUP = "signup"
 public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
@@ -142,6 +146,7 @@ class DIManager {
                 bindSingleton(tag = HOME) { Home() }
                 bindSingleton(tag = INIT) { Login() }
                 bindSingleton(tag = DASHBOARD) { DashboardScreen() }
+                bindSingleton(tag = BRANDING_CUSTOMIZATION) { BrandingCustomizationScreen() }
                 bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
                 bindSingleton(tag = SIGNUP) { SignUpScreen() }
                 bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
@@ -163,6 +168,7 @@ class DIManager {
                         instance(tag = HOME),
                         instance(tag = INIT),
                         instance(tag = DASHBOARD),
+                        instance(tag = BRANDING_CUSTOMIZATION),
                         instance(tag = BUTTONS_PREVIEW),
                         instance(tag = SIGNUP),
                         instance(tag = SELECT_SIGNUP_PROFILE),
@@ -218,6 +224,7 @@ class DIManager {
                 bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
                 bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
                 bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
+                bindSingleton<CommBrandingService> { ClientBrandingService(instance(), instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
