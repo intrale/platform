@@ -1,21 +1,19 @@
-# 🔄 Flujo de Refinamiento
+# 🔄 Flujo de Refinamiento (estricto)
 
 Definición
-- Refinar = producir detalle accionable y **persistirlo en el CUERPO de la issue**.
+- Refinar = escribir detalle en el **CUERPO** de la issue.
 
-Secuencia (obligatoria)
-1) Verificar repo/issue y que esté en Project V2 (agregar si falta).
-2) Editar el **CUERPO** de la issue usando la plantilla estándar
-   (Objetivo, Contexto, Cambios, Criterios, Notas).
-3) **Prohibido** publicar el refinamiento como comentario.
-4) **Prohibido** crear/editar archivos en `docs/` durante el refinamiento.
-5) Mover el estado a **Refined**.
+Secuencia
+1) Verificar repo/issue y presencia en Project V2.
+2) Actualizar el **CUERPO** con la plantilla (Objetivo, Contexto, Cambios,
+   Criterios, Notas). Sin comentarios.
+3) Mover estado a **Refined**.
 
-Criterios de aceptación
-- La issue muestra el refinamiento **en su CUERPO** (no comentarios).
-- No existen cambios en `docs/` vinculados a esta acción.
+Restricciones (duras)
+- **PROHIBIDO** crear/editar archivos del repo (incluye `docs/**`).
+- **PROHIBIDO** usar comentarios para volcar el refinamiento.
 
-Errores
-- Si no se puede editar el cuerpo (permisos/API): mover a **Blocked**
-  y explicar brevemente el motivo en el PR/issue (sin volcar el refinamiento
-  en comentarios).
+Post-condiciones
+- Diffs del repo = **0 archivos** modificados.
+- La issue muestra la plantilla completa en el CUERPO.
+- Si no se pudo editar el cuerpo → marcar **Blocked** con diagnóstico breve.
