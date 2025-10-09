@@ -1,19 +1,25 @@
-# 🔄 Generación de Pull Requests
+# 🔄 Generación de Pull Requests (política Codex)
 
-Al modificar código o documentación:
-1) Crear rama con prefijo: `feature/`, `bugfix/`, `refactor/`, `docs/`.
+Base obligatoria del PR:
+- **`base = develop`** siempre.
+- Excepción solo si el issue tiene etiqueta `release` o `hotfix`.
+
+Rama de origen:
+- Debe iniciar con `codex/` y seguir `codex/<issue>-<slug>`.
+
+Secuencia:
+1) Crear rama desde `origin/develop` (o rechazar si no es posible).
 2) Commits claros y relacionados al issue.
-3) Crear PR con:
-    - Título: `[auto] <descripción breve>`
-    - Cuerpo: descripción técnica + `Closes #<issue_number>`
-    - Asignado a `leitolarreta`
-4) Si falla la creación:
-    - Comentar error en issue
-    - Asegurar rama actualizada y build limpio
-    - Reintentar creación
-5) Si PR OK:
-    - Comentar en el issue (qué se hizo, link a ejecución y PR)
-    - Mover issue a **Ready**
+3) Crear PR:
+   - Título: `[auto] <breve>` + ` (Closes #<issue>)`
+   - Cuerpo: detalle técnico + enlaces
+   - Asignar a `leitolarreta`
+4) Comentar en el issue con link al PR y evidencias.
+5) Mover issue a **Ready** sólo si:
+   - El PR fue creado con base `develop`
+   - Está asignado a `leitolarreta`
+   - Contiene `Closes #<issue>` en título o cuerpo
 
-Restricción:
-- ❌ Nunca hacer merge automático del PR.
+Restricciones:
+- ❌ No abrir PR hacia `main` (salvo `release/hotfix`).
+- ❌ No hacer merge automático del PR.
