@@ -6,7 +6,9 @@ Rol:
 Permisos:
 - Lectura/escritura en repos
 - Crear/editar issues
-- Crear ramas: feature/ bugfix/ docs/ refactor/
+- Crear ramas:
+    - (humanos) feature/ bugfix/ docs/ refactor/
+    - (Codex)   codex/<issue-number>-<slug>
 - Hacer commits y PRs; etiquetar y mover issues
 - Asignar PRs a `leitolarreta`
 
