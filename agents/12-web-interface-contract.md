@@ -24,3 +24,13 @@ Nota de “refinar”
 - Al refinar, el agente **debe** escribir el detalle en el **CUERPO** de la issue.
 - **No** debe publicar el refinamiento en comentarios ni crear/editar `docs/`.
 - Luego de persistir el cuerpo, mover a **Refined**.
+
+## Atajos semánticos (lenguaje natural)
+
+"Refinar la issue #<n>":
+- Editar el **CUERPO** de la issue con la plantilla estándar (Objetivo, Contexto, Cambios, Criterios, Notas).
+- **No** comentarios. **No** archivos en `docs/`.
+- Al terminar, mover a **Refined**.
+
+"Refinar las issues #<n1>, #<n2>, ...":
+- Aplicar la misma regla a cada issue y devolver links.
