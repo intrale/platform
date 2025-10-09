@@ -2,7 +2,7 @@
 
 Creación de issues:
 - Todo issue (padre/hijo) debe agregarse **de inmediato** al tablero intrale.
-- Nueva tarjeta: columna **Todo** (o equivalente).
+- Nueva tarjeta: columna **Backlog** (o equivalente).
 - Nunca dejar issues fuera del proyecto o sin columna.
 
 Progresión:
