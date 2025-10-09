@@ -18,8 +18,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import ext.branding.BrandingSyncScheduler
+import ext.storage.KeyValueStorageService
 import androidx.navigation.compose.rememberNavController
 import org.jetbrains.compose.resources.StringResource
 import org.kodein.di.instance
@@ -84,6 +87,8 @@ fun App() {
     val router: Router by DIManager.di.instance(arg = rememberNavController())
     val useDarkTheme = isSystemInDarkTheme()
     var animationsEnabled by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+    val brandingSyncScheduler = remember { BrandingSyncScheduler(KeyValueStorageService(), coroutineScope) }
 
     logger.info { "Starting Intrale" }
 
@@ -91,6 +96,12 @@ fun App() {
         // Habilitamos animaciones luego del primer frame para evitar crashes cuando
         // DASHBOARD_ANIMATIONS_ENABLED permanece en false por recursos corruptos.
         animationsEnabled = true
+    }
+
+    LaunchedEffect(brandingSyncScheduler) {
+        brandingSyncScheduler.start(intervalDays = 1) {
+            logger.info { "Branding sync scheduler placeholder tick" }
+        }
     }
 
     IntraleTheme(useDarkTheme = useDarkTheme) {
