@@ -5,6 +5,7 @@ import asdo.auth.ToDoResetLoginCache
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.session.SessionStore
 import ui.sc.shared.ViewModel
 
 class DashboardViewModel : ViewModel() {
@@ -22,6 +23,7 @@ class DashboardViewModel : ViewModel() {
         try {
             toDoResetLoginCache.execute()
             logger.info { "Logout completado" }
+            SessionStore.clear()
         } catch (e: Throwable) {
             logger.error(e) { "Error al ejecutar logout" }
             throw e
