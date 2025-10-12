@@ -35,6 +35,17 @@
     <string name="semi_circular_menu_close">Cerrar men\u00fa de acciones</string>
     <string name="semi_circular_menu_long_press_hint">Desliz\u00e1 a la derecha para volver \u00b7 hacia abajo para abrir</string>
     <string name="dashboard_menu_hint">Despleg\u00e1 el men\u00fa para acceder a las acciones principales.</string>
+    <string name="personalization_panel">Personalizaci\u00f3n</string>
+    <string name="personalization_title">Panel de personalizaci\u00f3n</string>
+    <string name="personalization_description">Configura la apariencia de tu negocio.</string>
+    <string name="personalization_business_context">Negocio actual</string>
+    <string name="personalization_section_colors">Colores</string>
+    <string name="personalization_section_typography">Tipograf\u00edas</string>
+    <string name="personalization_section_images">Im\u00e1genes</string>
+    <string name="personalization_section_app_icon">\u00cdcono de App</string>
+    <string name="personalization_section_preview">Previsualizaci\u00f3n</string>
+    <string name="personalization_section_pending">Disponible pr\u00f3ximamente</string>
+    <string name="personalization_access_denied">No ten\u00e9s permisos para acceder a esta secci\u00f3n.</string>
 
     <string name="signup">Registrarme</string>
     <string name="signup_platform_admin">Registro Platform Admin</string>
