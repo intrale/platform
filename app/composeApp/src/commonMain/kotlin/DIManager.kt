@@ -90,6 +90,7 @@ import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.DashboardScreen
+import ui.sc.business.PersonalizationScreen
 import ui.sc.business.RegisterNewBusinessScreen
 import ui.sc.business.RequestJoinBusinessScreen
 import ui.sc.business.ReviewBusinessScreen
@@ -122,6 +123,7 @@ public const val REVIEW_BUSINESS = "reviewBusiness"
 public const val REGISTER_NEW_BUSINESS = "registerNewBusiness"
 public const val REQUEST_JOIN_BUSINESS = "requestJoinBusiness"
 public const val REVIEW_JOIN_BUSINESS = "reviewJoinBusiness"
+public const val PERSONALIZATION = "personalization"
 public const val TWO_FACTOR_SETUP = "twoFactorSetup"
 public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 
@@ -155,6 +157,7 @@ class DIManager {
                 bindSingleton(tag = REVIEW_BUSINESS) { ReviewBusinessScreen() }
                 bindSingleton(tag = REQUEST_JOIN_BUSINESS) { RequestJoinBusinessScreen() }
                 bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
+                bindSingleton(tag = PERSONALIZATION) { PersonalizationScreen() }
                 bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
                 bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
@@ -176,6 +179,7 @@ class DIManager {
                         instance(tag = REGISTER_NEW_BUSINESS),
                         instance(tag = REQUEST_JOIN_BUSINESS),
                         instance(tag = REVIEW_JOIN_BUSINESS),
+                        instance(tag = PERSONALIZATION),
                         instance(tag = TWO_FACTOR_SETUP),
                         instance(tag = TWO_FACTOR_VERIFY)
                     )
