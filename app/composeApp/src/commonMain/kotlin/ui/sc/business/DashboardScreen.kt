@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -53,6 +55,7 @@ import ui.rs.change_password
 import ui.rs.dashboard
 import ui.rs.dashboard_menu_hint
 import ui.rs.logout
+import ui.rs.personalization_panel
 import ui.rs.register_business
 import ui.rs.register_saler
 import ui.rs.request_join_business
@@ -67,10 +70,13 @@ import ui.th.spacing
 import ui.sc.auth.CHANGE_PASSWORD_PATH
 import ui.sc.auth.TWO_FACTOR_SETUP_PATH
 import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
+import ui.sc.business.PERSONALIZATION_PATH
 import ui.sc.shared.BUTTONS_PREVIEW_PATH
 import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.signup.REGISTER_SALER_PATH
+import ui.session.SessionStore
+import ui.session.UserRole
 import ui.util.RES_ERROR_PREFIX
 import ui.util.androidStringId
 import ui.util.fb
@@ -97,12 +103,17 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
     @Composable
     private fun ScreenContent(viewModel: DashboardViewModel = viewModel { DashboardViewModel() }) {
         val coroutineScope = rememberCoroutineScope()
+        val sessionStateState = SessionStore.sessionState.collectAsState()
+        val sessionState = sessionStateState.value
         val menuItems = rememberDashboardMenuItems(viewModel, coroutineScope)
-        val currentUserRole: String? = null
-        // TODO: Integrar el rol real del usuario cuando esté disponible en la sesión.
-        val visibleItems = remember(menuItems, currentUserRole) {
+        val currentUserRole = sessionState.role?.rawValue
+        val hasSelectedBusiness = sessionState.selectedBusinessId?.isNotBlank() == true
+        val visibleItems = remember(menuItems, currentUserRole, hasSelectedBusiness) {
             menuItems.filter { item ->
-                item.requiredRoles.isEmpty() || currentUserRole?.let { role -> role in item.requiredRoles } == true
+                val roleAllowed = item.requiredRoles.isEmpty() ||
+                    currentUserRole?.let { role -> role in item.requiredRoles } == true
+                val businessRequirementMet = !item.requiresBusinessSelection || hasSelectedBusiness
+                roleAllowed && businessRequirementMet
             }
         }
         val dashboardTitle = resString(
@@ -265,6 +276,10 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
             composeId = register_business,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
         )
+        val personalizationLabel = resString(
+            composeId = personalization_panel,
+            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Personalizacion"),
+        )
         val requestJoinLabel = resString(
             composeId = request_join_business,
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitar union"),
@@ -298,6 +313,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
             reviewJoinLabel,
             registerSalerLabel,
             logoutLabel,
+            personalizationLabel,
             viewModel,
             coroutineScope
         ) {
@@ -358,6 +374,20 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                     onClick = {
                         logger.info { "Navegando a $REGISTER_NEW_BUSINESS_PATH" }
                         navigate(REGISTER_NEW_BUSINESS_PATH)
+                    }
+                ),
+                MainMenuItem(
+                    id = "personalizacion",
+                    label = personalizationLabel,
+                    icon = Icons.Default.Palette,
+                    requiredRoles = setOf(
+                        UserRole.BusinessAdmin.rawValue,
+                        UserRole.PlatformAdmin.rawValue,
+                    ),
+                    requiresBusinessSelection = true,
+                    onClick = {
+                        logger.info { "Navegando a $PERSONALIZATION_PATH" }
+                        navigate(PERSONALIZATION_PATH)
                     }
                 ),
                 MainMenuItem(

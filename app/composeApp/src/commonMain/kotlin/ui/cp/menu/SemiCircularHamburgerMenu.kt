@@ -105,6 +105,7 @@ data class MainMenuItem(
     val label: String,
     val icon: ImageVector,
     val requiredRoles: Set<String> = emptySet(),
+    val requiresBusinessSelection: Boolean = false,
     val onClick: () -> Unit
 )
 
