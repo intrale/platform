@@ -11,7 +11,6 @@ import kotlin.test.assertTrue
 
 private class FakeStorage(initialToken: String?) : CommKeyValueStorage {
     override var token: String? = initialToken
-    override var brandingTheme: String? = null
 }
 
 private class CapturingReviewService : CommReviewBusinessRegistrationService {

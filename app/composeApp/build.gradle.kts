@@ -1,5 +1,4 @@
 import ar.com.intrale.branding.SyncBrandingIconsTask
-import ar.com.intrale.branding.GenerateBrandBuildsTask
 import com.codingfeline.buildkonfig.compiler.FieldSpec
 import compose.ValidateComposeResourcesTask
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
@@ -167,8 +166,6 @@ kotlin {
         }
     }
 }
-
-tasks.register("generateBrandBuilds", GenerateBrandBuildsTask::class)
 
 android {
     namespace = "ar.com.intrale"

@@ -119,10 +119,6 @@ val appModule = DI.Module("appModule") {
         singleton { LoggerFactory.getLogger("AppLogger") }
     }
 
-    bind<BrandingConfigRepository> {
-        singleton { BrandingConfigRepository() }
-    }
-
     bind<Function> (tag="signup") {
         singleton  { SignUp(instance(), instance(), instance(), instance()) }
     }
@@ -162,9 +158,6 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="registerBusiness") {
         singleton {  RegisterBusiness(instance(), instance(), instance()) }
     }
-    bind<Function> (tag="brandingPush") {
-        singleton { BrandingPush() }
-    }
     bind<Function> (tag="reviewBusiness") {
         singleton {  ReviewBusinessRegistration(instance(), instance(), instance("2faverify"),
             instance("signup"), instance(),
@@ -184,8 +177,5 @@ val appModule = DI.Module("appModule") {
     }
     bind<Function> (tag="configAutoAcceptDeliveries") {
         singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance(), instance()) }
-    }
-    bind<Function> (tag="branding") {
-        singleton { BrandingConfig(instance(), instance()) }
     }
 }

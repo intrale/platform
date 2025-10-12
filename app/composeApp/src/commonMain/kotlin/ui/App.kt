@@ -18,11 +18,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import ext.notifications.ClientBrandingPushService
-import kotlinx.coroutines.flow.collect
 import androidx.navigation.compose.rememberNavController
 import org.jetbrains.compose.resources.StringResource
 import org.kodein.di.instance
@@ -87,7 +84,6 @@ fun App() {
     val router: Router by DIManager.di.instance(arg = rememberNavController())
     val useDarkTheme = isSystemInDarkTheme()
     var animationsEnabled by remember { mutableStateOf(false) }
-    val brandingPushService = remember { ClientBrandingPushService() }
 
     logger.info { "Starting Intrale" }
 
@@ -95,16 +91,6 @@ fun App() {
         // Habilitamos animaciones luego del primer frame para evitar crashes cuando
         // DASHBOARD_ANIMATIONS_ENABLED permanece en false por recursos corruptos.
         animationsEnabled = true
-    }
-
-    LaunchedEffect(brandingPushService) {
-        brandingPushService.events.collect { event ->
-            logger.info { "Branding push placeholder: $event" }
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        brandingPushService.notifyBrandingUpdate()
     }
 
     IntraleTheme(useDarkTheme = useDarkTheme) {
