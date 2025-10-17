@@ -2,6 +2,7 @@
 
 Checklist de PR:
 - Título: `[auto] <descripción>`
+- Base: `develop`
 - Cuerpo con detalles técnicos
 - Relacionado con issue (`Closes #n`)
 - Asignado a `leitolarreta`
