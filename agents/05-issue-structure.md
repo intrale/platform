@@ -16,16 +16,6 @@ Plantilla estándar:
 - ## 📘 Notas técnicas
   Guía de implementación y consideraciones.
 
-Metadatos sugeridos (front matter YAML):
-```yaml
-name: Historia / Issue estándar
-about: Plantilla sugerida para historias trabajadas por Codex
-title: ''
-labels: []
-assignees: ''
-```
-
-Política:
-- Deshabilitar "blank issues" en el repositorio (`blank_issues_enabled: false`).
+Aplicación:
 - Usar esta estructura en todo issue/sub-issue, incluyendo refinamientos.
 - Redacción clara, sin ambigüedades.
