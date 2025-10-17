@@ -2,7 +2,7 @@
 
 Base por defecto:
 - **Toda rama nueva debe crearse desde `origin/develop`.**
-- Prohibido basarse en `main`, salvo etiqueta explícita: `release` o `hotfix`.
+- Excepción: `target:main` → base `origin/main`.
 
 Formato de nombre (una rama por issue):
 - `codex/<issue-number>-<slug-kebab>`
