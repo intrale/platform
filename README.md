@@ -23,6 +23,11 @@ Este proyecto se organiza como un monorepo con arquitectura modular. Incluye ser
 
 El backend expone una ruta dinámica `/{business}/{function}` para todas las operaciones de negocio, documentada en `docs/arquitectura-backend.md` y en las guías específicas dentro de `docs/`.
 
+## Política de ramas y PRs (Codex)
+- Ramas nuevas de Codex: `codex/<issue>-<slug>` basadas en `origin/develop`.
+- Pull requests automáticos apuntan a `develop` por defecto.
+- Usa la bandera `target:main` en el issue/PR solo cuando deba apuntar a `main`.
+
 ## Estructura de carpetas
 - `backend/` - infraestructura y lógica común del servidor HTTP y el runtime serverless.
 - `users/` - extensiones de negocio para gestión de usuarios, perfiles y 2FA.
