@@ -1,10 +1,11 @@
+@file:OptIn(ExperimentalResourceApi::class)
+
 package ui.util
 
-import android.content.Context
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.StringResource
-import org.jetbrains.compose.resources.stringResource as composeStringResource
 
 @Composable
 actual fun resString(
@@ -12,39 +13,37 @@ actual fun resString(
     composeId: StringResource?,
     fallbackAsciiSafe: String,
 ): String {
-    val context: Context = LocalContext.current
     val identifier = "androidId=$androidId composeId=$composeId"
 
-    androidId?.let { id ->
-        return resolveOrFallback(
-            identifier = identifier,
-            resolver = { context.getString(id) },
-            fallback = fallbackAsciiSafe,
-        )
+    val resolvedAndroidId = androidId ?: composeId?.let(::androidIdFromCompose)
+
+    resolvedAndroidId?.let { id ->
+        return runCatching { stringResource(id) }
+            .getOrElse { error ->
+                logFallback(identifier, fallbackAsciiSafe, error)
+            }
     }
 
-    composeId?.let { cid ->
-        return resolveComposeOrFallback(
-            identifier = identifier,
-            fallback = fallbackAsciiSafe,
-        ) {
-            composeStringResource(cid)
+    if (composeId != null) {
+        val guessedKey = composeKey(composeId)
+        val message = buildString {
+            append("Missing Android string for composeId=")
+            append(composeId)
+            if (guessedKey != null) {
+                append(" key=")
+                append(guessedKey)
+            }
         }
+        return logFallback(message, fallbackAsciiSafe)
     }
 
     return logFallback(identifier, fallbackAsciiSafe)
 }
 
-@Composable
-private fun resolveComposeOrFallback(
-    identifier: String,
-    fallback: String,
-    onFailure: (Throwable) -> Unit = {},
-    resolver: @Composable () -> String,
-): String {
-    return runCatching { resolver() }
-        .getOrElse { error ->
-            onFailure(error)
-            logFallback(identifier, fallback, error)
-        }
+private fun androidIdFromCompose(resource: StringResource): Int? {
+    return composeKey(resource)?.let(::androidStringId)
+}
+
+private fun composeKey(resource: StringResource): String? {
+    return runCatching { resource.key }.getOrNull()
 }

@@ -17,6 +17,7 @@ plugins {
     alias(libs.plugins.composeHotReload)
     alias(libs.plugins.kotlinx.serialization)
     alias(libs.plugins.buildkonfig)
+    alias(libs.plugins.ksp)
 }
 
 
@@ -26,6 +27,19 @@ buildkonfig {
     defaultConfigs {
         buildConfigField(FieldSpec.Type.STRING, "BASE_URL", "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/")
         buildConfigField(FieldSpec.Type.STRING, "BUSINESS", "intrale")
+    }
+}
+
+val forbiddenAllowTests = providers.gradleProperty("forbidden.i18n.allowTests").orElse("false")
+val forbiddenStringsProcessor = project(":tools:forbidden-strings-processor")
+
+ksp {
+    arg("forbidden.i18n.allowTests", forbiddenAllowTests.get())
+}
+
+configurations.configureEach {
+    if (name.startsWith("ksp") && name != "ksp") {
+        project.dependencies.add(name, forbiddenStringsProcessor)
     }
 }
 
@@ -109,7 +123,6 @@ kotlin {
             includeGeneratedCollectors("androidMainResourceCollectors")
 
             dependencies {
-                implementation(platform(libs.androidx.compose.bom.get()))
                 implementation(compose.preview)
                 implementation(libs.androidx.activity.compose)
                 implementation(libs.ktor.client.android)
@@ -121,7 +134,6 @@ kotlin {
         @OptIn(ExperimentalComposeLibrary::class)
         val androidInstrumentedTest by getting {
             dependencies {
-                implementation(platform(libs.androidx.compose.bom.get()))
                 implementation(libs.androidx.testExt.junit)
                 implementation(libs.androidx.espresso.core)
                 implementation(compose.uiTestJUnit4)
@@ -307,7 +319,9 @@ tasks.named("check") {
 }
 
 dependencies {
-    debugImplementation(platform(libs.androidx.compose.bom.get()))
+    add("androidMainImplementation", platform(libs.androidx.compose.bom))
+    add("androidInstrumentedTestImplementation", platform(libs.androidx.compose.bom))
+    debugImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(compose.uiTooling)
 }
 

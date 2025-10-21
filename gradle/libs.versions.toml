@@ -1,5 +1,6 @@
 [versions]
-kotlin = "2.0.0"
+kotlin = "2.2.0"
+ksp = "2.2.0-2.0.2"
 
 ktor = "2.3.9"
 
@@ -126,6 +127,7 @@ ktor-common = ["ktor-client-core", "ktor-client-json", "ktor-client-logging", "k
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 
 # Multiplatform plugins
 androidApplication = { id = "com.android.application", version.ref = "agp" }

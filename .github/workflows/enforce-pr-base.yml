@@ -1,0 +1,26 @@
+name: Enforce Codex PR base
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check-base-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validar base del PR
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          echo "Base detectada: ${BASE_REF}"
+          if [ "${BASE_REF}" != "develop" ]; then
+            BODY_NORMALIZED="$(printf '%s\n' "${PR_BODY}" | tr '[:upper:]' '[:lower:]')"
+            TITLE_NORMALIZED="$(printf '%s\n' "${PR_TITLE}" | tr '[:upper:]' '[:lower:]')"
+            if ! echo "${BODY_NORMALIZED}" | grep -q "target:main" && ! echo "${TITLE_NORMALIZED}" | grep -q "target:main"; then
+              echo "❌ El PR debe apuntar a develop. Usa target:main para permitir base ${BASE_REF}."
+              exit 1
+            fi
+            echo "target:main detectado, se permite base ${BASE_REF}."
+          fi
