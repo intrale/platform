@@ -79,7 +79,7 @@ else
     echo "✅ GITHUB_TOKEN válido (Authorization: token ...)."
     gh_echo_login "token $GITHUB_TOKEN"
     gh_echo_scopes "token $GITHUB_TOKEN"
-  else
+  } else {
     CODE_BEARER="$(gh_http_code "Bearer $GITHUB_TOKEN")"
     if [ "$CODE_BEARER" = "200" ]; then
       echo "✅ GITHUB_TOKEN válido (Authorization: Bearer ...)."
