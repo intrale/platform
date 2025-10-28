@@ -99,3 +99,38 @@ else
     fi
   fi
 fi
+
+###############################################################################
+# Codex defaults: base branch = develop  (PUNTO 2)
+###############################################################################
+# Si alguna variable ya está definida externamente, se respeta; si no, usa 'develop'
+export CODEX_BASE_BRANCH="${CODEX_BASE_BRANCH:-develop}"
+export DEFAULT_BASE_BRANCH="${DEFAULT_BASE_BRANCH:-$CODEX_BASE_BRANCH}"
+export GIT_DEFAULT_BRANCH="${GIT_DEFAULT_BRANCH:-$CODEX_BASE_BRANCH}"
+export BASE_BRANCH="${BASE_BRANCH:-$CODEX_BASE_BRANCH}"
+
+# Hacemos que Git use esa rama como default en inicializaciones nuevas
+git config --global init.defaultBranch "$CODEX_BASE_BRANCH"
+
+echo "🧭 Rama base por defecto para Codex: ${CODEX_BASE_BRANCH}"
+
+# (Opcional) Helper para asegurar que un repo esté en la base correcta y actualizado
+# Uso: ensure_upstream_branch /ruta/al/repo [rama]
+ensure_upstream_branch() {
+  local repo_path="$1"
+  local branch="${2:-$CODEX_BASE_BRANCH}"
+  if [ -d "$repo_path/.git" ]; then
+    (
+      cd "$repo_path" || exit 0
+      git fetch origin || true
+      # Si la rama no existe localmente, la creamos trackeando origin/<branch>
+      if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
+        git checkout -b "$branch" "origin/$branch" 2>/dev/null || git checkout "$branch" || true
+      else
+        git checkout "$branch" || true
+      fi
+      # Actualizamos fast-forward si es posible
+      git pull --ff-only || true
+    )
+  fi
+}
