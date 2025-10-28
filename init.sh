@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ########################################
-# 📦 Android SDK (como ya tenías)
+# 📦 Android SDK (igual que venías usando)
 ########################################
 echo "📦 Instalando Android SDK..."
 
@@ -29,7 +29,7 @@ yes | sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/
 echo "✅ Android SDK instalado correctamente."
 
 ########################################
-# 🔐 Validación de GITHUB_TOKEN (como ya tenías)
+# 🔐 Validación de GITHUB_TOKEN (corrige bug de sintaxis)
 ########################################
 echo "🔐 Validando GITHUB_TOKEN..."
 
@@ -79,32 +79,30 @@ else
     echo "✅ GITHUB_TOKEN válido (Authorization: token ...)."
     gh_echo_login "token $GITHUB_TOKEN"
     gh_echo_scopes "token $GITHUB_TOKEN"
-  } else {
-    CODE_BEARER="$(gh_http_code "Bearer $GITHUB_TOKEN")"
-    if [ "$CODE_BEARER" = "200" ]; then
-      echo "✅ GITHUB_TOKEN válido (Authorization: Bearer ...)."
-      gh_echo_login "Bearer $GITHUB_TOKEN"
-      gh_echo_scopes "Bearer $GITHUB_TOKEN"
-    else
-      echo "❌ GITHUB_TOKEN inválido o sin permisos suficientes."
-      echo "   HTTP (token):  $CODE_TOKEN"
-      echo "   HTTP (bearer): $CODE_BEARER"
-      echo "   Verifica caducidad, tipo de token y permisos (repo/project/workflow)."
-    fi
+  elif [ "$(gh_http_code "Bearer $GITHUB_TOKEN")" = "200" ]; then
+    echo "✅ GITHUB_TOKEN válido (Authorization: Bearer ...)."
+    gh_echo_login "Bearer $GITHUB_TOKEN"
+    gh_echo_scopes "Bearer $GITHUB_TOKEN"
+  else
+    echo "❌ GITHUB_TOKEN inválido o sin permisos suficientes."
+    echo "   HTTP (token):  $CODE_TOKEN"
+    echo "   HTTP (bearer): $(gh_http_code "Bearer $GITHUB_TOKEN")"
+    echo "   Verifica caducidad, tipo de token y permisos (repo/project/workflow)."
   fi
 fi
 
 ########################################
-# 🌿 Base de trabajo SIEMPRE desde develop (fallback a main)
+# 🌿 Base SIEMPRE desde develop (fallback a main)
 ########################################
 echo "🌿 Preparando workspace Git para Codex…"
 
 # Configurables
 REPO_URL="https://github.com/intrale/platform.git"
 WORKDIR="/workspace/platform"
-BASE_BRANCH="${BASE_BRANCH:-develop}"   # <<— default develop
+BASE_BRANCH="${BASE_BRANCH:-develop}"      # default: develop
+export CODEX_PR_BASE="${BASE_BRANCH}"      # hint para herramientas que lo soporten
 
-# Evita prompts interactivos
+# Evitar prompts interactivos
 export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=/bin/true
 
@@ -113,38 +111,29 @@ if [ ! -d "$WORKDIR/.git" ]; then
   git -C "$WORKDIR" init
 fi
 
-# Refresca el remote con token embebido (solo para fetch)
+# Remote limpio con token solo para fetch
 if git -C "$WORKDIR" remote get-url origin >/dev/null 2>&1; then
   git -C "$WORKDIR" remote remove origin || true
 fi
-# Inserta el token de forma segura (no se loguea)
 git -C "$WORKDIR" remote add origin "https://oauth2:${GITHUB_TOKEN:-x}@github.com/intrale/platform.git"
 
 echo "🔎 Intentando fetch de la base '${BASE_BRANCH}' (shallow)…"
-if git -C "$WORKDIR" fetch --no-tags --depth=1 origin "${BASE_BRANCH}"; then
-  CHOSEN_BASE="${BASE_BRANCH}"
-else
+CHOSEN_BASE="$BASE_BRANCH"
+if ! git -C "$WORKDIR" fetch --no-tags --depth=1 origin "${BASE_BRANCH}"; then
   echo "⚠️  No existe '${BASE_BRANCH}' en remoto. Probando 'main'…"
-  if git -C "$WORKDIR" fetch --no-tags --depth=1 origin main; then
-    CHOSEN_BASE="main"
-  else
-    echo "❌ No pude obtener ni '${BASE_BRANCH}' ni 'main' desde el remoto."
-    exit 1
-  fi
+  git -C "$WORKDIR" fetch --no-tags --depth=1 origin main
+  CHOSEN_BASE="main"
 fi
 
-# Crea/forza la rama de trabajo 'work' desde el FETCH_HEAD de la base elegida
+# Forzar rama de trabajo 'work' desde la base elegida
 git -C "$WORKDIR" switch --force-create work FETCH_HEAD
 
-# Limpia el remote para que los comandos posteriores no filtren token
+# Quitar el remote para no filtrar el token en logs posteriores
 git -C "$WORKDIR" remote remove origin || true
 
-# Estado y commit base
 echo "✅ Rama base elegida: ${CHOSEN_BASE}"
 echo "✅ Rama de trabajo actual: $(git -C "$WORKDIR" branch --show-current)"
 echo "✅ HEAD: $(git -C "$WORKDIR" rev-parse HEAD)"
-
-# Muestra un status limpio
 git -C "$WORKDIR" status --porcelain=v1
 
 echo "🏁 Workspace listo para trabajar desde '${CHOSEN_BASE}' ➜ 'work'."
