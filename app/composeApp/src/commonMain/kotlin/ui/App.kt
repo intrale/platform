@@ -21,7 +21,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
-import org.jetbrains.compose.resources.StringResource
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -31,24 +30,20 @@ import ui.rs.back_button
 import ui.th.IntraleTheme
 import ui.util.RES_ERROR_PREFIX
 import ui.util.fb
+import ui.sc.shared.ScreenTitle
 import ui.util.resString
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppBar(
-    title: StringResource,
+    title: ScreenTitle,
     canNavigateBack: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     TopAppBar(
         title = {
-            Text(
-                resString(
-                    composeId = title,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Pantalla sin titulo"),
-                )
-            )
+            Text(title.resolve())
         },
         colors = TopAppBarDefaults.mediumTopAppBarColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer

@@ -47,8 +47,6 @@ fun TextField(
     supportingText: (@Composable () -> Unit)? = null,
     enabled: Boolean = true,
 ) {
-    var isVisible by remember { mutableStateOf(!visualTransformation) }
-
     val labelString = resString(
         composeId = label,
         fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Etiqueta de campo"),
@@ -67,6 +65,89 @@ fun TextField(
         composeId = ui.rs.Res.string.text_field_hide_password,
         fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Ocultar contrasena"),
     )
+
+    TextFieldContent(
+        labelString = labelString,
+        value = value,
+        state = state,
+        visualTransformation = visualTransformation,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        leadingIcon = leadingIcon,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        placeholderString = placeholderString,
+        supportingText = supportingText,
+        enabled = enabled,
+        showPasswordText = showPassword,
+        hidePasswordText = hidePassword,
+    )
+}
+
+@OptIn(ExperimentalResourceApi::class)
+@Composable
+fun TextField(
+    labelText: String,
+    value: String,
+    state: MutableState<InputState>,
+    visualTransformation: Boolean = false,
+    onValueChange: (value: String) -> Unit = {},
+    modifier: Modifier = Modifier,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    placeholderText: String? = null,
+    supportingText: (@Composable () -> Unit)? = null,
+    enabled: Boolean = true,
+    showPasswordText: String? = null,
+    hidePasswordText: String? = null,
+) {
+    val showPassword = showPasswordText ?: resString(
+        composeId = ui.rs.Res.string.text_field_show_password,
+        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Mostrar contrasena"),
+    )
+    val hidePassword = hidePasswordText ?: resString(
+        composeId = ui.rs.Res.string.text_field_hide_password,
+        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Ocultar contrasena"),
+    )
+
+    TextFieldContent(
+        labelString = labelText,
+        value = value,
+        state = state,
+        visualTransformation = visualTransformation,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        leadingIcon = leadingIcon,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        placeholderString = placeholderText,
+        supportingText = supportingText,
+        enabled = enabled,
+        showPasswordText = showPassword,
+        hidePasswordText = hidePassword,
+    )
+}
+
+@Composable
+private fun TextFieldContent(
+    labelString: String,
+    value: String,
+    state: MutableState<InputState>,
+    visualTransformation: Boolean,
+    onValueChange: (value: String) -> Unit,
+    modifier: Modifier,
+    leadingIcon: (@Composable () -> Unit)?,
+    keyboardOptions: KeyboardOptions,
+    keyboardActions: KeyboardActions,
+    placeholderString: String?,
+    supportingText: (@Composable () -> Unit)?,
+    enabled: Boolean,
+    showPasswordText: String,
+    hidePasswordText: String,
+) {
+    var isVisible by remember { mutableStateOf(!visualTransformation) }
+
     val errorMessage = state.value.details.takeIf { !state.value.isValid }
 
     val fieldModifier = if (errorMessage != null) {
@@ -86,7 +167,7 @@ fun TextField(
                 {
                     IconButton(onClick = { isVisible = !isVisible }) {
                         val icon = if (isVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility
-                        val description = if (isVisible) hidePassword else showPassword
+                        val description = if (isVisible) hidePasswordText else showPasswordText
                         Icon(imageVector = icon, contentDescription = description)
                     }
                 }

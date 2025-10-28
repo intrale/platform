@@ -1,0 +1,35 @@
+package ar.com.intrale.strings.catalog
+
+import ar.com.intrale.strings.model.MessageKey
+
+internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
+    MessageKey.app_name to "Intrale",
+    MessageKey.login_title to "Welcome to Intrale",
+    MessageKey.login_subtitle to "Sign in with your corporate email to continue.",
+    MessageKey.login_button to "Sign in",
+    MessageKey.login_error_credentials to "Incorrect username or password",
+    MessageKey.login_change_password_required to "Update your password to continue",
+    MessageKey.login_generic_error to "We couldn't sign you in. Please try again.",
+    MessageKey.login_user_icon_content_description to "User icon",
+    MessageKey.login_password_icon_content_description to "Password icon",
+    MessageKey.login_change_password_title to "Update your password",
+    MessageKey.login_change_password_description to "Your account needs a password update before signing in.",
+    MessageKey.signup to "Sign up",
+    MessageKey.register_business to "Register business",
+    MessageKey.signup_delivery to "Delivery signup",
+    MessageKey.password_recovery to "Recover password",
+    MessageKey.confirm_password_recovery to "Confirm recovery",
+    MessageKey.username to "Username",
+    MessageKey.password to "Password",
+    MessageKey.login_email_placeholder to "email@intrale.com",
+    MessageKey.login_password_placeholder to "Your password",
+    MessageKey.login_new_password_placeholder to "New secure password",
+    MessageKey.login_name_placeholder to "Name",
+    MessageKey.login_family_name_placeholder to "Last name",
+    MessageKey.new_password to "New password",
+    MessageKey.login_name_label to "Name",
+    MessageKey.login_family_name_label to "Last name",
+    MessageKey.text_field_show_password to "Show password",
+    MessageKey.text_field_hide_password to "Hide password",
+    MessageKey.error_generic to "Something went wrong. Please try again.",
+)
