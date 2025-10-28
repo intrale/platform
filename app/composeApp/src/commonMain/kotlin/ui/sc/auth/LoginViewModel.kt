@@ -4,6 +4,7 @@ import DIManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import ar.com.intrale.strings.model.MessageKey
 import asdo.auth.DoLoginResult
 import asdo.auth.ToDoCheckPreviousLogin
 import asdo.auth.ToDoLogin
@@ -15,6 +16,8 @@ import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.inputs.InputState
 import ui.sc.shared.ViewModel
+
+private const val MIN_PASSWORD_LENGTH = 8
 
 class LoginViewModel : ViewModel() {
 
@@ -114,10 +117,15 @@ class LoginViewModel : ViewModel() {
         validateCurrentState()
     }
 
-    fun markCredentialsAsInvalid(message: String) {
+    fun markCredentialsAsInvalid(message: MessageKey) {
         listOf(LoginUIState::user.name, LoginUIState::password.name).forEach { key ->
             inputsStates[key]?.let {
-                it.value = it.value.copy(isValid = false, details = message)
+                it.value = it.value.copy(
+                    isValid = false,
+                    details = "",
+                    messageKey = message,
+                    messageParams = emptyMap(),
+                )
             }
         }
     }
@@ -132,40 +140,86 @@ class LoginViewModel : ViewModel() {
 
     private fun validateCurrentState() {
         inputsStates.forEach { (_, inputState) ->
-            inputState.value = inputState.value.copy(isValid = true, details = "")
+            inputState.value = inputState.value.copy(
+                isValid = true,
+                details = "",
+                messageKey = null,
+                messageParams = emptyMap(),
+            )
         }
         val result = loginValidation(state)
         result.errors.forEach { error ->
             val key = error.dataPath.substring(1)
             val mutableState = inputsStates.getOrPut(key) { mutableStateOf(InputState(key)) }
-            mutableState.value = mutableState.value.copy(
-                isValid = false,
-                details = error.message
-            )
+            val message = error.message
+            val (messageKey, params) = message?.let(::parseMessageKeyWithParams) ?: (null to emptyMap())
+            mutableState.value = if (messageKey != null) {
+                mutableState.value.copy(
+                    isValid = false,
+                    details = "",
+                    messageKey = messageKey,
+                    messageParams = params,
+                )
+            } else {
+                mutableState.value.copy(
+                    isValid = false,
+                    details = message ?: "",
+                    messageKey = null,
+                    messageParams = emptyMap(),
+                )
+            }
         }
     }
 
     private fun buildValidation(): Validation<LoginUIState> = Validation {
         LoginUIState::user required {
-            minLength(1) hint "Ingresá tu correo electrónico"
-            pattern(".+@.+\\..+") hint "Ingresá un correo electrónico válido"
+            minLength(1) hint MessageKey.validation_enter_email.name
+            pattern(".+@.+\\..+") hint MessageKey.validation_enter_valid_email.name
         }
         LoginUIState::password required {
-            minLength(1) hint "Ingresá tu contraseña"
-            minLength(8) hint "Debe contener al menos 8 caracteres"
+            minLength(1) hint MessageKey.validation_enter_password.name
+            minLength(MIN_PASSWORD_LENGTH) hint messageWithParams(MessageKey.validation_min_length, "min" to MIN_PASSWORD_LENGTH.toString())
         }
         if (changePasswordRequired) {
             LoginUIState::newPassword required {
-                minLength(1) hint "Ingresá tu nueva contraseña"
-                minLength(8) hint "Debe contener al menos 8 caracteres"
+                minLength(1) hint MessageKey.validation_enter_new_password.name
+                minLength(MIN_PASSWORD_LENGTH) hint messageWithParams(MessageKey.validation_min_length, "min" to MIN_PASSWORD_LENGTH.toString())
             }
             LoginUIState::name required {
-                minLength(1) hint "Ingresá tu nombre"
+                minLength(1) hint MessageKey.validation_enter_name.name
             }
             LoginUIState::familyName required {
-                minLength(1) hint "Ingresá tu apellido"
+                minLength(1) hint MessageKey.validation_enter_family_name.name
             }
         }
+    }
+
+    private fun messageWithParams(messageKey: MessageKey, vararg params: Pair<String, String>): String {
+        val encodedParams = params.joinToString(separator = "|") { (param, value) -> "$param=$value" }
+        return buildString {
+            append(messageKey.name)
+            if (encodedParams.isNotEmpty()) {
+                append("|")
+                append(encodedParams)
+            }
+        }
+    }
+
+    private fun parseMessageKeyWithParams(raw: String): Pair<MessageKey?, Map<String, String>> {
+        val segments = raw.split("|")
+        val key = segments.firstOrNull()?.let { runCatching { MessageKey.valueOf(it) }.getOrNull() }
+        if (key == null) {
+            return null to emptyMap()
+        }
+        val params = segments.drop(1).mapNotNull { segment ->
+            val parts = segment.split("=", limit = 2)
+            if (parts.size == 2) {
+                parts[0] to parts[1]
+            } else {
+                null
+            }
+        }.toMap()
+        return key to params
     }
 }
 

@@ -23,6 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import ar.com.intrale.strings.Txt
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.StringResource
 import ui.rs.text_field_hide_password
@@ -47,8 +48,6 @@ fun TextField(
     supportingText: (@Composable () -> Unit)? = null,
     enabled: Boolean = true,
 ) {
-    var isVisible by remember { mutableStateOf(!visualTransformation) }
-
     val labelString = resString(
         composeId = label,
         fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Etiqueta de campo"),
@@ -59,6 +58,72 @@ fun TextField(
             fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Placeholder de campo"),
         )
     }
+
+    IntraleTextField(
+        labelText = labelString,
+        value = value,
+        state = state,
+        visualTransformation = visualTransformation,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        leadingIcon = leadingIcon,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        placeholderText = placeholderString,
+        supportingText = supportingText,
+        enabled = enabled,
+    )
+}
+
+@Composable
+fun TextField(
+    labelText: String,
+    value: String,
+    state: MutableState<InputState>,
+    visualTransformation: Boolean = false,
+    onValueChange: (value: String) -> Unit = {},
+    modifier: Modifier = Modifier,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    placeholderText: String? = null,
+    supportingText: (@Composable () -> Unit)? = null,
+    enabled: Boolean = true,
+) {
+    IntraleTextField(
+        labelText = labelText,
+        value = value,
+        state = state,
+        visualTransformation = visualTransformation,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        leadingIcon = leadingIcon,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        placeholderText = placeholderText,
+        supportingText = supportingText,
+        enabled = enabled,
+    )
+}
+
+@OptIn(ExperimentalResourceApi::class)
+@Composable
+private fun IntraleTextField(
+    labelText: String,
+    value: String,
+    state: MutableState<InputState>,
+    visualTransformation: Boolean,
+    onValueChange: (value: String) -> Unit,
+    modifier: Modifier,
+    leadingIcon: (@Composable () -> Unit)?,
+    keyboardOptions: KeyboardOptions,
+    keyboardActions: KeyboardActions,
+    placeholderText: String?,
+    supportingText: (@Composable () -> Unit)?,
+    enabled: Boolean,
+) {
+    var isVisible by remember { mutableStateOf(!visualTransformation) }
+
     val showPassword = resString(
         composeId = ui.rs.Res.string.text_field_show_password,
         fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Mostrar contrasena"),
@@ -67,7 +132,13 @@ fun TextField(
         composeId = ui.rs.Res.string.text_field_hide_password,
         fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Ocultar contrasena"),
     )
-    val errorMessage = state.value.details.takeIf { !state.value.isValid }
+
+    val errorMessage = if (!state.value.isValid) {
+        state.value.messageKey?.let { Txt(it, state.value.messageParams) }
+            ?: state.value.details.takeIf { it.isNotBlank() }
+    } else {
+        null
+    }
 
     val fieldModifier = if (errorMessage != null) {
         modifier.semantics { error(errorMessage) }
@@ -79,7 +150,7 @@ fun TextField(
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
-            label = { Text(labelString, style = MaterialTheme.typography.labelMedium) },
+            label = { Text(labelText, style = MaterialTheme.typography.labelMedium) },
             modifier = fieldModifier,
             leadingIcon = leadingIcon,
             trailingIcon = if (visualTransformation) {
@@ -104,10 +175,10 @@ fun TextField(
             },
             keyboardOptions = keyboardOptions,
             keyboardActions = keyboardActions,
-            placeholder = placeholderString?.let { placeholderText ->
+            placeholder = placeholderText?.let { placeholderValue ->
                 {
                     Text(
-                        text = placeholderText,
+                        text = placeholderValue,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -122,6 +193,7 @@ fun TextField(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
+
                     supportingText != null -> supportingText()
                 }
             },
