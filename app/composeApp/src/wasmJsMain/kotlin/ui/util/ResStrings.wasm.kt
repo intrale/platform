@@ -10,26 +10,8 @@ actual fun resString(
     composeId: StringResource?,
     fallbackAsciiSafe: String,
 ): String {
-    val fallback = fallbackAsciiSafe
-
-    var composeFailure: Throwable? = null
-    if (composeId != null) {
-        runCatching { stringResource(composeId) }
-            .onSuccess { return it }
-            .onFailure { error -> composeFailure = error }
-    }
-
-    val identifier = buildString {
-        append("androidId=")
-        append(androidId ?: "null")
-        append(' ')
-        append("composeId=")
-        append(composeId ?: "null")
-    }
-
-    return if (composeFailure != null) {
-        logFallback(identifier, fallback, composeFailure)
-    } else {
-        logFallback(identifier, fallback, null)
+    return when {
+        composeId != null -> stringResource(composeId)
+        else -> fallbackAsciiSafe
     }
 }
