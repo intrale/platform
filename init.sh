@@ -20,7 +20,7 @@ export ANDROID_HOME="$ANDROID_SDK_ROOT"
 export ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT"
 export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
-# Evitar SIGPIPE (exit 141) al aceptar licencias
+# ⚠️ Evitar SIGPIPE (exit 141) al aceptar licencias
 set +o pipefail
 yes | sdkmanager --licenses >/dev/null 2>&1 || true
 yes | sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
@@ -60,9 +60,7 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=/bin/true
 
 mkdir -p "$WORKDIR"
-if [ ! -d "$WORKDIR/.git" ]; then
-  git -C "$WORKDIR" init
-fi
+[ -d "$WORKDIR/.git" ] || git -C "$WORKDIR" init
 
 # Config mínima de autor (por si Codex comitea)
 git -C "$WORKDIR" config user.name  "${GIT_AUTHOR_NAME:-leitocodexbot}"
