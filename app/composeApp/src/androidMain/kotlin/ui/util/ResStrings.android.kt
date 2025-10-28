@@ -1,11 +1,10 @@
-@file:OptIn(ExperimentalResourceApi::class)
-
 package ui.util
 
+import android.content.res.Resources
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.res.stringResource
-import org.jetbrains.compose.resources.ExperimentalResourceApi
+import androidx.compose.ui.platform.LocalContext
 import org.jetbrains.compose.resources.StringResource
+import org.jetbrains.compose.resources.stringResource
 
 @Composable
 actual fun resString(
@@ -13,37 +12,21 @@ actual fun resString(
     composeId: StringResource?,
     fallbackAsciiSafe: String,
 ): String {
-    val identifier = "androidId=$androidId composeId=$composeId"
-
-    val resolvedAndroidId = androidId ?: composeId?.let(::androidIdFromCompose)
-
-    resolvedAndroidId?.let { id ->
-        return runCatching { stringResource(id) }
-            .getOrElse { error ->
-                logFallback(identifier, fallbackAsciiSafe, error)
-            }
-    }
-
+    // 1) Compose resources (sin try/catch)
     if (composeId != null) {
-        val guessedKey = composeKey(composeId)
-        val message = buildString {
-            append("Missing Android string for composeId=")
-            append(composeId)
-            if (guessedKey != null) {
-                append(" key=")
-                append(guessedKey)
-            }
-        }
-        return logFallback(message, fallbackAsciiSafe)
+        return stringResource(composeId)
     }
 
-    return logFallback(identifier, fallbackAsciiSafe)
-}
+    // 2) R.string (esto NO es composable; podemos protegerlo)
+    val ctx = runCatching { LocalContext.current }.getOrNull()
+    val resources: Resources? = ctx?.resources
+    if (androidId != null && resources != null) {
+        runCatching {
+            return resources.getString(androidId)
+        }
+        // si falla, seguimos al fallback
+    }
 
-private fun androidIdFromCompose(resource: StringResource): Int? {
-    return composeKey(resource)?.let(::androidStringId)
-}
-
-private fun composeKey(resource: StringResource): String? {
-    return runCatching { resource.key }.getOrNull()
+    // 3) Fallback definitivo (ASCII-safe)
+    return fallbackAsciiSafe
 }
