@@ -1,10 +1,10 @@
 package ui.util
 
-import android.content.Context
+import android.content.res.Resources
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import org.jetbrains.compose.resources.StringResource
-import org.jetbrains.compose.resources.stringResource as composeStringResource
+import org.jetbrains.compose.resources.stringResource
 
 @Composable
 actual fun resString(
@@ -12,39 +12,21 @@ actual fun resString(
     composeId: StringResource?,
     fallbackAsciiSafe: String,
 ): String {
-    val context: Context = LocalContext.current
-    val identifier = "androidId=$androidId composeId=$composeId"
-
-    androidId?.let { id ->
-        return resolveOrFallback(
-            identifier = identifier,
-            resolver = { context.getString(id) },
-            fallback = fallbackAsciiSafe,
-        )
+    // 1) Compose resources (sin try/catch)
+    if (composeId != null) {
+        return stringResource(composeId)
     }
 
-    composeId?.let { cid ->
-        return resolveComposeOrFallback(
-            identifier = identifier,
-            fallback = fallbackAsciiSafe,
-        ) {
-            composeStringResource(cid)
+    // 2) R.string (esto NO es composable; podemos protegerlo)
+    val ctx = runCatching { LocalContext.current }.getOrNull()
+    val resources: Resources? = ctx?.resources
+    if (androidId != null && resources != null) {
+        runCatching {
+            return resources.getString(androidId)
         }
+        // si falla, seguimos al fallback
     }
 
-    return logFallback(identifier, fallbackAsciiSafe)
-}
-
-@Composable
-private fun resolveComposeOrFallback(
-    identifier: String,
-    fallback: String,
-    onFailure: (Throwable) -> Unit = {},
-    resolver: @Composable () -> String,
-): String {
-    return runCatching { resolver() }
-        .getOrElse { error ->
-            onFailure(error)
-            logFallback(identifier, fallback, error)
-        }
+    // 3) Fallback definitivo (ASCII-safe)
+    return fallbackAsciiSafe
 }
