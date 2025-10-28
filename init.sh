@@ -1,36 +1,36 @@
 #!/bin/bash
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Instalando Android SDK...
+########################################
+# 📦 Android SDK (como ya tenías)
+########################################
 echo "📦 Instalando Android SDK..."
 
 ANDROID_SDK_ROOT="/workspace/android-sdk"
 mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
 
 cd "$ANDROID_SDK_ROOT/cmdline-tools"
-curl -o commandlinetools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-unzip -q commandlinetools.zip
-rm commandlinetools.zip
-mv cmdline-tools latest
+if [ ! -d "latest" ]; then
+  curl -sSfL -o commandlinetools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+  unzip -q commandlinetools.zip
+  rm -f commandlinetools.zip
+  mv cmdline-tools latest
+fi
 
 export ANDROID_HOME="$ANDROID_SDK_ROOT"
 export ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT"
 export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
-yes | sdkmanager --licenses
-yes | sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+yes | sdkmanager --licenses >/dev/null
+yes | sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null
 
 echo "✅ Android SDK instalado correctamente."
 
-#echo "🎨 Sincronizando íconos oficiales..."
-#SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-#cd "$SCRIPT_DIR"
-#./gradlew :app:composeApp:syncBrandingIcons
-
-# =========================
-# 🔐 Validación de GITHUB_TOKEN (mínimo intrusivo)
-# =========================
+########################################
+# 🔐 Validación de GITHUB_TOKEN (como ya tenías)
+########################################
 echo "🔐 Validando GITHUB_TOKEN..."
 
 if [ -z "${GITHUB_TOKEN:-}" ]; then
@@ -52,10 +52,8 @@ else
 
   gh_echo_login() {
     local auth_header="$1"
-    # No dependemos de jq
     local body
     body="$(curl -s -H "$GH_ACCEPT_HEADER" -H "$GH_API_VERSION" -H "Authorization: $auth_header" "$GH_ENDPOINT")"
-    # Extrae "login":"usuario"
     local login
     login="$(printf '%s' "$body" | sed -n 's/.*"login"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
     if [ -n "$login" ]; then
@@ -65,7 +63,6 @@ else
 
   gh_echo_scopes() {
     local auth_header="$1"
-    # Encabezados (solo muestran X-OAuth-Scopes para PAT clásico)
     local headers
     headers="$(curl -s -I -H "$GH_ACCEPT_HEADER" -H "$GH_API_VERSION" -H "Authorization: $auth_header" "$GH_ENDPOINT")"
     local scopes
@@ -77,15 +74,12 @@ else
     fi
   }
 
-  # 1) Probar como PAT clásico
   CODE_TOKEN="$(gh_http_code "token $GITHUB_TOKEN")"
-
   if [ "$CODE_TOKEN" = "200" ]; then
     echo "✅ GITHUB_TOKEN válido (Authorization: token ...)."
     gh_echo_login "token $GITHUB_TOKEN"
     gh_echo_scopes "token $GITHUB_TOKEN"
   else
-    # 2) Probar como Bearer (PAT fine-grained o token de App)
     CODE_BEARER="$(gh_http_code "Bearer $GITHUB_TOKEN")"
     if [ "$CODE_BEARER" = "200" ]; then
       echo "✅ GITHUB_TOKEN válido (Authorization: Bearer ...)."
@@ -99,3 +93,58 @@ else
     fi
   fi
 fi
+
+########################################
+# 🌿 Base de trabajo SIEMPRE desde develop (fallback a main)
+########################################
+echo "🌿 Preparando workspace Git para Codex…"
+
+# Configurables
+REPO_URL="https://github.com/intrale/platform.git"
+WORKDIR="/workspace/platform"
+BASE_BRANCH="${BASE_BRANCH:-develop}"   # <<— default develop
+
+# Evita prompts interactivos
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=/bin/true
+
+mkdir -p "$WORKDIR"
+if [ ! -d "$WORKDIR/.git" ]; then
+  git -C "$WORKDIR" init
+fi
+
+# Refresca el remote con token embebido (solo para fetch)
+if git -C "$WORKDIR" remote get-url origin >/dev/null 2>&1; then
+  git -C "$WORKDIR" remote remove origin || true
+fi
+# Inserta el token de forma segura (no se loguea)
+git -C "$WORKDIR" remote add origin "https://oauth2:${GITHUB_TOKEN:-x}@github.com/intrale/platform.git"
+
+echo "🔎 Intentando fetch de la base '${BASE_BRANCH}' (shallow)…"
+if git -C "$WORKDIR" fetch --no-tags --depth=1 origin "${BASE_BRANCH}"; then
+  CHOSEN_BASE="${BASE_BRANCH}"
+else
+  echo "⚠️  No existe '${BASE_BRANCH}' en remoto. Probando 'main'…"
+  if git -C "$WORKDIR" fetch --no-tags --depth=1 origin main; then
+    CHOSEN_BASE="main"
+  else
+    echo "❌ No pude obtener ni '${BASE_BRANCH}' ni 'main' desde el remoto."
+    exit 1
+  fi
+fi
+
+# Crea/forza la rama de trabajo 'work' desde el FETCH_HEAD de la base elegida
+git -C "$WORKDIR" switch --force-create work FETCH_HEAD
+
+# Limpia el remote para que los comandos posteriores no filtren token
+git -C "$WORKDIR" remote remove origin || true
+
+# Estado y commit base
+echo "✅ Rama base elegida: ${CHOSEN_BASE}"
+echo "✅ Rama de trabajo actual: $(git -C "$WORKDIR" branch --show-current)"
+echo "✅ HEAD: $(git -C "$WORKDIR" rev-parse HEAD)"
+
+# Muestra un status limpio
+git -C "$WORKDIR" status --porcelain=v1
+
+echo "🏁 Workspace listo para trabajar desde '${CHOSEN_BASE}' ➜ 'work'."
