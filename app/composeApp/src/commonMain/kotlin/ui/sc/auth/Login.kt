@@ -37,38 +37,13 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import asdo.auth.DoLoginException
-import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.confirm_password_recovery
-import ui.rs.error_credentials
-import ui.rs.family_name
-import ui.rs.login
-import ui.rs.login_change_password_description
-import ui.rs.login_change_password_required
-import ui.rs.login_change_password_title
-import ui.rs.login_email_placeholder
-import ui.rs.login_family_name_placeholder
-import ui.rs.login_generic_error
-import ui.rs.login_name_placeholder
-import ui.rs.login_new_password_placeholder
-import ui.rs.login_password_icon_content_description
-import ui.rs.login_password_placeholder
-import ui.rs.login_subtitle
-import ui.rs.login_title
-import ui.rs.login_user_icon_content_description
-import ui.rs.name
-import ui.rs.new_password
-import ui.rs.password
-import ui.rs.password_recovery
-import ui.rs.register_business
-import ui.rs.signup
-import ui.rs.signup_delivery
-import ui.rs.username
 import ui.sc.business.DASHBOARD_PATH
 import ui.sc.business.REGISTER_NEW_BUSINESS_PATH
 import ui.sc.shared.Screen
@@ -77,13 +52,12 @@ import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
 import ui.sc.signup.SIGNUP_DELIVERY_PATH
 import ui.th.elevations
 import ui.th.spacing
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val LOGIN_PATH = "/login"
 
-class Login : Screen(LOGIN_PATH, Res.string.login) {
+class Login : Screen(LOGIN_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.login_title
 
     private val logger = LoggerFactory.default.newLogger<Login>()
 
@@ -92,7 +66,6 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
         screenImplementation()
     }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImplementation(viewModel: LoginViewModel = viewModel { LoginViewModel() }) {
         val snackbarHostState = remember { SnackbarHostState() }
@@ -100,66 +73,21 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
         val focusManager = LocalFocusManager.current
         val scrollState = rememberScrollState()
 
-        val loginText = resString(
-            composeId = Res.string.login,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Iniciar sesion"),
-        )
-        val errorCredentials = resString(
-            composeId = Res.string.error_credentials,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Credenciales invalidas"),
-        )
-        val changePasswordMessage = resString(
-            composeId = Res.string.login_change_password_required,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cambio de contrasena requerido"),
-        )
-        val genericError = resString(
-            composeId = Res.string.login_generic_error,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Error inesperado en login"),
-        )
-        val loginTitle = resString(
-            composeId = Res.string.login_title,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Titulo de ingreso"),
-        )
-        val loginSubtitle = resString(
-            composeId = Res.string.login_subtitle,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Descripcion de ingreso"),
-        )
-        val userIconDescription = resString(
-            composeId = Res.string.login_user_icon_content_description,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Icono usuario"),
-        )
-        val passwordIconDescription = resString(
-            composeId = Res.string.login_password_icon_content_description,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Icono contrasena"),
-        )
-        val changePasswordTitle = resString(
-            composeId = Res.string.login_change_password_title,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Actualizar contrasena"),
-        )
-        val changePasswordDescription = resString(
-            composeId = Res.string.login_change_password_description,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Instrucciones para actualizar"),
-        )
-        val signupLinkLabel = resString(
-            composeId = Res.string.signup,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
-        )
-        val registerBusinessLinkLabel = resString(
-            composeId = Res.string.register_business,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
-        )
-        val signupDeliveryLinkLabel = resString(
-            composeId = Res.string.signup_delivery,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar repartidor"),
-        )
-        val passwordRecoveryLinkLabel = resString(
-            composeId = Res.string.password_recovery,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Recuperar contrasena"),
-        )
-        val confirmRecoveryLinkLabel = resString(
-            composeId = Res.string.confirm_password_recovery,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Confirmar recuperacion"),
-        )
+        val loginText = Txt(MessageKey.login_button)
+        val errorCredentials = Txt(MessageKey.login_error_credentials)
+        val changePasswordMessage = Txt(MessageKey.login_change_password_required)
+        val genericError = Txt(MessageKey.login_generic_error)
+        val loginTitle = Txt(MessageKey.login_title)
+        val loginSubtitle = Txt(MessageKey.login_subtitle)
+        val userIconDescription = Txt(MessageKey.login_user_icon_content_description)
+        val passwordIconDescription = Txt(MessageKey.login_password_icon_content_description)
+        val changePasswordTitle = Txt(MessageKey.login_change_password_title)
+        val changePasswordDescription = Txt(MessageKey.login_change_password_description)
+        val signupLinkLabel = Txt(MessageKey.signup)
+        val registerBusinessLinkLabel = Txt(MessageKey.register_business)
+        val signupDeliveryLinkLabel = Txt(MessageKey.signup_delivery)
+        val passwordRecoveryLinkLabel = Txt(MessageKey.password_recovery)
+        val confirmRecoveryLinkLabel = Txt(MessageKey.confirm_password_recovery)
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
@@ -256,7 +184,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                     ) {
                         TextField(
-                            label = Res.string.username,
+                            label = MessageKey.username,
                             value = viewModel.state.user,
                             state = viewModel.inputsStates[LoginViewModel.LoginUIState::user.name]!!,
                             onValueChange = viewModel::onUserChange,
@@ -272,12 +200,12 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                                 imeAction = ImeAction.Next
                             ),
                             keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                            placeholder = Res.string.login_email_placeholder,
+                            placeholder = MessageKey.login_email_placeholder,
                             enabled = !viewModel.loading
                         )
 
                         TextField(
-                            label = Res.string.password,
+                            label = MessageKey.password,
                             value = viewModel.state.password,
                             state = viewModel.inputsStates[LoginViewModel.LoginUIState::password.name]!!,
                             visualTransformation = true,
@@ -298,7 +226,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                             } else {
                                 KeyboardActions(onDone = { submitLogin() })
                             },
-                            placeholder = Res.string.login_password_placeholder,
+                            placeholder = MessageKey.login_password_placeholder,
                             enabled = !viewModel.loading
                         )
 
@@ -318,7 +246,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 TextField(
-                                    label = Res.string.new_password,
+                                    label = MessageKey.new_password,
                                     value = viewModel.state.newPassword,
                                     state = viewModel.inputsStates[LoginViewModel.LoginUIState::newPassword.name]!!,
                                     visualTransformation = true,
@@ -329,11 +257,11 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                                         imeAction = ImeAction.Next
                                     ),
                                     keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                                    placeholder = Res.string.login_new_password_placeholder,
+                                    placeholder = MessageKey.login_new_password_placeholder,
                                     enabled = !viewModel.loading
                                 )
                                 TextField(
-                                    label = Res.string.name,
+                                    label = MessageKey.first_name,
                                     value = viewModel.state.name,
                                     state = viewModel.inputsStates[LoginViewModel.LoginUIState::name.name]!!,
                                     onValueChange = viewModel::onNameChange,
@@ -343,11 +271,11 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                                         imeAction = ImeAction.Next
                                     ),
                                     keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                                    placeholder = Res.string.login_name_placeholder,
+                                    placeholder = MessageKey.login_name_placeholder,
                                     enabled = !viewModel.loading
                                 )
                                 TextField(
-                                    label = Res.string.family_name,
+                                    label = MessageKey.family_name,
                                     value = viewModel.state.familyName,
                                     state = viewModel.inputsStates[LoginViewModel.LoginUIState::familyName.name]!!,
                                     onValueChange = viewModel::onFamilyNameChange,
@@ -357,7 +285,7 @@ class Login : Screen(LOGIN_PATH, Res.string.login) {
                                         imeAction = ImeAction.Done
                                     ),
                                     keyboardActions = KeyboardActions(onDone = { submitLogin() }),
-                                    placeholder = Res.string.login_family_name_placeholder,
+                                    placeholder = MessageKey.login_family_name_placeholder,
                                     enabled = !viewModel.loading
                                 )
                             }
