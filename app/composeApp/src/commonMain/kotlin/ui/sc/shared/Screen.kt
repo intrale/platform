@@ -1,11 +1,17 @@
 package ui.sc.shared
 
 import androidx.compose.runtime.Composable
+import ar.com.intrale.strings.model.MessageKey
 import org.jetbrains.compose.resources.StringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
-abstract class Screen (val route: String, val title: StringResource) {
+abstract class Screen(
+    val route: String,
+    val title: StringResource? = null,
+) {
+
+    open val messageTitle: MessageKey? = null
 
     protected val screenLogger = LoggerFactory.default.newLogger<Screen>()
 

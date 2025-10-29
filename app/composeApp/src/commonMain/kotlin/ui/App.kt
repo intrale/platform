@@ -21,10 +21,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
-import org.jetbrains.compose.resources.StringResource
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ar.com.intrale.strings.Txt
+import ui.sc.shared.Screen
 import ui.ro.Router
 import ui.rs.Res
 import ui.rs.back_button
@@ -36,18 +37,24 @@ import ui.util.resString
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppBar(
-    title: StringResource,
+    screen: Screen,
     canNavigateBack: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val titleText = screen.messageTitle?.let { Txt(it) }
+        ?: screen.title?.let {
+            resString(
+                composeId = it,
+                fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Pantalla sin titulo"),
+            )
+        }
+        ?: RES_ERROR_PREFIX + fb("Pantalla sin titulo")
+
     TopAppBar(
         title = {
             Text(
-                resString(
-                    composeId = title,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Pantalla sin titulo"),
-                )
+                titleText
             )
         },
         colors = TopAppBarDefaults.mediumTopAppBarColors(
@@ -98,7 +105,7 @@ fun App() {
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 AppBar(
-                    title = router.currentScreen().title,
+                    screen = router.currentScreen(),
                     canNavigateBack = router.canNavigateBack(),
                     onClick = { router.navigateUp() }
                 )
