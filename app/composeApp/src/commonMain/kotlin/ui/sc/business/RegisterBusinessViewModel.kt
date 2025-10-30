@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import ar.com.intrale.strings.model.MessageKey
 import ar.com.intrale.strings.resolveMessage
 import io.konform.validation.Validation
+import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
@@ -32,14 +33,14 @@ class RegisterBusinessViewModel : ViewModel() {
     init {
         validation = Validation<UIState> {
             UIState::name required {
-                hint(resolveMessage(MessageKey.form_error_required))
+                minLength(1) hint resolveMessage(MessageKey.form_error_required)
             }
             UIState::email required {
-                hint(resolveMessage(MessageKey.form_error_required))
+                minLength(1) hint resolveMessage(MessageKey.form_error_required)
                 pattern(".+@.+\\..+") hint resolveMessage(MessageKey.form_error_invalid_email)
             }
             UIState::description required {
-                hint(resolveMessage(MessageKey.form_error_required))
+                minLength(1) hint resolveMessage(MessageKey.form_error_required)
             }
         } as Validation<Any>
         initInputState()
