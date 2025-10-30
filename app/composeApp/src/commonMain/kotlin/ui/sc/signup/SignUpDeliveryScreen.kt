@@ -9,46 +9,43 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.menuAnchor
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.MaterialTheme
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
-import org.jetbrains.compose.resources.ExperimentalResourceApi
-import ui.cp.buttons.IntralePrimaryButton
-import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.email
-import ui.rs.signup_delivery
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import ui.rs.business
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.th.spacing
+import ui.cp.buttons.IntralePrimaryButton
+import ui.cp.inputs.TextField
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
+import ui.th.spacing
 
 const val SIGNUP_DELIVERY_PATH = "/signupDelivery"
 
-class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_delivery) {
+class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH) {
     private val logger = LoggerFactory.default.newLogger<SignUpDeliveryScreen>()
+
+    override val messageTitle: MessageKey = MessageKey.signup_delivery_title
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class, ExperimentalMaterial3Api::class)
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun screenImpl(viewModel: SignUpDeliveryViewModel = viewModel { SignUpDeliveryViewModel() }) {
         val coroutine = rememberCoroutineScope()
@@ -69,7 +66,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.email,
+                    MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
@@ -79,7 +76,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                 val showMenu = expanded && viewModel.suggestions.isNotEmpty()
                 ExposedDropdownMenuBox(expanded = showMenu, onExpandedChange = { expanded = it }) {
                     TextField(
-                        Res.string.business,
+                        MessageKey.business,
                         value = viewModel.state.businessName,
                         state = viewModel.inputsStates[SignUpDeliveryViewModel.SignUpUIState::businessPublicId.name]!!,
                         modifier = Modifier.menuAnchor(),
@@ -103,10 +100,7 @@ class SignUpDeliveryScreen : Screen(SIGNUP_DELIVERY_PATH, Res.string.signup_deli
                     }
                 }
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val signupDeliveryLabel = resString(
-                    composeId = Res.string.signup_delivery,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar repartidor"),
-                )
+                val signupDeliveryLabel = Txt(MessageKey.signup_delivery_submit)
                 IntralePrimaryButton(
                     text = signupDeliveryLabel,
                     iconAsset = "ic_delivery.svg",
