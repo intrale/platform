@@ -17,36 +17,35 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
-import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.email
-import ui.rs.password_recovery
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val PASSWORD_RECOVERY_PATH = "/passwordRecovery"
 
-class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.password_recovery) {
+class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.password_recovery
 
     private val logger = LoggerFactory.default.newLogger<PasswordRecoveryScreen>()
 
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: PasswordRecoveryViewModel = viewModel { PasswordRecoveryViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
+        val passwordRecoveryLabel = Txt(MessageKey.password_recovery)
+        val passwordRecoverySuccessMessage = Txt(MessageKey.password_recovery_email_sent)
+        val genericErrorMessage = Txt(MessageKey.error_generic)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -62,20 +61,16 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.passwor
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.email,
+                    MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[PasswordRecoveryViewModel.PasswordRecoveryUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val recoveryLabel = resString(
-                    composeId = Res.string.password_recovery,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Recuperar contrasena"),
-                )
                 IntralePrimaryButton(
-                    text = recoveryLabel,
+                    text = passwordRecoveryLabel,
                     iconAsset = "ic_recover.svg",
-                    iconContentDescription = recoveryLabel,
+                    iconContentDescription = passwordRecoveryLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
@@ -87,10 +82,14 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH, Res.string.passwor
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.recovery() },
-                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Correo enviado") } },
+                                onSuccess = {
+                                    coroutine.launch {
+                                        snackbarHostState.showSnackbar(passwordRecoverySuccessMessage)
+                                    }
+                                },
                                 onError = { error ->
                                     logger.error { "Error en recuperación de contraseña: ${error.message}" }
-                                    snackbarHostState.showSnackbar(error.message ?: "Error")
+                                    snackbarHostState.showSnackbar(error.message ?: genericErrorMessage)
                                 }
                             )
                         }
