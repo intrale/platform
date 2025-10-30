@@ -91,6 +91,8 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.signup to "Sign up",
     MessageKey.signup_platform_admin to "Platform admin signup",
     MessageKey.signup_delivery to "Delivery signup",
+    MessageKey.signup_delivery_title to "Delivery signup",
+    MessageKey.signup_delivery_submit to "Register delivery driver",
     MessageKey.text_field_hide_password to "Hide password",
     MessageKey.text_field_show_password to "Show password",
     MessageKey.username to "Username",
