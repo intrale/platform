@@ -84,6 +84,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.register_saler_success to "Registration sent",
     MessageKey.register_saler_email_invalid to "Enter a valid email address",
     MessageKey.signup to "Sign up",
+    MessageKey.signup_platform_admin to "Platform admin signup",
     MessageKey.signup_delivery to "Delivery signup",
     MessageKey.text_field_hide_password to "Hide password",
     MessageKey.text_field_show_password to "Show password",
