@@ -19,8 +19,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
-import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ar.com.intrale.strings.model.MessageKey
@@ -33,31 +34,22 @@ import ui.rs.review_join_business_rejected
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val REVIEW_JOIN_BUSINESS_PATH = "/reviewJoinBusiness"
 
-class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.review_join_business) {
+class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH) {
+    override val messageTitle: MessageKey = MessageKey.review_join_business
     private val logger = LoggerFactory.default.newLogger<ReviewJoinBusinessScreen>()
 
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: ReviewJoinBusinessViewModel = viewModel { ReviewJoinBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val approvedMsg = resString(
-            composeId = Res.string.review_join_business_approved,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Union aprobada"),
-        )
-        val rejectedMsg = resString(
-            composeId = Res.string.review_join_business_rejected,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Union rechazada"),
-        )
+        val approvedMsg = Txt(MessageKey.review_join_business_feedback_approved)
+        val rejectedMsg = Txt(MessageKey.review_join_business_feedback_rejected)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -74,6 +66,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     label = MessageKey.email,
+                    MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[ReviewJoinBusinessViewModel.UIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
@@ -83,10 +76,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
                 ) {
                     Button(
-                        label = resString(
-                            composeId = Res.string.review_join_business_approved,
-                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Aprobar union"),
-                        ),
+                        label = Txt(MessageKey.review_join_business_action_approve),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,
                         onClick = {
@@ -107,10 +97,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
                         }
                     )
                     Button(
-                        label = resString(
-                            composeId = Res.string.review_join_business_rejected,
-                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Rechazar union"),
-                        ),
+                        label = Txt(MessageKey.review_join_business_action_reject),
                         loading = viewModel.loading,
                         enabled = !viewModel.loading,
                         onClick = {

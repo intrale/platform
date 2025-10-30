@@ -24,24 +24,27 @@ import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import ui.rs.Res
 import ui.rs.signup_platform_admin
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.cp.buttons.Button
+import ui.cp.inputs.TextField
 import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val SIGNUP_PLATFORM_ADMIN_PATH = "/signupPlatformAdmin"
 
-class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.signup_platform_admin) {
+class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH) {
     private val logger = LoggerFactory.default.newLogger<SignUpPlatformAdminScreen>()
+
+    override val messageTitle: MessageKey = MessageKey.signup_platform_admin_title
+
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: SignUpPlatformAdminViewModel = viewModel { SignUpPlatformAdminViewModel() }) {
         val coroutine = rememberCoroutineScope()
@@ -63,16 +66,15 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH, Res.string.
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     label = MessageKey.email,
+                    MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[SignUpPlatformAdminViewModel.SignUpUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
+                val submitLabel = Txt(MessageKey.signup_platform_admin_submit)
                 Button(
-                    label = resString(
-                        composeId = Res.string.signup_platform_admin,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar administrador"),
-                    ),
+                    label = submitLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
