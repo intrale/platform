@@ -17,27 +17,24 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.email
-import ui.rs.register_saler
-import ui.rs.register_saler_success
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val REGISTER_SALER_PATH = "/registerSaler"
 
-class RegisterSalerScreen : Screen(REGISTER_SALER_PATH, Res.string.register_saler) {
+class RegisterSalerScreen : Screen(REGISTER_SALER_PATH) {
     private val logger = LoggerFactory.default.newLogger<RegisterSalerScreen>()
+
+    override val messageTitle: MessageKey = MessageKey.register_saler_title
 
     @Composable
     override fun screen() { screenImpl() }
@@ -47,10 +44,7 @@ class RegisterSalerScreen : Screen(REGISTER_SALER_PATH, Res.string.register_sale
     private fun screenImpl(viewModel: RegisterSalerViewModel = viewModel { RegisterSalerViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val successMessage = resString(
-            composeId = Res.string.register_saler_success,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registro enviado"),
-        )
+        val successMessage = Txt(MessageKey.register_saler_success)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { paddingValues ->
             logger.debug { "Mostrando RegisterSalerScreen" }
@@ -67,17 +61,15 @@ class RegisterSalerScreen : Screen(REGISTER_SALER_PATH, Res.string.register_sale
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.email,
+                    MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[RegisterSalerViewModel.RegisterSalerUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
+                val registerLabel = Txt(MessageKey.register_saler_submit)
                 Button(
-                    label = resString(
-                        composeId = Res.string.register_saler,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar vendedor"),
-                    ),
+                    label = registerLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
