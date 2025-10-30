@@ -92,6 +92,7 @@ enum class MessageKey {
     register_saler_success,
     register_saler_email_invalid,
     signup,
+    signup_platform_admin,
     signup_delivery,
     text_field_hide_password,
     text_field_show_password,
