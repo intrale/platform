@@ -24,8 +24,13 @@ import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ar.com.intrale.strings.model.MessageKey
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
+import ui.rs.Res
+import ui.rs.review_join_business
+import ui.rs.review_join_business_approved
+import ui.rs.review_join_business_rejected
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
@@ -60,6 +65,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH) {
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
+                    label = MessageKey.email,
                     MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[ReviewJoinBusinessViewModel.UIState::email.name]!!,

@@ -24,6 +24,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import ui.cp.buttons.Button
@@ -32,7 +33,6 @@ import ui.rs.Res
 import ui.rs.approve
 import ui.rs.approve_selected
 import ui.rs.auto_accept_deliveries
-import ui.rs.code
 import ui.rs.description
 import ui.rs.email_admin
 import ui.rs.pending_requests
@@ -88,7 +88,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.code,
+                    label = MessageKey.confirm_password_recovery_code,
                     value = viewModel.state.twoFactorCode,
                     state = viewModel.inputsStates[ReviewBusinessViewModel.UIState::twoFactorCode.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(twoFactorCode = it) }

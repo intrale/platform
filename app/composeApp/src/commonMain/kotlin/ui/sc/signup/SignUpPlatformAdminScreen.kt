@@ -17,6 +17,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
+import org.jetbrains.compose.resources.ExperimentalResourceApi
+import ar.com.intrale.strings.model.MessageKey
+import ui.cp.buttons.Button
+import ui.cp.inputs.TextField
+import ui.rs.Res
+import ui.rs.signup_platform_admin
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
@@ -58,6 +65,7 @@ class SignUpPlatformAdminScreen : Screen(SIGNUP_PLATFORM_ADMIN_PATH) {
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
+                    label = MessageKey.email,
                     MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[SignUpPlatformAdminViewModel.SignUpUIState::email.name]!!,
