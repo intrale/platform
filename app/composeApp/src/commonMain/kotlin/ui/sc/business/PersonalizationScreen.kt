@@ -2,15 +2,15 @@ package ui.sc.business
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
-import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
@@ -22,32 +22,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import org.jetbrains.compose.resources.ExperimentalResourceApi
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.rs.personalization_access_denied
-import ui.rs.personalization_business_context
-import ui.rs.personalization_description
-import ui.rs.personalization_section_app_icon
-import ui.rs.personalization_section_colors
-import ui.rs.personalization_section_images
-import ui.rs.personalization_section_pending
-import ui.rs.personalization_section_preview
-import ui.rs.personalization_section_typography
-import ui.rs.personalization_title
 import ui.sc.shared.Screen
 import ui.session.SessionStore
 import ui.session.UserRole
 import ui.th.spacing
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val PERSONALIZATION_PATH = "/personalization"
 
 private val ALLOWED_ROLES = setOf(UserRole.BusinessAdmin, UserRole.PlatformAdmin)
 
-class PersonalizationScreen : Screen(PERSONALIZATION_PATH, personalization_title) {
+class PersonalizationScreen : Screen(PERSONALIZATION_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.personalization_title
 
     private val logger = LoggerFactory.default.newLogger<PersonalizationScreen>()
 
@@ -57,7 +47,6 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH, personalization_title
         PersonalizationContent()
     }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun PersonalizationContent() {
         val sessionStateState = SessionStore.sessionState.collectAsState()
@@ -65,10 +54,7 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH, personalization_title
         val role = sessionState.role
         val hasAccess = role in ALLOWED_ROLES && sessionState.selectedBusinessId?.isNotBlank() == true
 
-        val accessDeniedMessage = resString(
-            composeId = personalization_access_denied,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("No tienes permiso para acceder a esta seccion"),
-        )
+        val accessDeniedMessage = Txt(MessageKey.personalization_access_denied)
 
         if (!hasAccess) {
             Text(
@@ -81,58 +67,37 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH, personalization_title
             return
         }
 
-        val businessLabel = resString(
-            composeId = personalization_business_context,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Negocio actual"),
+        val description = Txt(MessageKey.personalization_description)
+        val businessContext = Txt(
+            key = MessageKey.personalization_business_context,
+            params = mapOf("businessId" to sessionState.selectedBusinessId.orEmpty()),
         )
-        val description = resString(
-            composeId = personalization_description,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Configura la apariencia de tu negocio"),
-        )
-        val pendingLabel = resString(
-            composeId = personalization_section_pending,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Disponible proximamente"),
-        )
+        val pendingLabel = Txt(MessageKey.personalization_section_pending)
 
         val sections = listOf(
             PersonalizationSection(
                 icon = Icons.Default.Palette,
-                title = resString(
-                    composeId = personalization_section_colors,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Colores"),
-                ),
+                title = Txt(MessageKey.personalization_section_colors),
                 description = pendingLabel,
             ),
             PersonalizationSection(
                 icon = Icons.Default.Title,
-                title = resString(
-                    composeId = personalization_section_typography,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Tipografias"),
-                ),
+                title = Txt(MessageKey.personalization_section_typography),
                 description = pendingLabel,
             ),
             PersonalizationSection(
                 icon = Icons.Default.Image,
-                title = resString(
-                    composeId = personalization_section_images,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Imagenes"),
-                ),
+                title = Txt(MessageKey.personalization_section_images),
                 description = pendingLabel,
             ),
             PersonalizationSection(
                 icon = Icons.Default.Brush,
-                title = resString(
-                    composeId = personalization_section_app_icon,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Icono de app"),
-                ),
+                title = Txt(MessageKey.personalization_section_app_icon),
                 description = pendingLabel,
             ),
             PersonalizationSection(
                 icon = Icons.Default.Visibility,
-                title = resString(
-                    composeId = personalization_section_preview,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Previsualizacion"),
-                ),
+                title = Txt(MessageKey.personalization_section_preview),
                 description = pendingLabel,
             ),
         )
@@ -152,7 +117,7 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH, personalization_title
             )
 
             Text(
-                text = "$businessLabel: ${sessionState.selectedBusinessId.orEmpty()}",
+                text = businessContext,
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
             )
 
