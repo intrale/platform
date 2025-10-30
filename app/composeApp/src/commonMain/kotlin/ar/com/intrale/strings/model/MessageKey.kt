@@ -88,6 +88,8 @@ enum class MessageKey {
     register_saler_email_invalid,
     signup,
     signup_delivery,
+    signup_delivery_title,
+    signup_delivery_submit,
     text_field_hide_password,
     text_field_show_password,
     username,
