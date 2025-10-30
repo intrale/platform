@@ -17,27 +17,23 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.code
-import ui.rs.confirm_password_recovery
-import ui.rs.email
-import ui.rs.password
-import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
+import ui.th.spacing
 
 const val CONFIRM_PASSWORD_RECOVERY_PATH = "/confirmPasswordRecovery"
 
-class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res.string.confirm_password_recovery) {
+class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.confirm_password_recovery
 
     private val logger = LoggerFactory.default.newLogger<ConfirmPasswordRecoveryScreen>()
 
@@ -64,31 +60,30 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.email,
+                    label = MessageKey.confirm_password_recovery_email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.code,
+                    label = MessageKey.confirm_password_recovery_code,
                     value = viewModel.state.code,
                     state = viewModel.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::code.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(code = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.password,
+                    label = MessageKey.password,
                     visualTransformation = true,
                     value = viewModel.state.password,
                     state = viewModel.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::password.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(password = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
-                val confirmLabel = resString(
-                    composeId = Res.string.confirm_password_recovery,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Confirmar recuperacion"),
-                )
+                val confirmLabel = Txt(MessageKey.confirm_password_recovery)
+                val passwordUpdatedMessage = Txt(MessageKey.confirm_password_recovery_success)
+                val genericErrorMessage = Txt(MessageKey.error_generic)
                 IntralePrimaryButton(
                     text = confirmLabel,
                     iconAsset = "ic_recover.svg",
@@ -104,10 +99,10 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH, Res
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.confirm() },
-                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Contraseña actualizada") } },
+                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar(passwordUpdatedMessage) } },
                                 onError = { error ->
                                     logger.error { "Error al confirmar recuperación: ${error.message}" }
-                                    snackbarHostState.showSnackbar(error.message ?: "Error")
+                                    snackbarHostState.showSnackbar(error.message ?: genericErrorMessage)
                                 }
                             )
                         }
