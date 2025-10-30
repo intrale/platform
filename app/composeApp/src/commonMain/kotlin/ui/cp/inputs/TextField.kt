@@ -23,15 +23,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
-import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.StringResource
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
-import ui.rs.text_field_hide_password
-import ui.rs.text_field_show_password
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 @Composable
 private fun TextFieldContent(
@@ -117,59 +110,6 @@ private fun TextFieldContent(
             shape = MaterialTheme.shapes.medium
         )
     }
-}
-
-@OptIn(ExperimentalResourceApi::class)
-@Composable
-fun TextField(
-    label: StringResource,
-    value: String,
-    state: MutableState<InputState>,
-    visualTransformation: Boolean = false,
-    onValueChange: (value: String) -> Unit = {},
-    modifier: Modifier = Modifier,
-    leadingIcon: (@Composable () -> Unit)? = null,
-    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
-    keyboardActions: KeyboardActions = KeyboardActions.Default,
-    placeholder: StringResource? = null,
-    supportingText: (@Composable () -> Unit)? = null,
-    enabled: Boolean = true,
-) {
-    val labelString = resString(
-        composeId = label,
-        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Etiqueta de campo"),
-    )
-    val placeholderString = placeholder?.let {
-        resString(
-            composeId = it,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Placeholder de campo"),
-        )
-    }
-    val showPassword = resString(
-        composeId = ui.rs.Res.string.text_field_show_password,
-        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Mostrar contrasena"),
-    )
-    val hidePassword = resString(
-        composeId = ui.rs.Res.string.text_field_hide_password,
-        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Ocultar contrasena"),
-    )
-
-    TextFieldContent(
-        labelText = labelString,
-        value = value,
-        state = state,
-        visualTransformation = visualTransformation,
-        onValueChange = onValueChange,
-        modifier = modifier,
-        leadingIcon = leadingIcon,
-        keyboardOptions = keyboardOptions,
-        keyboardActions = keyboardActions,
-        placeholderText = placeholderString,
-        supportingText = supportingText,
-        enabled = enabled,
-        showPasswordLabel = showPassword,
-        hidePasswordLabel = hidePassword,
-    )
 }
 
 @Composable

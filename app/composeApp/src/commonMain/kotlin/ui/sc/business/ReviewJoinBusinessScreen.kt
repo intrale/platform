@@ -23,10 +23,10 @@ import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ar.com.intrale.strings.model.MessageKey
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import ui.rs.Res
-import ui.rs.email
 import ui.rs.review_join_business
 import ui.rs.review_join_business_approved
 import ui.rs.review_join_business_rejected
@@ -73,7 +73,7 @@ class ReviewJoinBusinessScreen : Screen(REVIEW_JOIN_BUSINESS_PATH, Res.string.re
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.email,
+                    label = MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[ReviewJoinBusinessViewModel.UIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
