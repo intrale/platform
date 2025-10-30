@@ -17,6 +17,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
@@ -29,24 +30,25 @@ import ui.rs.two_factor_verify
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val TWO_FACTOR_VERIFY_PATH = "/twoFactorVerify"
 
-class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH, Res.string.two_factor_verify) {
+class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.dashboard_menu_verify_two_factor
 
     private val logger = LoggerFactory.default.newLogger<TwoFactorVerifyScreen>()
 
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: TwoFactorVerifyViewModel = viewModel { TwoFactorVerifyViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
+        val verifyLabel = Txt(MessageKey.two_factor_verify_submit)
+        val successMessage = Txt(MessageKey.two_factor_verify_success)
+        val genericError = Txt(MessageKey.error_generic)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -62,6 +64,7 @@ class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH, Res.string.two_fact
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
+                    MessageKey.confirm_password_recovery_code,
                     label = MessageKey.confirm_password_recovery_code,
                     value = viewModel.state.code,
                     state = viewModel.inputsStates[TwoFactorVerifyViewModel.TwoFactorVerifyUIState::code.name]!!,
@@ -69,10 +72,7 @@ class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH, Res.string.two_fact
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = resString(
-                        composeId = Res.string.two_factor_verify,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Verificar codigo"),
-                    ),
+                    label = verifyLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
@@ -83,10 +83,12 @@ class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH, Res.string.two_fact
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.verify() },
-                                onSuccess = { coroutine.launch { snackbarHostState.showSnackbar("Código verificado") } },
+                                onSuccess = {
+                                    coroutine.launch { snackbarHostState.showSnackbar(successMessage) }
+                                },
                                 onError = { error ->
                                     logger.error { "Error al verificar: ${error.message}" }
-                                    snackbarHostState.showSnackbar(error.message ?: "Error")
+                                    snackbarHostState.showSnackbar(error.message ?: genericError)
                                 }
                             )
                         }

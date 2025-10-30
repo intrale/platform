@@ -98,4 +98,6 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.text_field_hide_password to "Hide password",
     MessageKey.text_field_show_password to "Show password",
     MessageKey.username to "Username",
+    MessageKey.two_factor_verify_submit to "Verify code",
+    MessageKey.two_factor_verify_success to "Code verified",
 )

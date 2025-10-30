@@ -101,4 +101,6 @@ enum class MessageKey {
     text_field_hide_password,
     text_field_show_password,
     username,
+    two_factor_verify_submit,
+    two_factor_verify_success,
 }
