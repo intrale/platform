@@ -27,8 +27,6 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.StringResource
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
-import ui.rs.text_field_hide_password
-import ui.rs.text_field_show_password
 import ui.util.RES_ERROR_PREFIX
 import ui.util.fb
 import ui.util.resString
@@ -51,7 +49,12 @@ private fun TextFieldContent(
     hidePasswordLabel: String,
 ) {
     var isVisible by remember { mutableStateOf(!visualTransformation) }
-    val errorMessage = state.value.details.takeIf { !state.value.isValid }
+    val errorMessageDetails = state.value.details.takeIf { !state.value.isValid }
+    val errorMessage = errorMessageDetails?.let { details ->
+        MessageKey.values().firstOrNull { it.name == details }?.let { key ->
+            Txt(key)
+        } ?: details
+    }
 
     val fieldModifier = if (errorMessage != null) {
         modifier.semantics { error(errorMessage) }

@@ -5,6 +5,7 @@ import asdo.business.ToDoRegisterBusiness
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import ar.com.intrale.strings.model.MessageKey
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
@@ -29,9 +30,16 @@ class RegisterBusinessViewModel : ViewModel() {
 
     init {
         validation = Validation<UIState> {
-            UIState::name required {}
-            UIState::email required { pattern(".+@.+\\..+") hint "Correo inválido" }
-            UIState::description required {}
+            UIState::name required {
+                hint(MessageKey.form_error_required.name)
+            }
+            UIState::email required {
+                hint(MessageKey.form_error_required.name)
+                pattern(".+@.+\\..+") hint MessageKey.form_error_invalid_email.name
+            }
+            UIState::description required {
+                hint(MessageKey.form_error_required.name)
+            }
         } as Validation<Any>
         initInputState()
     }
