@@ -6,6 +6,7 @@ import asdo.signup.ToDoRegisterSaler
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import ar.com.intrale.strings.model.MessageKey
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
@@ -27,7 +28,7 @@ class RegisterSalerViewModel : ViewModel() {
     init {
         validation = Validation<RegisterSalerUIState> {
             RegisterSalerUIState::email required {
-                pattern(".+@.+\\..+") hint "Correo inválido"
+                pattern(".+@.+\\..+") hint MessageKey.register_saler_email_invalid.name
             }
         } as Validation<Any>
         initInputState()

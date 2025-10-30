@@ -1,6 +1,5 @@
 package ui.sc.business
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,40 +17,31 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
-import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.business
-import ui.rs.request_join_business
-import ui.rs.request_join_business_sent
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val REQUEST_JOIN_BUSINESS_PATH = "/requestJoinBusiness"
 
-class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.request_join_business) {
+class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH) {
+    override val messageTitle: MessageKey = MessageKey.request_join_business
     private val logger = LoggerFactory.default.newLogger<RequestJoinBusinessScreen>()
 
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: RequestJoinBusinessViewModel = viewModel { RequestJoinBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val requestSent = resString(
-            composeId = Res.string.request_join_business_sent,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitud enviada"),
-        )
+        val requestSent = Txt(MessageKey.request_join_business_sent)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -67,17 +57,14 @@ class RequestJoinBusinessScreen : Screen(REQUEST_JOIN_BUSINESS_PATH, Res.string.
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.business,
+                    MessageKey.business,
                     value = viewModel.state.business,
                     state = viewModel.inputsStates[RequestJoinBusinessViewModel.UIState::business.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(business = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
-                    label = resString(
-                        composeId = Res.string.request_join_business,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitar union"),
-                    ),
+                    label = Txt(MessageKey.request_join_business),
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
