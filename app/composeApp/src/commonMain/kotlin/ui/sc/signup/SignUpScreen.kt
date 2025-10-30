@@ -17,26 +17,28 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.launch
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import org.jetbrains.compose.resources.ExperimentalResourceApi
+import ar.com.intrale.strings.model.MessageKey
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import ui.rs.Res
-import ui.rs.email
 import ui.rs.signup
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.th.spacing
+import ui.cp.buttons.Button
+import ui.cp.inputs.TextField
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
+import ui.th.spacing
 
 const val SIGNUP_PATH = "/signup"
 
-class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
+class SignUpScreen : Screen(SIGNUP_PATH) {
+    override val messageTitle: MessageKey = MessageKey.signup
+
     private val logger = LoggerFactory.default.newLogger<SignUpScreen>()
     @Composable
     override fun screen() { screenImpl() }
@@ -62,17 +64,16 @@ class SignUpScreen : Screen(SIGNUP_PATH, Res.string.signup) {
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.email,
+                    label = MessageKey.email,
+                    MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[SignUpViewModel.SignUpUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
+                val signupLabel = Txt(MessageKey.signup)
                 Button(
-                    label = resString(
-                        composeId = Res.string.signup,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
-                    ),
+                    label = signupLabel,
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {

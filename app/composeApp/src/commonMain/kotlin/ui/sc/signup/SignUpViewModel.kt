@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.signup.DoSignUpResult
 import asdo.signup.ToDoSignUp
+import ar.com.intrale.strings.model.MessageKey
+import ar.com.intrale.strings.resolveMessage
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.instance
@@ -25,7 +27,7 @@ class SignUpViewModel : ViewModel() {
     init {
         validation = Validation<SignUpUIState> {
             SignUpUIState::email required {
-                pattern(".+@.+\\..+") hint "Correo inválido"
+                pattern(".+@.+\\..+") hint resolveMessage(MessageKey.form_error_invalid_email)
             }
         } as Validation<Any>
         initInputState()

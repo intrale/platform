@@ -19,11 +19,14 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import kotlinx.coroutines.launch
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
+import ui.rs.Res
+import ui.rs.two_factor_verify
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
@@ -62,6 +65,7 @@ class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     MessageKey.confirm_password_recovery_code,
+                    label = MessageKey.confirm_password_recovery_code,
                     value = viewModel.state.code,
                     state = viewModel.inputsStates[TwoFactorVerifyViewModel.TwoFactorVerifyUIState::code.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(code = it) }
