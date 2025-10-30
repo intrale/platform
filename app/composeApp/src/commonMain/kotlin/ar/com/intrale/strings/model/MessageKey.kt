@@ -7,6 +7,10 @@ package ar.com.intrale.strings.model
 @Suppress("EnumEntryName")
 enum class MessageKey {
     app_name,
+    buttons_preview_login,
+    buttons_preview_logout,
+    buttons_preview_signup,
+    buttons_preview_title,
     app_back_button,
     app_home_icon_content_description,
     app_missing_title,
