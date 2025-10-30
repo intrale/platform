@@ -1,19 +1,9 @@
-# 🔄 Transiciones de Estado (permitidas)
+# 🔁 Transiciones válidas de estado (Project V2)
 
-Flujo principal:
-- Backlog → Refined
-- Refined → Todo
-- Todo → In Progress
-- In Progress → Ready
-- Ready → Done
+Backlog → Refined → Todo → In Progress → Ready → Done
 
-Bloqueos:
-- Cualquiera → Blocked (con causa)
-- Blocked → (volver al estado previo) cuando se resuelva
-
-Reglas:
-- No saltar pasos (ej.: Backlog → In Progress = ❌).
-- Todo exige que la issue esté en Refined (si no, mover primero a Refined).
-- Done exige evidencia de validación y criterios de aceptación cumplidos.
-- Al liberar un bloqueo: restaurar el estado que tenía antes de Blocked.
-- Toda transición debe dejar comentario (qué cambió y por qué).
+- `Blocked` puede aplicarse en cualquier estado.
+- Las transiciones deben mantener trazabilidad (comentario automático al cambiar estado).
+- Cambios automáticos provocados por PRs:
+    - Al crear PR asociado: `Todo → In Progress` (si aplica tu flujo).
+    - Al mergear PR: mover a `Done` **cuando** cumpla criterios QA.
