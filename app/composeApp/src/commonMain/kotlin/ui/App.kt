@@ -27,12 +27,8 @@ import org.kodein.log.newLogger
 import ar.com.intrale.strings.Txt
 import ui.sc.shared.Screen
 import ui.ro.Router
-import ui.rs.Res
-import ui.rs.back_button
 import ui.th.IntraleTheme
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
+import ar.com.intrale.strings.model.MessageKey
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,14 +38,7 @@ fun AppBar(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val titleText = screen.messageTitle?.let { Txt(it) }
-        ?: screen.title?.let {
-            resString(
-                composeId = it,
-                fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Pantalla sin titulo"),
-            )
-        }
-        ?: RES_ERROR_PREFIX + fb("Pantalla sin titulo")
+    val titleText = screen.titleText()
 
     TopAppBar(
         title = {
@@ -66,19 +55,13 @@ fun AppBar(
                 IconButton(onClick = onClick) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = resString(
-                            composeId = Res.string.back_button,
-                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Accion volver"),
-                        )
+                        contentDescription = Txt(MessageKey.app_back_button)
                     )
                 }
             } else {
                 Icon(
                     imageVector = Icons.Default.Home,
-                    contentDescription = resString(
-                        composeId = Res.string.back_button,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Accion volver"),
-                    )
+                    contentDescription = Txt(MessageKey.app_home_icon_content_description)
                 )
             }
         }
