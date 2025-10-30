@@ -51,7 +51,11 @@ private fun TextFieldContent(
     hidePasswordLabel: String,
 ) {
     var isVisible by remember { mutableStateOf(!visualTransformation) }
-    val errorMessage = state.value.details.takeIf { !state.value.isValid }
+    val errorMessage = state.value.details
+        .takeIf { !state.value.isValid }
+        ?.let { detail ->
+            MessageKey.entries.firstOrNull { it.name == detail }?.let { Txt(it) } ?: detail
+        }
 
     val fieldModifier = if (errorMessage != null) {
         modifier.semantics { error(errorMessage) }
