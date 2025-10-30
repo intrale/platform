@@ -89,6 +89,8 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.register_saler_success to "Registro enviado",
     MessageKey.register_saler_email_invalid to "Ingresá un correo electrónico válido",
     MessageKey.signup to "Registrarme",
+    MessageKey.signup_platform_admin_title to "Registro administrador de plataforma",
+    MessageKey.signup_platform_admin_submit to "Registrar administrador",
     MessageKey.signup_platform_admin to "Registro Platform Admin",
     MessageKey.signup_delivery to "Registro Delivery",
     MessageKey.signup_delivery_title to "Registro Delivery",
