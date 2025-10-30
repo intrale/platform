@@ -4,6 +4,10 @@ import ar.com.intrale.strings.model.MessageKey
 
 internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.app_name to "Intrale",
+    MessageKey.buttons_preview_login to "Sign in",
+    MessageKey.buttons_preview_logout to "Sign out",
+    MessageKey.buttons_preview_signup to "Create account",
+    MessageKey.buttons_preview_title to "Buttons preview",
     MessageKey.confirm_password_recovery to "Confirm recovery",
     MessageKey.error_generic to "Something went wrong. Please try again.",
     MessageKey.family_name to "Last name",

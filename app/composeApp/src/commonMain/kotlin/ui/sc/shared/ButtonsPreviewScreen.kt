@@ -13,22 +13,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
-import ui.rs.Res
-import ui.rs.buttons_preview
-import ui.rs.login
-import ui.rs.logout
-import ui.rs.signup
 import ui.th.spacing
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val BUTTONS_PREVIEW_PATH = "/demo/buttons"
 
-class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_preview) {
+class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.buttons_preview_title
 
     private val logger = LoggerFactory.default.newLogger<ButtonsPreviewScreen>()
 
@@ -50,37 +46,25 @@ class ButtonsPreviewScreen : Screen(BUTTONS_PREVIEW_PATH, Res.string.buttons_pre
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = resString(
-                    composeId = Res.string.buttons_preview,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Vista previa de botones"),
-                ),
+                text = Txt(MessageKey.buttons_preview_title),
                 style = MaterialTheme.typography.headlineMedium
             )
 
             IntralePrimaryButton(
-                text = resString(
-                    composeId = Res.string.login,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Iniciar sesion"),
-                ),
+                text = Txt(MessageKey.buttons_preview_login),
                 onClick = { logger.info { "Vista previa: ingresar" } },
                 leadingIcon = Icons.Filled.Login
             )
 
             IntralePrimaryButton(
-                text = resString(
-                    composeId = Res.string.signup,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
-                ),
+                text = Txt(MessageKey.buttons_preview_signup),
                 onClick = { logger.info { "Vista previa: registrarme (loading)" } },
                 leadingIcon = Icons.Filled.HowToReg,
                 loading = true
             )
 
             IntralePrimaryButton(
-                text = resString(
-                    composeId = Res.string.logout,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cerrar sesion"),
-                ),
+                text = Txt(MessageKey.buttons_preview_logout),
                 onClick = { logger.info { "Vista previa: salir" } },
                 leadingIcon = Icons.Filled.Logout,
                 enabled = false
