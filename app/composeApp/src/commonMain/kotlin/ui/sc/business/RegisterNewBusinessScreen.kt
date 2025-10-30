@@ -17,43 +17,30 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
-import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.description
-import ui.rs.email_admin
-import ui.rs.name
-import ui.rs.register_business
-import ui.rs.register_business_sent
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val REGISTER_NEW_BUSINESS_PATH = "/registerNewBusiness"
 
-class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.register_business) {
+class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH) {
+    override val messageTitle: MessageKey = MessageKey.register_business
     private val logger = LoggerFactory.default.newLogger<RegisterNewBusinessScreen>()
 
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: RegisterBusinessViewModel = viewModel { RegisterBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
-        val registerBusinessSent = resString(
-            composeId = Res.string.register_business_sent,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registro enviado"),
-        )
-
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
                 Modifier
@@ -68,30 +55,28 @@ class RegisterNewBusinessScreen : Screen(REGISTER_NEW_BUSINESS_PATH, Res.string.
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.name,
+                    label = MessageKey.business_name,
                     value = viewModel.state.name,
                     state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::name.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(name = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.email_admin,
+                    label = MessageKey.business_admin_email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    Res.string.description,
+                    label = MessageKey.business_description,
                     value = viewModel.state.description,
                     state = viewModel.inputsStates[RegisterBusinessViewModel.UIState::description.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(description = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                val registerLabel = resString(
-                    composeId = Res.string.register_business,
-                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
-                )
+                val registerLabel = Txt(MessageKey.register_business)
+                val registerBusinessSent = Txt(MessageKey.register_business_success)
                 IntralePrimaryButton(
                     text = registerLabel,
                     iconAsset = "ic_register_business.svg",
