@@ -65,7 +65,7 @@ echo "🌿 Preparando workspace Git para Codex…"
 # Config
 REPO_URL="https://github.com/intrale/platform.git"
 WORKDIR="/workspace/platform"
-BASE_BRANCH="${BASE_BRANCH:-develop}"       # default develop
+BASE_BRANCH="${BASE_BRANCH:-main}"       # default main
 export CODEX_PR_BASE="${BASE_BRANCH}"       # hint para agentes que lo lean
 
 # Evitar prompts

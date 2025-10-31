@@ -19,26 +19,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
-import org.jetbrains.compose.resources.ExperimentalResourceApi
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
-import ui.rs.Res
-import ui.rs.home
-import ui.rs.home_headline
-import ui.rs.home_subtitle
-import ui.rs.login
-import ui.rs.signup
 import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val HOME_PATH = "/home"
 
-class Home : Screen(HOME_PATH, Res.string.home) {
+class Home : Screen(HOME_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.home_title
 
     private val logger = LoggerFactory.default.newLogger<Home>()
 
@@ -48,18 +42,13 @@ class Home : Screen(HOME_PATH, Res.string.home) {
         ScreenContent()
     }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun ScreenContent() {
         val scrollState = rememberScrollState()
-        val loginLabel = resString(
-            composeId = Res.string.login,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Iniciar sesion"),
-        )
-        val signupLabel = resString(
-            composeId = Res.string.signup,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Crear cuenta"),
-        )
+        val loginLabel = Txt(MessageKey.login_button)
+        val signupLabel = Txt(MessageKey.signup)
+        val headline = Txt(MessageKey.home_headline)
+        val subtitle = Txt(MessageKey.home_subtitle)
 
         Box(
             modifier = Modifier
@@ -78,19 +67,13 @@ class Home : Screen(HOME_PATH, Res.string.home) {
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
             ) {
                 Text(
-                    text = resString(
-                        composeId = Res.string.home_headline,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Mensaje principal"),
-                    ),
+                    text = headline,
                     style = MaterialTheme.typography.headlineMedium,
                     textAlign = TextAlign.Center
                 )
 
                 Text(
-                    text = resString(
-                        composeId = Res.string.home_subtitle,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Detalle introductorio"),
-                    ),
+                    text = subtitle,
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center
                 )

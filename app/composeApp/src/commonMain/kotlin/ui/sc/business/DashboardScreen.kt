@@ -2,10 +2,12 @@
 
 package ui.sc.business
 
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,7 +43,6 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
@@ -89,7 +90,9 @@ const val DASHBOARD_PATH = "/dashboard"
 // tocar esta constante.
 private const val DASHBOARD_ANIMATIONS_ENABLED = false
 
-class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
+class DashboardScreen : Screen(DASHBOARD_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.dashboard_title
 
     private val logger = LoggerFactory.default.newLogger<DashboardScreen>()
 
@@ -99,7 +102,6 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         ScreenContent()
     }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun ScreenContent(viewModel: DashboardViewModel = viewModel { DashboardViewModel() }) {
         val coroutineScope = rememberCoroutineScope()
@@ -116,10 +118,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
                 roleAllowed && businessRequirementMet
             }
         }
-        val dashboardTitle = resString(
-            composeId = dashboard,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Panel principal"),
-        )
+        val dashboardTitle = Txt(MessageKey.dashboard_title)
 
         if (DASHBOARD_ANIMATIONS_ENABLED) {
             DashboardMenuWithSemiCircle(
@@ -134,32 +133,15 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         }
     }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun DashboardMenuWithSemiCircle(
         items: List<MainMenuItem>,
         title: String,
     ) {
-        val openDescription = resString(
-            androidId = androidStringId("semi_circular_menu_open"),
-            composeId = semi_circular_menu_open,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Menu. Desliza a la derecha para volver. Desliza hacia abajo para abrir. Toca para abrir o cerrar."),
-        )
-        val closeDescription = resString(
-            androidId = androidStringId("semi_circular_menu_close"),
-            composeId = semi_circular_menu_close,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cerrar menu de acciones"),
-        )
-        val longPressHint = resString(
-            androidId = androidStringId("semi_circular_menu_long_press_hint"),
-            composeId = semi_circular_menu_long_press_hint,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Desliza a la derecha para volver - hacia abajo para abrir"),
-        )
-        val hint = resString(
-            androidId = androidStringId("dashboard_menu_hint"),
-            composeId = dashboard_menu_hint,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Desplega el menu para acceder a las acciones principales."),
-        )
+        val openDescription = Txt(MessageKey.dashboard_menu_open_description)
+        val closeDescription = Txt(MessageKey.dashboard_menu_close_description)
+        val longPressHint = Txt(MessageKey.dashboard_menu_long_press_hint)
+        val hint = Txt(MessageKey.dashboard_menu_hint)
         val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
 
         Box(modifier = Modifier.fillMaxSize()) {
@@ -211,7 +193,6 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         }
     }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun LegacyDashboardLayout(
         items: List<MainMenuItem>,
@@ -244,62 +225,23 @@ class DashboardScreen : Screen(DASHBOARD_PATH, dashboard) {
         }
     }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun rememberDashboardMenuItems(
         viewModel: DashboardViewModel,
         coroutineScope: CoroutineScope
     ): List<MainMenuItem> {
-        val backLabel = resString(
-            composeId = back_button,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Volver"),
-        )
-        val buttonsPreviewLabel = resString(
-            composeId = buttons_preview,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Demo de botones Intrale"),
-        )
-        val changePasswordLabel = resString(
-            composeId = change_password,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Cambiar contrasena"),
-        )
-        val setupTwoFactorLabel = resString(
-            androidId = androidStringId("two_factor_setup"),
-            composeId = two_factor_setup,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Configurar autenticacion en dos pasos"),
-        )
-        val verifyTwoFactorLabel = resString(
-            androidId = androidStringId("two_factor_verify"),
-            composeId = two_factor_verify,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Verificar autenticacion en dos pasos"),
-        )
-        val registerBusinessLabel = resString(
-            composeId = register_business,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar negocio"),
-        )
-        val personalizationLabel = resString(
-            composeId = personalization_panel,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Personalizacion"),
-        )
-        val requestJoinLabel = resString(
-            composeId = request_join_business,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitar union"),
-        )
-        val reviewBusinessLabel = resString(
-            composeId = review_business,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Revisar solicitudes de negocio pendientes"),
-        )
-        val reviewJoinLabel = resString(
-            composeId = review_join_business,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Revisar solicitudes de union"),
-        )
-        val registerSalerLabel = resString(
-            composeId = register_saler,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Registrar vendedor"),
-        )
-        val logoutLabel = resString(
-            composeId = logout,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Salir"),
-        )
+        val backLabel = Txt(MessageKey.app_back_button)
+        val buttonsPreviewLabel = Txt(MessageKey.dashboard_menu_buttons_preview)
+        val changePasswordLabel = Txt(MessageKey.dashboard_menu_change_password)
+        val setupTwoFactorLabel = Txt(MessageKey.dashboard_menu_setup_two_factor)
+        val verifyTwoFactorLabel = Txt(MessageKey.dashboard_menu_verify_two_factor)
+        val registerBusinessLabel = Txt(MessageKey.register_business)
+        val personalizationLabel = Txt(MessageKey.dashboard_menu_personalization)
+        val requestJoinLabel = Txt(MessageKey.dashboard_menu_request_join_business)
+        val reviewBusinessLabel = Txt(MessageKey.dashboard_menu_review_business_requests)
+        val reviewJoinLabel = Txt(MessageKey.dashboard_menu_review_join_requests)
+        val registerSalerLabel = Txt(MessageKey.dashboard_menu_register_saler)
+        val logoutLabel = Txt(MessageKey.dashboard_menu_logout)
 
         return remember(
             backLabel,

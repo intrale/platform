@@ -23,51 +23,33 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
-import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.StringResource
-import ui.rs.text_field_hide_password
-import ui.rs.text_field_show_password
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
 
-@OptIn(ExperimentalResourceApi::class)
 @Composable
-fun TextField(
-    label: StringResource,
+private fun TextFieldContent(
+    labelText: String,
     value: String,
     state: MutableState<InputState>,
-    visualTransformation: Boolean = false,
-    onValueChange: (value: String) -> Unit = {},
-    modifier: Modifier = Modifier,
-    leadingIcon: (@Composable () -> Unit)? = null,
-    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
-    keyboardActions: KeyboardActions = KeyboardActions.Default,
-    placeholder: StringResource? = null,
-    supportingText: (@Composable () -> Unit)? = null,
-    enabled: Boolean = true,
+    visualTransformation: Boolean,
+    onValueChange: (value: String) -> Unit,
+    modifier: Modifier,
+    leadingIcon: (@Composable () -> Unit)?,
+    keyboardOptions: KeyboardOptions,
+    keyboardActions: KeyboardActions,
+    placeholderText: String?,
+    supportingText: (@Composable () -> Unit)?,
+    enabled: Boolean,
+    showPasswordLabel: String,
+    hidePasswordLabel: String,
 ) {
     var isVisible by remember { mutableStateOf(!visualTransformation) }
-
-    val labelString = resString(
-        composeId = label,
-        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Etiqueta de campo"),
-    )
-    val placeholderString = placeholder?.let {
-        resString(
-            composeId = it,
-            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Placeholder de campo"),
-        )
+    val errorMessageDetails = state.value.details.takeIf { !state.value.isValid }
+    val errorMessage = errorMessageDetails?.let { details ->
+        MessageKey.values().firstOrNull { it.name == details }?.let { key ->
+            Txt(key)
+        } ?: details
     }
-    val showPassword = resString(
-        composeId = ui.rs.Res.string.text_field_show_password,
-        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Mostrar contrasena"),
-    )
-    val hidePassword = resString(
-        composeId = ui.rs.Res.string.text_field_hide_password,
-        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Ocultar contrasena"),
-    )
-    val errorMessage = state.value.details.takeIf { !state.value.isValid }
 
     val fieldModifier = if (errorMessage != null) {
         modifier.semantics { error(errorMessage) }
@@ -79,14 +61,14 @@ fun TextField(
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
-            label = { Text(labelString, style = MaterialTheme.typography.labelMedium) },
+            label = { Text(labelText, style = MaterialTheme.typography.labelMedium) },
             modifier = fieldModifier,
             leadingIcon = leadingIcon,
             trailingIcon = if (visualTransformation) {
                 {
                     IconButton(onClick = { isVisible = !isVisible }) {
                         val icon = if (isVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility
-                        val description = if (isVisible) hidePassword else showPassword
+                        val description = if (isVisible) hidePasswordLabel else showPasswordLabel
                         Icon(imageVector = icon, contentDescription = description)
                     }
                 }
@@ -104,10 +86,10 @@ fun TextField(
             },
             keyboardOptions = keyboardOptions,
             keyboardActions = keyboardActions,
-            placeholder = placeholderString?.let { placeholderText ->
+            placeholder = placeholderText?.let { placeholder ->
                 {
                     Text(
-                        text = placeholderText,
+                        text = placeholder,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -128,4 +110,42 @@ fun TextField(
             shape = MaterialTheme.shapes.medium
         )
     }
+}
+
+@Composable
+fun TextField(
+    label: MessageKey,
+    value: String,
+    state: MutableState<InputState>,
+    visualTransformation: Boolean = false,
+    onValueChange: (value: String) -> Unit = {},
+    modifier: Modifier = Modifier,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    placeholder: MessageKey? = null,
+    supportingText: (@Composable () -> Unit)? = null,
+    enabled: Boolean = true,
+) {
+    val labelString = Txt(label)
+    val placeholderString = placeholder?.let { Txt(it) }
+    val showPassword = Txt(MessageKey.text_field_show_password)
+    val hidePassword = Txt(MessageKey.text_field_hide_password)
+
+    TextFieldContent(
+        labelText = labelString,
+        value = value,
+        state = state,
+        visualTransformation = visualTransformation,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        leadingIcon = leadingIcon,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        placeholderText = placeholderString,
+        supportingText = supportingText,
+        enabled = enabled,
+        showPasswordLabel = showPassword,
+        hidePasswordLabel = hidePassword,
+    )
 }
