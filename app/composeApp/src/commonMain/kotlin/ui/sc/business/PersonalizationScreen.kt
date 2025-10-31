@@ -11,15 +11,6 @@ import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Title
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Row
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Brush
-import androidx.compose.material.icons.filled.Title
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
@@ -33,28 +24,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
-import org.kodein.log.LoggerFactory
-import org.kodein.log.newLogger
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.rs.personalization_access_denied
-import ui.rs.personalization_business_context
-import ui.rs.personalization_description
-import ui.rs.personalization_section_app_icon
-import ui.rs.personalization_section_colors
-import ui.rs.personalization_section_images
-import ui.rs.personalization_section_pending
-import ui.rs.personalization_section_preview
-import ui.rs.personalization_section_typography
-import ui.rs.personalization_title
 import ui.sc.shared.Screen
 import ui.session.SessionStore
 import ui.session.UserRole
 import ui.th.spacing
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val PERSONALIZATION_PATH = "/personalization"
 

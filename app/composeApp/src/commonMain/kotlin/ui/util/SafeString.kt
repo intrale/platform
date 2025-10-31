@@ -14,6 +14,6 @@ internal const val SAFE_STRING_DEPRECATION_MESSAGE = "Usar resString(...) con fb
 @Deprecated(SAFE_STRING_DEPRECATION_MESSAGE)
 @Composable
 fun safeString(
-    id: StringResource,
+    @Suppress("UNUSED_PARAMETER") id: StringResource,
     fallback: String = RES_ERROR_PREFIX + fb("Texto no disponible"),
-): String = resString(composeId = id, fallbackAsciiSafe = fallback)
+): String = resString(fallbackAsciiSafe = fallback)

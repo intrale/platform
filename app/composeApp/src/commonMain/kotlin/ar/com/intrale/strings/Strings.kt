@@ -47,7 +47,6 @@ fun Txt(
     // Usamos el wrapper multiplataforma. No hay llamada composable adentro (va por fallback).
     return resString(
         androidId = null,
-        composeId = null,
         fallbackAsciiSafe = interpolated
     )
 }

@@ -1,7 +1,6 @@
 package ui.util
 
 import androidx.compose.runtime.Composable
-import org.jetbrains.compose.resources.StringResource
 import org.kodein.log.Logger
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -22,7 +21,6 @@ private object ResStringFallbackMetrics {
 @Composable
 expect fun resString(
     androidId: Int? = null,
-    composeId: StringResource? = null,
     fallbackAsciiSafe: String,
 ): String
 

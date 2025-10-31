@@ -3,16 +3,11 @@ package ui.sc.shared
 import androidx.compose.runtime.Composable
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
-import org.jetbrains.compose.resources.StringResource
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 abstract class Screen(
     val route: String,
-    val title: StringResource? = null,
 ) {
 
     open val messageTitle: MessageKey? = null
@@ -46,13 +41,6 @@ abstract class Screen(
 
     @Composable
     open fun titleText(): String {
-        messageTitle?.let { return Txt(it) }
-        title?.let {
-            return resString(
-                composeId = it,
-                fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Pantalla sin titulo"),
-            )
-        }
-        return Txt(MessageKey.app_missing_title)
+        return messageTitle?.let { Txt(it) } ?: Txt(MessageKey.app_missing_title)
     }
 }
