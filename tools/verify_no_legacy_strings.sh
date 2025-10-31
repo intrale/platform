@@ -32,10 +32,24 @@ for ex in "${EXCLUDES[@]}"; do
   exclude_expr+=( -not -path "*/$ex/*" )
 done
 
+KT_PATTERNS=(
+  "*.kt"
+  "*.kts"
+  "*.java"
+)
+
+file_filters=()
+for ext in "${KT_PATTERNS[@]}"; do
+  file_filters+=(-name "$ext" -o)
+done
+file_filters+=(-false)
+
 for dir in "${INCLUDE_DIRS[@]}"; do
   for pat in "${PATTERNS[@]}"; do
-    matches=$(find "$dir" -type f -name '*.kt' "${exclude_expr[@]}" -print0 \
-      | xargs -0 grep -nE "$pat" || true)
+    matches=$(find "$dir" -type f \
+      \( "${file_filters[@]}" \) \
+      "${exclude_expr[@]}" -print0 |
+      xargs -0 grep -nE "$pat" || true)
     if [[ -n "$matches" ]]; then
       echo "❌ Encontrado patrón prohibido: /$pat/"
       echo "$matches"
