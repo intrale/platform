@@ -64,7 +64,6 @@ class TwoFactorVerifyScreen : Screen(TWO_FACTOR_VERIFY_PATH) {
             ) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
-                    MessageKey.confirm_password_recovery_code,
                     label = MessageKey.confirm_password_recovery_code,
                     value = viewModel.state.code,
                     state = viewModel.inputsStates[TwoFactorVerifyViewModel.TwoFactorVerifyUIState::code.name]!!,

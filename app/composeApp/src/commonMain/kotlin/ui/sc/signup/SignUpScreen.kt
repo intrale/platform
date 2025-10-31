@@ -20,15 +20,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import org.jetbrains.compose.resources.ExperimentalResourceApi
-import ar.com.intrale.strings.model.MessageKey
-import ui.cp.buttons.Button
-import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.signup
 import org.kodein.log.LoggerFactory
-import org.kodein.log.newLogger
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
+import org.kodein.log.newLogger
 import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
@@ -65,7 +60,6 @@ class SignUpScreen : Screen(SIGNUP_PATH) {
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     label = MessageKey.email,
-                    MessageKey.email,
                     value = viewModel.state.email,
                     state = viewModel.inputsStates[SignUpViewModel.SignUpUIState::email.name]!!,
                     onValueChange = { viewModel.state = viewModel.state.copy(email = it) }
