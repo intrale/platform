@@ -1,10 +1,10 @@
-# 🌱 Nomenclatura de Ramas (actualizada)
+# 🌱 Nomenclatura de Ramas
 
-Reglas generales
+Reglas:
 - El nombre deriva del issue y su prefijo.
 - Si el issue es sub-tarea, trabajar sobre la **misma rama** usada por el issue padre (heredar nomenclatura del padre).
 
-Prefijos (trabajo manual)
+Prefijos:
 | Tipo            | Prefijo            |
 |-----------------|--------------------|
 | Funcionalidad   | feature/<desc>     |
