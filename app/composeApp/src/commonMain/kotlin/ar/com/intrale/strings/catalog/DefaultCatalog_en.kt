@@ -100,4 +100,9 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.username to "Username",
     MessageKey.two_factor_verify_submit to "Verify code",
     MessageKey.two_factor_verify_success to "Code verified",
+    MessageKey.app_name      to "Intrale",
+    MessageKey.login_title   to "Sign in",
+    MessageKey.login_subtitle to "Use your account",
+    MessageKey.login_button  to "Continue",
+    MessageKey.error_generic to "Something went wrong. Please try again.",
 )

@@ -103,4 +103,8 @@ enum class MessageKey {
     username,
     two_factor_verify_submit,
     two_factor_verify_success,
+    login_title,
+    login_subtitle,
+    login_button,
+    error_generic,
 }
