@@ -24,42 +24,35 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
-import org.jetbrains.compose.resources.ExperimentalResourceApi
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.approve
-import ui.rs.approve_selected
-import ui.rs.auto_accept_deliveries
-import ui.rs.description
-import ui.rs.email_admin
-import ui.rs.pending_requests
-import ui.rs.reject
-import ui.rs.reject_selected
-import ui.rs.select_all
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
-import ui.util.RES_ERROR_PREFIX
-import ui.util.fb
-import ui.util.resString
 
 const val REVIEW_BUSINESS_PATH = "/reviewBusiness"
 
-class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_requests) {
+class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH) {
+    override val messageTitle: MessageKey = MessageKey.review_business_pending_requests
     private val logger = LoggerFactory.default.newLogger<ReviewBusinessScreen>()
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: ReviewBusinessViewModel = viewModel { ReviewBusinessViewModel() }) {
         val coroutine = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
+        val pendingRequestsLabel = Txt(MessageKey.review_business_pending_requests)
+        val selectAllLabel = Txt(MessageKey.review_business_select_all)
+        val approveLabel = Txt(MessageKey.review_join_business_action_approve)
+        val rejectLabel = Txt(MessageKey.review_join_business_action_reject)
+        val approveSelectedLabel = Txt(MessageKey.review_business_approve_selected)
+        val rejectSelectedLabel = Txt(MessageKey.review_business_reject_selected)
 
         LaunchedEffect(true) {
             logger.debug { "Cargando solicitudes pendientes" }
@@ -80,12 +73,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                Text(
-                    resString(
-                        composeId = Res.string.pending_requests,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Solicitudes pendientes"),
-                    )
-                )
+                Text(pendingRequestsLabel)
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 TextField(
                     label = MessageKey.confirm_password_recovery_code,
@@ -104,12 +92,7 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             if (checked) viewModel.selectAll() else viewModel.clearSelection()
                         }
                     )
-                    Text(
-                        resString(
-                            composeId = Res.string.select_all,
-                            fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Seleccionar todo"),
-                        )
-                    )
+                    Text(selectAllLabel)
                 }
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
                 viewModel.pending.forEach { biz ->
@@ -129,27 +112,14 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(biz.name)
-                                val descriptionLabel = resString(
-                                    composeId = Res.string.description,
-                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Descripcion"),
-                                )
-                                val emailLabel = resString(
-                                    composeId = Res.string.email_admin,
-                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Correo administrador"),
-                                )
-                                val autoAcceptLabel = resString(
-                                    composeId = Res.string.auto_accept_deliveries,
-                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Auto aceptar entregas"),
-                                )
+                                val descriptionLabel = Txt(MessageKey.review_business_description_label)
+                                val emailLabel = Txt(MessageKey.business_admin_email)
+                                val autoAcceptLabel = Txt(MessageKey.review_business_auto_accept_deliveries)
                                 Text("$descriptionLabel: ${biz.description}")
                                 Text("$emailLabel: ${biz.emailAdmin}")
                                 Text("$autoAcceptLabel: ${biz.autoAcceptDeliveries}")
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                val approveLabel = resString(
-                                    composeId = Res.string.approve,
-                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Aprobar"),
-                                )
                                 Button(
                                     label = approveLabel,
                                     loading = viewModel.loading,
@@ -166,10 +136,6 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                     }
                                 )
                                 Spacer(Modifier.size(MaterialTheme.spacing.x0_5))
-                                val rejectLabel = resString(
-                                    composeId = Res.string.reject,
-                                    fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Rechazar"),
-                                )
                                 Button(
                                     label = rejectLabel,
                                     loading = viewModel.loading,
@@ -193,10 +159,6 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
-                    val approveSelectedLabel = resString(
-                        composeId = Res.string.approve_selected,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Aprobar seleccionados"),
-                    )
                     Button(
                         label = approveSelectedLabel,
                         loading = viewModel.loading,
@@ -217,10 +179,6 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH, Res.string.pending_req
                                 onSuccess = { coroutine.launch { viewModel.loadPending() } }
                             )
                         }
-                    )
-                    val rejectSelectedLabel = resString(
-                        composeId = Res.string.reject_selected,
-                        fallbackAsciiSafe = RES_ERROR_PREFIX + fb("Rechazar seleccionados"),
                     )
                     Button(
                         label = rejectSelectedLabel,

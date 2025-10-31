@@ -22,26 +22,25 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.viewmodel.compose.viewModel
-import org.jetbrains.compose.resources.ExperimentalResourceApi
+import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import kotlinx.coroutines.launch
-import ui.rs.Res
-import ui.rs.two_factor_setup
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 
 const val TWO_FACTOR_SETUP_PATH = "/twoFactorSetup"
 
-class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH, Res.string.two_factor_setup) {
+class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH) {
+
+    override val messageTitle: MessageKey = MessageKey.dashboard_menu_setup_two_factor
 
     private val logger = LoggerFactory.default.newLogger<TwoFactorSetupScreen>()
 
     @Composable
     override fun screen() { screenImpl() }
 
-    @OptIn(ExperimentalResourceApi::class)
     @Composable
     private fun screenImpl(viewModel: TwoFactorSetupViewModel = viewModel { TwoFactorSetupViewModel() }) {
         val coroutine = rememberCoroutineScope()

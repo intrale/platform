@@ -3,6 +3,7 @@ package ar.com.intrale
 import aws.sdk.kotlin.runtime.auth.credentials.StaticCredentialsProvider
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient
 import aws.smithy.kotlin.runtime.auth.awscredentials.Credentials
+import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import net.datafaker.Faker
 import org.kodein.di.DI
@@ -57,12 +58,12 @@ val appModule = DI.Module("appModule") {
             val configFactory = ConfigFactory.load()
 
             DynamoDbClient.builder()
-                .region(Region.of(System.getenv(LOCAL_AWS_REGION) ?: configFactory.getString(AWS_REGION)))
+                .region(Region.of(System.getenv(LOCAL_AWS_REGION) ?: configFactory.stringValue(AWS_REGION)))
                 .credentialsProvider(
                     software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(
-                            System.getenv(LOCAL_AWS_ACCESS_KEY_ID) ?: configFactory.getString(AWS_ACCESS_KEY_ID),
-                            System.getenv(LOCAL_AWS_SECRET_ACCESS_KEY) ?: configFactory.getString(AWS_SECRET_ACCESS_KEY))
+                            System.getenv(LOCAL_AWS_ACCESS_KEY_ID) ?: configFactory.stringValue(AWS_ACCESS_KEY_ID),
+                            System.getenv(LOCAL_AWS_SECRET_ACCESS_KEY) ?: configFactory.stringValue(AWS_SECRET_ACCESS_KEY))
                     )
                 )
                 .build()
@@ -99,11 +100,11 @@ val appModule = DI.Module("appModule") {
         singleton {
             val configFactory = ConfigFactory.load()
             UsersConfig(
-                region = System.getenv(LOCAL_AWS_REGION) ?: configFactory.getString(AWS_REGION),
-                accessKeyId = System.getenv(LOCAL_AWS_ACCESS_KEY_ID) ?: configFactory.getString(AWS_ACCESS_KEY_ID),
-                secretAccessKey = System.getenv(LOCAL_AWS_SECRET_ACCESS_KEY) ?: configFactory.getString(AWS_SECRET_ACCESS_KEY),
-                awsCognitoUserPoolId = System.getenv(LOCAL_AWS_COGNITO_USER_POOL_ID) ?: configFactory.getString(AWS_COGNITO_USER_POOL_ID),
-                awsCognitoClientId = System.getenv(LOCAL_AWS_COGNITO_CLIENT_ID) ?: configFactory.getString(AWS_COGNITO_CLIENT_ID),
+                region = System.getenv(LOCAL_AWS_REGION) ?: configFactory.stringValue(AWS_REGION),
+                accessKeyId = System.getenv(LOCAL_AWS_ACCESS_KEY_ID) ?: configFactory.stringValue(AWS_ACCESS_KEY_ID),
+                secretAccessKey = System.getenv(LOCAL_AWS_SECRET_ACCESS_KEY) ?: configFactory.stringValue(AWS_SECRET_ACCESS_KEY),
+                awsCognitoUserPoolId = System.getenv(LOCAL_AWS_COGNITO_USER_POOL_ID) ?: configFactory.stringValue(AWS_COGNITO_USER_POOL_ID),
+                awsCognitoClientId = System.getenv(LOCAL_AWS_COGNITO_CLIENT_ID) ?: configFactory.stringValue(AWS_COGNITO_CLIENT_ID),
                 tableBusiness = instance()
             )
         }
@@ -179,3 +180,5 @@ val appModule = DI.Module("appModule") {
         singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance(), instance()) }
     }
 }
+
+private fun Config.stringValue(path: String): String = getValue(path).unwrapped().toString()
