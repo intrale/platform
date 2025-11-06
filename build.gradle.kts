@@ -1,5 +1,10 @@
 import org.gradle.api.GradleException
 import java.io.File
+import org.gradle.api.plugins.JavaPluginExtension
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+import org.gradle.kotlin.dsl.findByType
+import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
+import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 
 data class LegacyMatch(
     val path: String,
@@ -7,6 +12,22 @@ data class LegacyMatch(
     val pattern: String,
     val snippet: String,
 )
+
+private val targetJavaVersion = JavaLanguageVersion.of(21)
+
+allprojects {
+    extensions.findByType<JavaPluginExtension>()?.apply {
+        toolchain.languageVersion.set(targetJavaVersion)
+    }
+
+    extensions.findByType<KotlinJvmProjectExtension>()?.apply {
+        jvmToolchain(targetJavaVersion.asInt())
+    }
+
+    extensions.findByType<KotlinMultiplatformExtension>()?.apply {
+        jvmToolchain(targetJavaVersion.asInt())
+    }
+}
 
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
