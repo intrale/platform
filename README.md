@@ -23,6 +23,18 @@ Este proyecto se organiza como un monorepo con arquitectura modular. Incluye ser
 
 El backend expone una ruta dinámica `/{business}/{function}` para todas las operaciones de negocio, documentada en `docs/arquitectura-backend.md` y en las guías específicas dentro de `docs/`.
 
+## Verificación de strings legacy (cross-platform)
+
+El pipeline de Gradle registra el task `verifyNoLegacyStrings`, encargado de bloquear usos antiguos de string resources como `stringResource(...)`, `Res.string.*`, `R.string.*` o llamadas directas a `getString(...)`. La tarea recorre los fuentes Kotlin/Java (excluyendo tests, builds y código generado) y falla el build si detecta coincidencias, informando archivo, línea y fragmento involucrado para facilitar la migración a `IntraleStrings`.
+
+- Ejecutar manualmente:
+  ```bash
+  ./gradlew verifyNoLegacyStrings
+  ```
+- El task se ejecuta automáticamente al correr `./gradlew build` o `./gradlew check`.
+- Cuando encuentra usos legacy imprime un reporte detallado y termina con error.
+- Si no hay coincidencias muestra `✅ Sin usos legacy de strings. Todo OK.`
+
 ## Política de ramas y PRs (Codex)
 - Ramas nuevas de Codex: `codex/<issue>-<slug>` basadas en `origin/develop`.
 - Pull requests automáticos apuntan a `develop` por defecto.
