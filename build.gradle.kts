@@ -39,6 +39,8 @@ tasks.register("verifyNoLegacyStrings") {
             "ios",
             "wasm",
             "desktop",
+            "tools",
+            "forbidden-strings-processor",
         )
         val excludedTestSegments = setOf(
             "test",
@@ -117,7 +119,7 @@ tasks.register("verifyNoLegacyStrings") {
                     logger.error("")
                     logger.error(path)
                     entries.forEach { match ->
-                        logger.error("  L${'$'}{match.line} (${match.pattern}): ${'$'}{match.snippet}")
+                        logger.error("  L${match.line} | ${match.pattern} | ${match.snippet}")
                     }
                 }
             logger.error("")
