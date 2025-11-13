@@ -159,3 +159,4 @@ tasks.matching { it.name == "check" }.configureEach {
 tasks.matching { it.name == "build" }.configureEach {
     dependsOn("verifyNoLegacyStrings")
 }
+
