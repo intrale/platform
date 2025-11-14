@@ -50,24 +50,6 @@ import ui.cp.menu.Corner
 import ui.cp.menu.MainMenuItem
 import ui.cp.menu.MenuState
 import ui.cp.menu.SemiCircularHamburgerMenu
-import ui.rs.buttons_preview
-import ui.rs.back_button
-import ui.rs.change_password
-import ui.rs.dashboard
-import ui.rs.dashboard_menu_hint
-import ui.rs.logout
-import ui.rs.personalization_panel
-import ui.rs.register_business
-import ui.rs.register_saler
-import ui.rs.request_join_business
-import ui.rs.review_business
-import ui.rs.review_join_business
-import ui.rs.semi_circular_menu_close
-import ui.rs.semi_circular_menu_long_press_hint
-import ui.rs.semi_circular_menu_open
-import ui.rs.two_factor_setup
-import ui.rs.two_factor_verify
-import ui.th.spacing
 import ui.sc.auth.CHANGE_PASSWORD_PATH
 import ui.sc.auth.TWO_FACTOR_SETUP_PATH
 import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
@@ -78,10 +60,7 @@ import ui.sc.shared.Screen
 import ui.sc.signup.REGISTER_SALER_PATH
 import ui.session.SessionStore
 import ui.session.UserRole
-import ui.util.RES_ERROR_PREFIX
-import ui.util.androidStringId
-import ui.util.fb
-import ui.util.resString
+import ui.th.spacing
 
 const val DASHBOARD_PATH = "/dashboard"
 

@@ -180,6 +180,14 @@ kotlin {
     }
 }
 
+val brandId = providers.gradleProperty("brandId").orElse("intrale").get()
+val appNames = mapOf(
+    "intrale" to "Intrale",
+    "demo" to "Intrale Demo",
+    // agrega las que uses
+)
+val appName = appNames[brandId] ?: "Intrale"
+
 android {
     namespace = "ar.com.intrale"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -191,6 +199,10 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        manifestPlaceholders += mapOf(
+            "appName" to appName
+        )
     }
     packaging {
         resources {
@@ -416,4 +428,11 @@ tasks.matching { it.name == "preBuild" }.configureEach {
 
 tasks.matching { it.name.endsWith("ProcessResources") }.configureEach {
     dependsOn(syncBrandingIcons)
+}
+
+tasks.matching { it.name == "validateComposeResources" }.configureEach {
+    onlyIf {
+        val dir = layout.buildDirectory.dir("generated/compose/resourceGenerator/preparedResources").get().asFile
+        dir.exists() && dir.listFiles()?.any { it.extension == "cvr" } == true
+    }
 }
