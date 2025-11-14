@@ -7,16 +7,43 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 class CatalogParityTest {
+
+    // Si hay claves que querés ignorar explícitamente, agregalas acá
+    private val EXCLUDED_KEYS = emptySet<String>()
+
     @Test
     fun `todas las keys tienen traduccion en ES y EN`() {
-        val es = DefaultCatalog_es.entries.keys.map { it.name }.toSet()
-        val en = DefaultCatalog_en.entries.keys.map { it.name }.toSet()
-        val all = MessageKey.entries.map { it.name }.toSet()
+        // Tomamos los nombres de las keys de cada catálogo (son Map<MessageKey, String>)
+        val es: Set<String> = DefaultCatalog_es.keys.map { it.name }.toSet() - EXCLUDED_KEYS
+        val en: Set<String> = DefaultCatalog_en.keys.map { it.name }.toSet() - EXCLUDED_KEYS
 
-        val faltanEnEs = all - es
-        val faltanEnEn = all - en
+        // Lista canónica: todos los MessageKey definidos
+        // (si tu compilador soporta .entries, podés usar MessageKey.entries.map { it.name })
+        val all: Set<String> = enumValues<MessageKey>().map { it.name }.toSet() - EXCLUDED_KEYS
 
-        assertTrue(faltanEnEs.isEmpty(), "Faltan en ES: $faltanEnEs")
-        assertTrue(faltanEnEn.isEmpty(), "Faltan en EN: $faltanEnEn")
+        val faltanEnEs = (all - es).sorted()
+        val faltanEnEn = (all - en).sorted()
+        val sobranEnEs = (es - all).sorted()
+        val sobranEnEn = (en - all).sorted()
+
+        val resumen = buildString {
+            appendLine("Paridad de catálogos")
+            appendLine(" - Total MessageKey: ${all.size}")
+            appendLine(" - ES: ${es.size} | EN: ${en.size}")
+            if (faltanEnEs.isNotEmpty()) appendLine("⛔ Faltan en ES: ${faltanEnEs.joinToString()}")
+            if (faltanEnEn.isNotEmpty()) appendLine("⛔ Faltan en EN: ${faltanEnEn.joinToString()}")
+            if (sobranEnEs.isNotEmpty()) appendLine("⚠️  Sobran en ES (no están en MessageKey): ${sobranEnEs.joinToString()}")
+            if (sobranEnEn.isNotEmpty()) appendLine("⚠️  Sobran en EN (no están en MessageKey): ${sobranEnEn.joinToString()}")
+            if (faltanEnEs.isEmpty() && faltanEnEn.isEmpty() && sobranEnEs.isEmpty() && sobranEnEn.isEmpty()) {
+                append("✅ Paridad OK")
+            }
+        }
+
+        println(resumen)
+
+        assertTrue(
+            faltanEnEs.isEmpty() && faltanEnEn.isEmpty() && sobranEnEs.isEmpty() && sobranEnEn.isEmpty(),
+            resumen
+        )
     }
 }
