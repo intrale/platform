@@ -25,8 +25,6 @@ import org.kodein.log.newLogger
 import kotlinx.coroutines.launch
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
-import ui.rs.Res
-import ui.rs.two_factor_verify
 import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
