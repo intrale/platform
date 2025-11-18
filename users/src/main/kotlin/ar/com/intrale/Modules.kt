@@ -20,8 +20,10 @@ import software.amazon.awssdk.enhanced.dynamodb.TableSchema
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import ar.com.intrale.ChangePassword
-import ar.com.intrale.RequestJoinBusiness
 import ar.com.intrale.ConfigAutoAcceptDeliveries
+import ar.com.intrale.GetBusinessLookAndFeelColors
+import ar.com.intrale.PutBusinessLookAndFeelColors
+import ar.com.intrale.RequestJoinBusiness
 
 private const val LOCAL_APP_AVAILABLE_BUSINESSES = "AVAILABLE_BUISNESS"
 private const val LOCAL_AWS_REGION = "REGION_VALUE"
@@ -93,6 +95,12 @@ val appModule = DI.Module("appModule") {
     bind <DynamoDbTable<UserBusinessProfile>>{
         singleton {
             instance<DynamoDbEnhancedClient>().table("userbusinessprofile", TableSchema.fromBean(UserBusinessProfile::class.java))
+        }
+    }
+
+    bind <DynamoDbTable<BusinessLookAndFeel>>{
+        singleton {
+            instance<DynamoDbEnhancedClient>().table("businesslookandfeel", TableSchema.fromBean(BusinessLookAndFeel::class.java))
         }
     }
 
@@ -178,6 +186,25 @@ val appModule = DI.Module("appModule") {
     }
     bind<Function> (tag="configAutoAcceptDeliveries") {
         singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="getBusinessLookAndFeelColors") {
+        singleton {
+            GetBusinessLookAndFeelColors(
+                instance<DynamoDbTable<BusinessLookAndFeel>>(),
+                instance<Logger>()
+            )
+        }
+    }
+    bind<Function> (tag="putBusinessLookAndFeelColors") {
+        singleton {
+            PutBusinessLookAndFeelColors(
+                instance<UsersConfig>(),
+                instance<Logger>(),
+                instance<CognitoIdentityProviderClient>(),
+                instance<DynamoDbTable<UserBusinessProfile>>(),
+                instance<DynamoDbTable<BusinessLookAndFeel>>()
+            )
+        }
     }
 }
 

@@ -15,6 +15,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,10 +26,13 @@ import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ar.com.intrale.strings.Txt
+import asdo.lookandfeel.ToGetBusinessLookAndFeelColors
 import ui.sc.shared.Screen
 import ui.ro.Router
 import ui.th.IntraleTheme
 import ar.com.intrale.strings.model.MessageKey
+import ui.session.SessionStore
+import ui.session.LookAndFeelStore
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,6 +76,8 @@ fun AppBar(
 fun App() {
     val logger = LoggerFactory.default.newLogger("ui", "App")
     val router: Router by DIManager.di.instance(arg = rememberNavController())
+    val getBusinessColors: ToGetBusinessLookAndFeelColors by DIManager.di.instance()
+    val sessionState by SessionStore.sessionState.collectAsState()
     val useDarkTheme = isSystemInDarkTheme()
     var animationsEnabled by remember { mutableStateOf(false) }
 
@@ -81,6 +87,18 @@ fun App() {
         // Habilitamos animaciones luego del primer frame para evitar crashes cuando
         // DASHBOARD_ANIMATIONS_ENABLED permanece en false por recursos corruptos.
         animationsEnabled = true
+    }
+
+    LaunchedEffect(sessionState.selectedBusinessId) {
+        val businessId = sessionState.selectedBusinessId
+        if (businessId.isNullOrBlank()) {
+            LookAndFeelStore.reset()
+        } else {
+            val result = getBusinessColors.execute(businessId)
+            result.onFailure { error ->
+                logger.error(error) { "No se pudieron cargar los colores del negocio $businessId" }
+            }
+        }
     }
 
     IntraleTheme(useDarkTheme = useDarkTheme) {

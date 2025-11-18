@@ -28,6 +28,10 @@ import asdo.business.ToDoRequestJoinBusiness
 import asdo.business.ToDoReviewBusinessRegistration
 import asdo.business.ToDoReviewJoinBusiness
 import asdo.business.ToGetBusinesses
+import asdo.lookandfeel.DoGetBusinessLookAndFeelColors
+import asdo.lookandfeel.DoSaveBusinessLookAndFeelColors
+import asdo.lookandfeel.ToGetBusinessLookAndFeelColors
+import asdo.lookandfeel.ToSaveBusinessLookAndFeelColors
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoSignUp
 import asdo.signup.DoSignUpDelivery
@@ -64,6 +68,10 @@ import ext.signup.CommRegisterSalerService
 import ext.signup.CommSignUpDeliveryService
 import ext.signup.CommSignUpPlatformAdminService
 import ext.signup.CommSignUpService
+import ext.lookandfeel.ClientGetBusinessLookAndFeelColorsService
+import ext.lookandfeel.ClientUpsertBusinessLookAndFeelColorsService
+import ext.lookandfeel.CommGetBusinessLookAndFeelColorsService
+import ext.lookandfeel.CommUpsertBusinessLookAndFeelColorsService
 import ext.storage.CommKeyValueStorage
 import ext.storage.KeyValueStorageService
 import io.ktor.client.HttpClient
@@ -222,6 +230,8 @@ class DIManager {
                 bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
                 bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
                 bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
+                bindSingleton<CommGetBusinessLookAndFeelColorsService> { ClientGetBusinessLookAndFeelColorsService(instance()) }
+                bindSingleton<CommUpsertBusinessLookAndFeelColorsService> { ClientUpsertBusinessLookAndFeelColorsService(instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -240,6 +250,8 @@ class DIManager {
                 bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
                 bindSingleton<ToDoTwoFactorSetup> { DoTwoFactorSetup(instance(), instance()) }
                 bindSingleton<ToDoTwoFactorVerify> { DoTwoFactorVerify(instance(), instance()) }
+                bindSingleton<ToGetBusinessLookAndFeelColors> { DoGetBusinessLookAndFeelColors(instance()) }
+                bindSingleton<ToSaveBusinessLookAndFeelColors> { DoSaveBusinessLookAndFeelColors(instance(), instance()) }
 
             }
     }

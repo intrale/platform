@@ -35,58 +35,34 @@ fun start(appModule: DI.Module) {
 
         routing {
             post("/{business}/{function}") {
-
                 val di = closestDI()
                 val logger: Logger by di.instance()
 
-                val businessName = call.parameters["business"]
-                val functionName = call.parameters["function"]
-
-                var functionResponse : Response
-
-                if (businessName == null) {
-                    functionResponse = RequestValidationException("No business defined on path")
-                } else {
-                    val config = di.direct.instance<Config>()
-                    val businesses = config.businesses()
-                    logger.info("config.businesses: ${businesses}")
-                    if (!businesses.contains(businessName)){
-                        functionResponse = ExceptionResponse("Business not avaiable with name $businessName")
-                    } else {
-                        if (functionName == null) {
-                            functionResponse = RequestValidationException("No function defined on path")
-                        } else {
-                            try {
-                                val allFunctions = di.direct.allInstances<Function>()
-                                logger.info(">>> Registered functions count: ${allFunctions.size}")
-                                logger.info("Injecting Function $functionName.")
-                                val function = di.direct.instance<Function>(tag = functionName)
-                                val headers: Map<String, String> = call.request.headers.entries().associate {
-                                    it.key to it.value.joinToString(",")
-                                }
-                                val requestBody = try {
-                                    call.receiveText()
-                                } catch (e: Exception) {
-                                    ""
-                                }
-                                functionResponse = function.execute(businessName, functionName, headers, requestBody)
-                            } catch (e: DI.NotFoundException) {
-                                functionResponse = ExceptionResponse("No function with name $functionName found")
-                            }
-                        }
-                    }
+                val headers = call.request.headers.entries().associate { it.key to it.value.joinToString(",") }
+                val body = try {
+                    call.receiveText()
+                } catch (e: Exception) {
+                    ""
                 }
+
+                val functionResponse = call.executeFunction(
+                    di = di,
+                    logger = logger,
+                    businessName = call.parameters["business"],
+                    functionName = call.parameters["function"],
+                    headers = headers,
+                    requestBody = body
+                )
 
                 call.respondText(
                     text = Gson().toJson(functionResponse),
                     contentType = ContentType.Application.Json,
                     status = functionResponse.statusCode
                 )
-
             }
             options {
                 call.response.headers.append("Access-Control-Allow-Origin", "*")
-                call.response.headers.append("Access-Control-Allow-Methods", "GET, OPTIONS, HEAD, PUT, POST")
+                call.response.headers.append("Access-Control-Allow-Methods", "OPTIONS, HEAD, POST")
                 call.response.headers.append(
                     "Access-Control-Allow-Headers",
                     "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,Access-Control-Allow-Origin,Access-Control-Allow-Headers,function,idToken,businessName,filename"
@@ -97,6 +73,35 @@ fun start(appModule: DI.Module) {
 
 
     }.start(wait = true)
+}
+
+private suspend fun ApplicationCall.executeFunction(
+    di: DI,
+    logger: Logger,
+    businessName: String?,
+    functionName: String?,
+    headers: Map<String, String>,
+    requestBody: String
+): Response {
+    val resolvedBusiness = businessName ?: return RequestValidationException("No business defined")
+    val config = di.direct.instance<Config>()
+    val businesses = config.businesses()
+    logger.info("config.businesses: ${businesses}")
+    if (!businesses.contains(resolvedBusiness)) {
+        return ExceptionResponse("Business not avaiable with name $resolvedBusiness")
+    }
+
+    val resolvedFunction = functionName ?: return RequestValidationException("No function defined on path")
+
+    return try {
+        val allFunctions = di.direct.allInstances<Function>()
+        logger.info(">>> Registered functions count: ${allFunctions.size}")
+        logger.info("Injecting Function $resolvedFunction.")
+        val function = di.direct.instance<Function>(tag = resolvedFunction)
+        function.execute(resolvedBusiness, resolvedFunction, headers, requestBody)
+    } catch (e: DI.NotFoundException) {
+        ExceptionResponse("No function with name $resolvedFunction found")
+    }
 }
 
 fun Application.healthRoute() {

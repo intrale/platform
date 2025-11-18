@@ -46,5 +46,6 @@ object SessionStore {
 
     fun clear() {
         mutableState.value = SessionState()
+        LookAndFeelStore.reset()
     }
 }

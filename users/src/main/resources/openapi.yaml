@@ -13,3 +13,65 @@ paths:
             application/json:
               schema:
                 type: object
+  /business-look-and-feel/colors:
+    get:
+      summary: Get business look and feel colors
+      parameters:
+        - name: businessId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current colors for the business
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  colors:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  lastUpdated:
+                    type: string
+                  updatedBy:
+                    type: string
+    put:
+      summary: Update business look and feel colors
+      parameters:
+        - name: businessId
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                colors:
+                  type: object
+                  additionalProperties:
+                    type: string
+              required:
+                - colors
+      responses:
+        '200':
+          description: Colors updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  colors:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  lastUpdated:
+                    type: string
+                  updatedBy:
+                    type: string

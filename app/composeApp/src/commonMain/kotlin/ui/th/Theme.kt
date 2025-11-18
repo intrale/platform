@@ -7,7 +7,12 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import ui.session.BusinessColorPalette
+import ui.session.LookAndFeelStore
+import ui.util.toColorOrNull
 
 private val IntraleLightColorScheme = lightColorScheme(
     primary = primaryLight,
@@ -90,7 +95,11 @@ fun IntraleTheme(
     useDarkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (useDarkTheme) IntraleDarkColorScheme else IntraleLightColorScheme
+    val baseScheme = if (useDarkTheme) IntraleDarkColorScheme else IntraleLightColorScheme
+    val palette by LookAndFeelStore.palette.collectAsState()
+    val colorScheme = remember(useDarkTheme, palette) {
+        baseScheme.applyBusinessPalette(palette)
+    }
     val spacing = remember { IntraleSpacing() }
     val elevations = remember { IntraleElevations() }
 
@@ -110,3 +119,32 @@ fun IntraleTheme(
 internal val lightScheme: ColorScheme = IntraleLightColorScheme
 
 internal val darkScheme: ColorScheme = IntraleDarkColorScheme
+
+private fun ColorScheme.applyBusinessPalette(palette: BusinessColorPalette): ColorScheme {
+    val background = palette.backgroundPrimary.toColorOrNull()
+    val surface = palette.screenBackground.toColorOrNull()
+    val primaryColor = palette.primaryButton.toColorOrNull()
+    val secondaryColor = palette.secondaryButton.toColorOrNull()
+    val labelColor = palette.labelText.toColorOrNull()
+    val headerColor = palette.headerBackground.toColorOrNull()
+
+    return copy(
+        background = background ?: background,
+        surface = surface ?: surface,
+        surfaceVariant = surface ?: surfaceVariant,
+        surfaceContainer = surface ?: surfaceContainer,
+        surfaceContainerLow = surface ?: surfaceContainerLow,
+        surfaceContainerLowest = surface ?: surfaceContainerLowest,
+        surfaceContainerHigh = surface ?: surfaceContainerHigh,
+        surfaceContainerHighest = surface ?: surfaceContainerHighest,
+        surfaceDim = surface ?: surfaceDim,
+        surfaceBright = surface ?: surfaceBright,
+        primary = primaryColor ?: primary,
+        secondary = secondaryColor ?: secondary,
+        primaryContainer = headerColor ?: primaryContainer,
+        onBackground = labelColor ?: onBackground,
+        onSurface = labelColor ?: onSurface,
+        onSurfaceVariant = labelColor ?: onSurfaceVariant,
+        inverseOnSurface = labelColor ?: inverseOnSurface,
+    )
+}
