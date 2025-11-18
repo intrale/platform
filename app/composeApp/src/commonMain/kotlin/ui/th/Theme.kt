@@ -121,24 +121,24 @@ internal val lightScheme: ColorScheme = IntraleLightColorScheme
 internal val darkScheme: ColorScheme = IntraleDarkColorScheme
 
 private fun ColorScheme.applyBusinessPalette(palette: BusinessColorPalette): ColorScheme {
-    val background = palette.backgroundPrimary.toColorOrNull()
-    val surface = palette.screenBackground.toColorOrNull()
+    val backgroundColor = palette.backgroundPrimary.toColorOrNull()
+    val surfaceColor = palette.screenBackground.toColorOrNull()
     val primaryColor = palette.primaryButton.toColorOrNull()
     val secondaryColor = palette.secondaryButton.toColorOrNull()
     val labelColor = palette.labelText.toColorOrNull()
     val headerColor = palette.headerBackground.toColorOrNull()
 
     return copy(
-        background = background ?: background,
-        surface = surface ?: surface,
-        surfaceVariant = surface ?: surfaceVariant,
-        surfaceContainer = surface ?: surfaceContainer,
-        surfaceContainerLow = surface ?: surfaceContainerLow,
-        surfaceContainerLowest = surface ?: surfaceContainerLowest,
-        surfaceContainerHigh = surface ?: surfaceContainerHigh,
-        surfaceContainerHighest = surface ?: surfaceContainerHighest,
-        surfaceDim = surface ?: surfaceDim,
-        surfaceBright = surface ?: surfaceBright,
+        background = backgroundColor ?: background,
+        surface = surfaceColor ?: surface,
+        surfaceVariant = surfaceColor ?: surfaceVariant,
+        surfaceContainer = surfaceColor ?: surfaceContainer,
+        surfaceContainerLow = surfaceColor ?: surfaceContainerLow,
+        surfaceContainerLowest = surfaceColor ?: surfaceContainerLowest,
+        surfaceContainerHigh = surfaceColor ?: surfaceContainerHigh,
+        surfaceContainerHighest = surfaceColor ?: surfaceContainerHighest,
+        surfaceDim = surfaceColor ?: surfaceDim,
+        surfaceBright = surfaceColor ?: surfaceBright,
         primary = primaryColor ?: primary,
         secondary = secondaryColor ?: secondary,
         primaryContainer = headerColor ?: primaryContainer,

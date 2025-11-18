@@ -18,7 +18,12 @@ fun Color.toHexString(): String {
     val r = (red * 255).roundToInt().coerceIn(0, 255)
     val g = (green * 255).roundToInt().coerceIn(0, 255)
     val b = (blue * 255).roundToInt().coerceIn(0, 255)
-    return "#%02X%02X%02X".format(r, g, b)
+    return buildString(7) {
+        append('#')
+        append(r.toString(16).padStart(2, '0').uppercase())
+        append(g.toString(16).padStart(2, '0').uppercase())
+        append(b.toString(16).padStart(2, '0').uppercase())
+    }
 }
 
 fun String?.normalizedHexOr(default: String): String {

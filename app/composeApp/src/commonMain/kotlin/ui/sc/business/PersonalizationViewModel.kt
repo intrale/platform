@@ -122,4 +122,4 @@ fun PersonalizationViewModel.selectedBusinessId(): String? =
     SessionStore.sessionState.value.selectedBusinessId
 
 fun PersonalizationViewModel.getInputState(key: String): InputState =
-    inputsStates[key] ?: InputState(key)
+    inputsStates.getOrPut(key) { mutableStateOf(InputState(key)) }.value
