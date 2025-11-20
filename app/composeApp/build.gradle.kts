@@ -20,13 +20,16 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val business = providers.gradleProperty("business").orElse("intrale")
+val appType = providers.gradleProperty("appType").orElse("CLIENT").map(String::uppercase)
 
 buildkonfig {
     packageName = "ar.com.intrale"
 
     defaultConfigs {
         buildConfigField(FieldSpec.Type.STRING, "BASE_URL", "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/")
-        buildConfigField(FieldSpec.Type.STRING, "BUSINESS", "intrale")
+        buildConfigField(FieldSpec.Type.STRING, "BUSINESS", business.get())
+        buildConfigField(FieldSpec.Type.STRING, "APP_TYPE", appType.get())
     }
 }
 
