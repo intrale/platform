@@ -1,5 +1,6 @@
 package ui.sc.auth
 
+import ar.com.intrale.BuildKonfig
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import asdo.auth.DoLoginException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
+import ui.sc.client.CLIENT_ENTRY_PATH
 import ui.cp.inputs.TextField
 import ui.sc.business.DASHBOARD_PATH
 import ui.sc.business.REGISTER_NEW_BUSINESS_PATH
@@ -50,10 +52,13 @@ import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
 import ui.sc.signup.SIGNUP_DELIVERY_PATH
+import ui.session.SessionStore
+import ui.session.UserRole
 import ui.th.elevations
 import ui.th.spacing
 
 const val LOGIN_PATH = "/login"
+private const val CLIENT_APP_TYPE = "CLIENT"
 
 class Login : Screen(LOGIN_PATH) {
 
@@ -119,8 +124,15 @@ class Login : Screen(LOGIN_PATH) {
                 setLoading = { viewModel.loading = it },
                 serviceCall = { viewModel.login() },
                 onSuccess = {
-                    logger.info { "Login exitoso, navegando a $DASHBOARD_PATH" }
-                    navigate(DASHBOARD_PATH)
+                    val destination = if (BuildKonfig.APP_TYPE.equals(CLIENT_APP_TYPE, ignoreCase = true)) {
+                        SessionStore.updateRole(UserRole.Client)
+                        CLIENT_ENTRY_PATH
+                    } else {
+                        DASHBOARD_PATH
+                    }
+
+                    logger.info { "Login exitoso, navegando a $destination" }
+                    navigate(destination)
                 },
                 onError = loginErrorHandler
             )
