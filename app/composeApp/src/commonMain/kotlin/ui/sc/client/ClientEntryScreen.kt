@@ -2,6 +2,7 @@ package ui.sc.client
 
 import DIManager
 import ar.com.intrale.BuildKonfig
+import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -150,6 +151,14 @@ private fun ClientWelcomeContent(
     businessName: String,
     onNavigate: (String) -> Unit
 ) {
+    val welcomeTitle = Txt(MessageKey.client_entry_welcome_title)
+    val welcomeSubtitle = Txt(MessageKey.client_entry_welcome_subtitle)
+    val registerLabel = Txt(MessageKey.client_entry_register_button)
+    val loginLabel = Txt(MessageKey.client_entry_login_button)
+    val accountInfo = Txt(MessageKey.client_entry_account_info)
+    val registerDescription = Txt(MessageKey.client_entry_register_content_description)
+    val loginDescription = Txt(MessageKey.client_entry_login_content_description)
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -168,7 +177,7 @@ private fun ClientWelcomeContent(
         }
         item {
             Text(
-                text = "Bienvenido a la tienda",
+                text = welcomeTitle,
                 style = MaterialTheme.typography.headlineMedium,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
@@ -176,7 +185,7 @@ private fun ClientWelcomeContent(
         }
         item {
             Text(
-                text = "Ingresá para usar la aplicación",
+                text = welcomeSubtitle,
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
@@ -185,25 +194,25 @@ private fun ClientWelcomeContent(
         item { Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2)) }
         item {
             IntralePrimaryButton(
-                text = "REGISTRARME",
+                text = registerLabel,
                 onClick = { onNavigate(SELECT_SIGNUP_PROFILE_PATH) },
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = Icons.Filled.PersonAdd,
-                iconContentDescription = "Crear cuenta"
+                iconContentDescription = registerDescription
             )
         }
         item {
             IntralePrimaryButton(
-                text = "YA TENGO CUENTA",
+                text = loginLabel,
                 onClick = { onNavigate(LOGIN_PATH) },
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = Icons.Filled.Login,
-                iconContentDescription = "Iniciar sesión"
+                iconContentDescription = loginDescription
             )
         }
         item {
             Text(
-                text = "Tu cuenta se puede usar en otras tiendas de la plataforma.",
+                text = accountInfo,
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
@@ -214,6 +223,11 @@ private fun ClientWelcomeContent(
 
 @Composable
 private fun ClientStoreUnavailable(businessName: String) {
+    val unavailableMessage = Txt(MessageKey.client_entry_store_unavailable_message)
+    val unavailableSecondary = Txt(MessageKey.client_entry_store_unavailable_secondary)
+    val disabledCta = Txt(MessageKey.client_entry_store_unavailable_cta)
+    val disabledDescription = Txt(MessageKey.client_entry_store_unavailable_content_description)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -230,14 +244,14 @@ private fun ClientStoreUnavailable(businessName: String) {
         )
         Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2))
         Text(
-            text = "La tienda no está disponible por el momento.",
+            text = unavailableMessage,
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2))
         Text(
-            text = "Volvé a intentarlo más tarde.",
+            text = unavailableSecondary,
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -245,12 +259,12 @@ private fun ClientStoreUnavailable(businessName: String) {
         )
         Spacer(modifier = Modifier.height(MaterialTheme.spacing.x4))
         IntralePrimaryButton(
-            text = "No es posible registrarse ahora",
+            text = disabledCta,
             onClick = {},
             modifier = Modifier.fillMaxWidth(),
             enabled = false,
             leadingIcon = Icons.Filled.Lock,
-            iconContentDescription = "Tienda cerrada"
+            iconContentDescription = disabledDescription
         )
     }
 }
