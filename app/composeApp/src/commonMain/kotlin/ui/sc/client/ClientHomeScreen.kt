@@ -52,7 +52,6 @@ import ui.sc.auth.TWO_FACTOR_SETUP_PATH
 import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.ViewModel
-import ui.sc.shared.navigate
 import ui.th.spacing
 import ui.session.SessionStore
 import ui.sc.shared.HOME_PATH
@@ -108,22 +107,22 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                 onDismissRequest = { profileMenuExpanded = false },
                 onChangePassword = {
                     profileMenuExpanded = false
-                    navigate(CHANGE_PASSWORD_PATH)
+                    this@ClientHomeScreen.navigate(CHANGE_PASSWORD_PATH)
                 },
                 onSetupTwoFactor = {
                     profileMenuExpanded = false
-                    navigate(TWO_FACTOR_SETUP_PATH)
+                    this@ClientHomeScreen.navigate(TWO_FACTOR_SETUP_PATH)
                 },
                 onVerifyTwoFactor = {
                     profileMenuExpanded = false
-                    navigate(TWO_FACTOR_VERIFY_PATH)
+                    this@ClientHomeScreen.navigate(TWO_FACTOR_VERIFY_PATH)
                 },
                 onLogout = {
                     profileMenuExpanded = false
                     coroutineScope.launch {
                         try {
                             viewModel.logout()
-                            navigate(HOME_PATH)
+                            this@ClientHomeScreen.navigate(HOME_PATH)
                         } catch (error: Throwable) {
                             logger.error(error) { "Error al cerrar sesión" }
                         }
