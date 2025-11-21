@@ -1,5 +1,6 @@
 package ui
 
+import ar.com.intrale.BuildKonfig
 import DIManager
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.Icons
@@ -74,6 +75,7 @@ fun App() {
     val router: Router by DIManager.di.instance(arg = rememberNavController())
     val useDarkTheme = isSystemInDarkTheme()
     var animationsEnabled by remember { mutableStateOf(false) }
+    val isClientApp = BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)
 
     logger.info { "Starting Intrale" }
 
@@ -87,11 +89,13 @@ fun App() {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
-                AppBar(
-                    screen = router.currentScreen(),
-                    canNavigateBack = router.canNavigateBack(),
-                    onClick = { router.navigateUp() }
-                )
+                if (!isClientApp) {
+                    AppBar(
+                        screen = router.currentScreen(),
+                        canNavigateBack = router.canNavigateBack(),
+                        onClick = { router.navigateUp() }
+                    )
+                }
             }
         ) { innerPadding ->
             router.animationsEnabled = animationsEnabled
