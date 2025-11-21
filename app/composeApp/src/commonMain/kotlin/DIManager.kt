@@ -2,6 +2,7 @@
 
 
 import androidx.navigation.NavHostController
+import ar.com.intrale.BuildKonfig
 import asdo.auth.DoChangePassword
 import asdo.auth.DoCheckPreviousLogin
 import asdo.auth.DoConfirmPasswordRecovery
@@ -70,6 +71,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.DefaultRequest
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.logging.LogLevel
+import io.ktor.client.plugins.logging.Logger
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.request.header
 import io.ktor.http.ContentType
@@ -80,7 +82,6 @@ import org.kodein.di.DI
 import org.kodein.di.bindFactory
 import org.kodein.di.bindSingleton
 import org.kodein.di.instance
-import io.ktor.client.plugins.logging.Logger
 import ui.ro.CommonRouter
 import ui.ro.Router
 import ui.sc.auth.ChangePasswordScreen
@@ -95,6 +96,8 @@ import ui.sc.business.RegisterNewBusinessScreen
 import ui.sc.business.RequestJoinBusinessScreen
 import ui.sc.business.ReviewBusinessScreen
 import ui.sc.business.ReviewJoinBusinessScreen
+import ui.sc.client.ClientEntryScreen
+import ui.sc.client.ClientHomeScreen
 import ui.sc.shared.ButtonsPreviewScreen
 import ui.sc.shared.Home
 import ui.sc.shared.Screen
@@ -107,6 +110,8 @@ import ui.sc.signup.SignUpScreen
 
 public const val SCREENS = "screens"
 
+public const val CLIENT_ENTRY = "clientEntry"
+public const val CLIENT_HOME = "clientHome"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -141,6 +146,8 @@ class DIManager {
                     navigator -> CommonRouter(navigator)
                 }
 
+                bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
+                bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
                 bindSingleton(tag = HOME) { Home() }
                 bindSingleton(tag = INIT) { Login() }
                 bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -162,27 +169,31 @@ class DIManager {
                 bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
                 bindSingleton (tag = SCREENS) {
-                    arrayListOf<Screen>(
-                        instance(tag = HOME),
-                        instance(tag = INIT),
-                        instance(tag = DASHBOARD),
-                        instance(tag = BUTTONS_PREVIEW),
-                        instance(tag = SIGNUP),
-                        instance(tag = SELECT_SIGNUP_PROFILE),
-                        instance(tag = SIGNUP_PLATFORM_ADMIN),
-                        instance(tag = SIGNUP_DELIVERY),
-                        instance(tag = REGISTER_SALER),
-                        instance(tag = CHANGE_PASSWORD),
-                        instance(tag = PASSWORD_RECOVERY),
-                        instance(tag = CONFIRM_PASSWORD_RECOVERY),
-                        instance(tag = REVIEW_BUSINESS),
-                        instance(tag = REGISTER_NEW_BUSINESS),
-                        instance(tag = REQUEST_JOIN_BUSINESS),
-                        instance(tag = REVIEW_JOIN_BUSINESS),
-                        instance(tag = PERSONALIZATION),
-                        instance(tag = TWO_FACTOR_SETUP),
-                        instance(tag = TWO_FACTOR_VERIFY)
-                    )
+                    arrayListOf<Screen>().apply {
+                        if (BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)) {
+                            add(instance(tag = CLIENT_ENTRY))
+                            add(instance(tag = CLIENT_HOME))
+                        }
+                        add(instance(tag = HOME))
+                        add(instance(tag = INIT))
+                        add(instance(tag = DASHBOARD))
+                        add(instance(tag = BUTTONS_PREVIEW))
+                        add(instance(tag = SIGNUP))
+                        add(instance(tag = SELECT_SIGNUP_PROFILE))
+                        add(instance(tag = SIGNUP_PLATFORM_ADMIN))
+                        add(instance(tag = SIGNUP_DELIVERY))
+                        add(instance(tag = REGISTER_SALER))
+                        add(instance(tag = CHANGE_PASSWORD))
+                        add(instance(tag = PASSWORD_RECOVERY))
+                        add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                        add(instance(tag = REVIEW_BUSINESS))
+                        add(instance(tag = REGISTER_NEW_BUSINESS))
+                        add(instance(tag = REQUEST_JOIN_BUSINESS))
+                        add(instance(tag = REVIEW_JOIN_BUSINESS))
+                        add(instance(tag = PERSONALIZATION))
+                        add(instance(tag = TWO_FACTOR_SETUP))
+                        add(instance(tag = TWO_FACTOR_VERIFY))
+                    }
                 }
 
                 bindSingleton<HttpClient>{
