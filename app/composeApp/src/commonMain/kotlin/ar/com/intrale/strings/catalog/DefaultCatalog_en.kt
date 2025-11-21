@@ -87,7 +87,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.login_password_icon_content_description to "Password icon",
     MessageKey.login_password_placeholder to "Your password",
     MessageKey.login_subtitle to "Sign in with your corporate email to continue.",
-    MessageKey.login_title to "Welcome to Intrale",
+    MessageKey.login_title to "Sign in to your account",
     MessageKey.login_user_icon_content_description to "User icon",
     MessageKey.first_name to "Name",
     MessageKey.new_password to "New password",
