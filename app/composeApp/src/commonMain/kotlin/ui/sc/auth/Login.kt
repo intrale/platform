@@ -52,6 +52,7 @@ import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
 import ui.sc.signup.SIGNUP_DELIVERY_PATH
+import ui.sc.signup.SIGNUP_PATH
 import ui.session.SessionStore
 import ui.session.UserRole
 import ui.th.elevations
@@ -151,6 +152,9 @@ class Login : Screen(LOGIN_PATH) {
                 triggerLogin()
             }
         }
+
+        val isClientApp = BuildKonfig.APP_TYPE.equals(CLIENT_APP_TYPE, ignoreCase = true)
+        val signupDestination = if (isClientApp) SIGNUP_PATH else SELECT_SIGNUP_PROFILE_PATH
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -319,20 +323,22 @@ class Login : Screen(LOGIN_PATH) {
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    TextButton(onClick = { navigate(SELECT_SIGNUP_PROFILE_PATH) }) {
+                    TextButton(onClick = { navigate(signupDestination) }) {
                         Text(text = signupLinkLabel)
-                    }
-                    TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
-                        Text(text = registerBusinessLinkLabel)
-                    }
-                    TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
-                        Text(text = signupDeliveryLinkLabel)
                     }
                     TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
                         Text(text = passwordRecoveryLinkLabel)
                     }
-                    TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                        Text(text = confirmRecoveryLinkLabel)
+                    if (!isClientApp) {
+                        TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
+                            Text(text = registerBusinessLinkLabel)
+                        }
+                        TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
+                            Text(text = signupDeliveryLinkLabel)
+                        }
+                        TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
+                            Text(text = confirmRecoveryLinkLabel)
+                        }
                     }
                 }
             }
