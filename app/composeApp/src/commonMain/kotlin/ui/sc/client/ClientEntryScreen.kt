@@ -40,7 +40,7 @@ import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.ViewModel
-import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
+import ui.sc.signup.SIGNUP_PATH
 import ui.session.SessionStore
 import ui.session.UserRole
 import ui.th.spacing
@@ -195,7 +195,7 @@ private fun ClientWelcomeContent(
         item {
             IntralePrimaryButton(
                 text = registerLabel,
-                onClick = { onNavigate(SELECT_SIGNUP_PROFILE_PATH) },
+                onClick = { onNavigate(SIGNUP_PATH) },
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = Icons.Filled.PersonAdd,
                 iconContentDescription = registerDescription
