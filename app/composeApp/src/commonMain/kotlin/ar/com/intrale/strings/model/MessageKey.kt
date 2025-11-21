@@ -96,6 +96,7 @@ enum class MessageKey {
     new_password,
     password,
     password_recovery,
+    password_recovery_have_code,
     password_recovery_email_sent,
     business,
     request_join_business,
