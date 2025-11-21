@@ -1,6 +1,6 @@
 package ui
 
-import BuildKonfig
+import ar.com.intrale.BuildKonfig
 import DIManager
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.Icons
