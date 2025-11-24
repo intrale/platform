@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,12 +18,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
@@ -32,11 +35,16 @@ import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +59,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
@@ -59,15 +68,35 @@ import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.auth.CHANGE_PASSWORD_PATH
 import ui.sc.auth.TWO_FACTOR_SETUP_PATH
 import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
+import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.ViewModel
 import ui.th.elevations
 import ui.th.spacing
 import ui.session.SessionStore
-import ui.sc.shared.HOME_PATH
 import asdo.auth.ToDoResetLoginCache
 
 const val CLIENT_HOME_PATH = "/client/home"
+
+data class ClientProduct(
+    val id: String,
+    val name: String,
+    val priceLabel: String,
+    val emoji: String
+)
+
+sealed interface ClientProductsState {
+    data object Loading : ClientProductsState
+    data object Empty : ClientProductsState
+    data class Error(val message: String) : ClientProductsState
+    data class Loaded(val products: List<ClientProduct>) : ClientProductsState
+}
+
+data class ClientHomeUiState(
+    val productsState: ClientProductsState = ClientProductsState.Loading,
+    val cartQuantities: Map<String, Int> = emptyMap(),
+    val lastAddedProduct: ClientProduct? = null
+)
 
 class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
 
@@ -78,67 +107,153 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
         val businessName = BuildKonfig.BUSINESS.replaceFirstChar { current ->
             if (current.isLowerCase()) current.titlecase() else current.toString()
         }
-        val scrollState = rememberScrollState()
+        val listState = rememberLazyListState()
         var profileMenuExpanded by remember { mutableStateOf(false) }
         val coroutineScope = rememberCoroutineScope()
         val logger = remember { LoggerFactory.default.newLogger<ClientHomeScreen>() }
         val viewModel: ClientHomeViewModel = viewModel { ClientHomeViewModel() }
+        val uiState = viewModel.state
 
-        val headerSubtitle = Txt(MessageKey.client_home_header_subtitle)
+        val headerTitle = Txt(MessageKey.client_home_header_title)
+        val headerSubtitle = Txt(
+            MessageKey.client_home_header_subtitle,
+            mapOf("business" to businessName)
+        )
         val cartContentDescription = Txt(MessageKey.client_home_cart_icon_content_description)
+        val productsTitle = Txt(MessageKey.client_home_products_title)
+        val emptyMessage = Txt(MessageKey.client_home_products_empty)
+        val errorMessage = Txt(MessageKey.client_home_products_error)
+        val retryLabel = Txt(MessageKey.client_home_retry)
+        val ordersPlaceholder = Txt(MessageKey.client_home_orders_placeholder)
+        val addedToCartMessage = uiState.lastAddedProduct?.let { product ->
+            Txt(MessageKey.client_home_added_to_cart, mapOf("product" to product.name))
+        }
+        val snackbarHostState = remember { SnackbarHostState() }
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x4),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
-            ) {
-                ClientHomeHeader(
-                    businessName = businessName,
-                    subtitle = headerSubtitle,
-                    cartContentDescription = cartContentDescription
-                )
-                ClientHomeBanner(businessName)
-                ClientHomeFeaturedProduct()
+        LaunchedEffect(Unit) {
+            viewModel.loadProducts()
+        }
+
+        LaunchedEffect(addedToCartMessage) {
+            addedToCartMessage?.let { message ->
+                snackbarHostState.showSnackbar(message)
+                viewModel.clearLastAddedProduct()
+            }
+        }
+
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            bottomBar = {
                 ClientHomeBottomBar(
-                    onHomeClick = { logger.info { "Cliente seleccionó home" } },
-                    onOrdersClick = { logger.info { "Cliente seleccionó pedidos" } },
+                    onHomeClick = {
+                        coroutineScope.launch { listState.animateScrollToItem(0) }
+                    },
+                    onOrdersClick = {
+                        coroutineScope.launch { snackbarHostState.showSnackbar(ordersPlaceholder) }
+                    },
                     onProfileClick = {
                         logger.info { "Abriendo menú de perfil" }
-                        profileMenuExpanded = !profileMenuExpanded
+                        profileMenuExpanded = true
                     }
                 )
             }
+        ) { padding ->
+            Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = PaddingValues(
+                        horizontal = MaterialTheme.spacing.x4,
+                        vertical = MaterialTheme.spacing.x4
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
+                ) {
+                    item {
+                        ClientHomeHeader(
+                            businessName = businessName,
+                            headerTitle = headerTitle,
+                            headerSubtitle = headerSubtitle,
+                            cartCount = uiState.cartQuantities.values.sum(),
+                            cartContentDescription = cartContentDescription
+                        )
+                    }
+                    item { ClientHomeBanner(businessName) }
 
-            ClientProfileMenu(
-                expanded = profileMenuExpanded,
-                onDismissRequest = { profileMenuExpanded = false },
-                onChangePassword = {
-                    profileMenuExpanded = false
-                    this@ClientHomeScreen.navigate(CHANGE_PASSWORD_PATH)
-                },
-                onSetupTwoFactor = {
-                    profileMenuExpanded = false
-                    this@ClientHomeScreen.navigate(TWO_FACTOR_SETUP_PATH)
-                },
-                onVerifyTwoFactor = {
-                    profileMenuExpanded = false
-                    this@ClientHomeScreen.navigate(TWO_FACTOR_VERIFY_PATH)
-                },
-                onLogout = {
-                    profileMenuExpanded = false
-                    coroutineScope.launch {
-                        try {
-                            viewModel.logout()
-                            this@ClientHomeScreen.navigate(HOME_PATH)
-                        } catch (error: Throwable) {
-                            logger.error(error) { "Error al cerrar sesión" }
+                    when (val productsState = uiState.productsState) {
+                        ClientProductsState.Loading -> {
+                            item { ClientHomeLoading() }
+                        }
+
+                        ClientProductsState.Empty -> {
+                            item {
+                                ClientHomeStateCard(
+                                    message = emptyMessage,
+                                    actionLabel = retryLabel,
+                                    onAction = { coroutineScope.launch { viewModel.loadProducts() } }
+                                )
+                            }
+                        }
+
+                        is ClientProductsState.Error -> {
+                            item {
+                                ClientHomeStateCard(
+                                    message = productsState.message.ifBlank { errorMessage },
+                                    actionLabel = retryLabel,
+                                    onAction = { coroutineScope.launch { viewModel.loadProducts() } }
+                                )
+                            }
+                        }
+
+                        is ClientProductsState.Loaded -> {
+                            item {
+                                Text(
+                                    text = productsTitle,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            items(productsState.products, key = { it.id }) { product ->
+                                ClientProductCard(
+                                    product = product,
+                                    addLabel = Txt(MessageKey.client_home_add_label),
+                                    addContentDescription = Txt(MessageKey.client_home_add_content_description),
+                                    onAddClick = { viewModel.addToCart(product) }
+                                )
+                            }
                         }
                     }
+
+                    item { Spacer(modifier = Modifier.height(MaterialTheme.spacing.x8)) }
                 }
-            )
+
+                ClientProfileMenu(
+                    expanded = profileMenuExpanded,
+                    onDismissRequest = { profileMenuExpanded = false },
+                    onChangePassword = {
+                        profileMenuExpanded = false
+                        this@ClientHomeScreen.navigate(CHANGE_PASSWORD_PATH)
+                    },
+                    onSetupTwoFactor = {
+                        profileMenuExpanded = false
+                        this@ClientHomeScreen.navigate(TWO_FACTOR_SETUP_PATH)
+                    },
+                    onVerifyTwoFactor = {
+                        profileMenuExpanded = false
+                        this@ClientHomeScreen.navigate(TWO_FACTOR_VERIFY_PATH)
+                    },
+                    onLogout = {
+                        profileMenuExpanded = false
+                        coroutineScope.launch {
+                            try {
+                                viewModel.logout()
+                                this@ClientHomeScreen.navigate(HOME_PATH)
+                            } catch (error: Throwable) {
+                                logger.error(error) { "Error al cerrar sesión" }
+                            }
+                        }
+                    }
+                )
+            }
         }
     }
 }
@@ -146,7 +261,9 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
 @Composable
 private fun ClientHomeHeader(
     businessName: String,
-    subtitle: String,
+    headerTitle: String,
+    headerSubtitle: String,
+    cartCount: Int,
     cartContentDescription: String
 ) {
     Row(
@@ -161,17 +278,42 @@ private fun ClientHomeHeader(
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = subtitle,
+                text = headerTitle,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = headerSubtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Icon(
-            imageVector = Icons.Default.ShoppingCart,
-            contentDescription = cartContentDescription,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(28.dp)
-        )
+        Box(contentAlignment = Alignment.TopEnd) {
+            Icon(
+                imageVector = Icons.Default.ShoppingCart,
+                contentDescription = cartContentDescription,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp)
+            )
+            if (cartCount > 0) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 2.dp)
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = cartCount.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -182,54 +324,76 @@ private fun ClientHomeBanner(businessName: String) {
         MessageKey.client_home_delivery_description,
         mapOf("business" to businessName)
     )
+    val bannerHelper = Txt(MessageKey.client_home_header_description, mapOf("business" to businessName))
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(MaterialTheme.spacing.x4),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape),
-                contentAlignment = Alignment.Center
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
             ) {
-                Icon(
-                    imageVector = Icons.Default.ShoppingBag,
-                    contentDescription = deliveryTitle,
-                    tint = MaterialTheme.colorScheme.primary
-                )
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ShoppingBag,
+                        contentDescription = deliveryTitle,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
+                    Text(
+                        text = deliveryTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = deliveryDescription,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
-                Text(
-                    text = deliveryTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = deliveryDescription,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Text(
+                text = bannerHelper,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
 
 @Composable
-private fun ClientHomeFeaturedProduct() {
-    val featuredTitle = Txt(MessageKey.client_home_featured_title)
-    val featuredName = Txt(MessageKey.client_home_featured_name)
-    val featuredPrice = Txt(MessageKey.client_home_featured_price)
-    val addLabel = Txt(MessageKey.client_home_add_label)
-    val addContentDescription = Txt(MessageKey.client_home_add_content_description)
+private fun ClientHomeLoading() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = MaterialTheme.spacing.x4),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircularProgressIndicator()
+    }
+}
 
+@Composable
+private fun ClientHomeStateCard(
+    message: String,
+    actionLabel: String,
+    onAction: () -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -238,40 +402,86 @@ private fun ClientHomeFeaturedProduct() {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(MaterialTheme.spacing.x4),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
         ) {
             Text(
-                text = featuredTitle,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
+                text = message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
-                        Text(
-                            text = featuredName,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = featuredPrice,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IntralePrimaryButton(
-                        text = addLabel,
-                        onClick = {},
-                        leadingIcon = Icons.Default.ShoppingCart,
-                        iconContentDescription = addContentDescription,
-                        modifier = Modifier
-                            .fillMaxWidth(0.4f)
-                    )
-            }
+            IntralePrimaryButton(
+                text = actionLabel,
+                onClick = onAction,
+                leadingIcon = Icons.Default.Image,
+                iconContentDescription = actionLabel,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
+    }
+}
+
+@Composable
+private fun ClientProductCard(
+    product: ClientProduct,
+    addLabel: String,
+    addContentDescription: String,
+    onAddClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
+        ) {
+            ProductThumbnail(product.emoji, contentDescription = product.name)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+            ) {
+                Text(
+                    text = product.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = product.priceLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IntralePrimaryButton(
+                text = addLabel,
+                onClick = onAddClick,
+                leadingIcon = Icons.Default.ShoppingCart,
+                iconContentDescription = addContentDescription,
+                modifier = Modifier.fillMaxWidth(0.42f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProductThumbnail(emoji: String, contentDescription: String) {
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .clip(RoundedCornerShape(MaterialTheme.spacing.x2))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = emoji,
+            style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.primary,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(MaterialTheme.spacing.x1)
+        )
     }
 }
 
@@ -305,7 +515,7 @@ private fun ClientHomeBottomBar(
 
 @Composable
 private fun ClientHomeBottomItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     onClick: () -> Unit
 ) {
@@ -447,9 +657,60 @@ class ClientHomeViewModel : ViewModel() {
 
     private val logger = LoggerFactory.default.newLogger<ClientHomeViewModel>()
 
-    override fun getState(): Any = Unit
+    var state by mutableStateOf(ClientHomeUiState())
+        private set
+
+    override fun getState(): Any = state
 
     override fun initInputState() { /* No-op */ }
+
+    suspend fun loadProducts() {
+        logger.info { "Cargando productos para cliente" }
+        state = state.copy(productsState = ClientProductsState.Loading)
+        state = runCatching { fetchProducts() }
+            .fold(
+                onSuccess = { products ->
+                    val nextState = if (products.isEmpty()) {
+                        ClientProductsState.Empty
+                    } else {
+                        ClientProductsState.Loaded(products)
+                    }
+                    state.copy(productsState = nextState)
+                },
+                onFailure = { error ->
+                    logger.error(error) { "Error al cargar productos" }
+                    state.copy(
+                        productsState = ClientProductsState.Error(
+                            error.message ?: ""
+                        )
+                    )
+                }
+            )
+    }
+
+    fun addToCart(product: ClientProduct) {
+        val updatedQuantities = state.cartQuantities.toMutableMap()
+        updatedQuantities[product.id] = (updatedQuantities[product.id] ?: 0) + 1
+        state = state.copy(
+            cartQuantities = updatedQuantities,
+            lastAddedProduct = product
+        )
+    }
+
+    fun clearLastAddedProduct() {
+        if (state.lastAddedProduct != null) {
+            state = state.copy(lastAddedProduct = null)
+        }
+    }
+
+    private suspend fun fetchProducts(): List<ClientProduct> {
+        delay(200)
+        return listOf(
+            ClientProduct(id = "bananas", name = "Bananas", priceLabel = "$400 / kg", emoji = "🍌"),
+            ClientProduct(id = "red-apples", name = "Manzana roja", priceLabel = "$1200 / kg", emoji = "🍎"),
+            ClientProduct(id = "avocado", name = "Palta", priceLabel = "$2500 / kg", emoji = "🥑")
+        )
+    }
 
     suspend fun logout() {
         logger.info { "Ejecutando logout desde cliente" }
@@ -462,4 +723,3 @@ class ClientHomeViewModel : ViewModel() {
         }
     }
 }
-
