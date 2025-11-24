@@ -4,27 +4,35 @@ import DIManager
 import ar.com.intrale.BuildKonfig
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -38,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -52,6 +61,7 @@ import ui.sc.auth.TWO_FACTOR_SETUP_PATH
 import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.ViewModel
+import ui.th.elevations
 import ui.th.spacing
 import ui.session.SessionStore
 import ui.sc.shared.HOME_PATH
@@ -97,7 +107,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                     onOrdersClick = { logger.info { "Cliente seleccionó pedidos" } },
                     onProfileClick = {
                         logger.info { "Abriendo menú de perfil" }
-                        profileMenuExpanded = true
+                        profileMenuExpanded = !profileMenuExpanded
                     }
                 )
             }
@@ -331,30 +341,103 @@ private fun ClientProfileMenu(
     val setupTwoFactorLabel = Txt(MessageKey.dashboard_menu_setup_two_factor)
     val verifyTwoFactorLabel = Txt(MessageKey.dashboard_menu_verify_two_factor)
     val logoutLabel = Txt(MessageKey.dashboard_menu_logout)
+    val menuTitle = Txt(MessageKey.dashboard_menu_title)
+
+    if (!expanded) return
 
     Box(modifier = Modifier.fillMaxSize()) {
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = onDismissRequest,
-            modifier = Modifier.align(Alignment.BottomEnd)
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismissRequest
+                )
+        )
+
+        Card(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x5)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(MaterialTheme.spacing.x2),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level3)
         ) {
-            DropdownMenuItem(
-                text = { Text(text = changePasswordLabel) },
-                onClick = onChangePassword
-            )
-            DropdownMenuItem(
-                text = { Text(text = setupTwoFactorLabel) },
-                onClick = onSetupTwoFactor
-            )
-            DropdownMenuItem(
-                text = { Text(text = verifyTwoFactorLabel) },
-                onClick = onVerifyTwoFactor
-            )
-            DropdownMenuItem(
-                text = { Text(text = logoutLabel) },
-                onClick = onLogout
-            )
+            Column(
+                modifier = Modifier.padding(
+                    horizontal = MaterialTheme.spacing.x3,
+                    vertical = MaterialTheme.spacing.x3
+                ),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+            ) {
+                Text(
+                    text = menuTitle,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                ClientProfileAction(
+                    icon = Icons.Default.Key,
+                    label = changePasswordLabel,
+                    onClick = onChangePassword
+                )
+                ClientProfileAction(
+                    icon = Icons.Default.Security,
+                    label = setupTwoFactorLabel,
+                    onClick = onSetupTwoFactor
+                )
+                ClientProfileAction(
+                    icon = Icons.Default.VerifiedUser,
+                    label = verifyTwoFactorLabel,
+                    onClick = onVerifyTwoFactor
+                )
+
+                Divider()
+
+                ClientProfileAction(
+                    icon = Icons.Default.Logout,
+                    label = logoutLabel,
+                    labelColor = MaterialTheme.colorScheme.error,
+                    iconTint = MaterialTheme.colorScheme.error,
+                    onClick = onLogout
+                )
+                Spacer(modifier = Modifier.height(MaterialTheme.spacing.x1))
+            }
         }
+    }
+}
+
+@Composable
+private fun ClientProfileAction(
+    icon: ImageVector,
+    label: String,
+    labelColor: Color = MaterialTheme.colorScheme.onSurface,
+    iconTint: Color = MaterialTheme.colorScheme.primary,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClick = onClick)
+            .padding(vertical = MaterialTheme.spacing.x1_5, horizontal = MaterialTheme.spacing.x2),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = iconTint
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = labelColor
+        )
     }
 }
 

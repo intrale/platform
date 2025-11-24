@@ -17,6 +17,7 @@ enum class MessageKey {
     dashboard_menu_close_description,
     dashboard_menu_long_press_hint,
     dashboard_menu_buttons_preview,
+    dashboard_menu_title,
     dashboard_menu_change_password,
     dashboard_menu_setup_two_factor,
     dashboard_menu_verify_two_factor,

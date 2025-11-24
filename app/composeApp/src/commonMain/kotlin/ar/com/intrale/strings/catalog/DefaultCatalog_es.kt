@@ -14,6 +14,7 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.dashboard_menu_close_description to "Cerrar menú de acciones",
     MessageKey.dashboard_menu_long_press_hint to "Deslizá a la derecha para volver y hacia abajo para abrir",
     MessageKey.dashboard_menu_buttons_preview to "Demo de botones Intrale",
+    MessageKey.dashboard_menu_title to "Mi cuenta",
     MessageKey.dashboard_menu_change_password to "Cambiar contraseña",
     MessageKey.dashboard_menu_setup_two_factor to "Configurar autenticación en dos pasos",
     MessageKey.dashboard_menu_verify_two_factor to "Verificar autenticación en dos pasos",
