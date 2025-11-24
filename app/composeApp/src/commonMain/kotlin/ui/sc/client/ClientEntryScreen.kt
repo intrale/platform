@@ -162,7 +162,7 @@ private fun ClientWelcomeContent(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x6),
+            .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x3),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
     ) {
@@ -231,7 +231,7 @@ private fun ClientStoreUnavailable(businessName: String) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x6),
+            .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x3),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
