@@ -46,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -82,7 +83,8 @@ data class ClientProduct(
     val id: String,
     val name: String,
     val priceLabel: String,
-    val emoji: String
+    val emoji: String,
+    val unitPrice: Double
 )
 
 sealed interface ClientProductsState {
@@ -94,7 +96,6 @@ sealed interface ClientProductsState {
 
 data class ClientHomeUiState(
     val productsState: ClientProductsState = ClientProductsState.Loading,
-    val cartQuantities: Map<String, Int> = emptyMap(),
     val lastAddedProduct: ClientProduct? = null
 )
 
@@ -113,6 +114,8 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
         val logger = remember { LoggerFactory.default.newLogger<ClientHomeScreen>() }
         val viewModel: ClientHomeViewModel = viewModel { ClientHomeViewModel() }
         val uiState = viewModel.state
+        val cartItems by ClientCartStore.items.collectAsState()
+        val cartCount = cartItems.values.sumOf { it.quantity }
 
         val headerTitle = Txt(MessageKey.client_home_header_title)
         val headerSubtitle = Txt(
@@ -173,8 +176,9 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                             businessName = businessName,
                             headerTitle = headerTitle,
                             headerSubtitle = headerSubtitle,
-                            cartCount = uiState.cartQuantities.values.sum(),
-                            cartContentDescription = cartContentDescription
+                            cartCount = cartCount,
+                            cartContentDescription = cartContentDescription,
+                            onCartClick = { navigate(CLIENT_CART_PATH) }
                         )
                     }
                     item { ClientHomeBanner(businessName) }
@@ -264,7 +268,8 @@ private fun ClientHomeHeader(
     headerTitle: String,
     headerSubtitle: String,
     cartCount: Int,
-    cartContentDescription: String
+    cartContentDescription: String,
+    onCartClick: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -288,7 +293,10 @@ private fun ClientHomeHeader(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Box(contentAlignment = Alignment.TopEnd) {
+        Box(
+            contentAlignment = Alignment.TopEnd,
+            modifier = Modifier.clickable(onClick = onCartClick)
+        ) {
             Icon(
                 imageVector = Icons.Default.ShoppingCart,
                 contentDescription = cartContentDescription,
@@ -689,12 +697,8 @@ class ClientHomeViewModel : ViewModel() {
     }
 
     fun addToCart(product: ClientProduct) {
-        val updatedQuantities = state.cartQuantities.toMutableMap()
-        updatedQuantities[product.id] = (updatedQuantities[product.id] ?: 0) + 1
-        state = state.copy(
-            cartQuantities = updatedQuantities,
-            lastAddedProduct = product
-        )
+        ClientCartStore.add(product)
+        state = state.copy(lastAddedProduct = product)
     }
 
     fun clearLastAddedProduct() {
@@ -706,9 +710,9 @@ class ClientHomeViewModel : ViewModel() {
     private suspend fun fetchProducts(): List<ClientProduct> {
         delay(200)
         return listOf(
-            ClientProduct(id = "bananas", name = "Bananas", priceLabel = "$400 / kg", emoji = "🍌"),
-            ClientProduct(id = "red-apples", name = "Manzana roja", priceLabel = "$1200 / kg", emoji = "🍎"),
-            ClientProduct(id = "avocado", name = "Palta", priceLabel = "$2500 / kg", emoji = "🥑")
+            ClientProduct(id = "bananas", name = "Bananas", priceLabel = "$400 / kg", emoji = "🍌", unitPrice = 400.0),
+            ClientProduct(id = "red-apples", name = "Manzana roja", priceLabel = "$1200 / kg", emoji = "🍎", unitPrice = 1200.0),
+            ClientProduct(id = "avocado", name = "Palta", priceLabel = "$2500 / kg", emoji = "🥑", unitPrice = 2500.0)
         )
     }
 
