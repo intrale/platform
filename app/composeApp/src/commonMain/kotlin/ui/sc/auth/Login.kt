@@ -93,7 +93,7 @@ class Login : Screen(LOGIN_PATH) {
         val registerBusinessLinkLabel = Txt(MessageKey.register_business)
         val signupDeliveryLinkLabel = Txt(MessageKey.signup_delivery)
         val passwordRecoveryLinkLabel = Txt(MessageKey.password_recovery)
-        val confirmRecoveryLinkLabel = Txt(MessageKey.confirm_password_recovery)
+        val confirmRecoveryLinkLabel = Txt(MessageKey.password_recovery_have_code)
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
@@ -329,15 +329,15 @@ class Login : Screen(LOGIN_PATH) {
                     TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
                         Text(text = passwordRecoveryLinkLabel)
                     }
+                    TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
+                        Text(text = confirmRecoveryLinkLabel)
+                    }
                     if (!isClientApp) {
                         TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
                             Text(text = registerBusinessLinkLabel)
                         }
                         TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
                             Text(text = signupDeliveryLinkLabel)
-                        }
-                        TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                            Text(text = confirmRecoveryLinkLabel)
                         }
                     }
                 }
