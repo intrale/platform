@@ -165,7 +165,7 @@ class Login : Screen(LOGIN_PATH) {
                     .verticalScroll(scrollState)
                     .padding(
                         horizontal = MaterialTheme.spacing.x3,
-                        vertical = MaterialTheme.spacing.x4
+                        vertical = MaterialTheme.spacing.x2
                     ),
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x4),
                 horizontalAlignment = Alignment.CenterHorizontally

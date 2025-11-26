@@ -167,7 +167,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                     state = listState,
                     contentPadding = PaddingValues(
                         horizontal = MaterialTheme.spacing.x4,
-                        vertical = MaterialTheme.spacing.x4
+                        vertical = MaterialTheme.spacing.x2
                     ),
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
                 ) {

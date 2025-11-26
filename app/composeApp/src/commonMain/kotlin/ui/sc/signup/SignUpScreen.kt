@@ -53,11 +53,11 @@ class SignUpScreen : Screen(SIGNUP_PATH) {
                     .verticalScroll(rememberScrollState())
                     .padding(
                         horizontal = MaterialTheme.spacing.x3,
-                        vertical = MaterialTheme.spacing.x4
+                        vertical = MaterialTheme.spacing.x2
                     ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
+                Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1))
                 TextField(
                     label = MessageKey.email,
                     value = viewModel.state.email,
