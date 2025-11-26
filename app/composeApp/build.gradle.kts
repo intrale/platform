@@ -22,6 +22,10 @@ plugins {
 
 val business = providers.gradleProperty("business").orElse("intrale")
 val appType = providers.gradleProperty("appType").orElse("CLIENT").map(String::uppercase)
+val appNameOverride = providers.gradleProperty("appNameOverride")
+val appIconOverride = providers.gradleProperty("appIcon")
+val appRoundIconOverride = providers.gradleProperty("appRoundIcon")
+val isBusinessApp = appType.map { it.equals("BUSINESS", ignoreCase = true) }
 
 buildkonfig {
     packageName = "ar.com.intrale"
@@ -189,7 +193,22 @@ val appNames = mapOf(
     "demo" to "Intrale Demo",
     // agrega las que uses
 )
-val appName = appNames[brandId] ?: "Intrale"
+val appName = appNameOverride
+    .orElse(
+        isBusinessApp.map { isBusiness ->
+            when {
+                isBusiness -> "Intrale Negocios"
+                else -> appNames[brandId] ?: "Intrale"
+            }
+        }
+    )
+    .get()
+val appIconName = appIconOverride
+    .orElse(isBusinessApp.map { isBusiness -> if (isBusiness) "ic_launcher_business" else "ic_launcher" })
+    .get()
+val appRoundIconName = appRoundIconOverride
+    .orElse(isBusinessApp.map { isBusiness -> if (isBusiness) "ic_launcher_business_round" else "ic_launcher_round" })
+    .get()
 
 android {
     namespace = "ar.com.intrale"
@@ -204,7 +223,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         manifestPlaceholders += mapOf(
-            "appName" to appName
+            "appName" to appName,
+            "appIcon" to appIconName,
+            "appIconRound" to appRoundIconName
         )
     }
     packaging {
