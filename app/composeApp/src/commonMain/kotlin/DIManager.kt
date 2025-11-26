@@ -172,32 +172,40 @@ class DIManager {
                 bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
                 bindSingleton (tag = SCREENS) {
-                    arrayListOf<Screen>().apply {
-                        if (BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)) {
+                    val isClientApp = BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)
+
+                    linkedSetOf<Screen>().apply {
+                        if (isClientApp) {
                             add(instance(tag = CLIENT_ENTRY))
                             add(instance(tag = CLIENT_HOME))
                             add(instance(tag = CLIENT_CART))
+                        } else {
+                            add(instance(tag = INIT))
+                            add(instance(tag = DASHBOARD))
                         }
-                        add(instance(tag = HOME))
-                        add(instance(tag = INIT))
-                        add(instance(tag = DASHBOARD))
-                        add(instance(tag = BUTTONS_PREVIEW))
-                        add(instance(tag = SIGNUP))
-                        add(instance(tag = SELECT_SIGNUP_PROFILE))
-                        add(instance(tag = SIGNUP_PLATFORM_ADMIN))
-                        add(instance(tag = SIGNUP_DELIVERY))
-                        add(instance(tag = REGISTER_SALER))
-                        add(instance(tag = CHANGE_PASSWORD))
-                        add(instance(tag = PASSWORD_RECOVERY))
-                        add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
-                        add(instance(tag = REVIEW_BUSINESS))
-                        add(instance(tag = REGISTER_NEW_BUSINESS))
-                        add(instance(tag = REQUEST_JOIN_BUSINESS))
-                        add(instance(tag = REVIEW_JOIN_BUSINESS))
-                        add(instance(tag = PERSONALIZATION))
-                        add(instance(tag = TWO_FACTOR_SETUP))
-                        add(instance(tag = TWO_FACTOR_VERIFY))
-                    }
+
+                        listOf(
+                            instance<Screen>(tag = HOME),
+                            instance<Screen>(tag = INIT),
+                            instance<Screen>(tag = DASHBOARD),
+                            instance<Screen>(tag = BUTTONS_PREVIEW),
+                            instance<Screen>(tag = SIGNUP),
+                            instance<Screen>(tag = SELECT_SIGNUP_PROFILE),
+                            instance<Screen>(tag = SIGNUP_PLATFORM_ADMIN),
+                            instance<Screen>(tag = SIGNUP_DELIVERY),
+                            instance<Screen>(tag = REGISTER_SALER),
+                            instance<Screen>(tag = CHANGE_PASSWORD),
+                            instance<Screen>(tag = PASSWORD_RECOVERY),
+                            instance<Screen>(tag = CONFIRM_PASSWORD_RECOVERY),
+                            instance<Screen>(tag = REVIEW_BUSINESS),
+                            instance<Screen>(tag = REGISTER_NEW_BUSINESS),
+                            instance<Screen>(tag = REQUEST_JOIN_BUSINESS),
+                            instance<Screen>(tag = REVIEW_JOIN_BUSINESS),
+                            instance<Screen>(tag = PERSONALIZATION),
+                            instance<Screen>(tag = TWO_FACTOR_SETUP),
+                            instance<Screen>(tag = TWO_FACTOR_VERIFY)
+                        ).forEach { add(it) }
+                    }.toList()
                 }
 
                 bindSingleton<HttpClient>{
