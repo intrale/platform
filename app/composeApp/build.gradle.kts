@@ -21,7 +21,17 @@ plugins {
 }
 
 val business = providers.gradleProperty("business").orElse("intrale")
-val appType = providers.gradleProperty("appType").orElse("CLIENT").map(String::uppercase)
+
+val requestedTasks = providers.provider { gradle.startParameter.taskNames }
+val inferredAppType = providers.provider {
+    if (requestedTasks.get().any { task -> task.contains("Business", ignoreCase = true) }) {
+        "BUSINESS"
+    } else {
+        "CLIENT"
+    }
+}
+
+val appType = providers.gradleProperty("appType").orElse(inferredAppType).map(String::uppercase)
 
 buildkonfig {
     packageName = "ar.com.intrale"
@@ -187,9 +197,12 @@ val brandId = providers.gradleProperty("brandId").orElse("intrale").get()
 val appNames = mapOf(
     "intrale" to "Intrale",
     "demo" to "Intrale Demo",
+    "business" to "Intrale Negocios",
     // agrega las que uses
 )
 val appName = appNames[brandId] ?: "Intrale"
+val businessAppName = providers.gradleProperty("businessAppName").orElse("Intrale Negocios").get()
+val businessApplicationId = providers.gradleProperty("businessApplicationId").orElse("ar.com.intrale.business").get()
 
 android {
     namespace = "ar.com.intrale"
@@ -204,8 +217,30 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         manifestPlaceholders += mapOf(
-            "appName" to appName
+            "appName" to appName,
+            "appIcon" to "@mipmap/ic_launcher",
+            "appRoundIcon" to "@mipmap/ic_launcher_round"
         )
+    }
+
+    flavorDimensions += "appType"
+
+    productFlavors {
+        create("client") {
+            dimension = "appType"
+            applicationId = "ar.com.intrale"
+            manifestPlaceholders["appName"] = appName
+            manifestPlaceholders["appIcon"] = "@mipmap/ic_launcher"
+            manifestPlaceholders["appRoundIcon"] = "@mipmap/ic_launcher_round"
+        }
+
+        create("business") {
+            dimension = "appType"
+            applicationId = businessApplicationId
+            manifestPlaceholders["appName"] = businessAppName
+            manifestPlaceholders["appIcon"] = "@mipmap/ic_launcher_business"
+            manifestPlaceholders["appRoundIcon"] = "@mipmap/ic_launcher_business_round"
+        }
     }
     packaging {
         resources {
