@@ -152,3 +152,17 @@ Usar exactamente estos nombres: **Backlog, Refined, Todo, In Progress, Ready, Do
 > Si **todas las hijas** de la **épica #{E}** están **Done**:
 > - Mover la **épica** a **Done**.
 > - Comentar un **informe de cierre** con lista de hijas, fechas y enlaces a PRs.
+
+## Comando: backlog-intake
+
+Uso:
+- El usuario crea un issue con un bloque ```yaml``` que describe historias de backlog.
+- El usuario comenta en el issue: "backlog intake en este issue".
+- El agente debe:
+    - Extraer el YAML.
+    - Ejecutar `scripts/backlog-intake.sh` con el número de issue actual.
+    - Comentar el resultado (ids → #número) en el mismo issue.
+
+Notas:
+- Los labels `stream:CLIENTE`, `stream:NEGOCIO`, `stream:DELIVERY` determinan a qué backlog pertenece cada issue.
+- Evitar crear issues duplicados por título.
