@@ -278,7 +278,7 @@ def set_status(item_id: str, status_name: str):
     if not option_id:
         print(f"[WARN] No se encontró opción de Status '{status_name}'")
         return
-    mutation = '''
+    mutation = """
     mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$optionId:String!){
       updateProjectV2ItemFieldValue(
         input:{
