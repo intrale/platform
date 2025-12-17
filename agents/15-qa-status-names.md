@@ -1,7 +1,9 @@
 # ✅ Nombres de Status (Project V2)
 
 Estados (usar EXACTAMENTE estos nombres):
-- Backlog: historias nuevas (usuario/auto) sin detalle.
+- Backlog CLIENTE: historias nuevas para las features del cliente (usuario/auto) sin detalle.
+- Backlog NEGOCIO: historias nuevas para las features del negocio (usuario/auto) sin detalle.
+- Backlog DELIVERY: historias nuevas para las features del delivery (usuario/auto) sin detalle.
 - Refined: historias detalladas (funcional + técnico) listas para priorizar.
 - Todo: priorizadas para empezar; DEBEN venir de Refined.
 - In Progress: en desarrollo activo (tomadas desde Todo).
