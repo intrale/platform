@@ -155,14 +155,43 @@ Usar exactamente estos nombres: **Backlog, Refined, Todo, In Progress, Ready, Do
 
 ## Comando: backlog-intake
 
-Uso:
-- El usuario crea un issue con un bloque ```yaml``` que describe historias de backlog.
-- El usuario comenta en el issue: "backlog intake en este issue".
-- El agente debe:
-    - Extraer el YAML.
-    - Ejecutar `scripts/backlog-intake.sh` con el número de issue actual.
-    - Comentar el resultado (ids → #número) en el mismo issue.
+**Prompt recomendado (ejemplo):**
 
-Notas:
-- Los labels `stream:CLIENTE`, `stream:NEGOCIO`, `stream:DELIVERY` determinan a qué backlog pertenece cada issue.
-- Evitar crear issues duplicados por título.
+> backlog intake en este issue:
+> > leé el bloque ```yaml``` del cuerpo, creá una issue por cada item usando su `title`, `body` y `labels`,  
+> > asegurate de respetar la label `stream:CLIENTE`, `stream:NEGOCIO` o `stream:DELIVERY` de cada item  
+> > para ubicar la issue en el backlog correcto del Project "Intrale",  
+> > agregá también la label `from-intake` y después comentá acá el resultado (ID → #issue creada).  
+> > No abras PR ni modifiques archivos de código, solo ejecutá el flujo de intake.
+
+### Uso
+
+- El usuario crea un issue con un bloque ```yaml``` que describe historias de backlog.
+- Cada `item` del YAML **debe incluir exactamente una** label de stream:
+    - `stream:CLIENTE`
+    - `stream:NEGOCIO`
+    - `stream:DELIVERY`
+- El usuario comenta en el issue: `"backlog intake en este issue"` (o una variante muy cercana al prompt recomendado).
+
+### Comportamiento esperado del agente
+
+- Extraer el bloque ```yaml``` del cuerpo de la issue.
+- Para cada `item`:
+    - Crear una nueva issue en `intrale/platform` con:
+        - `title`: el definido en el YAML (o el formato `{id} – {title}` si existe `id`).
+        - `body`: el campo `body` del YAML (Markdown).
+        - `labels`: todas las labels del YAML + la label adicional `from-intake`.
+    - Usar la label de stream para decidir en qué backlog / columna del Project “Intrale” se ubica la issue:
+        - `stream:CLIENTE`  → columna de backlog de CLIENTE.
+        - `stream:NEGOCIO`  → columna de backlog de NEGOCIO.
+        - `stream:DELIVERY` → columna de backlog de DELIVERY.
+- Publicar en la issue de intake un comentario resumen con la lista `ID → #nueva-issue` (y enlaces).
+- **No** crear ramas, **no** abrir PRs y **no** modificar archivos de código ni scripts como parte de este comando.
+
+### Notas
+
+- Si ya existe una issue con el mismo `title`, no crear un duplicado:
+    - solo mencionarla en el comentario final como “ya existente” y enlazarla.
+- Si el YAML está mal formado o falta información crítica (por ejemplo, `title` o `body`),
+    - dejar la issue marcada como bloqueada en el tablero y comentar el error de validación.
+
