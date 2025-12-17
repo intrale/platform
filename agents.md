@@ -23,6 +23,7 @@ Paquete modular de reglas para `leitocodexbot`.
 - 17-pr-template.md – Plantilla para pull requests.
 - 18-project-v2-api-examples.md – Ejemplos de API para Project V2.
 - 19-README-commands.md – Comandos README para agentes.
+- 20-backlog-intake.md - Proceso de incorporación al backlog.
 
 Notas:
 - Todos los módulos están bajo `./agents/`.
