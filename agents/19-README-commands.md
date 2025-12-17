@@ -159,7 +159,7 @@ Usar exactamente estos nombres: **Backlog, Refined, Todo, In Progress, Ready, Do
 
 > backlog intake en este issue:
 > > leé el bloque ```yaml``` del cuerpo, creá una issue por cada item usando su `title`, `body` y `labels`,  
-> > asegurate de respetar la label `stream:CLIENTE`, `stream:NEGOCIO` o `stream:DELIVERY` de cada item  
+> > asegurate de respetar la label `app:client`, `app:business` o `app:delivery` de cada item  
 > > para ubicar la issue en el backlog correcto del Project "Intrale",  
 > > agregá también la label `from-intake` y después comentá acá el resultado (ID → #issue creada).  
 > > No abras PR ni modifiques archivos de código, solo ejecutá el flujo de intake.
@@ -167,25 +167,31 @@ Usar exactamente estos nombres: **Backlog, Refined, Todo, In Progress, Ready, Do
 ### Uso
 
 - El usuario crea un issue con un bloque ```yaml``` que describe historias de backlog.
-- Cada `item` del YAML **debe incluir exactamente una** label de stream:
-    - `stream:CLIENTE`
-    - `stream:NEGOCIO`
-    - `stream:DELIVERY`
+- Cada `item` del YAML **debe incluir exactamente una** label de app:
+    - `app:client`
+    - `app:business`
+    - `app:delivery`
 - El usuario comenta en el issue: `"backlog intake en este issue"` (o una variante muy cercana al prompt recomendado).
 
 ### Comportamiento esperado del agente
 
+- Tomar el issue de intake como una tarea normal del flujo:
+    - Si está en **Backlog** o **Todo**, moverlo primero a **In Progress**.
 - Extraer el bloque ```yaml``` del cuerpo de la issue.
 - Para cada `item`:
     - Crear una nueva issue en `intrale/platform` con:
         - `title`: el definido en el YAML (o el formato `{id} – {title}` si existe `id`).
         - `body`: el campo `body` del YAML (Markdown).
         - `labels`: todas las labels del YAML + la label adicional `from-intake`.
-    - Usar la label de stream para decidir en qué backlog / columna del Project “Intrale” se ubica la issue:
-        - `stream:CLIENTE`  → columna de backlog de CLIENTE.
-        - `stream:NEGOCIO`  → columna de backlog de NEGOCIO.
-        - `stream:DELIVERY` → columna de backlog de DELIVERY.
+    - Usar la label de app para decidir en qué backlog / columna del Project “Intrale” se ubica la issue:
+        - `app:client`   → columna de **Backlog CLIENTE**.
+        - `app:business` → columna de **Backlog NEGOCIO**.
+        - `app:delivery` → columna de **Backlog DELIVERY**.
 - Publicar en la issue de intake un comentario resumen con la lista `ID → #nueva-issue` (y enlaces).
+- Marcar el intake como procesado:
+    - Agregar la label `intake-processed`.
+    - Si todo salió bien, mover el issue de intake a **Done**.
+    - Si hubo errores al crear o ubicar historias, moverlo a **Blocked** y describir el problema.
 - **No** crear ramas, **no** abrir PRs y **no** modificar archivos de código ni scripts como parte de este comando.
 
 ### Notas
@@ -193,5 +199,5 @@ Usar exactamente estos nombres: **Backlog, Refined, Todo, In Progress, Ready, Do
 - Si ya existe una issue con el mismo `title`, no crear un duplicado:
     - solo mencionarla en el comentario final como “ya existente” y enlazarla.
 - Si el YAML está mal formado o falta información crítica (por ejemplo, `title` o `body`),
-    - dejar la issue marcada como bloqueada en el tablero y comentar el error de validación.
+    - dejar la issue marcada como **Blocked** en el tablero y comentar el error de validación.
 
