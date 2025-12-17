@@ -47,6 +47,9 @@ import json
 import requests
 import yaml
 
+# ----------------------------------------------------------------------
+# Contexto / configuración
+# ----------------------------------------------------------------------
 yaml_path = sys.argv[1]
 token = os.environ["GITHUB_TOKEN"]
 repo_full = os.environ.get("GITHUB_REPOSITORY", "intrale/platform")
