@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Repositorio actual
+# Repo e issue actual
 REPO="${GITHUB_REPOSITORY:-intrale/platform}"
-
-# Número de issue a procesar (issue de intake)
 ISSUE_NUMBER="${ISSUE_NUMBER:-${CODEX_ISSUE_NUMBER:-}}"
 
 if [ -z "${GITHUB_TOKEN:-}" ]; then
@@ -29,7 +27,7 @@ BODY="$(curl -sS \
   -H "$AUTH_HEADER" \
   "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}" | jq -r '.body')"
 
-# Extraer bloque YAML entre ```yaml y ```
+# Extraer bloque ```yaml``` del cuerpo
 YAML_BLOCK="$(printf '%s\n' "$BODY" | sed -n '/```yaml/,/```/p' | sed '1d;$d')"
 
 if [ -z "$YAML_BLOCK" ]; then
@@ -46,19 +44,17 @@ python - "$TMP_YAML" << 'PY'
 import os
 import sys
 import json
-
 import requests
 import yaml
 
-# ----------------------------------------------------------------------
-# Contexto / configuración
-# ----------------------------------------------------------------------
 yaml_path = sys.argv[1]
 token = os.environ["GITHUB_TOKEN"]
 repo_full = os.environ.get("GITHUB_REPOSITORY", "intrale/platform")
 owner, repo = repo_full.split("/", 1)
 intake_issue_number = os.environ.get("ISSUE_NUMBER") or os.environ.get("CODEX_ISSUE_NUMBER")
 project_number = int(os.environ.get("GH_PROJECT_NUMBER", "1"))
+
+REST_BASE = "https://api.github.com"
 
 rest_headers = {
     "Authorization": f"Bearer {token}",
@@ -70,16 +66,14 @@ graphql_headers = {
     "Content-Type": "application/json",
 }
 
-REST_BASE = "https://api.github.com"
+session = requests.Session()
+session.headers.update(rest_headers)
 
-with open(yaml_path) as f:
-    data = yaml.safe_load(f)
+with open(yaml_path, "r", encoding="utf-8") as f:
+    data = yaml.safe_load(f) or {}
 
 items = data.get("items", [])
 
-# ----------------------------------------------------------------------
-# Helpers REST / GraphQL
-# ----------------------------------------------------------------------
 def graphql(query: str, variables: dict):
     r = requests.post(
         "https://api.github.com/graphql",
@@ -87,59 +81,59 @@ def graphql(query: str, variables: dict):
         json={"query": query, "variables": variables},
     )
     r.raise_for_status()
-    data = r.json()
-    if "errors" in data:
-        raise RuntimeError(f"GraphQL errors: {data['errors']}")
-    return data["data"]
+    payload = r.json()
+    if "errors" in payload:
+        raise RuntimeError(f"GraphQL errors: {payload['errors']}")
+    return payload["data"]
 
-session = requests.Session()
-session.headers.update(rest_headers)
+# ---------------------------------------------------------------------------
+# Project + campo Status
+# ---------------------------------------------------------------------------
 
-# ----------------------------------------------------------------------
-# Buscar projectId + Status field + opciones
-# ----------------------------------------------------------------------
 def get_project_and_status(owner: str, number: int):
-    query = '''
-    query($owner:String!, $number:Int!) {
-      user(login:$owner) {
-        projectV2(number:$number) {
+    query = """
+    query($owner:String!,$number:Int!){
+      user(login:$owner){
+        projectV2(number:$number){
           id
-          fields(first:50) {
-            nodes {
+          fields(first:50){
+            nodes{
               __typename
-              ... on ProjectV2SingleSelectField {
+              ... on ProjectV2SingleSelectField{
                 id
                 name
-                options { id name }
+                options{ id name }
               }
             }
           }
         }
       }
-      organization(login:$owner) {
-        projectV2(number:$number) {
+      organization(login:$owner){
+        projectV2(number:$number){
           id
-          fields(first:50) {
-            nodes {
+          fields(first:50){
+            nodes{
               __typename
-              ... on ProjectV2SingleSelectField {
+              ... on ProjectV2SingleSelectField{
                 id
                 name
-                options { id name }
+                options{ id name }
               }
             }
           }
         }
       }
     }
-    '''
+    """
     data = graphql(query, {"owner": owner, "number": number})
+
     proj = None
     if data.get("user") and data["user"].get("projectV2"):
         proj = data["user"]["projectV2"]
-    elif data.get("organization") and data["organization"].get("projectV2"):
+    if not proj and data.get("organization") and data["organization"].get("projectV2"):
         proj = data["organization"]["projectV2"]
-    else:
+
+    if not proj:
         raise RuntimeError("No se encontró el Project V2 para ese owner/number")
 
     fields = proj["fields"]["nodes"]
@@ -154,7 +148,7 @@ def get_project_and_status(owner: str, number: int):
     status_options = {opt["name"]: opt["id"] for opt in status_field["options"]}
     return proj["id"], status_field["id"], status_options
 
-# Mapear app:* -> nombre del Status
+# Mapeo de label → columna de backlog
 STATUS_BY_APP = {
     "app:client": "Backlog CLIENTE",
     "app:business": "Backlog NEGOCIO",
@@ -167,8 +161,8 @@ def infer_app_label(labels):
             return l
     return None
 
-# Buscar issues existentes para evitar duplicados
 def issue_exists(title: str):
+    """Evita duplicados buscando por título exacto en este repo."""
     url = f"{REST_BASE}/search/issues"
     q = f'repo:{owner}/{repo} "{title}" in:title'
     r = session.get(url, params={"q": q})
@@ -176,12 +170,13 @@ def issue_exists(title: str):
     data = r.json()
     for it in data.get("items", []):
         if it["title"] == title:
-            return it["number"]
-    return None
+            return it["number"], it["node_id"]
+    return None, None
 
-# ----------------------------------------------------------------------
-# Crear issues nuevas
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Crear issues (o reutilizar existentes)
+# ---------------------------------------------------------------------------
+
 created = []
 
 for item in items:
@@ -195,72 +190,98 @@ for item in items:
     app_label = infer_app_label(labels)
     status_name = STATUS_BY_APP.get(app_label)
 
-    existing_number = issue_exists(title)
+    existing_number, existing_node = issue_exists(title)
     if existing_number is not None:
-        created.append(
-            {
-                "id": iid,
-                "number": existing_number,
-                "status": "ya-existia",
-                "app_label": app_label,
-                "status_name": status_name,
-                "node_id": None,
-                "project_item_id": None,
-            }
-        )
+        created.append({
+            "id": iid,
+            "number": existing_number,
+            "status": "ya-existia",
+            "app_label": app_label,
+            "status_name": status_name,
+            "node_id": existing_node,
+            "project_item_id": None,
+        })
         continue
 
-    payload = {
-        "title": title,
-        "body": body,
-        "labels": labels,
-    }
+    payload = {"title": title, "body": body, "labels": labels}
     r = session.post(f"{REST_BASE}/repos/{owner}/{repo}/issues", json=payload)
     r.raise_for_status()
     issue = r.json()
-    number = issue["number"]
-    node_id = issue["node_id"]
-    created.append(
-        {
-            "id": iid,
-            "number": number,
-            "status": "creada",
-            "app_label": app_label,
-            "status_name": status_name,
-            "node_id": node_id,
-            "project_item_id": None,
-        }
-    )
+    created.append({
+        "id": iid,
+        "number": issue["number"],
+        "status": "creada",
+        "app_label": app_label,
+        "status_name": status_name,
+        "node_id": issue["node_id"],
+        "project_item_id": None,
+    })
 
-# Si no hay nada creado ni existente, terminamos temprano
 if not created:
     print(json.dumps({"created": [], "comment": "No se encontraron items en el YAML"}))
     sys.exit(0)
 
-# ----------------------------------------------------------------------
-# Resolver Project + Status
-# ----------------------------------------------------------------------
 project_id, status_field_id, status_options = get_project_and_status(owner, project_number)
 
-def add_issue_to_project(node_id: str) -> str:
-    """Devuelve el itemId del Project para este contenido."""
-    mutation = '''
-    mutation($projectId:ID!,$contentId:ID!){
-      addProjectV2ItemById(input:{projectId:$projectId,contentId:$contentId}){
-        item { id }
+# ---------------------------------------------------------------------------
+# Utilidades Project V2: buscar/crear item y cambiar Status
+# ---------------------------------------------------------------------------
+
+def get_project_item_for_content(content_id: str):
+    """Devuelve el item del Project para esta issue/PR si ya existe."""
+    query = """
+    query($contentId:ID!){
+      node(id:$contentId){
+        ... on Issue{
+          projectItems(first:20){
+            nodes{
+              id
+              project{ id }
+            }
+          }
+        }
+        ... on PullRequest{
+          projectItems(first:20){
+            nodes{
+              id
+              project{ id }
+            }
+          }
+        }
       }
     }
-    '''
+    """
+    data = graphql(query, {"contentId": content_id})
+    node = data.get("node")
+    if not node:
+        return None
+    for it in node.get("projectItems", {}).get("nodes", []):
+        if it["project"]["id"] == project_id:
+            return it["id"]
+    return None
+
+def add_issue_to_project(node_id: str) -> str:
+    mutation = """
+    mutation($projectId:ID!,$contentId:ID!){
+      addProjectV2ItemById(input:{projectId:$projectId,contentId:$contentId}){
+        item{ id }
+      }
+    }
+    """
     data = graphql(mutation, {"projectId": project_id, "contentId": node_id})
-    item = data["addProjectV2ItemById"]["item"]
-    return item["id"]
+    return data["addProjectV2ItemById"]["item"]["id"]
+
+def ensure_project_item(node_id: str) -> str:
+    item_id = get_project_item_for_content(node_id)
+    if item_id:
+        return item_id
+    return add_issue_to_project(node_id)
 
 def set_status(item_id: str, status_name: str):
     option_id = status_options.get(status_name)
     if not option_id:
-        # Si no existe esa opción, no hacemos nada.
         return
-    mutation = '''
+    mutation = """
     mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$optionId:String!){
       updateProjectV2ItemFieldValue(
         input:{
@@ -270,73 +291,66 @@ def set_status(item_id: str, status_name: str):
           value:{ singleSelectOptionId:$optionId }
         }
       ){
-        projectV2Item { id }
+        projectV2Item{ id }
       }
     }
-    '''
-    graphql(
-        mutation,
-        {
-            "projectId": project_id,
-            "itemId": item_id,
-            "fieldId": status_field_id,
-            "optionId": option_id,
-        },
-    )
+    """
+    graphql(mutation, {
+        "projectId": project_id,
+        "itemId": item_id,
+        "fieldId": status_field_id,
+        "optionId": option_id,
+    })
 
-# ----------------------------------------------------------------------
-# Agregar issues nuevas al Project y setear Status
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Añadir cada issue al Project y ponerla en el Backlog correcto
+# ---------------------------------------------------------------------------
+
 for entry in created:
-    if entry["status"] != "creada":
-        continue
-    if not entry["node_id"]:
-        continue
+    node_id = entry.get("node_id")
     status_name = entry.get("status_name")
-    if not status_name:
+    if not node_id or not status_name:
         continue
-
     try:
-        item_id = add_issue_to_project(entry["node_id"])
+        item_id = ensure_project_item(node_id)
         set_status(item_id, status_name)
         entry["project_item_id"] = item_id
     except Exception as e:
-        entry["status"] = f"creada-pero-sin-status ({e})"
+        entry["status"] = f"{entry['status']}-pero-sin-status ({e})"
 
-# ----------------------------------------------------------------------
-# Actualizar issue de intake: label + Status coherente (si se puede)
-# ----------------------------------------------------------------------
-# Determinar un status para el intake: usamos el primero válido que encontremos.
-intake_status_name = None
-for entry in created:
-    if entry.get("status_name") and entry["status"].startswith("creada"):
-        intake_status_name = entry["status_name"]
-        break
+# ---------------------------------------------------------------------------
+# Issue de intake: label + moverlo al mismo Backlog
+# ---------------------------------------------------------------------------
 
-# Obtener node_id del issue de intake
 r = session.get(f"{REST_BASE}/repos/{owner}/{repo}/issues/{intake_issue_number}")
 r.raise_for_status()
 intake_issue = r.json()
 intake_node_id = intake_issue["node_id"]
 
-# Agregar label intake-processed
+# Label intake-processed
 session.post(
     f"{REST_BASE}/repos/{owner}/{repo}/issues/{intake_issue_number}/labels",
     json={"labels": ["intake-processed"]},
 )
 
-# Agregar intake al Project y, si corresponde, setear Status
+# Usamos el mismo Status que el primer item creado (si hay)
+intake_status_name = None
+for e in created:
+    if e.get("status_name") and e["status"].startswith("creada"):
+        intake_status_name = e["status_name"]
+        break
+
 try:
-    intake_item_id = add_issue_to_project(intake_node_id)
+    intake_item_id = ensure_project_item(intake_node_id)
     if intake_status_name:
         set_status(intake_item_id, intake_status_name)
 except Exception:
-    # No bloqueamos el flujo si falla esto; igual se crean las historias.
-    intake_item_id = None
+    pass
 
-# ----------------------------------------------------------------------
-# Comentar resultado en issue de intake
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Comentario resumen en el issue de intake
+# ---------------------------------------------------------------------------
+
 lines = ["### Resultado del backlog intake", ""]
 for entry in created:
     if entry["status"] == "creada":
@@ -353,7 +367,6 @@ session.post(
     json={"body": comment_body},
 )
 
-# Devolver info mínima al shell (por si se quiere loguear algo)
 print(json.dumps({"created": created}))
 PY
 
