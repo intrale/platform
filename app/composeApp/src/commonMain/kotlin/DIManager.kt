@@ -172,31 +172,41 @@ class DIManager {
                 bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
                 bindSingleton (tag = SCREENS) {
+                    val isClientApp = BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)
+
                     arrayListOf<Screen>().apply {
-                        if (BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)) {
+                        if (isClientApp) {
                             add(instance(tag = CLIENT_ENTRY))
                             add(instance(tag = CLIENT_HOME))
                             add(instance(tag = CLIENT_CART))
+                            add(instance(tag = INIT))
+                            add(instance(tag = SIGNUP))
+                            add(instance(tag = CHANGE_PASSWORD))
+                            add(instance(tag = PASSWORD_RECOVERY))
+                            add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                            add(instance(tag = TWO_FACTOR_SETUP))
+                            add(instance(tag = TWO_FACTOR_VERIFY))
+                        } else {
+                            add(instance(tag = HOME))
+                            add(instance(tag = INIT))
+                            add(instance(tag = DASHBOARD))
+                            add(instance(tag = BUTTONS_PREVIEW))
+                            add(instance(tag = SIGNUP))
+                            add(instance(tag = SELECT_SIGNUP_PROFILE))
+                            add(instance(tag = SIGNUP_PLATFORM_ADMIN))
+                            add(instance(tag = SIGNUP_DELIVERY))
+                            add(instance(tag = REGISTER_SALER))
+                            add(instance(tag = CHANGE_PASSWORD))
+                            add(instance(tag = PASSWORD_RECOVERY))
+                            add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                            add(instance(tag = REVIEW_BUSINESS))
+                            add(instance(tag = REGISTER_NEW_BUSINESS))
+                            add(instance(tag = REQUEST_JOIN_BUSINESS))
+                            add(instance(tag = REVIEW_JOIN_BUSINESS))
+                            add(instance(tag = PERSONALIZATION))
+                            add(instance(tag = TWO_FACTOR_SETUP))
+                            add(instance(tag = TWO_FACTOR_VERIFY))
                         }
-                        add(instance(tag = HOME))
-                        add(instance(tag = INIT))
-                        add(instance(tag = DASHBOARD))
-                        add(instance(tag = BUTTONS_PREVIEW))
-                        add(instance(tag = SIGNUP))
-                        add(instance(tag = SELECT_SIGNUP_PROFILE))
-                        add(instance(tag = SIGNUP_PLATFORM_ADMIN))
-                        add(instance(tag = SIGNUP_DELIVERY))
-                        add(instance(tag = REGISTER_SALER))
-                        add(instance(tag = CHANGE_PASSWORD))
-                        add(instance(tag = PASSWORD_RECOVERY))
-                        add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
-                        add(instance(tag = REVIEW_BUSINESS))
-                        add(instance(tag = REGISTER_NEW_BUSINESS))
-                        add(instance(tag = REQUEST_JOIN_BUSINESS))
-                        add(instance(tag = REVIEW_JOIN_BUSINESS))
-                        add(instance(tag = PERSONALIZATION))
-                        add(instance(tag = TWO_FACTOR_SETUP))
-                        add(instance(tag = TWO_FACTOR_VERIFY))
                     }
                 }
 

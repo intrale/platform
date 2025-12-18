@@ -69,7 +69,6 @@ import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.auth.CHANGE_PASSWORD_PATH
 import ui.sc.auth.TWO_FACTOR_SETUP_PATH
 import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
-import ui.sc.shared.HOME_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.ViewModel
 import ui.th.elevations
@@ -250,7 +249,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                         coroutineScope.launch {
                             try {
                                 viewModel.logout()
-                                this@ClientHomeScreen.navigate(HOME_PATH)
+                                this@ClientHomeScreen.navigate(CLIENT_ENTRY_PATH)
                             } catch (error: Throwable) {
                                 logger.error(error) { "Error al cerrar sesión" }
                             }
