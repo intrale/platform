@@ -21,9 +21,18 @@ plugins {
 }
 
 val business = providers.gradleProperty("business").orElse("intrale")
+val inferredAppType = providers.provider {
+    val taskNames = gradle.startParameter.taskNames
+    if (taskNames.any { it.contains("business", ignoreCase = true) }) {
+        "BUSINESS"
+    } else {
+        "CLIENT"
+    }
+}
+
 val appType = providers.gradleProperty("appType")
     .orElse(providers.environmentVariable("APP_TYPE"))
-    .orElse("CLIENT")
+    .orElse(inferredAppType)
     .map(String::uppercase)
 
 buildkonfig {
@@ -206,6 +215,14 @@ android {
             applicationIdSuffix = ".client"
             manifestPlaceholders += mapOf("appName" to appName)
             resValue("string", "app_name", appName)
+        }
+
+        create("business") {
+            dimension = "appType"
+            applicationIdSuffix = ".business"
+            val businessAppName = "Intrale Negocios"
+            manifestPlaceholders += mapOf("appName" to businessAppName)
+            resValue("string", "app_name", businessAppName)
         }
     }
 

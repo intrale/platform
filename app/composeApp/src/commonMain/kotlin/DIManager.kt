@@ -78,6 +78,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import ar.com.intrale.appconfig.AppRuntimeConfig
 import org.kodein.di.DI
 import org.kodein.di.bindFactory
 import org.kodein.di.bindSingleton
@@ -172,7 +173,7 @@ class DIManager {
                 bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
                 bindSingleton (tag = SCREENS) {
-                    val isClientApp = BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)
+                    val isClientApp = AppRuntimeConfig.isClient
 
                     arrayListOf<Screen>().apply {
                         if (isClientApp) {

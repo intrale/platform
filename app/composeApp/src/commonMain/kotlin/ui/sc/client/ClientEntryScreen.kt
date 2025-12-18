@@ -4,6 +4,8 @@ import DIManager
 import ar.com.intrale.BuildKonfig
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import ar.com.intrale.appconfig.AppRuntimeConfig
+import ar.com.intrale.appconfig.AppType
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,7 +48,6 @@ import ui.session.UserRole
 import ui.th.spacing
 
 const val CLIENT_ENTRY_PATH = "/client/entry"
-private const val CLIENT_APP_TYPE = "CLIENT"
 
 enum class ClientEntryStatus { Loading, Welcome, NavigateClientHome, NavigateClassic, StoreUnavailable }
 
@@ -72,10 +73,10 @@ class ClientEntryViewModel : ViewModel() {
     override fun getState(): Any = state
     override fun initInputState() { /* No-op: no inputs in entry point */ }
 
-    suspend fun resolveEntry(appType: String = BuildKonfig.APP_TYPE) {
+    suspend fun resolveEntry(appType: AppType = AppRuntimeConfig.appType) {
         logger.info { "Resolviendo entry con APP_TYPE=$appType" }
 
-        if (!appType.equals(CLIENT_APP_TYPE, ignoreCase = true)) {
+        if (appType != AppType.CLIENT) {
             state = state.copy(status = ClientEntryStatus.NavigateClassic)
             return
         }
@@ -112,7 +113,7 @@ class ClientEntryScreen : Screen(CLIENT_ENTRY_PATH) {
         val state = viewModel.state
 
         LaunchedEffect(Unit) {
-            logger.info { "Evaluando entrypoint para APP_TYPE=${BuildKonfig.APP_TYPE}" }
+            logger.info { "Evaluando entrypoint para APP_TYPE=${AppRuntimeConfig.appType}" }
             viewModel.resolveEntry()
         }
 
