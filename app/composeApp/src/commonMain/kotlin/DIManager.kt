@@ -2,7 +2,7 @@
 
 
 import androidx.navigation.NavHostController
-import ar.com.intrale.BuildKonfig
+import ar.com.intrale.AppType
 import asdo.auth.DoChangePassword
 import asdo.auth.DoCheckPreviousLogin
 import asdo.auth.DoConfirmPasswordRecovery
@@ -173,7 +173,7 @@ class DIManager {
 
                 bindSingleton (tag = SCREENS) {
                     arrayListOf<Screen>().apply {
-                        if (BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)) {
+                        if (AppType.isClient()) {
                             add(instance(tag = CLIENT_ENTRY))
                             add(instance(tag = CLIENT_HOME))
                             add(instance(tag = CLIENT_CART))

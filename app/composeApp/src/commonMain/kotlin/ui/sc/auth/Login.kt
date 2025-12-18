@@ -1,6 +1,6 @@
 package ui.sc.auth
 
-import ar.com.intrale.BuildKonfig
+import ar.com.intrale.AppType
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -59,8 +59,6 @@ import ui.th.elevations
 import ui.th.spacing
 
 const val LOGIN_PATH = "/login"
-private const val CLIENT_APP_TYPE = "CLIENT"
-
 class Login : Screen(LOGIN_PATH) {
 
     override val messageTitle: MessageKey = MessageKey.login_title
@@ -125,7 +123,7 @@ class Login : Screen(LOGIN_PATH) {
                 setLoading = { viewModel.loading = it },
                 serviceCall = { viewModel.login() },
                 onSuccess = {
-                    val destination = if (BuildKonfig.APP_TYPE.equals(CLIENT_APP_TYPE, ignoreCase = true)) {
+                    val destination = if (AppType.isClient()) {
                         SessionStore.updateRole(UserRole.Client)
                         CLIENT_ENTRY_PATH
                     } else {
@@ -153,7 +151,7 @@ class Login : Screen(LOGIN_PATH) {
             }
         }
 
-        val isClientApp = BuildKonfig.APP_TYPE.equals(CLIENT_APP_TYPE, ignoreCase = true)
+        val isClientApp = AppType.isClient()
         val signupDestination = if (isClientApp) SIGNUP_PATH else SELECT_SIGNUP_PROFILE_PATH
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->

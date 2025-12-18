@@ -21,7 +21,14 @@ plugins {
 }
 
 val business = providers.gradleProperty("business").orElse("intrale")
-val appType = providers.gradleProperty("appType").orElse("CLIENT").map(String::uppercase)
+val inferredAppType = providers.provider {
+    val requestedTasks = gradle.startParameter.taskNames.joinToString(" ").lowercase()
+    if (requestedTasks.contains("business")) "BUSINESS" else "CLIENT"
+}
+val appType = providers.gradleProperty("appType")
+    .orElse(providers.environmentVariable("APP_TYPE"))
+    .orElse(inferredAppType)
+    .map(String::uppercase)
 
 buildkonfig {
     packageName = "ar.com.intrale"
@@ -190,6 +197,7 @@ val appNames = mapOf(
     // agrega las que uses
 )
 val appName = appNames[brandId] ?: "Intrale"
+val businessAppName = "$appName Negocios"
 
 android {
     namespace = "ar.com.intrale"
@@ -204,7 +212,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         manifestPlaceholders += mapOf(
-            "appName" to appName
+            "appName" to appName,
+            "launcherIcon" to "ic_launcher",
+            "launcherRoundIcon" to "ic_launcher_round"
         )
     }
     packaging {
@@ -215,6 +225,22 @@ android {
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
+        }
+    }
+    flavorDimensions += "appType"
+    productFlavors {
+        create("client") {
+            dimension = "appType"
+            manifestPlaceholders["appName"] = appName
+            manifestPlaceholders["launcherIcon"] = "ic_launcher"
+            manifestPlaceholders["launcherRoundIcon"] = "ic_launcher_round"
+        }
+        create("business") {
+            dimension = "appType"
+            applicationId = "ar.com.intrale.business"
+            manifestPlaceholders["appName"] = businessAppName
+            manifestPlaceholders["launcherIcon"] = "ic_launcher_business"
+            manifestPlaceholders["launcherRoundIcon"] = "ic_launcher_business_round"
         }
     }
     compileOptions {
