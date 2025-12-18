@@ -21,7 +21,10 @@ plugins {
 }
 
 val business = providers.gradleProperty("business").orElse("intrale")
-val appType = providers.gradleProperty("appType").orElse("CLIENT").map(String::uppercase)
+val appType = providers.gradleProperty("appType")
+    .orElse(providers.environmentVariable("APP_TYPE"))
+    .orElse("CLIENT")
+    .map(String::uppercase)
 
 buildkonfig {
     packageName = "ar.com.intrale"
@@ -194,6 +197,17 @@ val appName = appNames[brandId] ?: "Intrale"
 android {
     namespace = "ar.com.intrale"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
+
+    flavorDimensions += "appType"
+
+    productFlavors {
+        create("client") {
+            dimension = "appType"
+            applicationIdSuffix = ".client"
+            manifestPlaceholders += mapOf("appName" to appName)
+            resValue("string", "app_name", appName)
+        }
+    }
 
     defaultConfig {
         applicationId = "ar.com.intrale"
