@@ -6,37 +6,28 @@ import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material.icons.filled.ShoppingCart
-import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -66,9 +57,6 @@ import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
-import ui.sc.auth.CHANGE_PASSWORD_PATH
-import ui.sc.auth.TWO_FACTOR_SETUP_PATH
-import ui.sc.auth.TWO_FACTOR_VERIFY_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.ViewModel
 import ui.th.elevations
@@ -108,7 +96,6 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
             if (current.isLowerCase()) current.titlecase() else current.toString()
         }
         val listState = rememberLazyListState()
-        var profileMenuExpanded by remember { mutableStateOf(false) }
         val coroutineScope = rememberCoroutineScope()
         val logger = remember { LoggerFactory.default.newLogger<ClientHomeScreen>() }
         val viewModel: ClientHomeViewModel = viewModel { ClientHomeViewModel() }
@@ -154,8 +141,8 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                         coroutineScope.launch { snackbarHostState.showSnackbar(ordersPlaceholder) }
                     },
                     onProfileClick = {
-                        logger.info { "Abriendo menú de perfil" }
-                        profileMenuExpanded = true
+                        logger.info { "Navegando al perfil del cliente" }
+                        navigate(CLIENT_PROFILE_PATH)
                     }
                 )
             }
@@ -229,33 +216,6 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                     item { Spacer(modifier = Modifier.height(MaterialTheme.spacing.x8)) }
                 }
 
-                ClientProfileMenu(
-                    expanded = profileMenuExpanded,
-                    onDismissRequest = { profileMenuExpanded = false },
-                    onChangePassword = {
-                        profileMenuExpanded = false
-                        this@ClientHomeScreen.navigate(CHANGE_PASSWORD_PATH)
-                    },
-                    onSetupTwoFactor = {
-                        profileMenuExpanded = false
-                        this@ClientHomeScreen.navigate(TWO_FACTOR_SETUP_PATH)
-                    },
-                    onVerifyTwoFactor = {
-                        profileMenuExpanded = false
-                        this@ClientHomeScreen.navigate(TWO_FACTOR_VERIFY_PATH)
-                    },
-                    onLogout = {
-                        profileMenuExpanded = false
-                        coroutineScope.launch {
-                            try {
-                                viewModel.logout()
-                                this@ClientHomeScreen.navigate(CLIENT_ENTRY_PATH)
-                            } catch (error: Throwable) {
-                                logger.error(error) { "Error al cerrar sesión" }
-                            }
-                        }
-                    }
-                )
             }
         }
     }
@@ -541,119 +501,6 @@ private fun ClientHomeBottomItem(
             color = Color.White,
             textAlign = TextAlign.Center,
             style = MaterialTheme.typography.bodyMedium
-        )
-    }
-}
-
-@Composable
-private fun ClientProfileMenu(
-    expanded: Boolean,
-    onDismissRequest: () -> Unit,
-    onChangePassword: () -> Unit,
-    onSetupTwoFactor: () -> Unit,
-    onVerifyTwoFactor: () -> Unit,
-    onLogout: () -> Unit
-) {
-    val changePasswordLabel = Txt(MessageKey.dashboard_menu_change_password)
-    val setupTwoFactorLabel = Txt(MessageKey.dashboard_menu_setup_two_factor)
-    val verifyTwoFactorLabel = Txt(MessageKey.dashboard_menu_verify_two_factor)
-    val logoutLabel = Txt(MessageKey.dashboard_menu_logout)
-    val menuTitle = Txt(MessageKey.dashboard_menu_title)
-
-    if (!expanded) return
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismissRequest
-                )
-        )
-
-        Card(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x5)
-                .fillMaxWidth(),
-            shape = RoundedCornerShape(MaterialTheme.spacing.x2),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level3)
-        ) {
-            Column(
-                modifier = Modifier.padding(
-                    horizontal = MaterialTheme.spacing.x3,
-                    vertical = MaterialTheme.spacing.x3
-                ),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
-            ) {
-                Text(
-                    text = menuTitle,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                ClientProfileAction(
-                    icon = Icons.Default.Key,
-                    label = changePasswordLabel,
-                    onClick = onChangePassword
-                )
-                ClientProfileAction(
-                    icon = Icons.Default.Security,
-                    label = setupTwoFactorLabel,
-                    onClick = onSetupTwoFactor
-                )
-                ClientProfileAction(
-                    icon = Icons.Default.VerifiedUser,
-                    label = verifyTwoFactorLabel,
-                    onClick = onVerifyTwoFactor
-                )
-
-                Divider()
-
-                ClientProfileAction(
-                    icon = Icons.Default.Logout,
-                    label = logoutLabel,
-                    labelColor = MaterialTheme.colorScheme.error,
-                    iconTint = MaterialTheme.colorScheme.error,
-                    onClick = onLogout
-                )
-                Spacer(modifier = Modifier.height(MaterialTheme.spacing.x1))
-            }
-        }
-    }
-}
-
-@Composable
-private fun ClientProfileAction(
-    icon: ImageVector,
-    label: String,
-    labelColor: Color = MaterialTheme.colorScheme.onSurface,
-    iconTint: Color = MaterialTheme.colorScheme.primary,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(onClick = onClick)
-            .padding(vertical = MaterialTheme.spacing.x1_5, horizontal = MaterialTheme.spacing.x2),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = iconTint
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = labelColor
         )
     }
 }

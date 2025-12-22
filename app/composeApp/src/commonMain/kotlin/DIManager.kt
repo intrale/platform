@@ -99,6 +99,7 @@ import ui.sc.business.RequestJoinBusinessScreen
 import ui.sc.business.ReviewBusinessScreen
 import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientEntryScreen
+import ui.sc.client.ClientProfileScreen
 import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.shared.ButtonsPreviewScreen
@@ -116,6 +117,7 @@ public const val SCREENS = "screens"
 public const val CLIENT_ENTRY = "clientEntry"
 public const val CLIENT_HOME = "clientHome"
 public const val CLIENT_CART = "clientCart"
+public const val CLIENT_PROFILE = "clientProfile"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -153,6 +155,7 @@ class DIManager {
                 bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
                 bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
                 bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
+                bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
                 bindSingleton(tag = HOME) { Home() }
                 bindSingleton(tag = INIT) { Login() }
                 bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -182,6 +185,7 @@ class DIManager {
                                 add(instance(tag = CLIENT_ENTRY))
                                 add(instance(tag = CLIENT_HOME))
                                 add(instance(tag = CLIENT_CART))
+                                add(instance(tag = CLIENT_PROFILE))
                                 add(instance(tag = INIT))
                                 add(instance(tag = SIGNUP))
                                 add(instance(tag = CHANGE_PASSWORD))
