@@ -5,12 +5,14 @@ import ar.com.intrale.BuildKonfig
 enum class AppType {
     CLIENT,
     BUSINESS,
+    DELIVERY,
     UNKNOWN;
 
     companion object {
         fun fromValue(raw: String): AppType = when {
             raw.equals(CLIENT.name, ignoreCase = true) -> CLIENT
             raw.equals(BUSINESS.name, ignoreCase = true) -> BUSINESS
+            raw.equals(DELIVERY.name, ignoreCase = true) -> DELIVERY
             else -> UNKNOWN
         }
     }
@@ -25,4 +27,7 @@ object AppRuntimeConfig {
 
     val isBusiness: Boolean
         get() = appType == AppType.BUSINESS
+
+    val isDelivery: Boolean
+        get() = appType == AppType.DELIVERY
 }
