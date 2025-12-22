@@ -49,6 +49,7 @@ import ui.cp.inputs.TextField
 import ui.sc.business.DASHBOARD_PATH
 import ui.sc.business.REGISTER_NEW_BUSINESS_PATH
 import ui.sc.shared.Screen
+import ui.sc.shared.HOME_PATH
 import ui.sc.shared.callService
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
 import ui.sc.signup.SIGNUP_DELIVERY_PATH
@@ -80,6 +81,7 @@ class Login : Screen(LOGIN_PATH) {
 
         val loginText = Txt(MessageKey.login_button)
         val errorCredentials = Txt(MessageKey.login_error_credentials)
+        val inactiveUserMessage = Txt(MessageKey.login_error_inactive_user)
         val changePasswordMessage = Txt(MessageKey.login_change_password_required)
         val genericError = Txt(MessageKey.login_generic_error)
         val loginTitle = Txt(MessageKey.login_title)
@@ -100,6 +102,12 @@ class Login : Screen(LOGIN_PATH) {
                     error.statusCode.value == 401 -> {
                         viewModel.markCredentialsAsInvalid(errorCredentials)
                         snackbarHostState.showSnackbar(errorCredentials)
+                    }
+
+                    error.statusCode.value in listOf(403, 423) ||
+                        error.statusCode.description?.contains("inactive", ignoreCase = true) == true ||
+                        error.message?.contains("inactive", ignoreCase = true) == true -> {
+                        snackbarHostState.showSnackbar(inactiveUserMessage)
                     }
 
                     error.message?.contains("newPassword is required", ignoreCase = true) == true -> {
@@ -124,11 +132,21 @@ class Login : Screen(LOGIN_PATH) {
                 setLoading = { viewModel.loading = it },
                 serviceCall = { viewModel.login() },
                 onSuccess = {
-                    val destination = if (AppRuntimeConfig.isClient) {
-                        SessionStore.updateRole(UserRole.Client)
-                        CLIENT_ENTRY_PATH
-                    } else {
-                        DASHBOARD_PATH
+                    val destination = when {
+                        AppRuntimeConfig.isClient -> {
+                            SessionStore.updateRole(UserRole.Client)
+                            CLIENT_ENTRY_PATH
+                        }
+
+                        AppRuntimeConfig.isDelivery -> {
+                            SessionStore.updateRole(UserRole.Delivery)
+                            HOME_PATH
+                        }
+
+                        else -> {
+                            SessionStore.updateRole(UserRole.BusinessAdmin)
+                            DASHBOARD_PATH
+                        }
                     }
 
                     logger.info { "Login exitoso, navegando a $destination" }
