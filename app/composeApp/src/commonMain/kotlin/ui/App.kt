@@ -1,7 +1,7 @@
 package ui
 
-import ar.com.intrale.BuildKonfig
 import DIManager
+import ar.com.intrale.appconfig.AppRuntimeConfig
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -75,7 +75,7 @@ fun App() {
     val router: Router by DIManager.di.instance(arg = rememberNavController())
     val useDarkTheme = isSystemInDarkTheme()
     var animationsEnabled by remember { mutableStateOf(false) }
-    val isClientApp = BuildKonfig.APP_TYPE.equals("CLIENT", ignoreCase = true)
+    val isClientApp = AppRuntimeConfig.isClient
 
     logger.info { "Starting Intrale" }
 
