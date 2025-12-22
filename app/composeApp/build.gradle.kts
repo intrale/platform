@@ -22,11 +22,12 @@ plugins {
 
 val business = providers.gradleProperty("business").orElse("intrale")
 val inferredAppType = providers.provider {
-    val taskNames = gradle.startParameter.taskNames
-    if (taskNames.any { it.contains("business", ignoreCase = true) }) {
-        "BUSINESS"
-    } else {
-        "CLIENT"
+    val taskNames = gradle.startParameter.taskNames.map(String::lowercase)
+
+    when {
+        taskNames.any { it.contains("delivery") } -> "DELIVERY"
+        taskNames.any { it.contains("business") } -> "BUSINESS"
+        else -> "CLIENT"
     }
 }
 
