@@ -124,11 +124,23 @@ class Login : Screen(LOGIN_PATH) {
                 setLoading = { viewModel.loading = it },
                 serviceCall = { viewModel.login() },
                 onSuccess = {
-                    val destination = if (AppRuntimeConfig.isClient) {
-                        SessionStore.updateRole(UserRole.Client)
-                        CLIENT_ENTRY_PATH
-                    } else {
-                        DASHBOARD_PATH
+                    val destination = when {
+                        AppRuntimeConfig.isClient -> {
+                            SessionStore.updateRole(UserRole.Client)
+                            CLIENT_ENTRY_PATH
+                        }
+
+                        AppRuntimeConfig.isBusiness -> {
+                            SessionStore.updateRole(UserRole.BusinessAdmin)
+                            DASHBOARD_PATH
+                        }
+
+                        AppRuntimeConfig.isDelivery -> {
+                            SessionStore.updateRole(UserRole.Delivery)
+                            DASHBOARD_PATH
+                        }
+
+                        else -> DASHBOARD_PATH
                     }
 
                     logger.info { "Login exitoso, navegando a $destination" }

@@ -1,5 +1,6 @@
 package ui.sc.shared
 
+import ar.com.intrale.appconfig.AppRuntimeConfig
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,9 +25,10 @@ import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
-import ui.th.spacing
 import ui.sc.auth.LOGIN_PATH
+import ui.sc.business.REGISTER_NEW_BUSINESS_PATH
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
+import ui.th.spacing
 
 const val HOME_PATH = "/home"
 
@@ -45,10 +47,29 @@ class Home : Screen(HOME_PATH) {
     @Composable
     private fun ScreenContent() {
         val scrollState = rememberScrollState()
+        val isBusinessApp = AppRuntimeConfig.isBusiness
         val loginLabel = Txt(MessageKey.login_button)
-        val signupLabel = Txt(MessageKey.signup)
-        val headline = Txt(MessageKey.home_headline)
-        val subtitle = Txt(MessageKey.home_subtitle)
+        val secondaryLabel = if (isBusinessApp) {
+            Txt(MessageKey.register_business)
+        } else {
+            Txt(MessageKey.signup)
+        }
+        val headline = if (isBusinessApp) {
+            Txt(MessageKey.home_business_headline)
+        } else {
+            Txt(MessageKey.home_headline)
+        }
+        val subtitle = if (isBusinessApp) {
+            Txt(MessageKey.home_business_subtitle)
+        } else {
+            Txt(MessageKey.home_subtitle)
+        }
+
+        val secondaryDestination = if (isBusinessApp) {
+            REGISTER_NEW_BUSINESS_PATH
+        } else {
+            SELECT_SIGNUP_PROFILE_PATH
+        }
 
         Box(
             modifier = Modifier
@@ -92,14 +113,14 @@ class Home : Screen(HOME_PATH) {
                 )
 
                 IntralePrimaryButton(
-                    text = signupLabel,
+                    text = secondaryLabel,
                     onClick = {
-                        logger.info { "Navegando a $SELECT_SIGNUP_PROFILE_PATH" }
-                        navigate(SELECT_SIGNUP_PROFILE_PATH)
+                        logger.info { "Navegando a $secondaryDestination" }
+                        navigate(secondaryDestination)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     leadingIcon = Icons.Filled.HowToReg,
-                    iconContentDescription = signupLabel
+                    iconContentDescription = secondaryLabel
                 )
             }
         }

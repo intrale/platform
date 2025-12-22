@@ -40,6 +40,8 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.home_title to "Inicio",
     MessageKey.home_headline to "Impulsamos tu operación con Intrale",
     MessageKey.home_subtitle to "Ingresá o registrate para centralizar tu negocio y la gestión de tu red comercial.",
+    MessageKey.home_business_headline to "Administrá tu tienda con Intrale Negocios",
+    MessageKey.home_business_subtitle to "Controlá ventas, equipo y entregas desde un panel pensado para tu negocio.",
     MessageKey.client_entry_welcome_title to "Bienvenido a la tienda",
     MessageKey.client_entry_welcome_subtitle to "Ingresá para usar la aplicación",
     MessageKey.client_entry_register_button to "Registrarme",

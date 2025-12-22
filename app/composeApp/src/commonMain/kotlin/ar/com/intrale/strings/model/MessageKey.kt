@@ -43,6 +43,8 @@ enum class MessageKey {
     home_title,
     home_headline,
     home_subtitle,
+    home_business_headline,
+    home_business_subtitle,
     client_entry_welcome_title,
     client_entry_welcome_subtitle,
     client_entry_register_button,
