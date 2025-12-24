@@ -24,6 +24,10 @@ import asdo.client.DoUpdateClientProfile
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.delivery.DoGetDeliveryProfile
+import asdo.delivery.DoUpdateDeliveryProfile
+import asdo.delivery.ToDoGetDeliveryProfile
+import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoGetBusinesses
 import asdo.business.DoGetBusinessProducts
 import asdo.business.DoRegisterBusiness
@@ -59,6 +63,8 @@ import ext.client.ClientAddressesService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientProfileService
+import ext.delivery.CommDeliveryProfileService
+import ext.delivery.DeliveryProfileService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientRegisterBusinessService
 import ext.business.ClientRequestJoinBusinessService
@@ -118,6 +124,7 @@ import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
+import ui.sc.delivery.DeliveryProfileScreen
 import ui.sc.client.ClientProfileScreen
 import ui.sc.shared.ButtonsPreviewScreen
 import ui.sc.shared.Home
@@ -145,6 +152,7 @@ public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val REGISTER_SALER = "registerSaler"
 public const val DELIVERY_HOME = "deliveryHome"
 public const val DELIVERY_DASHBOARD = "deliveryDashboard"
+public const val DELIVERY_PROFILE = "deliveryProfile"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
@@ -186,6 +194,7 @@ class DIManager {
                 bindSingleton(tag = REGISTER_SALER) { RegisterSalerScreen() }
                 bindSingleton(tag = DELIVERY_HOME) { DeliveryHomeScreen() }
                 bindSingleton(tag = DELIVERY_DASHBOARD) { DeliveryDashboardScreen() }
+                bindSingleton(tag = DELIVERY_PROFILE) { DeliveryProfileScreen() }
                 bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
                 bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
                 bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
@@ -222,6 +231,7 @@ class DIManager {
                                 add(instance(tag = DELIVERY_HOME))
                                 add(instance(tag = INIT))
                                 add(instance(tag = DELIVERY_DASHBOARD))
+                                add(instance(tag = DELIVERY_PROFILE))
                                 add(instance(tag = SIGNUP_DELIVERY))
                                 add(instance(tag = CHANGE_PASSWORD))
                                 add(instance(tag = PASSWORD_RECOVERY))
@@ -302,6 +312,7 @@ class DIManager {
                 bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
                 bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
                 bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
+                bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -324,6 +335,8 @@ class DIManager {
                 bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
                 bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
                 bindSingleton<ToDoManageClientAddress> { DoManageClientAddress(instance(), instance(), instance()) }
+                bindSingleton<ToDoGetDeliveryProfile> { DoGetDeliveryProfile(instance()) }
+                bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }
 
             }
     }

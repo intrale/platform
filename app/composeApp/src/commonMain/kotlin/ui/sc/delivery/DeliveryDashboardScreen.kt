@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -17,6 +19,7 @@ import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen
 import ui.th.elevations
 import ui.th.spacing
@@ -37,6 +40,7 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
 
         val title = Txt(MessageKey.delivery_dashboard_title)
         val subtitle = Txt(MessageKey.delivery_dashboard_subtitle)
+        val profileCta = Txt(MessageKey.delivery_dashboard_profile_cta)
 
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -62,6 +66,15 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = MaterialTheme.spacing.x2)
+                )
+                IntralePrimaryButton(
+                    text = profileCta,
+                    onClick = { navigate(DELIVERY_PROFILE_PATH) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = MaterialTheme.spacing.x4),
+                    leadingIcon = Icons.Default.Person,
+                    iconContentDescription = profileCta
                 )
             }
         }
