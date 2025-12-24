@@ -42,6 +42,7 @@ import ext.auth.ClientLoginService
 import ext.auth.ClientPasswordRecoveryService
 import ext.auth.ClientTwoFactorSetupService
 import ext.auth.ClientTwoFactorVerifyService
+import ext.auth.DeliveryLoginService
 import ext.auth.CommChangePasswordService
 import ext.auth.CommLoginService
 import ext.auth.CommPasswordRecoveryService
@@ -101,6 +102,8 @@ import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientCartScreen
+import ui.sc.delivery.DeliveryDashboardScreen
+import ui.sc.delivery.DeliveryHomeScreen
 import ui.sc.shared.ButtonsPreviewScreen
 import ui.sc.shared.Home
 import ui.sc.shared.Screen
@@ -124,6 +127,8 @@ public const val SIGNUP = "signup"
 public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
 public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val REGISTER_SALER = "registerSaler"
+public const val DELIVERY_HOME = "deliveryHome"
+public const val DELIVERY_DASHBOARD = "deliveryDashboard"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
@@ -161,6 +166,8 @@ class DIManager {
                 bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
                 bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
                 bindSingleton(tag = REGISTER_SALER) { RegisterSalerScreen() }
+                bindSingleton(tag = DELIVERY_HOME) { DeliveryHomeScreen() }
+                bindSingleton(tag = DELIVERY_DASHBOARD) { DeliveryDashboardScreen() }
                 bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
                 bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
                 bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
@@ -192,11 +199,9 @@ class DIManager {
                             }
 
                             AppType.DELIVERY -> {
-                                add(instance(tag = HOME))
+                                add(instance(tag = DELIVERY_HOME))
                                 add(instance(tag = INIT))
-                                add(instance(tag = SIGNUP))
-                                add(instance(tag = SELECT_SIGNUP_PROFILE))
-                                add(instance(tag = SIGNUP_PLATFORM_ADMIN))
+                                add(instance(tag = DELIVERY_DASHBOARD))
                                 add(instance(tag = SIGNUP_DELIVERY))
                                 add(instance(tag = CHANGE_PASSWORD))
                                 add(instance(tag = PASSWORD_RECOVERY))
@@ -253,7 +258,13 @@ class DIManager {
                 }
 
                 bindSingleton<CommKeyValueStorage> { KeyValueStorageService() }
-                bindSingleton<CommLoginService> { ClientLoginService(instance()) }
+                bindSingleton<CommLoginService> {
+                    if (AppRuntimeConfig.isDelivery) {
+                        DeliveryLoginService(instance())
+                    } else {
+                        ClientLoginService(instance())
+                    }
+                }
                 bindSingleton<CommSignUpService> { ClientSignUpService(instance()) }
                 bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
                 bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }

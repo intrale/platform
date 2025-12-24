@@ -21,6 +21,7 @@ plugins {
 }
 
 val business = providers.gradleProperty("business").orElse("intrale")
+val delivery = providers.gradleProperty("delivery").orElse(business)
 val inferredAppType = providers.provider {
     val taskNames = gradle.startParameter.taskNames.map(String::lowercase)
 
@@ -42,6 +43,7 @@ buildkonfig {
     defaultConfigs {
         buildConfigField(FieldSpec.Type.STRING, "BASE_URL", "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/")
         buildConfigField(FieldSpec.Type.STRING, "BUSINESS", business.get())
+        buildConfigField(FieldSpec.Type.STRING, "DELIVERY", delivery.get())
         buildConfigField(FieldSpec.Type.STRING, "APP_TYPE", appType.get())
     }
 }
