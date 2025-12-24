@@ -19,6 +19,12 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
+import asdo.client.DoGetClientProfile
+import asdo.client.DoManageClientAddress
+import asdo.client.DoUpdateClientProfile
+import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoManageClientAddress
+import asdo.client.ToDoUpdateClientProfile
 import asdo.business.DoGetBusinesses
 import asdo.business.DoRegisterBusiness
 import asdo.business.DoRequestJoinBusiness
@@ -47,6 +53,10 @@ import ext.auth.CommLoginService
 import ext.auth.CommPasswordRecoveryService
 import ext.auth.CommTwoFactorSetupService
 import ext.auth.CommTwoFactorVerifyService
+import ext.client.ClientAddressesService
+import ext.client.ClientProfileService
+import ext.client.CommClientAddressesService
+import ext.client.CommClientProfileService
 import ext.business.ClientRegisterBusinessService
 import ext.business.ClientRequestJoinBusinessService
 import ext.business.ClientReviewBusinessRegistrationService
@@ -101,6 +111,7 @@ import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientCartScreen
+import ui.sc.client.ClientProfileScreen
 import ui.sc.shared.ButtonsPreviewScreen
 import ui.sc.shared.Home
 import ui.sc.shared.Screen
@@ -116,6 +127,7 @@ public const val SCREENS = "screens"
 public const val CLIENT_ENTRY = "clientEntry"
 public const val CLIENT_HOME = "clientHome"
 public const val CLIENT_CART = "clientCart"
+public const val CLIENT_PROFILE = "clientProfile"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -153,6 +165,7 @@ class DIManager {
                 bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
                 bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
                 bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
+                bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
                 bindSingleton(tag = HOME) { Home() }
                 bindSingleton(tag = INIT) { Login() }
                 bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -182,6 +195,7 @@ class DIManager {
                                 add(instance(tag = CLIENT_ENTRY))
                                 add(instance(tag = CLIENT_HOME))
                                 add(instance(tag = CLIENT_CART))
+                                add(instance(tag = CLIENT_PROFILE))
                                 add(instance(tag = INIT))
                                 add(instance(tag = SIGNUP))
                                 add(instance(tag = CHANGE_PASSWORD))
@@ -267,6 +281,8 @@ class DIManager {
                 bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
                 bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
                 bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
+                bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
+                bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
@@ -285,6 +301,9 @@ class DIManager {
                 bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
                 bindSingleton<ToDoTwoFactorSetup> { DoTwoFactorSetup(instance(), instance()) }
                 bindSingleton<ToDoTwoFactorVerify> { DoTwoFactorVerify(instance(), instance()) }
+                bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
+                bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
+                bindSingleton<ToDoManageClientAddress> { DoManageClientAddress(instance(), instance(), instance()) }
 
             }
     }
