@@ -48,6 +48,7 @@ import ui.sc.client.CLIENT_ENTRY_PATH
 import ui.cp.inputs.TextField
 import ui.sc.business.DASHBOARD_PATH
 import ui.sc.business.REGISTER_NEW_BUSINESS_PATH
+import ui.sc.delivery.DELIVERY_DASHBOARD_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.sc.signup.SELECT_SIGNUP_PROFILE_PATH
@@ -62,7 +63,10 @@ const val LOGIN_PATH = "/login"
 
 class Login : Screen(LOGIN_PATH) {
 
-    override val messageTitle: MessageKey = MessageKey.login_title
+    override fun titleText(): String {
+        val key = if (AppRuntimeConfig.isDelivery) MessageKey.login_delivery_title else MessageKey.login_title
+        return Txt(key)
+    }
 
     private val logger = LoggerFactory.default.newLogger<Login>()
 
@@ -82,32 +86,47 @@ class Login : Screen(LOGIN_PATH) {
         val errorCredentials = Txt(MessageKey.login_error_credentials)
         val changePasswordMessage = Txt(MessageKey.login_change_password_required)
         val genericError = Txt(MessageKey.login_generic_error)
-        val loginTitle = Txt(MessageKey.login_title)
-        val loginSubtitle = Txt(MessageKey.login_subtitle)
+        val loginTitle = Txt(
+            if (AppRuntimeConfig.isDelivery) MessageKey.login_delivery_title else MessageKey.login_title
+        )
+        val loginSubtitle = Txt(
+            if (AppRuntimeConfig.isDelivery) MessageKey.login_delivery_subtitle else MessageKey.login_subtitle
+        )
         val userIconDescription = Txt(MessageKey.login_user_icon_content_description)
         val passwordIconDescription = Txt(MessageKey.login_password_icon_content_description)
         val changePasswordTitle = Txt(MessageKey.login_change_password_title)
         val changePasswordDescription = Txt(MessageKey.login_change_password_description)
         val signupLinkLabel = Txt(MessageKey.signup)
+        val requestDeliveryAccessLabel = Txt(MessageKey.delivery_request_access)
         val registerBusinessLinkLabel = Txt(MessageKey.register_business)
         val signupDeliveryLinkLabel = Txt(MessageKey.signup_delivery)
         val passwordRecoveryLinkLabel = Txt(MessageKey.password_recovery)
         val confirmRecoveryLinkLabel = Txt(MessageKey.password_recovery_have_code)
+        val isDeliveryApp = AppRuntimeConfig.isDelivery
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
                 is DoLoginException -> when {
                     error.statusCode.value == 401 -> {
                         viewModel.markCredentialsAsInvalid(errorCredentials)
+                        if (isDeliveryApp) {
+                            logger.warn { "[Delivery][Login] Credenciales inválidas para ${viewModel.state.user}" }
+                        }
                         snackbarHostState.showSnackbar(errorCredentials)
                     }
 
                     error.message?.contains("newPassword is required", ignoreCase = true) == true -> {
                         viewModel.requirePasswordChange()
+                        if (isDeliveryApp) {
+                            logger.info { "[Delivery][Login] Se requiere cambio de contraseña" }
+                        }
                         snackbarHostState.showSnackbar(changePasswordMessage)
                     }
 
                     else -> {
+                        if (isDeliveryApp) {
+                            logger.warn { "[Delivery][Login] Error ${error.statusCode.value}: ${error.message}" }
+                        }
                         logger.error { "Error durante el login: ${error.message}" }
                         snackbarHostState.showSnackbar(genericError)
                     }
@@ -124,14 +143,26 @@ class Login : Screen(LOGIN_PATH) {
                 setLoading = { viewModel.loading = it },
                 serviceCall = { viewModel.login() },
                 onSuccess = {
-                    val destination = if (AppRuntimeConfig.isClient) {
-                        SessionStore.updateRole(UserRole.Client)
-                        CLIENT_ENTRY_PATH
-                    } else {
-                        DASHBOARD_PATH
+                    val destination = when {
+                        AppRuntimeConfig.isClient -> {
+                            SessionStore.updateRole(UserRole.Client)
+                            CLIENT_ENTRY_PATH
+                        }
+                        isDeliveryApp -> {
+                            SessionStore.updateRole(UserRole.Delivery)
+                            DELIVERY_DASHBOARD_PATH
+                        }
+                        else -> {
+                            SessionStore.updateRole(UserRole.BusinessAdmin)
+                            DASHBOARD_PATH
+                        }
                     }
 
-                    logger.info { "Login exitoso, navegando a $destination" }
+                    if (isDeliveryApp) {
+                        logger.info { "[Delivery][Login] Inicio de sesión exitoso, navegando a $destination" }
+                    } else {
+                        logger.info { "Login exitoso, navegando a $destination" }
+                    }
                     navigate(destination)
                 },
                 onError = loginErrorHandler
@@ -153,7 +184,11 @@ class Login : Screen(LOGIN_PATH) {
         }
 
         val isClientApp = AppRuntimeConfig.isClient
-        val signupDestination = if (isClientApp) SIGNUP_PATH else SELECT_SIGNUP_PROFILE_PATH
+        val signupDestination = when {
+            isClientApp -> SIGNUP_PATH
+            isDeliveryApp -> SIGNUP_DELIVERY_PATH
+            else -> SELECT_SIGNUP_PROFILE_PATH
+        }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             Column(
@@ -322,21 +357,48 @@ class Login : Screen(LOGIN_PATH) {
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    TextButton(onClick = { navigate(signupDestination) }) {
-                        Text(text = signupLinkLabel)
-                    }
-                    TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
-                        Text(text = passwordRecoveryLinkLabel)
-                    }
-                    TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                        Text(text = confirmRecoveryLinkLabel)
-                    }
-                    if (!isClientApp) {
-                        TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
-                            Text(text = registerBusinessLinkLabel)
+                    when {
+                        isDeliveryApp -> {
+                            TextButton(onClick = {
+                                logger.info { "[Delivery][Login] Navegando a solicitud de alta" }
+                                navigate(SIGNUP_DELIVERY_PATH)
+                            }) {
+                                Text(text = requestDeliveryAccessLabel)
+                            }
+                            TextButton(onClick = {
+                                logger.info { "[Delivery][Login] Navegando a recuperación de contraseña" }
+                                navigate(PASSWORD_RECOVERY_PATH)
+                            }) {
+                                Text(text = passwordRecoveryLinkLabel)
+                            }
+                            TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
+                                Text(text = confirmRecoveryLinkLabel)
+                            }
                         }
-                        TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
-                            Text(text = signupDeliveryLinkLabel)
+                        isClientApp -> {
+                            TextButton(onClick = { navigate(signupDestination) }) {
+                                Text(text = signupLinkLabel)
+                            }
+                            TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
+                                Text(text = passwordRecoveryLinkLabel)
+                            }
+                            TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
+                                Text(text = confirmRecoveryLinkLabel)
+                            }
+                        }
+                        else -> {
+                            TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
+                                Text(text = registerBusinessLinkLabel)
+                            }
+                            TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
+                                Text(text = signupDeliveryLinkLabel)
+                            }
+                            TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
+                                Text(text = passwordRecoveryLinkLabel)
+                            }
+                            TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
+                                Text(text = confirmRecoveryLinkLabel)
+                            }
                         }
                     }
                 }
