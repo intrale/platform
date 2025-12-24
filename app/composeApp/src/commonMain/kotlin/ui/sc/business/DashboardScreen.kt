@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
+import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -221,6 +222,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
         val reviewJoinLabel = Txt(MessageKey.dashboard_menu_review_join_requests)
         val registerSalerLabel = Txt(MessageKey.dashboard_menu_register_saler)
         val logoutLabel = Txt(MessageKey.dashboard_menu_logout)
+        val businessProductsLabel = Txt(MessageKey.dashboard_menu_business_products)
 
         return remember(
             backLabel,
@@ -235,6 +237,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
             registerSalerLabel,
             logoutLabel,
             personalizationLabel,
+            businessProductsLabel,
             viewModel,
             coroutineScope
         ) {
@@ -312,6 +315,20 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                     }
                 ),
                 MainMenuItem(
+                    id = "productos_negocio",
+                    label = businessProductsLabel,
+                    icon = Icons.Default.ShoppingBag,
+                    requiredRoles = setOf(
+                        UserRole.BusinessAdmin.rawValue,
+                        UserRole.PlatformAdmin.rawValue,
+                    ),
+                    requiresBusinessSelection = true,
+                    onClick = {
+                        logger.info { "Navegando a $BUSINESS_PRODUCTS_PATH" }
+                        navigate(BUSINESS_PRODUCTS_PATH)
+                    }
+                ),
+                MainMenuItem(
                     id = "solicitar_union",
                     label = requestJoinLabel,
                     icon = Icons.Default.Link,
@@ -368,4 +385,3 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
         }
     }
 }
-
