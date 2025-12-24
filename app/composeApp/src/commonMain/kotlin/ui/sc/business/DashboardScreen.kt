@@ -2,6 +2,7 @@
 
 package ui.sc.business
 
+import ar.com.intrale.appconfig.AppRuntimeConfig
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import androidx.compose.foundation.layout.Arrangement
@@ -250,8 +251,9 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                         logger.info { "Solicitando volver atrás" }
                         val navigated = goBack()
                         if (!navigated) {
-                            logger.info { "No fue posible navegar hacia atrás, regresando a $HOME_PATH" }
-                            navigate(HOME_PATH)
+                            val target = defaultLandingRoute()
+                            logger.info { "No fue posible navegar hacia atrás, regresando a $target" }
+                            navigate(target)
                         }
                     }
                 ),
@@ -374,7 +376,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                             try {
                                 viewModel.logout()
                                 logger.info { "Logout exitoso" }
-                                navigate(HOME_PATH)
+                                navigate(defaultLandingRoute())
                             } catch (e: Throwable) {
                                 logger.error(e) { "Error durante logout" }
                             }
@@ -384,4 +386,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
             )
         }
     }
+
+    private fun defaultLandingRoute(): String =
+        if (AppRuntimeConfig.isBusiness) BUSINESS_ONBOARDING_PATH else HOME_PATH
 }
