@@ -2,7 +2,6 @@
 
 
 import androidx.navigation.NavHostController
-import ar.com.intrale.BuildKonfig
 import asdo.auth.DoChangePassword
 import asdo.auth.DoCheckPreviousLogin
 import asdo.auth.DoConfirmPasswordRecovery
@@ -26,6 +25,7 @@ import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
 import asdo.business.DoGetBusinesses
+import asdo.business.DoGetBusinessProducts
 import asdo.business.DoRegisterBusiness
 import asdo.business.DoRequestJoinBusiness
 import asdo.business.DoReviewBusinessRegistration
@@ -35,6 +35,7 @@ import asdo.business.ToDoRequestJoinBusiness
 import asdo.business.ToDoReviewBusinessRegistration
 import asdo.business.ToDoReviewJoinBusiness
 import asdo.business.ToGetBusinesses
+import asdo.business.ToGetBusinessProducts
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoSignUp
 import asdo.signup.DoSignUpDelivery
@@ -58,11 +59,13 @@ import ext.client.ClientAddressesService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientProfileService
+import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientRegisterBusinessService
 import ext.business.ClientRequestJoinBusinessService
 import ext.business.ClientReviewBusinessRegistrationService
 import ext.business.ClientReviewJoinBusinessService
 import ext.business.ClientSearchBusinessesService
+import ext.business.CommGetBusinessProductsService
 import ext.business.CommRegisterBusinessService
 import ext.business.CommRequestJoinBusinessService
 import ext.business.CommReviewBusinessRegistrationService
@@ -103,6 +106,7 @@ import ui.sc.auth.Login
 import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
+import ui.sc.business.BusinessProductsScreen
 import ui.sc.business.DashboardScreen
 import ui.sc.business.PersonalizationScreen
 import ui.sc.business.RegisterNewBusinessScreen
@@ -150,6 +154,7 @@ public const val REGISTER_NEW_BUSINESS = "registerNewBusiness"
 public const val REQUEST_JOIN_BUSINESS = "requestJoinBusiness"
 public const val REVIEW_JOIN_BUSINESS = "reviewJoinBusiness"
 public const val PERSONALIZATION = "personalization"
+public const val BUSINESS_PRODUCTS = "businessProducts"
 public const val TWO_FACTOR_SETUP = "twoFactorSetup"
 public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 
@@ -190,6 +195,7 @@ class DIManager {
                 bindSingleton(tag = REQUEST_JOIN_BUSINESS) { RequestJoinBusinessScreen() }
                 bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
                 bindSingleton(tag = PERSONALIZATION) { PersonalizationScreen() }
+                bindSingleton(tag = BUSINESS_PRODUCTS) { BusinessProductsScreen() }
                 bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
                 bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
@@ -242,6 +248,7 @@ class DIManager {
                                 add(instance(tag = REQUEST_JOIN_BUSINESS))
                                 add(instance(tag = REVIEW_JOIN_BUSINESS))
                                 add(instance(tag = PERSONALIZATION))
+                                add(instance(tag = BUSINESS_PRODUCTS))
                                 add(instance(tag = TWO_FACTOR_SETUP))
                                 add(instance(tag = TWO_FACTOR_VERIFY))
                             }
@@ -284,6 +291,7 @@ class DIManager {
                 bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
                 bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance()) }
                 bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
+                bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
                 bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
                 bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
                 bindSingleton<CommRegisterBusinessService> { ClientRegisterBusinessService(instance()) }
@@ -301,6 +309,7 @@ class DIManager {
                 bindSingleton<ToDoSignUpDelivery> { DoSignUpDelivery(instance()) }
                 bindSingleton<ToDoRegisterSaler> { DoRegisterSaler(instance(), instance()) }
                 bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
+                bindSingleton<ToGetBusinessProducts> { DoGetBusinessProducts(instance()) }
                 bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
                 bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
                 bindSingleton<ToDoChangePassword> { DoChangePassword(instance(), instance()) }
