@@ -4,6 +4,7 @@ import ext.business.CommReviewBusinessRegistrationService
 import ext.business.ReviewBusinessRegistrationResponse
 import ext.dto.StatusCodeDTO
 import ext.storage.CommKeyValueStorage
+import ext.storage.model.ClientProfileCache
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11,6 +12,8 @@ import kotlin.test.assertTrue
 
 private class FakeStorage(initialToken: String?) : CommKeyValueStorage {
     override var token: String? = initialToken
+    override var profileCache: ClientProfileCache? = null
+    override var preferredLanguage: String? = null
 }
 
 private class CapturingReviewService : CommReviewBusinessRegistrationService {
