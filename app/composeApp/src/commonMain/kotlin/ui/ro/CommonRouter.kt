@@ -46,10 +46,11 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
             .padding(padding)
 
         logger.info { "Inicializando rutas" }
+        val startDestination = screens.first().route
 
         NavHost(
             navController = navigator,
-            startDestination = screens.first().route,
+            startDestination = startDestination,
             modifier = modifier,
             enterTransition = {
                 if (animationsEnabled) fadeIn() else EnterTransition.None
@@ -72,6 +73,12 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
                 val actual = iterator.next()
                 actual.navigator = { route: String ->
                     navigator.navigate(route)
+                }
+                actual.navigatorClearingBackStack = { route: String ->
+                    navigator.navigate(route) {
+                        popUpTo(startDestination) { inclusive = true }
+                        launchSingleTop = true
+                    }
                 }
                 actual.navigateBack = { navigator.popBackStack() }
 
