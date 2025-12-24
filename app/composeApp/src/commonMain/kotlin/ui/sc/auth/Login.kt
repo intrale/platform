@@ -77,6 +77,8 @@ class Login : Screen(LOGIN_PATH) {
         val coroutineScope = rememberCoroutineScope()
         val focusManager = LocalFocusManager.current
         val scrollState = rememberScrollState()
+        val isClientApp = AppRuntimeConfig.isClient
+        val isBusinessApp = AppRuntimeConfig.isBusiness
 
         val loginText = Txt(MessageKey.login_button)
         val errorCredentials = Txt(MessageKey.login_error_credentials)
@@ -84,15 +86,27 @@ class Login : Screen(LOGIN_PATH) {
         val genericError = Txt(MessageKey.login_generic_error)
         val loginTitle = Txt(MessageKey.login_title)
         val loginSubtitle = Txt(MessageKey.login_subtitle)
+        val businessLoginTitle = Txt(MessageKey.login_business_title)
+        val businessLoginSubtitle = Txt(MessageKey.login_business_subtitle)
         val userIconDescription = Txt(MessageKey.login_user_icon_content_description)
         val passwordIconDescription = Txt(MessageKey.login_password_icon_content_description)
         val changePasswordTitle = Txt(MessageKey.login_change_password_title)
         val changePasswordDescription = Txt(MessageKey.login_change_password_description)
-        val signupLinkLabel = Txt(MessageKey.signup)
+        val signupLinkLabel = if (isBusinessApp) {
+            Txt(MessageKey.login_business_signup_cta)
+        } else {
+            Txt(MessageKey.signup)
+        }
         val registerBusinessLinkLabel = Txt(MessageKey.register_business)
         val signupDeliveryLinkLabel = Txt(MessageKey.signup_delivery)
-        val passwordRecoveryLinkLabel = Txt(MessageKey.password_recovery)
+        val passwordRecoveryLinkLabel = if (isBusinessApp) {
+            Txt(MessageKey.login_business_recovery_cta)
+        } else {
+            Txt(MessageKey.password_recovery)
+        }
         val confirmRecoveryLinkLabel = Txt(MessageKey.password_recovery_have_code)
+        val headerTitle = if (isBusinessApp) businessLoginTitle else loginTitle
+        val headerSubtitle = if (isBusinessApp) businessLoginSubtitle else loginSubtitle
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
@@ -124,11 +138,19 @@ class Login : Screen(LOGIN_PATH) {
                 setLoading = { viewModel.loading = it },
                 serviceCall = { viewModel.login() },
                 onSuccess = {
-                    val destination = if (AppRuntimeConfig.isClient) {
-                        SessionStore.updateRole(UserRole.Client)
-                        CLIENT_ENTRY_PATH
-                    } else {
-                        DASHBOARD_PATH
+                    val destination = when {
+                        AppRuntimeConfig.isClient -> {
+                            SessionStore.updateRole(UserRole.Client)
+                            CLIENT_ENTRY_PATH
+                        }
+                        AppRuntimeConfig.isBusiness -> {
+                            SessionStore.updateRole(UserRole.BusinessAdmin)
+                            DASHBOARD_PATH
+                        }
+                        else -> {
+                            SessionStore.updateRole(null)
+                            DASHBOARD_PATH
+                        }
                     }
 
                     logger.info { "Login exitoso, navegando a $destination" }
@@ -152,7 +174,6 @@ class Login : Screen(LOGIN_PATH) {
             }
         }
 
-        val isClientApp = AppRuntimeConfig.isClient
         val signupDestination = if (isClientApp) SIGNUP_PATH else SELECT_SIGNUP_PROFILE_PATH
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
@@ -175,12 +196,12 @@ class Login : Screen(LOGIN_PATH) {
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
                     Text(
-                        text = loginTitle,
+                        text = headerTitle,
                         style = MaterialTheme.typography.headlineMedium,
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = loginSubtitle,
+                        text = headerSubtitle,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center

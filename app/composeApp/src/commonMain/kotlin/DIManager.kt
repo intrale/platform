@@ -98,6 +98,7 @@ import ui.sc.business.RegisterNewBusinessScreen
 import ui.sc.business.RequestJoinBusinessScreen
 import ui.sc.business.ReviewBusinessScreen
 import ui.sc.business.ReviewJoinBusinessScreen
+import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientCartScreen
@@ -118,6 +119,7 @@ public const val CLIENT_HOME = "clientHome"
 public const val CLIENT_CART = "clientCart"
 public const val HOME = "home"
 public const val INIT = "init"
+public const val BUSINESS_ONBOARDING = "businessOnboarding"
 public const val DASHBOARD = "dashboard"
 public const val BUTTONS_PREVIEW = "buttonsPreview"
 public const val SIGNUP = "signup"
@@ -155,6 +157,7 @@ class DIManager {
                 bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
                 bindSingleton(tag = HOME) { Home() }
                 bindSingleton(tag = INIT) { Login() }
+                bindSingleton(tag = BUSINESS_ONBOARDING) { BusinessOnboardingScreen() }
                 bindSingleton(tag = DASHBOARD) { DashboardScreen() }
                 bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
                 bindSingleton(tag = SIGNUP) { SignUpScreen() }
@@ -201,6 +204,29 @@ class DIManager {
                                 add(instance(tag = CHANGE_PASSWORD))
                                 add(instance(tag = PASSWORD_RECOVERY))
                                 add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                                add(instance(tag = TWO_FACTOR_SETUP))
+                                add(instance(tag = TWO_FACTOR_VERIFY))
+                            }
+
+                            AppType.BUSINESS -> {
+                                add(instance(tag = BUSINESS_ONBOARDING))
+                                add(instance(tag = INIT))
+                                add(instance(tag = DASHBOARD))
+                                add(instance(tag = HOME))
+                                add(instance(tag = BUTTONS_PREVIEW))
+                                add(instance(tag = SIGNUP))
+                                add(instance(tag = SELECT_SIGNUP_PROFILE))
+                                add(instance(tag = SIGNUP_PLATFORM_ADMIN))
+                                add(instance(tag = SIGNUP_DELIVERY))
+                                add(instance(tag = REGISTER_SALER))
+                                add(instance(tag = CHANGE_PASSWORD))
+                                add(instance(tag = PASSWORD_RECOVERY))
+                                add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                                add(instance(tag = REVIEW_BUSINESS))
+                                add(instance(tag = REGISTER_NEW_BUSINESS))
+                                add(instance(tag = REQUEST_JOIN_BUSINESS))
+                                add(instance(tag = REVIEW_JOIN_BUSINESS))
+                                add(instance(tag = PERSONALIZATION))
                                 add(instance(tag = TWO_FACTOR_SETUP))
                                 add(instance(tag = TWO_FACTOR_VERIFY))
                             }

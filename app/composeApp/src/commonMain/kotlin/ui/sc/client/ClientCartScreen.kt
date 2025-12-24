@@ -55,6 +55,8 @@ import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen
 import ui.th.elevations
 import ui.th.spacing
+import kotlin.math.abs
+import kotlin.math.roundToLong
 
 const val CLIENT_CART_PATH = "/client/cart"
 
@@ -449,4 +451,12 @@ private fun CartProductThumbnail(emoji: String, contentDescription: String) {
     }
 }
 
-private fun formatPrice(amount: Double): String = "$${"%.2f".format(amount)}"
+private fun formatPrice(amount: Double): String {
+    val cents = (amount * 100).roundToLong()
+    val absoluteCents = abs(cents)
+    val wholePart = absoluteCents / 100
+    val fractionalPart = (absoluteCents % 100).toString().padStart(2, '0')
+    val sign = if (cents < 0) "-" else ""
+
+    return "$sign$$wholePart.$fractionalPart"
+}

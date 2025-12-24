@@ -20,9 +20,11 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
+import ar.com.intrale.appconfig.AppRuntimeConfig
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.sc.business.DASHBOARD_PATH
 import ui.sc.shared.Screen
 
 class CommonRouter(navigator: NavHostController) : Router(navigator) {
@@ -71,7 +73,14 @@ class CommonRouter(navigator: NavHostController) : Router(navigator) {
                 // sharing the navigator for navigate into the screen composable
                 val actual = iterator.next()
                 actual.navigator = { route: String ->
-                    navigator.navigate(route)
+                    if (AppRuntimeConfig.isBusiness && route == DASHBOARD_PATH) {
+                        navigator.navigate(route) {
+                            popUpTo(screens.first().route) { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    } else {
+                        navigator.navigate(route)
+                    }
                 }
                 actual.navigateBack = { navigator.popBackStack() }
 
