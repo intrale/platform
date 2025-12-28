@@ -64,7 +64,11 @@ const val LOGIN_PATH = "/login"
 class Login : Screen(LOGIN_PATH) {
 
     override fun titleText(): String {
-        val key = if (AppRuntimeConfig.isDelivery) MessageKey.login_delivery_title else MessageKey.login_title
+        val key = when {
+            AppRuntimeConfig.isDelivery -> MessageKey.login_delivery_title
+            AppRuntimeConfig.isBusiness -> MessageKey.login_business_title
+            else -> MessageKey.login_title
+        }
         return Txt(key)
     }
 
@@ -86,11 +90,21 @@ class Login : Screen(LOGIN_PATH) {
         val errorCredentials = Txt(MessageKey.login_error_credentials)
         val changePasswordMessage = Txt(MessageKey.login_change_password_required)
         val genericError = Txt(MessageKey.login_generic_error)
+        val isDeliveryApp = AppRuntimeConfig.isDelivery
+        val isBusinessApp = AppRuntimeConfig.isBusiness
         val loginTitle = Txt(
-            if (AppRuntimeConfig.isDelivery) MessageKey.login_delivery_title else MessageKey.login_title
+            when {
+                isDeliveryApp -> MessageKey.login_delivery_title
+                isBusinessApp -> MessageKey.login_business_title
+                else -> MessageKey.login_title
+            }
         )
         val loginSubtitle = Txt(
-            if (AppRuntimeConfig.isDelivery) MessageKey.login_delivery_subtitle else MessageKey.login_subtitle
+            when {
+                isDeliveryApp -> MessageKey.login_delivery_subtitle
+                isBusinessApp -> MessageKey.login_business_subtitle
+                else -> MessageKey.login_subtitle
+            }
         )
         val userIconDescription = Txt(MessageKey.login_user_icon_content_description)
         val passwordIconDescription = Txt(MessageKey.login_password_icon_content_description)
@@ -102,7 +116,6 @@ class Login : Screen(LOGIN_PATH) {
         val signupDeliveryLinkLabel = Txt(MessageKey.signup_delivery)
         val passwordRecoveryLinkLabel = Txt(MessageKey.password_recovery)
         val confirmRecoveryLinkLabel = Txt(MessageKey.password_recovery_have_code)
-        val isDeliveryApp = AppRuntimeConfig.isDelivery
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
@@ -158,12 +171,18 @@ class Login : Screen(LOGIN_PATH) {
                         }
                     }
 
+                    val navigationAction: (String) -> Unit = if (isBusinessApp) {
+                        ::navigateClearingBackStack
+                    } else {
+                        ::navigate
+                    }
+
                     if (isDeliveryApp) {
                         logger.info { "[Delivery][Login] Inicio de sesión exitoso, navegando a $destination" }
                     } else {
                         logger.info { "Login exitoso, navegando a $destination" }
                     }
-                    navigate(destination)
+                    navigationAction(destination)
                 },
                 onError = loginErrorHandler
             )
