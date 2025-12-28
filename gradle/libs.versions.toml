@@ -21,6 +21,8 @@ gson = "2.10.1"
 konform = "0.6.1"
 kodein = "7.22.0"
 
+kotlinx-datetime = "0.6.1"
+
 java-jwt = "4.4.0"
 jwks-rsa = "0.22.0"
 
@@ -83,6 +85,7 @@ konform = { module = "io.konform:konform", version.ref = "konform" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization-json" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 
 aws-sdk-dynamodb = { module = "software.amazon.awssdk:dynamodb", version.ref = "aws-sdk-java" }
