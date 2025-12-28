@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -230,7 +231,7 @@ private fun DeliverySummaryRow(summary: DeliveryOrdersSummaryDTO) {
 }
 
 @Composable
-private fun DeliverySummaryCard(title: String, value: Int) {
+private fun RowScope.DeliverySummaryCard(title: String, value: Int) {
     Card(
         modifier = Modifier.weight(1f),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -364,6 +365,7 @@ private fun DeliveryLoading() {
     }
 }
 
+@Composable
 private fun orderStatusLabel(status: String): String = when (status.lowercase()) {
     "pending" -> Txt(MessageKey.delivery_order_status_pending)
     "inprogress", "in_progress", "assigned" -> Txt(MessageKey.delivery_order_status_in_progress)

@@ -75,14 +75,15 @@ class ClientProfileScreen : Screen(CLIENT_PROFILE_PATH) {
 
         val retryLabel = Txt(MessageKey.client_profile_retry)
         val ordersPlaceholder = Txt(MessageKey.client_home_orders_placeholder)
+        val successMessage = state.successKey?.let { Txt(it) }
 
         LaunchedEffect(Unit) {
             viewModel.loadProfile()
         }
 
-        LaunchedEffect(state.successKey) {
-            state.successKey?.let { key ->
-                snackbarHostState.showSnackbar(Txt(key))
+        LaunchedEffect(successMessage) {
+            successMessage?.let { message ->
+                snackbarHostState.showSnackbar(message)
             }
         }
 

@@ -31,7 +31,7 @@ class DeliveryProfileService(
             }
             response.toProfileResponse()
         }.recoverCatching { throwable ->
-            logger.warn(throwable) { "[Delivery][Perfil] Usando datos stub al fallar la carga" }
+            logger.warning(throwable) { "[Delivery][Perfil] Usando datos stub al fallar la carga" }
             DeliveryProfileResponse(
                 profile = DeliveryProfileDTO(
                     fullName = "Repartidor Demo",
@@ -55,7 +55,7 @@ class DeliveryProfileService(
             }
             response.toProfileResponse()
         }.recoverCatching { throwable ->
-            logger.warn(throwable) { "[Delivery][Perfil] Respuesta stub al actualizar perfil" }
+            logger.warning(throwable) { "[Delivery][Perfil] Respuesta stub al actualizar perfil" }
             DeliveryProfileResponse(profile = profile)
         }
     }

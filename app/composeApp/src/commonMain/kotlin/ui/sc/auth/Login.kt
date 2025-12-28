@@ -124,7 +124,7 @@ class Login : Screen(LOGIN_PATH) {
                     error.statusCode.value == 401 -> {
                         viewModel.markCredentialsAsInvalid(errorCredentials)
                         if (isDeliveryApp) {
-                            logger.warn { "[Delivery][Login] Credenciales inválidas para ${viewModel.state.user}" }
+                            logger.warning { "[Delivery][Login] Credenciales inválidas para ${viewModel.state.user}" }
                         }
                         snackbarHostState.showSnackbar(errorCredentials)
                     }
@@ -139,7 +139,7 @@ class Login : Screen(LOGIN_PATH) {
 
                     else -> {
                         if (isDeliveryApp) {
-                            logger.warn { "[Delivery][Login] Error ${error.statusCode.value}: ${error.message}" }
+                            logger.warning { "[Delivery][Login] Error ${error.statusCode.value}: ${error.message}" }
                         }
                         logger.error { "Error durante el login: ${error.message}" }
                         snackbarHostState.showSnackbar(genericError)

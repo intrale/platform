@@ -58,7 +58,7 @@ class ProductListViewModel(
 
     suspend fun loadProducts(businessId: String?) {
         if (businessId.isNullOrBlank()) {
-            logger.warn { "No hay negocio seleccionado para cargar productos" }
+            logger.warning { "No hay negocio seleccionado para cargar productos" }
             state = state.copy(
                 status = ProductListStatus.MissingBusiness,
                 items = emptyList(),

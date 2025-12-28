@@ -62,6 +62,14 @@ class ProductFormScreen(
         var showDeleteDialog by remember { mutableStateOf(false) }
 
         val businessId = sessionState.selectedBusinessId
+        val productSavedMessage = Txt(MessageKey.product_form_saved)
+        val genericErrorMessage = Txt(MessageKey.error_generic)
+        val formErrorRequiredMessage = Txt(MessageKey.form_error_required)
+        val productDeletedMessage = Txt(MessageKey.product_form_deleted)
+        val deleteConfirmTitle = Txt(MessageKey.product_form_delete_confirm_title)
+        val deleteConfirmMessage = Txt(MessageKey.product_form_delete_confirm_message)
+        val deleteConfirmAccept = Txt(MessageKey.product_form_delete_confirm_accept)
+        val deleteConfirmCancel = Txt(MessageKey.product_form_delete_confirm_cancel)
 
         LaunchedEffect(draft) {
             viewModel.applyDraft(draft)
@@ -176,21 +184,21 @@ class ProductFormScreen(
                                         )
                                     )
                                     coroutineScope.launch {
-                                        snackbarHostState.showSnackbar(Txt(MessageKey.product_form_saved))
+                                        snackbarHostState.showSnackbar(productSavedMessage)
                                     }
                                     navigate(BUSINESS_PRODUCTS_PATH)
                                 },
                                 onError = { error ->
                                     coroutineScope.launch {
                                         snackbarHostState.showSnackbar(
-                                            error.message ?: Txt(MessageKey.error_generic)
+                                            error.message ?: genericErrorMessage
                                         )
                                     }
                                 }
                             )
                         } else {
                             coroutineScope.launch {
-                                snackbarHostState.showSnackbar(Txt(MessageKey.form_error_required))
+                                snackbarHostState.showSnackbar(formErrorRequiredMessage)
                             }
                         }
                     }
@@ -211,8 +219,8 @@ class ProductFormScreen(
         if (showDeleteDialog) {
             AlertDialog(
                 onDismissRequest = { showDeleteDialog = false },
-                title = { Text(Txt(MessageKey.product_form_delete_confirm_title)) },
-                text = { Text(Txt(MessageKey.product_form_delete_confirm_message)) },
+                title = { Text(deleteConfirmTitle) },
+                text = { Text(deleteConfirmMessage) },
                 confirmButton = {
                     TextButton(onClick = {
                         showDeleteDialog = false
@@ -224,18 +232,18 @@ class ProductFormScreen(
                             onSuccess = {
                                 editorStore.clear()
                                 coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(Txt(MessageKey.product_form_deleted))
+                                    snackbarHostState.showSnackbar(productDeletedMessage)
                                 }
                                 navigate(BUSINESS_PRODUCTS_PATH)
                             }
                         )
                     }) {
-                        Text(Txt(MessageKey.product_form_delete_confirm_accept))
+                        Text(deleteConfirmAccept)
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showDeleteDialog = false }) {
-                        Text(Txt(MessageKey.product_form_delete_confirm_cancel))
+                        Text(deleteConfirmCancel)
                     }
                 }
             )
