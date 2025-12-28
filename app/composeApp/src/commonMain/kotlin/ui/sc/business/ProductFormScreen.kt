@@ -105,35 +105,35 @@ class ProductFormScreen(
                 TextField(
                     label = MessageKey.product_form_name,
                     value = viewModel.uiState.name,
-                    state = viewModel[ProductFormUiState::name.name],
+                    state = viewModel.inputsStates[ProductFormUiState::name.name]!!,
                     onValueChange = { viewModel.uiState = viewModel.uiState.copy(name = it) }
                 )
 
                 TextField(
                     label = MessageKey.product_form_short_description,
                     value = viewModel.uiState.shortDescription,
-                    state = viewModel[ProductFormUiState::shortDescription.name],
+                    state = viewModel.inputsStates[ProductFormUiState::shortDescription.name]!!,
                     onValueChange = { viewModel.uiState = viewModel.uiState.copy(shortDescription = it) }
                 )
 
                 TextField(
                     label = MessageKey.product_form_base_price,
                     value = viewModel.uiState.basePrice,
-                    state = viewModel[ProductFormUiState::basePrice.name],
+                    state = viewModel.inputsStates[ProductFormUiState::basePrice.name]!!,
                     onValueChange = { viewModel.uiState = viewModel.uiState.copy(basePrice = it) }
                 )
 
                 TextField(
                     label = MessageKey.product_form_unit,
                     value = viewModel.uiState.unit,
-                    state = viewModel[ProductFormUiState::unit.name],
+                    state = viewModel.inputsStates[ProductFormUiState::unit.name]!!,
                     onValueChange = { viewModel.uiState = viewModel.uiState.copy(unit = it) }
                 )
 
                 TextField(
                     label = MessageKey.product_form_category,
                     value = viewModel.uiState.categoryId,
-                    state = viewModel[ProductFormUiState::categoryId.name],
+                    state = viewModel.inputsStates[ProductFormUiState::categoryId.name]!!,
                     onValueChange = { viewModel.uiState = viewModel.uiState.copy(categoryId = it) }
                 )
 
