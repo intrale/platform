@@ -42,7 +42,7 @@ class DeliveryLoginService(private val httpClient: HttpClient) : CommLoginServic
                 Result.success(loginResponse)
             } else {
                 val exceptionResponse = Json.decodeFromString(ExceptionResponse.serializer(), bodyText)
-                logger.warn { "[Delivery][Login] Error ${exceptionResponse.statusCode}: ${exceptionResponse.message}" }
+                logger.warning { "[Delivery][Login] Error ${exceptionResponse.statusCode}: ${exceptionResponse.message}" }
                 Result.failure(exceptionResponse)
             }
 

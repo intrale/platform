@@ -69,14 +69,15 @@ class DeliveryProfileScreen : Screen(DELIVERY_PROFILE_PATH) {
         val zonesEmpty = Txt(MessageKey.delivery_profile_zones_empty)
         val contactLabel = Txt(MessageKey.delivery_profile_contact_title)
         val vehicleLabel = Txt(MessageKey.delivery_profile_vehicle_title)
+        val successMessage = state.successKey?.let { Txt(it) }
 
         LaunchedEffect(Unit) {
             viewModel.loadProfile()
         }
 
-        LaunchedEffect(state.successKey) {
-            state.successKey?.let { key ->
-                snackbarHostState.showSnackbar(Txt(key))
+        LaunchedEffect(successMessage) {
+            successMessage?.let { message ->
+                snackbarHostState.showSnackbar(message)
             }
         }
 
