@@ -255,13 +255,14 @@ class DeliveryProfileScreen : Screen(DELIVERY_PROFILE_PATH) {
                     Column(
                         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                     ) {
+                        var contentDescriptionTxt = Txt(MessageKey.delivery_profile_save_content_description)
                         IntralePrimaryButton(
                             text = saveLabel,
                             onClick = { coroutineScope.launch { viewModel.saveProfile() } },
                             loading = state.saving,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .semantics { contentDescription = Txt(MessageKey.delivery_profile_save_content_description) },
+                                .semantics { contentDescription = contentDescriptionTxt },
                             leadingIcon = Icons.Default.Save,
                             iconContentDescription = saveLabel
                         )

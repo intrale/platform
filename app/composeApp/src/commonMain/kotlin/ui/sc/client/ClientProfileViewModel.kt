@@ -15,7 +15,6 @@ import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
 import ar.com.intrale.strings.model.MessageKey
 import io.konform.validation.Validation
-import io.konform.validation.jsonschema.ifPresent
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.direct
