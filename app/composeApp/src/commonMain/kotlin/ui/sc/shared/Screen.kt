@@ -16,12 +16,22 @@ abstract class Screen(
 
     lateinit var navigator: (route:String) -> Unit
     var navigateBack: (() -> Boolean)? = null
+    var navigatorClearingBackStack: ((route: String) -> Unit)? = null
 
     fun navigate(route:String){
         screenLogger.info { "Navegando a $route" }
         try {
             navigator(route)
         }catch (e: Exception){
+            screenLogger.error(e) { "Error al navegar a $route" }
+        }
+    }
+
+    fun navigateClearingBackStack(route: String) {
+        screenLogger.info { "Navegando a $route y limpiando el back stack" }
+        try {
+            navigatorClearingBackStack?.invoke(route) ?: navigator(route)
+        } catch (e: Exception) {
             screenLogger.error(e) { "Error al navegar a $route" }
         }
     }
