@@ -30,6 +30,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
@@ -40,7 +42,6 @@ import ui.sc.shared.Screen
 import ui.session.SessionStore
 import ui.th.elevations
 import ui.th.spacing
-import androidx.compose.ui.Alignment
 
 const val DELIVERY_HOME_PATH = "/delivery/home"
 

@@ -122,7 +122,6 @@ import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.BusinessOnboardingScreen
-import ui.sc.business.BusinessProductsScreen
 import ui.sc.business.DashboardScreen
 import ui.sc.business.PersonalizationScreen
 import ui.sc.business.ProductFormScreen

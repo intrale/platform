@@ -53,6 +53,7 @@ import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen
+import ui.util.formatPrice
 import ui.th.elevations
 import ui.th.spacing
 
@@ -324,11 +325,11 @@ private fun ClientCartSummaryCard(
             SummaryRow(label = subtotalLabel, value = formatPrice(subtotal))
             SummaryRow(label = shippingLabel, value = formatPrice(shipping))
             Divider()
-            SummaryRow(
-                label = totalLabel,
-                value = formatPrice(total),
-                emphasize = true
-            )
+                    SummaryRow(
+                        label = totalLabel,
+                        value = formatPrice(total),
+                        emphasize = true
+                    )
         }
     }
 }
@@ -448,5 +449,3 @@ private fun CartProductThumbnail(emoji: String, contentDescription: String) {
         )
     }
 }
-
-private fun formatPrice(amount: Double): String = "$${"%.2f".format(amount)}"
