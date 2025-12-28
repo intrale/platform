@@ -70,7 +70,10 @@ import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientProfileService
 import ext.delivery.CommDeliveryProfileService
+import ext.delivery.CommDeliveryOrdersService
 import ext.delivery.DeliveryProfileService
+import ext.delivery.DeliveryOrdersService
+import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientProductService
 import ext.business.ClientRegisterBusinessService
 import ext.business.ClientRequestJoinBusinessService
@@ -350,6 +353,7 @@ class DIManager {
                 bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
                 bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
                 bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance()) }
+                bindSingleton<CommDeliveryOrdersService> { DeliveryOrdersService(instance(), instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
                 bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
