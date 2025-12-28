@@ -38,10 +38,11 @@ class ProductFormViewModel(
     private val createProduct: ToDoCreateProduct = DIManager.di.direct.instance(),
     private val updateProduct: ToDoUpdateProduct = DIManager.di.direct.instance(),
     private val deleteProduct: ToDoDeleteProduct = DIManager.di.direct.instance(),
-    private val listProducts: ToDoListProducts = DIManager.di.direct.instance()
+    private val listProducts: ToDoListProducts = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
-    private val logger = LoggerFactory.default.newLogger<ProductFormViewModel>()
+    private val logger = loggerFactory.newLogger<ProductFormViewModel>()
 
     var uiState by mutableStateOf(ProductFormUiState())
     var loading by mutableStateOf(false)

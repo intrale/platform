@@ -9,6 +9,8 @@ import asdo.client.ManageAddressAction
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import org.kodein.log.LoggerFactory
+import org.kodein.log.frontend.simplePrintFrontend
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -29,6 +31,8 @@ private val sampleData = ClientProfileData(
     preferences = ClientPreferences(language = "es")
 )
 
+private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
+
 class ClientProfileViewModelTest {
 
     @Test
@@ -37,7 +41,8 @@ class ClientProfileViewModelTest {
             getClientProfile = FakeGetProfile(),
             updateClientProfile = FakeUpdateProfile(),
             manageClientAddress = FakeManageAddress(),
-            toDoResetLoginCache = FakeResetLoginCache()
+            toDoResetLoginCache = FakeResetLoginCache(),
+            loggerFactory = testLoggerFactory
         )
 
         viewModel.loadProfile()
@@ -56,7 +61,8 @@ class ClientProfileViewModelTest {
             getClientProfile = FakeGetProfile(),
             updateClientProfile = FakeUpdateProfile(),
             manageClientAddress = FakeManageAddress(),
-            toDoResetLoginCache = reset
+            toDoResetLoginCache = reset,
+            loggerFactory = testLoggerFactory
         )
 
         viewModel.logout()

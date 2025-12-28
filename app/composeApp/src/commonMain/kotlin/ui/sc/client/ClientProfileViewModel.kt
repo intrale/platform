@@ -60,10 +60,11 @@ class ClientProfileViewModel(
     private val getClientProfile: ToDoGetClientProfile = DIManager.di.direct.instance(),
     private val updateClientProfile: ToDoUpdateClientProfile = DIManager.di.direct.instance(),
     private val manageClientAddress: ToDoManageClientAddress = DIManager.di.direct.instance(),
-    private val toDoResetLoginCache: ToDoResetLoginCache = DIManager.di.direct.instance()
+    private val toDoResetLoginCache: ToDoResetLoginCache = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
-    private val logger = LoggerFactory.default.newLogger<ClientProfileViewModel>()
+    private val logger = loggerFactory.newLogger<ClientProfileViewModel>()
 
     private var profileValidation: Validation<ClientProfileForm> = buildProfileValidation()
     private var addressValidation: Validation<AddressForm> = buildAddressValidation()
