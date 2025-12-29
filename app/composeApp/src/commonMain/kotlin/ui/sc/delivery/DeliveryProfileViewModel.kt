@@ -43,10 +43,11 @@ data class DeliveryProfileUiState(
 class DeliveryProfileViewModel(
     private val getDeliveryProfile: ToDoGetDeliveryProfile = DIManager.di.direct.instance(),
     private val updateDeliveryProfile: ToDoUpdateDeliveryProfile = DIManager.di.direct.instance(),
-    private val toDoResetLoginCache: ToDoResetLoginCache = DIManager.di.direct.instance()
+    private val toDoResetLoginCache: ToDoResetLoginCache = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
-    private val logger = LoggerFactory.default.newLogger<DeliveryProfileViewModel>()
+    private val logger = loggerFactory.newLogger<DeliveryProfileViewModel>()
     private val profileValidation: Validation<DeliveryProfileForm> = buildProfileValidation()
 
     var state by mutableStateOf(DeliveryProfileUiState())

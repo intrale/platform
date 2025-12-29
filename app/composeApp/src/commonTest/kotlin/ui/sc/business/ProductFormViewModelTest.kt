@@ -7,7 +7,7 @@ import asdo.business.ToDoUpdateProduct
 import ext.business.ProductDTO
 import ext.business.ProductRequest
 import ext.business.ProductStatus
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -46,7 +46,7 @@ private fun sampleProduct(id: String = "new-id") = ProductDTO(
 class ProductFormViewModelTest {
 
     @Test
-    fun `precio invalido bloquea guardado`() = runBlocking {
+    fun `precio invalido bloquea guardado`() = runTest {
         val fake = FakeProductCrud()
         val viewModel = ProductFormViewModel(fake, fake, fake, fake)
         viewModel.uiState = viewModel.uiState.copy(
@@ -60,7 +60,7 @@ class ProductFormViewModelTest {
     }
 
     @Test
-    fun `creacion exitosa cambia a modo edicion`() = runBlocking {
+    fun `creacion exitosa cambia a modo edicion`() = runTest {
         val fake = FakeProductCrud()
         val viewModel = ProductFormViewModel(fake, fake, fake, fake)
         viewModel.uiState = viewModel.uiState.copy(
@@ -76,7 +76,7 @@ class ProductFormViewModelTest {
     }
 
     @Test
-    fun `no se puede eliminar sin id`() = runBlocking {
+    fun `no se puede eliminar sin id`() = runTest {
         val fake = FakeProductCrud()
         val viewModel = ProductFormViewModel(fake, fake, fake, fake)
         val result = viewModel.delete("biz-1")

@@ -36,10 +36,11 @@ data class ProductListUiState(
 )
 
 class ProductListViewModel(
-    private val listProducts: ToDoListProducts = DIManager.di.direct.instance()
+    private val listProducts: ToDoListProducts = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
-    private val logger = LoggerFactory.default.newLogger<ProductListViewModel>()
+    private val logger = loggerFactory.newLogger<ProductListViewModel>()
     private var currentBusinessId: String? = null
 
     var state by mutableStateOf(ProductListUiState())

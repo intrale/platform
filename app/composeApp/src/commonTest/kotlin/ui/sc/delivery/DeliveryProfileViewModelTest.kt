@@ -8,6 +8,8 @@ import asdo.delivery.DeliveryZone
 import asdo.delivery.ToDoGetDeliveryProfile
 import asdo.delivery.ToDoUpdateDeliveryProfile
 import ar.com.intrale.strings.model.MessageKey
+import org.kodein.log.LoggerFactory
+import org.kodein.log.frontend.simplePrintFrontend
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -26,6 +28,8 @@ private val sampleData = DeliveryProfileData(
     zones = listOf(DeliveryZone(id = "zone-1", name = "Centro", description = "Cobertura urbana"))
 )
 
+private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
+
 class DeliveryProfileViewModelTest {
 
     @Test
@@ -33,7 +37,8 @@ class DeliveryProfileViewModelTest {
         val viewModel = DeliveryProfileViewModel(
             getDeliveryProfile = FakeGetProfile(),
             updateDeliveryProfile = FakeUpdateProfile(),
-            toDoResetLoginCache = FakeResetLoginCache()
+            toDoResetLoginCache = FakeResetLoginCache(),
+            loggerFactory = testLoggerFactory
         )
 
         viewModel.loadProfile()
@@ -48,7 +53,8 @@ class DeliveryProfileViewModelTest {
         val viewModel = DeliveryProfileViewModel(
             getDeliveryProfile = FakeGetProfile(),
             updateDeliveryProfile = FakeUpdateProfile(),
-            toDoResetLoginCache = FakeResetLoginCache()
+            toDoResetLoginCache = FakeResetLoginCache(),
+            loggerFactory = testLoggerFactory
         )
 
         viewModel.loadProfile()
@@ -64,7 +70,8 @@ class DeliveryProfileViewModelTest {
         val viewModel = DeliveryProfileViewModel(
             getDeliveryProfile = FakeGetProfile(),
             updateDeliveryProfile = FakeUpdateProfile(),
-            toDoResetLoginCache = reset
+            toDoResetLoginCache = reset,
+            loggerFactory = testLoggerFactory
         )
 
         viewModel.logout()
