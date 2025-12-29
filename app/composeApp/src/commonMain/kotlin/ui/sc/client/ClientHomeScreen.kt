@@ -4,6 +4,8 @@ import DIManager
 import ar.com.intrale.BuildKonfig
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import asdo.auth.ToDoResetLoginCache
+import asdo.business.ToGetBusinessProducts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,7 +25,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material.icons.filled.ShoppingCart
@@ -36,13 +37,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,21 +54,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.delay
+import ext.business.ProductStatus
 import kotlinx.coroutines.launch
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
+import ui.sc.client.ClientBottomBar
+import ui.sc.client.ClientTab
+import ui.sc.client.CLIENT_ORDERS_PATH
+import ui.sc.client.CLIENT_PROFILE_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.ViewModel
+import ui.session.SessionStore
 import ui.th.elevations
 import ui.th.spacing
-import ui.session.SessionStore
-import asdo.auth.ToDoResetLoginCache
-import ui.sc.client.ClientTab
-import ui.sc.client.ClientBottomBar
-import ui.sc.client.CLIENT_PROFILE_PATH
+import ui.util.formatPrice
 
 const val CLIENT_HOME_PATH = "/client/home"
 
@@ -95,8 +99,11 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
 
     @Composable
     override fun screen() {
-        val businessName = BuildKonfig.BUSINESS.replaceFirstChar { current ->
-            if (current.isLowerCase()) current.titlecase() else current.toString()
+        val sessionState by SessionStore.sessionState.collectAsState()
+        val businessName = remember(sessionState.selectedBusinessId) {
+            (sessionState.selectedBusinessId ?: BuildKonfig.BUSINESS).replaceFirstChar { current ->
+                if (current.isLowerCase()) current.titlecase() else current.toString()
+            }
         }
         val listState = rememberLazyListState()
         val coroutineScope = rememberCoroutineScope()
@@ -116,11 +123,13 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
         val emptyMessage = Txt(MessageKey.client_home_products_empty)
         val errorMessage = Txt(MessageKey.client_home_products_error)
         val retryLabel = Txt(MessageKey.client_home_retry)
-        val ordersPlaceholder = Txt(MessageKey.client_home_orders_placeholder)
+        val viewCatalogLabel = Txt(MessageKey.client_home_view_catalog)
+        val deliveryCtaLabel = Txt(MessageKey.client_home_delivery_cta)
         val addedToCartMessage = uiState.lastAddedProduct?.let { product ->
             Txt(MessageKey.client_home_added_to_cart, mapOf("product" to product.name))
         }
         val snackbarHostState = remember { SnackbarHostState() }
+        var hasUserInitiatedRetry by rememberSaveable { mutableStateOf(false) }
 
         LaunchedEffect(Unit) {
             viewModel.loadProducts()
@@ -133,6 +142,12 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
             }
         }
 
+        LaunchedEffect(uiState.productsState) {
+            if (uiState.productsState is ClientProductsState.Error && hasUserInitiatedRetry) {
+                snackbarHostState.showSnackbar(errorMessage)
+            }
+        }
+
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
@@ -142,7 +157,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                         coroutineScope.launch { listState.animateScrollToItem(0) }
                     },
                     onOrdersClick = {
-                        coroutineScope.launch { snackbarHostState.showSnackbar(ordersPlaceholder) }
+                        navigate(CLIENT_ORDERS_PATH)
                     },
                     onProfileClick = {
                         this@ClientHomeScreen.navigate(CLIENT_PROFILE_PATH)
@@ -170,7 +185,20 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                             onCartClick = { navigate(CLIENT_CART_PATH) }
                         )
                     }
-                    item { ClientHomeBanner(businessName) }
+                    item {
+                        ClientHomeBanner(
+                            businessName = businessName,
+                            deliveryCtaLabel = deliveryCtaLabel,
+                            onViewCatalog = {
+                                coroutineScope.launch {
+                                    val firstProductIndex = 3
+                                    listState.animateScrollToItem(firstProductIndex.coerceAtLeast(0))
+                                }
+                            },
+                            onDeliveryClick = { navigate(CLIENT_CART_PATH) },
+                            viewCatalogLabel = viewCatalogLabel
+                        )
+                    }
 
                     when (val productsState = uiState.productsState) {
                         ClientProductsState.Loading -> {
@@ -182,7 +210,10 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                                 ClientHomeStateCard(
                                     message = emptyMessage,
                                     actionLabel = retryLabel,
-                                    onAction = { coroutineScope.launch { viewModel.loadProducts() } }
+                                    onAction = {
+                                        hasUserInitiatedRetry = true
+                                        coroutineScope.launch { viewModel.loadProducts() }
+                                    }
                                 )
                             }
                         }
@@ -192,7 +223,10 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                                 ClientHomeStateCard(
                                     message = productsState.message.ifBlank { errorMessage },
                                     actionLabel = retryLabel,
-                                    onAction = { coroutineScope.launch { viewModel.loadProducts() } }
+                                    onAction = {
+                                        hasUserInitiatedRetry = true
+                                        coroutineScope.launch { viewModel.loadProducts() }
+                                    }
                                 )
                             }
                         }
@@ -288,7 +322,13 @@ private fun ClientHomeHeader(
 }
 
 @Composable
-private fun ClientHomeBanner(businessName: String) {
+private fun ClientHomeBanner(
+    businessName: String,
+    deliveryCtaLabel: String,
+    onViewCatalog: () -> Unit,
+    onDeliveryClick: () -> Unit,
+    viewCatalogLabel: String
+) {
     val deliveryTitle = Txt(MessageKey.client_home_delivery_title)
     val deliveryDescription = Txt(
         MessageKey.client_home_delivery_description,
@@ -341,6 +381,22 @@ private fun ClientHomeBanner(businessName: String) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+            ) {
+                IntralePrimaryButton(
+                    text = deliveryCtaLabel,
+                    onClick = onDeliveryClick,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = onViewCatalog,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(text = viewCatalogLabel)
+                }
+            }
         }
     }
 }
@@ -458,6 +514,7 @@ private fun ProductThumbnail(emoji: String, contentDescription: String) {
 class ClientHomeViewModel : ViewModel() {
 
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
+    private val toGetBusinessProducts: ToGetBusinessProducts by DIManager.di.instance()
 
     private val logger = LoggerFactory.default.newLogger<ClientHomeViewModel>()
 
@@ -504,12 +561,23 @@ class ClientHomeViewModel : ViewModel() {
     }
 
     private suspend fun fetchProducts(): List<ClientProduct> {
-        delay(200)
-        return listOf(
-            ClientProduct(id = "bananas", name = "Bananas", priceLabel = "$400 / kg", emoji = "🍌", unitPrice = 400.0),
-            ClientProduct(id = "red-apples", name = "Manzana roja", priceLabel = "$1200 / kg", emoji = "🍎", unitPrice = 1200.0),
-            ClientProduct(id = "avocado", name = "Palta", priceLabel = "$2500 / kg", emoji = "🥑", unitPrice = 2500.0)
-        )
+        val businessId = resolveBusinessId()
+        logger.info { "Cargando productos publicados para negocio $businessId" }
+        return toGetBusinessProducts.execute(
+            businessId = businessId,
+            status = ProductStatus.Published.name.uppercase()
+        ).getOrThrow()
+            .products
+            .filter { product -> ProductStatus.fromRaw(product.status) == ProductStatus.Published }
+            .map { product ->
+                ClientProduct(
+                    id = product.id,
+                    name = product.name,
+                    priceLabel = formatPrice(product.basePrice),
+                    emoji = product.emoji ?: "🛍️",
+                    unitPrice = product.basePrice
+                )
+            }
     }
 
     suspend fun logout() {
@@ -521,5 +589,11 @@ class ClientHomeViewModel : ViewModel() {
             logger.error(e) { "Error al ejecutar logout" }
             throw e
         }
+    }
+
+    private fun resolveBusinessId(): String {
+        val sessionBusiness = SessionStore.sessionState.value.selectedBusinessId
+        return (sessionBusiness ?: BuildKonfig.BUSINESS).takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("Business no configurado")
     }
 }
