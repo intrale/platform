@@ -31,6 +31,7 @@ import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
 import asdo.business.DoGetBusinesses
+import asdo.business.DoGetBusinessProducts
 import asdo.business.DoRegisterBusiness
 import asdo.business.DoRequestJoinBusiness
 import asdo.business.DoReviewBusinessRegistration
@@ -46,6 +47,7 @@ import asdo.business.ToDoReviewJoinBusiness
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoUpdateProduct
 import asdo.business.ToGetBusinesses
+import asdo.business.ToGetBusinessProducts
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoSignUp
 import asdo.signup.DoSignUpDelivery
@@ -80,6 +82,7 @@ import ext.business.ClientRequestJoinBusinessService
 import ext.business.ClientReviewBusinessRegistrationService
 import ext.business.ClientReviewJoinBusinessService
 import ext.business.ClientSearchBusinessesService
+import ext.business.CommGetBusinessProductsService
 import ext.business.CommProductService
 import ext.business.CommRegisterBusinessService
 import ext.business.CommRequestJoinBusinessService
@@ -132,6 +135,7 @@ import ui.sc.business.ReviewBusinessScreen
 import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
+import ui.sc.client.ClientOrdersScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
@@ -151,6 +155,7 @@ public const val SCREENS = "screens"
 
 public const val CLIENT_ENTRY = "clientEntry"
 public const val CLIENT_HOME = "clientHome"
+public const val CLIENT_ORDERS = "clientOrders"
 public const val CLIENT_CART = "clientCart"
 public const val CLIENT_PROFILE = "clientProfile"
 public const val HOME = "home"
@@ -195,6 +200,7 @@ class DIManager {
 
                 bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
                 bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
+                bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
                 bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
                 bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
                 bindSingleton(tag = HOME) { Home() }
@@ -231,6 +237,7 @@ class DIManager {
                             AppType.CLIENT -> {
                                 add(instance(tag = CLIENT_ENTRY))
                                 add(instance(tag = CLIENT_HOME))
+                                add(instance(tag = CLIENT_ORDERS))
                                 add(instance(tag = CLIENT_CART))
                                 add(instance(tag = CLIENT_PROFILE))
                                 add(instance(tag = INIT))
@@ -347,6 +354,7 @@ class DIManager {
                 bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
                 bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
                 bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
+                bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
                 bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
                 bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
                 bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
@@ -380,6 +388,7 @@ class DIManager {
                 bindSingleton<ToDoManageClientAddress> { DoManageClientAddress(instance(), instance(), instance()) }
                 bindSingleton<ToDoGetDeliveryProfile> { DoGetDeliveryProfile(instance()) }
                 bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }
+                bindSingleton<ToGetBusinessProducts> { DoGetBusinessProducts(instance()) }
 
             }
     }

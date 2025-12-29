@@ -74,7 +74,6 @@ class ClientProfileScreen : Screen(CLIENT_PROFILE_PATH) {
         val scrollState = rememberScrollState()
 
         val retryLabel = Txt(MessageKey.client_profile_retry)
-        val ordersPlaceholder = Txt(MessageKey.client_home_orders_placeholder)
         val successMessage = state.successKey?.let { Txt(it) }
 
         LaunchedEffect(Unit) {
@@ -99,9 +98,7 @@ class ClientProfileScreen : Screen(CLIENT_PROFILE_PATH) {
                 ClientBottomBar(
                     activeTab = ClientTab.PROFILE,
                     onHomeClick = { navigate(CLIENT_HOME_PATH) },
-                    onOrdersClick = {
-                        coroutineScope.launch { snackbarHostState.showSnackbar(ordersPlaceholder) }
-                    },
+                    onOrdersClick = { navigate(CLIENT_ORDERS_PATH) },
                     onProfileClick = {}
                 )
             }
