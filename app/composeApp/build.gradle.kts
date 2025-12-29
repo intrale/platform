@@ -228,6 +228,14 @@ android {
             manifestPlaceholders += mapOf("appName" to businessAppName)
             resValue("string", "app_name", businessAppName)
         }
+
+        create("delivery") {
+            dimension = "appType"
+            applicationIdSuffix = ".delivery"
+            val deliveryAppName = "Intrale Repartos"
+            manifestPlaceholders += mapOf("appName" to deliveryAppName)
+            resValue("string", "app_name", deliveryAppName)
+        }
     }
 
     defaultConfig {
