@@ -22,6 +22,7 @@ plugins {
 
 val business = providers.gradleProperty("business").orElse("intrale")
 val delivery = providers.gradleProperty("delivery").orElse(business)
+val storeAvailable = providers.gradleProperty("storeAvailable").orElse("true")
 val inferredAppType = providers.provider {
     val taskNames = gradle.startParameter.taskNames.map(String::lowercase)
 
@@ -45,6 +46,7 @@ buildkonfig {
         buildConfigField(FieldSpec.Type.STRING, "BUSINESS", business.get())
         buildConfigField(FieldSpec.Type.STRING, "DELIVERY", delivery.get())
         buildConfigField(FieldSpec.Type.STRING, "APP_TYPE", appType.get())
+        buildConfigField(FieldSpec.Type.BOOLEAN, "STORE_AVAILABLE", storeAvailable.get())
     }
 }
 

@@ -53,7 +53,7 @@ enum class ClientEntryStatus { Loading, Welcome, NavigateClientHome, NavigateCla
 
 data class ClientEntryState(
     val businessName: String = BuildKonfig.BUSINESS,
-    val businessActive: Boolean = true,
+    val businessActive: Boolean = BuildKonfig.STORE_AVAILABLE,
     val status: ClientEntryStatus = ClientEntryStatus.Loading
 ) {
     val formattedBusinessName: String
@@ -269,4 +269,3 @@ private fun ClientStoreUnavailable(businessName: String) {
         )
     }
 }
-
