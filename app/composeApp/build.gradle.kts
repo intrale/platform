@@ -20,6 +20,27 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+fun sanitizePackageSuffix(raw: String): String {
+    val normalized = raw
+        .lowercase()
+        .replace(Regex("[^a-z0-9]+"), "-")
+        .trim('-')
+
+    if (normalized.isBlank()) return ""
+
+    return normalized
+        .split("-")
+        .filter { it.isNotBlank() }
+        .joinToString(".") { segment ->
+            val safeSegment = segment.ifEmpty { "client" }
+            if (safeSegment.first().isDigit()) {
+                "c$safeSegment"
+            } else {
+                safeSegment
+            }
+        }
+}
+
 val business = providers.gradleProperty("business").orElse("intrale")
 val delivery = providers.gradleProperty("delivery").orElse(business)
 val inferredAppType = providers.provider {
@@ -206,6 +227,17 @@ val appNames = mapOf(
     // agrega las que uses
 )
 val appName = appNames[brandId] ?: "Intrale"
+val clientSlug = providers.gradleProperty("clientSlug")
+val clientAppName = providers.gradleProperty("clientAppName").orElse(providers.provider { appName })
+val baseApplicationId = "com.intrale.app"
+val clientApplicationSuffix = clientSlug.map(::sanitizePackageSuffix).getOrElse("")
+val clientApplicationId = if (clientApplicationSuffix.isBlank()) {
+    "$baseApplicationId.client"
+} else {
+    "$baseApplicationId.client.$clientApplicationSuffix"
+}
+val businessApplicationId = "$baseApplicationId.business"
+val deliveryApplicationId = "$baseApplicationId.delivery"
 
 android {
     namespace = "ar.com.intrale"
@@ -216,14 +248,15 @@ android {
     productFlavors {
         create("client") {
             dimension = "appType"
-            applicationIdSuffix = ".client"
-            manifestPlaceholders += mapOf("appName" to appName)
-            resValue("string", "app_name", appName)
+            applicationId = clientApplicationId
+            val flavorAppName = clientAppName.get()
+            manifestPlaceholders += mapOf("appName" to flavorAppName)
+            resValue("string", "app_name", flavorAppName)
         }
 
         create("business") {
             dimension = "appType"
-            applicationIdSuffix = ".business"
+            applicationId = businessApplicationId
             val businessAppName = "Intrale Negocios"
             manifestPlaceholders += mapOf("appName" to businessAppName)
             resValue("string", "app_name", businessAppName)
@@ -231,7 +264,7 @@ android {
 
         create("delivery") {
             dimension = "appType"
-            applicationIdSuffix = ".delivery"
+            applicationId = deliveryApplicationId
             val deliveryAppName = "Intrale Repartos"
             manifestPlaceholders += mapOf("appName" to deliveryAppName)
             resValue("string", "app_name", deliveryAppName)
@@ -239,7 +272,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "ar.com.intrale"
+        applicationId = baseApplicationId
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
