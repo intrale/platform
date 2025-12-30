@@ -23,7 +23,9 @@ class DoGetClientProfile(
         val profile = profileResponse.profile ?: ClientProfileDTO()
         val preferences = profileResponse.preferences ?: ClientPreferencesDTO(language = storage.preferredLanguage ?: "es")
         val addresses = addressesService.listAddresses().getOrDefault(emptyList())
-        val defaultId = profile.defaultAddressId ?: addresses.firstOrNull { it.isDefault }?.id
+        val defaultId = profile.defaultAddressId
+            ?: addresses.firstOrNull { it.isDefault }?.id
+            ?: addresses.firstOrNull()?.id
 
         val data = ClientProfileData(
             profile = profile.copy(defaultAddressId = defaultId).toDomain(preferences),
@@ -60,7 +62,9 @@ class DoUpdateClientProfile(
             defaultAddressId = profile.defaultAddressId
         )
         val addresses = addressesService.listAddresses().getOrDefault(emptyList())
-        val defaultId = updatedProfile.defaultAddressId ?: addresses.firstOrNull { it.isDefault }?.id
+        val defaultId = updatedProfile.defaultAddressId
+            ?: addresses.firstOrNull { it.isDefault }?.id
+            ?: addresses.firstOrNull()?.id
 
         val data = ClientProfileData(
             profile = updatedProfile.copy(defaultAddressId = defaultId).toDomain(response.preferences ?: preferencesDto),
@@ -87,16 +91,31 @@ class DoManageClientAddress(
 
     override suspend fun execute(action: ManageAddressAction): Result<ClientProfileData> = runCatching {
         logger.info { "Gestionando dirección: $action" }
-        when (action) {
-            is ManageAddressAction.Create -> addressesService.createAddress(action.address.toDto()).getOrThrow()
-            is ManageAddressAction.Update -> addressesService.updateAddress(action.address.toDto()).getOrThrow()
-            is ManageAddressAction.Delete -> addressesService.deleteAddress(action.addressId).getOrThrow()
+        val updatedId = when (action) {
+            is ManageAddressAction.Create -> {
+                val created = addressesService.createAddress(action.address.toDto()).getOrThrow()
+                if (action.address.isDefault || created.isDefault) {
+                    created.id?.let { addressesService.markDefault(it).getOrThrow() }
+                }
+                created.id
+            }
+
+            is ManageAddressAction.Update -> {
+                val updated = addressesService.updateAddress(action.address.toDto()).getOrThrow()
+                if (action.address.isDefault || updated.isDefault) {
+                    updated.id?.let { addressesService.markDefault(it).getOrThrow() }
+                }
+                updated.id
+            }
+
+            is ManageAddressAction.Delete -> {
+                addressesService.deleteAddress(action.addressId).getOrThrow()
+                null
+            }
+
             is ManageAddressAction.MarkDefault -> {
-                val addresses = addressesService.listAddresses().getOrDefault(emptyList())
-                val target = addresses.firstOrNull { it.id == action.addressId }
-                    ?: throw IllegalArgumentException("Dirección no encontrada")
-                val updated = target.copy(isDefault = true)
-                addressesService.updateAddress(updated).getOrThrow()
+                addressesService.markDefault(action.addressId).getOrThrow()
+                action.addressId
             }
         }
 
@@ -106,16 +125,25 @@ class DoManageClientAddress(
             ?: storage.profileCache?.toDomain()
             ?: ClientProfile()
 
+        val profileDefaultId = refreshedProfileResponse?.profile?.defaultAddressId
+        val defaultId = listOfNotNull(
+            refreshedAddresses.firstOrNull { it.isDefault }?.id,
+            profileDefaultId?.takeIf { id -> refreshedAddresses.any { it.id == id } },
+            updatedId,
+            refreshedAddresses.firstOrNull()?.id
+        ).firstOrNull()
+
+        val normalizedAddresses = refreshedAddresses.map { address ->
+            address.copy(isDefault = defaultId != null && address.id == defaultId)
+        }
+
         val preferences = refreshedProfileResponse?.preferences?.toDomain()
             ?: storage.profileCache?.toPreferences()
             ?: ClientPreferences()
 
-        val defaultId = refreshedAddresses.firstOrNull { it.isDefault }?.id
-            ?: refreshedProfile.defaultAddressId
-
         val data = ClientProfileData(
             profile = refreshedProfile.copy(defaultAddressId = defaultId),
-            addresses = refreshedAddresses.map { it.toDomain(defaultId) },
+            addresses = normalizedAddresses.map { it.toDomain(defaultId) },
             preferences = preferences
         )
 

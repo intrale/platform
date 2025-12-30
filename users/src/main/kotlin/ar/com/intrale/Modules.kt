@@ -120,6 +120,10 @@ val appModule = DI.Module("appModule") {
         singleton { LoggerFactory.getLogger("AppLogger") }
     }
 
+    bind<ClientProfileRepository> {
+        singleton { ClientProfileRepository() }
+    }
+
     bind<Function> (tag="signup") {
         singleton  { SignUp(instance(), instance(), instance(), instance()) }
     }
@@ -178,6 +182,12 @@ val appModule = DI.Module("appModule") {
     }
     bind<Function> (tag="configAutoAcceptDeliveries") {
         singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="client/profile") {
+        singleton { ClientProfileFunction(instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="client/addresses") {
+        singleton { ClientAddressesFunction(instance(), instance(), instance()) }
     }
 }
 

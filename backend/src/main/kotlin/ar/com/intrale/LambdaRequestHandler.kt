@@ -1,21 +1,17 @@
 package ar.com.intrale
 
+import ar.com.intrale.util.decodeBase64OrNull
 import com.amazonaws.services.lambda.runtime.Context
 import com.amazonaws.services.lambda.runtime.RequestHandler
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent
 import com.google.gson.Gson
+import io.ktor.http.HttpMethod
 import kotlinx.coroutines.runBlocking
 import org.kodein.di.DI
 import org.kodein.di.instance
-import org.kodein.di.ktor.closestDI
-import org.kodein.type.jvmType
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import ar.com.intrale.util.decodeBase64OrNull
-import kotlin.collections.component1
-import kotlin.collections.component2
-import kotlin.collections.iterator
 import kotlin.getValue
 
 abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
@@ -49,12 +45,12 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
             }
 
             if (requestEvent != null) {
-                var httpMehtod = requestEvent.httpMethod
+                val httpMethod = requestEvent.httpMethod ?: "POST"
 
-                if (httpMehtod == "OPTIONS") {
+                if (httpMethod.equals("OPTIONS", ignoreCase = true)) {
                     val map = mutableMapOf<String, String>()
                     map["Access-Control-Allow-Origin"] = "*"
-                    map["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD, PUT, POST"
+                    map["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD, PUT, POST, DELETE"
                     map["Access-Control-Allow-Headers"] =
                         "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,Access-Control-Allow-Origin,Access-Control-Allow-Headers,function,idToken,businessName,filename"
                     return APIGatewayProxyResponseEvent().apply {
@@ -63,90 +59,82 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                     }
                 }
 
-                if (httpMehtod == "POST") {
-                    logger.info("Path ${requestEvent.path}")
-                    logger.info("resource = ${requestEvent.resource}")
-                    var functionName = requestEvent.pathParameters["function"]
-                    val businessName = requestEvent.pathParameters["business"]
-                    /*val pathParts = requestEvent.path?.split("/")?.filter { it.isNotBlank() } ?: listOf()
-                    val businessName = pathParts.getOrNull(0)
-                    val functionName = pathParts.getOrNull(1)*/
+                logger.info("Path ${requestEvent.path}")
+                logger.info("resource = ${requestEvent.resource}")
 
-                    logger.info("Function name is $functionName")
-                    logger.info("Business name is $businessName")
+                val pathParts = requestEvent.path?.split("/")?.filter { it.isNotBlank() } ?: emptyList()
+                val businessName = requestEvent.pathParameters?.get("business") ?: pathParts.getOrNull(0)
+                val functionPath = requestEvent.pathParameters?.get("function")
+                    ?: pathParts.drop(1).joinToString("/")
+                val functionSegments = functionPath.split("/").filter { it.isNotBlank() }
+                val functionKey = when {
+                    functionSegments.size >= 2 -> functionSegments.take(2).joinToString("/")
+                    functionSegments.isNotEmpty() -> functionSegments.first()
+                    else -> null
+                }
 
-                    var functionResponse : Response
+                logger.info("Function name is $functionPath (key: $functionKey)")
+                logger.info("Business name is $businessName")
 
-                    if (businessName == null) {
-                        logger.info("Business name is null")
-                        functionResponse = RequestValidationException("No business defined on path")
+                val functionResponse: Response = if (businessName == null) {
+                    logger.info("Business name is null")
+                    RequestValidationException("No business defined on path")
+                } else {
+                    val config by di.instance<Config>()
+                    val businesses = config.businesses()
+                    logger.info("Available businesses are $businesses")
+                    if (!businesses.contains(businessName)){
+                        logger.info("Business not avaiable with name $businessName")
+                        ExceptionResponse("Business not avaiable with name $businessName")
+                    } else if (functionKey.isNullOrBlank()) {
+                        logger.info("No function defined on path")
+                        RequestValidationException("No function defined on path")
                     } else {
-                        val config by di.instance<Config>()
-                        val businesses = config.businesses()
-                        logger.info("Available businesses are $businesses")
-                        if (!businesses.contains(businessName)){
-                            logger.info("Business not avaiable with name $businessName")
-                            functionResponse = ExceptionResponse("Business not avaiable with name $businessName")
-                        } else {
-                            if (functionName == null) {56
-                                logger.info("No function defined on headers")
-                                functionResponse = RequestValidationException("No function defined on path")
-                            } else {
+                        try {
+                            logger.info("Injecting Function $functionKey")
+                            val function by di.instance<Function>(tag = functionKey)
+                            runBlocking {
+                                var requestBody = ""
                                 try {
-                                    logger.info("Injecting Function $functionName")
-                                    val function by di.instance<Function>(tag = functionName)
-                                    return runBlocking {
-                                        var requestBody: String = ""
-                                        try {
-                                            val encoded = requestEvent.body
-                                            if (encoded != null) {
-                                                val decoded = decodeBase64OrNull(encoded)
-                                                if (decoded != null) {
-                                                    requestBody = decoded
-                                                    logger.info("Request body is $requestBody")
-                                                } else {
-                                                    logger.warn("Request body no es Base64 válido, se usará el valor original")
-                                                    requestBody = encoded
-                                                }
-                                            } else {
-                                                logger.info("Request body not found")
-                                            }
-                                            functionResponse = function.execute(
-                                                businessName,
-                                                functionName,
-                                                requestEvent.headers,
-                                                requestBody
-                                            )
-                                        } catch (e: Exception) {
-                                            logger.info(e.message)
-                                            functionResponse = ExceptionResponse(e.message.toString())
+                                    val encoded = requestEvent.body
+                                    if (encoded != null) {
+                                        val decoded = decodeBase64OrNull(encoded)
+                                        if (decoded != null) {
+                                            requestBody = decoded
+                                            logger.info("Request body is $requestBody")
+                                        } else {
+                                            logger.warn("Request body no es Base64 válido, se usará el valor original")
+                                            requestBody = encoded
                                         }
-                                        logger.info("Returning function response $functionResponse")
-                                        return@runBlocking APIGatewayProxyResponseEvent().apply {
-                                            body = Gson().toJson(functionResponse)
-                                            logger.info("Returning body is $body")
-                                            statusCode = functionResponse.statusCode?.value
-                                        }
+                                    } else {
+                                        logger.info("Request body not found")
                                     }
-                                } catch (e: DI.NotFoundException) {
-                                    logger.info("No function with name $functionName found")
-                                    functionResponse = ExceptionResponse("No function with name $functionName found")
-                                    return APIGatewayProxyResponseEvent().apply {
-                                        body = Gson().toJson(functionResponse)
-                                        logger.info("Returning body is $body")
-                                        statusCode = functionResponse.statusCode?.value
-                                    }
+                                    val headers = (requestEvent.headers ?: emptyMap()) + mapOf(
+                                        "X-Http-Method" to httpMethod,
+                                        "X-Function-Path" to functionPath
+                                    )
+                                    function.execute(
+                                        businessName,
+                                        functionPath,
+                                        headers,
+                                        requestBody
+                                    )
+                                } catch (e: Exception) {
+                                    logger.info(e.message)
+                                    ExceptionResponse(e.message.toString())
                                 }
                             }
+                        } catch (e: DI.NotFoundException) {
+                            logger.info("No function with name $functionKey found")
+                            ExceptionResponse("No function with name $functionKey found")
                         }
                     }
+                }
 
-                    return APIGatewayProxyResponseEvent().apply {
-                        body = Gson().toJson(functionResponse)
-                        logger.info("Finally returning body is $body")
-                        statusCode = functionResponse.statusCode?.value
-                    }
-
+                return APIGatewayProxyResponseEvent().apply {
+                    body = Gson().toJson(functionResponse)
+                    logger.info("Returning body is $body")
+                    statusCode = functionResponse.statusCode?.value
                 }
 
             }

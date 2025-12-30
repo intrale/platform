@@ -1,7 +1,5 @@
 package ui.sc.client
 
-import ar.com.intrale.strings.Txt
-import ar.com.intrale.strings.model.MessageKey
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +16,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -30,6 +30,7 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -48,7 +49,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import ar.com.intrale.strings.Txt
+import ar.com.intrale.strings.model.MessageKey
+import asdo.client.ClientAddress
+import asdo.client.ToDoGetClientProfile
 import kotlinx.coroutines.launch
+import org.kodein.di.direct
+import org.kodein.di.instance
+import DIManager
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -94,6 +102,32 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
         val increaseContentDescription = Txt(MessageKey.client_cart_increase_quantity)
         val decreaseContentDescription = Txt(MessageKey.client_cart_decrease_quantity)
         val continuePlaceholder = Txt(MessageKey.client_cart_continue_placeholder)
+        val deliveryTitle = Txt(MessageKey.client_cart_delivery_address_title)
+        val deliveryEmpty = Txt(MessageKey.client_cart_delivery_address_empty)
+        val deliveryManage = Txt(MessageKey.client_cart_delivery_address_manage)
+        val deliveryLoading = Txt(MessageKey.client_cart_delivery_address_loading)
+        val continueMissingAddress = Txt(MessageKey.client_cart_continue_missing_address)
+        val continueWithAddress = Txt(MessageKey.client_cart_continue_with_address)
+
+        val getClientProfile: ToDoGetClientProfile = remember { DIManager.di.direct.instance() }
+        var deliveryState by remember { mutableStateOf(DeliveryAddressState(loading = true)) }
+
+        LaunchedEffect(Unit) {
+            deliveryState = deliveryState.copy(loading = true)
+            getClientProfile.execute()
+                .onSuccess { data ->
+                    val defaultId = data.profile.defaultAddressId ?: data.addresses.firstOrNull { it.isDefault }?.id
+                    deliveryState = DeliveryAddressState(
+                        addresses = data.addresses,
+                        selectedAddressId = defaultId ?: data.addresses.firstOrNull()?.id,
+                        loading = false
+                    )
+                }
+                .onFailure { throwable ->
+                    logger.error(throwable) { "No se pudieron cargar las direcciones" }
+                    deliveryState = deliveryState.copy(loading = false, error = throwable.message)
+                }
+        }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             if (itemsList.isEmpty()) {
@@ -135,6 +169,18 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                     }
 
                     item {
+                        DeliveryAddressCard(
+                            title = deliveryTitle,
+                            loadingMessage = deliveryLoading,
+                            emptyMessage = deliveryEmpty,
+                            manageLabel = deliveryManage,
+                            state = deliveryState,
+                            onSelect = { deliveryState = deliveryState.copy(selectedAddressId = it) },
+                            onManage = { navigate(CLIENT_PROFILE_PATH) }
+                        )
+                    }
+
+                    item {
                         ClientCartSummaryCard(
                             summaryTitle = summaryTitle,
                             subtotalLabel = subtotalLabel,
@@ -153,7 +199,18 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                             onContinue = {
                                 logger.info { "Continuar pedido" }
                                 coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(continuePlaceholder)
+                                    when {
+                                        deliveryState.loading -> snackbarHostState.showSnackbar(deliveryLoading)
+                                        deliveryState.addresses.isEmpty() -> {
+                                            snackbarHostState.showSnackbar(continueMissingAddress)
+                                            navigate(CLIENT_PROFILE_PATH)
+                                        }
+                                        else -> {
+                                            val label = deliveryState.selectedAddress()?.label.orEmpty()
+                                            val message = continueWithAddress.replace("{label}", label.ifBlank { "-" })
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                    }
                                 }
                             },
                             onClear = { confirmClearDialog = true }
@@ -355,6 +412,111 @@ private fun SummaryRow(label: String, value: String, emphasize: Boolean = false)
 }
 
 @Composable
+private fun DeliveryAddressCard(
+    title: String,
+    loadingMessage: String,
+    emptyMessage: String,
+    manageLabel: String,
+    state: DeliveryAddressState,
+    onSelect: (String) -> Unit,
+    onManage: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            when {
+                state.loading -> {
+                    Text(text = loadingMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                state.addresses.isEmpty() -> {
+                    Text(text = emptyMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                else -> {
+                    state.addresses.forEach { address ->
+                        DeliveryAddressRow(
+                            address = address,
+                            isSelected = state.selectedAddressId == address.id,
+                            onSelect = { address.id?.let(onSelect) }
+                        )
+                    }
+                }
+            }
+
+            TextButton(onClick = onManage) {
+                Text(text = manageLabel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeliveryAddressRow(
+    address: ClientAddress,
+    isSelected: Boolean,
+    onSelect: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            RadioButton(selected = isSelected, onClick = onSelect, enabled = address.id != null)
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = address.label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                    if (address.isDefault) {
+                        AssistChip(
+                            onClick = {},
+                            label = { Text(text = Txt(MessageKey.client_profile_default_badge)) },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        )
+                    }
+                }
+                Text(text = address.line1, style = MaterialTheme.typography.bodyMedium)
+                val location = listOfNotNull(address.city, address.state, address.zip, address.country)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
+                if (location.isNotBlank()) {
+                    Text(
+                        text = location,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ClientCartActions(
     continueLabel: String,
     clearLabel: String,
@@ -448,4 +610,13 @@ private fun CartProductThumbnail(emoji: String, contentDescription: String) {
             modifier = Modifier.padding(MaterialTheme.spacing.x1)
         )
     }
+}
+
+private data class DeliveryAddressState(
+    val addresses: List<ClientAddress> = emptyList(),
+    val selectedAddressId: String? = null,
+    val loading: Boolean = false,
+    val error: String? = null
+) {
+    fun selectedAddress(): ClientAddress? = addresses.firstOrNull { it.id == selectedAddressId } ?: addresses.firstOrNull()
 }

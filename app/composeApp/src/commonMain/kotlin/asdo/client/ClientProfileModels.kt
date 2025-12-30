@@ -15,10 +15,12 @@ data class ClientProfile(
 data class ClientAddress(
     val id: String? = null,
     val label: String = "",
-    val line1: String = "",
+    val street: String = "",
+    val number: String = "",
+    val reference: String? = null,
     val city: String = "",
     val state: String? = null,
-    val zip: String? = null,
+    val postalCode: String? = null,
     val country: String? = null,
     val isDefault: Boolean = false
 )
@@ -52,10 +54,12 @@ fun ClientAddressDTO.toDomain(defaultId: String? = null): ClientAddress =
     ClientAddress(
         id = id,
         label = label,
-        line1 = line1,
+        street = street,
+        number = number,
+        reference = reference,
         city = city,
         state = state,
-        zip = zip,
+        postalCode = postalCode,
         country = country,
         isDefault = isDefault || (defaultId != null && defaultId == id)
     )
@@ -72,10 +76,12 @@ fun ClientProfile.toDto(): ClientProfileDTO = ClientProfileDTO(
 fun ClientAddress.toDto(): ClientAddressDTO = ClientAddressDTO(
     id = id,
     label = label,
-    line1 = line1,
+    street = street,
+    number = number,
+    reference = reference,
     city = city,
     state = state,
-    zip = zip,
+    postalCode = postalCode,
     country = country,
     isDefault = isDefault
 )
