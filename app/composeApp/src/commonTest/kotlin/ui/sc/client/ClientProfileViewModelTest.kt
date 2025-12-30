@@ -9,38 +9,69 @@ import asdo.client.ManageAddressAction
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
-import org.kodein.log.LoggerFactory
-import org.kodein.log.frontend.simplePrintFrontend
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
+import org.kodein.log.LoggerFactory
+import org.kodein.log.frontend.simplePrintFrontend
+import ui.sc.client.AddressForm
 
-private val sampleData = ClientProfileData(
-    profile = ClientProfile(fullName = "Jane Doe", email = "jane@intrale.com", phone = "+5411123456", defaultAddressId = "addr-1"),
-    addresses = listOf(
+private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
+
+private class FakeAddressStore(
+    val addresses: MutableList<ClientAddress> = mutableListOf(
         ClientAddress(
             id = "addr-1",
             label = "Casa",
-            line1 = "Calle 123",
+            street = "Calle",
+            number = "123",
             city = "Buenos Aires",
             isDefault = true
+        ),
+        ClientAddress(
+            id = "addr-2",
+            label = "Oficina",
+            street = "Av Siempre Viva",
+            number = "742",
+            city = "Buenos Aires",
+            isDefault = false
         )
     ),
-    preferences = ClientPreferences(language = "es")
-)
+    var profile: ClientProfile = ClientProfile(
+        fullName = "Jane Doe",
+        email = "jane@intrale.com",
+        phone = "+5411123456",
+        defaultAddressId = "addr-1"
+    ),
+    var preferences: ClientPreferences = ClientPreferences(language = "es")
+) {
+    fun data(): ClientProfileData = ClientProfileData(
+        profile = profile,
+        addresses = addresses.toList(),
+        preferences = preferences
+    )
 
-private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
+    fun normalize(defaultId: String? = null) {
+        val chosen = defaultId
+            ?: addresses.firstOrNull { it.isDefault }?.id
+            ?: addresses.firstOrNull()?.id
+        addresses.replaceAll { it.copy(isDefault = it.id == chosen) }
+        profile = profile.copy(defaultAddressId = chosen)
+    }
+}
 
 class ClientProfileViewModelTest {
 
     @Test
     fun `loadProfile actualiza el estado con los datos del caso de uso`() = runTest {
+        val store = FakeAddressStore()
         val viewModel = ClientProfileViewModel(
-            getClientProfile = FakeGetProfile(),
-            updateClientProfile = FakeUpdateProfile(),
-            manageClientAddress = FakeManageAddress(),
+            getClientProfile = FakeGetProfile(store),
+            updateClientProfile = FakeUpdateProfile(store),
+            manageClientAddress = FakeManageAddress(store),
             toDoResetLoginCache = FakeResetLoginCache(),
             loggerFactory = testLoggerFactory
         )
@@ -50,38 +81,143 @@ class ClientProfileViewModelTest {
         assertFalse(viewModel.state.loading)
         assertEquals("Jane Doe", viewModel.state.profileForm.fullName)
         assertEquals("jane@intrale.com", viewModel.state.profileForm.email)
-        assertEquals(1, viewModel.state.addresses.size)
+        assertEquals(2, viewModel.state.addresses.size)
         assertTrue(viewModel.state.addresses.first().isDefault)
     }
 
     @Test
-    fun `logout limpia el estado del store`() = runTest {
-        val reset = FakeResetLoginCache()
+    fun `saveAddress valida campos requeridos antes de invocar el caso de uso`() = runTest {
+        val manage = FakeManageAddress(FakeAddressStore())
         val viewModel = ClientProfileViewModel(
             getClientProfile = FakeGetProfile(),
             updateClientProfile = FakeUpdateProfile(),
-            manageClientAddress = FakeManageAddress(),
-            toDoResetLoginCache = reset,
+            manageClientAddress = manage,
+            toDoResetLoginCache = FakeResetLoginCache(),
             loggerFactory = testLoggerFactory
         )
 
-        viewModel.logout()
+        viewModel.startAddressEditing()
+        viewModel.onAddressChange { copy(label = "", street = "", number = "", city = "") }
+        viewModel.saveAddress()
 
-        assertTrue(reset.called)
+        assertNull(manage.lastAction)
+        assertFalse(viewModel.inputsStates[AddressForm::street.name]!!.value.isValid)
+        assertFalse(viewModel.inputsStates[AddressForm::number.name]!!.value.isValid)
+    }
+
+    @Test
+    fun `saveAddress crea y marca la dirección predeterminada`() = runTest {
+        val store = FakeAddressStore()
+        val manage = FakeManageAddress(store)
+        val viewModel = ClientProfileViewModel(
+            getClientProfile = FakeGetProfile(store),
+            updateClientProfile = FakeUpdateProfile(store),
+            manageClientAddress = manage,
+            toDoResetLoginCache = FakeResetLoginCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadProfile()
+        viewModel.startAddressEditing()
+        viewModel.onAddressChange { copy(label = "Nueva", street = "Laprida", number = "456", city = "CABA", isDefault = true) }
+        viewModel.saveAddress()
+
+        assertTrue(manage.lastAction is ManageAddressAction.Create)
+        val defaultId = viewModel.state.profileForm.defaultAddressId
+        assertEquals("new-1", defaultId)
+        assertTrue(viewModel.state.addresses.first { it.id == defaultId }.isDefault)
+    }
+
+    @Test
+    fun `deleteAddress reasigna la predeterminada cuando corresponde`() = runTest {
+        val store = FakeAddressStore()
+        val manage = FakeManageAddress(store)
+        val viewModel = ClientProfileViewModel(
+            getClientProfile = FakeGetProfile(store),
+            updateClientProfile = FakeUpdateProfile(store),
+            manageClientAddress = manage,
+            toDoResetLoginCache = FakeResetLoginCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadProfile()
+        viewModel.deleteAddress("addr-1")
+
+        assertTrue(manage.lastAction is ManageAddressAction.Delete)
+        assertEquals("addr-2", viewModel.state.profileForm.defaultAddressId)
+        assertTrue(viewModel.state.addresses.first { it.id == "addr-2" }.isDefault)
+    }
+
+    @Test
+    fun `markDefault actualiza la dirección seleccionada`() = runTest {
+        val store = FakeAddressStore()
+        val manage = FakeManageAddress(store)
+        val viewModel = ClientProfileViewModel(
+            getClientProfile = FakeGetProfile(store),
+            updateClientProfile = FakeUpdateProfile(store),
+            manageClientAddress = manage,
+            toDoResetLoginCache = FakeResetLoginCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadProfile()
+        viewModel.markDefault("addr-2")
+
+        assertTrue(manage.lastAction is ManageAddressAction.MarkDefault)
+        assertEquals("addr-2", viewModel.state.profileForm.defaultAddressId)
+        assertTrue(viewModel.state.addresses.first { it.id == "addr-2" }.isDefault)
     }
 }
 
-private class FakeGetProfile : ToDoGetClientProfile {
-    override suspend fun execute(): Result<ClientProfileData> = Result.success(sampleData)
+private class FakeGetProfile(
+    private val store: FakeAddressStore = FakeAddressStore()
+) : ToDoGetClientProfile {
+    override suspend fun execute(): Result<ClientProfileData> = Result.success(store.data())
 }
 
-private class FakeUpdateProfile : ToDoUpdateClientProfile {
-    override suspend fun execute(profile: ClientProfile, preferences: ClientPreferences): Result<ClientProfileData> =
-        Result.success(sampleData.copy(profile = profile, preferences = preferences))
+private class FakeUpdateProfile(
+    private val store: FakeAddressStore = FakeAddressStore()
+) : ToDoUpdateClientProfile {
+    override suspend fun execute(profile: ClientProfile, preferences: ClientPreferences): Result<ClientProfileData> {
+        store.profile = profile
+        store.preferences = preferences
+        return Result.success(store.data())
+    }
 }
 
-private class FakeManageAddress : ToDoManageClientAddress {
-    override suspend fun execute(action: ManageAddressAction): Result<ClientProfileData> = Result.success(sampleData)
+private class FakeManageAddress(
+    private val store: FakeAddressStore
+) : ToDoManageClientAddress {
+    var lastAction: ManageAddressAction? = null
+
+    override suspend fun execute(action: ManageAddressAction): Result<ClientProfileData> {
+        lastAction = action
+        when (action) {
+            is ManageAddressAction.Create -> {
+                val newId = action.address.id ?: "new-1"
+                store.addresses.add(action.address.copy(id = newId))
+                store.normalize(newId.takeIf { action.address.isDefault })
+            }
+
+            is ManageAddressAction.Update -> {
+                val index = store.addresses.indexOfFirst { it.id == action.address.id }
+                if (index != -1) {
+                    store.addresses[index] = action.address
+                }
+                store.normalize(store.profile.defaultAddressId)
+            }
+
+            is ManageAddressAction.Delete -> {
+                store.addresses.removeIf { it.id == action.addressId }
+                store.normalize()
+            }
+
+            is ManageAddressAction.MarkDefault -> {
+                store.normalize(action.addressId)
+            }
+        }
+        return Result.success(store.data())
+    }
 }
 
 private class FakeResetLoginCache : ToDoResetLoginCache {
