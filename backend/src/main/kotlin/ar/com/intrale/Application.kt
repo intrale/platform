@@ -16,6 +16,7 @@ import org.kodein.di.ktor.closestDI
 import org.kodein.di.ktor.di
 import org.kodein.type.jvmType
 import ar.com.intrale.HealthResponse
+import ar.com.intrale.delivery.deliveryAvailabilityRoutes
 import kotlin.time.Duration.Companion.seconds
 import org.slf4j.Logger
 
@@ -32,6 +33,7 @@ fun start(appModule: DI.Module) {
         }
 
         healthRoute()
+        deliveryAvailabilityRoutes()
 
         routing {
             post("/{business}/{function}") {
@@ -110,6 +112,4 @@ fun Application.healthRoute() {
         }
     }
 }
-
-
 
