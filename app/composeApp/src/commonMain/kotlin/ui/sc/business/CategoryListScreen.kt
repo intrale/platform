@@ -4,9 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,9 +12,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.ShoppingBag
-import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -26,39 +26,40 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
-import ext.business.CategoryDTO
-import ext.business.ProductStatus
 import kotlinx.coroutines.launch
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen
+import ui.sc.shared.callService
 import ui.session.SessionStore
 import ui.session.UserRole
 import ui.th.elevations
 import ui.th.spacing
 
-const val BUSINESS_PRODUCTS_PATH = "/business/products"
-const val BUSINESS_PRODUCT_FORM_PATH = "/business/products/form"
+const val BUSINESS_CATEGORIES_PATH = "/business/categories"
+const val BUSINESS_CATEGORY_FORM_PATH = "/business/categories/form"
 
-private val ALLOWED_ROLES = setOf(UserRole.BusinessAdmin, UserRole.PlatformAdmin)
+internal val CATEGORY_ALLOWED_ROLES = setOf(UserRole.BusinessAdmin, UserRole.PlatformAdmin)
 
-class ProductListScreen(
-    private val editorStore: ProductEditorStore = ProductEditorStore
-) : Screen(BUSINESS_PRODUCTS_PATH) {
+class CategoryListScreen(
+    private val editorStore: CategoryEditorStore = CategoryEditorStore
+) : Screen(BUSINESS_CATEGORIES_PATH) {
 
-    override val messageTitle: MessageKey = MessageKey.business_products_title
+    override val messageTitle: MessageKey = MessageKey.business_categories_title
 
     @Composable
     override fun screen() {
@@ -66,7 +67,7 @@ class ProductListScreen(
     }
 
     @Composable
-    private fun ScreenContent(viewModel: ProductListViewModel = viewModel { ProductListViewModel() }) {
+    private fun ScreenContent(viewModel: CategoryListViewModel = viewModel { CategoryListViewModel() }) {
         val sessionState by SessionStore.sessionState.collectAsState()
         val snackbarHostState = remember { SnackbarHostState() }
         val coroutineScope = rememberCoroutineScope()
@@ -75,8 +76,11 @@ class ProductListScreen(
         val role = sessionState.role
         val state = viewModel.state
 
+        var categoryToDelete by remember { mutableStateOf<CategoryListItem?>(null) }
+        var deleting by remember { mutableStateOf(false) }
+
         LaunchedEffect(businessId) {
-            viewModel.loadProducts(businessId)
+            viewModel.loadCategories(businessId)
         }
 
         LaunchedEffect(state.errorMessage) {
@@ -85,76 +89,106 @@ class ProductListScreen(
                 viewModel.clearError()
             }
         }
-        LaunchedEffect(viewModel.categoryError) {
-            viewModel.categoryError?.takeIf { it.isNotBlank() }?.let { message ->
-                snackbarHostState.showSnackbar(message)
-            }
-        }
 
-        val addLabel = Txt(MessageKey.business_products_add_action)
-        val retryLabel = Txt(MessageKey.business_products_retry)
-        val emptyMessage = Txt(MessageKey.business_products_empty)
-        val errorMessage = Txt(MessageKey.business_products_error)
-        val missingBusinessMessage = Txt(MessageKey.product_list_missing_business)
-        val accessDeniedMessage = Txt(MessageKey.business_products_access_denied)
+        val addLabel = Txt(MessageKey.business_categories_add_action)
+        val retryLabel = Txt(MessageKey.business_categories_retry)
+        val emptyMessage = Txt(MessageKey.business_categories_empty)
+        val errorMessage = Txt(MessageKey.business_categories_error)
+        val accessDeniedMessage = Txt(MessageKey.business_categories_access_denied)
+        val missingBusinessMessage = Txt(MessageKey.category_list_missing_business)
+        val deleteConfirmTitle = Txt(MessageKey.category_form_delete_confirm_title)
+        val deleteConfirmMessage = Txt(MessageKey.category_form_delete_confirm_message)
+        val deleteConfirmAccept = Txt(MessageKey.category_form_delete_confirm_accept)
+        val deleteConfirmCancel = Txt(MessageKey.category_form_delete_confirm_cancel)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             when {
-                role !in ALLOWED_ROLES -> AccessMessage(
+                role !in CATEGORY_ALLOWED_ROLES -> AccessMessage(
                     message = accessDeniedMessage,
                     actionLabel = Txt(MessageKey.dashboard_menu_title),
                     onAction = { navigate(DASHBOARD_PATH) },
                     paddingValues = padding
                 )
 
-                state.status == ProductListStatus.MissingBusiness -> AccessMessage(
+                state.status == CategoryListStatus.MissingBusiness -> AccessMessage(
                     message = missingBusinessMessage,
                     actionLabel = Txt(MessageKey.dashboard_menu_title),
                     onAction = { navigate(DASHBOARD_PATH) },
                     paddingValues = padding
                 )
 
-                else -> ProductListContent(
+                else -> CategoryListContent(
                     state = state,
-                    categories = viewModel.categories,
-                    selectedCategoryId = viewModel.selectedCategoryId,
-                    onAdd = {
-                        editorStore.clear()
-                        navigate(BUSINESS_PRODUCT_FORM_PATH)
-                    },
-                    onRetry = {
-                        coroutineScope.launch { viewModel.refresh() }
-                    },
-                    onSelect = { item ->
-                        editorStore.setDraft(viewModel.toDraft(item))
-                        navigate(BUSINESS_PRODUCT_FORM_PATH)
-                    },
-                    onSelectCategory = viewModel::selectCategory,
                     paddingValues = padding,
                     addLabel = addLabel,
                     emptyMessage = emptyMessage,
                     errorMessage = errorMessage,
-                    retryLabel = retryLabel
+                    retryLabel = retryLabel,
+                    onAdd = {
+                        editorStore.clear()
+                        navigate(BUSINESS_CATEGORY_FORM_PATH)
+                    },
+                    onRetry = { coroutineScope.launch { viewModel.refresh() } },
+                    onSelect = { item ->
+                        editorStore.setDraft(viewModel.toDraft(item))
+                        navigate(BUSINESS_CATEGORY_FORM_PATH)
+                    },
+                    onDelete = { item -> categoryToDelete = item }
                 )
             }
+        }
+
+        categoryToDelete?.let { item ->
+            AlertDialog(
+                onDismissRequest = { categoryToDelete = null },
+                title = { Text(deleteConfirmTitle) },
+                text = { Text(deleteConfirmMessage) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            callService(
+                                coroutineScope = coroutineScope,
+                                snackbarHostState = snackbarHostState,
+                                setLoading = { deleting = it },
+                                serviceCall = { viewModel.deleteCategory(item.id) },
+                                onSuccess = {
+                                    snackbarHostState.showSnackbar(Txt(MessageKey.category_form_deleted))
+                                    categoryToDelete = null
+                                },
+                                onError = { error ->
+                                    snackbarHostState.showSnackbar(
+                                        error.message ?: Txt(MessageKey.error_generic)
+                                    )
+                                }
+                            )
+                        },
+                        enabled = !deleting
+                    ) {
+                        Text(deleteConfirmAccept)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { categoryToDelete = null }) {
+                        Text(deleteConfirmCancel)
+                    }
+                }
+            )
         }
     }
 }
 
 @Composable
-private fun ProductListContent(
-    state: ProductListUiState,
-    categories: List<CategoryDTO>,
-    selectedCategoryId: String?,
-    onAdd: () -> Unit,
-    onRetry: () -> Unit,
-    onSelect: (ProductListItem) -> Unit,
-    onSelectCategory: (String?) -> Unit,
+private fun CategoryListContent(
+    state: CategoryListUiState,
     paddingValues: PaddingValues,
     addLabel: String,
     emptyMessage: String,
     errorMessage: String,
-    retryLabel: String
+    retryLabel: String,
+    onAdd: () -> Unit,
+    onRetry: () -> Unit,
+    onSelect: (CategoryListItem) -> Unit,
+    onDelete: (CategoryListItem) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -175,7 +209,7 @@ private fun ProductListContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = Txt(MessageKey.business_products_title),
+                    text = Txt(MessageKey.business_categories_title),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -186,16 +220,11 @@ private fun ProductListContent(
                     onClick = onAdd,
                     modifier = Modifier.fillMaxWidth()
                 )
-                CategoryFilter(
-                    categories = categories,
-                    selectedCategoryId = selectedCategoryId,
-                    onSelect = onSelectCategory
-                )
             }
         }
 
         when (state.status) {
-            ProductListStatus.Loading, ProductListStatus.Idle -> {
+            CategoryListStatus.Loading, CategoryListStatus.Idle -> {
                 item {
                     Box(
                         modifier = Modifier
@@ -208,9 +237,9 @@ private fun ProductListContent(
                 }
             }
 
-            ProductListStatus.Error -> {
+            CategoryListStatus.Error -> {
                 item {
-                    ProductStateCard(
+                    CategoryStateCard(
                         icon = Icons.Default.Error,
                         message = state.errorMessage ?: errorMessage,
                         actionLabel = retryLabel,
@@ -219,10 +248,10 @@ private fun ProductListContent(
                 }
             }
 
-            ProductListStatus.Empty -> {
+            CategoryListStatus.Empty -> {
                 item {
-                    ProductStateCard(
-                        icon = Icons.Default.ShoppingBag,
+                    CategoryStateCard(
+                        icon = Icons.Default.Category,
                         message = emptyMessage,
                         actionLabel = addLabel,
                         onAction = onAdd
@@ -230,33 +259,30 @@ private fun ProductListContent(
                 }
             }
 
-            ProductListStatus.Loaded -> {
+            CategoryListStatus.Loaded -> {
                 items(state.items, key = { it.id }) { item ->
-                    ProductCard(
+                    CategoryCard(
                         item = item,
-                        onClick = { onSelect(item) }
+                        onClick = { onSelect(item) },
+                        onDelete = { onDelete(item) }
                     )
                 }
             }
 
-            ProductListStatus.MissingBusiness -> Unit
+            CategoryListStatus.MissingBusiness -> Unit
         }
     }
 }
 
 @Composable
-private fun ProductCard(
-    item: ProductListItem,
-    onClick: () -> Unit
+private fun CategoryCard(
+    item: CategoryListItem,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
 ) {
-    val statusLabel = when (item.status) {
-        ProductStatus.Published -> Txt(MessageKey.business_products_status_published)
-        ProductStatus.Draft -> Txt(MessageKey.business_products_status_draft)
-    }
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = MaterialTheme.spacing.x0_5)
             .clickable(onClick = onClick),
         elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
     ) {
@@ -266,57 +292,52 @@ private fun ProductCard(
                 .padding(MaterialTheme.spacing.x3),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = item.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                AssistChip(
-                    onClick = onClick,
-                    label = { Text(statusLabel) }
-                )
-            }
             Text(
-                text = item.priceLabel,
-                style = MaterialTheme.typography.bodyMedium,
+                text = item.name,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium
             )
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            if (item.description.isNotBlank()) {
                 Text(
-                    text = item.unit,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = item.categoryLabel,
+                    text = item.description,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (item.shortDescription.isNotBlank()) {
+            item.productCount?.let { count ->
                 Text(
-                    text = item.shortDescription,
+                    text = Txt(
+                        MessageKey.business_categories_products_count,
+                        mapOf("count" to count.toString())
+                    ),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+            ) {
+                TextButton(onClick = onClick) {
+                    Icon(imageVector = Icons.Default.Edit, contentDescription = null)
+                    Text(
+                        text = Txt(MessageKey.business_categories_edit),
+                        modifier = Modifier.padding(start = MaterialTheme.spacing.x0_5)
+                    )
+                }
+                TextButton(onClick = onDelete) {
+                    Icon(imageVector = Icons.Default.Delete, contentDescription = null)
+                    Text(
+                        text = Txt(MessageKey.business_categories_delete),
+                        modifier = Modifier.padding(start = MaterialTheme.spacing.x0_5)
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ProductStateCard(
+private fun CategoryStateCard(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     message: String,
     actionLabel: String,
@@ -360,47 +381,11 @@ private fun AccessMessage(
             .padding(paddingValues),
         contentAlignment = Alignment.Center
     ) {
-        ProductStateCard(
+        CategoryStateCard(
             icon = Icons.Default.Error,
             message = message,
             actionLabel = actionLabel,
             onAction = onAction
         )
-    }
-}
-
-@Composable
-private fun CategoryFilter(
-    categories: List<CategoryDTO>,
-    selectedCategoryId: String?,
-    onSelect: (String?) -> Unit
-) {
-    if (categories.isEmpty()) return
-    Column(
-        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
-    ) {
-        Text(
-            text = Txt(MessageKey.business_products_filter_category),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
-        ) {
-            FilterChip(
-                selected = selectedCategoryId == null,
-                onClick = { onSelect(null) },
-                label = { Text(Txt(MessageKey.business_products_filter_all)) }
-            )
-            categories.forEach { category ->
-                val id = category.id ?: return@forEach
-                FilterChip(
-                    selected = selectedCategoryId == id,
-                    onClick = { onSelect(id) },
-                    label = { Text(category.name) }
-                )
-            }
-        }
     }
 }

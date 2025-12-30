@@ -2,6 +2,7 @@ package ui.sc.business
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -33,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import ext.business.CategoryDTO
 import ext.business.ProductStatus
 import kotlinx.coroutines.launch
 import ui.cp.buttons.IntralePrimaryButton
@@ -70,6 +73,7 @@ class ProductFormScreen(
         val deleteConfirmMessage = Txt(MessageKey.product_form_delete_confirm_message)
         val deleteConfirmAccept = Txt(MessageKey.product_form_delete_confirm_accept)
         val deleteConfirmCancel = Txt(MessageKey.product_form_delete_confirm_cancel)
+        val refreshCategoriesLabel = Txt(MessageKey.business_categories_retry)
 
         LaunchedEffect(draft) {
             viewModel.applyDraft(draft)
@@ -79,6 +83,10 @@ class ProductFormScreen(
             if (!businessId.isNullOrBlank()) {
                 viewModel.ensureProductLoaded(businessId, draft?.id)
             }
+        }
+
+        LaunchedEffect(businessId) {
+            viewModel.loadCategories(businessId)
         }
 
         if (businessId.isNullOrBlank()) {
@@ -138,11 +146,14 @@ class ProductFormScreen(
                     onValueChange = { viewModel.uiState = viewModel.uiState.copy(unit = it) }
                 )
 
-                TextField(
-                    label = MessageKey.product_form_category,
-                    value = viewModel.uiState.categoryId,
-                    state = viewModel.inputsStates[ProductFormUiState::categoryId.name]!!,
-                    onValueChange = { viewModel.uiState = viewModel.uiState.copy(categoryId = it) }
+                CategorySelector(
+                    categories = viewModel.categories,
+                    selectedCategoryId = viewModel.uiState.categoryId,
+                    loading = viewModel.categoriesLoading,
+                    errorMessage = viewModel.categoryError,
+                    retryLabel = refreshCategoriesLabel,
+                    onRetry = { viewModel.loadCategories(businessId) },
+                    onSelect = viewModel::updateCategory
                 )
 
                 StatusSelector(
@@ -246,6 +257,75 @@ class ProductFormScreen(
                         Text(deleteConfirmCancel)
                     }
                 }
+            )
+        }
+    }
+}
+
+@Composable
+private fun CategorySelector(
+    categories: List<CategoryDTO>,
+    selectedCategoryId: String,
+    loading: Boolean,
+    errorMessage: String?,
+    retryLabel: String,
+    onRetry: suspend () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val coroutineScope = rememberCoroutineScope()
+    Column(
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+    ) {
+        Text(
+            text = Txt(MessageKey.product_form_category),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+        when {
+            loading -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(MaterialTheme.spacing.x3))
+                }
+            }
+
+            categories.isEmpty() -> {
+                Text(
+                    text = Txt(MessageKey.product_form_category_empty),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(
+                    onClick = { coroutineScope.launch { onRetry() } }
+                ) {
+                    Text(retryLabel)
+                }
+            }
+
+            else -> {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5),
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                ) {
+                    categories.forEach { category ->
+                        val id = category.id ?: return@forEach
+                        FilterChip(
+                            selected = selectedCategoryId == id,
+                            onClick = { onSelect(id) },
+                            label = { Text(category.name) }
+                        )
+                    }
+                }
+            }
+        }
+
+        errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
             )
         }
     }
