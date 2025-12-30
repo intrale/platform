@@ -149,6 +149,19 @@ class ClientAddressesService(
         }
     }
 
+    override suspend fun markDefault(addressId: String): Result<ClientAddressDTO> {
+        return try {
+            logger.info { "Marcando dirección predeterminada $addressId" }
+            val response = httpClient.put("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/client/addresses/$addressId/default") {
+                authorize()
+            }
+            Result.success(response.toAddress())
+        } catch (throwable: Throwable) {
+            logger.error(throwable) { "Error al marcar dirección predeterminada" }
+            Result.failure(throwable.toClientException())
+        }
+    }
+
     private suspend fun HttpResponse.toAddresses(): List<ClientAddressDTO> {
         val bodyText = bodyAsText()
         if (status.isSuccess()) {

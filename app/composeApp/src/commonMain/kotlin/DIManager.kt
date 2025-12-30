@@ -34,21 +34,29 @@ import asdo.delivery.ToDoUpdateDeliveryAvailability
 import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
+import asdo.business.DoDeleteCategory
 import asdo.business.DoGetBusinesses
 import asdo.business.DoGetBusinessProducts
+import asdo.business.DoListCategories
 import asdo.business.DoRegisterBusiness
 import asdo.business.DoRequestJoinBusiness
 import asdo.business.DoReviewBusinessRegistration
 import asdo.business.DoReviewJoinBusiness
 import asdo.business.DoListProducts
+import asdo.business.DoCreateCategory
+import asdo.business.DoUpdateCategory
 import asdo.business.DoUpdateProduct
 import asdo.business.ToDoCreateProduct
+import asdo.business.ToDoCreateCategory
 import asdo.business.ToDoDeleteProduct
+import asdo.business.ToDoDeleteCategory
 import asdo.business.ToDoRegisterBusiness
 import asdo.business.ToDoRequestJoinBusiness
 import asdo.business.ToDoReviewBusinessRegistration
 import asdo.business.ToDoReviewJoinBusiness
 import asdo.business.ToDoListProducts
+import asdo.business.ToDoListCategories
+import asdo.business.ToDoUpdateCategory
 import asdo.business.ToDoUpdateProduct
 import asdo.business.ToGetBusinesses
 import asdo.business.ToGetBusinessProducts
@@ -82,12 +90,14 @@ import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
 import ext.business.ClientGetBusinessProductsService
+import ext.business.ClientCategoryService
 import ext.business.ClientProductService
 import ext.business.ClientRegisterBusinessService
 import ext.business.ClientRequestJoinBusinessService
 import ext.business.ClientReviewBusinessRegistrationService
 import ext.business.ClientReviewJoinBusinessService
 import ext.business.ClientSearchBusinessesService
+import ext.business.CommCategoryService
 import ext.business.CommGetBusinessProductsService
 import ext.business.CommProductService
 import ext.business.CommRegisterBusinessService
@@ -135,6 +145,8 @@ import ui.sc.business.DashboardScreen
 import ui.sc.business.PersonalizationScreen
 import ui.sc.business.ProductFormScreen
 import ui.sc.business.ProductListScreen
+import ui.sc.business.CategoryFormScreen
+import ui.sc.business.CategoryListScreen
 import ui.sc.business.RegisterNewBusinessScreen
 import ui.sc.business.RequestJoinBusinessScreen
 import ui.sc.business.ReviewBusinessScreen
@@ -187,6 +199,8 @@ public const val REVIEW_JOIN_BUSINESS = "reviewJoinBusiness"
 public const val PERSONALIZATION = "personalization"
 public const val BUSINESS_PRODUCTS = "businessProducts"
 public const val BUSINESS_PRODUCT_FORM = "businessProductForm"
+public const val BUSINESS_CATEGORIES = "businessCategories"
+public const val BUSINESS_CATEGORY_FORM = "businessCategoryForm"
 public const val TWO_FACTOR_SETUP = "twoFactorSetup"
 public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 
@@ -232,6 +246,8 @@ class DIManager {
                 bindSingleton(tag = PERSONALIZATION) { PersonalizationScreen() }
                 bindSingleton(tag = BUSINESS_PRODUCTS) { ProductListScreen() }
                 bindSingleton(tag = BUSINESS_PRODUCT_FORM) { ProductFormScreen() }
+                bindSingleton(tag = BUSINESS_CATEGORIES) { CategoryListScreen() }
+                bindSingleton(tag = BUSINESS_CATEGORY_FORM) { CategoryFormScreen() }
                 bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
                 bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
 
@@ -287,6 +303,9 @@ class DIManager {
                                 add(instance(tag = REVIEW_JOIN_BUSINESS))
                                 add(instance(tag = PERSONALIZATION))
                                 add(instance(tag = BUSINESS_PRODUCTS))
+                                add(instance(tag = BUSINESS_PRODUCT_FORM))
+                                add(instance(tag = BUSINESS_CATEGORIES))
+                                add(instance(tag = BUSINESS_CATEGORY_FORM))
                                 add(instance(tag = TWO_FACTOR_SETUP))
                                 add(instance(tag = TWO_FACTOR_VERIFY))
                             }
@@ -311,6 +330,8 @@ class DIManager {
                                 add(instance(tag = PERSONALIZATION))
                                 add(instance(tag = BUSINESS_PRODUCTS))
                                 add(instance(tag = BUSINESS_PRODUCT_FORM))
+                                add(instance(tag = BUSINESS_CATEGORIES))
+                                add(instance(tag = BUSINESS_CATEGORY_FORM))
                                 add(instance(tag = TWO_FACTOR_SETUP))
                                 add(instance(tag = TWO_FACTOR_VERIFY))
                             }
@@ -353,6 +374,7 @@ class DIManager {
                 bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
                 bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance()) }
                 bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
+                bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
                 bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
                 bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
                 bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
@@ -376,9 +398,13 @@ class DIManager {
                 bindSingleton<ToDoRegisterSaler> { DoRegisterSaler(instance(), instance()) }
                 bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
                 bindSingleton<ToDoListProducts> { DoListProducts(instance()) }
+                bindSingleton<ToDoListCategories> { DoListCategories(instance()) }
                 bindSingleton<ToDoCreateProduct> { DoCreateProduct(instance()) }
+                bindSingleton<ToDoCreateCategory> { DoCreateCategory(instance()) }
                 bindSingleton<ToDoUpdateProduct> { DoUpdateProduct(instance()) }
+                bindSingleton<ToDoUpdateCategory> { DoUpdateCategory(instance()) }
                 bindSingleton<ToDoDeleteProduct> { DoDeleteProduct(instance()) }
+                bindSingleton<ToDoDeleteCategory> { DoDeleteCategory(instance()) }
                 bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
                 bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
                 bindSingleton<ToDoChangePassword> { DoChangePassword(instance(), instance()) }

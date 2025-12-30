@@ -5,6 +5,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.business.ToDoListProducts
+import asdo.business.ToDoListCategories
+import ext.business.CategoryDTO
 import ext.business.ProductDTO
 import ext.business.ProductStatus
 import io.konform.validation.Validation
@@ -24,9 +26,11 @@ data class ProductListItem(
     val basePrice: Double,
     val unit: String,
     val categoryId: String,
+    val categoryName: String,
     val status: ProductStatus
 ) {
     val priceLabel: String = formatPrice(basePrice, unit)
+    val categoryLabel: String = categoryName.ifBlank { categoryId }
 }
 
 data class ProductListUiState(
@@ -37,13 +41,21 @@ data class ProductListUiState(
 
 class ProductListViewModel(
     private val listProducts: ToDoListProducts = DIManager.di.direct.instance(),
+    private val listCategories: ToDoListCategories = DIManager.di.direct.instance(),
     loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
     private val logger = loggerFactory.newLogger<ProductListViewModel>()
     private var currentBusinessId: String? = null
+    private var allItems: List<ProductListItem> = emptyList()
 
     var state by mutableStateOf(ProductListUiState())
+        private set
+    var categories by mutableStateOf<List<CategoryDTO>>(emptyList())
+        private set
+    var selectedCategoryId by mutableStateOf<String?>(null)
+        private set
+    var categoryError by mutableStateOf<String?>(null)
         private set
 
     override fun getState(): Any = state
@@ -72,14 +84,12 @@ class ProductListViewModel(
             status = ProductListStatus.Loading,
             errorMessage = null
         )
+        loadCategories(businessId)
         listProducts.execute(businessId)
             .onSuccess { products ->
-                val mapped = products.mapNotNull { it.toItem() }
-                state = state.copy(
-                    status = if (mapped.isEmpty()) ProductListStatus.Empty else ProductListStatus.Loaded,
-                    items = mapped,
-                    errorMessage = null
-                )
+                val mapped = products.mapNotNull { it.toItem(categories) }
+                allItems = mapped
+                applyCategoryFilter()
             }
             .onFailure { error ->
                 logger.error(error) { "Error al cargar productos" }
@@ -92,6 +102,42 @@ class ProductListViewModel(
 
     suspend fun refresh() {
         loadProducts(currentBusinessId)
+    }
+
+    private suspend fun loadCategories(businessId: String) {
+        categoryError = null
+        listCategories.execute(businessId)
+            .onSuccess { loaded -> categories = loaded.filter { !it.id.isNullOrBlank() } }
+            .onFailure { error ->
+                categoryError = error.message
+                logger.error(error) { "No se pudieron cargar categorías" }
+            }
+    }
+
+    fun selectCategory(categoryId: String?) {
+        selectedCategoryId = categoryId
+        applyCategoryFilter()
+    }
+
+    fun clearCategoryFilter() {
+        selectCategory(null)
+    }
+
+    private fun applyCategoryFilter() {
+        val filtered = selectedCategoryId?.let { id ->
+            allItems.filter { it.categoryId == id }
+        } ?: allItems
+        val status = when {
+            state.status == ProductListStatus.Error -> ProductListStatus.Error
+            state.status == ProductListStatus.MissingBusiness -> ProductListStatus.MissingBusiness
+            filtered.isEmpty() -> ProductListStatus.Empty
+            else -> ProductListStatus.Loaded
+        }
+        state = state.copy(
+            status = status,
+            items = filtered,
+            errorMessage = if (status == ProductListStatus.Error) state.errorMessage else null
+        )
     }
 
     fun clearError() {
@@ -111,8 +157,9 @@ class ProductListViewModel(
             status = item.status
         )
 
-    private fun ProductDTO.toItem(): ProductListItem? {
+    private fun ProductDTO.toItem(categories: List<CategoryDTO>): ProductListItem? {
         val id = id ?: return null
+        val categoryName = categories.firstOrNull { it.id == categoryId }?.name.orEmpty()
         return ProductListItem(
             id = id,
             name = name,
@@ -120,6 +167,7 @@ class ProductListViewModel(
             basePrice = basePrice,
             unit = unit,
             categoryId = categoryId,
+            categoryName = categoryName,
             status = status
         )
     }

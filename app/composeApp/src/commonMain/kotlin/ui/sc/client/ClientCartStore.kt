@@ -14,6 +14,8 @@ object ClientCartStore {
 
     private val _items = MutableStateFlow<Map<String, ClientCartItem>>(emptyMap())
     val items: StateFlow<Map<String, ClientCartItem>> = _items.asStateFlow()
+    private val _selectedAddressId = MutableStateFlow<String?>(null)
+    val selectedAddressId: StateFlow<String?> = _selectedAddressId.asStateFlow()
 
     fun add(product: ClientProduct) {
         _items.update { current ->
@@ -49,5 +51,10 @@ object ClientCartStore {
 
     fun clear() {
         _items.value = emptyMap()
+        _selectedAddressId.value = null
+    }
+
+    fun selectAddress(addressId: String?) {
+        _selectedAddressId.value = addressId
     }
 }
