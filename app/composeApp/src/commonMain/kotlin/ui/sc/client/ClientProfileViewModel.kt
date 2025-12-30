@@ -36,10 +36,12 @@ data class ClientProfileForm(
 data class AddressForm(
     val id: String? = null,
     val label: String = "",
-    val line1: String = "",
+    val street: String = "",
+    val number: String = "",
+    val reference: String = "",
     val city: String = "",
     val state: String = "",
-    val zip: String = "",
+    val postalCode: String = "",
     val country: String = "",
     val isDefault: Boolean = false
 )
@@ -84,9 +86,10 @@ class ClientProfileViewModel(
             entry(ClientProfileForm::email.name),
             entry(ClientProfileForm::phone.name),
             entry(AddressForm::label.name),
-            entry(AddressForm::line1.name),
+            entry(AddressForm::street.name),
+            entry(AddressForm::number.name),
             entry(AddressForm::city.name),
-            entry(AddressForm::zip.name)
+            entry(AddressForm::postalCode.name)
         )
         validation = profileValidation as Validation<Any>
     }
@@ -266,10 +269,12 @@ class ClientProfileViewModel(
     private fun ClientAddress.toForm(): AddressForm = AddressForm(
         id = id,
         label = label,
-        line1 = line1,
+        street = street,
+        number = number,
+        reference = reference.orEmpty(),
         city = city,
         state = state.orEmpty(),
-        zip = zip.orEmpty(),
+        postalCode = postalCode.orEmpty(),
         country = country.orEmpty(),
         isDefault = isDefault
     )
@@ -277,10 +282,12 @@ class ClientProfileViewModel(
     private fun AddressForm.toAddress(): ClientAddress = ClientAddress(
         id = id,
         label = label.trim(),
-        line1 = line1.trim(),
+        street = street.trim(),
+        number = number.trim(),
+        reference = reference.ifBlank { null },
         city = city.trim(),
         state = state.ifBlank { null },
-        zip = zip.ifBlank { null },
+        postalCode = postalCode.ifBlank { null },
         country = country.ifBlank { null },
         isDefault = isDefault
     )
@@ -305,13 +312,16 @@ class ClientProfileViewModel(
         AddressForm::label required {
             minLength(1) hint MessageKey.form_error_required.name
         }
-        AddressForm::line1 required {
+        AddressForm::street required {
+            minLength(1) hint MessageKey.form_error_required.name
+        }
+        AddressForm::number required {
             minLength(1) hint MessageKey.form_error_required.name
         }
         AddressForm::city required {
             minLength(1) hint MessageKey.form_error_required.name
         }
-        AddressForm::zip ifPresent {
+        AddressForm::postalCode ifPresent {
             minLength(3) hint MessageKey.form_error_required.name
         }
     }
@@ -336,7 +346,7 @@ class ClientProfileViewModel(
     private fun validateAddress(): Boolean {
         validation = addressValidation as Validation<Any>
         inputsStates.forEach { (key, inputState) ->
-            if (key in listOf(AddressForm::label.name, AddressForm::line1.name, AddressForm::city.name, AddressForm::zip.name)) {
+            if (key in listOf(AddressForm::label.name, AddressForm::street.name, AddressForm::number.name, AddressForm::city.name, AddressForm::postalCode.name)) {
                 inputState.value = inputState.value.copy(isValid = true, details = "")
             }
         }

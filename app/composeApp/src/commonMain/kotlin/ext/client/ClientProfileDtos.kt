@@ -16,10 +16,12 @@ data class ClientProfileDTO(
 data class ClientAddressDTO(
     val id: String? = null,
     val label: String = "",
-    val line1: String = "",
+    val street: String = "",
+    val number: String = "",
+    val reference: String? = null,
     val city: String = "",
     val state: String? = null,
-    val zip: String? = null,
+    val postalCode: String? = null,
     val country: String? = null,
     val isDefault: Boolean = false
 )

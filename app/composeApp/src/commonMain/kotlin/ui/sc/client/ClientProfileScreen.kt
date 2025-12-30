@@ -415,11 +415,11 @@ private fun AddressesSection(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = address.label,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                            Text(
+                                text = address.label,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
                                 if (address.isDefault) {
                                     AssistChip(
                                         onClick = {},
@@ -436,9 +436,21 @@ private fun AddressesSection(
                                     )
                                 }
                             }
-                            Text(text = address.line1, style = MaterialTheme.typography.bodyMedium)
+                            val streetLine = listOf(address.street, address.number)
+                                .filter { it.isNotBlank() }
+                                .joinToString(" ")
+                            if (streetLine.isNotBlank()) {
+                                Text(text = streetLine, style = MaterialTheme.typography.bodyMedium)
+                            }
+                            if (!address.reference.isNullOrBlank()) {
+                                Text(
+                                    text = address.reference.orEmpty(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             Text(
-                                text = listOfNotNull(address.city, address.state, address.zip, address.country)
+                                text = listOfNotNull(address.city, address.state, address.postalCode, address.country)
                                     .filter { it.isNotBlank() }
                                     .joinToString(separator = " • "),
                                 style = MaterialTheme.typography.bodySmall,
@@ -481,9 +493,23 @@ private fun AddressesSection(
             )
             TextField(
                 label = MessageKey.client_profile_address_line1,
-                value = state.addressForm.line1,
-                state = viewModel.inputsStates[AddressForm::line1.name]!!,
-                onValueChange = { value -> viewModel.onAddressChange { copy(line1 = value) } },
+                value = state.addressForm.street,
+                state = viewModel.inputsStates[AddressForm::street.name]!!,
+                onValueChange = { value -> viewModel.onAddressChange { copy(street = value) } },
+                modifier = Modifier.fillMaxWidth()
+            )
+            TextField(
+                label = MessageKey.client_profile_address_number,
+                value = state.addressForm.number,
+                state = viewModel.inputsStates[AddressForm::number.name]!!,
+                onValueChange = { value -> viewModel.onAddressChange { copy(number = value) } },
+                modifier = Modifier.fillMaxWidth()
+            )
+            TextField(
+                label = MessageKey.client_profile_address_reference,
+                value = state.addressForm.reference,
+                state = viewModel.inputsStates.getOrPut(AddressForm::reference.name) { mutableStateOf(InputState(AddressForm::reference.name)) },
+                onValueChange = { value -> viewModel.onAddressChange { copy(reference = value) } },
                 modifier = Modifier.fillMaxWidth()
             )
             TextField(
@@ -502,9 +528,9 @@ private fun AddressesSection(
             )
             TextField(
                 label = MessageKey.client_profile_address_zip,
-                value = state.addressForm.zip,
-                state = viewModel.inputsStates[AddressForm::zip.name]!!,
-                onValueChange = { value -> viewModel.onAddressChange { copy(zip = value) } },
+                value = state.addressForm.postalCode,
+                state = viewModel.inputsStates[AddressForm::postalCode.name]!!,
+                onValueChange = { value -> viewModel.onAddressChange { copy(postalCode = value) } },
                 modifier = Modifier.fillMaxWidth()
             )
             TextField(
