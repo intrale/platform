@@ -13,4 +13,5 @@ interface CommClientAddressesService {
     suspend fun createAddress(address: ClientAddressDTO): Result<ClientAddressDTO>
     suspend fun updateAddress(address: ClientAddressDTO): Result<ClientAddressDTO>
     suspend fun deleteAddress(addressId: String): Result<Unit>
+    suspend fun markDefault(addressId: String): Result<ClientAddressDTO>
 }
