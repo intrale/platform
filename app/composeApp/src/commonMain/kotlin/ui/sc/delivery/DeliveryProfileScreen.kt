@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
@@ -23,13 +24,16 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -44,7 +48,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
+import kotlinx.datetime.DayOfWeek
 import ui.cp.buttons.IntralePrimaryButton
+import ui.cp.inputs.InputState
 import ui.cp.inputs.TextField
 import ui.sc.shared.Screen
 import ui.th.spacing
@@ -252,6 +258,11 @@ class DeliveryProfileScreen : Screen(DELIVERY_PROFILE_PATH) {
                         }
                     }
 
+                    DeliveryAvailabilitySection(
+                        viewModel = viewModel,
+                        state = state
+                    )
+
                     Column(
                         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                     ) {
@@ -299,6 +310,196 @@ class DeliveryProfileScreen : Screen(DELIVERY_PROFILE_PATH) {
             }
         }
     }
+}
+
+@Composable
+private fun DeliveryAvailabilitySection(
+    viewModel: DeliveryProfileViewModel,
+    state: DeliveryProfileUiState
+) {
+    val availabilityTitle = Txt(MessageKey.delivery_availability_title)
+    val availabilitySubtitle = Txt(MessageKey.delivery_availability_subtitle)
+    val timezoneState = viewModel.inputsStates[AVAILABILITY_TIMEZONE_KEY]!!
+    val availabilityError = state.availabilityErrorKey?.let { keyName ->
+        runCatching { MessageKey.valueOf(keyName) }.getOrNull()?.let { Txt(it) } ?: keyName
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Schedule,
+                    contentDescription = availabilityTitle
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
+                    Text(
+                        text = availabilityTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = availabilitySubtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            TextField(
+                label = MessageKey.delivery_availability_timezone,
+                value = state.availability.timezone,
+                state = timezoneState,
+                onValueChange = viewModel::onTimezoneChange,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (!availabilityError.isNullOrBlank()) {
+                Text(
+                    text = availabilityError,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            state.availability.slots.forEach { slot ->
+                AvailabilitySlotRow(
+                    slot = slot,
+                    onToggleDay = { enabled -> viewModel.onToggleDay(slot.dayOfWeek, enabled) },
+                    onBlockSelected = { block -> viewModel.onBlockSelected(slot.dayOfWeek, block) },
+                    onCustomSelected = { viewModel.onCustomSelected(slot.dayOfWeek) },
+                    onStartChange = { value -> viewModel.onCustomStartChange(slot.dayOfWeek, value) },
+                    onEndChange = { value -> viewModel.onCustomEndChange(slot.dayOfWeek, value) },
+                    startState = viewModel.inputsStates[availabilityKey(slot.dayOfWeek, "start")]!!,
+                    endState = viewModel.inputsStates[availabilityKey(slot.dayOfWeek, "end")]!!
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AvailabilitySlotRow(
+    slot: DeliveryAvailabilitySlotForm,
+    onToggleDay: (Boolean) -> Unit,
+    onBlockSelected: (DeliveryAvailabilityBlock) -> Unit,
+    onCustomSelected: () -> Unit,
+    onStartChange: (String) -> Unit,
+    onEndChange: (String) -> Unit,
+    startState: MutableState<InputState>,
+    endState: MutableState<InputState>
+) {
+    val dayLabel = Txt(slot.dayOfWeek.toMessageKey())
+    val customLabel = Txt(MessageKey.delivery_availability_mode_custom)
+    val blockLabel = Txt(MessageKey.delivery_availability_mode_block)
+    val blockLabels = mapOf(
+        DeliveryAvailabilityBlock.MORNING to Txt(MessageKey.delivery_availability_block_morning),
+        DeliveryAvailabilityBlock.AFTERNOON to Txt(MessageKey.delivery_availability_block_afternoon),
+        DeliveryAvailabilityBlock.NIGHT to Txt(MessageKey.delivery_availability_block_night)
+    )
+    val rangeLabel = if (slot.mode == DeliveryAvailabilityMode.BLOCK) {
+        Txt(MessageKey.delivery_availability_block_range_template)
+            .replace("{start}", slot.start)
+            .replace("{end}", slot.end)
+    } else ""
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.medium)
+            .padding(MaterialTheme.spacing.x2),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
+                Text(text = dayLabel, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                Text(
+                    text = if (slot.enabled) Txt(MessageKey.delivery_availability_day_enabled) else Txt(MessageKey.delivery_availability_day_disabled),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = slot.enabled,
+                onCheckedChange = onToggleDay
+            )
+        }
+
+        if (slot.enabled) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = blockLabel, style = MaterialTheme.typography.labelLarge)
+                blockLabels.forEach { (block, label) ->
+                    FilterChip(
+                        selected = slot.mode == DeliveryAvailabilityMode.BLOCK && slot.block == block,
+                        onClick = { onBlockSelected(block) },
+                        label = { Text(label) }
+                    )
+                }
+                FilterChip(
+                    selected = slot.mode == DeliveryAvailabilityMode.CUSTOM,
+                    onClick = onCustomSelected,
+                    label = { Text(customLabel) }
+                )
+            }
+
+            if (slot.mode == DeliveryAvailabilityMode.BLOCK) {
+                Text(
+                    text = rangeLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                ) {
+                    TextField(
+                        label = MessageKey.delivery_availability_start,
+                        value = slot.start,
+                        state = startState,
+                        onValueChange = onStartChange,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextField(
+                        label = MessageKey.delivery_availability_end,
+                        value = slot.end,
+                        state = endState,
+                        onValueChange = onEndChange,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun DayOfWeek.toMessageKey(): MessageKey = when (this) {
+    DayOfWeek.MONDAY -> MessageKey.delivery_availability_day_monday
+    DayOfWeek.TUESDAY -> MessageKey.delivery_availability_day_tuesday
+    DayOfWeek.WEDNESDAY -> MessageKey.delivery_availability_day_wednesday
+    DayOfWeek.THURSDAY -> MessageKey.delivery_availability_day_thursday
+    DayOfWeek.FRIDAY -> MessageKey.delivery_availability_day_friday
+    DayOfWeek.SATURDAY -> MessageKey.delivery_availability_day_saturday
+    DayOfWeek.SUNDAY -> MessageKey.delivery_availability_day_sunday
+    else -> MessageKey.delivery_availability_day_monday
 }
 
 @Composable

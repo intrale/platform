@@ -29,3 +29,18 @@ data class DeliveryProfileResponse(
     val profile: DeliveryProfileDTO? = null,
     val zones: List<DeliveryZoneDTO> = emptyList()
 )
+
+@Serializable
+data class DeliveryAvailabilityDTO(
+    val timezone: String = "",
+    val slots: List<DeliveryAvailabilitySlotDTO> = emptyList()
+)
+
+@Serializable
+data class DeliveryAvailabilitySlotDTO(
+    val dayOfWeek: String,
+    val mode: String,
+    val block: String? = null,
+    val start: String? = null,
+    val end: String? = null
+)

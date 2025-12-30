@@ -24,9 +24,13 @@ import asdo.client.DoUpdateClientProfile
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.delivery.DoGetDeliveryAvailability
 import asdo.delivery.DoGetDeliveryProfile
+import asdo.delivery.DoUpdateDeliveryAvailability
 import asdo.delivery.DoUpdateDeliveryProfile
+import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryProfile
+import asdo.delivery.ToDoUpdateDeliveryAvailability
 import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
@@ -79,8 +83,10 @@ import ext.client.ClientAddressesService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientProfileService
+import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
 import ext.delivery.CommDeliveryOrdersService
+import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
 import ext.business.ClientGetBusinessProductsService
@@ -382,6 +388,7 @@ class DIManager {
                 bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
                 bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
                 bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance()) }
+                bindSingleton<CommDeliveryAvailabilityService> { DeliveryAvailabilityService(instance(), instance()) }
                 bindSingleton<CommDeliveryOrdersService> { DeliveryOrdersService(instance(), instance()) }
 
                 bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
@@ -414,6 +421,8 @@ class DIManager {
                 bindSingleton<ToDoManageClientAddress> { DoManageClientAddress(instance(), instance(), instance()) }
                 bindSingleton<ToDoGetDeliveryProfile> { DoGetDeliveryProfile(instance()) }
                 bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }
+                bindSingleton<ToDoGetDeliveryAvailability> { DoGetDeliveryAvailability(instance()) }
+                bindSingleton<ToDoUpdateDeliveryAvailability> { DoUpdateDeliveryAvailability(instance()) }
                 bindSingleton<ToGetBusinessProducts> { DoGetBusinessProducts(instance()) }
 
             }

@@ -5,8 +5,14 @@ import asdo.delivery.DeliveryProfile
 import asdo.delivery.DeliveryProfileData
 import asdo.delivery.DeliveryVehicle
 import asdo.delivery.DeliveryZone
+import asdo.delivery.DeliveryAvailabilityBlock
+import asdo.delivery.DeliveryAvailabilityConfig
+import asdo.delivery.DeliveryAvailabilityMode
+import asdo.delivery.DeliveryAvailabilitySlot
 import asdo.delivery.ToDoGetDeliveryProfile
 import asdo.delivery.ToDoUpdateDeliveryProfile
+import asdo.delivery.ToDoGetDeliveryAvailability
+import asdo.delivery.ToDoUpdateDeliveryAvailability
 import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend
@@ -28,6 +34,19 @@ private val sampleData = DeliveryProfileData(
     zones = listOf(DeliveryZone(id = "zone-1", name = "Centro", description = "Cobertura urbana"))
 )
 
+private val sampleAvailability = DeliveryAvailabilityConfig(
+    timezone = "America/Argentina/Buenos_Aires",
+    slots = listOf(
+        DeliveryAvailabilitySlot(
+            dayOfWeek = kotlinx.datetime.DayOfWeek.MONDAY,
+            mode = DeliveryAvailabilityMode.BLOCK,
+            block = DeliveryAvailabilityBlock.MORNING,
+            start = "06:00",
+            end = "12:00"
+        )
+    )
+)
+
 private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
 
 class DeliveryProfileViewModelTest {
@@ -37,6 +56,8 @@ class DeliveryProfileViewModelTest {
         val viewModel = DeliveryProfileViewModel(
             getDeliveryProfile = FakeGetProfile(),
             updateDeliveryProfile = FakeUpdateProfile(),
+            getDeliveryAvailability = FakeGetAvailability(),
+            updateDeliveryAvailability = FakeUpdateAvailability(),
             toDoResetLoginCache = FakeResetLoginCache(),
             loggerFactory = testLoggerFactory
         )
@@ -46,6 +67,8 @@ class DeliveryProfileViewModelTest {
         assertFalse(viewModel.state.loading)
         assertEquals("Rita Rider", viewModel.state.form.fullName)
         assertEquals("Centro", viewModel.state.zones.first().name)
+        assertEquals("America/Argentina/Buenos_Aires", viewModel.state.availability.timezone)
+        assertTrue(viewModel.state.availability.slots.first().enabled)
     }
 
     @Test
@@ -53,6 +76,8 @@ class DeliveryProfileViewModelTest {
         val viewModel = DeliveryProfileViewModel(
             getDeliveryProfile = FakeGetProfile(),
             updateDeliveryProfile = FakeUpdateProfile(),
+            getDeliveryAvailability = FakeGetAvailability(),
+            updateDeliveryAvailability = FakeUpdateAvailability(),
             toDoResetLoginCache = FakeResetLoginCache(),
             loggerFactory = testLoggerFactory
         )
@@ -61,7 +86,7 @@ class DeliveryProfileViewModelTest {
         viewModel.saveProfile()
 
         assertFalse(viewModel.state.saving)
-        assertEquals(MessageKey.delivery_profile_saved, viewModel.state.successKey)
+        assertEquals(MessageKey.delivery_availability_saved, viewModel.state.successKey)
     }
 
     @Test
@@ -70,6 +95,8 @@ class DeliveryProfileViewModelTest {
         val viewModel = DeliveryProfileViewModel(
             getDeliveryProfile = FakeGetProfile(),
             updateDeliveryProfile = FakeUpdateProfile(),
+            getDeliveryAvailability = FakeGetAvailability(),
+            updateDeliveryAvailability = FakeUpdateAvailability(),
             toDoResetLoginCache = reset,
             loggerFactory = testLoggerFactory
         )
@@ -87,6 +114,15 @@ private class FakeGetProfile : ToDoGetDeliveryProfile {
 private class FakeUpdateProfile : ToDoUpdateDeliveryProfile {
     override suspend fun execute(profile: DeliveryProfile): Result<DeliveryProfileData> =
         Result.success(sampleData.copy(profile = profile))
+}
+
+private class FakeGetAvailability : ToDoGetDeliveryAvailability {
+    override suspend fun execute(): Result<DeliveryAvailabilityConfig> = Result.success(sampleAvailability)
+}
+
+private class FakeUpdateAvailability : ToDoUpdateDeliveryAvailability {
+    override suspend fun execute(config: DeliveryAvailabilityConfig): Result<DeliveryAvailabilityConfig> =
+        Result.success(config)
 }
 
 private class FakeResetLoginCache : ToDoResetLoginCache {
