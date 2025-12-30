@@ -2,8 +2,10 @@ package ui.sc.business
 
 import asdo.business.ToDoCreateProduct
 import asdo.business.ToDoDeleteProduct
+import asdo.business.ToDoListCategories
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoUpdateProduct
+import ext.business.CategoryDTO
 import ext.business.ProductDTO
 import ext.business.ProductRequest
 import ext.business.ProductStatus
@@ -33,6 +35,12 @@ private class FakeProductCrud(
     override suspend fun execute(businessId: String): Result<List<ProductDTO>> = listResult
 }
 
+private class FakeCategories(
+    private val result: Result<List<CategoryDTO>> = Result.success(emptyList())
+) : ToDoListCategories {
+    override suspend fun execute(businessId: String): Result<List<CategoryDTO>> = result
+}
+
 private fun sampleProduct(id: String = "new-id") = ProductDTO(
     id = id,
     name = "Producto",
@@ -48,7 +56,7 @@ class ProductFormViewModelTest {
     @Test
     fun `precio invalido bloquea guardado`() = runTest {
         val fake = FakeProductCrud()
-        val viewModel = ProductFormViewModel(fake, fake, fake, fake)
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, FakeCategories())
         viewModel.uiState = viewModel.uiState.copy(
             name = "Test",
             basePrice = "-1",
@@ -62,7 +70,7 @@ class ProductFormViewModelTest {
     @Test
     fun `creacion exitosa cambia a modo edicion`() = runTest {
         val fake = FakeProductCrud()
-        val viewModel = ProductFormViewModel(fake, fake, fake, fake)
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, FakeCategories())
         viewModel.uiState = viewModel.uiState.copy(
             name = "Test",
             basePrice = "12.5",
@@ -78,7 +86,7 @@ class ProductFormViewModelTest {
     @Test
     fun `no se puede eliminar sin id`() = runTest {
         val fake = FakeProductCrud()
-        val viewModel = ProductFormViewModel(fake, fake, fake, fake)
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, FakeCategories())
         val result = viewModel.delete("biz-1")
         assertTrue(result.isFailure)
         assertFalse(viewModel.loading)

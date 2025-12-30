@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Security
@@ -224,6 +225,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
         val registerSalerLabel = Txt(MessageKey.dashboard_menu_register_saler)
         val logoutLabel = Txt(MessageKey.dashboard_menu_logout)
         val businessProductsLabel = Txt(MessageKey.dashboard_menu_business_products)
+        val businessCategoriesLabel = Txt(MessageKey.dashboard_menu_business_categories)
 
         return remember(
             backLabel,
@@ -239,6 +241,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
             logoutLabel,
             personalizationLabel,
             businessProductsLabel,
+            businessCategoriesLabel,
             viewModel,
             coroutineScope
         ) {
@@ -328,6 +331,20 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                     onClick = {
                         logger.info { "Navegando a $BUSINESS_PRODUCTS_PATH" }
                         navigate(BUSINESS_PRODUCTS_PATH)
+                    }
+                ),
+                MainMenuItem(
+                    id = "categorias_negocio",
+                    label = businessCategoriesLabel,
+                    icon = Icons.Default.Category,
+                    requiredRoles = setOf(
+                        UserRole.BusinessAdmin.rawValue,
+                        UserRole.PlatformAdmin.rawValue,
+                    ),
+                    requiresBusinessSelection = true,
+                    onClick = {
+                        logger.info { "Navegando a $BUSINESS_CATEGORIES_PATH" }
+                        navigate(BUSINESS_CATEGORIES_PATH)
                     }
                 ),
                 MainMenuItem(

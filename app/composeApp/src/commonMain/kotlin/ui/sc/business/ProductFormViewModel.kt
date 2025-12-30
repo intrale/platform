@@ -10,6 +10,8 @@ import asdo.business.ToDoCreateProduct
 import asdo.business.ToDoDeleteProduct
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoUpdateProduct
+import asdo.business.ToDoListCategories
+import ext.business.CategoryDTO
 import ext.business.ProductDTO
 import ext.business.ProductRequest
 import ext.business.ProductStatus
@@ -39,6 +41,7 @@ class ProductFormViewModel(
     private val updateProduct: ToDoUpdateProduct = DIManager.di.direct.instance(),
     private val deleteProduct: ToDoDeleteProduct = DIManager.di.direct.instance(),
     private val listProducts: ToDoListProducts = DIManager.di.direct.instance(),
+    private val listCategories: ToDoListCategories = DIManager.di.direct.instance(),
     loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
@@ -49,6 +52,12 @@ class ProductFormViewModel(
     var mode by mutableStateOf(ProductFormMode.Create)
         private set
     var errorMessage by mutableStateOf<String?>(null)
+        private set
+    var categories by mutableStateOf<List<CategoryDTO>>(emptyList())
+        private set
+    var categoriesLoading by mutableStateOf(false)
+        private set
+    var categoryError by mutableStateOf<String?>(null)
         private set
 
     override fun getState(): Any = uiState
@@ -100,6 +109,26 @@ class ProductFormViewModel(
         errorMessage = null
     }
 
+    suspend fun loadCategories(businessId: String?) {
+        if (businessId.isNullOrBlank()) return
+        categoriesLoading = true
+        categoryError = null
+        listCategories.execute(businessId)
+            .onSuccess { loaded ->
+                categories = loaded.filter { !it.id.isNullOrBlank() }
+                if (uiState.categoryId.isNotBlank() &&
+                    categories.none { it.id == uiState.categoryId }
+                ) {
+                    uiState = uiState.copy(categoryId = "")
+                }
+            }
+            .onFailure { error ->
+                logger.error(error) { "No se pudieron cargar categorías" }
+                categoryError = error.message
+            }
+        categoriesLoading = false
+    }
+
     suspend fun ensureProductLoaded(businessId: String, productId: String?) {
         if (productId.isNullOrBlank()) return
         if (uiState.id == productId && uiState.name.isNotBlank()) return
@@ -112,8 +141,15 @@ class ProductFormViewModel(
             .onFailure { error ->
                 logger.error(error) { "No se pudo cargar el producto $productId" }
                 errorMessage = error.message
-            }
+        }
     }
+
+    fun updateCategory(categoryId: String) {
+        uiState = uiState.copy(categoryId = categoryId)
+    }
+
+    fun categoryName(categoryId: String): String =
+        categories.firstOrNull { it.id == categoryId }?.name.orEmpty()
 
     suspend fun save(businessId: String): Result<ProductDTO> {
         if (!isValid()) {
