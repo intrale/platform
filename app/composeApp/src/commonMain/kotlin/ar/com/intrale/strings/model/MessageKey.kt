@@ -244,6 +244,7 @@ enum class MessageKey {
     login_change_password_title,
     login_email_placeholder,
     login_error_credentials,
+    login_error_user_blocked,
     login_family_name_placeholder,
     login_generic_error,
     login_name_placeholder,

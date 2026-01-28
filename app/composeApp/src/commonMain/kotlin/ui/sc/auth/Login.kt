@@ -44,7 +44,7 @@ import asdo.auth.DoLoginException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
-import ui.sc.client.CLIENT_ENTRY_PATH
+import ui.sc.client.CLIENT_HOME_PATH
 import ui.cp.inputs.TextField
 import ui.sc.business.DASHBOARD_PATH
 import ui.sc.business.REGISTER_NEW_BUSINESS_PATH
@@ -91,6 +91,7 @@ class Login : Screen(LOGIN_PATH) {
         val errorCredentials = Txt(MessageKey.login_error_credentials)
         val changePasswordMessage = Txt(MessageKey.login_change_password_required)
         val genericError = Txt(MessageKey.login_generic_error)
+        val blockedUserMessage = Txt(MessageKey.login_error_user_blocked)
         val isDeliveryApp = AppRuntimeConfig.isDelivery
         val isBusinessApp = AppRuntimeConfig.isBusiness
         val loginTitle = Txt(
@@ -128,6 +129,10 @@ class Login : Screen(LOGIN_PATH) {
                         }
                         snackbarHostState.showSnackbar(errorCredentials)
                     }
+                    error.statusCode.value == 403 || error.statusCode.value == 423 || error.message?.contains("blocked", ignoreCase = true) == true -> {
+                        logger.warning { "Usuario bloqueado: ${viewModel.state.user}" }
+                        snackbarHostState.showSnackbar(blockedUserMessage)
+                    }
 
                     error.message?.contains("newPassword is required", ignoreCase = true) == true -> {
                         viewModel.requirePasswordChange()
@@ -160,7 +165,7 @@ class Login : Screen(LOGIN_PATH) {
                     val destination = when {
                         AppRuntimeConfig.isClient -> {
                             SessionStore.updateRole(UserRole.Client)
-                            CLIENT_ENTRY_PATH
+                            CLIENT_HOME_PATH
                         }
                         isDeliveryApp -> {
                             SessionStore.updateRole(UserRole.Delivery)

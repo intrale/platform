@@ -241,6 +241,7 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.login_change_password_title to "Actualizá tu contraseña",
     MessageKey.login_email_placeholder to "correo@intrale.com",
     MessageKey.login_error_credentials to "Usuario o contraseña incorrectos",
+    MessageKey.login_error_user_blocked to "Tu usuario está bloqueado. Comunicate con el administrador del negocio.",
     MessageKey.login_family_name_placeholder to "Apellido",
     MessageKey.login_generic_error to "Ocurrió un error al iniciar sesión. Intentá nuevamente.",
     MessageKey.login_name_placeholder to "Nombre",
