@@ -211,6 +211,8 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_profile_make_default to "Set as default",
     MessageKey.client_profile_address_label to "Label",
     MessageKey.client_profile_address_line1 to "Address",
+    MessageKey.client_profile_address_number to "Number",
+    MessageKey.client_profile_address_reference to "Reference",
     MessageKey.client_profile_address_city to "City",
     MessageKey.client_profile_address_state to "State/Province",
     MessageKey.client_profile_address_zip to "Postal code",

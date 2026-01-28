@@ -214,6 +214,8 @@ enum class MessageKey {
     client_profile_make_default,
     client_profile_address_label,
     client_profile_address_line1,
+    client_profile_address_number,
+    client_profile_address_reference,
     client_profile_address_city,
     client_profile_address_state,
     client_profile_address_zip,
