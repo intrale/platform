@@ -18,7 +18,6 @@ import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoUpdateDeliveryAvailability
 import ar.com.intrale.strings.model.MessageKey
 import io.konform.validation.Validation
-import io.konform.validation.addConstraint
 import io.konform.validation.onEach
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
@@ -329,8 +328,10 @@ class DeliveryProfileViewModel(
         DeliveryAvailabilityForm::timezone required {
             minLength(1) hint MessageKey.delivery_availability_error_timezone_required.name
         }
-        DeliveryAvailabilityForm::slots addConstraint MessageKey.delivery_availability_error_no_days.name { slots ->
-            slots.any { it.enabled }
+        DeliveryAvailabilityForm::slots {
+            addConstraint(MessageKey.delivery_availability_error_no_days.name) { slots ->
+                slots.any { it.enabled }
+            }
         }
         DeliveryAvailabilityForm::slots onEach {
             addConstraint(MessageKey.delivery_availability_error_block_required.name) { slot ->

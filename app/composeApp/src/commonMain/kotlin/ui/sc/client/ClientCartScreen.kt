@@ -501,7 +501,7 @@ private fun DeliveryAddressRow(
                     }
                 }
                 Text(text = address.line1, style = MaterialTheme.typography.bodyMedium)
-                val location = listOfNotNull(address.city, address.state, address.zip, address.country)
+                val location = listOfNotNull(address.city, address.state, address.postalCode, address.country)
                     .filter { it.isNotBlank() }
                     .joinToString(" • ")
                 if (location.isNotBlank()) {

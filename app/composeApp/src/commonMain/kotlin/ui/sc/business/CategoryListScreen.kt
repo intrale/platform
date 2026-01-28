@@ -152,7 +152,9 @@ class CategoryListScreen(
                                 setLoading = { deleting = it },
                                 serviceCall = { viewModel.deleteCategory(item.id) },
                                 onSuccess = {
-                                    snackbarHostState.showSnackbar(Txt(MessageKey.category_form_deleted))
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(Txt(MessageKey.category_form_deleted))
+                                    }
                                     categoryToDelete = null
                                 },
                                 onError = { error ->

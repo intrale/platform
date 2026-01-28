@@ -47,6 +47,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import asdo.delivery.DeliveryAvailabilityBlock
+import asdo.delivery.DeliveryAvailabilityMode
 import kotlinx.coroutines.launch
 import kotlinx.datetime.DayOfWeek
 import ui.cp.buttons.IntralePrimaryButton
