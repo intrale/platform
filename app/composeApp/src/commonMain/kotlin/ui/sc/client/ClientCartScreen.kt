@@ -37,6 +37,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -500,7 +501,16 @@ private fun DeliveryAddressRow(
                         )
                     }
                 }
-                Text(text = address.line1, style = MaterialTheme.typography.bodyMedium)
+                val mainLine = listOf(address.street, address.number)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ")
+                val addressLine = listOfNotNull(
+                    mainLine.takeIf { it.isNotBlank() },
+                    address.reference?.takeIf { it.isNotBlank() }
+                ).joinToString(" • ")
+                if (addressLine.isNotBlank()) {
+                    Text(text = addressLine, style = MaterialTheme.typography.bodyMedium)
+                }
                 val location = listOfNotNull(address.city, address.state, address.postalCode, address.country)
                     .filter { it.isNotBlank() }
                     .joinToString(" • ")

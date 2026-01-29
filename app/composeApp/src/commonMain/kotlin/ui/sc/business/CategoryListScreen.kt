@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -100,6 +101,8 @@ class CategoryListScreen(
         val deleteConfirmMessage = Txt(MessageKey.category_form_delete_confirm_message)
         val deleteConfirmAccept = Txt(MessageKey.category_form_delete_confirm_accept)
         val deleteConfirmCancel = Txt(MessageKey.category_form_delete_confirm_cancel)
+        val deletedMessage = Txt(MessageKey.category_form_deleted)
+        val genericError = Txt(MessageKey.error_generic)
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             when {
@@ -153,13 +156,13 @@ class CategoryListScreen(
                                 serviceCall = { viewModel.deleteCategory(item.id) },
                                 onSuccess = {
                                     coroutineScope.launch {
-                                        snackbarHostState.showSnackbar(Txt(MessageKey.category_form_deleted))
+                                        snackbarHostState.showSnackbar(deletedMessage)
                                     }
                                     categoryToDelete = null
                                 },
                                 onError = { error ->
                                     snackbarHostState.showSnackbar(
-                                        error.message ?: Txt(MessageKey.error_generic)
+                                        error.message ?: genericError
                                     )
                                 }
                             )
