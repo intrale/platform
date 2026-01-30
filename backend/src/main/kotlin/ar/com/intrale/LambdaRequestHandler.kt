@@ -63,7 +63,8 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                 logger.info("resource = ${requestEvent.resource}")
 
                 val pathParts = requestEvent.path?.split("/")?.filter { it.isNotBlank() } ?: emptyList()
-                val businessName = requestEvent.pathParameters?.get("business") ?: pathParts.getOrNull(0)
+                val businessName = requestEvent.pathParameters?.get("business")
+                    ?: pathParts.takeIf { it.size >= 2 }?.getOrNull(0)
                 val functionPath = requestEvent.pathParameters?.get("function")
                     ?: pathParts.drop(1).joinToString("/")
                 val functionSegments = functionPath.split("/").filter { it.isNotBlank() }
