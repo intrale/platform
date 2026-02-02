@@ -240,9 +240,11 @@ class ClientProfileViewModel(
         successKey: MessageKey?,
         resetAddressForm: Boolean = false
     ) {
-        val defaultId = data.profile.defaultAddressId ?: data.addresses.firstOrNull { it.isDefault }?.id
+        val defaultId = data.profile.defaultAddressId
+            ?: data.addresses.firstOrNull { it.isDefault }?.id
+            ?: data.addresses.firstOrNull()?.id
         val updatedAddresses = data.addresses.map { address ->
-            address.copy(isDefault = address.isDefault || address.id == defaultId)
+            address.copy(isDefault = address.id == defaultId)
         }
         val cleanAddressForm = if (resetAddressForm) AddressForm(isDefault = updatedAddresses.isEmpty()) else state.addressForm
 
