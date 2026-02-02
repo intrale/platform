@@ -10,7 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-private class FakeCategories(
+private class CategoryListFakeCategories(
     private val listResult: Result<List<CategoryDTO>>,
     private val deleteResult: Result<Unit> = Result.success(Unit)
 ) : ToDoListCategories, ToDoDeleteCategory {
@@ -29,7 +29,7 @@ class CategoryListViewModelTest {
 
     @Test
     fun `estado missing sin negocio seleccionado`() = runTest {
-        val fake = FakeCategories(Result.success(emptyList()))
+        val fake = CategoryListFakeCategories(Result.success(emptyList()))
         val viewModel = CategoryListViewModel(fake, fake, loggerFactory = testLogger)
         viewModel.loadCategories(null)
         assertEquals(CategoryListStatus.MissingBusiness, viewModel.state.status)
@@ -37,7 +37,7 @@ class CategoryListViewModelTest {
 
     @Test
     fun `carga categorias exitosamente`() = runTest {
-        val fake = FakeCategories(Result.success(listOf(CategoryDTO(id = "1", name = "Bebidas"))))
+        val fake = CategoryListFakeCategories(Result.success(listOf(CategoryDTO(id = "1", name = "Bebidas"))))
         val viewModel = CategoryListViewModel(fake, fake, loggerFactory = testLogger)
         viewModel.loadCategories("biz-1")
         assertEquals(CategoryListStatus.Loaded, viewModel.state.status)
@@ -48,7 +48,7 @@ class CategoryListViewModelTest {
     fun `fallo al eliminar informa error`() = runTest {
         val listResult = Result.success(listOf(CategoryDTO(id = "1", name = "Bebidas")))
         val deleteResult = Result.failure<Unit>(Exception("blocked"))
-        val fake = FakeCategories(listResult, deleteResult)
+        val fake = CategoryListFakeCategories(listResult, deleteResult)
         val viewModel = CategoryListViewModel(fake, fake, loggerFactory = testLogger)
         viewModel.loadCategories("biz-1")
         val result = viewModel.deleteCategory("1")
