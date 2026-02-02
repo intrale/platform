@@ -35,10 +35,10 @@ private class FakeProductCrud(
     override suspend fun execute(businessId: String): Result<List<ProductDTO>> = listResult
 }
 
-private class FakeCategories(
-    private val result: Result<List<CategoryDTO>> = Result.success(emptyList())
+private class ProductFormFakeCategories(
+    private val listResult: Result<List<CategoryDTO>> = Result.success(emptyList())
 ) : ToDoListCategories {
-    override suspend fun execute(businessId: String): Result<List<CategoryDTO>> = result
+    override suspend fun execute(businessId: String): Result<List<CategoryDTO>> = listResult
 }
 
 private fun sampleProduct(id: String = "new-id") = ProductDTO(
@@ -56,7 +56,7 @@ class ProductFormViewModelTest {
     @Test
     fun `precio invalido bloquea guardado`() = runTest {
         val fake = FakeProductCrud()
-        val viewModel = ProductFormViewModel(fake, fake, fake, fake, FakeCategories())
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
         viewModel.uiState = viewModel.uiState.copy(
             name = "Test",
             basePrice = "-1",
@@ -70,7 +70,7 @@ class ProductFormViewModelTest {
     @Test
     fun `creacion exitosa cambia a modo edicion`() = runTest {
         val fake = FakeProductCrud()
-        val viewModel = ProductFormViewModel(fake, fake, fake, fake, FakeCategories())
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
         viewModel.uiState = viewModel.uiState.copy(
             name = "Test",
             basePrice = "12.5",
@@ -86,7 +86,7 @@ class ProductFormViewModelTest {
     @Test
     fun `no se puede eliminar sin id`() = runTest {
         val fake = FakeProductCrud()
-        val viewModel = ProductFormViewModel(fake, fake, fake, fake, FakeCategories())
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
         val result = viewModel.delete("biz-1")
         assertTrue(result.isFailure)
         assertFalse(viewModel.loading)

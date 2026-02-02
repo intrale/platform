@@ -58,7 +58,9 @@ private class FakeAddressStore(
         val chosen = defaultId
             ?: addresses.firstOrNull { it.isDefault }?.id
             ?: addresses.firstOrNull()?.id
-        addresses.replaceAll { it.copy(isDefault = it.id == chosen) }
+        addresses.forEachIndexed { index, address ->
+            addresses[index] = address.copy(isDefault = address.id == chosen)
+        }
         profile = profile.copy(defaultAddressId = chosen)
     }
 }
@@ -208,7 +210,7 @@ private class FakeManageAddress(
             }
 
             is ManageAddressAction.Delete -> {
-                store.addresses.removeIf { it.id == action.addressId }
+                store.addresses.removeAll { it.id == action.addressId }
                 store.normalize()
             }
 
