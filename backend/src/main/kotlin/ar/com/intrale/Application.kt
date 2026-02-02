@@ -1,6 +1,5 @@
 package ar.com.intrale
 
-import ar.com.intrale.HealthResponse
 import com.google.gson.Gson
 import io.ktor.http.*
 import io.ktor.server.application.*

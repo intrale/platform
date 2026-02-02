@@ -10,6 +10,7 @@ import io.ktor.http.HttpMethod
 import kotlinx.coroutines.runBlocking
 import org.kodein.di.DI
 import org.kodein.di.instance
+import org.kodein.type.jvmType
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import kotlin.getValue
