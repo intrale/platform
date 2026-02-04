@@ -126,10 +126,16 @@ class DoManageClientAddress(
             ?: ClientProfile()
 
         val profileDefaultId = refreshedProfileResponse?.profile?.defaultAddressId
+        val preferUpdatedDefault = when (action) {
+            is ManageAddressAction.Create -> action.address.isDefault
+            is ManageAddressAction.Update -> action.address.isDefault
+            is ManageAddressAction.MarkDefault -> true
+            is ManageAddressAction.Delete -> false
+        }
         val defaultId = listOfNotNull(
+            updatedId?.takeIf { preferUpdatedDefault },
             refreshedAddresses.firstOrNull { it.isDefault }?.id,
             profileDefaultId?.takeIf { id -> refreshedAddresses.any { it.id == id } },
-            updatedId,
             refreshedAddresses.firstOrNull()?.id
         ).firstOrNull()
 
