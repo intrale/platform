@@ -240,7 +240,9 @@ class ClientProfileViewModel(
         successKey: MessageKey?,
         resetAddressForm: Boolean = false
     ) {
-        val defaultId = data.profile.defaultAddressId
+        val profileDefaultId = data.profile.defaultAddressId
+            ?.takeIf { id -> data.addresses.any { it.id == id } }
+        val defaultId = profileDefaultId
             ?: data.addresses.firstOrNull { it.isDefault }?.id
             ?: data.addresses.firstOrNull()?.id
         val updatedAddresses = data.addresses.map { address ->
