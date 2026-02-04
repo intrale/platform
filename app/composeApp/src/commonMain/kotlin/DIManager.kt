@@ -36,6 +36,7 @@ import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
 import asdo.business.DoDeleteCategory
 import asdo.business.DoGetBusinesses
+import asdo.business.DoGetBusinessDashboardSummary
 import asdo.business.DoGetBusinessProducts
 import asdo.business.DoListCategories
 import asdo.business.DoRegisterBusiness
@@ -59,6 +60,7 @@ import asdo.business.ToDoListCategories
 import asdo.business.ToDoUpdateCategory
 import asdo.business.ToDoUpdateProduct
 import asdo.business.ToGetBusinesses
+import asdo.business.ToGetBusinessDashboardSummary
 import asdo.business.ToGetBusinessProducts
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoSignUp
@@ -89,6 +91,7 @@ import ext.delivery.CommDeliveryOrdersService
 import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
+import ext.business.ClientGetBusinessDashboardSummaryService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientCategoryService
 import ext.business.ClientProductService
@@ -98,6 +101,7 @@ import ext.business.ClientReviewBusinessRegistrationService
 import ext.business.ClientReviewJoinBusinessService
 import ext.business.ClientSearchBusinessesService
 import ext.business.CommCategoryService
+import ext.business.CommGetBusinessDashboardSummaryService
 import ext.business.CommGetBusinessProductsService
 import ext.business.CommProductService
 import ext.business.CommRegisterBusinessService
@@ -382,6 +386,9 @@ class DIManager {
                 bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
                 bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
                 bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
+                bindSingleton<CommGetBusinessDashboardSummaryService> {
+                    ClientGetBusinessDashboardSummaryService(instance(), instance())
+                }
                 bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
                 bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
                 bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
@@ -397,6 +404,7 @@ class DIManager {
                 bindSingleton<ToDoSignUpDelivery> { DoSignUpDelivery(instance()) }
                 bindSingleton<ToDoRegisterSaler> { DoRegisterSaler(instance(), instance()) }
                 bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
+                bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
                 bindSingleton<ToDoListProducts> { DoListProducts(instance()) }
                 bindSingleton<ToDoListCategories> { DoListCategories(instance()) }
                 bindSingleton<ToDoCreateProduct> { DoCreateProduct(instance()) }
