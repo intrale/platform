@@ -91,10 +91,18 @@ class DoManageClientAddress(
 
     override suspend fun execute(action: ManageAddressAction): Result<ClientProfileData> = runCatching {
         logger.info { "Gestionando dirección: $action" }
+        var updatedDefaultRequested = false
+        val actionDefaultId = when (action) {
+            is ManageAddressAction.Create -> action.address.id
+            is ManageAddressAction.Update -> action.address.id
+            is ManageAddressAction.MarkDefault -> action.addressId
+            is ManageAddressAction.Delete -> null
+        }
         val updatedId = when (action) {
             is ManageAddressAction.Create -> {
                 val created = addressesService.createAddress(action.address.toDto()).getOrThrow()
-                if (action.address.isDefault || created.isDefault) {
+                updatedDefaultRequested = action.address.isDefault || created.isDefault
+                if (updatedDefaultRequested) {
                     created.id?.let { addressesService.markDefault(it).getOrThrow() }
                 }
                 created.id
@@ -102,7 +110,8 @@ class DoManageClientAddress(
 
             is ManageAddressAction.Update -> {
                 val updated = addressesService.updateAddress(action.address.toDto()).getOrThrow()
-                if (action.address.isDefault || updated.isDefault) {
+                updatedDefaultRequested = action.address.isDefault || updated.isDefault
+                if (updatedDefaultRequested) {
                     updated.id?.let { addressesService.markDefault(it).getOrThrow() }
                 }
                 updated.id
@@ -114,6 +123,7 @@ class DoManageClientAddress(
             }
 
             is ManageAddressAction.MarkDefault -> {
+                updatedDefaultRequested = true
                 addressesService.markDefault(action.addressId).getOrThrow()
                 action.addressId
             }
@@ -126,14 +136,8 @@ class DoManageClientAddress(
             ?: ClientProfile()
 
         val profileDefaultId = refreshedProfileResponse?.profile?.defaultAddressId
-        val preferUpdatedDefault = when (action) {
-            is ManageAddressAction.Create -> action.address.isDefault
-            is ManageAddressAction.Update -> action.address.isDefault
-            is ManageAddressAction.MarkDefault -> true
-            is ManageAddressAction.Delete -> false
-        }
         val defaultId = listOfNotNull(
-            updatedId?.takeIf { preferUpdatedDefault },
+            (updatedId ?: actionDefaultId)?.takeIf { updatedDefaultRequested },
             refreshedAddresses.firstOrNull { it.isDefault }?.id,
             profileDefaultId?.takeIf { id -> refreshedAddresses.any { it.id == id } },
             refreshedAddresses.firstOrNull()?.id
