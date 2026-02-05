@@ -8,8 +8,8 @@ Acciones permitidas:
 - Actualización de docs existentes en `docs/`.
 
 Restricciones:
-- ❌ No modificar `agents.md`.
-- ❌ No correr tests si la tarea es solo de documentación.
+- ❌ No modificar `agents.md` salvo que el issue lo requiera.
+- ✅ No saltar tests; ejecutar verificación estándar antes de declarar Ready.
 
 Pull Request de docs:
 - Título: `[auto][docs] Actualización de documentación`

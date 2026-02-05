@@ -14,6 +14,7 @@ Si logra **In Progress**:
 Si puede resolver:
 - Asignar issue a `leitocodexbot`.
 - Ejecutar cambios (código/pruebas/docs) comentando progreso.
+- Cumplir reglas de verificación y evidencia (ver módulo correspondiente).
 - Generar PR y asignarlo a `leitolarreta` (reintentos si falla).
 - Mover a **Ready** solo si el PR se creó correctamente.
 
