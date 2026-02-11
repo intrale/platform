@@ -72,6 +72,7 @@ import ui.th.spacing
 import ui.util.formatPrice
 
 const val CLIENT_HOME_PATH = "/client/home"
+const val CLIENT_PRODUCT_DETAIL_PATH = "/client/product/detail"
 
 data class ClientHomeUiState(
     val productsState: ClientProductsState = ClientProductsState.Loading,
@@ -226,7 +227,11 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                                     product = product,
                                     addLabel = Txt(MessageKey.client_home_add_label),
                                     addContentDescription = Txt(MessageKey.client_home_add_content_description),
-                                    onAddClick = { viewModel.addToCart(product) }
+                                    onAddClick = { viewModel.addToCart(product) },
+                                    onOpenDetail = {
+                                        ClientProductSelectionStore.select(product.id)
+                                        navigate(CLIENT_PRODUCT_DETAIL_PATH)
+                                    }
                                 )
                             }
                         }
@@ -319,7 +324,9 @@ private fun ClientHomeBanner(
     val bannerHelper = Txt(MessageKey.client_home_header_description, mapOf("business" to businessName))
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpenDetail),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
     ) {
         Column(
@@ -433,10 +440,13 @@ private fun ClientProductCard(
     product: ClientProduct,
     addLabel: String,
     addContentDescription: String,
-    onAddClick: () -> Unit
+    onAddClick: () -> Unit,
+    onOpenDetail: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpenDetail),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
     ) {
