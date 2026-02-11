@@ -8,7 +8,9 @@ data class BusinessProductDTO(
     val name: String,
     val basePrice: Double,
     val status: String,
-    val emoji: String? = null
+    val emoji: String? = null,
+    val isAvailable: Boolean = true,
+    val stockQuantity: Int? = null
 )
 
 @Serializable

@@ -30,7 +30,9 @@ data class ProductDTO(
     val basePrice: Double,
     val unit: String,
     val categoryId: String,
-    val status: ProductStatus = ProductStatus.Draft
+    val status: ProductStatus = ProductStatus.Draft,
+    val isAvailable: Boolean = true,
+    val stockQuantity: Int? = null
 )
 
 @Serializable
@@ -40,7 +42,9 @@ data class ProductRequest(
     val basePrice: Double,
     val unit: String,
     val categoryId: String,
-    val status: ProductStatus
+    val status: ProductStatus,
+    val isAvailable: Boolean = true,
+    val stockQuantity: Int? = null
 )
 
 @Serializable

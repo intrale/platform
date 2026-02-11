@@ -73,6 +73,23 @@ import ui.util.formatPrice
 
 const val CLIENT_HOME_PATH = "/client/home"
 
+data class ClientProduct(
+    val id: String,
+    val name: String,
+    val priceLabel: String,
+    val emoji: String,
+    val unitPrice: Double,
+    val isAvailable: Boolean
+)
+
+sealed interface ClientProductsState {
+    data object Loading : ClientProductsState
+    data object Empty : ClientProductsState
+    data class Error(val message: String) : ClientProductsState
+    data class Loaded(val products: List<ClientProduct>) : ClientProductsState
+}
+
+
 data class ClientHomeUiState(
     val productsState: ClientProductsState = ClientProductsState.Loading,
     val lastAddedProduct: ClientProduct? = null
@@ -226,6 +243,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                                     product = product,
                                     addLabel = Txt(MessageKey.client_home_add_label),
                                     addContentDescription = Txt(MessageKey.client_home_add_content_description),
+                                    unavailableLabel = Txt(MessageKey.client_home_product_unavailable),
                                     onAddClick = { viewModel.addToCart(product) }
                                 )
                             }
@@ -433,6 +451,7 @@ private fun ClientProductCard(
     product: ClientProduct,
     addLabel: String,
     addContentDescription: String,
+    unavailableLabel: String,
     onAddClick: () -> Unit
 ) {
     Card(
@@ -464,10 +483,11 @@ private fun ClientProductCard(
                 )
             }
             IntralePrimaryButton(
-                text = addLabel,
+                text = if (product.isAvailable) addLabel else unavailableLabel,
                 onClick = onAddClick,
                 leadingIcon = Icons.Default.ShoppingCart,
                 iconContentDescription = addContentDescription,
+                enabled = product.isAvailable,
                 modifier = Modifier.fillMaxWidth(0.42f)
             )
         }
@@ -532,6 +552,7 @@ class ClientHomeViewModel : ViewModel() {
     }
 
     fun addToCart(product: ClientProduct) {
+        if (!product.isAvailable) return
         ClientCartStore.add(product)
         state = state.copy(lastAddedProduct = product)
     }
@@ -557,7 +578,8 @@ class ClientHomeViewModel : ViewModel() {
                     name = product.name,
                     priceLabel = formatPrice(product.basePrice),
                     emoji = product.emoji ?: "🛍️",
-                    unitPrice = product.basePrice
+                    unitPrice = product.basePrice,
+                    isAvailable = product.isAvailable && (product.stockQuantity == null || product.stockQuantity > 0)
                 )
             }
     }

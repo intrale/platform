@@ -39,6 +39,7 @@ import ext.business.CategoryDTO
 import ext.business.ProductStatus
 import kotlinx.coroutines.launch
 import ui.cp.buttons.IntralePrimaryButton
+import ui.cp.inputs.InputState
 import ui.cp.inputs.TextField
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
@@ -161,6 +162,13 @@ class ProductFormScreen(
                     onSelect = viewModel::updateStatus
                 )
 
+                AvailabilitySelector(
+                    isAvailable = viewModel.uiState.isAvailable,
+                    stockQuantity = viewModel.uiState.stockQuantity,
+                    onAvailabilityChange = viewModel::updateAvailability,
+                    onStockQuantityChange = viewModel::updateStockQuantity
+                )
+
                 viewModel.errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
                     Text(
                         text = message,
@@ -191,7 +199,9 @@ class ProductFormScreen(
                                             basePrice = product.basePrice,
                                             unit = product.unit,
                                             categoryId = product.categoryId,
-                                            status = product.status
+                                            status = product.status,
+                                            isAvailable = product.isAvailable,
+                                            stockQuantity = product.stockQuantity
                                         )
                                     )
                                     coroutineScope.launch {
@@ -273,6 +283,7 @@ private fun CategorySelector(
     onSelect: (String) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val stockInputState = remember { mutableStateOf(InputState("stockQuantity")) }
     Column(
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
     ) {
@@ -358,6 +369,47 @@ private fun StatusSelector(
                 onClick = { onSelect(ProductStatus.Published) }
             )
         }
+    }
+}
+
+
+@Composable
+private fun AvailabilitySelector(
+    isAvailable: Boolean,
+    stockQuantity: String,
+    onAvailabilityChange: (Boolean) -> Unit,
+    onStockQuantityChange: (String) -> Unit
+) {
+    val stockInputState = remember { mutableStateOf(InputState("stockQuantity")) }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+    ) {
+        Text(
+            text = Txt(MessageKey.product_form_availability),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            StatusChip(
+                label = Txt(MessageKey.product_form_availability_available),
+                selected = isAvailable,
+                onClick = { onAvailabilityChange(true) }
+            )
+            StatusChip(
+                label = Txt(MessageKey.product_form_availability_out_of_stock),
+                selected = !isAvailable,
+                onClick = { onAvailabilityChange(false) }
+            )
+        }
+
+        TextField(
+            label = MessageKey.product_form_stock_quantity,
+            value = stockQuantity,
+            state = stockInputState,
+            onValueChange = onStockQuantityChange
+        )
     }
 }
 

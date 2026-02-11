@@ -18,6 +18,7 @@ object ClientCartStore {
     val selectedAddressId: StateFlow<String?> = _selectedAddressId.asStateFlow()
 
     fun add(product: ClientProduct) {
+        if (!product.isAvailable) return
         _items.update { current ->
             val existing = current[product.id]
             val nextQuantity = (existing?.quantity ?: 0) + 1

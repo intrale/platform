@@ -278,10 +278,27 @@ private fun ProductCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                AssistChip(
-                    onClick = onClick,
-                    label = { Text(statusLabel) }
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AssistChip(
+                        onClick = onClick,
+                        label = { Text(statusLabel) }
+                    )
+                    AssistChip(
+                        onClick = onClick,
+                        label = {
+                            Text(
+                                if (item.isAvailable) {
+                                    Txt(MessageKey.product_form_availability_available)
+                                } else {
+                                    Txt(MessageKey.product_form_availability_out_of_stock)
+                                }
+                            )
+                        }
+                    )
+                }
             }
             Text(
                 text = item.priceLabel,
