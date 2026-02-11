@@ -24,6 +24,7 @@ Paquete modular de reglas para `leitocodexbot`.
 - 18-project-v2-api-examples.md – Ejemplos de API para Project V2.
 - 19-README-commands.md – Comandos README para agentes.
 - 20-backlog-intake.md - Proceso de incorporación al backlog.
+- 21-verification-evidence.md - Evidencia obligatoria de verificación.
 
 Notas:
 - Todos los módulos están bajo `./agents/`.
