@@ -38,6 +38,7 @@ import asdo.business.DoDeleteCategory
 import asdo.business.DoGetBusinesses
 import asdo.business.DoGetBusinessDashboardSummary
 import asdo.business.DoGetBusinessProducts
+import asdo.business.DoGetProduct
 import asdo.business.DoListCategories
 import asdo.business.DoRegisterBusiness
 import asdo.business.DoRequestJoinBusiness
@@ -62,6 +63,7 @@ import asdo.business.ToDoUpdateProduct
 import asdo.business.ToGetBusinesses
 import asdo.business.ToGetBusinessDashboardSummary
 import asdo.business.ToGetBusinessProducts
+import asdo.business.ToGetProduct
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoSignUp
 import asdo.signup.DoSignUpDelivery
@@ -158,6 +160,7 @@ import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientOrdersScreen
+import ui.sc.client.ClientProductDetailScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
@@ -180,6 +183,7 @@ public const val CLIENT_HOME = "clientHome"
 public const val CLIENT_ORDERS = "clientOrders"
 public const val CLIENT_CART = "clientCart"
 public const val CLIENT_PROFILE = "clientProfile"
+public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -227,6 +231,7 @@ class DIManager {
                 bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
                 bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
                 bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
+                bindSingleton(tag = CLIENT_PRODUCT_DETAIL) { ClientProductDetailScreen() }
                 bindSingleton(tag = HOME) { Home() }
                 bindSingleton(tag = INIT) { Login() }
                 bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -266,6 +271,7 @@ class DIManager {
                                 add(instance(tag = CLIENT_ORDERS))
                                 add(instance(tag = CLIENT_CART))
                                 add(instance(tag = CLIENT_PROFILE))
+                                add(instance(tag = CLIENT_PRODUCT_DETAIL))
                                 add(instance(tag = INIT))
                                 add(instance(tag = SIGNUP))
                                 add(instance(tag = CHANGE_PASSWORD))
@@ -432,6 +438,7 @@ class DIManager {
                 bindSingleton<ToDoGetDeliveryAvailability> { DoGetDeliveryAvailability(instance()) }
                 bindSingleton<ToDoUpdateDeliveryAvailability> { DoUpdateDeliveryAvailability(instance()) }
                 bindSingleton<ToGetBusinessProducts> { DoGetBusinessProducts(instance()) }
+                bindSingleton<ToGetProduct> { DoGetProduct(instance()) }
 
             }
     }

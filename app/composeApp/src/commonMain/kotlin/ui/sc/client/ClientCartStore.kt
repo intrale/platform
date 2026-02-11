@@ -25,6 +25,17 @@ object ClientCartStore {
         }
     }
 
+    fun quantityOf(productId: String): Int = _items.value[productId]?.quantity ?: 0
+
+    fun setQuantity(product: ClientProduct, quantity: Int) {
+        _items.update { current ->
+            when {
+                quantity <= 0 -> current - product.id
+                else -> current + (product.id to ClientCartItem(product = product, quantity = quantity))
+            }
+        }
+    }
+
     fun increment(productId: String) {
         _items.update { current ->
             current[productId]?.let { item ->
