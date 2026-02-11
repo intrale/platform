@@ -49,7 +49,9 @@ class ProductListViewModelTest {
                 basePrice = 10.0,
                 unit = "kg",
                 categoryId = "frutas",
-                status = ProductStatus.Published
+                status = ProductStatus.Published,
+                isAvailable = false,
+                stockQuantity = 0
             )
         )
         val viewModel = ProductListViewModel(
@@ -60,6 +62,8 @@ class ProductListViewModelTest {
         viewModel.loadProducts("biz-1")
         assertEquals(ProductListStatus.Loaded, viewModel.state.status)
         assertEquals(1, viewModel.state.items.size)
+        assertEquals(false, viewModel.state.items.first().isAvailable)
+        assertEquals(0, viewModel.state.items.first().stockQuantity)
     }
 
     @Test
