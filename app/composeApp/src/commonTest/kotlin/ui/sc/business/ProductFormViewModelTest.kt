@@ -75,12 +75,16 @@ class ProductFormViewModelTest {
             name = "Test",
             basePrice = "12.5",
             unit = "kg",
-            categoryId = "fruta"
+            categoryId = "fruta",
+            isAvailable = false,
+            stockQuantity = "0"
         )
         val result = viewModel.save("biz-1")
         assertTrue(result.isSuccess)
         assertEquals(ProductFormMode.Edit, viewModel.mode)
         assertEquals("new-id", viewModel.uiState.id)
+        assertTrue(viewModel.uiState.isAvailable)
+        assertEquals("", viewModel.uiState.stockQuantity)
     }
 
     @Test
