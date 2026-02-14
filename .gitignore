@@ -1,3 +1,44 @@
+# Build outputs
+build/
+*/build/
+**/build/
+
+# Gradle
+.gradle/
+*/.gradle/
+**/.gradle/
+
+# Kotlin
+.kotlin/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Android
+local.properties
+app/local.properties
+*.apk
+*.aab
+
+# Logs
+*.log
+app/logs/
+logs/
+
+# Node (Wasm)
+node_modules/
+kotlin-js-store/
+
+# Dependencies dump
+deps_commonMain.txt
+
 # Archivos generados desde los packs base64 del branding
 app/composeApp/src/androidMain/res/mipmap-*/ic_launcher*.png
 app/composeApp/src/wasmJsMain/resources/*.png
