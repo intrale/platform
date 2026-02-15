@@ -1,6 +1,9 @@
 import ar.com.intrale.*
 import ar.com.intrale.Function
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient
+import io.konform.validation.Validation
+import io.konform.validation.jsonschema.minLength
+import io.konform.validation.jsonschema.pattern
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.AttributeType
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.GetUserResponse
 import com.google.gson.Gson
@@ -117,10 +120,22 @@ class ReviewBusinessRegistrationTest {
     }¨*/
 
     @Test
-    fun invalidDecisionReturnsError() {
-        val req = ReviewBusinessRegistrationRequest("Biz", "invalid", "123456")
-        val resp = review.requestValidation(req)
+    fun `decision invalida retorna error`() {
+        val req = ReviewBusinessRegistrationRequest("BizTest1", "invalid", "123456")
+        val resp = validateRequest(req, reviewBusinessValidation())
         assertEquals(HttpStatusCode.BadRequest, (resp as RequestValidationException).statusCode)
+    }
+
+    private fun reviewBusinessValidation() = Validation<ReviewBusinessRegistrationRequest> {
+        ReviewBusinessRegistrationRequest::publicId required {
+            minLength(7)
+        }
+        ReviewBusinessRegistrationRequest::decision required {
+            pattern(Regex("^(approved|rejected)$", RegexOption.IGNORE_CASE)) hint "Debe ser APPROVED o REJECTED"
+        }
+        ReviewBusinessRegistrationRequest::twoFactorCode required {
+            minLength(6)
+        }
     }
 
     /*@Test
