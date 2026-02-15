@@ -15,7 +15,7 @@ import io.ktor.http.HttpStatusCode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class DummyAssignProfileTable : DynamoDbTable<UserBusinessProfile> {
+class DummyAssignProfileIntgTable : DynamoDbTable<UserBusinessProfile> {
     val items = mutableListOf<UserBusinessProfile>()
     override fun mapperExtension(): DynamoDbEnhancedClientExtension? = null
     override fun tableSchema(): TableSchema<UserBusinessProfile> = TableSchema.fromBean(UserBusinessProfile::class.java)
@@ -23,6 +23,8 @@ class DummyAssignProfileTable : DynamoDbTable<UserBusinessProfile> {
     override fun keyFrom(item: UserBusinessProfile): Key = Key.builder().partitionValue(item.compositeKey).build()
     override fun index(indexName: String) = throw UnsupportedOperationException()
     override fun putItem(item: UserBusinessProfile) { items.add(item) }
+    override fun getItem(key: UserBusinessProfile): UserBusinessProfile? =
+        items.firstOrNull { it.compositeKey == key.compositeKey }
 }
 
 class AssignProfileIntegrationTest {
@@ -32,7 +34,7 @@ class AssignProfileIntegrationTest {
     //TODO: Revisar porque no funciona el test de asignacion de perfil
     /*@Test
     fun `asignacion exitosa de perfil`() = runBlocking {
-        val table = DummyAssignProfileTable()
+        val table = DummyAssignProfileIntgTable()
         val cognito = mockk<CognitoIdentityProviderClient>(relaxed = true)
         coEvery { cognito.getUser(any()) } returns GetUserResponse {
             username = "admin"
@@ -54,7 +56,7 @@ class AssignProfileIntegrationTest {
 
     @Test
     fun `perfil no autorizado retorna error`() = runBlocking {
-        val table = DummyAssignProfileTable()
+        val table = DummyAssignProfileIntgTable()
         val cognito = mockk<CognitoIdentityProviderClient>(relaxed = true)
         coEvery { cognito.getUser(any()) } returns GetUserResponse {
             username = "admin"

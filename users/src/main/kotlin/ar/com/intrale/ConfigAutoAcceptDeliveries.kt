@@ -29,10 +29,14 @@ class ConfigAutoAcceptDeliveries(
         val email = cognito.getUser { this.accessToken = headers["Authorization"] }
             .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
             ?: return UnauthorizedException()
-        val profiles = tableProfiles.scan().items().filter {
-            it.email == email && it.business == business && it.profile == PROFILE_BUSINESS_ADMIN && it.state == BusinessState.APPROVED
-        }
-        if (profiles.isEmpty()) {
+        val adminProfile = tableProfiles.getItem(
+            UserBusinessProfile().apply {
+                this.email = email
+                this.business = business
+                profile = PROFILE_BUSINESS_ADMIN
+            }
+        )
+        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
             return UnauthorizedException()
         }
 

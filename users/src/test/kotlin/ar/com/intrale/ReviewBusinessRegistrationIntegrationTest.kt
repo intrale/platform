@@ -65,6 +65,8 @@ class ReviewBusinessRegistrationIntegrationTest {
         override fun keyFrom(item: UserBusinessProfile): Key = Key.builder().partitionValue(item.email).sortValue(item.business).build()
         override fun index(indexName: String) = throw UnsupportedOperationException()
         override fun putItem(item: UserBusinessProfile) { items.add(item) }
+        override fun getItem(key: UserBusinessProfile): UserBusinessProfile? =
+            items.firstOrNull { it.compositeKey == key.compositeKey }
     }
 
     private fun testModule(

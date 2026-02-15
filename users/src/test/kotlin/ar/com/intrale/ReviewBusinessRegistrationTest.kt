@@ -74,6 +74,8 @@ class DummyProfileTable : DynamoDbTable<UserBusinessProfile> {
     override fun keyFrom(item: UserBusinessProfile): Key = Key.builder().partitionValue(item.email).sortValue(item.business).build()
     override fun index(indexName: String) = throw UnsupportedOperationException()
     override fun putItem(item: UserBusinessProfile) { items.add(item) }
+    override fun getItem(key: UserBusinessProfile): UserBusinessProfile? =
+        items.firstOrNull { it.compositeKey == key.compositeKey }
     override fun scan(): PageIterable<UserBusinessProfile> =
         PageIterable.create(SdkIterable { mutableListOf(Page.create(items)).iterator() })
 }

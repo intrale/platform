@@ -69,13 +69,14 @@ class RegisterSaler(
             null
         } ?: return UnauthorizedException()
 
-        val isApprovedAdmin = tableProfiles.scan().items().any {
-            it.email == adminEmail &&
-                it.business == business &&
-                it.profile == PROFILE_BUSINESS_ADMIN &&
-                it.state == BusinessState.APPROVED
-        }
-        if (!isApprovedAdmin) {
+        val adminProfile = tableProfiles.getItem(
+            UserBusinessProfile().apply {
+                email = adminEmail
+                this.business = business
+                profile = PROFILE_BUSINESS_ADMIN
+            }
+        )
+        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
             return UnauthorizedException()
         }
 
