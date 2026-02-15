@@ -56,9 +56,16 @@ class ReviewJoinBusiness(
         val email = cognito.getUser { this.accessToken = headers["Authorization"] }
             .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
             ?: return UnauthorizedException()
-        val adminProfile = tableProfiles.scan().items().firstOrNull {
-            it.email == email && it.business == business && it.profile == PROFILE_BUSINESS_ADMIN && it.state == BusinessState.APPROVED
-        } ?: return UnauthorizedException()
+        val adminProfile = tableProfiles.getItem(
+            UserBusinessProfile().apply {
+                this.email = email
+                this.business = business
+                profile = PROFILE_BUSINESS_ADMIN
+            }
+        )
+        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
+            return UnauthorizedException()
+        }
 
         val key = UserBusinessProfile().apply {
             this.email = body.email

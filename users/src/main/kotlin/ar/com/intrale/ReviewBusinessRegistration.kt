@@ -74,9 +74,16 @@ class ReviewBusinessRegistration(
         if (email == null) {
             return UnauthorizedException()
         }
-        val adminProfile = tableProfiles.scan().items().firstOrNull {
-            it.email == email && it.business == business && it.profile == PROFILE_PLATFORM_ADMIN && it.state == BusinessState.APPROVED
-        } ?: return UnauthorizedException()
+        val adminProfile = tableProfiles.getItem(
+            UserBusinessProfile().apply {
+                this.email = email
+                this.business = business
+                this.profile = PROFILE_PLATFORM_ADMIN
+            }
+        )
+        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
+            return UnauthorizedException()
+        }
 
         // Validar el segundo factor para ese usuario
         logger.debug("checking Two Factor")

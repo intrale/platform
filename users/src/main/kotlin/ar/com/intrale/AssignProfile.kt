@@ -53,9 +53,16 @@ class AssignProfile(
         val emailCaller = cognito.getUser { this.accessToken = headers["Authorization"] }
             .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
             ?: return UnauthorizedException()
-        val adminProfile = tableProfiles.scan().items().firstOrNull {
-            it.email == emailCaller && it.business == business && it.profile == PROFILE_PLATFORM_ADMIN && it.state == BusinessState.APPROVED
-        } ?: return UnauthorizedException()
+        val adminProfile = tableProfiles.getItem(
+            UserBusinessProfile().apply {
+                email = emailCaller
+                this.business = business
+                profile = PROFILE_PLATFORM_ADMIN
+            }
+        )
+        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
+            return UnauthorizedException()
+        }
 
         UserBusinessProfileUtils.upsertUserBusinessProfile(
             tableProfiles,
