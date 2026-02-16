@@ -31,14 +31,20 @@ class AssignProfileIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = testConfig("biz")
 
-    //TODO: Revisar porque no funciona el test de asignacion de perfil
-    /*@Test
+    @Test
     fun `asignacion exitosa de perfil`() = runBlocking {
         val table = DummyAssignProfileIntgTable()
+        // Pre-seed con perfil de admin aprobado
+        table.items.add(UserBusinessProfile().apply {
+            email = "admin@test.com"
+            business = "biz"
+            profile = PROFILE_PLATFORM_ADMIN
+            state = BusinessState.APPROVED
+        })
         val cognito = mockk<CognitoIdentityProviderClient>(relaxed = true)
         coEvery { cognito.getUser(any()) } returns GetUserResponse {
             username = "admin"
-            userAttributes = listOf(AttributeType { name = PROFILE_ATT_NAME; value = PLATFORM_ADMIN_PROFILE })
+            userAttributes = listOf(AttributeType { name = EMAIL_ATT_NAME; value = "admin@test.com" })
         }
         val assign = AssignProfile(config, logger, cognito, table)
 
@@ -50,9 +56,9 @@ class AssignProfileIntegrationTest {
         )
 
         assertEquals(HttpStatusCode.OK, response.statusCode)
-        assertEquals(1, table.items.size)
-        assertEquals("user@test.com#biz#CLIENT", table.items[0].compositeKey)
-    }*/
+        assertEquals(2, table.items.size)
+        assertEquals("user@test.com#biz#CLIENT", table.items[1].compositeKey)
+    }
 
     @Test
     fun `perfil no autorizado retorna error`() = runBlocking {
