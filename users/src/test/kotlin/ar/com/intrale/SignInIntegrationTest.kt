@@ -34,8 +34,7 @@ class SignInIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = testConfig("biz")
 
-    //TODO: Revisar porque no funciona el test de ingreso exitoso
-    /*@Test
+    @Test
     fun `ingreso exitoso`() = runBlocking {
         val table = DummySignInTableIntg().apply {
             items.add(UserBusinessProfile().apply {
@@ -53,10 +52,6 @@ class SignInIntegrationTest {
                 refreshToken = "refresh"
             }
         }
-        coEvery { cognito.adminGetUser(any()) } returns AdminGetUserResponse {
-            username = "user@test.com"
-            userAttributes = listOf(AttributeType { name = BUSINESS_ATT_NAME; value = "biz" })
-        }
         coEvery { cognito.close() } returns Unit
         val signIn = SignIn(config, logger, cognito, table)
 
@@ -69,8 +64,7 @@ class SignInIntegrationTest {
 
         assertEquals(io.ktor.http.HttpStatusCode.OK, resp.statusCode)
         coVerify(exactly = 1) { cognito.adminInitiateAuth(any()) }
-        coVerify(exactly = 1) { cognito.adminGetUser(any()) }
-    }*/
+    }
 
     @Test
     fun `cambio de contrasena requerido`() = runBlocking {

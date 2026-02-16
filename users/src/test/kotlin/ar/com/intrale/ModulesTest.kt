@@ -36,7 +36,10 @@ class ModulesTest {
         assertEquals(l1, l2)
     }
 
-    //TODO: Revisar porque no funciona el test de signup
+    //TODO: El binding de "signup" requiere DynamoDbTable<User> y DynamoDbTable<UserBusinessProfile>
+    // que se resuelven via DynamoDbClient real (necesita credenciales AWS). Para habilitar este test
+    // hay que: 1) Extraer las tablas como interfaces mockeables, o 2) Agregar overrides de DummyTable
+    // en el DI de test para las 3 tablas (Business, User, UserBusinessProfile).
     /*@Test
     fun `signup se resuelve`() {
         val signUp: Function by di.instance(tag = "signup")

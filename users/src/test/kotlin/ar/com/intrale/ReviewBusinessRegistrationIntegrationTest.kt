@@ -24,6 +24,9 @@ import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClientExtension
 import software.amazon.awssdk.enhanced.dynamodb.Key
+import software.amazon.awssdk.enhanced.dynamodb.model.Page
+import software.amazon.awssdk.enhanced.dynamodb.model.PageIterable
+import software.amazon.awssdk.core.pagination.sync.SdkIterable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -54,6 +57,8 @@ class ReviewBusinessRegistrationIntegrationTest {
             }
             return item
         }
+        override fun scan(): PageIterable<Business> =
+            PageIterable.create(SdkIterable { mutableListOf(Page.create(items)).iterator() })
     }
 
 
@@ -67,6 +72,8 @@ class ReviewBusinessRegistrationIntegrationTest {
         override fun putItem(item: UserBusinessProfile) { items.add(item) }
         override fun getItem(key: UserBusinessProfile): UserBusinessProfile? =
             items.firstOrNull { it.compositeKey == key.compositeKey }
+        override fun scan(): PageIterable<UserBusinessProfile> =
+            PageIterable.create(SdkIterable { mutableListOf(Page.create(items)).iterator() })
     }
 
     private fun testModule(
@@ -89,8 +96,7 @@ class ReviewBusinessRegistrationIntegrationTest {
         }
     }
 
-    //TODO: Revisar porque no funciona el test de revision de negocio
-    /*@Test
+    @Test
     fun `revision exitosa del negocio`() = testApplication {
         val twoFactor = mockk<Function>()
         coEvery { twoFactor.execute(any(), any(), any(), any()) } returns Response()
@@ -101,8 +107,7 @@ class ReviewBusinessRegistrationIntegrationTest {
         coEvery { cognito.getUser(any()) } returns GetUserResponse {
             username = "admin"
             userAttributes = listOf(
-                AttributeType { name = EMAIL_ATT_NAME; value = "admin@biz.com" },
-                AttributeType { name = PROFILE_ATT_NAME; value = PLATFORM_ADMIN_PROFILE }
+                AttributeType { name = EMAIL_ATT_NAME; value = "admin@biz.com" }
             )
         }
         coEvery { cognito.close() } returns Unit
@@ -111,7 +116,7 @@ class ReviewBusinessRegistrationIntegrationTest {
             putItem(
                 Business(
                     name = "biz",
-                    publicId = "biz",
+                    publicId = "biz-test-id",
                     emailAdmin = "admin@biz.com"
                 )
             )
@@ -121,7 +126,15 @@ class ReviewBusinessRegistrationIntegrationTest {
         every { userTable.getItem(any<java.util.function.Consumer<software.amazon.awssdk.enhanced.dynamodb.model.GetItemEnhancedRequest.Builder>>()) } returns null
         every { userTable.getItem(any<software.amazon.awssdk.enhanced.dynamodb.model.GetItemEnhancedRequest>()) } returns null
         every { userTable.putItem(any<User>()) } returns Unit
-        val profileTable = DummyProfileTable()
+        val profileTable = DummyProfileTable().apply {
+            // Pre-seed con perfil platform admin aprobado
+            putItem(UserBusinessProfile().apply {
+                email = "admin@biz.com"
+                business = "biz"
+                profile = PROFILE_PLATFORM_ADMIN
+                state = BusinessState.APPROVED
+            })
+        }
 
         application {
             di {
@@ -172,14 +185,14 @@ class ReviewBusinessRegistrationIntegrationTest {
         val response = client.post("/biz/reviewBusiness") {
             header(HttpHeaders.ContentType, ContentType.Application.Json)
             header("Authorization", "token")
-            setBody("{\"name\":\"Biz\",\"decision\":\"approved\",\"twoFactorCode\":\"123456\"}")
+            setBody("{\"publicId\":\"biz-test-id\",\"decision\":\"approved\",\"twoFactorCode\":\"123456\"}")
         }
 
         assertEquals(HttpStatusCode.OK, response.status)
         coVerify(exactly = 1) { twoFactor.execute(any(), any(), any(), any()) }
         coVerify(exactly = 1) { signUp.execute(any(), any(), any(), any()) }
         assertEquals(BusinessState.APPROVED, businessTable.items.first().state)
-    }*/
+    }
 
     @Test
     fun `decision invalida retorna error`() = testApplication {
