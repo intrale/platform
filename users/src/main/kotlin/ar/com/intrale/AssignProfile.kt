@@ -10,8 +10,9 @@ class AssignProfile(
     override val config: UsersConfig,
     override val logger: Logger,
     private val cognito: CognitoIdentityProviderClient,
-    private val tableProfiles: DynamoDbTable<UserBusinessProfile>
-) : SecuredFunction(config = config, logger = logger) {
+    private val tableProfiles: DynamoDbTable<UserBusinessProfile>,
+    override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
+) : SecuredFunction(config = config, logger = logger, jwtValidator = jwtValidator) {
 
     override suspend fun securedExecute(
         business: String,

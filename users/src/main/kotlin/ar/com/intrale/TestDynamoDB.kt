@@ -13,8 +13,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.*
 
 
-class TestDynamoDB(override val config: UsersConfig, val faker: Faker, override val logger: Logger) :
-    SecuredFunction(config=config, logger=logger ) {
+class TestDynamoDB(override val config: UsersConfig, val faker: Faker, override val logger: Logger, override val jwtValidator: JwtValidator = CognitoJwtValidator(config)) :
+    SecuredFunction(config=config, logger=logger, jwtValidator=jwtValidator) {
     override suspend fun securedExecute(
         business: String,
         function: String,

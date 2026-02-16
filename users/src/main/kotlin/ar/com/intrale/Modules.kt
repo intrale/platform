@@ -120,6 +120,10 @@ val appModule = DI.Module("appModule") {
         singleton { LoggerFactory.getLogger("AppLogger") }
     }
 
+    bind<JwtValidator> {
+        singleton { CognitoJwtValidator(instance<UsersConfig>()) }
+    }
+
     bind<ClientProfileRepository> {
         singleton { ClientProfileRepository() }
     }
@@ -134,13 +138,13 @@ val appModule = DI.Module("appModule") {
         singleton  { SignUpDelivery(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="registerSaler") {
-        singleton  { RegisterSaler(instance(), instance(), instance(), instance()) }
+        singleton  { RegisterSaler(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="signin") {
         singleton {  SignIn(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="validate") {
-        singleton {  Validate(instance(), instance()) }
+        singleton {  Validate(instance(), instance(), instance()) }
     }
     bind<Function> (tag="recovery") {
         singleton {  PasswordRecovery(instance(), instance(), instance()) }
@@ -149,16 +153,16 @@ val appModule = DI.Module("appModule") {
         singleton {  ConfirmPasswordRecovery(instance(), instance(), instance()) }
     }
     bind<Function> (tag="changePassword") {
-        singleton {  ChangePassword(instance(), instance(), instance()) }
+        singleton {  ChangePassword(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="profiles") {
-        singleton {  Profiles(instance(), instance()) }
+        singleton {  Profiles(instance(), instance(), instance()) }
     }
     bind<Function> (tag="2fasetup") {
-        singleton {  TwoFactorSetup(instance(), instance(), instance(), instance()) }
+        singleton {  TwoFactorSetup(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="2faverify") {
-        singleton {  TwoFactorVerify(instance(), instance(), instance(), instance()) }
+        singleton {  TwoFactorVerify(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="registerBusiness") {
         singleton {  RegisterBusiness(instance(), instance(), instance()) }
@@ -166,28 +170,28 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="reviewBusiness") {
         singleton {  ReviewBusinessRegistration(instance(), instance(), instance("2faverify"),
             instance("signup"), instance(),
-            instance(), instance(),instance()) }
+            instance(), instance(),instance(), instance()) }
     }
     bind<Function> (tag="assignProfile") {
-        singleton { AssignProfile(instance(), instance(), instance(), instance()) }
+        singleton { AssignProfile(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="requestJoinBusiness") {
-        singleton { RequestJoinBusiness(instance(), instance(), instance(), instance(), instance()) }
+        singleton { RequestJoinBusiness(instance(), instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="reviewJoinBusiness") {
-        singleton { ReviewJoinBusiness(instance(), instance(), instance(), instance()) }
+        singleton { ReviewJoinBusiness(instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="searchBusinesses") {
         singleton { SearchBusinesses(instance<DynamoDbTable<Business>>(), instance()) }
     }
     bind<Function> (tag="configAutoAcceptDeliveries") {
-        singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance(), instance()) }
+        singleton { ConfigAutoAcceptDeliveries(instance(), instance(), instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="client/profile") {
-        singleton { ClientProfileFunction(instance(), instance(), instance()) }
+        singleton { ClientProfileFunction(instance(), instance(), instance(), instance()) }
     }
     bind<Function> (tag="client/addresses") {
-        singleton { ClientAddressesFunction(instance(), instance(), instance()) }
+        singleton { ClientAddressesFunction(instance(), instance(), instance(), instance()) }
     }
 }
 
