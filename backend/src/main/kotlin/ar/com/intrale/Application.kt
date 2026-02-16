@@ -8,7 +8,6 @@ import io.ktor.server.netty.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlin.time.Duration.Companion.seconds
 import org.kodein.di.DI
 import org.kodein.di.allInstances
 import org.kodein.di.direct
@@ -18,7 +17,6 @@ import org.kodein.di.ktor.di
 import org.kodein.type.jvmType
 import ar.com.intrale.HealthResponse
 import ar.com.intrale.delivery.deliveryAvailabilityRoutes
-import kotlin.time.Duration.Companion.seconds
 import org.slf4j.Logger
 
 /**
@@ -35,25 +33,7 @@ fun start(appModule: DI.Module) {
 
         healthRoute()
         deliveryAvailabilityRoutes()
-
-        routing {
-            route("/{business}/{function...}") {
-                registerDynamicHandler(HttpMethod.Post)
-                registerDynamicHandler(HttpMethod.Get)
-                registerDynamicHandler(HttpMethod.Put)
-                registerDynamicHandler(HttpMethod.Delete)
-            }
-            options {
-                call.response.headers.append("Access-Control-Allow-Origin", "*")
-                call.response.headers.append("Access-Control-Allow-Methods", "GET, OPTIONS, HEAD, PUT, POST, DELETE")
-                call.response.headers.append(
-                    "Access-Control-Allow-Headers",
-                    "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,Access-Control-Allow-Origin,Access-Control-Allow-Headers,function,idToken,businessName,filename"
-                )
-                call.respond(HttpStatusCode.OK)
-            }
-        }
-
+        configureDynamicRouting()
 
     }.start(wait = true)
 }
@@ -66,6 +46,26 @@ fun Application.healthRoute() {
                 contentType = ContentType.Application.Json,
                 status = HttpStatusCode.OK
             )
+        }
+    }
+}
+
+fun Application.configureDynamicRouting() {
+    routing {
+        route("/{business}/{function...}") {
+            registerDynamicHandler(HttpMethod.Post)
+            registerDynamicHandler(HttpMethod.Get)
+            registerDynamicHandler(HttpMethod.Put)
+            registerDynamicHandler(HttpMethod.Delete)
+        }
+        options {
+            call.response.headers.append("Access-Control-Allow-Origin", "*")
+            call.response.headers.append("Access-Control-Allow-Methods", "GET, OPTIONS, HEAD, PUT, POST, DELETE")
+            call.response.headers.append(
+                "Access-Control-Allow-Headers",
+                "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,Access-Control-Allow-Origin,Access-Control-Allow-Headers,function,idToken,businessName,filename"
+            )
+            call.respond(HttpStatusCode.OK)
         }
     }
 }
@@ -128,4 +128,3 @@ private fun Route.registerDynamicHandler(httpMethod: HttpMethod) {
         }
     }
 }
-

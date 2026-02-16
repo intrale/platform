@@ -7,8 +7,8 @@ import org.slf4j.Logger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 import java.security.SecureRandom
 
-class TwoFactorSetup (override val config: UsersConfig, override val logger: Logger, val cognito: CognitoIdentityProviderClient, val tableUsers: DynamoDbTable<User>) :
-    SecuredFunction(config=config, logger=logger ) {
+class TwoFactorSetup (override val config: UsersConfig, override val logger: Logger, val cognito: CognitoIdentityProviderClient, val tableUsers: DynamoDbTable<User>, override val jwtValidator: JwtValidator = CognitoJwtValidator(config)) :
+    SecuredFunction(config=config, logger=logger, jwtValidator=jwtValidator) {
 
         override suspend fun securedExecute(
         business: String,

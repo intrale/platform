@@ -14,8 +14,8 @@ import java.security.SecureRandom
 import java.time.Instant
 import javax.crypto.spec.SecretKeySpec
 
-class TwoFactorVerify (override val config: UsersConfig, override val logger: Logger, val cognito: CognitoIdentityProviderClient, val tableUsers: DynamoDbTable<User>) :
-    SecuredFunction(config=config, logger=logger ) {
+class TwoFactorVerify (override val config: UsersConfig, override val logger: Logger, val cognito: CognitoIdentityProviderClient, val tableUsers: DynamoDbTable<User>, override val jwtValidator: JwtValidator = CognitoJwtValidator(config)) :
+    SecuredFunction(config=config, logger=logger, jwtValidator=jwtValidator) {
 
 
     fun requestValidation(body:TwoFactorVerifyRequest): Response? {

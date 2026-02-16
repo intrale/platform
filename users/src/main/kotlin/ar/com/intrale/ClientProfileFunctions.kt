@@ -22,8 +22,9 @@ private fun Map<String, String>.resolveClientEmail(): String? {
 class ClientProfileFunction(
     override val config: UsersConfig,
     override val logger: Logger,
-    private val repository: ClientProfileRepository
-) : SecuredFunction(config, logger) {
+    private val repository: ClientProfileRepository,
+    override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
+) : SecuredFunction(config, logger, jwtValidator) {
 
     override suspend fun securedExecute(
         business: String,
@@ -74,8 +75,9 @@ class ClientProfileFunction(
 class ClientAddressesFunction(
     override val config: UsersConfig,
     override val logger: Logger,
-    private val repository: ClientProfileRepository
-) : SecuredFunction(config, logger) {
+    private val repository: ClientProfileRepository,
+    override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
+) : SecuredFunction(config, logger, jwtValidator) {
 
     override suspend fun securedExecute(
         business: String,

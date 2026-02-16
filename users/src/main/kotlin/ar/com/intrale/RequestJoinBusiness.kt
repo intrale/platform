@@ -10,8 +10,9 @@ class RequestJoinBusiness(
     override val logger: Logger,
     private val cognito: CognitoIdentityProviderClient,
     private val tableProfiles: DynamoDbTable<UserBusinessProfile>,
-    private val tableBusiness: DynamoDbTable<Business>
-) : SecuredFunction(config = config, logger = logger) {
+    private val tableBusiness: DynamoDbTable<Business>,
+    override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
+) : SecuredFunction(config = config, logger = logger, jwtValidator = jwtValidator) {
 
     fun requestValidation(body: RequestJoinBusinessRequest): Response? {
         return null

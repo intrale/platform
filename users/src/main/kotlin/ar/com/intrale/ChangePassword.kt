@@ -12,8 +12,9 @@ import ar.com.intrale.UnauthorizedException
 class ChangePassword(
     override val config: UsersConfig,
     override val logger: Logger,
-    private val cognito: CognitoIdentityProviderClient
-) : SecuredFunction(config = config, logger = logger) {
+    private val cognito: CognitoIdentityProviderClient,
+    override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
+) : SecuredFunction(config = config, logger = logger, jwtValidator = jwtValidator) {
 
     fun requestValidation(body: ChangePasswordRequest): Response? {
         val validation = Validation<ChangePasswordRequest> {
