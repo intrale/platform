@@ -1,4 +1,6 @@
 import ar.com.intrale.*
+import io.konform.validation.Validation
+import io.konform.validation.jsonschema.pattern
 import io.ktor.http.HttpStatusCode
 import org.slf4j.helpers.NOPLogger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
@@ -39,17 +41,24 @@ class AssignProfileTest {
     private val assign = AssignProfile(config, logger, cognito, table)
 
     @Test
-    fun validRequestPassesValidation() {
+    fun `request valido pasa validacion`() {
         val req = AssignProfileRequest("user@test.com", "CLIENT")
-        val resp = assign.requestValidation(req)
+        val resp = validateRequest(req, assignProfileValidation())
         assertEquals(null, resp)
     }
 
     @Test
-    fun invalidEmailReturnsError() {
+    fun `email invalido retorna error`() {
         val req = AssignProfileRequest("invalid", "CLIENT")
-        val resp = assign.requestValidation(req)
+        val resp = validateRequest(req, assignProfileValidation())
         assertEquals(HttpStatusCode.BadRequest, (resp as RequestValidationException).statusCode)
+    }
+
+    private fun assignProfileValidation() = Validation<AssignProfileRequest> {
+        AssignProfileRequest::email required {
+            pattern(".+@.+\\..+") hint EMAIL_VALIDATION_HINT
+        }
+        AssignProfileRequest::profile required {}
     }
 
     @Test

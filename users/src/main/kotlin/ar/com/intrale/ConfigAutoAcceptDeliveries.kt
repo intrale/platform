@@ -1,11 +1,8 @@
 package ar.com.intrale
 
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient
-import aws.sdk.kotlin.services.cognitoidentityprovider.getUser
-import com.google.gson.Gson
 import org.slf4j.Logger
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
-import ar.com.intrale.UserBusinessProfile
 
 class ConfigAutoAcceptDeliveries(
     override val config: UsersConfig,
@@ -23,22 +20,12 @@ class ConfigAutoAcceptDeliveries(
     ): Response {
         logger.debug("starting config auto accept deliveries $function")
 
-        if (textBody.isEmpty()) return RequestValidationException("Request body not found")
-        val body = Gson().fromJson(textBody, ConfigAutoAcceptDeliveriesRequest::class.java)
+        val body = parseBody<ConfigAutoAcceptDeliveriesRequest>(textBody)
+            ?: return RequestValidationException("Request body not found")
 
-        val email = cognito.getUser { this.accessToken = headers["Authorization"] }
-            .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
-            ?: return UnauthorizedException()
-        val adminProfile = tableProfiles.getItem(
-            UserBusinessProfile().apply {
-                this.email = email
-                this.business = business
-                profile = PROFILE_BUSINESS_ADMIN
-            }
-        )
-        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
-            return UnauthorizedException()
-        }
+        val (_, _) = requireApprovedProfile(
+            cognito, headers, tableProfiles, business, PROFILE_BUSINESS_ADMIN
+        ) ?: return UnauthorizedException()
 
         val key = Business().apply { name = business }
         val existing = tableBusiness.getItem(key) ?: return ExceptionResponse("Business not found")

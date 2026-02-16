@@ -1,10 +1,8 @@
 package ar.com.intrale
 
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient
-import aws.sdk.kotlin.services.cognitoidentityprovider.getUser
 import com.google.gson.Gson
 import io.konform.validation.Validation
-import io.konform.validation.ValidationResult
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
 import org.slf4j.Logger
@@ -22,33 +20,6 @@ class ReviewBusinessRegistration(
     private val tableProfiles: DynamoDbTable<UserBusinessProfile>
 ) : SecuredFunction(config = config, logger = logger) {
 
-    fun requestValidation(body: ReviewBusinessRegistrationRequest): Response? {
-        val validation = Validation<ReviewBusinessRegistrationRequest> {
-            ReviewBusinessRegistrationRequest::publicId required {
-                minLength(7)
-            }
-            ReviewBusinessRegistrationRequest::decision required {
-                pattern(Regex("^(approved|rejected)$", RegexOption.IGNORE_CASE)) hint "Debe ser APPROVED o REJECTED"
-            }
-            ReviewBusinessRegistrationRequest::twoFactorCode required {
-                minLength(6)
-            }
-        }
-        val validationResult: ValidationResult<Any> = try {
-            validation(body)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return RequestValidationException(e.message ?: "Unknown error")
-        }
-        if (!validationResult.isValid) {
-            val errorsMessage = validationResult.errors.joinToString(" ") {
-                "${it.dataPath.substring(1)} ${it.message}"
-            }
-            return RequestValidationException(errorsMessage)
-        }
-        return null
-    }
-
     override suspend fun securedExecute(
         business: String,
         function: String,
@@ -58,32 +29,26 @@ class ReviewBusinessRegistration(
         logger.debug("starting review business registration $function")
 
         // Validacion del request
-        if (textBody.isEmpty()) return RequestValidationException("Request body not found")
-        val body = Gson().fromJson(textBody, ReviewBusinessRegistrationRequest::class.java)
-        val response = requestValidation(body)
-        if (response != null) return response
+        val body = parseBody<ReviewBusinessRegistrationRequest>(textBody)
+            ?: return RequestValidationException("Request body not found")
+        val validationError = validateRequest(body, Validation {
+            ReviewBusinessRegistrationRequest::publicId required {
+                minLength(7)
+            }
+            ReviewBusinessRegistrationRequest::decision required {
+                pattern(Regex("^(approved|rejected)$", RegexOption.IGNORE_CASE)) hint "Debe ser APPROVED o REJECTED"
+            }
+            ReviewBusinessRegistrationRequest::twoFactorCode required {
+                minLength(6)
+            }
+        })
+        if (validationError != null) return validationError
 
         // Validar si el usuario que genera el request es un Platform Admin
         logger.debug("checking Platform Admin Profile")
-        val responseCognito = cognito.getUser {
-            this.accessToken = headers["Authorization"]!!
-        }
-
-        logger.debug("trying to get user $responseCognito")
-        val email = responseCognito.userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
-        if (email == null) {
-            return UnauthorizedException()
-        }
-        val adminProfile = tableProfiles.getItem(
-            UserBusinessProfile().apply {
-                this.email = email
-                this.business = business
-                this.profile = PROFILE_PLATFORM_ADMIN
-            }
-        )
-        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
-            return UnauthorizedException()
-        }
+        val (_, _) = requireApprovedProfile(
+            cognito, headers, tableProfiles, business, PROFILE_PLATFORM_ADMIN
+        ) ?: return UnauthorizedException()
 
         // Validar el segundo factor para ese usuario
         logger.debug("checking Two Factor")
@@ -115,7 +80,6 @@ class ReviewBusinessRegistration(
             // Si el negocio es aceptado, Validar si el usuario Business Admin ya se encuentra registrado en intrale en caso de que No, enviar mail para signup del usuario
             logger.debug("checking User Business Admin")
 
-            //val businessAdminUser = tableUsers.getItem { User(email = businessData.emailAdmin) }
             val businessAdminUser = tableUsers.getItem { b ->
                 b.key(Key.builder().partitionValue(businessData.emailAdmin).build())
             }
@@ -156,4 +120,3 @@ class ReviewBusinessRegistration(
         return Response()
     }
 }
-

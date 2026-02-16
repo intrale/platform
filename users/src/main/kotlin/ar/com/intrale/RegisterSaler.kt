@@ -1,13 +1,10 @@
 package ar.com.intrale
 
 import aws.sdk.kotlin.services.cognitoidentityprovider.CognitoIdentityProviderClient
-import aws.sdk.kotlin.services.cognitoidentityprovider.getUser
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.AdminCreateUserRequest
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.AttributeType
 import aws.sdk.kotlin.services.cognitoidentityprovider.model.UsernameExistsException
-import com.google.gson.Gson
 import io.konform.validation.Validation
-import io.konform.validation.ValidationResult
 import io.konform.validation.jsonschema.pattern
 import io.ktor.http.HttpStatusCode
 import org.slf4j.Logger
@@ -20,28 +17,6 @@ class RegisterSaler(
     private val tableProfiles: DynamoDbTable<UserBusinessProfile>,
 ) : SecuredFunction(config = config, logger = logger) {
 
-    fun requestValidation(body: RegisterSalerRequest): Response? {
-        val validation = Validation<RegisterSalerRequest> {
-            RegisterSalerRequest::email required {
-                pattern(".+@.+\\..+") hint "El campo email debe tener formato de email. Valor actual: '{value}'"
-            }
-        }
-
-        val validationResult: ValidationResult<Any> = try {
-            validation(body)
-        } catch (e: Exception) {
-            return RequestValidationException("Request is empty")
-        }
-
-        if (!validationResult.isValid) {
-            val errorsMessage = validationResult.errors.joinToString(" ") {
-                it.dataPath.substring(1) + ' ' + it.message
-            }
-            return RequestValidationException(errorsMessage)
-        }
-        return null
-    }
-
     override suspend fun securedExecute(
         business: String,
         function: String,
@@ -50,35 +25,18 @@ class RegisterSaler(
     ): Response {
         logger.debug("starting register saler $function")
 
-        if (textBody.isEmpty()) {
-            return RequestValidationException("Request body not found")
-        }
-        val body = Gson().fromJson(textBody, RegisterSalerRequest::class.java)
-        val validationResponse = requestValidation(body)
-        if (validationResponse != null) {
-            return validationResponse
-        }
-
-        val token = headers["Authorization"] ?: return UnauthorizedException()
-
-        val adminEmail = try {
-            cognito.getUser { this.accessToken = token }
-                .userAttributes?.firstOrNull { it.name == EMAIL_ATT_NAME }?.value
-        } catch (e: Exception) {
-            logger.error("Error obtaining admin email", e)
-            null
-        } ?: return UnauthorizedException()
-
-        val adminProfile = tableProfiles.getItem(
-            UserBusinessProfile().apply {
-                email = adminEmail
-                this.business = business
-                profile = PROFILE_BUSINESS_ADMIN
+        val body = parseBody<RegisterSalerRequest>(textBody)
+            ?: return RequestValidationException("Request body not found")
+        val validationError = validateRequest(body, Validation {
+            RegisterSalerRequest::email required {
+                pattern(EMAIL_REGEX) hint EMAIL_VALIDATION_HINT
             }
-        )
-        if (adminProfile == null || adminProfile.state != BusinessState.APPROVED) {
-            return UnauthorizedException()
-        }
+        })
+        if (validationError != null) return validationError
+
+        val (_, _) = requireApprovedProfile(
+            cognito, headers, tableProfiles, business, PROFILE_BUSINESS_ADMIN
+        ) ?: return UnauthorizedException()
 
         val existing = tableProfiles.getItem(
             UserBusinessProfile().apply {
