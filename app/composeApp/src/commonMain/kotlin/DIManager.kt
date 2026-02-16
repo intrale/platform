@@ -1,6 +1,4 @@
 
-
-
 import androidx.navigation.NavHostController
 import asdo.auth.DoChangePassword
 import asdo.auth.DoCheckPreviousLogin
@@ -210,229 +208,244 @@ public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 
 const val LOGIN_PATH = "/login"
 
-// These class define bindings for dependencies injections on our App
-class DIManager {
+private val infrastructureModule = DI.Module("infrastructure") {
+    bindFactory<NavHostController, Router> { navigator -> CommonRouter(navigator) }
 
-    companion object {
-
-            var di = DI {
-
-                /* Bindings */
-                bindFactory<NavHostController, Router> {
-                    navigator -> CommonRouter(navigator)
-                }
-
-                bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
-                bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
-                bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
-                bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
-                bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
-                bindSingleton(tag = HOME) { Home() }
-                bindSingleton(tag = INIT) { Login() }
-                bindSingleton(tag = DASHBOARD) { DashboardScreen() }
-                bindSingleton(tag = BUSINESS_ONBOARDING) { BusinessOnboardingScreen() }
-                bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
-                bindSingleton(tag = SIGNUP) { SignUpScreen() }
-                bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
-                bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
-                bindSingleton(tag = REGISTER_SALER) { RegisterSalerScreen() }
-                bindSingleton(tag = DELIVERY_HOME) { DeliveryHomeScreen() }
-                bindSingleton(tag = DELIVERY_DASHBOARD) { DeliveryDashboardScreen() }
-                bindSingleton(tag = DELIVERY_PROFILE) { DeliveryProfileScreen() }
-                bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
-                bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
-                bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
-                bindSingleton(tag = CONFIRM_PASSWORD_RECOVERY) { ConfirmPasswordRecoveryScreen() }
-                bindSingleton(tag = REGISTER_NEW_BUSINESS) { RegisterNewBusinessScreen() }
-                bindSingleton(tag = REVIEW_BUSINESS) { ReviewBusinessScreen() }
-                bindSingleton(tag = REQUEST_JOIN_BUSINESS) { RequestJoinBusinessScreen() }
-                bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
-                bindSingleton(tag = PERSONALIZATION) { PersonalizationScreen() }
-                bindSingleton(tag = BUSINESS_PRODUCTS) { ProductListScreen() }
-                bindSingleton(tag = BUSINESS_PRODUCT_FORM) { ProductFormScreen() }
-                bindSingleton(tag = BUSINESS_CATEGORIES) { CategoryListScreen() }
-                bindSingleton(tag = BUSINESS_CATEGORY_FORM) { CategoryFormScreen() }
-                bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
-                bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
-
-                bindSingleton(tag = SCREENS) {
-                    val appType = AppRuntimeConfig.appType
-
-                    arrayListOf<Screen>().apply {
-                        when (appType) {
-                            AppType.CLIENT -> {
-                                add(instance(tag = CLIENT_ENTRY))
-                                add(instance(tag = CLIENT_HOME))
-                                add(instance(tag = CLIENT_ORDERS))
-                                add(instance(tag = CLIENT_CART))
-                                add(instance(tag = CLIENT_PROFILE))
-                                add(instance(tag = INIT))
-                                add(instance(tag = SIGNUP))
-                                add(instance(tag = CHANGE_PASSWORD))
-                                add(instance(tag = PASSWORD_RECOVERY))
-                                add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
-                                add(instance(tag = TWO_FACTOR_SETUP))
-                                add(instance(tag = TWO_FACTOR_VERIFY))
-                            }
-
-                            AppType.DELIVERY -> {
-                                add(instance(tag = DELIVERY_HOME))
-                                add(instance(tag = INIT))
-                                add(instance(tag = DELIVERY_DASHBOARD))
-                                add(instance(tag = DELIVERY_PROFILE))
-                                add(instance(tag = SIGNUP_DELIVERY))
-                                add(instance(tag = CHANGE_PASSWORD))
-                                add(instance(tag = PASSWORD_RECOVERY))
-                                add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
-                                add(instance(tag = TWO_FACTOR_SETUP))
-                                add(instance(tag = TWO_FACTOR_VERIFY))
-                            }
-
-                            AppType.BUSINESS -> {
-                                add(instance(tag = BUSINESS_ONBOARDING))
-                                add(instance(tag = INIT))
-                                add(instance(tag = DASHBOARD))
-                                add(instance(tag = BUTTONS_PREVIEW))
-                                add(instance(tag = SIGNUP))
-                                add(instance(tag = SELECT_SIGNUP_PROFILE))
-                                add(instance(tag = SIGNUP_PLATFORM_ADMIN))
-                                add(instance(tag = SIGNUP_DELIVERY))
-                                add(instance(tag = REGISTER_SALER))
-                                add(instance(tag = CHANGE_PASSWORD))
-                                add(instance(tag = PASSWORD_RECOVERY))
-                                add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
-                                add(instance(tag = REVIEW_BUSINESS))
-                                add(instance(tag = REGISTER_NEW_BUSINESS))
-                                add(instance(tag = REQUEST_JOIN_BUSINESS))
-                                add(instance(tag = REVIEW_JOIN_BUSINESS))
-                                add(instance(tag = PERSONALIZATION))
-                                add(instance(tag = BUSINESS_PRODUCTS))
-                                add(instance(tag = BUSINESS_PRODUCT_FORM))
-                                add(instance(tag = BUSINESS_CATEGORIES))
-                                add(instance(tag = BUSINESS_CATEGORY_FORM))
-                                add(instance(tag = TWO_FACTOR_SETUP))
-                                add(instance(tag = TWO_FACTOR_VERIFY))
-                            }
-
-                            else -> {
-                                add(instance(tag = HOME))
-                                add(instance(tag = INIT))
-                                add(instance(tag = DASHBOARD))
-                                add(instance(tag = BUTTONS_PREVIEW))
-                                add(instance(tag = SIGNUP))
-                                add(instance(tag = SELECT_SIGNUP_PROFILE))
-                                add(instance(tag = SIGNUP_PLATFORM_ADMIN))
-                                add(instance(tag = SIGNUP_DELIVERY))
-                                add(instance(tag = REGISTER_SALER))
-                                add(instance(tag = CHANGE_PASSWORD))
-                                add(instance(tag = PASSWORD_RECOVERY))
-                                add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
-                                add(instance(tag = REVIEW_BUSINESS))
-                                add(instance(tag = REGISTER_NEW_BUSINESS))
-                                add(instance(tag = REQUEST_JOIN_BUSINESS))
-                                add(instance(tag = REVIEW_JOIN_BUSINESS))
-                                add(instance(tag = PERSONALIZATION))
-                                add(instance(tag = BUSINESS_PRODUCTS))
-                                add(instance(tag = BUSINESS_PRODUCT_FORM))
-                                add(instance(tag = BUSINESS_CATEGORIES))
-                                add(instance(tag = BUSINESS_CATEGORY_FORM))
-                                add(instance(tag = TWO_FACTOR_SETUP))
-                                add(instance(tag = TWO_FACTOR_VERIFY))
-                            }
-                        }
-                    }
-                }
-
-                bindSingleton<HttpClient>{
-                    HttpClient() {
-                        install(ContentNegotiation) {
-                            json(
-                                Json { isLenient = true; ignoreUnknownKeys = true }
-                            )
-                        }
-                        install(Logging) {
-                            level = LogLevel.ALL // También podés usar HEADERS, BODY, etc.
-                            logger = object : Logger {
-                                override fun log(message: String) {
-                                    println("HTTP TRACE: $message") // o usá un logger real
-                                }
-                            }
-                        }
-                        install(DefaultRequest) {
-                            header(HttpHeaders.ContentType, ContentType.Application.Json)
-                        }
-
-                    }
-                }
-
-                bindSingleton<CommKeyValueStorage> { KeyValueStorageService() }
-                bindSingleton<CommLoginService> {
-                    if (AppRuntimeConfig.isDelivery) {
-                        DeliveryLoginService(instance())
-                    } else {
-                        ClientLoginService(instance())
-                    }
-                }
-                bindSingleton<CommSignUpService> { ClientSignUpService(instance()) }
-                bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
-                bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
-                bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance()) }
-                bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
-                bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
-                bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
-                bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
-                bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
-                bindSingleton<CommRegisterBusinessService> { ClientRegisterBusinessService(instance()) }
-                bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
-                bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
-                bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
-                bindSingleton<CommGetBusinessDashboardSummaryService> {
-                    ClientGetBusinessDashboardSummaryService(instance(), instance())
-                }
-                bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
-                bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
-                bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
-                bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
-                bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
-                bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance()) }
-                bindSingleton<CommDeliveryAvailabilityService> { DeliveryAvailabilityService(instance(), instance()) }
-                bindSingleton<CommDeliveryOrdersService> { DeliveryOrdersService(instance(), instance()) }
-
-                bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
-                bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
-                bindSingleton<ToDoSignUpPlatformAdmin> { DoSignUpPlatformAdmin(instance()) }
-                bindSingleton<ToDoSignUpDelivery> { DoSignUpDelivery(instance()) }
-                bindSingleton<ToDoRegisterSaler> { DoRegisterSaler(instance(), instance()) }
-                bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
-                bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
-                bindSingleton<ToDoListProducts> { DoListProducts(instance()) }
-                bindSingleton<ToDoListCategories> { DoListCategories(instance()) }
-                bindSingleton<ToDoCreateProduct> { DoCreateProduct(instance()) }
-                bindSingleton<ToDoCreateCategory> { DoCreateCategory(instance()) }
-                bindSingleton<ToDoUpdateProduct> { DoUpdateProduct(instance()) }
-                bindSingleton<ToDoUpdateCategory> { DoUpdateCategory(instance()) }
-                bindSingleton<ToDoDeleteProduct> { DoDeleteProduct(instance()) }
-                bindSingleton<ToDoDeleteCategory> { DoDeleteCategory(instance()) }
-                bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
-                bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
-                bindSingleton<ToDoChangePassword> { DoChangePassword(instance(), instance()) }
-                bindSingleton<ToDoPasswordRecovery> { DoPasswordRecovery(instance()) }
-                bindSingleton<ToDoConfirmPasswordRecovery> { DoConfirmPasswordRecovery(instance()) }
-                bindSingleton<ToDoRegisterBusiness> { DoRegisterBusiness(instance()) }
-                bindSingleton<ToDoReviewBusinessRegistration> { DoReviewBusinessRegistration(instance(), instance()) }
-                bindSingleton<ToDoRequestJoinBusiness> { DoRequestJoinBusiness(instance()) }
-                bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
-                bindSingleton<ToDoTwoFactorSetup> { DoTwoFactorSetup(instance(), instance()) }
-                bindSingleton<ToDoTwoFactorVerify> { DoTwoFactorVerify(instance(), instance()) }
-                bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
-                bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
-                bindSingleton<ToDoManageClientAddress> { DoManageClientAddress(instance(), instance(), instance()) }
-                bindSingleton<ToDoGetDeliveryProfile> { DoGetDeliveryProfile(instance()) }
-                bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }
-                bindSingleton<ToDoGetDeliveryAvailability> { DoGetDeliveryAvailability(instance()) }
-                bindSingleton<ToDoUpdateDeliveryAvailability> { DoUpdateDeliveryAvailability(instance()) }
-                bindSingleton<ToGetBusinessProducts> { DoGetBusinessProducts(instance()) }
-
+    bindSingleton<HttpClient> {
+        HttpClient() {
+            install(ContentNegotiation) {
+                json(Json { isLenient = true; ignoreUnknownKeys = true })
             }
+            install(Logging) {
+                level = LogLevel.ALL
+                logger = object : Logger {
+                    override fun log(message: String) {
+                        println("HTTP TRACE: $message")
+                    }
+                }
+            }
+            install(DefaultRequest) {
+                header(HttpHeaders.ContentType, ContentType.Application.Json)
+            }
+        }
+    }
+
+    bindSingleton<CommKeyValueStorage> { KeyValueStorageService() }
+}
+
+private val authModule = DI.Module("auth") {
+    bindSingleton<CommLoginService> {
+        if (AppRuntimeConfig.isDelivery) DeliveryLoginService(instance())
+        else ClientLoginService(instance())
+    }
+    bindSingleton<CommChangePasswordService> { ClientChangePasswordService(instance()) }
+    bindSingleton<CommPasswordRecoveryService> { ClientPasswordRecoveryService(instance()) }
+    bindSingleton<CommTwoFactorSetupService> { ClientTwoFactorSetupService(instance()) }
+    bindSingleton<CommTwoFactorVerifyService> { ClientTwoFactorVerifyService(instance()) }
+
+    bindSingleton<ToDoLogin> { DoLogin(instance(), instance()) }
+    bindSingleton<ToDoCheckPreviousLogin> { DoCheckPreviousLogin(instance()) }
+    bindSingleton<ToDoResetLoginCache> { DoResetLoginCache(instance()) }
+    bindSingleton<ToDoChangePassword> { DoChangePassword(instance(), instance()) }
+    bindSingleton<ToDoPasswordRecovery> { DoPasswordRecovery(instance()) }
+    bindSingleton<ToDoConfirmPasswordRecovery> { DoConfirmPasswordRecovery(instance()) }
+    bindSingleton<ToDoTwoFactorSetup> { DoTwoFactorSetup(instance(), instance()) }
+    bindSingleton<ToDoTwoFactorVerify> { DoTwoFactorVerify(instance(), instance()) }
+}
+
+private val signupModule = DI.Module("signup") {
+    bindSingleton<CommSignUpService> { ClientSignUpService(instance()) }
+    bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
+    bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
+    bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance()) }
+
+    bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
+    bindSingleton<ToDoSignUpPlatformAdmin> { DoSignUpPlatformAdmin(instance()) }
+    bindSingleton<ToDoSignUpDelivery> { DoSignUpDelivery(instance()) }
+    bindSingleton<ToDoRegisterSaler> { DoRegisterSaler(instance(), instance()) }
+}
+
+private val businessModule = DI.Module("business") {
+    bindSingleton<CommSearchBusinessesService> { ClientSearchBusinessesService(instance()) }
+    bindSingleton<CommRegisterBusinessService> { ClientRegisterBusinessService(instance()) }
+    bindSingleton<CommReviewBusinessRegistrationService> { ClientReviewBusinessRegistrationService(instance()) }
+    bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
+    bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
+    bindSingleton<CommGetBusinessDashboardSummaryService> { ClientGetBusinessDashboardSummaryService(instance(), instance()) }
+    bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
+    bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
+    bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
+
+    bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
+    bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
+    bindSingleton<ToDoListProducts> { DoListProducts(instance()) }
+    bindSingleton<ToDoListCategories> { DoListCategories(instance()) }
+    bindSingleton<ToDoCreateProduct> { DoCreateProduct(instance()) }
+    bindSingleton<ToDoUpdateProduct> { DoUpdateProduct(instance()) }
+    bindSingleton<ToDoDeleteProduct> { DoDeleteProduct(instance()) }
+    bindSingleton<ToDoCreateCategory> { DoCreateCategory(instance()) }
+    bindSingleton<ToDoUpdateCategory> { DoUpdateCategory(instance()) }
+    bindSingleton<ToDoDeleteCategory> { DoDeleteCategory(instance()) }
+    bindSingleton<ToDoRegisterBusiness> { DoRegisterBusiness(instance()) }
+    bindSingleton<ToDoReviewBusinessRegistration> { DoReviewBusinessRegistration(instance(), instance()) }
+    bindSingleton<ToDoRequestJoinBusiness> { DoRequestJoinBusiness(instance()) }
+    bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
+    bindSingleton<ToGetBusinessProducts> { DoGetBusinessProducts(instance()) }
+}
+
+private val clientModule = DI.Module("client") {
+    bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
+    bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
+
+    bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
+    bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
+    bindSingleton<ToDoManageClientAddress> { DoManageClientAddress(instance(), instance(), instance()) }
+}
+
+private val deliveryModule = DI.Module("delivery") {
+    bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance()) }
+    bindSingleton<CommDeliveryAvailabilityService> { DeliveryAvailabilityService(instance(), instance()) }
+    bindSingleton<CommDeliveryOrdersService> { DeliveryOrdersService(instance(), instance()) }
+
+    bindSingleton<ToDoGetDeliveryProfile> { DoGetDeliveryProfile(instance()) }
+    bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }
+    bindSingleton<ToDoGetDeliveryAvailability> { DoGetDeliveryAvailability(instance()) }
+    bindSingleton<ToDoUpdateDeliveryAvailability> { DoUpdateDeliveryAvailability(instance()) }
+}
+
+private val screensModule = DI.Module("screens") {
+    bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
+    bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
+    bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
+    bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
+    bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
+    bindSingleton(tag = HOME) { Home() }
+    bindSingleton(tag = INIT) { Login() }
+    bindSingleton(tag = DASHBOARD) { DashboardScreen() }
+    bindSingleton(tag = BUSINESS_ONBOARDING) { BusinessOnboardingScreen() }
+    bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
+    bindSingleton(tag = SIGNUP) { SignUpScreen() }
+    bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
+    bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
+    bindSingleton(tag = REGISTER_SALER) { RegisterSalerScreen() }
+    bindSingleton(tag = DELIVERY_HOME) { DeliveryHomeScreen() }
+    bindSingleton(tag = DELIVERY_DASHBOARD) { DeliveryDashboardScreen() }
+    bindSingleton(tag = DELIVERY_PROFILE) { DeliveryProfileScreen() }
+    bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
+    bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
+    bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
+    bindSingleton(tag = CONFIRM_PASSWORD_RECOVERY) { ConfirmPasswordRecoveryScreen() }
+    bindSingleton(tag = REGISTER_NEW_BUSINESS) { RegisterNewBusinessScreen() }
+    bindSingleton(tag = REVIEW_BUSINESS) { ReviewBusinessScreen() }
+    bindSingleton(tag = REQUEST_JOIN_BUSINESS) { RequestJoinBusinessScreen() }
+    bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
+    bindSingleton(tag = PERSONALIZATION) { PersonalizationScreen() }
+    bindSingleton(tag = BUSINESS_PRODUCTS) { ProductListScreen() }
+    bindSingleton(tag = BUSINESS_PRODUCT_FORM) { ProductFormScreen() }
+    bindSingleton(tag = BUSINESS_CATEGORIES) { CategoryListScreen() }
+    bindSingleton(tag = BUSINESS_CATEGORY_FORM) { CategoryFormScreen() }
+    bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
+    bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
+
+    bindSingleton(tag = SCREENS) {
+        val appType = AppRuntimeConfig.appType
+
+        arrayListOf<Screen>().apply {
+            when (appType) {
+                AppType.CLIENT -> {
+                    add(instance(tag = CLIENT_ENTRY))
+                    add(instance(tag = CLIENT_HOME))
+                    add(instance(tag = CLIENT_ORDERS))
+                    add(instance(tag = CLIENT_CART))
+                    add(instance(tag = CLIENT_PROFILE))
+                    add(instance(tag = INIT))
+                    add(instance(tag = SIGNUP))
+                    add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = PASSWORD_RECOVERY))
+                    add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                    add(instance(tag = TWO_FACTOR_SETUP))
+                    add(instance(tag = TWO_FACTOR_VERIFY))
+                }
+
+                AppType.DELIVERY -> {
+                    add(instance(tag = DELIVERY_HOME))
+                    add(instance(tag = INIT))
+                    add(instance(tag = DELIVERY_DASHBOARD))
+                    add(instance(tag = DELIVERY_PROFILE))
+                    add(instance(tag = SIGNUP_DELIVERY))
+                    add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = PASSWORD_RECOVERY))
+                    add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                    add(instance(tag = TWO_FACTOR_SETUP))
+                    add(instance(tag = TWO_FACTOR_VERIFY))
+                }
+
+                AppType.BUSINESS -> {
+                    add(instance(tag = BUSINESS_ONBOARDING))
+                    add(instance(tag = INIT))
+                    add(instance(tag = DASHBOARD))
+                    add(instance(tag = BUTTONS_PREVIEW))
+                    add(instance(tag = SIGNUP))
+                    add(instance(tag = SELECT_SIGNUP_PROFILE))
+                    add(instance(tag = SIGNUP_PLATFORM_ADMIN))
+                    add(instance(tag = SIGNUP_DELIVERY))
+                    add(instance(tag = REGISTER_SALER))
+                    add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = PASSWORD_RECOVERY))
+                    add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                    add(instance(tag = REVIEW_BUSINESS))
+                    add(instance(tag = REGISTER_NEW_BUSINESS))
+                    add(instance(tag = REQUEST_JOIN_BUSINESS))
+                    add(instance(tag = REVIEW_JOIN_BUSINESS))
+                    add(instance(tag = PERSONALIZATION))
+                    add(instance(tag = BUSINESS_PRODUCTS))
+                    add(instance(tag = BUSINESS_PRODUCT_FORM))
+                    add(instance(tag = BUSINESS_CATEGORIES))
+                    add(instance(tag = BUSINESS_CATEGORY_FORM))
+                    add(instance(tag = TWO_FACTOR_SETUP))
+                    add(instance(tag = TWO_FACTOR_VERIFY))
+                }
+
+                else -> {
+                    add(instance(tag = HOME))
+                    add(instance(tag = INIT))
+                    add(instance(tag = DASHBOARD))
+                    add(instance(tag = BUTTONS_PREVIEW))
+                    add(instance(tag = SIGNUP))
+                    add(instance(tag = SELECT_SIGNUP_PROFILE))
+                    add(instance(tag = SIGNUP_PLATFORM_ADMIN))
+                    add(instance(tag = SIGNUP_DELIVERY))
+                    add(instance(tag = REGISTER_SALER))
+                    add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = PASSWORD_RECOVERY))
+                    add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
+                    add(instance(tag = REVIEW_BUSINESS))
+                    add(instance(tag = REGISTER_NEW_BUSINESS))
+                    add(instance(tag = REQUEST_JOIN_BUSINESS))
+                    add(instance(tag = REVIEW_JOIN_BUSINESS))
+                    add(instance(tag = PERSONALIZATION))
+                    add(instance(tag = BUSINESS_PRODUCTS))
+                    add(instance(tag = BUSINESS_PRODUCT_FORM))
+                    add(instance(tag = BUSINESS_CATEGORIES))
+                    add(instance(tag = BUSINESS_CATEGORY_FORM))
+                    add(instance(tag = TWO_FACTOR_SETUP))
+                    add(instance(tag = TWO_FACTOR_VERIFY))
+                }
+            }
+        }
+    }
+}
+
+class DIManager {
+    companion object {
+        var di = DI {
+            import(infrastructureModule)
+            import(authModule)
+            import(signupModule)
+            import(businessModule)
+            import(clientModule)
+            import(deliveryModule)
+            import(screensModule)
+        }
     }
 }
