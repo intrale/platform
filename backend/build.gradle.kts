@@ -5,6 +5,17 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.ktor)
     alias(libs.plugins.shadow)
+    alias(libs.plugins.kover)
+}
+
+kover {
+    reports {
+        verify {
+            rule {
+                minBound(40)
+            }
+        }
+    }
 }
 
 kotlin {
