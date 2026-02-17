@@ -26,8 +26,8 @@ jobs:
       - name: Run verifyNoLegacyStrings
         run: ./gradlew verifyNoLegacyStrings
 
-      - name: Run tests
-        run: ./gradlew check
+      - name: Run tests with coverage
+        run: ./gradlew check koverVerify koverHtmlReport
 
       - name: Upload test reports
         if: always()
@@ -37,4 +37,13 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+          retention-days: 14
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            **/build/reports/kover/
           retention-days: 14

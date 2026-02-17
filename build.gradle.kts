@@ -35,6 +35,7 @@ plugins {
     alias(libs.plugins.shadow) apply false
 
     alias(libs.plugins.ksp) apply false
+    alias(libs.plugins.kover) apply false
 
     // Plugins for Multiplatform projects
     alias(libs.plugins.androidApplication) apply false
