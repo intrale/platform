@@ -80,10 +80,10 @@ class TwoFactorVerify (override val config: UsersConfig, override val logger: Lo
                     val key = SecretKeySpec(Base32().decode(user.secret), "HmacSHA1")
 
                     val now = Instant.now()
-                    val expected = generator.generateOneTimePassword(key, now)
+                    val expected = String.format("%06d", generator.generateOneTimePassword(key, now))
 
                     logger.debug("body.code=" + body.code + ", expected=" + expected)
-                    if (body.code == expected.toString()){
+                    if (body.code == expected){
                         return Response()
                     }
 

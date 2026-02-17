@@ -51,7 +51,7 @@ class E2ETwoFactorTest : E2ETestBase() {
             // Generar TOTP valido con el mismo secret
             val generator = TimeBasedOneTimePasswordGenerator()
             val key = SecretKeySpec(Base32().decode(knownSecret), "HmacSHA1")
-            val code = generator.generateOneTimePassword(key, Instant.now()).toString()
+            val code = String.format("%06d", generator.generateOneTimePassword(key, Instant.now()))
 
             val response = client.post("/intrale/2faverify") {
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())

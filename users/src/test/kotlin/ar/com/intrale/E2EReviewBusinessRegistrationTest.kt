@@ -23,7 +23,7 @@ class E2EReviewBusinessRegistrationTest : E2ETestBase() {
     private fun generateTotpCode(): String {
         val generator = TimeBasedOneTimePasswordGenerator()
         val key = SecretKeySpec(Base32().decode(knownSecret), "HmacSHA1")
-        return generator.generateOneTimePassword(key, Instant.now()).toString()
+        return String.format("%06d", generator.generateOneTimePassword(key, Instant.now()))
     }
 
     @Test
