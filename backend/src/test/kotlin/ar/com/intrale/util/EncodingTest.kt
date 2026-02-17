@@ -36,4 +36,35 @@ class EncodingTest {
 
         assertEquals("", decoded)
     }
+
+    @Test
+    fun `decodeBase64OrNull retorna null si contiene retorno de carro`() {
+        val decoded = decodeBase64OrNull("Zm9v\rYmFy")
+
+        assertNull(decoded)
+    }
+
+    @Test
+    fun `decodeBase64OrNull retorna null si longitud no es multiplo de 4`() {
+        val decoded = decodeBase64OrNull("Zm9vY")
+
+        assertNull(decoded)
+    }
+
+    @Test
+    fun `decodeBase64OrNull retorna null con caracteres invalidos`() {
+        val decoded = decodeBase64OrNull("Zm9v!@#$")
+
+        assertNull(decoded)
+    }
+
+    @Test
+    fun `decodeBase64OrNull maneja espacios alrededor`() {
+        val original = "test"
+        val encoded = java.util.Base64.getEncoder().encodeToString(original.toByteArray())
+
+        val decoded = decodeBase64OrNull("  $encoded  ")
+
+        assertEquals(original, decoded)
+    }
 }
