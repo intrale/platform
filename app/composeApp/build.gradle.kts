@@ -18,6 +18,19 @@ plugins {
     alias(libs.plugins.kotlinx.serialization)
     alias(libs.plugins.buildkonfig)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.kover)
+}
+
+kover {
+    reports {
+        variant("jvm") {
+            verify {
+                rule {
+                    minBound(5)
+                }
+            }
+        }
+    }
 }
 
 fun sanitizePackageSuffix(raw: String): String {
@@ -471,6 +484,13 @@ tasks.withType(KotlinCompilationTask::class).configureEach {
 
 tasks.named("check").configure {
     dependsOn(validateComposeResources)
+    dependsOn("koverVerifyJvm")
+}
+
+// Desactivar koverVerify genérico — falla con ConcurrentModificationException por los Android
+// product flavors. Se usa koverVerifyJvm (desktop) que cubre commonTest.
+tasks.matching { it.name == "koverVerify" }.configureEach {
+    enabled = false
 }
 
 tasks.named("assemble").configure {
