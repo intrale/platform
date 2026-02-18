@@ -8,15 +8,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import ext.dto.BusinessDTO
 import io.konform.validation.Validation
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class ReviewBusinessViewModel : ViewModel() {
-    private val logger = LoggerFactory.default.newLogger<ReviewBusinessViewModel>()
-    private val review: ToDoReviewBusinessRegistration by DIManager.di.instance()
-    private val getBusinesses: ToGetBusinesses by DIManager.di.instance()
+class ReviewBusinessViewModel(
+    private val review: ToDoReviewBusinessRegistration = DIManager.di.direct.instance(),
+    private val getBusinesses: ToGetBusinesses = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<ReviewBusinessViewModel>()
 
     var state by mutableStateOf(UIState())
     var loading by mutableStateOf(false)

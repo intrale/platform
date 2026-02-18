@@ -8,15 +8,18 @@ import asdo.auth.DoTwoFactorVerifyResult
 import asdo.auth.ToDoTwoFactorVerify
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class TwoFactorVerifyViewModel : ViewModel() {
+class TwoFactorVerifyViewModel(
+    private val toDoVerify: ToDoTwoFactorVerify = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
 
-    private val toDoVerify: ToDoTwoFactorVerify by DIManager.di.instance()
-    private val logger = LoggerFactory.default.newLogger<TwoFactorVerifyViewModel>()
+    private val logger = loggerFactory.newLogger<TwoFactorVerifyViewModel>()
 
     var state by mutableStateOf(TwoFactorVerifyUIState())
     var loading by mutableStateOf(false)

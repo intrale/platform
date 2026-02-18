@@ -10,14 +10,17 @@ import ar.com.intrale.strings.model.MessageKey
 import ar.com.intrale.strings.resolveMessage
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class SignUpViewModel : ViewModel() {
-    private val logger = LoggerFactory.default.newLogger<SignUpViewModel>()
-    private val toDoSignUpGeneric: ToDoSignUp by DIManager.di.instance()
+class SignUpViewModel(
+    private val toDoSignUpGeneric: ToDoSignUp = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<SignUpViewModel>()
 
     var state by mutableStateOf(SignUpUIState())
     var loading by mutableStateOf(false)

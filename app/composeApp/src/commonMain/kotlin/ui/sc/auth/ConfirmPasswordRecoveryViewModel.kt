@@ -9,14 +9,17 @@ import asdo.auth.ToDoConfirmPasswordRecovery
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class ConfirmPasswordRecoveryViewModel : ViewModel() {
-    private val toDoConfirmPasswordRecovery: ToDoConfirmPasswordRecovery by DIManager.di.instance()
-    private val logger = LoggerFactory.default.newLogger<ConfirmPasswordRecoveryViewModel>()
+class ConfirmPasswordRecoveryViewModel(
+    private val toDoConfirmPasswordRecovery: ToDoConfirmPasswordRecovery = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<ConfirmPasswordRecoveryViewModel>()
 
     var state by mutableStateOf(ConfirmPasswordRecoveryUIState())
     var loading by mutableStateOf(false)

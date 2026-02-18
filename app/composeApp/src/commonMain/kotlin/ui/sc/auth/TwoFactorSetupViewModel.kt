@@ -7,15 +7,18 @@ import androidx.compose.runtime.setValue
 import asdo.auth.DoTwoFactorSetupResult
 import asdo.auth.ToDoTwoFactorSetup
 import io.konform.validation.Validation
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class TwoFactorSetupViewModel : ViewModel() {
+class TwoFactorSetupViewModel(
+    private val toDoSetup: ToDoTwoFactorSetup = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
 
-    private val toDoSetup: ToDoTwoFactorSetup by DIManager.di.instance()
-    private val logger = LoggerFactory.default.newLogger<TwoFactorSetupViewModel>()
+    private val logger = loggerFactory.newLogger<TwoFactorSetupViewModel>()
 
     var state by mutableStateOf(TwoFactorSetupState())
     var loading by mutableStateOf(false)

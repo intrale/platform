@@ -8,15 +8,18 @@ import asdo.auth.DoChangePasswordResult
 import asdo.auth.ToDoChangePassword
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class ChangePasswordViewModel : ViewModel() {
+class ChangePasswordViewModel(
+    private val toDoChangePassword: ToDoChangePassword = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
 
-    private val toDoChangePassword: ToDoChangePassword by DIManager.di.instance()
-    private val logger = LoggerFactory.default.newLogger<ChangePasswordViewModel>()
+    private val logger = loggerFactory.newLogger<ChangePasswordViewModel>()
 
     var state by mutableStateOf(ChangePasswordUIState())
     var loading by mutableStateOf(false)
