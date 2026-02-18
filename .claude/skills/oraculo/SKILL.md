@@ -28,7 +28,7 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 ### Setup (ejecutar al inicio)
 
 ```bash
-export PATH="/c/tools/gh-cli/bin:$PATH"
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
 GH_REPO="intrale/platform"
 ```

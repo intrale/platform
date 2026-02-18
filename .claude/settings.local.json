@@ -42,7 +42,8 @@
       "WebSearch",
       "WebFetch",
       "Skill(oraculo)",
-      "Skill(mensajero)"
+      "Skill(mensajero)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\":*)"
     ],
     "deny": [
       "Bash(git push --force:*)",
@@ -58,8 +59,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-telegram.sh\"",
-            "timeout": 10
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-telegram.sh\"",
+            "timeout": 10000
           }
         ]
       }
@@ -70,8 +71,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-notify.sh\"",
-            "timeout": 10
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-notify.sh\"",
+            "timeout": 10000
           }
         ]
       }
@@ -82,8 +83,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/post-git-push.sh\"",
-            "timeout": 10
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/post-git-push.sh\"",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/activity-logger.sh\"",
+            "timeout": 5000
           }
         ]
       }
