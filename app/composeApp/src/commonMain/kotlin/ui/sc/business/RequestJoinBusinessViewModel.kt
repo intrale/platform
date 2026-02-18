@@ -7,14 +7,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.konform.validation.Validation
 import io.konform.validation.required
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class RequestJoinBusinessViewModel : ViewModel() {
-    private val logger = LoggerFactory.default.newLogger<RequestJoinBusinessViewModel>()
-    private val requestJoin: ToDoRequestJoinBusiness by DIManager.di.instance()
+class RequestJoinBusinessViewModel(
+    private val requestJoin: ToDoRequestJoinBusiness = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<RequestJoinBusinessViewModel>()
 
     var state by mutableStateOf(UIState())
     var loading by mutableStateOf(false)

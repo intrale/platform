@@ -24,9 +24,61 @@ plugins {
 kover {
     reports {
         variant("jvm") {
+            filters {
+                excludes {
+                    classes(
+                        // Componentes UI
+                        "ui.cp.*",
+                        "ui.cp.buttons.*",
+                        "ui.cp.icons.*",
+                        "ui.cp.inputs.*",
+                        "ui.cp.menu.*",
+                        // Tema
+                        "ui.th.*",
+                        // Router / navegación
+                        "ui.ro.*",
+                        // Pantallas compartidas
+                        "ui.sc.shared.*",
+                        // Compose resources generados
+                        "ui.rs.*",
+                        // Pantallas Compose (no testeables con unit tests)
+                        "*Screen*",
+                        "*ScreenKt*",
+                        // Entry points
+                        "*NavigationBar*",
+                        "ui.AppKt*",
+                        "ar.com.intrale.App*",
+                        "ar.com.intrale.MainKt*",
+                        // Pantallas Compose sin sufijo "Screen" en el nombre de clase
+                        "ui.sc.auth.Login",
+                        "ui.sc.auth.Login$*",
+                        "ui.sc.auth.LoginKt",
+                        "ui.sc.auth.LoginKt$*",
+                        // Generados / singletons (root package y qualified)
+                        "DIManager*",
+                        "ar.com.intrale.DIManager*",
+                        "ar.com.intrale.BuildKonfig*",
+                        "MainKt",
+                        "*ComposableSingletons*",
+                        // Catálogos de strings (puro data)
+                        "ar.com.intrale.strings.catalog.*",
+                        // Enum de constantes
+                        "ar.com.intrale.strings.model.MessageKey*",
+                        // Runtime de strings (locale/brand, platform-specific)
+                        "ar.com.intrale.strings.runtime.*",
+                        // Config de app (platform-specific)
+                        "ar.com.intrale.appconfig.*",
+                        // Storage (platform-specific, depende de settings nativas)
+                        "ext.storage.*",
+                        // Expect/actual platform
+                        "*Platform*",
+                        "*Greeting*",
+                    )
+                }
+            }
             verify {
                 rule {
-                    minBound(5)
+                    minBound(80)
                 }
             }
         }

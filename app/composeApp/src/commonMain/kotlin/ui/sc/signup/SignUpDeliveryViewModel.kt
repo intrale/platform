@@ -9,16 +9,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.business.BusinessView
 import ui.sc.shared.ViewModel
 
-class SignUpDeliveryViewModel : ViewModel() {
-    private val logger = LoggerFactory.default.newLogger<SignUpDeliveryViewModel>()
-    private val toDoSignUpDelivery: ToDoSignUpDelivery by DIManager.di.instance()
-    private val toGetBusinesses: ToGetBusinesses by DIManager.di.instance()
+class SignUpDeliveryViewModel(
+    private val toDoSignUpDelivery: ToDoSignUpDelivery = DIManager.di.direct.instance(),
+    private val toGetBusinesses: ToGetBusinesses = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<SignUpDeliveryViewModel>()
 
     var state by mutableStateOf(SignUpUIState())
     var suggestions by mutableStateOf(listOf<BusinessView>())

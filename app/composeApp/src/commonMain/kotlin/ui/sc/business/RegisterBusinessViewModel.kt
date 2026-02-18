@@ -10,14 +10,17 @@ import ar.com.intrale.strings.resolveMessage
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class RegisterBusinessViewModel : ViewModel() {
-    private val logger = LoggerFactory.default.newLogger<RegisterBusinessViewModel>()
-    private val register: ToDoRegisterBusiness by DIManager.di.instance()
+class RegisterBusinessViewModel(
+    private val register: ToDoRegisterBusiness = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<RegisterBusinessViewModel>()
 
     var state by mutableStateOf(UIState())
     var loading by mutableStateOf(false)

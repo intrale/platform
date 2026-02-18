@@ -8,14 +8,17 @@ import asdo.auth.DoPasswordRecoveryResult
 import asdo.auth.ToDoPasswordRecovery
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class PasswordRecoveryViewModel : ViewModel() {
-    private val toDoPasswordRecovery: ToDoPasswordRecovery by DIManager.di.instance()
-    private val logger = LoggerFactory.default.newLogger<PasswordRecoveryViewModel>()
+class PasswordRecoveryViewModel(
+    private val toDoPasswordRecovery: ToDoPasswordRecovery = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<PasswordRecoveryViewModel>()
 
     var state by mutableStateOf(PasswordRecoveryUIState())
     var loading by mutableStateOf(false)

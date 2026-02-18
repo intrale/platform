@@ -10,17 +10,20 @@ import asdo.auth.ToDoLogin
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.inputs.InputState
 import ui.sc.shared.ViewModel
 
-class LoginViewModel : ViewModel() {
+class LoginViewModel(
+    private val todoLogin: ToDoLogin = DIManager.di.direct.instance(),
+    private val toDoCheckPreviousLogin: ToDoCheckPreviousLogin = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
 
-    private val todoLogin: ToDoLogin by DIManager.di.instance()
-    private val toDoCheckPreviousLogin: ToDoCheckPreviousLogin by DIManager.di.instance()
-    private val logger = LoggerFactory.default.newLogger<LoginViewModel>()
+    private val logger = loggerFactory.newLogger<LoginViewModel>()
 
     // data state initialize
     var state by mutableStateOf(LoginUIState())

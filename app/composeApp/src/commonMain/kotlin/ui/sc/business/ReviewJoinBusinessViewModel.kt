@@ -9,14 +9,17 @@ import androidx.compose.runtime.setValue
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import io.konform.validation.required
+import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
 
-class ReviewJoinBusinessViewModel : ViewModel() {
-    private val logger = LoggerFactory.default.newLogger<ReviewJoinBusinessViewModel>()
-    private val reviewJoin: ToDoReviewJoinBusiness by DIManager.di.instance()
+class ReviewJoinBusinessViewModel(
+    private val reviewJoin: ToDoReviewJoinBusiness = DIManager.di.direct.instance(),
+    loggerFactory: LoggerFactory = LoggerFactory.default
+) : ViewModel() {
+    private val logger = loggerFactory.newLogger<ReviewJoinBusinessViewModel>()
 
     var state by mutableStateOf(UIState())
     var loading by mutableStateOf(false)
