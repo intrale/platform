@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/activity-logger.sh",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/activity-logger.sh",
             "timeout": 5000
           }
         ]
