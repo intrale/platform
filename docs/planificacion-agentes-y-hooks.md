@@ -143,4 +143,7 @@ git push (Bash tool)
 - [x] Agente **El Sabueso** (skill `/sabueso`)
 - [x] Agente **El Mensajero** (skill `/mensajero`)
 - [x] Agente **El Inquisidor** (skill `/inquisidor`)
+- [x] Agente **La Pluma** (skill `/pluma`, unificando `/nueva-historia`, `/refinar`, `/triaje`)
+- [x] Agente **El Oráculo** (skill `/oraculo` — planificación, sprint, propuestas, digest)
+- [x] Instalar `gh` CLI 2.86.0 y migrar todos los skills de `curl` a `gh`
 - [x] Mejorar MEMORY.md con patrones de arquitectura y debugging (completado con reporte de El Sabueso)
