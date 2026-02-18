@@ -45,3 +45,6 @@ app/composeApp/src/wasmJsMain/resources/*.png
 app/composeApp/src/wasmJsMain/resources/*.ico
 app/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/*.png
 docs/branding/icons/icon_master.png
+
+# Claude Code
+.claude/activity-log.jsonl
