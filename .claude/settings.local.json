@@ -40,7 +40,9 @@
       "Bash(winget:*)",
       "Bash(bash:*)",
       "WebSearch",
-      "WebFetch"
+      "WebFetch",
+      "Skill(oraculo)",
+      "Skill(mensajero)"
     ],
     "deny": [
       "Bash(git push --force:*)",
