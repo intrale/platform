@@ -1,6 +1,11 @@
+<<<<<<< docs/agents-automation
 // El Portero 🚪 — Permission Tracker Hook v2
 // PostToolUse hook: detecta tools aprobados y los persiste en settings.local.json
 // Maneja: Bash, WebFetch, Skill
+=======
+// El Portero -- Permission Tracker Hook
+// PostToolUse hook: detecta comandos Bash aprobados y los persiste en settings.local.json
+>>>>>>> main
 // Pure Node.js — sin dependencia de bash
 const fs = require("fs");
 const path = require("path");
@@ -27,12 +32,16 @@ process.stdin.on("end", () => { if (!done) { done = true; handleInput(); } });
 process.stdin.on("error", () => { if (!done) { done = true; handleInput(); } });
 setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} handleInput(); } }, 2000);
 
+<<<<<<< docs/agents-automation
 // --- Generadores de patrones por tipo de tool ---
 
 function generateBashPattern(cmd) {
     if (!cmd) return null;
 
     // Comando entre comillas (paths con espacios)
+=======
+function generatePattern(cmd) {
+>>>>>>> main
     if (cmd.startsWith("\"")) {
         const end = cmd.indexOf("\"", 1);
         if (end > 0) {
@@ -46,7 +55,10 @@ function generateBashPattern(cmd) {
 
     if (parts.length === 1) return "Bash(" + first + ":*)";
 
+<<<<<<< docs/agents-automation
     // Git: generalizar por subcomando
+=======
+>>>>>>> main
     if (first === "git") {
         const sub = parts[1];
         if (sub === "credential" && parts.length > 2) return "Bash(git credential " + parts[2] + ":*)";
@@ -54,7 +66,10 @@ function generateBashPattern(cmd) {
         return "Bash(git " + sub + ":*)";
     }
 
+<<<<<<< docs/agents-automation
     // Export: generalizar por nombre de variable
+=======
+>>>>>>> main
     if (first === "export") {
         const rest = parts.slice(1).join(" ");
         const eqIdx = rest.indexOf("=");
@@ -65,15 +80,20 @@ function generateBashPattern(cmd) {
         return "Bash(export " + parts[1] + ":*)";
     }
 
+<<<<<<< docs/agents-automation
     // Paths absolutos o relativos
     if (first.startsWith("./") || first.startsWith("/")) return "Bash(" + first + ":*)";
 
     // Variable assignment (VAR=value command)
+=======
+    if (first.startsWith("./") || first.startsWith("/")) return "Bash(" + first + ":*)";
+>>>>>>> main
     if (first.includes("=")) {
         const varname = first.substring(0, first.indexOf("="));
         return "Bash(" + varname + "=*)";
     }
 
+<<<<<<< docs/agents-automation
     // Generico: primer token como prefijo
     return "Bash(" + first + ":*)";
 }
@@ -173,12 +193,30 @@ function handleInput() {
         if (!pattern) process.exit(0);
 
         // Leer settings
+=======
+    return "Bash(" + first + ":*)";
+}
+
+function handleInput() {
+    try {
+        const data = JSON.parse(input || "{}");
+
+        if (data.tool_name !== "Bash") process.exit(0);
+
+        const command = (data.tool_input && data.tool_input.command) || "";
+        if (!command) process.exit(0);
+
+        const pattern = generatePattern(command.trim());
+        if (!pattern) process.exit(0);
+
+>>>>>>> main
         let settings;
         try { settings = JSON.parse(fs.readFileSync(SETTINGS, "utf8")); } catch(e) { process.exit(0); }
 
         const allow = (settings.permissions && settings.permissions.allow) || [];
         const deny = (settings.permissions && settings.permissions.deny) || [];
 
+<<<<<<< docs/agents-automation
         // Verificar si ya esta cubierto por un patron existente
         if (isAlreadyCovered(pattern, allow)) process.exit(0);
 
@@ -186,6 +224,22 @@ function handleInput() {
         if (conflictsWithDeny(pattern, deny)) process.exit(0);
 
         // Agregar nuevo patron
+=======
+        if (allow.includes(pattern)) process.exit(0);
+
+        // Matchea deny?
+        const newMatch = pattern.match(/^Bash\((.+?):\*\)$/);
+        if (newMatch) {
+            const newCmd = newMatch[1];
+            for (const d of deny) {
+                const dm = d.match(/^Bash\((.+?):\*\)$/);
+                if (!dm) continue;
+                const denyCmd = dm[1];
+                if (denyCmd.startsWith(newCmd) || newCmd.startsWith(denyCmd)) process.exit(0);
+            }
+        }
+
+>>>>>>> main
         allow.push(pattern);
         settings.permissions = settings.permissions || {};
         settings.permissions.allow = allow;
@@ -194,6 +248,7 @@ function handleInput() {
         // Log
         const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
         const sessionId = data.session_id || "";
+<<<<<<< docs/agents-automation
         const logEntry = JSON.stringify({
             ts,
             action: "added",
@@ -202,12 +257,19 @@ function handleInput() {
             description: description.substring(0, 200),
             session: sessionId
         });
+=======
+        const logEntry = JSON.stringify({ ts, action: "added", pattern, command, session: sessionId });
+>>>>>>> main
 
         const logDir = path.dirname(LOG_PATH);
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
         fs.appendFileSync(LOG_PATH, logEntry + "\n", "utf8");
 
+<<<<<<< docs/agents-automation
         // Rotacion del log
+=======
+        // Rotacion
+>>>>>>> main
         try {
             const lines = fs.readFileSync(LOG_PATH, "utf8").trim().split("\n");
             if (lines.length > 200) fs.writeFileSync(LOG_PATH, lines.slice(-100).join("\n") + "\n", "utf8");

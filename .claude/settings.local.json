@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+<<<<<<< docs/agents-automation
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
@@ -83,11 +84,25 @@
       "WebFetch(domain:jetbrains.com)",
       "WebFetch(domain:mvnrepository.com)",
 
+=======
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)",
+      "Bash(export JAVA_HOME=\"/c/Users/Administrator/.jdks/temurin-21.0.7\")",
+      "Bash(./gradlew:*)",
+      "Bash(git -C \"/c/Workspaces/Intrale/platform\" diff 92b44b5..62354de --name-only)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(node -e:*)",
+      "Bash(git push:*)",
+      "Bash(git -C:*)",
+      "Bash(curl:*)",
+>>>>>>> main
       "Skill(permisos)",
       "Skill(sabueso)",
       "Skill(inquisidor)",
       "Skill(pluma)",
       "Skill(oraculo)",
+<<<<<<< docs/agents-automation
       "Skill(mensajero)",
       "Skill(monitor)",
       "Skill(triaje)",
@@ -104,6 +119,17 @@
       "Bash(git clean -fd:*)",
       "Bash(rm -rf:*)",
       "Bash(rm -r:*)"
+=======
+      "Bash(npm install:*)",
+      "WebSearch",
+      "Bash(printf '{\"\"tool_name\"\":\"\"Bash\"\",\"\"tool_input\"\":{\"\"command\"\":\"\"shutdown /s /t 3600\"\"}}')",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\":*)",
+      "Bash(echo:*)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\" -c 'cd /c/Workspaces/Intrale/platform && cat | node -e '\"''\"':*)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\" /c/Workspaces/Intrale/platform/.claude/hooks/permission-notify.sh)",
+      "Bash(printf:*)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\" /c/Workspaces/Intrale/platform/.claude/hooks/pre-tool-notify.sh)"
+>>>>>>> main
     ]
   }
 }

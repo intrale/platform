@@ -1,4 +1,8 @@
+<<<<<<< docs/agents-automation
 // El Centinela v2.1 -- Activity Logger Hook
+=======
+// El Centinela v2 -- Activity Logger Hook
+>>>>>>> main
 // PostToolUse hook: registra actividad per-session en .claude/sessions/<id>.json
 // Pure Node.js — sin dependencia de bash
 const fs = require("fs");
@@ -14,8 +18,11 @@ const MAX_LOG_LINES = 500;
 const TASKS_BASE = path.join(process.env.HOME || process.env.USERPROFILE || "", ".claude", "tasks");
 const STALE_HOURS = 24;
 
+<<<<<<< docs/agents-automation
 const CLEANUP_EVERY_N = 50; // throttle: solo cleanup cada N invocaciones
 
+=======
+>>>>>>> main
 // Mapeo skill → agente
 const SKILL_AGENT_MAP = {
   sabueso: "El Sabueso \u{1F415}",
@@ -25,9 +32,12 @@ const SKILL_AGENT_MAP = {
   oraculo: "El Or\u00E1culo \u{1F52E}",
   pluma: "La Pluma \u{270D}\u{FE0F}",
   permisos: "El Portero \u{1F6AA}",
+<<<<<<< docs/agents-automation
   "nueva-historia": "La Pluma \u{270D}\u{FE0F}",
   refinar: "La Pluma \u{270D}\u{FE0F}",
   triaje: "La Pluma \u{270D}\u{FE0F}",
+=======
+>>>>>>> main
 };
 
 // --- stdin read ---
@@ -128,9 +138,12 @@ function updateSession(fullId, shortId, ts, toolName, skillName, permMode) {
       permission_mode: permMode || null,
       status: "active",
     };
+<<<<<<< docs/agents-automation
   } else if (session.type === "sub" && isParentSession(fullId)) {
     // Recalcular: el taskdir puede no existir en el primer evento pero si despues
     session.type = "parent";
+=======
+>>>>>>> main
   }
 
   session.action_count++;
@@ -188,8 +201,13 @@ function handleInput() {
     const toolName = data.tool_name || "";
     if (!toolName) return;
 
+<<<<<<< docs/agents-automation
     // Ignorar herramientas de solo lectura y TaskOutput (mucho ruido, session null)
     if (["TaskList", "TaskGet", "TaskOutput", "Read", "Glob", "Grep"].includes(toolName)) return;
+=======
+    // Ignorar herramientas de solo lectura (mucho ruido)
+    if (["TaskList", "TaskGet", "Read", "Glob", "Grep"].includes(toolName)) return;
+>>>>>>> main
 
     const ti = data.tool_input || {};
     let target = "--";
@@ -245,6 +263,7 @@ function handleInput() {
       updateSession(fullId, shortId, ts, toolName, skillName, permMode);
     }
 
+<<<<<<< docs/agents-automation
     // Cleanup stale sessions (throttled: cada N invocaciones)
     if (shortId) {
       try {
@@ -252,6 +271,10 @@ function handleInput() {
         if (s.action_count % CLEANUP_EVERY_N === 0) cleanupStaleSessions();
       } catch(e) { cleanupStaleSessions(); }
     }
+=======
+    // Cleanup stale sessions (cheap — runs every invocation)
+    cleanupStaleSessions();
+>>>>>>> main
 
     // Rotate activity log
     try {

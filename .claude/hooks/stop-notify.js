@@ -1,4 +1,8 @@
+<<<<<<< docs/agents-automation
 // Hook Stop: notifica a Telegram + marca sesion como "done"
+=======
+// Hook Stop: notifica a Telegram cuando Claude termina su respuesta
+>>>>>>> main
 // Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
@@ -11,7 +15,10 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+<<<<<<< docs/agents-automation
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
+=======
+>>>>>>> main
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 
 function log(msg) {
@@ -59,6 +66,7 @@ process.stdin.on("end", () => { if (!done) { done = true; processInput(); } });
 process.stdin.on("error", () => { if (!done) { done = true; processInput(); } });
 setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} processInput(); } }, 3000);
 
+<<<<<<< docs/agents-automation
 // Marcar sesion como "done" en sessions/<id>.json
 function closeSession(sessionId) {
     if (!sessionId) return;
@@ -74,6 +82,8 @@ function closeSession(sessionId) {
     } catch(e) { log("Error cerrando sesion: " + e.message); }
 }
 
+=======
+>>>>>>> main
 async function processInput() {
     log("INPUT: " + rawInput.substring(0, 300));
 
@@ -82,9 +92,12 @@ async function processInput() {
 
     if (data.stop_hook_active) return;
 
+<<<<<<< docs/agents-automation
     // Marcar sesion como "done"
     closeSession(data.session_id);
 
+=======
+>>>>>>> main
     let summary = (data.last_assistant_message || "").trim();
     if (summary.length > 150) summary = summary.substring(0, 150) + "...";
 
