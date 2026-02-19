@@ -39,6 +39,22 @@ kotlin-js-store/
 # Dependencies dump
 deps_commonMain.txt
 
+# Entorno local (generado por scripts/local-up.sh)
+.env.local
+
+# Claude Code — estado de sesión y logs (no commitear)
+.claude/activity-log.jsonl
+.claude/permissions-log.jsonl
+.claude/session-state.json
+.claude/sessions/
+.claude/settings.local.json
+
+# Binarios de gh-cli descargados localmente
+gh-cli/
+gh.zip
+Workspacesgh-cli/
+Workspacesgh.zip
+
 # Archivos generados desde los packs base64 del branding
 app/composeApp/src/androidMain/res/mipmap-*/ic_launcher*.png
 app/composeApp/src/wasmJsMain/resources/*.png

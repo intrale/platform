@@ -1,0 +1,38 @@
+services:
+  dynamodb-local:
+    image: amazon/dynamodb-local
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -so /dev/null -w '%{http_code}' http://localhost:8000 | grep -q 400"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  moto:
+    image: motoserver/moto
+    ports:
+      - "5050:5000"
+    environment:
+      - MOTO_SERVICE=cognitoidp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5000 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  aws-init:
+    image: amazon/aws-cli
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+      moto:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["bash", "/scripts/init-local-aws.sh"]

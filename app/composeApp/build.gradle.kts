@@ -124,11 +124,15 @@ val appType = providers.gradleProperty("appType")
     .orElse(inferredAppType)
     .map(String::uppercase)
 
+val localBaseUrl = providers.gradleProperty("LOCAL_BASE_URL")
+    .orElse(providers.environmentVariable("LOCAL_BASE_URL"))
+
 buildkonfig {
     packageName = "ar.com.intrale"
 
     defaultConfigs {
-        buildConfigField(FieldSpec.Type.STRING, "BASE_URL", "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/")
+        buildConfigField(FieldSpec.Type.STRING, "BASE_URL",
+            localBaseUrl.getOrElse("https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/"))
         buildConfigField(FieldSpec.Type.STRING, "BUSINESS", business.get())
         buildConfigField(FieldSpec.Type.STRING, "DELIVERY", delivery.get())
         buildConfigField(FieldSpec.Type.STRING, "APP_TYPE", appType.get())
@@ -254,6 +258,7 @@ kotlin {
             dependencies {
                 implementation(compose.desktop.currentOs)
                 implementation(libs.kotlinx.coroutinesSwing)
+                implementation(libs.ktor.client.java)
             }
         }
 
@@ -489,7 +494,7 @@ dependencies {
 
 compose.desktop {
     application {
-        mainClass = "ar.com.intrale.MainKt"
+        mainClass = "MainKt"
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)

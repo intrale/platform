@@ -29,6 +29,9 @@ private const val LOCAL_AWS_ACCESS_KEY_ID = "ACCESS_KEY_ID"
 private const val LOCAL_AWS_SECRET_ACCESS_KEY = "SECRET_ACCESS_KEY"
 private const val LOCAL_AWS_COGNITO_USER_POOL_ID = "USER_POOL_ID"
 private const val LOCAL_AWS_COGNITO_CLIENT_ID = "CLIENT_ID"
+private const val LOCAL_DYNAMODB_ENDPOINT = "DYNAMODB_ENDPOINT"
+private const val LOCAL_COGNITO_ENDPOINT  = "COGNITO_ENDPOINT"
+private const val LOCAL_MODE              = "LOCAL_MODE"
 
 private const val APP_AVAILABLE_BUSINESSES = "app.availableBusinesses"
 private const val AWS_REGION = "aws.region"
@@ -49,6 +52,9 @@ val appModule = DI.Module("appModule") {
                     accessKeyId = config.accessKeyId,
                     secretAccessKey = config.secretAccessKey
                 ))
+                System.getenv(LOCAL_COGNITO_ENDPOINT)?.let {
+                    endpointUrl = aws.smithy.kotlin.runtime.net.url.Url.parse(it)
+                }
             }
         }
     }
@@ -66,6 +72,11 @@ val appModule = DI.Module("appModule") {
                             System.getenv(LOCAL_AWS_SECRET_ACCESS_KEY) ?: configFactory.stringValue(AWS_SECRET_ACCESS_KEY))
                     )
                 )
+                .apply {
+                    System.getenv(LOCAL_DYNAMODB_ENDPOINT)?.let {
+                        endpointOverride(java.net.URI.create(it))
+                    }
+                }
                 .build()
         }
     }
@@ -121,7 +132,13 @@ val appModule = DI.Module("appModule") {
     }
 
     bind<JwtValidator> {
-        singleton { CognitoJwtValidator(instance<UsersConfig>()) }
+        singleton {
+            if (System.getenv(LOCAL_MODE)?.lowercase() == "true") {
+                LocalJwtValidator(instance<UsersConfig>())
+            } else {
+                CognitoJwtValidator(instance<UsersConfig>())
+            }
+        }
     }
 
     bind<ClientProfileRepository> {
