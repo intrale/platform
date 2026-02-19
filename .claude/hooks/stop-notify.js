@@ -69,7 +69,9 @@ async function processInput() {
     let summary = (data.last_assistant_message || "").trim();
     if (summary.length > 150) summary = summary.substring(0, 150) + "...";
 
-    const text = "\u2705 <b>[Claude Code] Listo</b>" + (summary ? " \u2014 " + summary : " \u2014 esperando tu siguiente instruccion");
+    const agent = process.env.CLAUDE_AGENT_NAME || "Claude Code";
+
+    const text = "\u2705 <b>" + agent + " \u2014 Listo</b>" + (summary ? "\n" + summary : "\nesperando tu siguiente instruccion");
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {

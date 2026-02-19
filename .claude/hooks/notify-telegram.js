@@ -68,6 +68,8 @@ async function processInput() {
     const title = data.title || "";
     const type = data.notification_type || "notification";
 
+    const agent = process.env.CLAUDE_AGENT_NAME || "Claude Code";
+
     const emoji = {
         "permission_prompt": "\u26a0\ufe0f",
         "idle_prompt": "\u2705",
@@ -75,7 +77,7 @@ async function processInput() {
         "elicitation_dialog": "\u2753"
     }[type] || "\ud83d\udd14";
 
-    const text = emoji + " <b>[Claude Code] " + (title || type) + "</b>\n" + message;
+    const text = emoji + " <b>" + agent + " \u2014 " + (title || type) + "</b>\n" + message;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {

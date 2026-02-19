@@ -1,4 +1,5 @@
 // Hook PermissionRequest: notifica a Telegram cuando Claude pide permisos
+// Formato terminal: muestra la acción exacta y opciones como en consola
 // Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
@@ -15,6 +16,10 @@ const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] PermissionRequest: " + msg + "\n"); } catch(e) {}
+}
+
+function getAgentName() {
+    return process.env.CLAUDE_AGENT_NAME || "Claude Code";
 }
 
 function sendTelegram(text, attempt) {
@@ -44,6 +49,50 @@ function sendTelegram(text, attempt) {
     });
 }
 
+function escHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function formatTerminalAction(toolName, toolInput) {
+    switch (toolName) {
+        case "Bash": {
+            const cmd = toolInput.command || "";
+            const display = cmd.length > 200 ? cmd.substring(0, 200) + "..." : cmd;
+            return "$ " + escHtml(display);
+        }
+        case "Edit": {
+            const fp = toolInput.file_path || toolInput.filePath || "";
+            const oldStr = toolInput.old_string || "";
+            const preview = oldStr.length > 80 ? oldStr.substring(0, 80) + "..." : oldStr;
+            return "Edit " + escHtml(fp) + (preview ? "\n" + escHtml(preview) : "");
+        }
+        case "Write": {
+            const fp = toolInput.file_path || toolInput.filePath || "";
+            return "Write " + escHtml(fp);
+        }
+        case "Task": {
+            const desc = toolInput.description || "";
+            const agent = toolInput.subagent_type || "?";
+            return "Task [" + agent + "] " + escHtml(desc);
+        }
+        case "Skill": {
+            const skill = toolInput.skill || "";
+            const args = toolInput.args || "";
+            return "/" + escHtml(skill) + (args ? " " + escHtml(args) : "");
+        }
+        case "WebFetch":
+            return "fetch " + escHtml(toolInput.url || "");
+        case "WebSearch":
+            return "search " + escHtml(toolInput.query || "");
+        case "NotebookEdit":
+            return "NotebookEdit " + escHtml(toolInput.notebook_path || "");
+        default: {
+            const raw = JSON.stringify(toolInput);
+            return escHtml(toolName) + " " + escHtml(raw.length > 120 ? raw.substring(0, 120) + "..." : raw);
+        }
+    }
+}
+
 // Leer stdin con limite y timeout de seguridad
 const MAX_READ = 8192;
 let rawInput = "";
@@ -70,23 +119,14 @@ async function processInput() {
 
     const toolName = data.tool_name || data.toolName || "desconocido";
     const toolInput = data.tool_input || data.toolInput || {};
+    const agent = getAgentName();
+    const action = formatTerminalAction(toolName, toolInput);
 
-    let detail = "";
-    if (toolName === "Bash") {
-        const cmd = toolInput.command || "";
-        detail = cmd.length > 120 ? cmd.substring(0, 120) + "..." : cmd;
-    } else if (toolName === "Edit" || toolName === "Write") {
-        detail = toolInput.file_path || toolInput.filePath || "";
-    } else if (toolName === "Task") {
-        detail = toolInput.description || "";
-    } else {
-        detail = JSON.stringify(toolInput).substring(0, 120);
-    }
-
-    const text = "\u26a0\ufe0f <b>[Claude Code] Permiso requerido</b>\n"
-        + "<b>Herramienta:</b> " + toolName + "\n"
-        + "<b>Detalle:</b> " + detail + "\n\n"
-        + "Aprob\u00e1 o rechaz\u00e1 en la terminal.";
+    const text = "\u26a0\ufe0f <b>" + agent + " — Permiso requerido</b>\n\n"
+        + "<code>" + action + "</code>\n\n"
+        + "  y) Permitir una vez\n"
+        + "  a) Permitir siempre\n"
+        + "  n) Denegar";
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
