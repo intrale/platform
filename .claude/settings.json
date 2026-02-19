@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/activity-logger.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git stash:*)",
+      "Bash(git credential fill:*)",
+      "Bash(git -C:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(chmod:*)",
+      "Bash(test:*)",
+      "Bash(sleep:*)",
+      "Bash(find:*)",
+      "Bash(printf:*)",
+      "Bash(tr:*)",
+      "Bash(export JAVA_HOME=*)",
+      "Bash(export PATH=*)",
+      "Bash(export GH_TOKEN=*)",
+      "Bash(./gradlew:*)",
+      "Bash(java:*)",
+      "Bash(curl:*)",
+      "Bash(node:*)",
+      "Bash(npx:*)",
+      "Bash(gh:*)",
+      "Bash(TOKEN=*)",
+      "Bash(GH_REPO=*)",
+      "Bash(BRANCH=*)",
+      "Bash(nohup:*)",
+      "Bash(cygpath:*)",
+      "Bash(where:*)",
+      "Bash(winget:*)",
+      "Bash(bash:*)",
+      "WebSearch",
+      "WebFetch",
+      "Skill(oraculo)",
+      "Skill(mensajero)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\":*)",
+      "Bash(git fetch:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -f:*)",
+      "Bash(rm -rf:*)"
+    ]
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-telegram.sh\"",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-notify.sh\"",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/post-git-push.sh\"",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission-tracker.sh\"",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/activity-logger.sh\"",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
