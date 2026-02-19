@@ -5,13 +5,10 @@
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-/c/Workspaces/Intrale/platform}"
 
 # Parsear JSON con node para extraer command y verificar errores
-SHOULD_MONITOR=$(cat | node -e '
-let input = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (c) => { input += c; });
-process.stdin.on("end", () => {
+INPUT=$(cat)
+INPUT_DATA="$INPUT" node -e '
     try {
-        const data = JSON.parse(input);
+        const data = JSON.parse(process.env.INPUT_DATA || "{}");
         const command = (data.tool_input && data.tool_input.command) || "";
         if (!command.includes("git push")) process.exit(1);
 
@@ -24,8 +21,7 @@ process.stdin.on("end", () => {
     } catch(e) {
         process.exit(1);
     }
-});
-' 2>/dev/null)
+' 2>/dev/null
 
 if [ $? -ne 0 ]; then
     exit 0

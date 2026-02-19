@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/permission-notify.sh",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "",
@@ -7,7 +19,7 @@
           {
             "type": "command",
             "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/notify-telegram.sh",
-            "timeout": 10000
+            "timeout": 15000
           }
         ]
       }
@@ -19,7 +31,19 @@
           {
             "type": "command",
             "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/stop-notify.sh",
-            "timeout": 10000
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/pre-tool-notify.sh",
+            "timeout": 15000
           }
         ]
       }

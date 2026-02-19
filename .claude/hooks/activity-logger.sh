@@ -1,128 +1,102 @@
 #!/bin/bash
 # El Centinela -- Activity Logger Hook
-# Se ejecuta como PostToolUse hook, registra actividad en activity-log.jsonl
-# Compatible con Windows (Git Bash) — sin dependencia de jq
+# PostToolUse hook: registra actividad en activity-log.jsonl
+# Usa node con limite de lectura de stdin para evitar timeout en Read/Glob grandes
 
-LOG_FILE="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/activity-log.jsonl"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo '.')"
+LOG_FILE="$REPO_ROOT/.claude/activity-log.jsonl"
 MAX_LINES=500
 
-# Leer JSON del stdin (protocolo PostToolUse de Claude Code)
-INPUT=$(cat)
+node -e '
+const fs = require("fs");
+const path = require("path");
 
-# Extraer tool_name del JSON usando bash string manipulation
-# El input tiene formato: {"session_id":"...","tool_name":"...","tool_input":{...},...}
-tool_name=""
-target=""
+const logFile = process.argv[1];
+const maxLines = parseInt(process.argv[2]) || 500;
 
-# Extraer tool_name
-if [[ "$INPUT" == *'"tool_name"'* ]]; then
-    # Extraer el valor despues de "tool_name":"
-    temp="${INPUT#*\"tool_name\"}"
-    temp="${temp#*:}"
-    temp="${temp#*\"}"
-    tool_name="${temp%%\"*}"
-fi
+// Leer solo los primeros 4KB de stdin — suficiente para tool_name y target
+const MAX_READ = 4096;
+let input = "";
+let done = false;
 
-# Si no se pudo extraer tool_name, salir silenciosamente
-if [[ -z "$tool_name" ]]; then
-    exit 0
-fi
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+    if (done) return;
+    input += chunk;
+    if (input.length >= MAX_READ) {
+        done = true;
+        process.stdin.destroy();
+        handleInput();
+    }
+});
+process.stdin.on("end", () => { if (!done) { done = true; handleInput(); } });
+process.stdin.on("error", () => { if (!done) { done = true; handleInput(); } });
 
-# Ignorar herramientas de solo lectura que generan mucho ruido
-case "$tool_name" in
-    TaskList|TaskGet|Read|Glob|Grep)
-        exit 0
-        ;;
-esac
+// Timeout de seguridad: si stdin no cierra en 2s, procesar lo que tengamos
+setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} handleInput(); } }, 2000);
 
-# Extraer target segun el tipo de herramienta
-case "$tool_name" in
-    Edit|Write|NotebookEdit)
-        # Extraer file_path o notebook_path
-        if [[ "$INPUT" == *'"file_path"'* ]]; then
-            temp="${INPUT#*\"file_path\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="${temp%%\"*}"
-        elif [[ "$INPUT" == *'"notebook_path"'* ]]; then
-            temp="${INPUT#*\"notebook_path\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="${temp%%\"*}"
-        fi
-        ;;
-    Bash)
-        # Extraer command (primeros 80 chars)
-        if [[ "$INPUT" == *'"command"'* ]]; then
-            temp="${INPUT#*\"command\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="${temp%%\"*}"
-            # Truncar a 80 caracteres
-            if [[ ${#target} -gt 80 ]]; then
-                target="${target:0:80}..."
-            fi
-        fi
-        ;;
-    Task)
-        # Extraer description
-        if [[ "$INPUT" == *'"description"'* ]]; then
-            temp="${INPUT#*\"description\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="${temp%%\"*}"
-        fi
-        ;;
-    TaskCreate|TaskUpdate)
-        # Extraer subject o taskId
-        if [[ "$INPUT" == *'"subject"'* ]]; then
-            temp="${INPUT#*\"subject\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="${temp%%\"*}"
-        elif [[ "$INPUT" == *'"taskId"'* ]]; then
-            temp="${INPUT#*\"taskId\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="task #${temp%%\"*}"
-        fi
-        ;;
-    WebFetch|WebSearch)
-        if [[ "$INPUT" == *'"url"'* ]]; then
-            temp="${INPUT#*\"url\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="${temp%%\"*}"
-        elif [[ "$INPUT" == *'"query"'* ]]; then
-            temp="${INPUT#*\"query\"}"
-            temp="${temp#*:}"
-            temp="${temp#*\"}"
-            target="${temp%%\"*}"
-        fi
-        ;;
-    *)
-        target="--"
-        ;;
-esac
+function handleInput() {
+    try {
+        let data;
+        try { data = JSON.parse(input); } catch(e) {
+            // Si el JSON esta truncado, extraer tool_name con regex
+            const m = input.match(/"tool_name"\s*:\s*"([^"]+)"/);
+            if (!m) return;
+            data = { tool_name: m[1], tool_input: {} };
+            // Intentar extraer tool_input parcialmente
+            const fm = input.match(/"file_path"\s*:\s*"([^"]+)"/);
+            if (fm) data.tool_input = { file_path: fm[1] };
+            const cm = input.match(/"command"\s*:\s*"([^"]+)"/);
+            if (cm) data.tool_input = { command: cm[1] };
+        }
 
-# Sanitizar target para JSON (escapar comillas y backslashes)
-target="${target//\\/\\\\}"
-target="${target//\"/\\\"}"
+        const toolName = data.tool_name || "";
+        if (!toolName) return;
 
-# Timestamp ISO 8601
-timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S")
+        // Ignorar herramientas de solo lectura (mucho ruido)
+        if (["TaskList","TaskGet","Read","Glob","Grep"].includes(toolName)) return;
 
-# Escribir entrada JSONL
-mkdir -p "$(dirname "$LOG_FILE")"
-echo "{\"ts\":\"$timestamp\",\"tool\":\"$tool_name\",\"target\":\"$target\"}" >> "$LOG_FILE"
+        // Extraer target segun herramienta
+        const ti = data.tool_input || {};
+        let target = "--";
 
-# Rotacion: si supera MAX_LINES, mantener las ultimas MAX_LINES/2
-if [[ -f "$LOG_FILE" ]]; then
-    line_count=$(wc -l < "$LOG_FILE" 2>/dev/null)
-    if [[ "$line_count" -gt "$MAX_LINES" ]]; then
-        keep=$((MAX_LINES / 2))
-        tail -n "$keep" "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null && mv "${LOG_FILE}.tmp" "$LOG_FILE"
-    fi
-fi
+        switch (toolName) {
+            case "Edit": case "Write": case "NotebookEdit":
+                target = ti.file_path || ti.notebook_path || "--";
+                break;
+            case "Bash":
+                target = (ti.command || "--").substring(0, 80);
+                break;
+            case "Task":
+                target = (ti.description || "--").substring(0, 80);
+                break;
+            case "TaskCreate": case "TaskUpdate":
+                target = ti.subject || (ti.taskId ? "task #" + ti.taskId : "--");
+                break;
+            case "WebFetch": case "WebSearch":
+                target = ti.url || ti.query || "--";
+                break;
+        }
+
+        // Escribir entrada JSONL
+        const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        const dir = path.dirname(logFile);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+        const entry = JSON.stringify({ ts, tool: toolName, target: target.substring(0, 120) });
+        fs.appendFileSync(logFile, entry + "\n", "utf8");
+
+        // Rotacion
+        try {
+            const content = fs.readFileSync(logFile, "utf8").trim();
+            const lines = content.split("\n");
+            if (lines.length > maxLines) {
+                const keep = Math.floor(maxLines / 2);
+                fs.writeFileSync(logFile, lines.slice(-keep).join("\n") + "\n", "utf8");
+            }
+        } catch(e) {}
+    } catch(e) {}
+}
+' "$LOG_FILE" "$MAX_LINES" 2>/dev/null
 
 exit 0
