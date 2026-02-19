@@ -39,6 +39,9 @@ kotlin-js-store/
 # Dependencies dump
 deps_commonMain.txt
 
+# Entorno local (generado por scripts/local-up.sh)
+.env.local
+
 # Archivos generados desde los packs base64 del branding
 app/composeApp/src/androidMain/res/mipmap-*/ic_launcher*.png
 app/composeApp/src/wasmJsMain/resources/*.png
