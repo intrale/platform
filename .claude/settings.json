@@ -42,11 +42,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/permission-tracker.js",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
             "command": "node .claude/hooks/post-git-push.js",
             "timeout": 5000
           }
@@ -55,6 +50,11 @@
       {
         "matcher": "",
         "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/permission-tracker.js",
+            "timeout": 5000
+          },
           {
             "type": "command",
             "command": "node .claude/hooks/activity-logger.js",
