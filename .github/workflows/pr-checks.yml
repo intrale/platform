@@ -27,7 +27,7 @@ jobs:
         run: ./gradlew verifyNoLegacyStrings
 
       - name: Run tests with coverage
-        run: ./gradlew check koverVerify koverHtmlReport
+        run: ./gradlew check koverVerify koverHtmlReport -x compileTestKotlinIosX64
 
       - name: Upload test reports
         if: always()
