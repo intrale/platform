@@ -2,7 +2,20 @@
 # Levanta Docker (DynamoDB + Moto), espera la inicialización,
 # extrae credenciales y arranca el backend Ktor.
 # Uso: ./scripts/local-up.sh
-set -euo pipefail
+set -uo pipefail
+
+# En Windows: si algo falla, no cerrar la ventana sin avisar
+pause_on_exit() {
+  local code=$?
+  if [ $code -ne 0 ]; then
+    echo ""
+    echo "ERROR: el script falló con código $code"
+  fi
+  echo ""
+  read -r -p "Presiona Enter para cerrar..."
+  exit $code
+}
+trap pause_on_exit EXIT
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,26 +23,34 @@ ENV_FILE="$PROJECT_ROOT/.env.local"
 
 cd "$PROJECT_ROOT"
 
-# ── 1. Docker ──────────────────────────────────────────────
+# ── 1. Verificar Docker ───────────────────────────────────
+echo "=== Verificando Docker ==="
+if ! command -v docker &>/dev/null; then
+  echo "ERROR: 'docker' no encontrado en PATH"
+  echo "Instala Docker Desktop: https://www.docker.com/products/docker-desktop/"
+  exit 1
+fi
+
+if ! docker info &>/dev/null; then
+  echo "ERROR: Docker daemon no está corriendo"
+  echo "Abrí Docker Desktop y esperá a que arranque."
+  exit 1
+fi
+
+# ── 2. Docker Compose ─────────────────────────────────────
 echo "=== Levantando servicios Docker ==="
-docker compose up -d
+if ! docker compose up -d; then
+  echo "ERROR: docker compose up falló"
+  exit 1
+fi
 
 echo "Esperando a que aws-init termine..."
-# aws-init es un container efímero — esperamos a que salga con código 0
 TIMEOUT=120
 ELAPSED=0
 while [ $ELAPSED -lt $TIMEOUT ]; do
-  STATUS=$(docker compose ps aws-init --format '{{.State}}' 2>/dev/null || echo "unknown")
-  # El container puede reportar "exited" o desaparecer del listado
-  if echo "$STATUS" | grep -qi "exited"; then
+  # Verificar si el container ya no está running
+  if ! docker compose ps 2>/dev/null | grep "aws-init" | grep -qi "running"; then
     break
-  fi
-  # Si ya no existe en la lista, también terminó
-  if ! docker compose ps --status running 2>/dev/null | grep -q "aws-init"; then
-    # Verificar que no esté "running" sino que ya salió
-    if ! docker compose ps 2>/dev/null | grep "aws-init" | grep -qi "running"; then
-      break
-    fi
   fi
   sleep 2
   ELAPSED=$((ELAPSED + 2))
@@ -39,21 +60,15 @@ echo ""
 
 if [ $ELAPSED -ge $TIMEOUT ]; then
   echo "ERROR: aws-init no terminó en ${TIMEOUT}s"
-  docker compose logs aws-init
-  exit 1
-fi
-
-# Verificar que salió bien
-EXIT_CODE=$(docker compose ps aws-init --format '{{.ExitCode}}' 2>/dev/null || echo "0")
-if [ "$EXIT_CODE" != "0" ] && [ -n "$EXIT_CODE" ]; then
-  echo "ERROR: aws-init falló (exit code: $EXIT_CODE)"
+  echo "Logs:"
   docker compose logs aws-init
   exit 1
 fi
 
 echo "aws-init completado."
+echo ""
 
-# ── 2. Extraer credenciales ────────────────────────────────
+# ── 3. Extraer credenciales ────────────────────────────────
 echo "Extrayendo USER_POOL_ID y CLIENT_ID..."
 
 INIT_LOGS=$(docker compose logs aws-init 2>&1)
@@ -61,18 +76,19 @@ INIT_LOGS=$(docker compose logs aws-init 2>&1)
 USER_POOL_ID=$(echo "$INIT_LOGS" | grep 'USER_POOL_ID=' | tail -1 | sed 's/.*USER_POOL_ID=//')
 CLIENT_ID=$(echo "$INIT_LOGS" | grep 'CLIENT_ID=' | tail -1 | sed 's/.*CLIENT_ID=//')
 
-# Limpiar posibles \r de Windows
-USER_POOL_ID=$(echo "$USER_POOL_ID" | tr -d '\r' | xargs)
-CLIENT_ID=$(echo "$CLIENT_ID" | tr -d '\r' | xargs)
+# Limpiar \r de Windows y espacios
+USER_POOL_ID=$(echo "$USER_POOL_ID" | tr -d '\r\n' | xargs)
+CLIENT_ID=$(echo "$CLIENT_ID" | tr -d '\r\n' | xargs)
 
 if [ -z "$USER_POOL_ID" ] || [ -z "$CLIENT_ID" ]; then
-  echo "ERROR: No se pudieron extraer credenciales de los logs"
+  echo "ERROR: No se pudieron extraer credenciales de los logs."
+  echo ""
   echo "Logs de aws-init:"
   echo "$INIT_LOGS"
   exit 1
 fi
 
-# ── 3. Guardar .env.local ─────────────────────────────────
+# ── 4. Guardar .env.local ─────────────────────────────────
 cat > "$ENV_FILE" <<ENVEOF
 # Generado automáticamente por local-up.sh — no commitear
 LOCAL_MODE=true
@@ -89,13 +105,13 @@ echo "Credenciales guardadas en .env.local"
 echo "  USER_POOL_ID=$USER_POOL_ID"
 echo "  CLIENT_ID=$CLIENT_ID"
 
-# ── 4. Arrancar backend ───────────────────────────────────
+# ── 5. Arrancar backend ───────────────────────────────────
 echo ""
 echo "=== Arrancando backend Ktor ==="
 echo "(Ctrl+C para detener)"
 echo ""
 
-# Exportar todas las variables
+# Exportar variables
 set -a
 source "$ENV_FILE"
 set +a
@@ -109,4 +125,5 @@ else
   echo "WARN: JAVA_HOME no configurado — Gradle usará el JDK del PATH"
 fi
 
-exec ./gradlew :users:run
+# No usar exec — mantener el script vivo para el trap
+./gradlew :users:run
