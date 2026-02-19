@@ -76,6 +76,7 @@ ktor-client-logging = { group = "io.ktor", name = "ktor-client-logging", version
 ktor-client-serialization = { group = "io.ktor", name = "ktor-client-serialization", version.ref = "ktor-wasm2" }
 ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor-wasm2" }
 ktor-client-android = { group = "io.ktor", name = "ktor-client-android", version.ref = "ktor-wasm2" }
+ktor-client-java = { group = "io.ktor", name = "ktor-client-java", version.ref = "ktor-wasm2" }
 ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor-wasm2" }
 ktor-client-mock = { group = "io.ktor", name = "ktor-client-mock", version.ref = "ktor-wasm2" }
 

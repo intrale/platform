@@ -258,6 +258,7 @@ kotlin {
             dependencies {
                 implementation(compose.desktop.currentOs)
                 implementation(libs.kotlinx.coroutinesSwing)
+                implementation(libs.ktor.client.java)
             }
         }
 
@@ -490,7 +491,7 @@ dependencies {
 
 compose.desktop {
     application {
-        mainClass = "ar.com.intrale.MainKt"
+        mainClass = "MainKt"
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
