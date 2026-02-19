@@ -15,20 +15,17 @@ Recolecta datos de TODAS estas fuentes en paralelo:
 3. **Git info**: Ejecuta en un solo Bash: `git branch --show-current && git log --oneline -1`
 4. **CI**: Ejecuta `export PATH="/c/Workspaces/gh-cli/bin:$PATH" && export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p') && gh run list --limit 1 --json status,conclusion,headBranch,event,createdAt --jq '.[0] | "\(.status) \(.conclusion // "—") \(.headBranch)"'`
 
-Luego, para cada sesion de tipo `"parent"`, determina su estado de liveness:
+Luego, para cada sesion de tipo `"parent"`, determina su estado de liveness usando `last_activity_ts` del JSON:
 
-**Deteccion de liveness** (ejecutar con Bash para CADA sesion parent):
-```bash
-stat -c %Y ~/.claude/tasks/<full_id>/.highwatermark 2>/dev/null
-```
+**Deteccion de liveness** (calculada directamente desde los datos JSON, sin stat ni Bash adicional):
 
-Calcula la diferencia con el timestamp actual:
+Calcula la diferencia entre `last_activity_ts` y el momento actual:
 - **< 5 minutos** → `active` → icono `●`
 - **5-15 minutos** → `idle` → icono `◐`
 - **> 15 minutos** → `stale` → icono `○`
-- **Si no existe `.highwatermark`**: usa `last_activity_ts` del JSON con los mismos umbrales
+- **`status: "done"`** → sesion terminada → icono `✗` (mostrar solo si < 1 hora de antiguedad)
 
-Si la sesion tiene el MISMO `id` que tu propia sesion (la que ejecuta `/monitor`), agrega `▶` al lado del icono de estado.
+Para identificar la sesion actual (la que ejecuta `/monitor`): lee `.claude/session-state.json` y usa `current_session` como ID de la sesion propia. Agrega `▶` al lado del icono de estado de esa sesion.
 
 Genera el dashboard con este formato (ajustando ancho a ~56 columnas):
 
@@ -95,7 +92,7 @@ Genera el dashboard con este formato (ajustando ancho a ~56 columnas):
 
 ### "sessions" -- Solo panel SESIONES
 
-Ejecuta solo los pasos 1 (sesiones) y liveness. Muestra SOLO el panel SESIONES con el mismo formato box-drawing.
+Ejecuta solo el paso 1 (sesiones). La liveness se calcula desde los datos JSON, no requiere comandos adicionales. Muestra SOLO el panel SESIONES con el mismo formato box-drawing.
 
 ### "tasks" -- Solo tareas
 
@@ -106,7 +103,7 @@ Ejecuta `TaskList` y muestra SOLO el panel TAREAS + ALERTAS con el mismo formato
 Muestra:
 
 ```
-┌─ El Centinela 🗼 v2 ────────────────────────────┐
+┌─ El Centinela 🗼 v2.1 ───────────────────────────┐
 │ Dashboard de Semaforos Multi-Sesion               │
 │                                                   │
 │ Comandos disponibles:                             │
@@ -119,8 +116,10 @@ Muestra:
 │   ●  Activa (< 5 min)                            │
 │   ◐  Idle (5-15 min)                             │
 │   ○  Stale (> 15 min)                            │
+│   ✗  Terminada (done)                             │
 │   ▶  Sesion actual (ejecuta /monitor)             │
 │                                                   │
+│ Dashboard live: node .claude/dashboard.js         │
 │ Datos: .claude/sessions/*.json                    │
 │ Hook: activity-logger.js (PostToolUse)            │
 └──────────────────────────────────────────────────┘
@@ -130,6 +129,8 @@ Muestra:
 
 - Cada sesion de Claude Code genera su propio archivo en `.claude/sessions/`
 - Sub-agentes (type: "sub") NO se muestran en el dashboard — su actividad incrementa `sub_count` en la sesion padre
-- La deteccion de liveness usa `.highwatermark` de `~/.claude/tasks/<full_id>/` como fuente primaria, con fallback a `last_activity_ts`
+- La deteccion de liveness usa `last_activity_ts` del JSON de sesion (actualizado en cada PostToolUse por el hook)
+- Sesiones marcadas como `status: "done"` por el hook Stop se muestran con `✗` (solo si < 1h de antiguedad)
+- Para monitoreo en tiempo real con auto-refresh: `node .claude/dashboard.js` en terminal externa
 - Paneles ELIMINADOS respecto a v1: ACTIVIDAD, METRICAS (ya no existen)
 - El archivo `activity-log.jsonl` sigue existiendo para registro historico pero NO se usa en el dashboard
