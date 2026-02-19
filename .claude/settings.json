@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/permission-notify.sh",
+            "command": "node .claude/hooks/permission-notify.js",
             "timeout": 30000
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/notify-telegram.sh",
+            "command": "node .claude/hooks/notify-telegram.js",
             "timeout": 15000
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/stop-notify.sh",
+            "command": "node .claude/hooks/stop-notify.js",
             "timeout": 15000
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/pre-tool-notify.sh",
+            "command": "node .claude/hooks/pre-tool-notify.js",
             "timeout": 15000
           }
         ]
@@ -54,12 +54,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/permission-tracker.sh",
+            "command": "node .claude/hooks/permission-tracker.js",
             "timeout": 5000
           },
           {
             "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/post-git-push.sh",
+            "command": "node .claude/hooks/post-git-push.js",
             "timeout": 5000
           }
         ]
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" .claude/hooks/activity-logger.sh",
+            "command": "node .claude/hooks/activity-logger.js",
             "timeout": 5000
           }
         ]
