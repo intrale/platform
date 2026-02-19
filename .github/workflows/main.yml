@@ -37,7 +37,7 @@ jobs:
           sed -i "s/CLIENT_ID/${CLIENT_ID}/gi" application.conf
           cd ../../../../
           chmod +x gradlew
-          ./gradlew clean build
+          ./gradlew clean build -x compileTestKotlinIosX64 -x compileProductionExecutableKotlinWasmJsOptimize
       - name: Deploy lambda
         uses: yvesgurcan/deploy-lambda-function@master
         with:

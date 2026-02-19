@@ -118,7 +118,7 @@ class DoCheckPreviousLoginTest {
 class DoResetLoginCacheTest {
 
     @Test
-    fun `limpia token, profileCache y preferredLanguage`() = runTest {
+    fun `limpia token y profileCache y preferredLanguage`() = runTest {
         val storage = FakeStorage("tok").apply {
             profileCache = ClientProfileCache("", "", "", "", "en")
             preferredLanguage = "en"

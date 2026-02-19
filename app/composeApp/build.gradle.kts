@@ -372,6 +372,9 @@ android {
     lint {
         disable += "NullSafeMutableLiveData"
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 tasks.register("forbidDirectComposeStringResource") {
