@@ -1,19 +1,50 @@
 #!/bin/bash
 # Hook: reenvia notificaciones de Claude Code a Telegram
-
-INPUT=$(cat)
-MESSAGE=$(echo "$INPUT" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
-TITLE=$(echo "$INPUT" | grep -o '"title":"[^"]*"' | cut -d'"' -f4)
-NOTIF_TYPE=$(echo "$INPUT" | grep -o '"notification_type":"[^"]*"' | cut -d'"' -f4)
+# Evento: Notification (permission_prompt, idle_prompt, auth_success, elicitation_dialog)
 
 BOT_TOKEN="8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk"
 CHAT_ID="6529617704"
 
-TEXT="[Claude Code] ${TITLE:-$NOTIF_TYPE}: ${MESSAGE}"
+cat | node -e '
+const https = require("https");
+const querystring = require("querystring");
 
-curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-  --data-urlencode "chat_id=${CHAT_ID}" \
-  --data-urlencode "text=${TEXT}" \
-  > /dev/null 2>&1
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (c) => { input += c; });
+process.stdin.on("end", () => {
+    try {
+        const data = JSON.parse(input);
+        const message = data.message || "";
+        const title = data.title || "";
+        const type = data.notification_type || "notification";
+
+        // Emoji segun tipo
+        const emoji = {
+            "permission_prompt": "\u26a0\ufe0f",
+            "idle_prompt": "\u2705",
+            "auth_success": "\ud83d\udd11",
+            "elicitation_dialog": "\u2753"
+        }[type] || "\ud83d\udd14";
+
+        const text = emoji + " [Claude Code] " + (title || type) + ": " + message;
+
+        const postData = querystring.stringify({
+            chat_id: process.argv[1],
+            text: text
+        });
+
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + process.argv[2] + "/sendMessage",
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" }
+        });
+        req.on("error", () => {});
+        req.write(postData);
+        req.end();
+    } catch(e) {}
+});
+' "$CHAT_ID" "$BOT_TOKEN" 2>/dev/null
 
 exit 0
