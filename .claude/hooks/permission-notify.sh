@@ -1,5 +1,5 @@
 #!/bin/bash
-# Hook Notification: reenvia notificaciones de Claude Code a Telegram
+# Hook PermissionRequest: notifica a Telegram cuando Claude pide permisos
 # FIX v2: node lee stdin directo (sin cat pipe), con timeout de seguridad
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo '.')"
@@ -17,7 +17,7 @@ const RETRY_DELAY_MS = 1500;
 const LOG_FILE = process.argv[1] || "hook-debug.log";
 
 function log(msg) {
-    try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Notification: " + msg + "\n"); } catch(e) {}
+    try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] PermissionRequest: " + msg + "\n"); } catch(e) {}
 }
 
 function sendTelegram(text, attempt) {
@@ -47,7 +47,8 @@ function sendTelegram(text, attempt) {
     });
 }
 
-const MAX_READ = 4096;
+// Leer stdin con limite y timeout de seguridad
+const MAX_READ = 8192;
 let rawInput = "";
 let done = false;
 
@@ -65,20 +66,30 @@ async function processInput() {
     log("INPUT: " + rawInput.substring(0, 300));
 
     let data;
-    try { data = JSON.parse(rawInput); } catch(e) { log("JSON parse failed: " + rawInput.substring(0, 200)); data = {}; }
+    try { data = JSON.parse(rawInput); } catch(e) {
+        log("JSON parse failed, raw: " + rawInput.substring(0, 200));
+        data = {};
+    }
 
-    const message = data.message || "";
-    const title = data.title || "";
-    const type = data.notification_type || "notification";
+    const toolName = data.tool_name || data.toolName || "desconocido";
+    const toolInput = data.tool_input || data.toolInput || {};
 
-    const emoji = {
-        "permission_prompt": "\u26a0\ufe0f",
-        "idle_prompt": "\u2705",
-        "auth_success": "\ud83d\udd11",
-        "elicitation_dialog": "\u2753"
-    }[type] || "\ud83d\udd14";
+    let detail = "";
+    if (toolName === "Bash") {
+        const cmd = toolInput.command || "";
+        detail = cmd.length > 120 ? cmd.substring(0, 120) + "..." : cmd;
+    } else if (toolName === "Edit" || toolName === "Write") {
+        detail = toolInput.file_path || toolInput.filePath || "";
+    } else if (toolName === "Task") {
+        detail = toolInput.description || "";
+    } else {
+        detail = JSON.stringify(toolInput).substring(0, 120);
+    }
 
-    const text = emoji + " <b>[Claude Code] " + (title || type) + "</b>\n" + message;
+    const text = "\u26a0\ufe0f <b>[Claude Code] Permiso requerido</b>\n"
+        + "<b>Herramienta:</b> " + toolName + "\n"
+        + "<b>Detalle:</b> " + detail + "\n\n"
+        + "Aprob\u00e1 o rechaz\u00e1 en la terminal.";
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {

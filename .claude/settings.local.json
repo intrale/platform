@@ -1,114 +1,31 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git status:*)",
-      "Bash(git log:*)",
-      "Bash(git diff:*)",
-      "Bash(git branch:*)",
-      "Bash(git remote:*)",
       "Bash(git checkout:*)",
+      "Bash(git stash:*)",
+      "Bash(export JAVA_HOME=\"/c/Users/Administrator/.jdks/temurin-21.0.7\")",
+      "Bash(./gradlew:*)",
+      "Bash(git -C \"/c/Workspaces/Intrale/platform\" diff 92b44b5..62354de --name-only)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git pull:*)",
+      "Bash(node -e:*)",
       "Bash(git push:*)",
-      "Bash(git stash:*)",
-      "Bash(git credential fill:*)",
       "Bash(git -C:*)",
-      "Bash(ls:*)",
-      "Bash(mkdir:*)",
-      "Bash(chmod:*)",
-      "Bash(test:*)",
-      "Bash(sleep:*)",
-      "Bash(find:*)",
-      "Bash(printf:*)",
-      "Bash(tr:*)",
-      "Bash(export JAVA_HOME=*)",
-      "Bash(export PATH=*)",
-      "Bash(export GH_TOKEN=*)",
-      "Bash(./gradlew:*)",
-      "Bash(java:*)",
       "Bash(curl:*)",
-      "Bash(node:*)",
-      "Bash(npx:*)",
-      "Bash(gh:*)",
-      "Bash(TOKEN=*)",
-      "Bash(GH_REPO=*)",
-      "Bash(BRANCH=*)",
-      "Bash(nohup:*)",
-      "Bash(cygpath:*)",
-      "Bash(where:*)",
-      "Bash(winget:*)",
-      "Bash(bash:*)",
-      "WebSearch",
-      "WebFetch",
+      "Skill(permisos)",
+      "Skill(sabueso)",
+      "Skill(inquisidor)",
+      "Skill(pluma)",
       "Skill(oraculo)",
-      "Skill(mensajero)",
+      "Bash(npm install:*)",
+      "WebSearch",
+      "Bash(printf '{\"\"tool_name\"\":\"\"Bash\"\",\"\"tool_input\"\":{\"\"command\"\":\"\"shutdown /s /t 3600\"\"}}')",
       "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\":*)",
-      "Bash(git fetch:*)"
-    ],
-    "deny": [
-      "Bash(git push --force:*)",
-      "Bash(git reset --hard:*)",
-      "Bash(git clean -f:*)",
-      "Bash(rm -rf:*)"
-    ]
-  },
-  "hooks": {
-    "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-telegram.sh\"",
-            "timeout": 10000
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-notify.sh\"",
-            "timeout": 10000
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/post-git-push.sh\"",
-            "timeout": 10000
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission-tracker.sh\"",
-            "timeout": 10000
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"C:/Program Files/Git/usr/bin/bash.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/activity-logger.sh\"",
-            "timeout": 5000
-          }
-        ]
-      }
+      "Bash(echo:*)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\" -c 'cd /c/Workspaces/Intrale/platform && cat | node -e '\"''\"':*)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\" /c/Workspaces/Intrale/platform/.claude/hooks/permission-notify.sh)",
+      "Bash(printf:*)",
+      "Bash(\"C:/Program Files/Git/usr/bin/bash.exe\" /c/Workspaces/Intrale/platform/.claude/hooks/pre-tool-notify.sh)"
     ]
   }
 }

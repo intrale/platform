@@ -1,20 +1,17 @@
-#!/bin/bash
-# Hook Notification: reenvia notificaciones de Claude Code a Telegram
-# FIX v2: node lee stdin directo (sin cat pipe), con timeout de seguridad
-
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo '.')"
-LOG_FILE="$REPO_ROOT/.claude/hooks/hook-debug.log"
-
-node -e '
+// Hook Notification: reenvia notificaciones de Claude Code a Telegram
+// Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
 const fs = require("fs");
+const path = require("path");
 
 const BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
 const CHAT_ID = "6529617704";
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
-const LOG_FILE = process.argv[1] || "hook-debug.log";
+
+const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Notification: " + msg + "\n"); } catch(e) {}
@@ -71,6 +68,8 @@ async function processInput() {
     const title = data.title || "";
     const type = data.notification_type || "notification";
 
+    const agent = process.env.CLAUDE_AGENT_NAME || "Claude Code";
+
     const emoji = {
         "permission_prompt": "\u26a0\ufe0f",
         "idle_prompt": "\u2705",
@@ -78,7 +77,7 @@ async function processInput() {
         "elicitation_dialog": "\u2753"
     }[type] || "\ud83d\udd14";
 
-    const text = emoji + " <b>[Claude Code] " + (title || type) + "</b>\n" + message;
+    const text = emoji + " <b>" + agent + " \u2014 " + (title || type) + "</b>\n" + message;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -94,6 +93,3 @@ async function processInput() {
         }
     }
 }
-' "$LOG_FILE"
-
-exit 0

@@ -1,23 +1,20 @@
-#!/bin/bash
-# Hook Notification: reenvia notificaciones de Claude Code a Telegram
-# FIX v2: node lee stdin directo (sin cat pipe), con timeout de seguridad
-
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo '.')"
-LOG_FILE="$REPO_ROOT/.claude/hooks/hook-debug.log"
-
-node -e '
+// Hook Stop: notifica a Telegram cuando Claude termina su respuesta
+// Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
 const fs = require("fs");
+const path = require("path");
 
 const BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
 const CHAT_ID = "6529617704";
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
-const LOG_FILE = process.argv[1] || "hook-debug.log";
+
+const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 
 function log(msg) {
-    try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Notification: " + msg + "\n"); } catch(e) {}
+    try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Stop: " + msg + "\n"); } catch(e) {}
 }
 
 function sendTelegram(text, attempt) {
@@ -67,18 +64,14 @@ async function processInput() {
     let data;
     try { data = JSON.parse(rawInput); } catch(e) { log("JSON parse failed: " + rawInput.substring(0, 200)); data = {}; }
 
-    const message = data.message || "";
-    const title = data.title || "";
-    const type = data.notification_type || "notification";
+    if (data.stop_hook_active) return;
 
-    const emoji = {
-        "permission_prompt": "\u26a0\ufe0f",
-        "idle_prompt": "\u2705",
-        "auth_success": "\ud83d\udd11",
-        "elicitation_dialog": "\u2753"
-    }[type] || "\ud83d\udd14";
+    let summary = (data.last_assistant_message || "").trim();
+    if (summary.length > 150) summary = summary.substring(0, 150) + "...";
 
-    const text = emoji + " <b>[Claude Code] " + (title || type) + "</b>\n" + message;
+    const agent = process.env.CLAUDE_AGENT_NAME || "Claude Code";
+
+    const text = "\u2705 <b>" + agent + " \u2014 Listo</b>" + (summary ? "\n" + summary : "\nesperando tu siguiente instruccion");
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -94,6 +87,3 @@ async function processInput() {
         }
     }
 }
-' "$LOG_FILE"
-
-exit 0

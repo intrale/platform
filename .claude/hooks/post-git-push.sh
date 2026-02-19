@@ -1,35 +1,39 @@
 #!/bin/bash
-# Hook PostToolUse: detecta git push y lanza monitoreo CI en background
+# Hook PostToolUse[Bash]: detecta git push y lanza monitoreo CI en background
+# Matcher: Bash — solo se ejecuta despues de comandos Bash
 
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-/c/Workspaces/Intrale/platform}"
+
+# Parsear JSON con node para extraer command y verificar errores
 INPUT=$(cat)
+INPUT_DATA="$INPUT" node -e '
+    try {
+        const data = JSON.parse(process.env.INPUT_DATA || "{}");
+        const command = (data.tool_input && data.tool_input.command) || "";
+        if (!command.includes("git push")) process.exit(1);
 
-# Solo actuar si fue una llamada al tool Bash
-TOOL=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | cut -d'"' -f4)
-if [ "$TOOL" != "Bash" ]; then
-    exit 0
-fi
+        // Verificar que no hubo error en stderr
+        const stderr = (data.tool_result && data.tool_result.stderr) || "";
+        if (/error|rejected|denied|failed/i.test(stderr)) process.exit(1);
 
-# Verificar si el comando fue un git push
-COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4)
-if ! echo "$COMMAND" | grep -q "git push"; then
-    exit 0
-fi
+        // OK para monitorear
+        process.exit(0);
+    } catch(e) {
+        process.exit(1);
+    }
+' 2>/dev/null
 
-# Asegurarse de que no fue un push fallido (no hay "error" ni "rejected" en el output)
-OUTPUT=$(echo "$INPUT" | grep -o '"stdout":"[^"]*"' | head -1)
-ERROR=$(echo "$INPUT" | grep -o '"stderr":"[^"]*"' | head -1)
-if echo "$ERROR" | grep -qiE 'error|rejected|denied|failed'; then
+if [ $? -ne 0 ]; then
     exit 0
 fi
 
 # Obtener el SHA del commit pusheado
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-/c/Workspaces/Intrale/platform}"
 SHA=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null)
 if [ -z "$SHA" ]; then
     exit 0
 fi
 
 # Lanzar monitoreo CI en background (no bloquea el hook)
-nohup bash "$PROJECT_DIR/.claude/hooks/ci-monitor.sh" "$SHA" "$PROJECT_DIR" > /tmp/ci-monitor-$$.log 2>&1 &
+nohup bash "$PROJECT_DIR/.claude/hooks/ci-monitor.sh" "$SHA" "$PROJECT_DIR" > /dev/null 2>&1 &
 
 exit 0

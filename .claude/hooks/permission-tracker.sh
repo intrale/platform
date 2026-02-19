@@ -14,19 +14,16 @@ if [[ ! -f "$SETTINGS" ]]; then
     exit 0
 fi
 
-# Leer stdin y pasar todo a node en un solo paso
-cat | node -e '
+# Leer stdin en variable y pasar via env (evita problemas de pipe en Windows)
+INPUT=$(cat)
+INPUT_DATA="$INPUT" node -e '
 const fs = require("fs");
 
 const settingsPath = process.argv[1];
 const logPath = process.argv[2];
 
-let input = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => { input += chunk; });
-process.stdin.on("end", () => {
     try {
-        const data = JSON.parse(input);
+        const data = JSON.parse(process.env.INPUT_DATA || "{}");
 
         // Solo procesar Bash
         if (data.tool_name !== "Bash") process.exit(0);
@@ -94,7 +91,6 @@ process.stdin.on("end", () => {
         // Silenciar errores — nunca bloquear Claude Code
         process.exit(0);
     }
-});
 
 function generatePattern(cmd) {
     // Comando entre comillas: "C:/Program Files/..." args
