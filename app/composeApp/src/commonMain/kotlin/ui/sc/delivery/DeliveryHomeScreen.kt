@@ -36,7 +36,9 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
-import ext.delivery.DeliveryOrdersSummaryDTO
+import asdo.delivery.DeliveryOrder
+import asdo.delivery.DeliveryOrderStatus
+import asdo.delivery.DeliveryOrdersSummary
 import kotlinx.coroutines.launch
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen
@@ -210,7 +212,7 @@ private fun DeliveryHomeHeader(greeting: String, dateLabel: String, userName: St
 }
 
 @Composable
-private fun DeliverySummaryRow(summary: DeliveryOrdersSummaryDTO) {
+private fun DeliverySummaryRow(summary: DeliveryOrdersSummary) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
@@ -253,7 +255,7 @@ private fun RowScope.DeliverySummaryCard(title: String, value: Int) {
 }
 
 @Composable
-private fun DeliveryOrderCard(order: DeliveryActiveOrder, onOpen: () -> Unit) {
+internal fun DeliveryOrderCard(order: DeliveryOrder, onOpen: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -325,7 +327,7 @@ private fun DeliveryOrderCard(order: DeliveryActiveOrder, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun DeliveryStateCard(
+internal fun DeliveryStateCard(
     message: String,
     actionLabel: String,
     onAction: () -> Unit
@@ -354,7 +356,7 @@ private fun DeliveryStateCard(
 }
 
 @Composable
-private fun DeliveryLoading() {
+internal fun DeliveryLoading() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -366,9 +368,9 @@ private fun DeliveryLoading() {
 }
 
 @Composable
-private fun orderStatusLabel(status: String): String = when (status.lowercase()) {
-    "pending" -> Txt(MessageKey.delivery_order_status_pending)
-    "inprogress", "in_progress", "assigned" -> Txt(MessageKey.delivery_order_status_in_progress)
-    "delivered" -> Txt(MessageKey.delivery_order_status_delivered)
-    else -> status
+internal fun orderStatusLabel(status: DeliveryOrderStatus): String = when (status) {
+    DeliveryOrderStatus.PENDING -> Txt(MessageKey.delivery_order_status_pending)
+    DeliveryOrderStatus.IN_PROGRESS -> Txt(MessageKey.delivery_order_status_in_progress)
+    DeliveryOrderStatus.DELIVERED -> Txt(MessageKey.delivery_order_status_delivered)
+    DeliveryOrderStatus.UNKNOWN -> ""
 }

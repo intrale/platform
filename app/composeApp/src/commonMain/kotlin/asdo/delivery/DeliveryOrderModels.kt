@@ -1,0 +1,45 @@
+package asdo.delivery
+
+import ext.delivery.DeliveryOrderDTO
+import ext.delivery.DeliveryOrdersSummaryDTO
+
+enum class DeliveryOrderStatus {
+    PENDING, IN_PROGRESS, DELIVERED, UNKNOWN
+}
+
+data class DeliveryOrder(
+    val id: String,
+    val label: String,
+    val businessName: String,
+    val neighborhood: String,
+    val status: DeliveryOrderStatus,
+    val eta: String?
+)
+
+data class DeliveryOrdersSummary(
+    val pending: Int = 0,
+    val inProgress: Int = 0,
+    val delivered: Int = 0
+)
+
+fun DeliveryOrderDTO.toDomain(): DeliveryOrder = DeliveryOrder(
+    id = id,
+    label = publicId ?: shortCode ?: id,
+    businessName = businessName,
+    neighborhood = neighborhood,
+    status = status.toDeliveryOrderStatus(),
+    eta = eta ?: promisedAt
+)
+
+fun DeliveryOrdersSummaryDTO.toDomain(): DeliveryOrdersSummary = DeliveryOrdersSummary(
+    pending = pending,
+    inProgress = inProgress,
+    delivered = delivered
+)
+
+fun String.toDeliveryOrderStatus(): DeliveryOrderStatus = when (this.lowercase()) {
+    "pending" -> DeliveryOrderStatus.PENDING
+    "inprogress", "in_progress", "assigned" -> DeliveryOrderStatus.IN_PROGRESS
+    "delivered" -> DeliveryOrderStatus.DELIVERED
+    else -> DeliveryOrderStatus.UNKNOWN
+}

@@ -1,0 +1,48 @@
+package asdo.delivery
+
+import ext.delivery.CommDeliveryOrdersService
+import ext.delivery.toDeliveryException
+import kotlinx.datetime.LocalDate
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
+
+class DoGetActiveDeliveryOrders(
+    private val ordersService: CommDeliveryOrdersService
+) : ToDoGetActiveDeliveryOrders {
+
+    private val logger = LoggerFactory.default.newLogger<DoGetActiveDeliveryOrders>()
+
+    private val statusPriority = listOf(
+        DeliveryOrderStatus.PENDING,
+        DeliveryOrderStatus.IN_PROGRESS
+    )
+
+    override suspend fun execute(): Result<List<DeliveryOrder>> = runCatching {
+        logger.info { "Obteniendo pedidos activos del repartidor" }
+        ordersService.fetchActiveOrders().getOrThrow()
+            .map { it.toDomain() }
+            .filterNot { it.status == DeliveryOrderStatus.DELIVERED }
+            .sortedWith(compareBy(
+                { statusPriority.indexOf(it.status).let { idx -> if (idx >= 0) idx else Int.MAX_VALUE } },
+                { it.eta.orEmpty() }
+            ))
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al obtener pedidos activos" }
+        throw throwable.toDeliveryException()
+    }
+}
+
+class DoGetDeliveryOrdersSummary(
+    private val ordersService: CommDeliveryOrdersService
+) : ToDoGetDeliveryOrdersSummary {
+
+    private val logger = LoggerFactory.default.newLogger<DoGetDeliveryOrdersSummary>()
+
+    override suspend fun execute(date: LocalDate): Result<DeliveryOrdersSummary> = runCatching {
+        logger.info { "Obteniendo resumen de pedidos para $date" }
+        ordersService.fetchSummary(date).getOrThrow().toDomain()
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al obtener resumen de pedidos" }
+        throw throwable.toDeliveryException()
+    }
+}

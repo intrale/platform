@@ -5,18 +5,20 @@ import asdo.delivery.DeliveryAvailabilityBlock
 import asdo.delivery.DeliveryAvailabilityConfig
 import asdo.delivery.DeliveryAvailabilityMode
 import asdo.delivery.DeliveryAvailabilitySlot
+import asdo.delivery.DeliveryOrder
+import asdo.delivery.DeliveryOrderStatus
+import asdo.delivery.DeliveryOrdersSummary
 import asdo.delivery.DeliveryProfile
 import asdo.delivery.DeliveryProfileData
 import asdo.delivery.DeliveryVehicle
 import asdo.delivery.DeliveryZone
+import asdo.delivery.ToDoGetActiveDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryAvailability
+import asdo.delivery.ToDoGetDeliveryOrdersSummary
 import asdo.delivery.ToDoGetDeliveryProfile
 import asdo.delivery.ToDoUpdateDeliveryAvailability
 import asdo.delivery.ToDoUpdateDeliveryProfile
 import ar.com.intrale.strings.model.MessageKey
-import ext.delivery.CommDeliveryOrdersService
-import ext.delivery.DeliveryOrderDTO
-import ext.delivery.DeliveryOrdersSummaryDTO
 import kotlinx.coroutines.test.runTest
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.LocalDate
@@ -33,16 +35,15 @@ import kotlin.test.assertTrue
 
 // --- Datos de ejemplo ---
 
-private val sampleSummary = DeliveryOrdersSummaryDTO(pending = 3, inProgress = 2, delivered = 5)
+private val sampleSummary = DeliveryOrdersSummary(pending = 3, inProgress = 2, delivered = 5)
 
 private val sampleActiveOrders = listOf(
-    DeliveryOrderDTO(id = "o1", publicId = "PUB-1", businessName = "Pizzeria", neighborhood = "Centro", status = "pending", eta = "12:00"),
-    DeliveryOrderDTO(id = "o2", publicId = "PUB-2", businessName = "Farmacia", neighborhood = "Norte", status = "inprogress", eta = "11:30"),
-    DeliveryOrderDTO(id = "o3", shortCode = "SC3", businessName = "Panaderia", neighborhood = "Sur", status = "assigned", eta = "13:00"),
-    DeliveryOrderDTO(id = "o4", publicId = "PUB-4", businessName = "Verduleria", neighborhood = "Oeste", status = "pending", eta = "14:00"),
-    DeliveryOrderDTO(id = "o5", publicId = "PUB-5", businessName = "Carniceria", neighborhood = "Este", status = "pending", eta = "15:00"),
-    DeliveryOrderDTO(id = "o6", publicId = "PUB-6", businessName = "Libreria", neighborhood = "Centro", status = "pending", eta = "16:00"),
-    DeliveryOrderDTO(id = "o7", publicId = "PUB-7", businessName = "Kiosco", neighborhood = "Norte", status = "delivered", eta = "10:00")
+    DeliveryOrder(id = "o1", label = "PUB-1", businessName = "Pizzeria", neighborhood = "Centro", status = DeliveryOrderStatus.PENDING, eta = "12:00"),
+    DeliveryOrder(id = "o2", label = "PUB-2", businessName = "Farmacia", neighborhood = "Norte", status = DeliveryOrderStatus.IN_PROGRESS, eta = "11:30"),
+    DeliveryOrder(id = "o3", label = "SC3", businessName = "Panaderia", neighborhood = "Sur", status = DeliveryOrderStatus.IN_PROGRESS, eta = "13:00"),
+    DeliveryOrder(id = "o4", label = "PUB-4", businessName = "Verduleria", neighborhood = "Oeste", status = DeliveryOrderStatus.PENDING, eta = "14:00"),
+    DeliveryOrder(id = "o5", label = "PUB-5", businessName = "Carniceria", neighborhood = "Este", status = DeliveryOrderStatus.PENDING, eta = "15:00"),
+    DeliveryOrder(id = "o6", label = "PUB-6", businessName = "Libreria", neighborhood = "Centro", status = DeliveryOrderStatus.PENDING, eta = "16:00"),
 )
 
 private val sampleProfileData = DeliveryProfileData(
@@ -72,14 +73,16 @@ private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
 
 // --- Fakes para DeliveryHomeViewModel ---
 
-private class FakeOrdersService(
-    private val summaryResult: Result<DeliveryOrdersSummaryDTO> = Result.success(sampleSummary),
-    private val activeResult: Result<List<DeliveryOrderDTO>> = Result.success(sampleActiveOrders),
-    private val availableResult: Result<List<DeliveryOrderDTO>> = Result.success(emptyList())
-) : CommDeliveryOrdersService {
-    override suspend fun fetchSummary(date: LocalDate): Result<DeliveryOrdersSummaryDTO> = summaryResult
-    override suspend fun fetchActiveOrders(): Result<List<DeliveryOrderDTO>> = activeResult
-    override suspend fun fetchAvailableOrders(): Result<List<DeliveryOrderDTO>> = availableResult
+private class FakeGetActiveDeliveryOrders(
+    private val result: Result<List<DeliveryOrder>> = Result.success(sampleActiveOrders)
+) : ToDoGetActiveDeliveryOrders {
+    override suspend fun execute(): Result<List<DeliveryOrder>> = result
+}
+
+private class FakeGetDeliveryOrdersSummary(
+    private val result: Result<DeliveryOrdersSummary> = Result.success(sampleSummary)
+) : ToDoGetDeliveryOrdersSummary {
+    override suspend fun execute(date: LocalDate): Result<DeliveryOrdersSummary> = result
 }
 
 // --- Fakes para DeliveryProfileViewModel ---
@@ -127,7 +130,10 @@ class DeliveryHomeViewModelTest {
     @Test
     fun `loadData exitoso carga resumen y ordenes`() = runTest {
         SessionStore.updateRole(UserRole.Delivery)
-        val viewModel = DeliveryHomeViewModel(ordersService = FakeOrdersService())
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary()
+        )
 
         viewModel.loadData()
 
@@ -144,8 +150,10 @@ class DeliveryHomeViewModelTest {
 
     @Test
     fun `loadData sin rol delivery muestra error`() = runTest {
-        // No se establece el rol Delivery
-        val viewModel = DeliveryHomeViewModel(ordersService = FakeOrdersService())
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary()
+        )
 
         viewModel.loadData()
 
@@ -160,9 +168,10 @@ class DeliveryHomeViewModelTest {
     @Test
     fun `refreshSummary actualiza resumen`() = runTest {
         SessionStore.updateRole(UserRole.Delivery)
-        val updatedSummary = DeliveryOrdersSummaryDTO(pending = 10, inProgress = 5, delivered = 20)
+        val updatedSummary = DeliveryOrdersSummary(pending = 10, inProgress = 5, delivered = 20)
         val viewModel = DeliveryHomeViewModel(
-            ordersService = FakeOrdersService(summaryResult = Result.success(updatedSummary))
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.success(updatedSummary))
         )
 
         viewModel.refreshSummary()
@@ -175,30 +184,28 @@ class DeliveryHomeViewModelTest {
     }
 
     @Test
-    fun `loadData con ordenes activas las ordena y limita`() = runTest {
+    fun `loadData con ordenes activas las limita a 5`() = runTest {
         SessionStore.updateRole(UserRole.Delivery)
-        val viewModel = DeliveryHomeViewModel(ordersService = FakeOrdersService())
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary()
+        )
 
         viewModel.loadData()
 
         val activeState = viewModel.state.activeOrdersState
         assertTrue(activeState is DeliveryActiveOrdersState.Loaded)
-        // Se filtran los "delivered" (o7), quedan 6 ordenes, pero se toma max 5
         assertEquals(5, activeState.orders.size)
-        // Verificar que "delivered" no aparece
-        assertTrue(activeState.orders.none { it.status.equals("delivered", ignoreCase = true) })
-        // Verificar orden: pending (idx 0) va primero, luego inprogress (idx 1), luego assigned (idx 3)
-        assertEquals("pending", activeState.orders.first().status)
+        assertTrue(activeState.orders.none { it.status == DeliveryOrderStatus.DELIVERED })
+        assertEquals(DeliveryOrderStatus.PENDING, activeState.orders.first().status)
     }
 
     @Test
     fun `loadData con error muestra error`() = runTest {
         SessionStore.updateRole(UserRole.Delivery)
         val viewModel = DeliveryHomeViewModel(
-            ordersService = FakeOrdersService(
-                summaryResult = Result.failure(Exception("Error de red")),
-                activeResult = Result.failure(Exception("Error de red"))
-            )
+            getActiveOrders = FakeGetActiveDeliveryOrders(Result.failure(Exception("Error de red"))),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.failure(Exception("Error de red")))
         )
 
         viewModel.loadData()
