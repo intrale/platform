@@ -62,5 +62,8 @@ app/composeApp/src/wasmJsMain/resources/*.ico
 app/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/*.png
 docs/branding/icons/icon_master.png
 
+# Plan del Oraculo (generado por /oraculo sprint)
+scripts/oraculo-plan.json
+
 # Claude Code
 .claude/activity-log.jsonl
