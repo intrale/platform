@@ -73,21 +73,6 @@ import ui.util.formatPrice
 
 const val CLIENT_HOME_PATH = "/client/home"
 
-data class ClientProduct(
-    val id: String,
-    val name: String,
-    val priceLabel: String,
-    val emoji: String,
-    val unitPrice: Double
-)
-
-sealed interface ClientProductsState {
-    data object Loading : ClientProductsState
-    data object Empty : ClientProductsState
-    data class Error(val message: String) : ClientProductsState
-    data class Loaded(val products: List<ClientProduct>) : ClientProductsState
-}
-
 data class ClientHomeUiState(
     val productsState: ClientProductsState = ClientProductsState.Loading,
     val lastAddedProduct: ClientProduct? = null
@@ -190,10 +175,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                             businessName = businessName,
                             deliveryCtaLabel = deliveryCtaLabel,
                             onViewCatalog = {
-                                coroutineScope.launch {
-                                    val firstProductIndex = 3
-                                    listState.animateScrollToItem(firstProductIndex.coerceAtLeast(0))
-                                }
+                                navigate(CLIENT_CATALOG_PATH)
                             },
                             onDeliveryClick = { navigate(CLIENT_CART_PATH) },
                             viewCatalogLabel = viewCatalogLabel

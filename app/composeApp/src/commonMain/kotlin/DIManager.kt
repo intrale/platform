@@ -153,6 +153,7 @@ import ui.sc.business.RegisterNewBusinessScreen
 import ui.sc.business.RequestJoinBusinessScreen
 import ui.sc.business.ReviewBusinessScreen
 import ui.sc.business.ReviewJoinBusinessScreen
+import ui.sc.client.ClientCatalogScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientOrdersScreen
@@ -175,6 +176,7 @@ public const val SCREENS = "screens"
 
 public const val CLIENT_ENTRY = "clientEntry"
 public const val CLIENT_HOME = "clientHome"
+public const val CLIENT_CATALOG = "clientCatalog"
 public const val CLIENT_ORDERS = "clientOrders"
 public const val CLIENT_CART = "clientCart"
 public const val CLIENT_PROFILE = "clientProfile"
@@ -316,6 +318,7 @@ private val deliveryModule = DI.Module("delivery") {
 private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
     bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
+    bindSingleton(tag = CLIENT_CATALOG) { ClientCatalogScreen() }
     bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
     bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
@@ -355,6 +358,7 @@ private val screensModule = DI.Module("screens") {
                 AppType.CLIENT -> {
                     add(instance(tag = CLIENT_ENTRY))
                     add(instance(tag = CLIENT_HOME))
+                    add(instance(tag = CLIENT_CATALOG))
                     add(instance(tag = CLIENT_ORDERS))
                     add(instance(tag = CLIENT_CART))
                     add(instance(tag = CLIENT_PROFILE))
