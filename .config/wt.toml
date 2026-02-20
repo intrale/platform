@@ -1,0 +1,6 @@
+# .config/wt.toml — Project config (compartida via git)
+# Docs: https://worktrunk.dev
+#
+# La automatizacion principal esta en scripts/dev-functions.sh
+# (copia de settings, setup de entorno, etc.)
+# Este archivo queda para hooks que apliquen a TODO el equipo.
