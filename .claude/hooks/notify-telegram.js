@@ -70,6 +70,13 @@ async function processInput() {
 
     const agent = process.env.CLAUDE_AGENT_NAME || "Claude Code";
 
+    const TIPO_TITULO = {
+        "permission_prompt":   "Aprobaci\u00f3n requerida",
+        "idle_prompt":         "Claude est\u00e1 esperando",
+        "auth_success":        "Autenticaci\u00f3n exitosa",
+        "elicitation_dialog":  "Informaci\u00f3n requerida"
+    };
+
     const emoji = {
         "permission_prompt": "\u26a0\ufe0f",
         "idle_prompt": "\u2705",
@@ -77,7 +84,14 @@ async function processInput() {
         "elicitation_dialog": "\u2753"
     }[type] || "\ud83d\udd14";
 
-    const text = emoji + " <b>" + agent + " \u2014 " + (title || type) + "</b>\n" + message;
+    const displayTitle = TIPO_TITULO[type] || title || type;
+
+    let displayMessage = message;
+    if (type === "permission_prompt" && message === "Claude Code needs your approval for the plan") {
+        displayMessage = "Claude Code requiere tu aprobaci\u00f3n para continuar con el plan de trabajo. Revis\u00e1 la terminal para ver el detalle y confirmar o cancelar.";
+    }
+
+    const text = emoji + " <b>" + agent + " \u2014 " + displayTitle + "</b>\n" + displayMessage;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
