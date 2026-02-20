@@ -1,8 +1,9 @@
-// El Portero -- Permission Tracker Hook
-// PostToolUse hook: detecta comandos Bash aprobados y los persiste en settings.local.json
+// El Portero v2 -- Permission Tracker Hook
+// PostToolUse hook: detecta tools aprobados (Bash, WebFetch, Skill) y los persiste en settings.local.json
 // Pure Node.js — sin dependencia de bash
 const fs = require("fs");
 const path = require("path");
+const url = require("url");
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const SETTINGS = path.join(PROJECT_DIR, ".claude", "settings.local.json");
@@ -26,7 +27,12 @@ process.stdin.on("end", () => { if (!done) { done = true; handleInput(); } });
 process.stdin.on("error", () => { if (!done) { done = true; handleInput(); } });
 setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} handleInput(); } }, 2000);
 
-function generatePattern(cmd) {
+// --- Generadores de patron por tipo de tool ---
+
+function generateBashPattern(command) {
+    const cmd = command.trim();
+    if (!cmd) return null;
+
     if (cmd.startsWith("\"")) {
         const end = cmd.indexOf("\"", 1);
         if (end > 0) {
@@ -66,16 +72,85 @@ function generatePattern(cmd) {
     return "Bash(" + first + ":*)";
 }
 
+function generateWebFetchPattern(toolInput) {
+    const fetchUrl = toolInput.url || "";
+    if (!fetchUrl) return null;
+    try {
+        const parsed = new URL(fetchUrl);
+        const domain = parsed.hostname;
+        if (!domain) return null;
+        return "WebFetch(domain:" + domain + ")";
+    } catch(e) {
+        return null;
+    }
+}
+
+function generateSkillPattern(toolInput) {
+    const skill = toolInput.skill || "";
+    if (!skill) return null;
+    return "Skill(" + skill + ")";
+}
+
+function generatePattern(toolName, toolInput) {
+    switch (toolName) {
+        case "Bash":
+            return generateBashPattern((toolInput && toolInput.command) || "");
+        case "WebFetch":
+            return generateWebFetchPattern(toolInput || {});
+        case "Skill":
+            return generateSkillPattern(toolInput || {});
+        default:
+            return null;
+    }
+}
+
+// --- Verificar si un patron ya esta cubierto ---
+
+function isAlreadyCovered(pattern, allowList) {
+    // Exacto
+    if (allowList.includes(pattern)) return true;
+
+    // Si es WebFetch(domain:X), verificar si "WebFetch" bare esta en la lista
+    if (pattern.startsWith("WebFetch(") && allowList.includes("WebFetch")) return true;
+
+    // Si es Bash(X:*), verificar si algun patron mas amplio lo cubre
+    const m = pattern.match(/^Bash\((.+?):\*\)$/);
+    if (m) {
+        const cmd = m[1];
+        for (const p of allowList) {
+            const pm = p.match(/^Bash\((.+?):\*\)$/);
+            if (pm && cmd.startsWith(pm[1])) return true;
+        }
+    }
+
+    return false;
+}
+
+function collidesWithDeny(pattern, denyList) {
+    const m = pattern.match(/^Bash\((.+?):\*\)$/);
+    if (!m) return false;
+    const cmd = m[1];
+    for (const d of denyList) {
+        const dm = d.match(/^Bash\((.+?):\*\)$/);
+        if (!dm) continue;
+        const denyCmd = dm[1];
+        if (denyCmd.startsWith(cmd) || cmd.startsWith(denyCmd)) return true;
+    }
+    return false;
+}
+
+// --- Main ---
+
 function handleInput() {
     try {
         const data = JSON.parse(input || "{}");
+        const toolName = data.tool_name || "";
 
-        if (data.tool_name !== "Bash") process.exit(0);
+        // Solo trackeamos Bash, WebFetch y Skill
+        if (!["Bash", "WebFetch", "Skill"].includes(toolName)) process.exit(0);
 
-        const command = (data.tool_input && data.tool_input.command) || "";
-        if (!command) process.exit(0);
-
-        const pattern = generatePattern(command.trim());
+        const toolInput = data.tool_input || {};
+        const pattern = generatePattern(toolName, toolInput);
         if (!pattern) process.exit(0);
 
         let settings;
@@ -84,20 +159,13 @@ function handleInput() {
         const allow = (settings.permissions && settings.permissions.allow) || [];
         const deny = (settings.permissions && settings.permissions.deny) || [];
 
-        if (allow.includes(pattern)) process.exit(0);
+        // Ya cubierto?
+        if (isAlreadyCovered(pattern, allow)) process.exit(0);
 
-        // Matchea deny?
-        const newMatch = pattern.match(/^Bash\((.+?):\*\)$/);
-        if (newMatch) {
-            const newCmd = newMatch[1];
-            for (const d of deny) {
-                const dm = d.match(/^Bash\((.+?):\*\)$/);
-                if (!dm) continue;
-                const denyCmd = dm[1];
-                if (denyCmd.startsWith(newCmd) || newCmd.startsWith(denyCmd)) process.exit(0);
-            }
-        }
+        // Colisiona con deny?
+        if (collidesWithDeny(pattern, deny)) process.exit(0);
 
+        // Agregar
         allow.push(pattern);
         settings.permissions = settings.permissions || {};
         settings.permissions.allow = allow;
@@ -106,7 +174,7 @@ function handleInput() {
         // Log
         const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
         const sessionId = data.session_id || "";
-        const logEntry = JSON.stringify({ ts, action: "added", pattern, command, session: sessionId });
+        const logEntry = JSON.stringify({ ts, action: "added", tool: toolName, pattern, session: sessionId });
 
         const logDir = path.dirname(LOG_PATH);
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
