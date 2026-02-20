@@ -3,7 +3,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
 }
 
 dependencies {
@@ -17,8 +17,6 @@ dependencies {
 
     // KSP API alineado por catálogo
     compileOnly(libs.ksp.api)
-
-    implementation("com.google.devtools.ksp:symbol-processing-api:2.2.0-2.0.2")
     testImplementation(kotlin("test"))
 }
 
