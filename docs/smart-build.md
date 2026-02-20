@@ -14,12 +14,12 @@ En `gradle.properties`:
 ```properties
 org.gradle.caching=true
 org.gradle.parallel=true
-org.gradle.configuration-cache=true
 ```
 
 - **Build cache**: reutiliza outputs de tasks cuyo input no cambió
 - **Parallel**: ejecuta tasks independientes en paralelo
-- **Configuration cache**: cachea la fase de configuración de Gradle
+
+> **Nota**: `configuration-cache` no se habilita porque varias tasks del proyecto (`verifyNoLegacyStrings`, tasks de Compose, plugin Wasm) no son compatibles con él. Se puede reconsiderar cuando se migren las tasks a la API compatible.
 
 ### 2. CI ya no ejecuta `clean`
 
