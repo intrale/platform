@@ -22,11 +22,15 @@ import asdo.client.DoUpdateClientProfile
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.delivery.DoGetActiveDeliveryOrders
 import asdo.delivery.DoGetDeliveryAvailability
+import asdo.delivery.DoGetDeliveryOrdersSummary
 import asdo.delivery.DoGetDeliveryProfile
 import asdo.delivery.DoUpdateDeliveryAvailability
 import asdo.delivery.DoUpdateDeliveryProfile
+import asdo.delivery.ToDoGetActiveDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryAvailability
+import asdo.delivery.ToDoGetDeliveryOrdersSummary
 import asdo.delivery.ToDoGetDeliveryProfile
 import asdo.delivery.ToDoUpdateDeliveryAvailability
 import asdo.delivery.ToDoUpdateDeliveryProfile
@@ -311,6 +315,9 @@ private val deliveryModule = DI.Module("delivery") {
     bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }
     bindSingleton<ToDoGetDeliveryAvailability> { DoGetDeliveryAvailability(instance()) }
     bindSingleton<ToDoUpdateDeliveryAvailability> { DoUpdateDeliveryAvailability(instance()) }
+
+    bindSingleton<ToDoGetActiveDeliveryOrders> { DoGetActiveDeliveryOrders(instance()) }
+    bindSingleton<ToDoGetDeliveryOrdersSummary> { DoGetDeliveryOrdersSummary(instance()) }
 }
 
 private val screensModule = DI.Module("screens") {

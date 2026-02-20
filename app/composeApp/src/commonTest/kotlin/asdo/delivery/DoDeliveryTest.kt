@@ -2,6 +2,7 @@ package asdo.delivery
 
 import ext.delivery.*
 import kotlinx.coroutines.test.runTest
+import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -148,4 +149,88 @@ class DoUpdateDeliveryAvailabilityTest {
     }
 }
 
-// endregion
+// endregion DoUpdateDeliveryAvailability
+
+// region DoGetActiveDeliveryOrders
+
+private val sampleOrderDTOs = listOf(
+    DeliveryOrderDTO(id = "o1", publicId = "PUB-1", businessName = "Pizzeria", neighborhood = "Centro", status = "pending", eta = "12:00"),
+    DeliveryOrderDTO(id = "o2", publicId = "PUB-2", businessName = "Farmacia", neighborhood = "Norte", status = "inprogress", eta = "11:30"),
+    DeliveryOrderDTO(id = "o3", shortCode = "SC3", businessName = "Panaderia", neighborhood = "Sur", status = "delivered", eta = "10:00"),
+)
+
+private val sampleSummaryDTO = DeliveryOrdersSummaryDTO(pending = 3, inProgress = 2, delivered = 5)
+
+private class FakeDeliveryOrdersService(
+    private val activeResult: Result<List<DeliveryOrderDTO>> = Result.success(sampleOrderDTOs),
+    private val summaryResult: Result<DeliveryOrdersSummaryDTO> = Result.success(sampleSummaryDTO),
+    private val availableResult: Result<List<DeliveryOrderDTO>> = Result.success(emptyList())
+) : CommDeliveryOrdersService {
+    override suspend fun fetchActiveOrders() = activeResult
+    override suspend fun fetchSummary(date: LocalDate) = summaryResult
+    override suspend fun fetchAvailableOrders() = availableResult
+}
+
+class DoGetActiveDeliveryOrdersTest {
+
+    @Test
+    fun `obtener pedidos activos exitoso mapea y filtra delivered`() = runTest {
+        val sut = DoGetActiveDeliveryOrders(FakeDeliveryOrdersService())
+
+        val result = sut.execute()
+
+        assertTrue(result.isSuccess)
+        val orders = result.getOrThrow()
+        assertEquals(2, orders.size)
+        assertTrue(orders.none { it.status == DeliveryOrderStatus.DELIVERED })
+        assertEquals("PUB-1", orders[0].label)
+        assertEquals(DeliveryOrderStatus.PENDING, orders[0].status)
+        assertEquals(DeliveryOrderStatus.IN_PROGRESS, orders[1].status)
+    }
+
+    @Test
+    fun `obtener pedidos activos fallido retorna DeliveryExceptionResponse`() = runTest {
+        val sut = DoGetActiveDeliveryOrders(
+            FakeDeliveryOrdersService(activeResult = Result.failure(RuntimeException("Error de red")))
+        )
+
+        val result = sut.execute()
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is DeliveryExceptionResponse)
+    }
+}
+
+// endregion DoGetActiveDeliveryOrders
+
+// region DoGetDeliveryOrdersSummary
+
+class DoGetDeliveryOrdersSummaryTest {
+
+    @Test
+    fun `obtener resumen exitoso mapea correctamente`() = runTest {
+        val sut = DoGetDeliveryOrdersSummary(FakeDeliveryOrdersService())
+
+        val result = sut.execute(LocalDate(2026, 2, 20))
+
+        assertTrue(result.isSuccess)
+        val summary = result.getOrThrow()
+        assertEquals(3, summary.pending)
+        assertEquals(2, summary.inProgress)
+        assertEquals(5, summary.delivered)
+    }
+
+    @Test
+    fun `obtener resumen fallido retorna DeliveryExceptionResponse`() = runTest {
+        val sut = DoGetDeliveryOrdersSummary(
+            FakeDeliveryOrdersService(summaryResult = Result.failure(RuntimeException("Error")))
+        )
+
+        val result = sut.execute(LocalDate(2026, 2, 20))
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is DeliveryExceptionResponse)
+    }
+}
+
+// endregion DoGetDeliveryOrdersSummary
