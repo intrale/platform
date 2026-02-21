@@ -45,6 +45,7 @@ abstract class E2ETestBase {
             bind<DynamoDbTable<UserBusinessProfile>>() { singleton { tableProfiles } }
             bind<Faker>() { singleton { Faker() } }
             bind<ClientProfileRepository>() { singleton { ClientProfileRepository() } }
+            bind<ClientOrderRepository>() { singleton { ClientOrderRepository() } }
 
             // Funciones no seguras
             bind<Function>(tag = "signup") {
@@ -117,6 +118,12 @@ abstract class E2ETestBase {
             }
             bind<Function>(tag = "client/addresses") {
                 singleton { ClientAddressesFunction(instance(), instance(), instance(), instance()) }
+            }
+            bind<Function>(tag = "client/orders") {
+                singleton { ClientOrders(instance(), instance(), instance(), instance()) }
+            }
+            bind<Function>(tag = "client/order-detail") {
+                singleton { ClientOrderDetail(instance(), instance(), instance(), instance()) }
             }
         }
     }

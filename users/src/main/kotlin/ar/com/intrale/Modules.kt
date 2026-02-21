@@ -145,6 +145,10 @@ val appModule = DI.Module("appModule") {
         singleton { ClientProfileRepository() }
     }
 
+    bind<ClientOrderRepository> {
+        singleton { ClientOrderRepository() }
+    }
+
     bind<Function> (tag="signup") {
         singleton  { SignUp(instance(), instance(), instance(), instance()) }
     }
@@ -209,6 +213,12 @@ val appModule = DI.Module("appModule") {
     }
     bind<Function> (tag="client/addresses") {
         singleton { ClientAddressesFunction(instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="client/orders") {
+        singleton { ClientOrders(instance(), instance(), instance(), instance()) }
+    }
+    bind<Function> (tag="client/order-detail") {
+        singleton { ClientOrderDetail(instance(), instance(), instance(), instance()) }
     }
 }
 
