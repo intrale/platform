@@ -35,6 +35,7 @@ private fun mockClient(status: HttpStatusCode, body: String): HttpClient {
 private class FakeStorage(override var token: String? = "Bearer test-tok") : CommKeyValueStorage {
     override var profileCache: ClientProfileCache? = null
     override var preferredLanguage: String? = null
+    override var onboardingCompleted: Boolean = false
 }
 
 // region ClientRegisterBusinessService
