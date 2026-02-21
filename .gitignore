@@ -48,6 +48,11 @@ deps_commonMain.txt
 .claude/session-state.json
 .claude/sessions/
 .claude/settings.local.json
+.claude/hooks/hook-debug.log
+.claude/hooks/tg-approver-offset.json
+
+# Planner — plan de agentes (no commitear, local de trabajo)
+scripts/planner-plan.json
 
 # Binarios de gh-cli descargados localmente
 gh-cli/
