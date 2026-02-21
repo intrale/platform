@@ -27,12 +27,14 @@ import asdo.delivery.DoGetDeliveryAvailability
 import asdo.delivery.DoGetDeliveryOrdersSummary
 import asdo.delivery.DoGetDeliveryProfile
 import asdo.delivery.DoUpdateDeliveryAvailability
+import asdo.delivery.DoUpdateDeliveryOrderStatus
 import asdo.delivery.DoUpdateDeliveryProfile
 import asdo.delivery.ToDoGetActiveDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
 import asdo.delivery.ToDoGetDeliveryProfile
 import asdo.delivery.ToDoUpdateDeliveryAvailability
+import asdo.delivery.ToDoUpdateDeliveryOrderStatus
 import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
@@ -320,6 +322,7 @@ private val deliveryModule = DI.Module("delivery") {
 
     bindSingleton<ToDoGetActiveDeliveryOrders> { DoGetActiveDeliveryOrders(instance()) }
     bindSingleton<ToDoGetDeliveryOrdersSummary> { DoGetDeliveryOrdersSummary(instance()) }
+    bindSingleton<ToDoUpdateDeliveryOrderStatus> { DoUpdateDeliveryOrderStatus(instance()) }
 }
 
 private val screensModule = DI.Module("screens") {

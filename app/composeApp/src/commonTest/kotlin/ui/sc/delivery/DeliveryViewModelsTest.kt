@@ -12,11 +12,13 @@ import asdo.delivery.DeliveryProfile
 import asdo.delivery.DeliveryProfileData
 import asdo.delivery.DeliveryVehicle
 import asdo.delivery.DeliveryZone
+import asdo.delivery.DeliveryOrderStatusUpdateResult
 import asdo.delivery.ToDoGetActiveDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
 import asdo.delivery.ToDoGetDeliveryProfile
 import asdo.delivery.ToDoUpdateDeliveryAvailability
+import asdo.delivery.ToDoUpdateDeliveryOrderStatus
 import asdo.delivery.ToDoUpdateDeliveryProfile
 import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.test.runTest
@@ -85,6 +87,14 @@ private class FakeGetDeliveryOrdersSummary(
     override suspend fun execute(date: LocalDate): Result<DeliveryOrdersSummary> = result
 }
 
+private class FakeUpdateDeliveryOrderStatusForHome(
+    private val result: Result<DeliveryOrderStatusUpdateResult> = Result.success(
+        DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS)
+    )
+) : ToDoUpdateDeliveryOrderStatus {
+    override suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus): Result<DeliveryOrderStatusUpdateResult> = result
+}
+
 // --- Fakes para DeliveryProfileViewModel ---
 
 private class FakeGetDeliveryProfile(
@@ -132,7 +142,8 @@ class DeliveryHomeViewModelTest {
         SessionStore.updateRole(UserRole.Delivery)
         val viewModel = DeliveryHomeViewModel(
             getActiveOrders = FakeGetActiveDeliveryOrders(),
-            getOrdersSummary = FakeGetDeliveryOrdersSummary()
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
         )
 
         viewModel.loadData()
@@ -152,7 +163,8 @@ class DeliveryHomeViewModelTest {
     fun `loadData sin rol delivery muestra error`() = runTest {
         val viewModel = DeliveryHomeViewModel(
             getActiveOrders = FakeGetActiveDeliveryOrders(),
-            getOrdersSummary = FakeGetDeliveryOrdersSummary()
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
         )
 
         viewModel.loadData()
@@ -171,7 +183,8 @@ class DeliveryHomeViewModelTest {
         val updatedSummary = DeliveryOrdersSummary(pending = 10, inProgress = 5, delivered = 20)
         val viewModel = DeliveryHomeViewModel(
             getActiveOrders = FakeGetActiveDeliveryOrders(),
-            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.success(updatedSummary))
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.success(updatedSummary)),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
         )
 
         viewModel.refreshSummary()
@@ -188,7 +201,8 @@ class DeliveryHomeViewModelTest {
         SessionStore.updateRole(UserRole.Delivery)
         val viewModel = DeliveryHomeViewModel(
             getActiveOrders = FakeGetActiveDeliveryOrders(),
-            getOrdersSummary = FakeGetDeliveryOrdersSummary()
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
         )
 
         viewModel.loadData()
@@ -205,7 +219,8 @@ class DeliveryHomeViewModelTest {
         SessionStore.updateRole(UserRole.Delivery)
         val viewModel = DeliveryHomeViewModel(
             getActiveOrders = FakeGetActiveDeliveryOrders(Result.failure(Exception("Error de red"))),
-            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.failure(Exception("Error de red")))
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.failure(Exception("Error de red"))),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
         )
 
         viewModel.loadData()
@@ -215,6 +230,41 @@ class DeliveryHomeViewModelTest {
 
         val activeState = viewModel.state.activeOrdersState
         assertTrue(activeState is DeliveryActiveOrdersState.Error)
+    }
+    @Test
+    fun `updateStatus exitoso refresca resumen y ordenes activas`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.loadData()
+        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+
+        assertTrue(viewModel.state.statusUpdateSuccess)
+        assertNull(viewModel.state.updatingOrderId)
+        val summaryState = viewModel.state.summaryState
+        assertTrue(summaryState is DeliverySummaryState.Loaded)
+    }
+
+    @Test
+    fun `updateStatus con error muestra mensaje de error`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome(
+                Result.failure(RuntimeException("Error de red"))
+            )
+        )
+
+        viewModel.loadData()
+        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+
+        assertTrue(viewModel.state.statusUpdateError != null)
+        assertNull(viewModel.state.updatingOrderId)
     }
 }
 

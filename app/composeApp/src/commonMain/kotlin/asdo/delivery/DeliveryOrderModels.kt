@@ -1,6 +1,7 @@
 package asdo.delivery
 
 import ext.delivery.DeliveryOrderDTO
+import ext.delivery.DeliveryOrderStatusUpdateResponse
 import ext.delivery.DeliveryOrdersSummaryDTO
 
 enum class DeliveryOrderStatus {
@@ -20,6 +21,11 @@ data class DeliveryOrdersSummary(
     val pending: Int = 0,
     val inProgress: Int = 0,
     val delivered: Int = 0
+)
+
+data class DeliveryOrderStatusUpdateResult(
+    val orderId: String,
+    val newStatus: DeliveryOrderStatus
 )
 
 fun DeliveryOrderDTO.toDomain(): DeliveryOrder = DeliveryOrder(
@@ -43,3 +49,16 @@ fun String.toDeliveryOrderStatus(): DeliveryOrderStatus = when (this.lowercase()
     "delivered" -> DeliveryOrderStatus.DELIVERED
     else -> DeliveryOrderStatus.UNKNOWN
 }
+
+fun DeliveryOrderStatus.toApiString(): String = when (this) {
+    DeliveryOrderStatus.PENDING -> "pending"
+    DeliveryOrderStatus.IN_PROGRESS -> "inprogress"
+    DeliveryOrderStatus.DELIVERED -> "delivered"
+    DeliveryOrderStatus.UNKNOWN -> "unknown"
+}
+
+fun DeliveryOrderStatusUpdateResponse.toDomain(): DeliveryOrderStatusUpdateResult =
+    DeliveryOrderStatusUpdateResult(
+        orderId = orderId,
+        newStatus = status.toDeliveryOrderStatus()
+    )

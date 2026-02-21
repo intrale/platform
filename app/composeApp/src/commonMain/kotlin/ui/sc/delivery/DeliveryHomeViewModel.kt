@@ -5,9 +5,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.delivery.DeliveryOrder
+import asdo.delivery.DeliveryOrderStatus
 import asdo.delivery.DeliveryOrdersSummary
 import asdo.delivery.ToDoGetActiveDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
+import asdo.delivery.ToDoUpdateDeliveryOrderStatus
 import ext.delivery.toDeliveryException
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
@@ -36,12 +38,16 @@ sealed interface DeliveryActiveOrdersState {
 data class DeliveryHomeUiState(
     val summaryState: DeliverySummaryState = DeliverySummaryState.Loading,
     val activeOrdersState: DeliveryActiveOrdersState = DeliveryActiveOrdersState.Loading,
-    val today: String = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date.toString()
+    val today: String = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date.toString(),
+    val updatingOrderId: String? = null,
+    val statusUpdateSuccess: Boolean = false,
+    val statusUpdateError: String? = null
 )
 
 class DeliveryHomeViewModel(
     private val getActiveOrders: ToDoGetActiveDeliveryOrders = DIManager.di.direct.instance(),
-    private val getOrdersSummary: ToDoGetDeliveryOrdersSummary = DIManager.di.direct.instance()
+    private val getOrdersSummary: ToDoGetDeliveryOrdersSummary = DIManager.di.direct.instance(),
+    private val updateOrderStatus: ToDoUpdateDeliveryOrderStatus = DIManager.di.direct.instance()
 ) : ViewModel() {
 
     private val logger = LoggerFactory.default.newLogger<DeliveryHomeViewModel>()
@@ -71,6 +77,28 @@ class DeliveryHomeViewModel(
     suspend fun refreshSummary() = loadSummary()
 
     suspend fun refreshActive() = loadActiveOrders()
+
+    suspend fun updateStatus(orderId: String, newStatus: DeliveryOrderStatus) {
+        state = state.copy(updatingOrderId = orderId, statusUpdateSuccess = false, statusUpdateError = null)
+        updateOrderStatus.execute(orderId, newStatus)
+            .onSuccess {
+                state = state.copy(updatingOrderId = null, statusUpdateSuccess = true)
+                loadSummary()
+                loadActiveOrders()
+            }
+            .onFailure { throwable ->
+                val deliveryError = throwable.toDeliveryException()
+                logger.error(throwable) { "Error al actualizar estado del pedido $orderId" }
+                state = state.copy(
+                    updatingOrderId = null,
+                    statusUpdateError = deliveryError.message ?: "Error al actualizar estado"
+                )
+            }
+    }
+
+    fun clearStatusFeedback() {
+        state = state.copy(statusUpdateSuccess = false, statusUpdateError = null)
+    }
 
     private suspend fun loadSummary() {
         state = state.copy(summaryState = DeliverySummaryState.Loading)

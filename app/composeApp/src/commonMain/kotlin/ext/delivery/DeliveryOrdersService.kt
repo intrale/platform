@@ -6,6 +6,8 @@ import ext.storage.CommKeyValueStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.put
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
@@ -53,6 +55,21 @@ class DeliveryOrdersService(
         response.toResult(ListSerializer(DeliveryOrderDTO.serializer()))
     }.recoverCatching { throwable ->
         logger.error(throwable) { "[Delivery][Home] Error al obtener pedidos disponibles" }
+        throw throwable.toDeliveryException()
+    }
+
+    override suspend fun updateOrderStatus(
+        orderId: String,
+        newStatus: String
+    ): Result<DeliveryOrderStatusUpdateResponse> = runCatching {
+        logger.info { "[Delivery][Orders] Actualizando estado del pedido $orderId a $newStatus" }
+        val response = httpClient.put("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/orders/$orderId/status") {
+            authorize()
+            setBody(DeliveryOrderStatusUpdateRequest(orderId = orderId, status = newStatus))
+        }
+        response.toResult(DeliveryOrderStatusUpdateResponse.serializer())
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "[Delivery][Orders] Error al actualizar estado del pedido $orderId" }
         throw throwable.toDeliveryException()
     }
 

@@ -27,3 +27,18 @@ data class DeliveryOrderDTO(
     val eta: String? = null,
     val distance: String? = null
 )
+
+@Serializable
+data class DeliveryOrderStatusUpdateRequest(
+    @SerialName("orderId")
+    val orderId: String,
+    val status: String
+)
+
+@Serializable
+data class DeliveryOrderStatusUpdateResponse(
+    @SerialName("orderId")
+    val orderId: String = "",
+    val status: String = "",
+    val message: String? = null
+)

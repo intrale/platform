@@ -46,3 +46,23 @@ class DoGetDeliveryOrdersSummary(
         throw throwable.toDeliveryException()
     }
 }
+
+class DoUpdateDeliveryOrderStatus(
+    private val ordersService: CommDeliveryOrdersService
+) : ToDoUpdateDeliveryOrderStatus {
+
+    private val logger = LoggerFactory.default.newLogger<DoUpdateDeliveryOrderStatus>()
+
+    override suspend fun execute(
+        orderId: String,
+        newStatus: DeliveryOrderStatus
+    ): Result<DeliveryOrderStatusUpdateResult> = runCatching {
+        logger.info { "Actualizando estado del pedido $orderId a $newStatus" }
+        ordersService.updateOrderStatus(orderId, newStatus.toApiString())
+            .getOrThrow()
+            .toDomain()
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al actualizar estado del pedido $orderId" }
+        throw throwable.toDeliveryException()
+    }
+}
