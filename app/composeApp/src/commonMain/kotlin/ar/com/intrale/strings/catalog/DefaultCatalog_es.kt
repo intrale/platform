@@ -284,6 +284,7 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.login_generic_error to "Ocurrió un error al iniciar sesión. Intentá nuevamente.",
     MessageKey.login_name_placeholder to "Nombre",
     MessageKey.login_new_password_placeholder to "Nueva contraseña segura",
+    MessageKey.login_appbar_title to "Inicio de sesion",
     MessageKey.login_business_title to "Ingresá como administrador de negocio",
     MessageKey.login_business_subtitle to "Usá tus credenciales para acceder al panel, tu equipo y los pedidos de tu tienda.",
     MessageKey.login_password_icon_content_description to "Ícono de contraseña",
