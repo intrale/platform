@@ -63,15 +63,7 @@ const val LOGIN_PATH = "/login"
 
 class Login : Screen(LOGIN_PATH) {
 
-    @Composable
-    override fun titleText(): String {
-        val key = when {
-            AppRuntimeConfig.isDelivery -> MessageKey.login_delivery_title
-            AppRuntimeConfig.isBusiness -> MessageKey.login_business_title
-            else -> MessageKey.login_title
-        }
-        return Txt(key)
-    }
+    override val messageTitle: MessageKey = MessageKey.login_appbar_title
 
     private val logger = LoggerFactory.default.newLogger<Login>()
 

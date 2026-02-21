@@ -284,6 +284,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.login_generic_error to "There was an error while signing in. Try again.",
     MessageKey.login_name_placeholder to "First name",
     MessageKey.login_new_password_placeholder to "Secure new password",
+    MessageKey.login_appbar_title to "Sign in",
     MessageKey.login_business_title to "Sign in as business admin",
     MessageKey.login_business_subtitle to "Use your business credentials to access the dashboard, team, and orders.",
     MessageKey.login_password_icon_content_description to "Password icon",

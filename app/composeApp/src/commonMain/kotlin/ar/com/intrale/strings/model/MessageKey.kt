@@ -287,6 +287,7 @@ enum class MessageKey {
     login_generic_error,
     login_name_placeholder,
     login_new_password_placeholder,
+    login_appbar_title,
     login_business_title,
     login_business_subtitle,
     login_password_icon_content_description,
