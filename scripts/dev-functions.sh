@@ -200,4 +200,5 @@ dev-home() {
     cd "$_INTRALE_MAIN" 2>/dev/null && echo ">> En main: $(pwd)"
 }
 
-echo "[dev-functions] Cargado. Usa 'dev <issue> [slug]' para empezar."
+# Solo mostrar mensaje en sesiones interactivas (evita contaminar stdout de hooks)
+[[ $- == *i* ]] && echo "[dev-functions] Cargado. Usa 'dev <issue> [slug]' para empezar."
