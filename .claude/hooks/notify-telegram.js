@@ -10,7 +10,7 @@ const CHAT_ID = "6529617704";
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
 
-const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 
 function log(msg) {

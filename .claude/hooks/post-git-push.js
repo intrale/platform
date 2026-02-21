@@ -3,7 +3,7 @@
 const { execSync, spawn } = require("child_process");
 const path = require("path");
 
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 
 // Leer stdin
 const MAX_READ = 4096;

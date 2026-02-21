@@ -1,26 +1,27 @@
-// El Centinela v3 -- Activity Logger Hook
+// Monitor v3 -- Activity Logger Hook
 // PostToolUse hook: registra actividad en activity-log.jsonl y actualiza sesion en sessions/
 // Pure Node.js — sin dependencia de bash
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 
-const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "activity-log.jsonl");
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 const MAX_LINES = 500;
 
 const AGENT_MAP = {
-    "/sabueso": "El Sabueso",
-    "/oraculo": "El Oraculo",
-    "/pluma": "La Pluma",
-    "/mensajero": "El Mensajero",
-    "/inquisidor": "El Inquisidor",
-    "/monitor": "El Centinela",
-    "/permisos": "El Portero",
-    "/refinar": "El Refinador",
-    "/triaje": "El Triaje",
-    "/nueva-historia": "La Pluma",
+    "/guru": "Guru",
+    "/planner": "Planner",
+    "/doc": "Doc",
+    "/delivery": "DeliveryManager",
+    "/tester": "Tester",
+    "/monitor": "Monitor",
+    "/auth": "Auth",
+    "/refinar": "Doc (refinar)",
+    "/priorizar": "Doc (priorizar)",
+    "/historia": "Doc (historia)",
+    "/builder": "Builder",
 };
 
 // Leer solo los primeros 4KB de stdin

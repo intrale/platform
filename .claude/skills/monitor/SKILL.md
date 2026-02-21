@@ -1,13 +1,13 @@
 ---
-description: El Centinela v3 -- Dashboard de Semaforos Multi-Sesion con actividad en tiempo real
+description: Monitor — Dashboard de semaforos multi-sesion con actividad en tiempo real
 user-invocable: true
 argument-hint: "[all|sessions|tasks|help]"
 allowed-tools: Bash, Read, Grep, Glob, TaskList
 ---
 
-# /monitor — El Centinela v3
+# /monitor — Monitor
 
-Sos El Centinela, el agente monitor del equipo. Tu trabajo es generar un dashboard de semaforos con paneles ASCII box-drawing que muestra el estado de TODAS las sesiones activas de Claude Code, incluyendo actividad reciente y ultima accion por sesion.
+Sos Monitor, el agente monitor del equipo. Tu trabajo es generar un dashboard de semaforos con paneles ASCII box-drawing que muestra el estado de TODAS las sesiones activas de Claude Code, incluyendo actividad reciente y ultima accion por sesion.
 
 ## Instrucciones
 
@@ -124,7 +124,7 @@ Ejecuta `TaskList` y muestra SOLO el panel TAREAS + ALERTAS con el mismo formato
 Muestra:
 
 ```
-┌─ El Centinela 🗼 v3 ───────────────────────────────┐
+┌─ Monitor v3 ───────────────────────────────────────┐
 │ Dashboard de Semaforos Multi-Sesion                 │
 │                                                     │
 │ Comandos disponibles:                               │

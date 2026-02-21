@@ -18,7 +18,7 @@
 
 Los agentes tienen nombres propios para hacer el trabajo más ameno y distinguirlos fácilmente.
 
-### El Sabueso 🐕 — Research & Información
+### Guru — Research & Información
 
 **Rol**: Investigación técnica, búsqueda de documentación, exploración de codebase.
 **Personalidad**: Metódico, incansable, nada se le escapa. Siempre encuentra la pista.
@@ -30,7 +30,7 @@ Los agentes tienen nombres propios para hacer el trabajo más ameno y distinguir
 - "Investigá las opciones para implementar Z"
 - "Buscá la documentación de esta librería"
 
-**Skill a crear**: `/sabueso <pregunta>` — lanza al agente con Context7 activado
+**Skill**: `/guru <pregunta>` — lanza al agente con Context7 activado
 
 ---
 
@@ -47,7 +47,7 @@ Los agentes tienen nombres propios para hacer el trabajo más ameno y distinguir
 
 ---
 
-### El Vigía 🔭 — CI Monitor (Background)
+### CI Monitor (Background)
 
 **Rol**: Monitorear GitHub Actions después de cada push. Notifica resultado.
 **Personalidad**: Siempre mirando, nunca duerme. Reporta sin que se lo pidan.
@@ -57,33 +57,33 @@ Los agentes tienen nombres propios para hacer el trabajo más ameno y distinguir
 
 ---
 
-### La Pluma ✍️ — Issues & Docs
+### Doc — Issues & Docs
 
 **Rol**: Crear, refinar y documentar issues de GitHub. Redactar docs técnicas.
 **Personalidad**: Elocuente, bilingüe (español/inglés en código), estructurado.
 **Modelo**: `claude-sonnet-4-6` — Escribir bien requiere calidad. Haiku produce texto genérico.
 **Herramientas**: GitHub API, Read, Write.
-**Skills existentes**: `/refinar`, `/nueva-historia`, `/triaje`
+**Skills**: `/doc`, `/refinar`, `/historia`, `/priorizar`
 
 ---
 
-### El Inquisidor 🕵️ — Testing
+### Tester — Testing
 
 **Rol**: Ejecutar tests, verificar cobertura, revisar calidad de código.
-**Personalidad**: Nadie lo espera. Cuestiona todo. No da el visto bueno fácil.
+**Personalidad**: Cuestiona todo. No da el visto bueno fácil.
 **Modelo**: `claude-haiku-4-5-20251001` para correr tests y parsear resultados. `claude-sonnet-4-6` si hay que analizar fallos complejos.
 **Herramientas**: Bash (Gradle test/kover), Read, Grep.
-**Skill a crear**: `/inquisidor` — corre tests + verifica coverage + reporta
+**Skill**: `/tester` — corre tests + verifica coverage + reporta
 
 ---
 
-### El Mensajero 📨 — PR & Deploy
+### DeliveryManager — PR & Deploy
 
 **Rol**: Commit + push + PR con convenciones Intrale en un solo comando.
 **Personalidad**: Veloz y confiable. Siempre entrega en tiempo y forma.
 **Modelo**: `claude-haiku-4-5-20251001` — Es una tarea mecánica basada en plantilla. Haiku lo hace igual de bien que Sonnet a la mitad del costo.
-**Herramientas**: Bash (git), GitHub API (curl).
-**Skill a crear**: `/mensajero <descripcion>` — workflow completo de entrega
+**Herramientas**: Bash (git), GitHub API (gh).
+**Skill**: `/delivery <descripcion>` — workflow completo de entrega
 
 ---
 
@@ -127,7 +127,7 @@ git push (Bash tool)
 }
 ```
 
-**Uso esperado por El Sabueso**:
+**Uso esperado por Guru**:
 1. Primero consultar Context7 para documentación oficial actualizada
 2. Si no hay resultado, usar WebSearch
 3. Último recurso: leer directamente el código fuente de librerías
@@ -140,10 +140,10 @@ git push (Bash tool)
 - [x] Hook `Stop` + `stop-notify.sh`
 - [x] Hook `PostToolUse` + `post-git-push.sh` + `ci-monitor.sh`
 - [x] MCP Context7 en global settings.json
-- [x] Agente **El Sabueso** (skill `/sabueso`)
-- [x] Agente **El Mensajero** (skill `/mensajero`)
-- [x] Agente **El Inquisidor** (skill `/inquisidor`)
-- [x] Agente **La Pluma** (skill `/pluma`, unificando `/nueva-historia`, `/refinar`, `/triaje`)
-- [x] Agente **El Oráculo** (skill `/oraculo` — planificación, sprint, propuestas, digest)
+- [x] Agente **Guru** (skill `/guru`)
+- [x] Agente **DeliveryManager** (skill `/delivery`)
+- [x] Agente **Tester** (skill `/tester`)
+- [x] Agente **Doc** (skill `/doc`, unificando `/historia`, `/refinar`, `/priorizar`)
+- [x] Agente **Planner** (skill `/planner` — planificación, sprint, propuestas, digest)
 - [x] Instalar `gh` CLI 2.86.0 y migrar todos los skills de `curl` a `gh`
-- [x] Mejorar MEMORY.md con patrones de arquitectura y debugging (completado con reporte de El Sabueso)
+- [x] Mejorar MEMORY.md con patrones de arquitectura y debugging (completado con reporte de Guru)

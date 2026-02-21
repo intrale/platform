@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/permission-notify.js",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-notify.js",
             "timeout": 30000
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/notify-telegram.js",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/notify-telegram.js",
             "timeout": 15000
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/stop-notify.js",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/stop-notify.js",
             "timeout": 15000
           }
         ]
@@ -42,8 +42,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/post-git-push.js",
-            "timeout": 5000
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-git-push.js",
+            "timeout": 10000
           }
         ]
       },
@@ -52,13 +52,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/permission-tracker.js",
-            "timeout": 5000
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-tracker.js",
+            "timeout": 10000
           },
           {
             "type": "command",
-            "command": "node .claude/hooks/activity-logger.js",
-            "timeout": 5000
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/activity-logger.js",
+            "timeout": 10000
           }
         ]
       }

@@ -54,7 +54,7 @@ dev-done          # squash merge a main + cleanup
 dev 42 auth-2fa
 claude "Implementar auth 2FA - Closes #42"
 
-# Claude pushea y crea PR (via /mensajero)
+# Claude pushea y crea PR (via /delivery)
 # PR se mergea en GitHub
 # Limpiar worktree local:
 dev-go 42
