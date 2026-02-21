@@ -44,6 +44,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-git-push.js",
             "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-issue-close.js",
+            "timeout": 10000
           }
         ]
       },
