@@ -5,15 +5,18 @@ package ui.util
 import androidx.compose.runtime.Composable
 import org.jetbrains.compose.resources.StringResource
 
-internal const val SAFE_STRING_DEPRECATION_MESSAGE = "Usar resString(...) con fb(\"...\") para fallbacks ASCII-safe"
+internal const val SAFE_STRING_DEPRECATION_MESSAGE = "Usar Txt(MessageKey, params)"
 
 /**
- * Wrapper legado que delega en [resString].
- * Mantener hasta migrar todos los consumidores a fallbacks explícitos con [fb].
+ * Wrapper legado — deprecado con ERROR para forzar migración a [Txt].
  */
-@Deprecated(SAFE_STRING_DEPRECATION_MESSAGE)
+@Deprecated(
+    message = SAFE_STRING_DEPRECATION_MESSAGE,
+    replaceWith = ReplaceWith("Txt(key, params)", "ar.com.intrale.strings.Txt"),
+    level = DeprecationLevel.ERROR,
+)
 @Composable
 fun safeString(
     @Suppress("UNUSED_PARAMETER") id: StringResource,
-    fallback: String = RES_ERROR_PREFIX + fb("Texto no disponible"),
-): String = resString(fallbackAsciiSafe = fallback)
+    @Suppress("UNUSED_PARAMETER") fallback: String = RES_ERROR_PREFIX + fb("Texto no disponible"),
+): String = error("Reemplazar por Txt(MessageKey)")
