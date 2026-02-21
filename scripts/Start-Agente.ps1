@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Lee sprint-plan.json y crea worktrees para los agentes indicados.
-    Copia permisos de Claude Code y abre nueva terminal PowerShell con claude ejecutando.
+    Enlaza .claude/ del repo principal via symlink y abre nueva terminal PowerShell con claude ejecutando.
 
 .PARAMETER Numero
     Numero de agente (1, 2, 3...) o "all" para lanzar todos en paralelo.
@@ -91,15 +91,41 @@ function Start-UnAgente {
         $wtDirResolved = $wtDir
     }
 
-    # Copiar settings.local.json de Claude Code (permisos)
-    $settingsSrc = Join-Path $MainRepo ".claude\settings.local.json"
-    if (Test-Path $settingsSrc) {
-        $claudeDir = Join-Path $wtDirResolved ".claude"
-        if (-not (Test-Path $claudeDir)) {
-            New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
+    # Symlink de .claude/ para heredar confianza y permisos del repo principal
+    $claudeSrc = Join-Path $MainRepo ".claude"
+    $claudeDst = Join-Path $wtDirResolved ".claude"
+    if (Test-Path $claudeSrc) {
+        $createSymlink = $false
+
+        if (Test-Path $claudeDst) {
+            $item = Get-Item $claudeDst -Force
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                Write-Host ">> Symlink .claude/ ya existe, reutilizando"
+            }
+            elseif (-not $wtExists) {
+                # Worktree recien creado: reemplazar .claude/ checkeado por git con symlink
+                Remove-Item $claudeDst -Recurse -Force
+                $createSymlink = $true
+            }
+            else {
+                Write-Host ">> .claude/ real existente, no se sobreescribe" -ForegroundColor Yellow
+            }
         }
-        Copy-Item $settingsSrc (Join-Path $claudeDir "settings.local.json") -Force
-        Write-Host ">> Copiado permisos de Claude Code"
+        else {
+            $createSymlink = $true
+        }
+
+        if ($createSymlink) {
+            try {
+                New-Item -ItemType SymbolicLink -Path $claudeDst -Target $claudeSrc -Force | Out-Null
+                Write-Host ">> Symlink .claude/ creado"
+            }
+            catch {
+                # Fallback: junction si symlink falla (permisos Windows)
+                cmd /c mklink /J "$claudeDst" "$claudeSrc" 2>$null | Out-Null
+                Write-Host ">> Junction .claude/ creado (fallback)"
+            }
+        }
     }
 
     # Abrir nueva terminal PowerShell con claude ejecutando
