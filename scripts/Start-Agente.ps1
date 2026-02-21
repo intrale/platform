@@ -130,7 +130,7 @@ function Start-UnAgente {
 
     # Abrir nueva terminal PowerShell con claude ejecutando
     $escapedPrompt = $prompt -replace '"', '\"'
-    $command = "Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude `"$escapedPrompt`""
+    $command = "Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude `"$escapedPrompt`""
 
     Write-Host ">> Abriendo terminal con claude..."
     $proc = Start-Process powershell -ArgumentList "-NoExit", "-Command", $command -PassThru
@@ -164,7 +164,7 @@ function Start-MonitorLive {
     }
 
     $command = "Set-Location '$MainRepo'; " +
-               "Write-Host '  Monitor Live — Dashboard multi-sesion' -ForegroundColor Cyan; " +
+               "Write-Host '  Monitor Live - Dashboard multi-sesion' -ForegroundColor Cyan; " +
                "node '$dashboardPath'"
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $command
     Write-Host ">> Monitor live lanzado." -ForegroundColor Green
