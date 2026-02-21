@@ -1,4 +1,4 @@
-# Criterios de planificación — El Oráculo 🔮
+# Criterios de planificación — Planner
 
 ## Scoring de prioridad
 

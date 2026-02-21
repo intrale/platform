@@ -11,7 +11,7 @@ const CHAT_ID = "6529617704";
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
 
-const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 
 function log(msg) {
@@ -89,12 +89,16 @@ function getContextDescription(toolName, toolInput) {
         }
         case "Skill": {
             const skill = (toolInput.skill || "").toLowerCase();
-            if (skill === "mensajero") return "Claude quiere invocar el agente El Mensajero para hacer commit, push y abrir el PR.";
-            if (skill === "inquisidor") return "Claude quiere invocar el agente El Inquisidor para ejecutar tests y verificar calidad.";
-            if (skill === "sabueso") return "Claude quiere invocar el agente El Sabueso para investigar documentación técnica.";
-            if (skill === "pluma") return "Claude quiere invocar el agente La Pluma para gestionar el backlog.";
-            if (skill === "refinar") return "Claude quiere invocar el agente de refinamiento para mejorar un issue.";
-            if (skill === "triaje") return "Claude quiere invocar el agente de triaje para categorizar issues.";
+            if (skill === "delivery") return "Claude quiere invocar DeliveryManager para hacer commit, push y abrir el PR.";
+            if (skill === "tester") return "Claude quiere invocar Tester para ejecutar tests y verificar calidad.";
+            if (skill === "guru") return "Claude quiere invocar Guru para investigar documentación técnica.";
+            if (skill === "doc") return "Claude quiere invocar Doc para gestionar el backlog.";
+            if (skill === "refinar") return "Claude quiere invocar Doc (refinar) para mejorar un issue.";
+            if (skill === "priorizar") return "Claude quiere invocar Doc (priorizar) para categorizar issues.";
+            if (skill === "planner") return "Claude quiere invocar Planner para planificación estratégica.";
+            if (skill === "auth") return "Claude quiere invocar Auth para auditar permisos.";
+            if (skill === "builder") return "Claude quiere invocar Builder para compilar el proyecto.";
+            if (skill === "historia") return "Claude quiere invocar Doc (historia) para crear una nueva historia.";
             return "Claude quiere invocar una skill especializada.";
         }
         case "WebFetch":

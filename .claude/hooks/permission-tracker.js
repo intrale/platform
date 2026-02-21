@@ -1,11 +1,11 @@
-// El Portero v2 -- Permission Tracker Hook
+// Auth v2 -- Permission Tracker Hook
 // PostToolUse hook: detecta tools aprobados (Bash, WebFetch, Skill) y los persiste en settings.local.json
 // Pure Node.js — sin dependencia de bash
 const fs = require("fs");
 const path = require("path");
 const url = require("url");
 
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const SETTINGS = path.join(PROJECT_DIR, ".claude", "settings.local.json");
 const LOG_PATH = path.join(PROJECT_DIR, ".claude", "permissions-log.jsonl");
 

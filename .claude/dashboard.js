@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// El Centinela v3 — Dashboard Live Multi-Sesion
+// Monitor v3 — Dashboard Live Multi-Sesion
 // Script standalone Node.js puro — sin dependencias externas
 // Uso: node .claude/dashboard.js [--verbose]
 // Teclado: q=salir, v=toggle verbose, r=refresh manual
@@ -212,7 +212,7 @@ function render() {
   const lines = [];
 
   // Header
-  lines.push(boxTop(C.bold + C.cyan + "El Centinela \u{1F5FC}" + C.reset + C.dim + "  " + timeStr + C.reset, W));
+  lines.push(boxTop(C.bold + C.cyan + "Monitor" + C.reset + C.dim + "  " + timeStr + C.reset, W));
 
   // Panel SESIONES
   if (sessions.length === 0) {
