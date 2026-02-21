@@ -6,9 +6,9 @@ import kotlin.test.assertEquals
 class SafeResourceTest {
 
     @Test
-    fun `safeString expone mensaje de deprecacion hacia resString`() {
+    fun `safeString expone mensaje de deprecacion hacia Txt`() {
         assertEquals(
-            "Usar resString(...) con fb(\"...\") para fallbacks ASCII-safe",
+            "Usar Txt(MessageKey, params)",
             SAFE_STRING_DEPRECATION_MESSAGE,
         )
     }

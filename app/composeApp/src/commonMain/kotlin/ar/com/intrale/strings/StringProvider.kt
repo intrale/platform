@@ -1,6 +1,10 @@
+@file:Suppress("DEPRECATION_ERROR")
+
 package ar.com.intrale.strings
 
-/** Punto de entrada global (simple y testable). */
+/**
+ * Proveedor legacy — reemplazado por [Txt] (composable) y [resolveMessage] (no-UI).
+ */
 object Strings {
     // Config por defecto mínima (es/en) para arrancar
     private var catalog: StringCatalog = StringCatalog(
@@ -28,17 +32,28 @@ object Strings {
     fun setLang(lang: Lang) { currentLang = lang }
 
     /** API de acceso simple */
+    @Deprecated(
+        message = "Usar Txt(MessageKey, params) o resolveMessage()",
+        replaceWith = ReplaceWith("Txt(key, params)", "ar.com.intrale.strings.Txt"),
+        level = DeprecationLevel.ERROR,
+    )
     fun t(key: StringKey, brand: BrandId? = currentBrand, lang: Lang = currentLang): String {
         return catalog.resolve(key, brand, lang) ?: "⟪$key⟫"
     }
 
     /** Con reemplazos: "{{name}}" -> args["name"] */
+    @Deprecated(
+        message = "Usar Txt(MessageKey, params) o resolveMessage()",
+        replaceWith = ReplaceWith("Txt(key, params)", "ar.com.intrale.strings.Txt"),
+        level = DeprecationLevel.ERROR,
+    )
     fun t(
         key: StringKey,
         args: Map<String, String>,
         brand: BrandId? = currentBrand,
         lang: Lang = currentLang
     ): String {
+        @Suppress("DEPRECATION_ERROR")
         val base = t(key, brand, lang)
         if (args.isEmpty()) return base
         var out = base
