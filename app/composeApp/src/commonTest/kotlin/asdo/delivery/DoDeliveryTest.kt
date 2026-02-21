@@ -161,18 +161,41 @@ private val sampleOrderDTOs = listOf(
 
 private val sampleSummaryDTO = DeliveryOrdersSummaryDTO(pending = 3, inProgress = 2, delivered = 5)
 
+private val sampleOrderDetailDTO = DeliveryOrderDetailDTO(
+    id = "o1",
+    publicId = "PUB-1",
+    businessName = "Pizzeria",
+    neighborhood = "Centro",
+    status = "pending",
+    eta = "12:00",
+    distance = "2.5 km",
+    address = "Av. Corrientes 1234",
+    addressNotes = "Piso 3, Depto B",
+    items = listOf(
+        DeliveryOrderItemDTO(name = "Pizza Grande", quantity = 2, notes = "Sin cebolla"),
+        DeliveryOrderItemDTO(name = "Empanadas", quantity = 6)
+    ),
+    notes = "Tocar timbre 3B",
+    customerName = "Juan Pérez",
+    customerPhone = "+5491112345678",
+    createdAt = "2026-02-20T10:00:00Z",
+    updatedAt = "2026-02-20T10:30:00Z"
+)
+
 private class FakeDeliveryOrdersService(
     private val activeResult: Result<List<DeliveryOrderDTO>> = Result.success(sampleOrderDTOs),
     private val summaryResult: Result<DeliveryOrdersSummaryDTO> = Result.success(sampleSummaryDTO),
     private val availableResult: Result<List<DeliveryOrderDTO>> = Result.success(emptyList()),
     private val updateStatusResult: Result<DeliveryOrderStatusUpdateResponse> = Result.success(
         DeliveryOrderStatusUpdateResponse(orderId = "o1", status = "inprogress")
-    )
+    ),
+    private val orderDetailResult: Result<DeliveryOrderDetailDTO> = Result.success(sampleOrderDetailDTO)
 ) : CommDeliveryOrdersService {
     override suspend fun fetchActiveOrders() = activeResult
     override suspend fun fetchSummary(date: LocalDate) = summaryResult
     override suspend fun fetchAvailableOrders() = availableResult
     override suspend fun updateOrderStatus(orderId: String, newStatus: String) = updateStatusResult
+    override suspend fun fetchOrderDetail(orderId: String) = orderDetailResult
 }
 
 class DoGetActiveDeliveryOrdersTest {
@@ -269,3 +292,50 @@ class DoUpdateDeliveryOrderStatusTest {
 }
 
 // endregion DoUpdateDeliveryOrderStatus
+
+// region DoGetDeliveryOrderDetail
+
+class DoGetDeliveryOrderDetailTest {
+
+    @Test
+    fun `obtener detalle de pedido exitoso retorna datos completos`() = runTest {
+        val sut = DoGetDeliveryOrderDetail(FakeDeliveryOrdersService())
+
+        val result = sut.execute("o1")
+
+        assertTrue(result.isSuccess)
+        val detail = result.getOrThrow()
+        assertEquals("o1", detail.id)
+        assertEquals("PUB-1", detail.label)
+        assertEquals("Pizzeria", detail.businessName)
+        assertEquals("Centro", detail.neighborhood)
+        assertEquals(DeliveryOrderStatus.PENDING, detail.status)
+        assertEquals("12:00", detail.eta)
+        assertEquals("2.5 km", detail.distance)
+        assertEquals("Av. Corrientes 1234", detail.address)
+        assertEquals("Piso 3, Depto B", detail.addressNotes)
+        assertEquals(2, detail.items.size)
+        assertEquals("Pizza Grande", detail.items[0].name)
+        assertEquals(2, detail.items[0].quantity)
+        assertEquals("Sin cebolla", detail.items[0].notes)
+        assertEquals("Empanadas", detail.items[1].name)
+        assertEquals(6, detail.items[1].quantity)
+        assertEquals("Tocar timbre 3B", detail.notes)
+        assertEquals("Juan Pérez", detail.customerName)
+        assertEquals("+5491112345678", detail.customerPhone)
+    }
+
+    @Test
+    fun `obtener detalle de pedido fallido retorna DeliveryExceptionResponse`() = runTest {
+        val sut = DoGetDeliveryOrderDetail(
+            FakeDeliveryOrdersService(orderDetailResult = Result.failure(RuntimeException("Error de red")))
+        )
+
+        val result = sut.execute("o1")
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is DeliveryExceptionResponse)
+    }
+}
+
+// endregion DoGetDeliveryOrderDetail

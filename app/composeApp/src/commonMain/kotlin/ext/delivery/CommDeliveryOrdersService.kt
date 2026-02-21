@@ -7,4 +7,5 @@ interface CommDeliveryOrdersService {
     suspend fun fetchActiveOrders(): Result<List<DeliveryOrderDTO>>
     suspend fun fetchAvailableOrders(): Result<List<DeliveryOrderDTO>>
     suspend fun updateOrderStatus(orderId: String, newStatus: String): Result<DeliveryOrderStatusUpdateResponse>
+    suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDetailDTO>
 }

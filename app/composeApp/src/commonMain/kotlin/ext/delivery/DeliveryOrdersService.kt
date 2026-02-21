@@ -73,6 +73,17 @@ class DeliveryOrdersService(
         throw throwable.toDeliveryException()
     }
 
+    override suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDetailDTO> = runCatching {
+        logger.info { "[Delivery][Orders] Solicitando detalle del pedido $orderId" }
+        val response = httpClient.get("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/orders/$orderId") {
+            authorize()
+        }
+        response.toResult(DeliveryOrderDetailDTO.serializer())
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "[Delivery][Orders] Error al obtener detalle del pedido $orderId" }
+        throw throwable.toDeliveryException()
+    }
+
     private fun io.ktor.client.request.HttpRequestBuilder.authorize() {
         val token = keyValueStorage.token
             ?: throw DeliveryExceptionResponse(

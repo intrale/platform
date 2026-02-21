@@ -66,3 +66,18 @@ class DoUpdateDeliveryOrderStatus(
         throw throwable.toDeliveryException()
     }
 }
+
+class DoGetDeliveryOrderDetail(
+    private val ordersService: CommDeliveryOrdersService
+) : ToDoGetDeliveryOrderDetail {
+
+    private val logger = LoggerFactory.default.newLogger<DoGetDeliveryOrderDetail>()
+
+    override suspend fun execute(orderId: String): Result<DeliveryOrderDetail> = runCatching {
+        logger.info { "Obteniendo detalle del pedido $orderId" }
+        ordersService.fetchOrderDetail(orderId).getOrThrow().toDomain()
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al obtener detalle del pedido $orderId" }
+        throw throwable.toDeliveryException()
+    }
+}
