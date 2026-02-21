@@ -51,8 +51,9 @@ deps_commonMain.txt
 .claude/hooks/hook-debug.log
 .claude/hooks/tg-approver-offset.json
 
-# Sprint plan — plan de agentes (no commitear, local de trabajo)
+# Sprint — archivos de agentes (no commitear, local de trabajo)
 scripts/sprint-plan.json
+scripts/sprint-pids.json
 
 # Binarios de gh-cli descargados localmente
 gh-cli/
