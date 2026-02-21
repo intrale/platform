@@ -3,7 +3,7 @@
     Finaliza agentes Claude: commit + push + PR + merge + cleanup.
 
 .DESCRIPTION
-    Lee oraculo-plan.json y procesa el cierre de agentes.
+    Lee planner-plan.json y procesa el cierre de agentes.
     Flujo: commit, push, PR, squash-merge y limpieza de worktree.
 
 .PARAMETER Numero
@@ -37,7 +37,7 @@ $ErrorActionPreference = "Stop"
 $GitWt    = "C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Packages\max-sixty.worktrunk_Microsoft.Winget.Source_8wekyb3d8bbwe\git-wt.exe"
 $Gh       = "C:\Workspaces\gh-cli\bin\gh.exe"
 $MainRepo = "C:\Workspaces\Intrale\platform"
-$PlanFile = Join-Path $PSScriptRoot "oraculo-plan.json"
+$PlanFile = Join-Path $PSScriptRoot "planner-plan.json"
 
 # --- Helpers ---
 $P = '>>'  # prefijo para mensajes de log
