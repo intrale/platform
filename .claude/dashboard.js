@@ -10,10 +10,12 @@ const { execSync } = require("child_process");
 // --- config ---
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
+const LOG_FILE = path.join(REPO_ROOT, ".claude", "activity-log.jsonl");
 const REFRESH_MS = 5000;
 const ACTIVE_THRESHOLD = 5 * 60 * 1000;   // 5 min
 const IDLE_THRESHOLD = 15 * 60 * 1000;    // 15 min
 const DONE_DISPLAY_HOURS = 1;
+const RECENT_ACTIVITY_COUNT = 5;
 
 // --- ANSI colors ---
 const C = {
@@ -62,6 +64,31 @@ function formatAge(isoTs) {
   return Math.floor(hours / 24) + "d";
 }
 
+function formatDuration(startTs, endTs) {
+  if (!startTs || !endTs) return "???";
+  const diff = new Date(endTs).getTime() - new Date(startTs).getTime();
+  if (diff < 0) return "0s";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return secs + "s";
+  const mins = Math.floor(secs / 60);
+  const remSecs = secs % 60;
+  if (mins < 60) return mins + "m" + (remSecs > 0 ? remSecs + "s" : "");
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return hours + "h" + (remMins > 0 ? remMins + "m" : "");
+}
+
+function lastActionLabel(session) {
+  if (!session.last_tool || session.last_tool === "--") return "\u2014";
+  let t = session.last_target || "--";
+  // Extraer solo el nombre de archivo si es una ruta
+  if (t.includes("/") || t.includes("\\")) {
+    const parts = t.replace(/\\/g, "/").split("/");
+    t = parts[parts.length - 1];
+  }
+  return truncate(session.last_tool + ": " + t, 24);
+}
+
 function livenessIcon(session) {
   if (session.status === "done") return C.dim + "\u2717" + C.reset; // ✗
   const diff = Date.now() - new Date(session.last_activity_ts).getTime();
@@ -101,6 +128,19 @@ function loadSessions() {
   // Ordenar por last_activity_ts desc
   sessions.sort((a, b) => new Date(b.last_activity_ts) - new Date(a.last_activity_ts));
   return sessions;
+}
+
+function loadRecentActivity() {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return [];
+    const content = fs.readFileSync(LOG_FILE, "utf8").trim();
+    if (!content) return [];
+    const lines = content.split("\n");
+    const recent = lines.slice(-RECENT_ACTIVITY_COUNT).reverse();
+    return recent.map(line => {
+      try { return JSON.parse(line); } catch(e) { return null; }
+    }).filter(Boolean);
+  } catch(e) { return []; }
 }
 
 function getGitInfo() {
@@ -161,12 +201,13 @@ function boxBot(width) {
 
 function render() {
   const cols = Math.max(process.stdout.columns || 60, 56);
-  const W = Math.min(cols, 72);
+  const W = Math.min(cols, 80);
   const now = new Date();
   const timeStr = now.toTimeString().substring(0, 8);
 
   const sessions = loadSessions();
   const git = getGitInfo();
+  const recentActivity = loadRecentActivity();
 
   const lines = [];
 
@@ -181,10 +222,10 @@ function render() {
     lines.push(boxLine(
       C.bold +
       padEnd("ID", 10) +
-      padEnd("Agente", 18) +
-      padEnd("Sub", 4) +
-      padEnd("Acciones", 9) +
-      padEnd("Hace", 6) +
+      padEnd("Agente", 16) +
+      padEnd("Accs", 5) +
+      padEnd("Dur.", 7) +
+      padEnd("Ultima accion", 25) +
       "Est." +
       C.reset, W
     ));
@@ -192,24 +233,46 @@ function render() {
     for (const s of sessions) {
       const icon = livenessIcon(s);
       const agent = s.agent_name || "Claude \uD83E\uDD16";
-      const age = formatAge(s.last_activity_ts);
+      const duration = formatDuration(s.started_ts, s.last_activity_ts);
+      const action = lastActionLabel(s);
       let row =
         padEnd(s.id, 10) +
-        padEnd(truncate(agent, 17), 18) +
-        padEnd(String(s.sub_count || 0), 4) +
-        padEnd(String(s.action_count || 0), 9) +
-        padEnd(age, 6) +
+        padEnd(truncate(agent, 15), 16) +
+        padEnd(String(s.action_count || 0), 5) +
+        padEnd(duration, 7) +
+        padEnd(action, 25) +
         icon;
 
       if (verbose) {
         lines.push(boxLine(row, W));
         const skills = (s.skills_invoked || []).join(", ") || "\u2014";
-        const detail = C.dim + "  rama: " + (s.branch || "?") + "  skills: " + skills +
-          "  mode: " + (s.permission_mode || "?") + C.reset;
+        const detail = C.dim + "  rama: " + (s.branch || "?") + "  sub: " + (s.sub_count || 0) +
+          "  skills: " + skills + "  mode: " + (s.permission_mode || "?") + C.reset;
         lines.push(boxLine(truncate(detail, W - 4), W));
       } else {
         lines.push(boxLine(row, W));
       }
+    }
+  }
+
+  // Panel ACTIVIDAD RECIENTE
+  lines.push(boxMid("ACTIVIDAD RECIENTE", W));
+  if (recentActivity.length === 0) {
+    lines.push(boxLine(C.dim + "Sin actividad registrada" + C.reset, W));
+  } else {
+    for (const entry of recentActivity) {
+      const time = (entry.ts || "").substring(11, 19);
+      const sid = entry.session || "\u2014";
+      let t = entry.target || "--";
+      if (t.includes("/") || t.includes("\\")) {
+        const parts = t.replace(/\\/g, "/").split("/");
+        t = parts[parts.length - 1];
+      }
+      const line = C.dim + time + C.reset + " " +
+        C.cyan + padEnd(sid, 9) + C.reset +
+        padEnd(entry.tool || "?", 8) +
+        C.dim + truncate(t, W - 30) + C.reset;
+      lines.push(boxLine(line, W));
     }
   }
 
@@ -301,6 +364,15 @@ function main() {
       });
     }
   } catch(e) { /* fs.watch not available — rely on setInterval */ }
+
+  // Watch JSONL for activity changes
+  try {
+    if (fs.existsSync(LOG_FILE)) {
+      fs.watch(LOG_FILE, { persistent: false }, () => {
+        setTimeout(render, 200);
+      });
+    }
+  } catch(e) { /* fs.watch not available */ }
 }
 
 main();

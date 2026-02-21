@@ -1,4 +1,4 @@
-// Hook Stop: notifica a Telegram cuando Claude termina su respuesta
+// Hook Stop: notifica a Telegram y marca sesion como "done"
 // Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
@@ -12,6 +12,7 @@ const RETRY_DELAY_MS = 1500;
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Stop: " + msg + "\n"); } catch(e) {}
@@ -58,6 +59,21 @@ process.stdin.on("end", () => { if (!done) { done = true; processInput(); } });
 process.stdin.on("error", () => { if (!done) { done = true; processInput(); } });
 setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} processInput(); } }, 3000);
 
+function markSessionDone(sessionId) {
+    try {
+        if (!sessionId) return;
+        const shortId = sessionId.substring(0, 8);
+        const sessionFile = path.join(SESSIONS_DIR, shortId + ".json");
+        if (!fs.existsSync(sessionFile)) return;
+
+        const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+        session.status = "done";
+        session.last_activity_ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");
+        log("Sesion " + shortId + " marcada como done");
+    } catch(e) { log("Error marcando sesion done: " + e.message); }
+}
+
 async function processInput() {
     log("INPUT: " + rawInput.substring(0, 300));
 
@@ -65,6 +81,9 @@ async function processInput() {
     try { data = JSON.parse(rawInput); } catch(e) { log("JSON parse failed: " + rawInput.substring(0, 200)); data = {}; }
 
     if (data.stop_hook_active) return;
+
+    // Marcar sesion como terminada
+    markSessionDone(data.session_id || "");
 
     let summary = (data.last_assistant_message || "").trim();
     if (summary.length > 150) summary = summary.substring(0, 150) + "...";
