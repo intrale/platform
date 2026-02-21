@@ -231,6 +231,7 @@ class DeliveryHomeViewModelTest {
         val activeState = viewModel.state.activeOrdersState
         assertTrue(activeState is DeliveryActiveOrdersState.Error)
     }
+
     @Test
     fun `updateStatus exitoso refresca resumen y ordenes activas`() = runTest {
         SessionStore.updateRole(UserRole.Delivery)
@@ -265,6 +266,58 @@ class DeliveryHomeViewModelTest {
 
         assertTrue(viewModel.state.statusUpdateError != null)
         assertNull(viewModel.state.updatingOrderId)
+    }
+
+    @Test
+    fun `loadData con pedidos vacios muestra Empty`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(Result.success(emptyList())),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.loadData()
+
+        assertEquals(DeliveryActiveOrdersState.Empty, viewModel.state.activeOrdersState)
+    }
+
+    @Test
+    fun `loadData con error en resumen muestra error en summaryState`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.failure(RuntimeException("error de red"))),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.loadData()
+
+        val summaryState = viewModel.state.summaryState
+        assertTrue(summaryState is DeliverySummaryState.Error)
+        assertTrue(summaryState.message.contains("error de red"))
+
+        val activeState = viewModel.state.activeOrdersState
+        assertTrue(activeState is DeliveryActiveOrdersState.Loaded)
+    }
+
+    @Test
+    fun `loadData con error en pedidos muestra error en activeOrdersState`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(Result.failure(RuntimeException("timeout"))),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.loadData()
+
+        val summaryState = viewModel.state.summaryState
+        assertTrue(summaryState is DeliverySummaryState.Loaded)
+
+        val activeState = viewModel.state.activeOrdersState
+        assertTrue(activeState is DeliveryActiveOrdersState.Error)
+        assertTrue(activeState.message.contains("timeout"))
     }
 }
 

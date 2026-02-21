@@ -97,6 +97,30 @@ class RegisterBusinessViewModelTest {
         )
         assertFalse(vm.isValid())
     }
+
+    @Test
+    fun `validacion rechaza email invalido`() {
+        val vm = RegisterBusinessViewModel(FakeRegisterBusiness(), testLoggerFactory)
+        vm.state = RegisterBusinessViewModel.UIState(
+            name = "Mi Negocio", email = "correo-sin-arroba", description = "Descripcion"
+        )
+        assertFalse(vm.isValid())
+    }
+
+    @Test
+    fun `registro con error propaga fallo`() = runTest {
+        val vm = RegisterBusinessViewModel(
+            FakeRegisterBusiness(Result.failure(RuntimeException("error de red"))),
+            testLoggerFactory
+        )
+        vm.state = RegisterBusinessViewModel.UIState(
+            name = "Mi Negocio", email = "admin@test.com", description = "Descripcion"
+        )
+
+        val result = vm.register()
+
+        assertTrue(result.isFailure)
+    }
 }
 
 // endregion
@@ -120,6 +144,19 @@ class RequestJoinBusinessViewModelTest {
         val vm = RequestJoinBusinessViewModel(FakeRequestJoinBusiness(), testLoggerFactory)
         vm.state = RequestJoinBusinessViewModel.UIState(business = "negocio-1")
         assertTrue(vm.isValid())
+    }
+
+    @Test
+    fun `request con error no modifica resultState`() = runTest {
+        val vm = RequestJoinBusinessViewModel(
+            FakeRequestJoinBusiness(Result.failure(RuntimeException("error de red"))),
+            testLoggerFactory
+        )
+        vm.state = RequestJoinBusinessViewModel.UIState(business = "negocio-1")
+
+        vm.request()
+
+        assertEquals(null, vm.state.resultState)
     }
 }
 
@@ -185,6 +222,53 @@ class ReviewBusinessViewModelTest {
         assertEquals(2, vm.selected.size)
 
         vm.clearSelection()
+        assertTrue(vm.selected.isEmpty())
+    }
+
+    @Test
+    fun `loadPending con error no modifica lista`() = runTest {
+        val vm = ReviewBusinessViewModel(
+            FakeReviewBusinessRegistration(),
+            FakeGetBusinessesForReview(Result.failure(RuntimeException("error de red"))),
+            testLoggerFactory
+        )
+
+        vm.loadPending()
+
+        assertTrue(vm.pending.isEmpty())
+    }
+
+    @Test
+    fun `reject exitoso invoca caso de uso con decision rejected`() = runTest {
+        val vm = ReviewBusinessViewModel(
+            FakeReviewBusinessRegistration(),
+            FakeGetBusinessesForReview(),
+            testLoggerFactory
+        )
+        vm.state = ReviewBusinessViewModel.UIState(twoFactorCode = "123456")
+
+        val result = vm.reject("pub-1")
+
+        assertTrue(result.isSuccess)
+    }
+
+    @Test
+    fun `clearSelection vacia la seleccion`() = runTest {
+        val businesses = listOf(
+            BusinessDTO("id-1", "pub-1", "A", "D", "a@t.com", false, "PENDING"),
+            BusinessDTO("id-2", "pub-2", "B", "D", "b@t.com", false, "PENDING")
+        )
+        val vm = ReviewBusinessViewModel(
+            FakeReviewBusinessRegistration(),
+            FakeGetBusinessesForReview(Result.success(SearchBusinessesResponse(StatusCodeDTO(200, "OK"), businesses))),
+            testLoggerFactory
+        )
+        vm.loadPending()
+        vm.selectAll()
+        assertEquals(2, vm.selected.size)
+
+        vm.clearSelection()
+
         assertTrue(vm.selected.isEmpty())
     }
 }

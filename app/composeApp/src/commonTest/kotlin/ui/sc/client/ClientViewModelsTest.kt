@@ -321,6 +321,15 @@ class ClientCartViewModelTest {
     )
 
     @Test
+    fun `estado inicial tiene lista vacia y sin seleccion`() {
+        val viewModel = createViewModel()
+
+        assertTrue(viewModel.state.addresses.isEmpty())
+        assertNull(viewModel.state.selectedAddressId)
+        assertNull(viewModel.state.error)
+    }
+
+    @Test
     fun `loadAddresses carga direcciones y selecciona la predeterminada`() = runTest {
         val viewModel = createViewModel()
 
@@ -457,6 +466,27 @@ class ClientCartViewModelTest {
         val state = viewModel.getState()
 
         assertTrue(state is ClientCartUiState)
+    }
+
+    @Test
+    fun `loadAddresses sin direcciones muestra lista vacia`() = runTest {
+        setUp()
+        val viewModel = ClientCartViewModel(
+            getClientProfile = FakeGetClientProfileSuccess(
+                ClientProfileData(
+                    profile = ClientProfile(fullName = "Test", email = "t@t.com"),
+                    addresses = emptyList(),
+                    preferences = ClientPreferences()
+                )
+            ),
+            loggerFactory = vmTestLoggerFactory
+        )
+
+        viewModel.loadAddresses()
+
+        assertTrue(viewModel.state.addresses.isEmpty())
+        assertNull(viewModel.state.selectedAddressId)
+        assertNull(viewModel.state.error)
     }
 }
 
