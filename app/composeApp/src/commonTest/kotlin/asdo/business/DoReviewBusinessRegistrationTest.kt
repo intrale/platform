@@ -14,6 +14,7 @@ private class FakeStorage(initialToken: String?) : CommKeyValueStorage {
     override var token: String? = initialToken
     override var profileCache: ClientProfileCache? = null
     override var preferredLanguage: String? = null
+    override var onboardingCompleted: Boolean = false
 }
 
 private class CapturingReviewService : CommReviewBusinessRegistrationService {

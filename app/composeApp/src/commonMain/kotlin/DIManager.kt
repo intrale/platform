@@ -160,6 +160,7 @@ import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientCatalogScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
+import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientOrdersScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.delivery.DeliveryDashboardScreen
@@ -178,6 +179,7 @@ import ui.sc.signup.SignUpScreen
 
 public const val SCREENS = "screens"
 
+public const val CLIENT_ONBOARDING = "clientOnboarding"
 public const val CLIENT_ENTRY = "clientEntry"
 public const val CLIENT_HOME = "clientHome"
 public const val CLIENT_CATALOG = "clientCatalog"
@@ -323,6 +325,7 @@ private val deliveryModule = DI.Module("delivery") {
 }
 
 private val screensModule = DI.Module("screens") {
+    bindSingleton(tag = CLIENT_ONBOARDING) { ClientOnboardingScreen() }
     bindSingleton(tag = CLIENT_ENTRY) { ClientEntryScreen() }
     bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
     bindSingleton(tag = CLIENT_CATALOG) { ClientCatalogScreen() }
@@ -363,6 +366,7 @@ private val screensModule = DI.Module("screens") {
         arrayListOf<Screen>().apply {
             when (appType) {
                 AppType.CLIENT -> {
+                    add(instance(tag = CLIENT_ONBOARDING))
                     add(instance(tag = CLIENT_ENTRY))
                     add(instance(tag = CLIENT_HOME))
                     add(instance(tag = CLIENT_CATALOG))

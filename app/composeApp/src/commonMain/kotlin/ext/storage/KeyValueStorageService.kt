@@ -41,12 +41,19 @@ class KeyValueStorageService : CommKeyValueStorage {
             profileCache = profileCache?.copy(preferredLanguage = value) ?: ClientProfileCache(preferredLanguage = value)
         }
 
+    override var onboardingCompleted: Boolean
+        get() = settings.getBoolean(StorageKeys.ONBOARDING_COMPLETED.key, false)
+        set(value) {
+            settings.putBoolean(StorageKeys.ONBOARDING_COMPLETED.key, value)
+        }
+
 }
 
 enum class StorageKeys {
     TOKEN,
     LOGIN_INFO,
-    PREFERRED_LANGUAGE;
+    PREFERRED_LANGUAGE,
+    ONBOARDING_COMPLETED;
 
     val key get() = this.name
 }
