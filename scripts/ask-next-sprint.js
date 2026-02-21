@@ -173,7 +173,7 @@ async function main() {
     const msgText = "\u2705 <b>Sprint completado</b>\n\n"
         + "Todos los agentes finalizaron y los worktrees estan limpios."
         + planInfo + "\n\n"
-        + "\u00BFPlanificar el siguiente sprint ahora?";
+        + "\u00BFPlanificar el siguiente sprint y proponer nuevas historias ahora?";
 
     // 1. Obtener offset actual ANTES de enviar el mensaje
     let offset;
@@ -195,8 +195,8 @@ async function main() {
             parse_mode: "HTML",
             reply_markup: {
                 inline_keyboard: [[
-                    { text: "\uD83D\uDE80 Si, planificar", callback_data: "yes:" + requestId },
-                    { text: "\u23F9 No, terminar",         callback_data: "no:" + requestId }
+                    { text: "\uD83D\uDE80 Si, planificar + proponer", callback_data: "yes:" + requestId },
+                    { text: "\u23F9 No, terminar",                    callback_data: "no:" + requestId }
                 ]]
             }
         }, 8000);
@@ -231,7 +231,9 @@ async function main() {
 
     // 4. Responder al callback (quitar spinner del boton en Telegram)
     const isYes = decision.action === "yes";
-    const confirmText = isYes ? "\uD83D\uDE80 Planificando siguiente sprint..." : "\u23F9 Ciclo finalizado";
+    const confirmText = isYes
+        ? "\uD83D\uDE80 Planificando sprint + generando propuestas..."
+        : "\u23F9 Ciclo finalizado";
     try {
         await telegramPost("answerCallbackQuery", {
             callback_query_id: decision.callbackQueryId,
