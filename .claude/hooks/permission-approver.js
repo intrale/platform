@@ -13,6 +13,7 @@ const querystring = require("querystring");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot } = require("./permission-utils");
 
 const BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
 const CHAT_ID = "6529617704";
@@ -21,9 +22,9 @@ const MAX_POLL_CYCLES = 15;    // Máximo 15 ciclos = 5 minutos antes de fallbac
 const ANSWER_TIMEOUT = 5000;   // Timeout para answerCallbackQuery y editMessage
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
-const SETTINGS_PATH = path.join(REPO_ROOT, ".claude", "settings.local.json");
-const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
-const OFFSET_FILE = path.join(REPO_ROOT, ".claude", "hooks", "tg-approver-offset.json");
+const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
+const LOG_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+const OFFSET_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "tg-approver-offset.json");
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Approver: " + msg + "\n"); } catch(e) {}
@@ -92,47 +93,19 @@ function formatAction(toolName, toolInput) {
 }
 
 // ─── Patrón de permiso para persistencia ("Siempre") ──────────────────────────
-
-function generatePattern(toolName, toolInput) {
-    if (toolName === "Bash") {
-        const cmd = (toolInput.command || "").trim();
-        if (!cmd) return null;
-        const parts = cmd.split(/\s+/);
-        const first = parts[0];
-        if (first === "git" && parts[1]) return "Bash(git " + parts[1] + ":*)";
-        if (first.startsWith("./") || first.startsWith("/")) return "Bash(" + first + ":*)";
-        return "Bash(" + first + ":*)";
-    }
-    if (toolName === "WebFetch") {
-        try {
-            const u = new URL(toolInput.url || "");
-            return "WebFetch(domain:" + u.hostname + ")";
-        } catch(e) { return null; }
-    }
-    if (toolName === "Skill") {
-        const s = toolInput.skill || "";
-        return s ? "Skill(" + s + ")" : null;
-    }
-    return null;
-}
+// generatePattern() y persistPattern() importados de permission-utils.js
+// Escriben en AMBOS settings (worktree + repo principal) para persistencia cross-worktree
 
 function persistAlways(toolName, toolInput) {
-    try {
-        const pattern = generatePattern(toolName, toolInput);
-        if (!pattern) return;
-        if (!fs.existsSync(SETTINGS_PATH)) return;
-        const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
-        const allow = (settings.permissions && settings.permissions.allow) || [];
-        if (!allow.includes(pattern)) {
-            allow.push(pattern);
-            settings.permissions = settings.permissions || {};
-            settings.permissions.allow = allow;
-            fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf8");
-            log("Persistido 'siempre': " + pattern);
-        }
-    } catch(e) {
-        log("Error persistiendo 'siempre': " + e.message);
+    const pattern = generatePattern(toolName, toolInput);
+    log("persistAlways: tool=" + toolName + " pattern=" + (pattern || "NULL"));
+    if (!pattern) {
+        log("persistAlways: no se pudo generar patrón para " + toolName);
+        return;
     }
+    const settingsPaths = getSettingsPaths(REPO_ROOT);
+    log("persistAlways: settingsPaths=" + JSON.stringify(settingsPaths));
+    persistPattern(pattern, settingsPaths, log);
 }
 
 // ─── Offset persistente (compartido entre invocaciones del hook) ──────────────
@@ -269,6 +242,8 @@ async function processInput() {
     const agent = process.env.CLAUDE_AGENT_NAME || "Claude Code";
     const requestId = crypto.randomBytes(8).toString("hex");
 
+    log("REPO_ROOT=" + REPO_ROOT + " MAIN=" + MAIN_REPO_ROOT + " tool=" + toolName);
+
     const action = formatAction(toolName, toolInput);
 
     const msgText = "⚠️ <b>" + escHtml(agent) + " — Permiso requerido</b>\n\n"
@@ -351,12 +326,13 @@ async function processInput() {
 
     log("Decisión: " + decision.action + " en " + latencyMs + "ms");
 
-    // 6. Si es "siempre": persistir en settings.local.json
+    // 6. Si es "siempre": persistir en settings.local.json ANTES de responder
+    //    (escritura síncrona — garantiza que el archivo existe antes del allow)
     if (decision.action === "always") {
         persistAlways(toolName, toolInput);
     }
 
-    // 7. Escribir decisión a stdout para Claude Code
+    // 7. Escribir decisión a stdout para Claude Code (después de persistir)
     //    Formato requerido: hookSpecificOutput.decision.behavior
     const isAllow = (decision.action === "allow" || decision.action === "always");
     const response = {
