@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-// Monitor v3 — Dashboard Live Multi-Sesion
+// Monitor v3 — Dashboard Live Multi-Sesion + Reporter Telegram
 // Script standalone Node.js puro — sin dependencias externas
-// Uso: node .claude/dashboard.js [--verbose]
+// Uso: node .claude/dashboard.js [--verbose] [--report <minutos>]
+//   --report N   enviar resumen a Telegram cada N minutos (defecto: deshabilitado)
+//   --report 0   deshabilitar reporter explícitamente
 // Teclado: q=salir, v=toggle verbose, r=refresh manual
 const fs = require("fs");
 const path = require("path");
+const https = require("https");
+const querystring = require("querystring");
 const { execSync } = require("child_process");
 
 // --- config ---
@@ -34,9 +38,25 @@ const C = {
 const HIDE_CURSOR = "\x1B[?25l";
 const SHOW_CURSOR = "\x1B[?25h";
 
+// --- Telegram reporter config ---
+const TG_BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
+const TG_CHAT_ID = "6529617704";
+const TG_MAX_RETRIES = 2;
+const TG_RETRY_DELAY_MS = 1500;
+
+function parseReportInterval() {
+  const idx = process.argv.indexOf("--report");
+  if (idx === -1) return 0;
+  const val = parseInt(process.argv[idx + 1], 10);
+  return isNaN(val) || val < 0 ? 3 : val;
+}
+
 // --- state ---
 let verbose = process.argv.includes("--verbose") || process.argv.includes("-v");
+const reportIntervalMin = parseReportInterval();
 let refreshTimer = null;
+let reportTimer = null;
+let lastReportTs = null;
 
 // --- helpers ---
 
@@ -175,6 +195,117 @@ function ciIcon(ci) {
   return C.dim + "\u2014" + C.reset;
 }
 
+// --- Telegram reporter ---
+
+function sendTelegram(text, attempt) {
+  attempt = attempt || 1;
+  return new Promise((resolve, reject) => {
+    const postData = querystring.stringify({ chat_id: TG_CHAT_ID, text: text });
+    const req = https.request({
+      hostname: "api.telegram.org",
+      path: "/bot" + TG_BOT_TOKEN + "/sendMessage",
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 10000
+    }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) resolve(r);
+          else reject(new Error(d));
+        } catch(e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.on("error", (e) => reject(e));
+    req.write(postData);
+    req.end();
+  });
+}
+
+function buildReportMessage() {
+  const sessions = loadSessions();
+  const recentActivity = loadRecentActivity();
+
+  if (sessions.length === 0) return null;
+
+  // No enviar si todas las sesiones son "done"
+  const hasActive = sessions.some(s => livenessLabel(s) !== "done");
+  if (!hasActive) return null;
+
+  const now = new Date();
+  const timeStr = now.toTimeString().substring(0, 5);
+  const total = sessions.length;
+  const activos = sessions.filter(s => livenessLabel(s) === "activa").length;
+
+  let msg = "\uD83D\uDCCA Sprint \u2014 " + timeStr + "\n\n";
+  msg += "\uD83E\uDD16 Agentes (" + activos + " activos / " + total + " total):\n";
+
+  for (const s of sessions) {
+    const label = livenessLabel(s);
+    const icon = label === "activa" ? "\u25CF" : label === "idle" ? "\u25D0" : label === "done" ? "\u2717" : "\u25CB";
+    const agent = s.agent_name || s.branch || s.id;
+    const action = lastActionLabel(s);
+    const age = formatAge(s.last_activity_ts);
+    msg += icon + " " + truncate(agent, 22) + " \u2014 " + action + " (" + age + ")\n";
+  }
+
+  // Actividad reciente (top 3)
+  if (recentActivity.length > 0) {
+    msg += "\n\uD83D\uDCDD Actividad:\n";
+    const top3 = recentActivity.slice(0, 3);
+    for (const entry of top3) {
+      const time = (entry.ts || "").substring(11, 16);
+      let t = entry.target || "--";
+      if (t.includes("/") || t.includes("\\")) {
+        const parts = t.replace(/\\/g, "/").split("/");
+        t = parts[parts.length - 1];
+      }
+      msg += "  " + time + " " + (entry.tool || "?") + ": " + truncate(t, 25) + "\n";
+    }
+  }
+
+  // CI
+  try {
+    const ci = getCIStatus();
+    let ciLabel;
+    if (ci.status === "completed" && ci.conclusion === "success") ciLabel = "\u2705";
+    else if (ci.status === "completed" && ci.conclusion === "failure") ciLabel = "\u274C";
+    else if (ci.status === "in_progress") ciLabel = "\u23F3";
+    else ciLabel = "\u2014";
+    msg += "\n\u2699\uFE0F CI: " + ciLabel + " " + (ci.branch || "?");
+  } catch(e) {}
+
+  return msg;
+}
+
+async function sendReport() {
+  try {
+    const msg = buildReportMessage();
+    if (!msg) return;
+    for (let attempt = 1; attempt <= TG_MAX_RETRIES; attempt++) {
+      try {
+        await sendTelegram(msg, attempt);
+        lastReportTs = new Date().toISOString();
+        return;
+      } catch(e) {
+        if (attempt < TG_MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, TG_RETRY_DELAY_MS));
+        }
+      }
+    }
+  } catch(e) { /* no romper el dashboard por error de reporter */ }
+}
+
+function startReporter() {
+  if (reportIntervalMin <= 0) return;
+  // Enviar primer reporte al iniciar
+  sendReport();
+  reportTimer = setInterval(sendReport, reportIntervalMin * 60 * 1000);
+}
+
 // --- rendering ---
 
 function boxLine(content, width) {
@@ -212,7 +343,10 @@ function render() {
   const lines = [];
 
   // Header
-  lines.push(boxTop(C.bold + C.cyan + "Monitor" + C.reset + C.dim + "  " + timeStr + C.reset, W));
+  const reportTag = reportIntervalMin > 0
+    ? C.green + " \u2709 " + reportIntervalMin + "m" + C.reset
+    : "";
+  lines.push(boxTop(C.bold + C.cyan + "Monitor" + C.reset + C.dim + "  " + timeStr + C.reset + reportTag, W));
 
   // Panel SESIONES
   if (sessions.length === 0) {
@@ -293,9 +427,12 @@ function render() {
 
   // Footer
   lines.push(boxMid("", W));
+  const reportStatus = reportIntervalMin > 0
+    ? "  Report: " + reportIntervalMin + "m"
+    : "";
   lines.push(boxLine(
     C.dim + "[q] Salir  [v] Verbose" + (verbose ? " ON" : "") +
-    "  [r] Refresh  Auto: " + (REFRESH_MS / 1000) + "s" + C.reset, W
+    "  [r] Refresh  Auto: " + (REFRESH_MS / 1000) + "s" + reportStatus + C.reset, W
   ));
   lines.push(boxBot(W));
 
@@ -337,6 +474,7 @@ function cleanup() {
   process.stdout.write(SHOW_CURSOR);
   process.stdout.write("\x1B[2J\x1B[H"); // clear screen
   if (refreshTimer) clearInterval(refreshTimer);
+  if (reportTimer) clearInterval(reportTimer);
 }
 
 function main() {
@@ -352,6 +490,9 @@ function main() {
 
   // Auto-refresh
   refreshTimer = setInterval(render, REFRESH_MS);
+
+  // Telegram reporter
+  startReporter();
 
   // Watch sessions dir for reactive refresh
   try {
