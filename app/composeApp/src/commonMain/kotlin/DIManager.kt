@@ -86,8 +86,10 @@ import ext.auth.CommPasswordRecoveryService
 import ext.auth.CommTwoFactorSetupService
 import ext.auth.CommTwoFactorVerifyService
 import ext.client.ClientAddressesService
+import ext.client.ClientOrdersService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
+import ext.client.CommClientOrdersService
 import ext.client.CommClientProfileService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
@@ -310,6 +312,7 @@ private val businessModule = DI.Module("business") {
 private val clientModule = DI.Module("client") {
     bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
     bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
+    bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
