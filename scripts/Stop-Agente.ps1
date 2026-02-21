@@ -142,7 +142,7 @@ function Stop-UnAgente {
         # --- Commit ---
         Write-Host ">> Committing cambios..."
         git add -A
-        $commitMsg = "feat: $issueTitle (Closes #$issue)`n`nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+        $commitMsg = ('feat: {0} (Closes #{1})' -f $issueTitle, $issue) + "`n`nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
         git commit -m $commitMsg
 
         # --- Push ---
@@ -151,7 +151,7 @@ function Stop-UnAgente {
 
         # --- Crear PR ---
         Write-Host ">> Creando PR..."
-        $prTitle = "feat: $issueTitle (Closes #$issue)"
+        $prTitle = 'feat: {0} (Closes #{1})' -f $issueTitle, $issue
         $prBody = @"
 ## Summary
 - Implementacion automatizada del issue #$issue
