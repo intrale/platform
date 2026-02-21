@@ -203,6 +203,38 @@ Formato de salida:
 ...
 ```
 
+### Generar plan JSON para Start-Agente
+
+Al finalizar el sprint, **siempre** escribir `scripts/oraculo-plan.json` con el plan estructurado
+para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
+
+```json
+{
+  "fecha": "2026-02-20",
+  "agentes": [
+    {
+      "numero": 1,
+      "issue": 821,
+      "slug": "notificaciones",
+      "titulo": "Mejorar notificaciones Telegram",
+      "prompt": "Implementar issue #821. Leer el issue con: gh issue view 821 --repo intrale/platform. Completar los cambios pendientes descritos en el body del issue. Usar /mensajero para commit+PR al terminar. Closes #821",
+      "stream": "E",
+      "size": "S"
+    }
+  ]
+}
+```
+
+Reglas del JSON:
+- `numero`: secuencial empezando en 1
+- `issue`: numero del issue de GitHub
+- `slug`: identificador corto sin espacios ni caracteres especiales (usado para branch y worktree)
+- `titulo`: titulo humano del issue
+- `prompt`: instruccion completa para Claude — incluir `gh issue view` + que hacer + `/mensajero` al final
+- `stream`: A/B/C/D/E segun clasificacion de streams
+- `size`: S/M/L/XL segun estimacion de esfuerzo
+- El archivo NO se commitea (esta en .gitignore)
+
 ---
 
 ## Modo: `proponer`
