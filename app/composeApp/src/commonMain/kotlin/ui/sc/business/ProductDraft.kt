@@ -9,5 +9,7 @@ data class ProductDraft(
     val basePrice: Double? = null,
     val unit: String = "",
     val categoryId: String = "",
-    val status: ProductStatus = ProductStatus.Draft
+    val status: ProductStatus = ProductStatus.Draft,
+    val isAvailable: Boolean = true,
+    val stockQuantity: Int? = null
 )
