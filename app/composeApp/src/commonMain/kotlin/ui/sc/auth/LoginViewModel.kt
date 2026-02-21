@@ -4,6 +4,8 @@ import DIManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import ar.com.intrale.strings.model.MessageKey
+import ar.com.intrale.strings.resolveMessage
 import asdo.auth.DoLoginResult
 import asdo.auth.ToDoCheckPreviousLogin
 import asdo.auth.ToDoLogin
@@ -150,23 +152,23 @@ class LoginViewModel(
 
     private fun buildValidation(): Validation<LoginUIState> = Validation {
         LoginUIState::user required {
-            minLength(1) hint "Ingresá tu correo electrónico"
-            pattern(".+@.+\\..+") hint "Ingresá un correo electrónico válido"
+            minLength(1) hint resolveMessage(MessageKey.form_error_required)
+            pattern(".+@.+\\..+") hint resolveMessage(MessageKey.form_error_invalid_email)
         }
         LoginUIState::password required {
-            minLength(1) hint "Ingresá tu contraseña"
-            minLength(8) hint "Debe contener al menos 8 caracteres"
+            minLength(1) hint resolveMessage(MessageKey.form_error_required)
+            minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
         }
         if (changePasswordRequired) {
             LoginUIState::newPassword required {
-                minLength(1) hint "Ingresá tu nueva contraseña"
-                minLength(8) hint "Debe contener al menos 8 caracteres"
+                minLength(1) hint resolveMessage(MessageKey.form_error_required)
+                minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
             }
             LoginUIState::name required {
-                minLength(1) hint "Ingresá tu nombre"
+                minLength(1) hint resolveMessage(MessageKey.form_error_required)
             }
             LoginUIState::familyName required {
-                minLength(1) hint "Ingresá tu apellido"
+                minLength(1) hint resolveMessage(MessageKey.form_error_required)
             }
         }
     }

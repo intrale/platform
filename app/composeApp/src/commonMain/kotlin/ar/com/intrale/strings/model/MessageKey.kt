@@ -275,6 +275,7 @@ enum class MessageKey {
     form_error_required,
     form_error_invalid_email,
     form_error_invalid_code,
+    form_error_min_length_8,
     family_name,
     login_button,
     login_change_password_description,
