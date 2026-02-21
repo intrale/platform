@@ -272,6 +272,7 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.form_error_required to "Campo obligatorio",
     MessageKey.form_error_invalid_email to "Correo inválido",
     MessageKey.form_error_invalid_code to "El código debe tener 6 dígitos",
+    MessageKey.form_error_min_length_8 to "Debe contener al menos 8 caracteres",
     MessageKey.family_name to "Apellido",
     MessageKey.login_button to "Ingresar",
     MessageKey.login_change_password_description to "Tu cuenta requiere actualizar la contraseña antes de ingresar.",
