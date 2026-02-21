@@ -17,7 +17,7 @@ const path = require("path");
 const BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
 const CHAT_ID = "6529617704";
 const POLL_TIMEOUT_SEC = 20;   // Telegram long-poll: esperar hasta 20s por update
-const MAX_POLL_CYCLES = 2;     // Máximo 2 ciclos = 40s antes de fallback
+const MAX_POLL_CYCLES = 15;    // Máximo 15 ciclos = 5 minutos antes de fallback
 const ANSWER_TIMEOUT = 5000;   // Timeout para answerCallbackQuery y editMessage
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
@@ -357,14 +357,20 @@ async function processInput() {
     }
 
     // 7. Escribir decisión a stdout para Claude Code
-    if (decision.action === "allow" || decision.action === "always") {
-        process.stdout.write(JSON.stringify({ behavior: "allow" }) + "\n");
-    } else {
-        process.stdout.write(JSON.stringify({
-            behavior: "deny",
-            message: "Denegado por el usuario vía Telegram"
-        }) + "\n");
-    }
+    //    Formato requerido: hookSpecificOutput.decision.behavior
+    const isAllow = (decision.action === "allow" || decision.action === "always");
+    const response = {
+        hookSpecificOutput: {
+            hookEventName: "PermissionRequest",
+            decision: isAllow
+                ? { behavior: "allow" }
+                : { behavior: "deny", message: "Denegado por el usuario vía Telegram" }
+        }
+    };
 
-    process.exit(0);
+    process.stdout.write(JSON.stringify(response) + "\n", () => {
+        process.exit(0);
+    });
+    // Fallback: si el callback nunca se invoca, salir después de 2s
+    setTimeout(() => process.exit(0), 2000);
 }

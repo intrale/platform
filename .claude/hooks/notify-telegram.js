@@ -84,6 +84,12 @@ async function processInput() {
         "elicitation_dialog": "\u2753"
     }[type] || "\ud83d\udd14";
 
+    // Ignorar permission_prompt: ya lo maneja permission-approver.js con botones inline
+    if (type === "permission_prompt") {
+        log("Ignorado permission_prompt (manejado por permission-approver.js)");
+        return;
+    }
+
     const displayTitle = TIPO_TITULO[type] || title || type;
 
     let displayMessage = message;
