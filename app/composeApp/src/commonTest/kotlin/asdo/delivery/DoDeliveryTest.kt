@@ -164,11 +164,15 @@ private val sampleSummaryDTO = DeliveryOrdersSummaryDTO(pending = 3, inProgress 
 private class FakeDeliveryOrdersService(
     private val activeResult: Result<List<DeliveryOrderDTO>> = Result.success(sampleOrderDTOs),
     private val summaryResult: Result<DeliveryOrdersSummaryDTO> = Result.success(sampleSummaryDTO),
-    private val availableResult: Result<List<DeliveryOrderDTO>> = Result.success(emptyList())
+    private val availableResult: Result<List<DeliveryOrderDTO>> = Result.success(emptyList()),
+    private val updateStatusResult: Result<DeliveryOrderStatusUpdateResponse> = Result.success(
+        DeliveryOrderStatusUpdateResponse(orderId = "o1", status = "inprogress")
+    )
 ) : CommDeliveryOrdersService {
     override suspend fun fetchActiveOrders() = activeResult
     override suspend fun fetchSummary(date: LocalDate) = summaryResult
     override suspend fun fetchAvailableOrders() = availableResult
+    override suspend fun updateOrderStatus(orderId: String, newStatus: String) = updateStatusResult
 }
 
 class DoGetActiveDeliveryOrdersTest {
@@ -234,3 +238,34 @@ class DoGetDeliveryOrdersSummaryTest {
 }
 
 // endregion DoGetDeliveryOrdersSummary
+
+// region DoUpdateDeliveryOrderStatus
+
+class DoUpdateDeliveryOrderStatusTest {
+
+    @Test
+    fun `actualizar estado exitoso retorna resultado mapeado`() = runTest {
+        val sut = DoUpdateDeliveryOrderStatus(FakeDeliveryOrdersService())
+
+        val result = sut.execute("o1", DeliveryOrderStatus.IN_PROGRESS)
+
+        assertTrue(result.isSuccess)
+        val updateResult = result.getOrThrow()
+        assertEquals("o1", updateResult.orderId)
+        assertEquals(DeliveryOrderStatus.IN_PROGRESS, updateResult.newStatus)
+    }
+
+    @Test
+    fun `actualizar estado fallido retorna DeliveryExceptionResponse`() = runTest {
+        val sut = DoUpdateDeliveryOrderStatus(
+            FakeDeliveryOrdersService(updateStatusResult = Result.failure(RuntimeException("Error de red")))
+        )
+
+        val result = sut.execute("o1", DeliveryOrderStatus.DELIVERED)
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is DeliveryExceptionResponse)
+    }
+}
+
+// endregion DoUpdateDeliveryOrderStatus

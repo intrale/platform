@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -24,15 +25,19 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
@@ -40,6 +45,7 @@ import asdo.delivery.DeliveryOrder
 import asdo.delivery.DeliveryOrderStatus
 import asdo.delivery.DeliveryOrdersSummary
 import kotlinx.coroutines.launch
+import ui.cp.buttons.IntraleOutlinedButton
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen
 import ui.session.SessionStore
@@ -59,9 +65,27 @@ class DeliveryHomeScreen : Screen(DELIVERY_HOME_PATH) {
         val scrollState = rememberScrollState()
         val coroutineScope = rememberCoroutineScope()
         val sessionState by SessionStore.sessionState.collectAsState()
+        val snackbarHostState = remember { SnackbarHostState() }
 
         LaunchedEffect(Unit) {
             viewModel.loadData()
+        }
+
+        val successMessage = Txt(MessageKey.delivery_order_status_updated)
+        val errorMessage = Txt(MessageKey.delivery_order_status_update_error)
+
+        LaunchedEffect(state.statusUpdateSuccess) {
+            if (state.statusUpdateSuccess) {
+                snackbarHostState.showSnackbar(successMessage)
+                viewModel.clearStatusFeedback()
+            }
+        }
+
+        LaunchedEffect(state.statusUpdateError) {
+            state.statusUpdateError?.let {
+                snackbarHostState.showSnackbar(it)
+                viewModel.clearStatusFeedback()
+            }
         }
 
         val greeting = Txt(MessageKey.delivery_home_greeting)
@@ -74,6 +98,7 @@ class DeliveryHomeScreen : Screen(DELIVERY_HOME_PATH) {
         val quickActionsLabel = Txt(MessageKey.delivery_home_quick_actions)
 
         Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
                 DeliveryBottomBar(
                     activeTab = DeliveryTab.HOME,
@@ -144,7 +169,18 @@ class DeliveryHomeScreen : Screen(DELIVERY_HOME_PATH) {
                         ordersState.orders.forEach { order ->
                             DeliveryOrderCard(
                                 order = order,
-                                onOpen = { navigate(DELIVERY_DASHBOARD_PATH) }
+                                onOpen = { navigate(DELIVERY_DASHBOARD_PATH) },
+                                onStartDelivery = {
+                                    coroutineScope.launch {
+                                        viewModel.updateStatus(order.id, DeliveryOrderStatus.IN_PROGRESS)
+                                    }
+                                },
+                                onMarkDelivered = {
+                                    coroutineScope.launch {
+                                        viewModel.updateStatus(order.id, DeliveryOrderStatus.DELIVERED)
+                                    }
+                                },
+                                isUpdating = state.updatingOrderId == order.id
                             )
                         }
                     }
@@ -255,7 +291,14 @@ private fun RowScope.DeliverySummaryCard(title: String, value: Int) {
 }
 
 @Composable
-internal fun DeliveryOrderCard(order: DeliveryOrder, onOpen: () -> Unit) {
+internal fun DeliveryOrderCard(
+    order: DeliveryOrder,
+    onOpen: () -> Unit,
+    onStartDelivery: (() -> Unit)? = null,
+    onMarkDelivered: (() -> Unit)? = null,
+    onReportProblem: (() -> Unit)? = null,
+    isUpdating: Boolean = false
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -320,6 +363,44 @@ internal fun DeliveryOrderCard(order: DeliveryOrder, onOpen: () -> Unit) {
                         text = Txt(MessageKey.delivery_home_view_order),
                         modifier = Modifier.padding(start = MaterialTheme.spacing.x1)
                     )
+                }
+            }
+
+            if (isUpdating) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+            } else {
+                when (order.status) {
+                    DeliveryOrderStatus.PENDING -> {
+                        onStartDelivery?.let { callback ->
+                            IntraleOutlinedButton(
+                                text = Txt(MessageKey.delivery_order_action_start),
+                                onClick = callback,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                    DeliveryOrderStatus.IN_PROGRESS -> {
+                        onMarkDelivered?.let { callback ->
+                            IntralePrimaryButton(
+                                text = Txt(MessageKey.delivery_order_action_deliver),
+                                onClick = callback,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        onReportProblem?.let { callback ->
+                            IntraleOutlinedButton(
+                                text = Txt(MessageKey.delivery_order_action_problem),
+                                onClick = callback,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                    else -> { /* Sin acciones para DELIVERED y UNKNOWN */ }
                 }
             }
         }

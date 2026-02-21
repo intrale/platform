@@ -9,3 +9,7 @@ interface ToDoGetActiveDeliveryOrders {
 interface ToDoGetDeliveryOrdersSummary {
     suspend fun execute(date: LocalDate): Result<DeliveryOrdersSummary>
 }
+
+interface ToDoUpdateDeliveryOrderStatus {
+    suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus): Result<DeliveryOrderStatusUpdateResult>
+}
