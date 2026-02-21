@@ -8,16 +8,22 @@
     1. Ejecuta Stop-Agente.ps1 all (commit + PR + merge + cleanup)
     2. Pregunta via Telegram si planificar el siguiente sprint
     3. Si confirma: git pull + nueva terminal con claude '/planner sprint'
+       + nueva terminal con claude '/planner proponer' (en paralelo)
 
 .PARAMETER PollInterval
     Intervalo de polling en segundos (default: 30).
 
+.PARAMETER NoAutoProponer
+    Si se indica, no se lanza automaticamente '/planner proponer' en paralelo.
+
 .EXAMPLE
     .\Watch-Agentes.ps1
     .\Watch-Agentes.ps1 -PollInterval 60
+    .\Watch-Agentes.ps1 -NoAutoProponer
 #>
 param(
-    [int]$PollInterval = 30
+    [int]$PollInterval = 30,
+    [switch]$NoAutoProponer
 )
 
 Set-StrictMode -Version Latest
@@ -59,6 +65,9 @@ Write-Host '============================================' -ForegroundColor Magen
 Write-Host ''
 Write-Log ('Vigilando {0} agente(s) del sprint {1}' -f $AgentCount, $Plan.fecha) 'Cyan'
 Write-Log ('Intervalo de polling: {0}s' -f $PollInterval) 'Cyan'
+if ($NoAutoProponer) {
+    Write-Log 'Auto-proponer deshabilitado (-NoAutoProponer)' 'Yellow'
+}
 Write-Host ''
 
 foreach ($a in $Plan.agentes) {
@@ -178,7 +187,7 @@ if (Test-Path $AskScript) {
         }
         elseif ($result.timeout -eq $true) {
             Write-Log 'Timeout en Telegram, preguntando en terminal...' 'Yellow'
-            $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint? (s/N)'
+            $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint y proponer nuevas historias? (s/N)'
             if ($resp -match '^[sS]') { $confirmed = $true }
         }
         else {
@@ -187,13 +196,13 @@ if (Test-Path $AskScript) {
     }
     catch {
         Write-Log ('Telegram no disponible ({0}), preguntando en terminal...' -f $_.Exception.Message) 'Yellow'
-        $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint? (s/N)'
+        $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint y proponer nuevas historias? (s/N)'
         if ($resp -match '^[sS]') { $confirmed = $true }
     }
 }
 else {
     # Fallback: preguntar en terminal
-    $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint? (s/N)'
+    $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint y proponer nuevas historias? (s/N)'
     if ($resp -match '^[sS]') { $confirmed = $true }
 }
 
@@ -221,16 +230,28 @@ finally {
 
 # Lanzar nueva terminal con /planner sprint
 Write-Log 'Lanzando nuevo ciclo de planificacion...' 'Cyan'
-$command = "Set-Location '$MainRepo'; " +
-           "Write-Host ''; " +
-           "Write-Host '  Nuevo sprint -- planificando...' -ForegroundColor Cyan; " +
-           "Write-Host ''; " +
-           "claude '/planner sprint'"
+$cmdSprint = "Set-Location '$MainRepo'; " +
+             "Write-Host ''; " +
+             "Write-Host '  Nuevo sprint -- planificando...' -ForegroundColor Cyan; " +
+             "Write-Host ''; " +
+             "claude '/planner sprint'"
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $command
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdSprint
 
-Write-Log 'Nuevo ciclo lanzado en nueva terminal.' 'Green'
+# Lanzar /planner proponer en paralelo (segunda terminal)
+if (-not $NoAutoProponer) {
+    Write-Log 'Lanzando analisis de propuestas en paralelo...' 'Magenta'
+    $cmdProponer = "Set-Location '$MainRepo'; " +
+                   "Write-Host ''; " +
+                   "Write-Host '  Analizando codebase para nuevas propuestas...' -ForegroundColor Magenta; " +
+                   "Write-Host ''; " +
+                   "claude '/planner proponer'"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdProponer
+}
+
+$bannerMsg = if ($NoAutoProponer) { 'sprint iniciado' } else { 'sprint + proponer iniciados' }
+Write-Log ('Nuevo ciclo lanzado en nueva(s) terminal(es).') 'Green'
 Write-Host ''
 Write-Host '============================================' -ForegroundColor Magenta
-Write-Host '  Ciclo continuo -- nuevo sprint iniciado'    -ForegroundColor Magenta
+Write-Host "  Ciclo continuo -- $bannerMsg"                -ForegroundColor Magenta
 Write-Host '============================================' -ForegroundColor Magenta
