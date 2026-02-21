@@ -168,6 +168,8 @@ import ui.sc.client.ClientCartScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
 import ui.sc.delivery.DeliveryProfileScreen
+import ui.sc.client.AddressFormScreen
+import ui.sc.client.AddressListScreen
 import ui.sc.client.ClientProfileScreen
 import ui.sc.shared.ButtonsPreviewScreen
 import ui.sc.shared.Home
@@ -188,6 +190,8 @@ public const val CLIENT_CATALOG = "clientCatalog"
 public const val CLIENT_ORDERS = "clientOrders"
 public const val CLIENT_CART = "clientCart"
 public const val CLIENT_PROFILE = "clientProfile"
+public const val CLIENT_ADDRESSES = "clientAddresses"
+public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -335,6 +339,8 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
     bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
+    bindSingleton(tag = CLIENT_ADDRESSES) { AddressListScreen() }
+    bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
     bindSingleton(tag = HOME) { Home() }
     bindSingleton(tag = INIT) { Login() }
     bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -376,6 +382,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_ORDERS))
                     add(instance(tag = CLIENT_CART))
                     add(instance(tag = CLIENT_PROFILE))
+                    add(instance(tag = CLIENT_ADDRESSES))
+                    add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = INIT))
                     add(instance(tag = SIGNUP))
                     add(instance(tag = CHANGE_PASSWORD))
@@ -446,6 +454,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))
                     add(instance(tag = BUSINESS_CATEGORY_FORM))
+                    add(instance(tag = CLIENT_ADDRESSES))
+                    add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))
                     add(instance(tag = TWO_FACTOR_VERIFY))
                 }
