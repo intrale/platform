@@ -117,19 +117,48 @@ function Stop-UnAgente {
         return
     }
 
+    # --- Verificar si es un repo git valido ---
+    $gitMarker = Join-Path $wtDirResolved '.git'
+    if (-not (Test-Path $gitMarker)) {
+        Write-Log 'Directorio no es un repo git valido, limpiando...' 'Yellow'
+        Push-Location $MainRepo
+        try {
+            git worktree remove $wtDirResolved --force 2>$null
+            git branch -D $branch 2>$null
+            git worktree prune 2>$null
+        }
+        catch { }
+        finally { Pop-Location }
+        # Fallback: borrar directorio si sigue existiendo
+        if (Test-Path $wtDirResolved) {
+            Remove-Item $wtDirResolved -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Log 'Limpiado.' 'Green'
+        return
+    }
+
     Push-Location $wtDirResolved
     try {
         # --- Verificar cambios ---
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
         $status = git status --porcelain 2>$null
+        $ErrorActionPreference = $prevEAP
         if (-not $status) {
             Write-Log 'Sin cambios en el worktree.' 'Yellow'
 
             # Solo limpiar
             Pop-Location
             Push-Location $MainRepo
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'SilentlyContinue'
             git worktree remove $wtDirResolved --force 2>$null
             git branch -D $branch 2>$null
             git worktree prune 2>$null
+            $ErrorActionPreference = $prevEAP
+            if (Test-Path $wtDirResolved) {
+                Remove-Item $wtDirResolved -Recurse -Force -ErrorAction SilentlyContinue
+            }
             Write-Log 'Worktree limpiado (sin cambios).' 'Green'
             return
         }
@@ -210,6 +239,8 @@ function Stop-UnAgente {
     # --- Cleanup worktree ---
     Push-Location $MainRepo
     try {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
         git fetch origin --prune --quiet 2>$null
 
         if (-not $SkipMerge) {
@@ -219,9 +250,11 @@ function Stop-UnAgente {
             }
             git branch -D $branch 2>$null
             git worktree prune 2>$null
+            $ErrorActionPreference = $prevEAP
             Write-Log 'Worktree limpiado.' 'Green'
         }
         else {
+            $ErrorActionPreference = $prevEAP
             Write-Log 'Worktree conservado (--SkipMerge). Usa git worktree remove para limpiarlo.' 'Yellow'
         }
     }
