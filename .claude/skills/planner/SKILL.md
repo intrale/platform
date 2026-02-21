@@ -205,7 +205,7 @@ Formato de salida:
 
 ### Generar plan JSON para Start-Agente
 
-Al finalizar el sprint, **siempre** escribir `scripts/planner-plan.json` con el plan estructurado
+Al finalizar el sprint, **siempre** escribir `scripts/sprint-plan.json` con el plan estructurado
 para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 
 ```json

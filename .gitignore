@@ -51,8 +51,8 @@ deps_commonMain.txt
 .claude/hooks/hook-debug.log
 .claude/hooks/tg-approver-offset.json
 
-# Planner — plan de agentes (no commitear, local de trabajo)
-scripts/planner-plan.json
+# Sprint plan — plan de agentes (no commitear, local de trabajo)
+scripts/sprint-plan.json
 
 # Binarios de gh-cli descargados localmente
 gh-cli/
@@ -67,8 +67,9 @@ app/composeApp/src/wasmJsMain/resources/*.ico
 app/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/*.png
 docs/branding/icons/icon_master.png
 
-# Plan del Oraculo (generado por /oraculo sprint)
+# (legacy — se puede borrar cuando no queden archivos locales)
 scripts/oraculo-plan.json
+scripts/planner-plan.json
 
 # Claude Code
 .claude/activity-log.jsonl

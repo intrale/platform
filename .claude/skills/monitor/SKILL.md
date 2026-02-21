@@ -22,6 +22,7 @@ Recolecta datos de TODAS estas fuentes en paralelo:
 3. **Tareas**: Usa `TaskList` para obtener todas las tareas
 4. **Git info**: Ejecuta en un solo Bash: `git branch --show-current && git log --oneline -1`
 5. **CI**: Ejecuta `export PATH="/c/Workspaces/gh-cli/bin:$PATH" && export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p') && gh run list --limit 1 --json status,conclusion,headBranch,event,createdAt --jq '.[0] | "\(.status) \(.conclusion // "—") \(.headBranch)"'`
+6. **Sprint plan**: Lee `scripts/sprint-plan.json` con `Read` (puede no existir — si no existe, omitir panel PLAN)
 
 Luego, para cada sesion de tipo `"parent"`, determina su estado de liveness usando `last_activity_ts` del JSON:
 
@@ -51,6 +52,9 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │ Rama: codex/829-centinela-v3                                     │
 │ Commit: 2b29ad5 migrar hooks de bash…                            │
 │ CI: ⏳ in_progress (codex/829-centinela-v3)                       │
+├─ PLAN (2026-02-20) ────────────────────────────────────────────┤
+│ #1  #821  notificaciones     S  Stream E                         │
+│ #2  #845  refactor-login     M  Stream A                         │
 ├─ TAREAS ────────────────────────────────────────────────────────┤
 │ ● #1  Implementar login          Vulcano 🔥                      │
 │ ○ #2  Tests de login             — (◄#1)                         │
@@ -90,6 +94,15 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
   - `queued` → `🔄`
   - Sin datos → `—`
 - Incluir la rama del CI entre parentesis
+
+**Reglas del panel PLAN:**
+
+- Fuente: `scripts/sprint-plan.json` (generado por `/planner sprint`)
+- Si el archivo no existe, omitir este panel completamente
+- Titulo del panel: `PLAN (fecha)` donde fecha viene del campo `fecha` del JSON
+- Cada fila muestra: `#numero  #issue  slug  size  Stream X`
+- Ordenar por `numero` ascendente
+- Si no hay agentes en el plan: "Plan vacio"
 
 **Reglas del panel TAREAS:**
 

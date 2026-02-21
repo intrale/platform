@@ -3,7 +3,7 @@
     Lanza agentes Claude en worktrees aislados consumiendo el plan del Oraculo.
 
 .DESCRIPTION
-    Lee oraculo-plan.json y crea worktrees para los agentes indicados.
+    Lee sprint-plan.json y crea worktrees para los agentes indicados.
     Copia permisos de Claude Code y abre nueva terminal PowerShell con claude ejecutando.
 
 .PARAMETER Numero
@@ -25,7 +25,7 @@ $ErrorActionPreference = "Stop"
 $GitWt    = "C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Packages\max-sixty.worktrunk_Microsoft.Winget.Source_8wekyb3d8bbwe\git-wt.exe"
 $Gh       = "C:\Workspaces\gh-cli\bin\gh.exe"
 $MainRepo = "C:\Workspaces\Intrale\platform"
-$PlanFile = Join-Path $PSScriptRoot "planner-plan.json"
+$PlanFile = Join-Path $PSScriptRoot "sprint-plan.json"
 
 # --- Validaciones ---
 if (-not (Test-Path $PlanFile)) {
