@@ -56,6 +56,27 @@ if (-not (Test-Path $PlanFile)) {
 # --- Leer plan ---
 $Plan = Get-Content $PlanFile -Raw | ConvertFrom-Json
 
+function Close-AgenteTerminal {
+    param(
+        [Parameter(Mandatory)] $Agente
+    )
+
+    $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
+    if (-not (Test-Path $pidsFile)) { return }
+
+    $pidsData = Get-Content $pidsFile -Raw | ConvertFrom-Json
+    $pidKey = "agente_$($Agente.numero)"
+    $terminalPid = $pidsData.$pidKey
+    if ($terminalPid) {
+        $termProc = Get-Process -Id $terminalPid -ErrorAction SilentlyContinue
+        if ($termProc) {
+            Write-Log ('Cerrando terminal del agente (PID {0})...' -f $terminalPid) 'White'
+            Stop-Process -Id $terminalPid -Force -ErrorAction SilentlyContinue
+            Write-Log 'Terminal cerrada.' 'Green'
+        }
+    }
+}
+
 function Stop-UnAgente {
     param(
         [Parameter(Mandatory)] $Agente,
@@ -75,6 +96,7 @@ function Stop-UnAgente {
 
     # Verificar que el worktree existe
     if (-not (Test-Path $wtDir)) {
+        Close-AgenteTerminal -Agente $Agente
         Write-Log ('Worktree no encontrado: {0} - nada que hacer.' -f $wtDir) 'Yellow'
         return
     }
@@ -104,6 +126,7 @@ function Stop-UnAgente {
             Pop-Location
         }
 
+        Close-AgenteTerminal -Agente $Agente
         Write-Log ('Agente {0} abortado y limpiado.' -f $Agente.numero) 'Green'
         return
     }
@@ -133,6 +156,7 @@ function Stop-UnAgente {
         if (Test-Path $wtDirResolved) {
             Remove-Item $wtDirResolved -Recurse -Force -ErrorAction SilentlyContinue
         }
+        Close-AgenteTerminal -Agente $Agente
         Write-Log 'Limpiado.' 'Green'
         return
     }
@@ -159,6 +183,7 @@ function Stop-UnAgente {
             if (Test-Path $wtDirResolved) {
                 Remove-Item $wtDirResolved -Recurse -Force -ErrorAction SilentlyContinue
             }
+            Close-AgenteTerminal -Agente $Agente
             Write-Log 'Worktree limpiado (sin cambios).' 'Green'
             return
         }
@@ -262,6 +287,7 @@ function Stop-UnAgente {
         Pop-Location
     }
 
+    Close-AgenteTerminal -Agente $Agente
     Write-Log ('Agente {0} finalizado.' -f $Agente.numero) 'Green'
 }
 
@@ -271,6 +297,13 @@ if ($Numero -eq 'all') {
     foreach ($agente in $Plan.agentes) {
         Stop-UnAgente -Agente $agente -SkipMerge:$SkipMerge -Abort:$Abort
     }
+    # Limpiar sprint-pids.json al finalizar todos los agentes
+    $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
+    if (Test-Path $pidsFile) {
+        Remove-Item $pidsFile -Force
+        Write-Log 'sprint-pids.json eliminado.' 'Green'
+    }
+
     Write-Host ''
     Write-Host '>> Todos los agentes procesados.' -ForegroundColor Green
 }

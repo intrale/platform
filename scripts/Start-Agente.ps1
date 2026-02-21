@@ -107,9 +107,19 @@ function Start-UnAgente {
     $command = "Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude `"$escapedPrompt`""
 
     Write-Host ">> Abriendo terminal con claude..."
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", $command
+    $proc = Start-Process powershell -ArgumentList "-NoExit", "-Command", $command -PassThru
 
-    Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal" -ForegroundColor Green
+    # Guardar PID en sprint-pids.json
+    $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
+    $pidsData = if (Test-Path $pidsFile) {
+        Get-Content $pidsFile -Raw | ConvertFrom-Json
+    } else {
+        [PSCustomObject]@{}
+    }
+    $pidsData | Add-Member -NotePropertyName "agente_$($Agente.numero)" -NotePropertyValue $proc.Id -Force
+    $pidsData | ConvertTo-Json | Set-Content $pidsFile
+
+    Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal (PID $($proc.Id))" -ForegroundColor Green
 }
 
 # --- Ejecutar ---
