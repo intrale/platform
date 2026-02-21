@@ -41,6 +41,12 @@ private class FakeRegisterSaler(
     override suspend fun execute(email: String): Result<DoRegisterSalerResult> = result
 }
 
+private class FakeConfirmSignUp(
+    private val result: Result<DoConfirmSignUpResult> = Result.success(DoConfirmSignUpResult(ConfirmSignUpStatusCode(200, "OK")))
+) : ToDoConfirmSignUp {
+    override suspend fun execute(email: String, code: String): Result<DoConfirmSignUpResult> = result
+}
+
 private class FakeGetBusinesses(
     private val result: Result<SearchBusinessesResponse> = Result.success(
         SearchBusinessesResponse(StatusCodeDTO(200, "OK"), emptyList())
@@ -188,6 +194,55 @@ class RegisterSalerViewModelTest {
         val vm = RegisterSalerViewModel(FakeRegisterSaler(), testLoggerFactory)
         vm.state = RegisterSalerViewModel.RegisterSalerUIState("invalido")
         assertFalse(vm.isValid())
+    }
+}
+
+// endregion
+
+// region ConfirmSignUpViewModel
+
+class ConfirmSignUpViewModelTest {
+
+    @Test
+    fun `confirmSignUp exitoso retorna resultado`() = runTest {
+        val vm = ConfirmSignUpViewModel(FakeConfirmSignUp(), FakeSignUp(), testLoggerFactory)
+        vm.state = ConfirmSignUpViewModel.ConfirmSignUpUIState("test@test.com", "123456")
+
+        val result = vm.confirmSignUp()
+
+        assertTrue(result.isSuccess)
+        assertEquals(200, result.getOrThrow().statusCode.value)
+    }
+
+    @Test
+    fun `isValid con datos validos retorna true`() {
+        val vm = ConfirmSignUpViewModel(FakeConfirmSignUp(), FakeSignUp(), testLoggerFactory)
+        vm.state = ConfirmSignUpViewModel.ConfirmSignUpUIState("test@test.com", "123456")
+        assertTrue(vm.isValid())
+    }
+
+    @Test
+    fun `isValid con email invalido retorna false`() {
+        val vm = ConfirmSignUpViewModel(FakeConfirmSignUp(), FakeSignUp(), testLoggerFactory)
+        vm.state = ConfirmSignUpViewModel.ConfirmSignUpUIState("invalido", "123456")
+        assertFalse(vm.isValid())
+    }
+
+    @Test
+    fun `isValid con codigo invalido retorna false`() {
+        val vm = ConfirmSignUpViewModel(FakeConfirmSignUp(), FakeSignUp(), testLoggerFactory)
+        vm.state = ConfirmSignUpViewModel.ConfirmSignUpUIState("test@test.com", "abc")
+        assertFalse(vm.isValid())
+    }
+
+    @Test
+    fun `resendCode exitoso retorna resultado`() = runTest {
+        val vm = ConfirmSignUpViewModel(FakeConfirmSignUp(), FakeSignUp(), testLoggerFactory)
+        vm.state = ConfirmSignUpViewModel.ConfirmSignUpUIState("test@test.com", "")
+
+        val result = vm.resendCode()
+
+        assertTrue(result.isSuccess)
     }
 }
 

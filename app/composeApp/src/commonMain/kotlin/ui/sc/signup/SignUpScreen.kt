@@ -24,7 +24,6 @@ import org.kodein.log.LoggerFactory
 import ui.cp.buttons.Button
 import ui.cp.inputs.TextField
 import org.kodein.log.newLogger
-import ui.sc.auth.LOGIN_PATH
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.th.spacing
@@ -78,7 +77,7 @@ class SignUpScreen : Screen(SIGNUP_PATH) {
                                 snackbarHostState = snackbarHostState,
                                 setLoading = { viewModel.loading = it },
                                 serviceCall = { viewModel.signup() },
-                                onSuccess = { navigate(LOGIN_PATH) }
+                                onSuccess = { navigate(CONFIRM_SIGNUP_PATH) }
                             )
                         }
                     }
