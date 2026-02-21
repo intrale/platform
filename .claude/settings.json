@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-notify.js",
-            "timeout": 30000
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-approver.js",
+            "timeout": 55000
           }
         ]
       }
