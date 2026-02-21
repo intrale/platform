@@ -104,7 +104,7 @@ function Start-UnAgente {
 
     # Abrir nueva terminal PowerShell con claude ejecutando
     $escapedPrompt = $prompt -replace '"', '\"'
-    $command = "Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) — issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude `"$escapedPrompt`""
+    $command = "Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude `"$escapedPrompt`""
 
     Write-Host ">> Abriendo terminal con claude..."
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $command
