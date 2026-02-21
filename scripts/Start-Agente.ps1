@@ -138,6 +138,28 @@ function Start-UnAgente {
     Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal" -ForegroundColor Green
 }
 
+function Start-MonitorLive {
+    $monitorProcs = Get-Process -Name 'node' -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'dashboard\.js' }
+
+    if ($monitorProcs) {
+        Write-Host ">> Monitor ya activo (PID: $($monitorProcs.Id)) — reutilizando." -ForegroundColor Yellow
+        return
+    }
+
+    $dashboardPath = Join-Path $MainRepo ".claude\dashboard.js"
+    if (-not (Test-Path $dashboardPath)) {
+        Write-Host ">> dashboard.js no encontrado en: $dashboardPath — omitiendo monitor." -ForegroundColor Yellow
+        return
+    }
+
+    $command = "Set-Location '$MainRepo'; " +
+               "Write-Host '  Monitor Live — Dashboard multi-sesion' -ForegroundColor Cyan; " +
+               "node '$dashboardPath'"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", $command
+    Write-Host ">> Monitor live lanzado." -ForegroundColor Green
+}
+
 # --- Ejecutar ---
 if ($Numero -eq "all") {
     Write-Host ">> Lanzando TODOS los agentes del plan ($($Plan.agentes.Count))..." -ForegroundColor Magenta
@@ -146,6 +168,7 @@ if ($Numero -eq "all") {
     }
     Write-Host ""
     Write-Host ">> Todos los agentes lanzados." -ForegroundColor Green
+    Start-MonitorLive
 }
 else {
     $num = [int]$Numero
@@ -157,4 +180,5 @@ else {
     }
 
     Start-UnAgente -Agente $agente
+    Start-MonitorLive
 }
