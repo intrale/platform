@@ -25,11 +25,11 @@ $ErrorActionPreference = "Stop"
 $GitWt    = "C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Packages\max-sixty.worktrunk_Microsoft.Winget.Source_8wekyb3d8bbwe\git-wt.exe"
 $Gh       = "C:\Workspaces\gh-cli\bin\gh.exe"
 $MainRepo = "C:\Workspaces\Intrale\platform"
-$PlanFile = Join-Path $PSScriptRoot "oraculo-plan.json"
+$PlanFile = Join-Path $PSScriptRoot "planner-plan.json"
 
 # --- Validaciones ---
 if (-not (Test-Path $PlanFile)) {
-    Write-Error "No se encontro el plan: $PlanFile`nEjecuta /oraculo sprint para generarlo."
+    Write-Error "No se encontro el plan: $PlanFile`nEjecuta /planner sprint para generarlo."
     exit 1
 }
 
