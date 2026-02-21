@@ -9,6 +9,7 @@ import asdo.client.ManageAddressAction
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -52,6 +53,24 @@ private val sampleProfileData = ClientProfileData(
     profile = sampleProfile,
     addresses = sampleAddresses,
     preferences = samplePreferences
+)
+
+private val sampleProduct1 = ClientProduct(
+    id = "prod-1",
+    name = "Manzana roja",
+    priceLabel = "$1200",
+    emoji = "🍎",
+    unitPrice = 1200.0,
+    categoryId = "cat-1"
+)
+
+private val sampleProduct2 = ClientProduct(
+    id = "prod-2",
+    name = "Banana",
+    priceLabel = "$800",
+    emoji = "🍌",
+    unitPrice = 800.0,
+    categoryId = "cat-2"
 )
 
 // --- Fakes ---
@@ -147,22 +166,163 @@ private class MutableProfileStore(
 }
 
 // =============================================================================
+// ClientCartStore
+// =============================================================================
+
+class ClientCartStoreTest {
+
+    @BeforeTest
+    fun setUp() {
+        ClientCartStore.clear()
+    }
+
+    @Test
+    fun `add agrega un producto nuevo con cantidad 1`() {
+        ClientCartStore.add(sampleProduct1)
+
+        val items = ClientCartStore.items.value
+        assertTrue(items.containsKey("prod-1"))
+        assertEquals(1, items["prod-1"]?.quantity)
+        assertEquals(sampleProduct1, items["prod-1"]?.product)
+    }
+
+    @Test
+    fun `add incrementa cantidad si el producto ya existe`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct1)
+
+        val items = ClientCartStore.items.value
+        assertEquals(1, items.size)
+        assertEquals(2, items["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `add permite agregar multiples productos distintos`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct2)
+
+        val items = ClientCartStore.items.value
+        assertEquals(2, items.size)
+        assertEquals(1, items["prod-1"]?.quantity)
+        assertEquals(1, items["prod-2"]?.quantity)
+    }
+
+    @Test
+    fun `increment aumenta la cantidad de un producto existente`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.increment("prod-1")
+
+        assertEquals(2, ClientCartStore.items.value["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `increment no modifica el mapa si el producto no existe`() {
+        ClientCartStore.increment("prod-inexistente")
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `decrement reduce la cantidad de un producto existente`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.increment("prod-1")
+        ClientCartStore.decrement("prod-1")
+
+        assertEquals(1, ClientCartStore.items.value["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `decrement elimina el producto cuando la cantidad llega a 1`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.decrement("prod-1")
+
+        assertFalse(ClientCartStore.items.value.containsKey("prod-1"))
+    }
+
+    @Test
+    fun `decrement no modifica el mapa si el producto no existe`() {
+        ClientCartStore.decrement("prod-inexistente")
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `remove elimina un producto del carrito`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct2)
+
+        ClientCartStore.remove("prod-1")
+
+        val items = ClientCartStore.items.value
+        assertEquals(1, items.size)
+        assertFalse(items.containsKey("prod-1"))
+        assertTrue(items.containsKey("prod-2"))
+    }
+
+    @Test
+    fun `remove no falla si el producto no existe`() {
+        ClientCartStore.remove("prod-inexistente")
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `clear vacia todos los items y la direccion seleccionada`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct2)
+        ClientCartStore.selectAddress("addr-1")
+
+        ClientCartStore.clear()
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+        assertNull(ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `selectAddress establece la direccion seleccionada`() {
+        ClientCartStore.selectAddress("addr-1")
+
+        assertEquals("addr-1", ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `selectAddress permite cambiar la direccion`() {
+        ClientCartStore.selectAddress("addr-1")
+        ClientCartStore.selectAddress("addr-2")
+
+        assertEquals("addr-2", ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `selectAddress permite establecer null`() {
+        ClientCartStore.selectAddress("addr-1")
+        ClientCartStore.selectAddress(null)
+
+        assertNull(ClientCartStore.selectedAddressId.value)
+    }
+}
+
+// =============================================================================
 // ClientCartViewModel
 // =============================================================================
 
 class ClientCartViewModelTest {
 
-    private fun setUp() {
+    @BeforeTest
+    fun setUp() {
         ClientCartStore.clear()
     }
 
+    private fun createViewModel(
+        getClientProfile: ToDoGetClientProfile = FakeGetClientProfileSuccess()
+    ): ClientCartViewModel = ClientCartViewModel(
+        getClientProfile = getClientProfile,
+        loggerFactory = vmTestLoggerFactory
+    )
+
     @Test
-    fun `loadAddresses exitoso carga direcciones`() = runTest {
-        setUp()
-        val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfileSuccess(),
-            loggerFactory = vmTestLoggerFactory
-        )
+    fun `loadAddresses carga direcciones y selecciona la predeterminada`() = runTest {
+        val viewModel = createViewModel()
 
         viewModel.loadAddresses()
 
@@ -170,15 +330,61 @@ class ClientCartViewModelTest {
         assertNull(viewModel.state.error)
         assertEquals(2, viewModel.state.addresses.size)
         assertEquals("addr-1", viewModel.state.selectedAddressId)
-        assertTrue(viewModel.state.addresses.first { it.id == "addr-1" }.isDefault)
+        assertEquals("addr-1", ClientCartStore.selectedAddressId.value)
     }
 
     @Test
-    fun `loadAddresses con error muestra error`() = runTest {
-        setUp()
-        val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfileFailure("Sin conexion"),
-            loggerFactory = vmTestLoggerFactory
+    fun `loadAddresses normaliza direcciones marcando la predeterminada`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.loadAddresses()
+
+        val defaultAddr = viewModel.state.addresses.first { it.id == "addr-1" }
+        assertTrue(defaultAddr.isDefault)
+    }
+
+    @Test
+    fun `loadAddresses usa primera direccion isDefault cuando profile no tiene defaultAddressId`() = runTest {
+        val data = ClientProfileData(
+            profile = ClientProfile(
+                fullName = "Jane Doe",
+                email = "jane@intrale.com",
+                defaultAddressId = null
+            ),
+            addresses = sampleAddresses
+        )
+        val viewModel = createViewModel(
+            getClientProfile = FakeGetClientProfileSuccess(data)
+        )
+
+        viewModel.loadAddresses()
+
+        assertEquals("addr-1", viewModel.state.selectedAddressId)
+    }
+
+    @Test
+    fun `loadAddresses usa primera direccion disponible cuando ninguna es default`() = runTest {
+        val addressesSinDefault = listOf(
+            ClientAddress(id = "addr-x", label = "Temp", street = "X", number = "1", city = "C", isDefault = false),
+            ClientAddress(id = "addr-y", label = "Otra", street = "Y", number = "2", city = "C", isDefault = false)
+        )
+        val data = ClientProfileData(
+            profile = ClientProfile(defaultAddressId = null),
+            addresses = addressesSinDefault
+        )
+        val viewModel = createViewModel(
+            getClientProfile = FakeGetClientProfileSuccess(data)
+        )
+
+        viewModel.loadAddresses()
+
+        assertEquals("addr-x", viewModel.state.selectedAddressId)
+    }
+
+    @Test
+    fun `loadAddresses con error actualiza el estado con mensaje de error`() = runTest {
+        val viewModel = createViewModel(
+            getClientProfile = FakeGetClientProfileFailure("Sin conexion")
         )
 
         viewModel.loadAddresses()
@@ -186,22 +392,71 @@ class ClientCartViewModelTest {
         assertFalse(viewModel.state.loading)
         assertEquals("Sin conexion", viewModel.state.error)
         assertTrue(viewModel.state.addresses.isEmpty())
-        assertNull(viewModel.state.selectedAddressId)
     }
 
     @Test
-    fun `selectAddress actualiza direccion seleccionada`() = runTest {
-        setUp()
-        val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfileSuccess(),
-            loggerFactory = vmTestLoggerFactory
+    fun `loadAddresses con error sin mensaje usa mensaje por defecto`() = runTest {
+        val viewModel = createViewModel(
+            getClientProfile = object : ToDoGetClientProfile {
+                override suspend fun execute(): Result<ClientProfileData> =
+                    Result.failure(RuntimeException())
+            }
         )
 
         viewModel.loadAddresses()
+
+        assertEquals("No se pudieron cargar las direcciones", viewModel.state.error)
+    }
+
+    @Test
+    fun `selectAddress actualiza el estado y el store`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAddresses()
+
         viewModel.selectAddress("addr-2")
 
         assertEquals("addr-2", viewModel.state.selectedAddressId)
         assertNull(viewModel.state.error)
+        assertEquals("addr-2", ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `selectAddress limpia error previo`() = runTest {
+        val viewModel = createViewModel(
+            getClientProfile = FakeGetClientProfileFailure("Error previo")
+        )
+        viewModel.loadAddresses()
+        assertEquals("Error previo", viewModel.state.error)
+
+        viewModel.selectAddress("addr-1")
+
+        assertNull(viewModel.state.error)
+    }
+
+    @Test
+    fun `loadAddresses con lista vacia de direcciones maneja correctamente`() = runTest {
+        val data = ClientProfileData(
+            profile = ClientProfile(defaultAddressId = null),
+            addresses = emptyList()
+        )
+        val viewModel = createViewModel(
+            getClientProfile = FakeGetClientProfileSuccess(data)
+        )
+
+        viewModel.loadAddresses()
+
+        assertTrue(viewModel.state.addresses.isEmpty())
+        assertNull(viewModel.state.selectedAddressId)
+        assertFalse(viewModel.state.loading)
+    }
+
+    @Test
+    fun `getState devuelve el estado actual del ViewModel`() = runTest {
+        val viewModel = createViewModel()
+
+        val state = viewModel.getState()
+
+        assertTrue(state is ClientCartUiState)
     }
 }
 
