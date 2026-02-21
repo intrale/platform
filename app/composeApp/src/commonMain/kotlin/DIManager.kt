@@ -22,6 +22,7 @@ import asdo.client.DoUpdateClientProfile
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.delivery.DoDeliveryStateChange
 import asdo.delivery.DoGetActiveDeliveryOrders
 import asdo.delivery.DoGetDeliveryAvailability
 import asdo.delivery.DoGetDeliveryOrdersSummary
@@ -29,6 +30,7 @@ import asdo.delivery.DoGetDeliveryProfile
 import asdo.delivery.DoUpdateDeliveryAvailability
 import asdo.delivery.DoUpdateDeliveryOrderStatus
 import asdo.delivery.DoUpdateDeliveryProfile
+import asdo.delivery.ToDoDeliveryStateChange
 import asdo.delivery.ToDoGetActiveDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
@@ -92,9 +94,11 @@ import ext.client.CommClientProfileService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
 import ext.delivery.CommDeliveryOrdersService
+import ext.delivery.CommDeliveryStateService
 import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
+import ext.delivery.DeliveryStateService
 import ext.business.ClientGetBusinessDashboardSummaryService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientCategoryService
@@ -320,6 +324,7 @@ private val deliveryModule = DI.Module("delivery") {
     bindSingleton<CommDeliveryProfileService> { DeliveryProfileService(instance(), instance()) }
     bindSingleton<CommDeliveryAvailabilityService> { DeliveryAvailabilityService(instance(), instance()) }
     bindSingleton<CommDeliveryOrdersService> { DeliveryOrdersService(instance(), instance()) }
+    bindSingleton<CommDeliveryStateService> { DeliveryStateService(instance(), instance()) }
 
     bindSingleton<ToDoGetDeliveryProfile> { DoGetDeliveryProfile(instance()) }
     bindSingleton<ToDoUpdateDeliveryProfile> { DoUpdateDeliveryProfile(instance()) }
@@ -329,6 +334,7 @@ private val deliveryModule = DI.Module("delivery") {
     bindSingleton<ToDoGetActiveDeliveryOrders> { DoGetActiveDeliveryOrders(instance()) }
     bindSingleton<ToDoGetDeliveryOrdersSummary> { DoGetDeliveryOrdersSummary(instance()) }
     bindSingleton<ToDoUpdateDeliveryOrderStatus> { DoUpdateDeliveryOrderStatus(instance()) }
+    bindSingleton<ToDoDeliveryStateChange> { DoDeliveryStateChange(instance()) }
 }
 
 private val screensModule = DI.Module("screens") {
