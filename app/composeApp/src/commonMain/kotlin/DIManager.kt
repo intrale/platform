@@ -67,9 +67,11 @@ import asdo.business.ToGetBusinesses
 import asdo.business.ToGetBusinessDashboardSummary
 import asdo.business.ToGetBusinessProducts
 import asdo.signup.DoRegisterSaler
+import asdo.signup.DoConfirmSignUp
 import asdo.signup.DoSignUp
 import asdo.signup.DoSignUpDelivery
 import asdo.signup.DoSignUpPlatformAdmin
+import asdo.signup.ToDoConfirmSignUp
 import asdo.signup.ToDoRegisterSaler
 import asdo.signup.ToDoSignUp
 import asdo.signup.ToDoSignUpDelivery
@@ -113,10 +115,12 @@ import ext.business.CommRequestJoinBusinessService
 import ext.business.CommReviewBusinessRegistrationService
 import ext.business.CommReviewJoinBusinessService
 import ext.business.CommSearchBusinessesService
+import ext.signup.ClientConfirmSignUpService
 import ext.signup.ClientRegisterSalerService
 import ext.signup.ClientSignUpDeliveryService
 import ext.signup.ClientSignUpPlatformAdminService
 import ext.signup.ClientSignUpService
+import ext.signup.CommConfirmSignUpService
 import ext.signup.CommRegisterSalerService
 import ext.signup.CommSignUpDeliveryService
 import ext.signup.CommSignUpPlatformAdminService
@@ -178,6 +182,7 @@ import ui.sc.signup.RegisterSalerScreen
 import ui.sc.signup.SelectSignUpProfileScreen
 import ui.sc.signup.SignUpDeliveryScreen
 import ui.sc.signup.SignUpPlatformAdminScreen
+import ui.sc.signup.ConfirmSignUpScreen
 import ui.sc.signup.SignUpScreen
 
 
@@ -198,6 +203,7 @@ public const val DASHBOARD = "dashboard"
 public const val BUSINESS_ONBOARDING = "businessOnboarding"
 public const val BUTTONS_PREVIEW = "buttonsPreview"
 public const val SIGNUP = "signup"
+public const val CONFIRM_SIGNUP = "confirmSignUp"
 public const val SIGNUP_PLATFORM_ADMIN = "signupPlatformAdmin"
 public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val REGISTER_SALER = "registerSaler"
@@ -272,11 +278,13 @@ private val signupModule = DI.Module("signup") {
     bindSingleton<CommSignUpPlatformAdminService> { ClientSignUpPlatformAdminService(instance()) }
     bindSingleton<CommSignUpDeliveryService> { ClientSignUpDeliveryService(instance()) }
     bindSingleton<CommRegisterSalerService> { ClientRegisterSalerService(instance()) }
+    bindSingleton<CommConfirmSignUpService> { ClientConfirmSignUpService(instance()) }
 
     bindSingleton<ToDoSignUp> { DoSignUp(instance()) }
     bindSingleton<ToDoSignUpPlatformAdmin> { DoSignUpPlatformAdmin(instance()) }
     bindSingleton<ToDoSignUpDelivery> { DoSignUpDelivery(instance()) }
     bindSingleton<ToDoRegisterSaler> { DoRegisterSaler(instance(), instance()) }
+    bindSingleton<ToDoConfirmSignUp> { DoConfirmSignUp(instance()) }
 }
 
 private val businessModule = DI.Module("business") {
@@ -347,6 +355,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_ONBOARDING) { BusinessOnboardingScreen() }
     bindSingleton(tag = BUTTONS_PREVIEW) { ButtonsPreviewScreen() }
     bindSingleton(tag = SIGNUP) { SignUpScreen() }
+    bindSingleton(tag = CONFIRM_SIGNUP) { ConfirmSignUpScreen() }
     bindSingleton(tag = SIGNUP_PLATFORM_ADMIN) { SignUpPlatformAdminScreen() }
     bindSingleton(tag = SIGNUP_DELIVERY) { SignUpDeliveryScreen() }
     bindSingleton(tag = REGISTER_SALER) { RegisterSalerScreen() }
@@ -386,6 +395,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = INIT))
                     add(instance(tag = SIGNUP))
+                    add(instance(tag = CONFIRM_SIGNUP))
                     add(instance(tag = CHANGE_PASSWORD))
                     add(instance(tag = PASSWORD_RECOVERY))
                     add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
@@ -399,6 +409,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = DELIVERY_DASHBOARD))
                     add(instance(tag = DELIVERY_PROFILE))
                     add(instance(tag = SIGNUP_DELIVERY))
+                    add(instance(tag = CONFIRM_SIGNUP))
                     add(instance(tag = CHANGE_PASSWORD))
                     add(instance(tag = PASSWORD_RECOVERY))
                     add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
@@ -412,6 +423,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = DASHBOARD))
                     add(instance(tag = BUTTONS_PREVIEW))
                     add(instance(tag = SIGNUP))
+                    add(instance(tag = CONFIRM_SIGNUP))
                     add(instance(tag = SELECT_SIGNUP_PROFILE))
                     add(instance(tag = SIGNUP_PLATFORM_ADMIN))
                     add(instance(tag = SIGNUP_DELIVERY))
@@ -438,6 +450,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = DASHBOARD))
                     add(instance(tag = BUTTONS_PREVIEW))
                     add(instance(tag = SIGNUP))
+                    add(instance(tag = CONFIRM_SIGNUP))
                     add(instance(tag = SELECT_SIGNUP_PROFILE))
                     add(instance(tag = SIGNUP_PLATFORM_ADMIN))
                     add(instance(tag = SIGNUP_DELIVERY))

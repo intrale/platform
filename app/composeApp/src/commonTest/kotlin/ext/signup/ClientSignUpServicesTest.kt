@@ -114,3 +114,25 @@ class ClientRegisterSalerServiceTest {
 }
 
 // endregion
+
+// region ClientConfirmSignUpService
+
+class ClientConfirmSignUpServiceTest {
+
+    @Test
+    fun `confirmacion exitosa retorna ConfirmSignUpResponse`() = runTest {
+        val service = ClientConfirmSignUpService(mockClient(HttpStatusCode.OK, "{}"))
+        val result = service.execute("user@test.com", "123456")
+        assertTrue(result.isSuccess)
+    }
+
+    @Test
+    fun `confirmacion fallida retorna ExceptionResponse`() = runTest {
+        val body = """{"statusCode":{"value":400,"description":"Bad Request"},"message":"Codigo invalido"}"""
+        val service = ClientConfirmSignUpService(mockClient(HttpStatusCode.BadRequest, body))
+        val result = service.execute("user@test.com", "wrong")
+        assertTrue(result.isFailure)
+    }
+}
+
+// endregion

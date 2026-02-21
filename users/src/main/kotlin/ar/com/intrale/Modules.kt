@@ -173,6 +173,9 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="confirm") {
         singleton {  ConfirmPasswordRecovery(instance(), instance(), instance()) }
     }
+    bind<Function> (tag="confirmSignUp") {
+        singleton {  ConfirmSignUp(instance(), instance(), instance()) }
+    }
     bind<Function> (tag="changePassword") {
         singleton {  ChangePassword(instance(), instance(), instance(), instance()) }
     }
