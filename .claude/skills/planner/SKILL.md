@@ -235,35 +235,26 @@ Reglas del JSON:
 - `size`: S/M/L/XL segun estimacion de esfuerzo
 - El archivo NO se commitea (esta en .gitignore)
 
-### Ofrecer lanzar agentes
+### Lanzar agentes automaticamente
 
-Tras escribir `sprint-plan.json`, preguntar al usuario usando AskUserQuestion:
+Tras escribir `sprint-plan.json`, lanzar los agentes **directamente sin preguntar** al usuario.
+Esto permite el ciclo continuo autonomo (Stop-Agente -> /planner sprint -> Start-Agente -> agentes trabajan -> Stop-Agente).
 
-> ✅ Plan generado con N agentes. ¿Lanzar los agentes ahora?
-
-Opciones:
-- **Todos** — lanza todos los agentes del plan en paralelo
-- **Uno específico** — preguntar cuál número y lanzar solo ese
-- **No, solo mostrar el plan** — terminar sin lanzar
-
-Si confirma "todos":
+Ejecutar:
 ```bash
 powershell.exe -NonInteractive -File /c/Workspaces/Intrale/platform/scripts/Start-Agente.ps1 all
 ```
 
-Si confirma uno específico (reemplazar `<N>` por el número elegido):
-```bash
-powershell.exe -NonInteractive -File /c/Workspaces/Intrale/platform/scripts/Start-Agente.ps1 <N>
-```
-
-Tras ejecutar, reportar al usuario cuántos agentes fueron lanzados:
+Tras ejecutar, reportar al usuario cuantos agentes fueron lanzados:
 > 🚀 N agente(s) lanzado(s) en terminales independientes.
 
+Si `Start-Agente.ps1` falla (plan vacio, error de PowerShell, etc.), reportar el error claramente:
+> ❌ Error al lanzar agentes: [mensaje de error]
+
 Consideraciones:
-- **Siempre** pedir confirmación antes de ejecutar — nunca lanzar sin preguntar
-- `Start-Agente.ps1` usa `Start-Process` internamente para abrir terminales, retorna rápido y no bloquea al planner
+- **NO** usar `AskUserQuestion` — lanzar directamente para no romper el ciclo continuo
+- `Start-Agente.ps1` usa `Start-Process` internamente para abrir terminales, retorna rapido y no bloquea al planner
 - `powershell.exe -NonInteractive` evita que el script espere input del usuario
-- Si el usuario rechaza, el flujo termina normalmente mostrando solo el plan
 
 ---
 
