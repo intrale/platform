@@ -16,9 +16,13 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
+import asdo.client.DoGetClientOrders
+import asdo.client.DoGetClientOrderDetail
 import asdo.client.DoGetClientProfile
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
+import asdo.client.ToDoGetClientOrders
+import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
@@ -331,6 +335,9 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoManageClientAddress> { DoManageClientAddress(instance(), instance(), instance()) }
+
+    bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
+    bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {
