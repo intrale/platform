@@ -5,8 +5,9 @@ const querystring = require("querystring");
 const fs = require("fs");
 const path = require("path");
 
-const BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
-const CHAT_ID = "6529617704";
+const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
+const BOT_TOKEN = _tgCfg.bot_token;
+const CHAT_ID = _tgCfg.chat_id;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
 
@@ -74,6 +75,37 @@ function markSessionDone(sessionId) {
     } catch(e) { log("Error marcando sesion done: " + e.message); }
 }
 
+function cleanOldSessions() {
+    try {
+        if (!fs.existsSync(SESSIONS_DIR)) return;
+        const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+        const now = Date.now();
+        const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 horas
+        let cleaned = 0;
+
+        for (const file of files) {
+            try {
+                const filePath = path.join(SESSIONS_DIR, file);
+                const session = JSON.parse(fs.readFileSync(filePath, "utf8"));
+
+                // Solo limpiar sessions terminadas
+                if (session.status !== "done") continue;
+
+                const lastActivity = new Date(session.last_activity_ts || 0).getTime();
+                if (now - lastActivity > MAX_AGE_MS) {
+                    fs.unlinkSync(filePath);
+                    cleaned++;
+                }
+            } catch(e) {
+                // Si el archivo es invalido (ej: test-ses.json), eliminarlo
+                try { fs.unlinkSync(path.join(SESSIONS_DIR, file)); cleaned++; } catch(e2) {}
+            }
+        }
+
+        if (cleaned > 0) log("Rotacion: " + cleaned + " session(s) antiguas eliminadas");
+    } catch(e) { log("Error en rotacion de sessions: " + e.message); }
+}
+
 async function processInput() {
     log("INPUT: " + rawInput.substring(0, 300));
 
@@ -84,6 +116,9 @@ async function processInput() {
 
     // Marcar sesion como terminada
     markSessionDone(data.session_id || "");
+
+    // Rotacion: limpiar sessions "done" con mas de 24h de antiguedad
+    cleanOldSessions();
 
     let summary = (data.last_assistant_message || "").trim();
     if (summary.length > 150) summary = summary.substring(0, 150) + "...";

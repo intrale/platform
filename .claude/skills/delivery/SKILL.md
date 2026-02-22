@@ -68,7 +68,7 @@ tipo: descripcion concisa en español
 
 Detalle adicional si es necesario.
 
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
 )"
 ```
