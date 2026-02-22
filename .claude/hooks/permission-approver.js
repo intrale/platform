@@ -15,8 +15,9 @@ const fs = require("fs");
 const path = require("path");
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot } = require("./permission-utils");
 
-const BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
-const CHAT_ID = "6529617704";
+const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
+const BOT_TOKEN = _tgCfg.bot_token;
+const CHAT_ID = _tgCfg.chat_id;
 const POLL_TIMEOUT_SEC = 20;   // Telegram long-poll: esperar hasta 20s por update
 const MAX_POLL_CYCLES = 15;    // Máximo 15 ciclos = 5 minutos antes de fallback
 const ANSWER_TIMEOUT = 5000;   // Timeout para answerCallbackQuery y editMessage

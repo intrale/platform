@@ -3,6 +3,7 @@ description: Monitor — Dashboard de semaforos multi-sesion con actividad en ti
 user-invocable: true
 argument-hint: "[all|sessions|tasks|help]"
 allowed-tools: Bash, Read, Grep, Glob, TaskList
+model: claude-haiku-4-5-20251001
 ---
 
 # /monitor — Monitor
