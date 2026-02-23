@@ -27,9 +27,9 @@ else
   echo "  No se encontro PID del backend"
   # Intentar matar por puerto
   if command -v lsof &>/dev/null; then
-    PIDS=$(lsof -ti :80 2>/dev/null || true)
+    PIDS=$(lsof -ti :8080 2>/dev/null || true)
     if [ -n "$PIDS" ]; then
-      echo "  Matando procesos en puerto 80: $PIDS"
+      echo "  Matando procesos en puerto 8080: $PIDS"
       echo "$PIDS" | xargs kill 2>/dev/null || true
     fi
   fi

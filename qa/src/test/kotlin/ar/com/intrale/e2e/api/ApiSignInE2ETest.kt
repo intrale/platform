@@ -90,8 +90,8 @@ class ApiSignInE2ETest : QATestBase() {
 
     @Test
     @Order(4)
-    @DisplayName("POST /intrale/signin con email inexistente responde error")
-    fun `signin con email inexistente responde error`() {
+    @DisplayName("POST /intrale/signin con email inexistente responde 401")
+    fun `signin con email inexistente responde 401`() {
         val response = apiContext.post(
             "/intrale/signin",
             RequestOptions.create()
@@ -104,8 +104,8 @@ class ApiSignInE2ETest : QATestBase() {
 
         logger.info("SignIn email inexistente: status=${response.status()}")
         assertTrue(
-            response.status() in 400..599,
-            "SignIn con email inexistente debe responder error (4xx/5xx). Actual: ${response.status()}"
+            response.status() in 400..499,
+            "SignIn con email inexistente debe responder 4xx. Actual: ${response.status()}"
         )
     }
 }
