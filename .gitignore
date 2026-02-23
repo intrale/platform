@@ -41,6 +41,11 @@ deps_commonMain.txt
 
 # Entorno local (generado por scripts/local-up.sh)
 .env.local
+.env.qa
+
+# QA E2E — recordings y estado del backend
+qa/recordings/
+qa/.backend.pid
 
 # Claude Code — estado de sesión y logs (no commitear)
 .claude/activity-log.jsonl

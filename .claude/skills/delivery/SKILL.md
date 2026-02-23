@@ -51,6 +51,22 @@ Basándote en el diff, clasificá:
 - `docs:` — solo documentación
 - `chore:` — tareas de mantenimiento
 
+## Paso 3.5: Verificar QA E2E
+
+Antes de crear el PR, verificar si hay resultados recientes de QA:
+
+```bash
+# Buscar resultados de tests QA recientes (ultimas 2 horas)
+find qa/build/test-results/test -name "*.xml" -mmin -120 2>/dev/null | head -5
+```
+
+- Si **NO hay resultados** de QA recientes (directorio vacio o archivos antiguos):
+  - ADVERTENCIA al usuario: "No se detectaron tests E2E recientes."
+  - Preguntar al usuario si desea continuar sin QA o ejecutar `/qa` primero.
+
+- Si **HAY resultados** recientes: agregar al body del PR la linea:
+  `QA E2E: tests ejecutados [fecha del ultimo resultado]`
+
 ## Paso 4: Stage y commit
 
 Solo stagear archivos relevantes (NO usar `git add -A` a ciegas):
