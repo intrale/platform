@@ -13,16 +13,21 @@
 .PARAMETER PollInterval
     Intervalo de polling en segundos (default: 30).
 
+.PARAMETER SkipMerge
+    Si se indica, se pasa -SkipMerge a Stop-Agente.ps1 (PR sin merge automatico).
+
 .PARAMETER NoAutoProponer
     Si se indica, no se lanza automaticamente '/planner proponer' en paralelo.
 
 .EXAMPLE
     .\Watch-Agentes.ps1
     .\Watch-Agentes.ps1 -PollInterval 60
+    .\Watch-Agentes.ps1 -SkipMerge
     .\Watch-Agentes.ps1 -NoAutoProponer
 #>
 param(
     [int]$PollInterval = 30,
+    [switch]$SkipMerge,
     [switch]$NoAutoProponer
 )
 
@@ -41,6 +46,22 @@ function Write-Log {
     param([string]$Msg, [string]$Color = 'White')
     $ts = Get-Date -Format 'HH:mm:ss'
     Write-Host "$P [$ts] $Msg" -ForegroundColor $Color
+}
+
+function Send-TelegramMessage {
+    param([string]$Text)
+    try {
+        $botToken = '8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk'
+        $chatId   = '6529617704'
+        $uri = "https://api.telegram.org/bot$botToken/sendMessage"
+        Invoke-RestMethod -Uri $uri -Method Post -Body @{
+            chat_id = $chatId
+            text    = $Text
+        } -ErrorAction SilentlyContinue | Out-Null
+    }
+    catch {
+        Write-Log ('Telegram: no se pudo enviar ({0})' -f $_.Exception.Message) 'Yellow'
+    }
 }
 
 # --- Validaciones ---
@@ -65,10 +86,16 @@ Write-Host '============================================' -ForegroundColor Magen
 Write-Host ''
 Write-Log ('Vigilando {0} agente(s) del sprint {1}' -f $AgentCount, $Plan.fecha) 'Cyan'
 Write-Log ('Intervalo de polling: {0}s' -f $PollInterval) 'Cyan'
+if ($SkipMerge) {
+    Write-Log 'SkipMerge activado — PRs sin merge automatico' 'Yellow'
+}
 if ($NoAutoProponer) {
     Write-Log 'Auto-proponer deshabilitado (-NoAutoProponer)' 'Yellow'
 }
 Write-Host ''
+
+$tgMsg = "Watch-Agentes iniciado -- vigilando $AgentCount agente(s) del sprint $($Plan.fecha)"
+Send-TelegramMessage $tgMsg
 
 foreach ($a in $Plan.agentes) {
     Write-Log ('  Agente {0}: issue #{1} ({2})' -f $a.numero, $a.issue, $a.slug)
@@ -158,11 +185,15 @@ Write-Host ''
 Write-Log 'Todos los agentes finalizaron!' 'Green'
 Write-Host ''
 
+$elapsedTotal = [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
+$tgMsg = "Watch-Agentes finalizado -- todos terminaron ($elapsedTotal min). Ejecutando Stop-Agente..."
+Send-TelegramMessage $tgMsg
+
 # --- Ejecutar Stop-Agente.ps1 all ---
 Write-Log 'Ejecutando Stop-Agente.ps1 all...' 'Cyan'
 $stopScript = Join-Path $PSScriptRoot 'Stop-Agente.ps1'
 try {
-    & $stopScript all
+    & $stopScript all -SkipMerge:$SkipMerge
     Write-Log 'Stop-Agente.ps1 finalizado.' 'Green'
 }
 catch {

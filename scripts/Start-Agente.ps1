@@ -9,13 +9,18 @@
 .PARAMETER Numero
     Numero de agente (1, 2, 3...) o "all" para lanzar todos en paralelo.
 
+.PARAMETER SkipMerge
+    Si se indica, se pasa -SkipMerge al Watch-Agentes (PRs sin merge automatico).
+
 .EXAMPLE
     .\Start-Agente.ps1 1
     .\Start-Agente.ps1 all
+    .\Start-Agente.ps1 all -SkipMerge
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [string]$Numero
+    [string]$Numero,
+    [switch]$SkipMerge
 )
 
 Set-StrictMode -Version Latest
@@ -179,6 +184,18 @@ if ($Numero -eq "all") {
     Write-Host ""
     Write-Host ">> Todos los agentes lanzados." -ForegroundColor Green
     Start-MonitorLive
+
+    # Lanzar Watch-Agentes en background para ciclo continuo
+    $watchScript = Join-Path $PSScriptRoot 'Watch-Agentes.ps1'
+    if (Test-Path $watchScript) {
+        $watchArgs = @('-NonInteractive', '-File', $watchScript)
+        if ($SkipMerge) { $watchArgs += '-SkipMerge' }
+        Start-Process powershell -ArgumentList $watchArgs
+        Write-Host ">> Watch-Agentes lanzado en background (ciclo continuo)." -ForegroundColor Magenta
+    }
+    else {
+        Write-Host ">> Watch-Agentes.ps1 no encontrado, omitiendo watcher." -ForegroundColor Yellow
+    }
 }
 else {
     $num = [int]$Numero
