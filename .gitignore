@@ -46,6 +46,7 @@ deps_commonMain.txt
 # QA E2E — recordings y estado del backend
 qa/recordings/
 qa/.backend.pid
+.maestro/tests/
 
 # Claude Code — estado de sesión y logs (no commitear)
 .claude/activity-log.jsonl

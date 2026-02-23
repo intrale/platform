@@ -1,7 +1,7 @@
 ---
 description: QA — Tests E2E contra entorno real con video y reporte de calidad
 user-invocable: true
-argument-hint: "[api|all] [--skip-env] [--keep-env]"
+argument-hint: "[api|desktop|android|all] [--skip-env] [--keep-env]"
 allowed-tools: Bash, Read, Grep, Glob
 model: claude-sonnet-4-6
 ---
@@ -14,9 +14,9 @@ No aprobás nada sin haberlo probado de punta a punta.
 
 ## Argumentos
 
-- `[plataforma]` — Qué tests correr: `api` (default), `all`
-- `--skip-env` — No levantar entorno (asumir que ya está corriendo)
-- `--keep-env` — No tirar abajo el entorno al terminar
+- `[plataforma]` — Qué tests correr: `api` (default), `desktop`, `android`, `all`
+- `--skip-env` — No levantar entorno (asumir que ya está corriendo). Solo aplica a `api`.
+- `--keep-env` — No tirar abajo el entorno al terminar. Solo aplica a `api`.
 
 ## Paso 1: Setup del entorno
 
@@ -24,12 +24,13 @@ No aprobás nada sin haberlo probado de punta a punta.
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 ```
 
-### Si NO se pasó `--skip-env`:
+### Si plataforma es `api` o `all`:
+
+#### Si NO se pasó `--skip-env`:
 
 Verificar si Docker está corriendo y el backend responde:
 
 ```bash
-# Verificar si el backend ya responde
 # Verificar si el backend responde (signin con body vacio = 400 significa que esta vivo)
 STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
 [ "$STATUS" = "400" ] && echo "BACKEND_UP" || echo "BACKEND_DOWN"
@@ -42,7 +43,7 @@ bash qa/scripts/qa-env-up.sh
 
 Si `BACKEND_UP`, informar que se reutiliza el entorno existente.
 
-### Si se pasó `--skip-env`:
+#### Si se pasó `--skip-env`:
 
 Verificar que el backend responde. Si no responde, avisar y abortar.
 
@@ -56,16 +57,40 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
   ./gradlew :qa:test --info 2>&1 | tail -80
 ```
 
+### Plataforma `desktop`
+
+Tests UI con compose.uiTest (no requiere entorno Docker):
+
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
+  ./gradlew :app:composeApp:desktopTest --info 2>&1 | tail -80
+```
+
+### Plataforma `android`
+
+Tests con Maestro contra emulador/dispositivo Android:
+
+```bash
+bash qa/scripts/qa-android.sh
+```
+
+**Prerequisitos:**
+- `adb` en PATH con emulador o dispositivo conectado
+- Maestro instalado (`curl -Ls 'https://get.maestro.mobile.dev' | bash`)
+
+Si no hay emulador conectado, reportar instrucciones claras y NO fallar silenciosamente.
+
 ### Plataforma `all`
 
-Igual que `api` (por ahora solo hay tests de API; desktop y mobile son futuro).
+Ejecutar en orden: `api` → `desktop` → `android`.
+Si `android` no está disponible (sin emulador), reportar pero NO bloquear el veredicto.
 
 ## Paso 3: Analizar resultados
 
 ### Si todos los tests pasan
 
 Reportar:
-- Cantidad de tests ejecutados
+- Cantidad de tests ejecutados por plataforma
 - Tiempo total
 - Plataformas verificadas
 
@@ -83,22 +108,32 @@ Buscar reportes de tests:
 # Reportes JUnit en build
 ls -la qa/build/reports/tests/test/ 2>/dev/null || echo "Sin reportes HTML"
 ls -la qa/build/test-results/test/ 2>/dev/null || echo "Sin resultados XML"
+# Reportes desktop
+ls -la app/composeApp/build/reports/tests/desktopTest/ 2>/dev/null || echo "Sin reportes desktop"
+# Reportes Maestro
+ls -la qa/recordings/maestro-results.xml 2>/dev/null || echo "Sin reportes Maestro"
 ```
 
 ## Paso 4: Limpiar entorno
 
-### Si NO se pasó `--keep-env`:
+### Si plataforma fue `api` o `all`:
+
+#### Si NO se pasó `--keep-env`:
 
 ```bash
 bash qa/scripts/qa-env-down.sh
 ```
 
-### Si se pasó `--keep-env`:
+#### Si se pasó `--keep-env`:
 
 Informar que el entorno sigue corriendo y cómo detenerlo:
 ```
 El entorno QA sigue corriendo. Para detenerlo: ./qa/scripts/qa-env-down.sh
 ```
+
+### Si plataforma fue `desktop` o `android`:
+
+No hay cleanup necesario.
 
 ## Paso 5: Reporte final
 
@@ -107,10 +142,12 @@ El entorno QA sigue corriendo. Para detenerlo: ./qa/scripts/qa-env-down.sh
 
 ### Tests ejecutados
 - API: X pasaron, Y fallaron de Z total
+- Desktop: X pasaron, Y fallaron de Z total
+- Android: X pasaron, Y fallaron de Z total (o N/A si no hay emulador)
 - Tiempo: Xs
 
 ### Entorno
-- Backend: localhost:80
+- Backend: localhost:80 (solo API)
 - Docker: DynamoDB-local + Moto (Cognito mock)
 - Datos seed: admin@intrale.com / Admin1234!
 
@@ -132,3 +169,4 @@ El entorno QA sigue corriendo. Para detenerlo: ./qa/scripts/qa-env-down.sh
 - Workdir: `/c/Workspaces/Intrale/platform` — correr todos los comandos desde ahí
 - Los recordings van a `qa/recordings/` — NO commitear
 - SIEMPRE reportar el veredicto final, incluso si no hubo fallos
+- Para `android`: si no hay emulador, reportar instrucciones pero NO bloquear otros niveles

@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
@@ -49,6 +50,7 @@ class SignUpScreen : Screen(SIGNUP_PATH) {
                 Modifier
                     .padding(padding)
                     .fillMaxWidth()
+                    .testTag("signup_screen")
                     .verticalScroll(rememberScrollState())
                     .padding(
                         horizontal = MaterialTheme.spacing.x3,

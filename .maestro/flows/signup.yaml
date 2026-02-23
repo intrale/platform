@@ -1,0 +1,23 @@
+appId: com.intrale.app.client
+---
+# Flujo: Signup basico
+- launchApp
+
+- assertVisible:
+    id: "login_screen"
+    label: "Pantalla de login visible"
+
+# Navegar a signup (tap en el link de registro)
+- tapOn: "Registrarse"
+
+- assertVisible:
+    id: "signup_screen"
+    label: "Pantalla de signup visible"
+
+- assertVisible:
+    id: "field_Email"
+    label: "Campo de email visible"
+
+- tapOn:
+    id: "field_Email"
+- inputText: "qa-maestro-test@intrale.com"

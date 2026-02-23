@@ -1,0 +1,22 @@
+appId: com.intrale.app.client
+---
+# Flujo: Navegacion login -> signup -> login
+- launchApp
+
+- assertVisible:
+    id: "login_screen"
+    label: "Login screen inicial"
+
+# Navegar a signup
+- tapOn: "Registrarse"
+
+- assertVisible:
+    id: "signup_screen"
+    label: "Signup screen visible"
+
+# Volver atras (back navigation)
+- pressKey: back
+
+- assertVisible:
+    id: "login_screen"
+    label: "De vuelta en login screen"

@@ -18,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -51,10 +52,11 @@ private fun TextFieldContent(
         } ?: details
     }
 
+    val taggedModifier = modifier.testTag("field_$labelText")
     val fieldModifier = if (errorMessage != null) {
-        modifier.semantics { error(errorMessage) }
+        taggedModifier.semantics { error(errorMessage) }
     } else {
-        modifier
+        taggedModifier
     }
 
     Column {

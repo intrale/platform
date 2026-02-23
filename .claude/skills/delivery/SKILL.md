@@ -61,8 +61,9 @@ find qa/build/test-results/test -name "*.xml" -mmin -120 2>/dev/null | head -5
 ```
 
 - Si **NO hay resultados** de QA recientes (directorio vacio o archivos antiguos):
-  - ADVERTENCIA al usuario: "No se detectaron tests E2E recientes."
-  - Preguntar al usuario si desea continuar sin QA o ejecutar `/qa` primero.
+  - BLOQUEAR: "No se detectaron tests E2E recientes. Ejecuta /qa antes de crear el PR."
+  - NO continuar hasta que el usuario confirme explicitamente que quiere saltear QA.
+  - Si el usuario confirma saltear, agregar al body del PR: `QA E2E: omitido por decision del usuario`
 
 - Si **HAY resultados** recientes: agregar al body del PR la linea:
   `QA E2E: tests ejecutados [fecha del ultimo resultado]`
