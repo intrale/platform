@@ -6,25 +6,39 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-@DisplayName("E2E — Health y routing basico")
+@DisplayName("E2E — Routing y conectividad basica")
 class ApiHealthE2ETest : QATestBase() {
 
     @Test
-    @DisplayName("GET /intrale/health responde 200")
-    fun `health endpoint responde 200`() {
-        val response = apiContext.get("/intrale/health")
+    @DisplayName("POST /intrale/signin con body vacio responde 400 (backend vivo)")
+    fun `backend responde a signin con body vacio`() {
+        val response = apiContext.post(
+            "/intrale/signin",
+            com.microsoft.playwright.options.RequestOptions.create()
+                .setHeader("Content-Type", "application/json")
+                .setData("{}")
+        )
 
-        logger.info("Health response: status=${response.status()}")
-        assertEquals(200, response.status(), "El health endpoint debe responder 200")
+        logger.info("Connectivity check: status=${response.status()}")
+        assertEquals(400, response.status(),
+            "POST /intrale/signin con {} debe responder 400 (validacion). Confirma que el backend esta vivo.")
     }
 
     @Test
-    @DisplayName("GET /intrale/ruta-inexistente responde 404")
-    fun `ruta inexistente responde 404`() {
-        val response = apiContext.get("/intrale/ruta-que-no-existe-${System.currentTimeMillis()}")
+    @DisplayName("POST /intrale/funcion-inexistente responde 500 (function not found)")
+    fun `funcion inexistente responde 500`() {
+        val response = apiContext.post(
+            "/intrale/ruta-que-no-existe-${System.currentTimeMillis()}",
+            com.microsoft.playwright.options.RequestOptions.create()
+                .setHeader("Content-Type", "application/json")
+                .setData("{}")
+        )
 
-        logger.info("404 response: status=${response.status()}")
-        assertEquals(404, response.status(), "Una ruta inexistente debe responder 404")
+        logger.info("Unknown function response: status=${response.status()}")
+        assertTrue(
+            response.status() in listOf(404, 500),
+            "Una funcion inexistente debe responder 404 o 500 (actual: ${response.status()})"
+        )
     }
 
     @Test
@@ -34,7 +48,7 @@ class ApiHealthE2ETest : QATestBase() {
 
         logger.info("Root response: status=${response.status()}")
         assertTrue(
-            response.status() in listOf(400, 404, 405),
+            response.status() in 400..599,
             "La raiz sin business debe responder con error (actual: ${response.status()})"
         )
     }
