@@ -412,7 +412,8 @@ jobs:
 
           # Esperar healthcheck
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/intrale/health >/dev/null 2>&1; then
+            STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
+            if [ "$STATUS" = "400" ]; then
               echo "Backend listo"
               break
             fi
@@ -424,7 +425,7 @@ jobs:
 
       - name: Run E2E QA tests
         env:
-          QA_BASE_URL: http://localhost:8080
+          QA_BASE_URL: http://localhost:80
         run: ./gradlew :qa:test --info
 
       - name: Upload test reports

@@ -55,10 +55,26 @@ echo "  aws-init completado"
 
 # ── 3. Extraer credenciales ────────────────────────────────
 echo "[3/5] Extrayendo credenciales..."
-INIT_LOGS=$(docker compose logs aws-init 2>&1)
+sleep 2  # Esperar flush de logs del container
+INIT_LOGS=$(docker compose logs --no-log-prefix aws-init 2>&1)
 
-USER_POOL_ID=$(echo "$INIT_LOGS" | grep 'USER_POOL_ID=' | tail -1 | sed 's/.*USER_POOL_ID=//')
-CLIENT_ID=$(echo "$INIT_LOGS" | grep 'CLIENT_ID=' | tail -1 | sed 's/.*CLIENT_ID=//')
+# Extraer USER_POOL_ID: formato "USER_POOL_ID=xxx" o "User Pool creado: xxx"
+USER_POOL_ID=$(echo "$INIT_LOGS" | sed -n 's/.*USER_POOL_ID=\([^ ]*\).*/\1/p' | tail -1)
+if [ -z "$USER_POOL_ID" ]; then
+  USER_POOL_ID=$(echo "$INIT_LOGS" | sed -n 's/.*User Pool creado: \([^ ]*\).*/\1/p' | tail -1)
+fi
+if [ -z "$USER_POOL_ID" ]; then
+  USER_POOL_ID=$(echo "$INIT_LOGS" | sed -n 's/.*User Pool ya existe: \([^ ]*\).*/\1/p' | tail -1)
+fi
+
+# Extraer CLIENT_ID: formato "CLIENT_ID=xxx" o "App Client creado: xxx"
+CLIENT_ID=$(echo "$INIT_LOGS" | sed -n 's/.*CLIENT_ID=\([^ ]*\).*/\1/p' | tail -1)
+if [ -z "$CLIENT_ID" ]; then
+  CLIENT_ID=$(echo "$INIT_LOGS" | sed -n 's/.*App Client creado: \([^ ]*\).*/\1/p' | tail -1)
+fi
+if [ -z "$CLIENT_ID" ]; then
+  CLIENT_ID=$(echo "$INIT_LOGS" | sed -n 's/.*App Client ya existe: \([^ ]*\).*/\1/p' | tail -1)
+fi
 
 USER_POOL_ID=$(echo "$USER_POOL_ID" | tr -d '\r\n' | xargs)
 CLIENT_ID=$(echo "$CLIENT_ID" | tr -d '\r\n' | xargs)
@@ -80,7 +96,7 @@ USER_POOL_ID=$USER_POOL_ID
 CLIENT_ID=$CLIENT_ID
 DYNAMODB_ENDPOINT=http://localhost:8000
 COGNITO_ENDPOINT=http://localhost:5050
-QA_BASE_URL=http://localhost:8080
+QA_BASE_URL=http://localhost:80
 ENVEOF
 
 echo "  Credenciales guardadas en .env.qa"
@@ -115,9 +131,10 @@ echo "[5/5] Esperando que el backend responda..."
 HC_TIMEOUT=90
 HC_ELAPSED=0
 while [ $HC_ELAPSED -lt $HC_TIMEOUT ]; do
-  if curl -sf "http://localhost:8080/intrale/health" >/dev/null 2>&1; then
+  STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
+  if [ "$STATUS" = "400" ]; then
     echo ""
-    echo "  Backend respondiendo en http://localhost:8080"
+    echo "  Backend respondiendo en http://localhost:80"
     break
   fi
   sleep 3
@@ -134,6 +151,6 @@ fi
 
 echo ""
 echo "=== QA Environment listo ==="
-echo "  Base URL: http://localhost:8080"
+echo "  Base URL: http://localhost:80"
 echo "  Para correr tests: ./gradlew :qa:test"
 echo "  Para tirar abajo: ./qa/scripts/qa-env-down.sh"

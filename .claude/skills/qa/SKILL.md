@@ -30,7 +30,9 @@ Verificar si Docker está corriendo y el backend responde:
 
 ```bash
 # Verificar si el backend ya responde
-curl -sf http://localhost:8080/intrale/health >/dev/null 2>&1 && echo "BACKEND_UP" || echo "BACKEND_DOWN"
+# Verificar si el backend responde (signin con body vacio = 400 significa que esta vivo)
+STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
+[ "$STATUS" = "400" ] && echo "BACKEND_UP" || echo "BACKEND_DOWN"
 ```
 
 Si `BACKEND_DOWN`, levantar el entorno:
@@ -50,7 +52,7 @@ Verificar que el backend responde. Si no responde, avisar y abortar.
 
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  export QA_BASE_URL="http://localhost:8080" && \
+  export QA_BASE_URL="http://localhost:80" && \
   ./gradlew :qa:test --info 2>&1 | tail -80
 ```
 
@@ -108,7 +110,7 @@ El entorno QA sigue corriendo. Para detenerlo: ./qa/scripts/qa-env-down.sh
 - Tiempo: Xs
 
 ### Entorno
-- Backend: localhost:8080
+- Backend: localhost:80
 - Docker: DynamoDB-local + Moto (Cognito mock)
 - Datos seed: admin@intrale.com / Admin1234!
 

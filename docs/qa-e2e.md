@@ -59,7 +59,7 @@ El agente se encarga de levantar el entorno, correr tests, analizar resultados y
 
 # 2. Correr tests
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
-export QA_BASE_URL="http://localhost:8080"
+export QA_BASE_URL="http://localhost:80"
 ./gradlew :qa:test
 
 # 3. Ver resultados
@@ -94,7 +94,7 @@ Los tests usan los mismos servicios Docker que el desarrollo local:
 
 | Variable | Default | Descripcion |
 |----------|---------|-------------|
-| `QA_BASE_URL` | `http://localhost:8080` | URL base del backend |
+| `QA_BASE_URL` | `http://localhost:80` | URL base del backend |
 | `RECORDINGS_DIR` | `qa/recordings/` | Directorio para videos |
 
 ## Integración con delivery
