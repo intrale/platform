@@ -110,6 +110,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
         val retryLabel = Txt(MessageKey.client_home_retry)
         val viewCatalogLabel = Txt(MessageKey.client_home_view_catalog)
         val deliveryCtaLabel = Txt(MessageKey.client_home_delivery_cta)
+        val outOfStockLabel = Txt(MessageKey.client_product_out_of_stock)
         val addedToCartMessage = uiState.lastAddedProduct?.let { product ->
             Txt(MessageKey.client_home_added_to_cart, mapOf("product" to product.name))
         }
@@ -226,6 +227,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                                     product = product,
                                     addLabel = Txt(MessageKey.client_home_add_label),
                                     addContentDescription = Txt(MessageKey.client_home_add_content_description),
+                                    outOfStockLabel = outOfStockLabel,
                                     onAddClick = { viewModel.addToCart(product) }
                                 )
                             }
@@ -433,6 +435,7 @@ private fun ClientProductCard(
     product: ClientProduct,
     addLabel: String,
     addContentDescription: String,
+    outOfStockLabel: String,
     onAddClick: () -> Unit
 ) {
     Card(
@@ -463,13 +466,22 @@ private fun ClientProductCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IntralePrimaryButton(
-                text = addLabel,
-                onClick = onAddClick,
-                leadingIcon = Icons.Default.ShoppingCart,
-                iconContentDescription = addContentDescription,
-                modifier = Modifier.fillMaxWidth(0.42f)
-            )
+            if (product.isAvailable) {
+                IntralePrimaryButton(
+                    text = addLabel,
+                    onClick = onAddClick,
+                    leadingIcon = Icons.Default.ShoppingCart,
+                    iconContentDescription = addContentDescription,
+                    modifier = Modifier.fillMaxWidth(0.42f)
+                )
+            } else {
+                Text(
+                    text = outOfStockLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
     }
 }
@@ -557,7 +569,8 @@ class ClientHomeViewModel : ViewModel() {
                     name = product.name,
                     priceLabel = formatPrice(product.basePrice),
                     emoji = product.emoji ?: "🛍️",
-                    unitPrice = product.basePrice
+                    unitPrice = product.basePrice,
+                    isAvailable = product.isAvailable
                 )
             }
     }
