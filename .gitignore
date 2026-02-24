@@ -56,6 +56,8 @@ qa/.backend.pid
 .claude/settings.local.json
 .claude/hooks/hook-debug.log
 .claude/hooks/tg-approver-offset.json
+.claude/hooks/tg-commander-offset.json
+.claude/hooks/telegram-commander.lock
 
 # Sprint — archivos de agentes (no commitear, local de trabajo)
 scripts/sprint-plan.json
