@@ -1,7 +1,7 @@
 ---
 description: Planner — Planificación estratégica del proyecto — Gantt, dependencias, priorización y nuevas historias
 user-invocable: true
-argument-hint: "[planificar | sprint | proponer | estado]"
+argument-hint: "[planificar | sprint [N] | proponer | estado]"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
 ---
@@ -17,7 +17,7 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 | Argumento | Modo |
 |-----------|------|
 | `planificar` | Plan completo: Gantt, dependencias, streams paralelos |
-| `sprint` | Qué hacer en los próximos días — top 10 accionables |
+| `sprint [N]` | Qué hacer en los próximos días — top N accionables (default: 5) |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
 | sin argumento | Digest rápido: qué bloquea, qué está listo, qué sigue |
 
@@ -177,7 +177,14 @@ gantt
 
 ## Modo: `sprint`
 
-Seleccionar las **top 10 tareas accionables** para los próximos días:
+### Límite de issues
+
+El modo sprint acepta un número opcional **N** como parte del argumento (ej: `/planner sprint 8`).
+Si no se especifica, el default es **5**. Este límite controla cuántos issues se incluyen en el
+`sprint-plan.json` y en el reporte textual. La recolección y el scoring se hacen sobre todos los
+issues del repo; el recorte a N ocurre al final tras el ranking.
+
+Seleccionar las **top N tareas accionables** para los próximos días:
 
 Criterios de selección:
 1. Primero los 🔴 BLOQUEANTES (siempre)
@@ -186,9 +193,9 @@ Criterios de selección:
 4. Balance entre streams (no saturar uno solo)
 5. Preferir S/M sobre L/XL para tener wins rápidos
 
-Formato de salida:
+Formato de salida (máximo N issues, default 5):
 ```
-## Sprint sugerido — [fecha]
+## Sprint sugerido — [fecha] (N issues)
 
 ### Hoy / Mañana
 1. 🔴 #780 Fix test failure (S - 1 día) → Stream A
@@ -199,8 +206,7 @@ Formato de salida:
 4. 🟢 #NNN [título] (S) → Stream C
 5. 🟡 #NNN [título] (M) → Stream A
 
-### Próxima semana
-...
+(máximo N issues en total — si hay más candidatos, priorizar por score)
 ```
 
 ### Generar plan JSON para Start-Agente
