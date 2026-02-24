@@ -19,7 +19,9 @@ const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirn
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 const POLL_TIMEOUT_SEC = 20;   // Telegram long-poll: esperar hasta 20s por update
-const MAX_POLL_CYCLES = 15;    // Máximo 15 ciclos = 5 minutos antes de fallback
+const MAX_WAIT_HOURS = 1;      // Referencia: tiempo maximo de espera por defecto
+const PERMISSION_TIMEOUT_MIN = _tgCfg.permission_timeout_min || 60; // Configurable via telegram-config.json
+const MAX_POLL_CYCLES = Math.ceil((PERMISSION_TIMEOUT_MIN * 60) / POLL_TIMEOUT_SEC); // 180 ciclos = 1 hora
 const ANSWER_TIMEOUT = 5000;   // Timeout para answerCallbackQuery y editMessage
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";

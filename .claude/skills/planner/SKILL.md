@@ -177,7 +177,7 @@ gantt
 
 ## Modo: `sprint`
 
-Seleccionar las **top 10 tareas accionables** para los próximos días:
+Seleccionar las **top 5 tareas accionables** para los próximos días (máximo 5 agentes por sprint — no generar más):
 
 Criterios de selección:
 1. Primero los 🔴 BLOQUEANTES (siempre)
