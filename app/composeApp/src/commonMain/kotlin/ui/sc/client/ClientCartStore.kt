@@ -45,6 +45,16 @@ object ClientCartStore {
         }
     }
 
+    fun setQuantity(product: ClientProduct, quantity: Int) {
+        _items.update { current ->
+            if (quantity <= 0) {
+                current - product.id
+            } else {
+                current + (product.id to ClientCartItem(product = product, quantity = quantity))
+            }
+        }
+    }
+
     fun remove(productId: String) {
         _items.update { current -> current - productId }
     }

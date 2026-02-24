@@ -405,4 +405,27 @@ class DoDeleteProductTest {
     }
 }
 
+class DoGetProductTest {
+
+    @Test
+    fun `obtener producto exitoso retorna DTO`() = runTest {
+        val dto = ProductDTO(id = "prod-1", name = "Manzana", basePrice = 100.0, unit = "kg", categoryId = "c1")
+        val sut = DoGetProduct(FakeProductService(getResult = Result.success(dto)))
+
+        val result = sut.execute("biz-1", "prod-1")
+
+        assertTrue(result.isSuccess)
+        assertEquals("Manzana", result.getOrThrow().name)
+    }
+
+    @Test
+    fun `obtener producto fallido retorna error`() = runTest {
+        val sut = DoGetProduct(FakeProductService(getResult = Result.failure(RuntimeException("Error"))))
+
+        val result = sut.execute("biz-1", "prod-1")
+
+        assertTrue(result.isFailure)
+    }
+}
+
 // endregion

@@ -226,7 +226,11 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                                     product = product,
                                     addLabel = Txt(MessageKey.client_home_add_label),
                                     addContentDescription = Txt(MessageKey.client_home_add_content_description),
-                                    onAddClick = { viewModel.addToCart(product) }
+                                    onAddClick = { viewModel.addToCart(product) },
+                                    onCardClick = {
+                                        ClientProductSelectionStore.select(product.id)
+                                        navigate(CLIENT_PRODUCT_DETAIL_PATH)
+                                    }
                                 )
                             }
                         }
@@ -433,10 +437,11 @@ private fun ClientProductCard(
     product: ClientProduct,
     addLabel: String,
     addContentDescription: String,
-    onAddClick: () -> Unit
+    onAddClick: () -> Unit,
+    onCardClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onCardClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
     ) {

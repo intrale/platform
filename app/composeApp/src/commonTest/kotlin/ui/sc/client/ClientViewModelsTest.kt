@@ -300,6 +300,38 @@ class ClientCartStoreTest {
 
         assertNull(ClientCartStore.selectedAddressId.value)
     }
+
+    @Test
+    fun `setQuantity establece la cantidad especificada`() {
+        ClientCartStore.setQuantity(sampleProduct1, 5)
+
+        assertEquals(5, ClientCartStore.items.value["prod-1"]?.quantity)
+        assertEquals(sampleProduct1, ClientCartStore.items.value["prod-1"]?.product)
+    }
+
+    @Test
+    fun `setQuantity con cantidad 0 elimina el producto`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.setQuantity(sampleProduct1, 0)
+
+        assertFalse(ClientCartStore.items.value.containsKey("prod-1"))
+    }
+
+    @Test
+    fun `setQuantity actualiza cantidad de producto existente`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.setQuantity(sampleProduct1, 3)
+
+        assertEquals(3, ClientCartStore.items.value["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `setQuantity con cantidad negativa elimina el producto`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.setQuantity(sampleProduct1, -1)
+
+        assertFalse(ClientCartStore.items.value.containsKey("prod-1"))
+    }
 }
 
 // =============================================================================

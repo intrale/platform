@@ -7,6 +7,7 @@ import ar.com.intrale.strings.model.MessageKey
 import asdo.business.ToDoListCategories
 import asdo.business.ToDoListProducts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -357,7 +358,11 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                                 product = product,
                                 addLabel = addLabel,
                                 addContentDescription = addContentDescription,
-                                onAddClick = { viewModel.addToCart(product) }
+                                onAddClick = { viewModel.addToCart(product) },
+                                onCardClick = {
+                                    ClientProductSelectionStore.select(product.id)
+                                    this@ClientCatalogScreen.navigate(CLIENT_PRODUCT_DETAIL_PATH)
+                                }
                             )
                         }
                     }
@@ -477,10 +482,11 @@ private fun CatalogProductCard(
     product: ClientProduct,
     addLabel: String,
     addContentDescription: String,
-    onAddClick: () -> Unit
+    onAddClick: () -> Unit,
+    onCardClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onCardClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
     ) {
