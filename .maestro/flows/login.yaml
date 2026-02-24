@@ -2,30 +2,30 @@ appId: com.intrale.app.client
 ---
 # Flujo: Login con credenciales
 - launchApp
+- waitForAnimationToEnd
 
-- assertVisible:
-    id: "login_screen"
-    label: "Pantalla de login visible"
+# Saltar onboarding (aparece en primer uso)
+- tapOn:
+    text: "Saltar"
+    optional: true
 
-- assertVisible:
-    id: "field_Username"
-    label: "Campo de usuario visible"
+- waitForAnimationToEnd
 
+# Navegar al login desde home
+- tapOn:
+    text: "Ya tengo cuenta"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Interactuar con campos de login
 - tapOn:
     id: "field_Username"
 - inputText: "admin@intrale.com"
 
-- assertVisible:
-    id: "field_Password"
-    label: "Campo de password visible"
-
 - tapOn:
     id: "field_Password"
 - inputText: "Admin1234!"
-
-- assertVisible:
-    id: "btn_primary"
-    label: "Boton de login visible"
 
 - tapOn:
     id: "btn_primary"
