@@ -80,3 +80,9 @@ scripts/planner-plan.json
 
 # Claude Code
 .claude/activity-log.jsonl
+
+# Telegram Commander (daemon)
+.claude/hooks/telegram-commander.lock
+.claude/hooks/tg-commander-offset.json
+.claude/hooks/commander-stdout.log
+.claude/hooks/commander-stderr.log
