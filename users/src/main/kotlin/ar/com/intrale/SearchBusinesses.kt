@@ -16,11 +16,8 @@ class SearchBusinesses(
         textBody: String
     ): Response {
         logger.debug("starting search businesses $function")
-        val body = if (textBody.isNotEmpty()) {
-            Gson().fromJson(textBody, SearchBusinessesRequest::class.java)
-        } else {
-            SearchBusinessesRequest()
-        }
+        if (textBody.isEmpty()) return RequestValidationException("Request body not found")
+        val body = Gson().fromJson(textBody, SearchBusinessesRequest::class.java)
 
         val items = tableBusiness.scan().items().toList()
 

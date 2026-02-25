@@ -27,7 +27,9 @@ data class ProductListItem(
     val unit: String,
     val categoryId: String,
     val categoryName: String,
-    val status: ProductStatus
+    val status: ProductStatus,
+    val isAvailable: Boolean = true,
+    val stockQuantity: Int? = null
 ) {
     val priceLabel: String = formatPrice(basePrice, unit)
     val categoryLabel: String = categoryName.ifBlank { categoryId }
@@ -154,7 +156,9 @@ class ProductListViewModel(
             basePrice = item.basePrice,
             unit = item.unit,
             categoryId = item.categoryId,
-            status = item.status
+            status = item.status,
+            isAvailable = item.isAvailable,
+            stockQuantity = item.stockQuantity
         )
 
     private fun ProductDTO.toItem(categories: List<CategoryDTO>): ProductListItem? {
@@ -168,7 +172,9 @@ class ProductListViewModel(
             unit = unit,
             categoryId = categoryId,
             categoryName = categoryName,
-            status = status
+            status = status,
+            isAvailable = isAvailable,
+            stockQuantity = stockQuantity
         )
     }
 }

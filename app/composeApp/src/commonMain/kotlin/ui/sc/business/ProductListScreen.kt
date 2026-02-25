@@ -254,6 +254,7 @@ private fun ProductCard(
         ProductStatus.Published -> Txt(MessageKey.business_products_status_published)
         ProductStatus.Draft -> Txt(MessageKey.business_products_status_draft)
     }
+    val outOfStockLabel = Txt(MessageKey.business_products_out_of_stock)
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -276,12 +277,26 @@ private fun ProductCard(
                     text = item.name,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-                AssistChip(
-                    onClick = onClick,
-                    label = { Text(statusLabel) }
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
+                    if (!item.isAvailable) {
+                        AssistChip(
+                            onClick = onClick,
+                            label = {
+                                Text(
+                                    outOfStockLabel,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        )
+                    }
+                    AssistChip(
+                        onClick = onClick,
+                        label = { Text(statusLabel) }
+                    )
+                }
             }
             Text(
                 text = item.priceLabel,

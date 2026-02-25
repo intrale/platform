@@ -22,6 +22,8 @@ const AGENT_MAP = {
     "/priorizar": "Doc (priorizar)",
     "/historia": "Doc (historia)",
     "/builder": "Builder",
+    "/review": "Review",
+    "/qa": "QA",
 };
 
 // Leer solo los primeros 4KB de stdin

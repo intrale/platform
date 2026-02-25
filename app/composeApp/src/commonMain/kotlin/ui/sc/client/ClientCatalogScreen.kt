@@ -191,7 +191,8 @@ class ClientCatalogViewModel(
                     priceLabel = formatPrice(product.basePrice),
                     emoji = "🛍️",
                     unitPrice = product.basePrice,
-                    categoryId = product.categoryId
+                    categoryId = product.categoryId,
+                    isAvailable = product.isAvailable
                 )
             }
     }
@@ -233,6 +234,7 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
         val retryLabel = Txt(MessageKey.client_catalog_retry)
         val addLabel = Txt(MessageKey.client_catalog_add_label)
         val addContentDescription = Txt(MessageKey.client_catalog_add_content_description)
+        val outOfStockLabel = Txt(MessageKey.client_product_out_of_stock)
         val noResultsMessage = Txt(MessageKey.client_catalog_search_no_results)
         val cartContentDescription = Txt(MessageKey.client_home_cart_icon_content_description)
         val addedToCartMessage = uiState.lastAddedProduct?.let { product ->
@@ -358,6 +360,7 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                                 product = product,
                                 addLabel = addLabel,
                                 addContentDescription = addContentDescription,
+                                outOfStockLabel = outOfStockLabel,
                                 onAddClick = { viewModel.addToCart(product) },
                                 onCardClick = {
                                     ClientProductSelectionStore.select(product.id)
@@ -482,6 +485,7 @@ private fun CatalogProductCard(
     product: ClientProduct,
     addLabel: String,
     addContentDescription: String,
+    outOfStockLabel: String,
     onAddClick: () -> Unit,
     onCardClick: () -> Unit
 ) {
@@ -513,13 +517,22 @@ private fun CatalogProductCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IntralePrimaryButton(
-                text = addLabel,
-                onClick = onAddClick,
-                leadingIcon = Icons.Default.ShoppingCart,
-                iconContentDescription = addContentDescription,
-                modifier = Modifier.fillMaxWidth(0.42f)
-            )
+            if (product.isAvailable) {
+                IntralePrimaryButton(
+                    text = addLabel,
+                    onClick = onAddClick,
+                    leadingIcon = Icons.Default.ShoppingCart,
+                    iconContentDescription = addContentDescription,
+                    modifier = Modifier.fillMaxWidth(0.42f)
+                )
+            } else {
+                Text(
+                    text = outOfStockLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
     }
 }

@@ -1,7 +1,9 @@
 // Hook PostToolUse[Bash]: detecta git push y lanza monitoreo CI en background
-// Pure Node.js — sin dependencia de bash
+// Pure Node.js — sin dependencia de bash ni ci-monitor.sh
+// Polling: consulta GitHub Actions cada 30s hasta que el workflow concluya, luego notifica via Telegram
 const { execSync, spawn } = require("child_process");
 const path = require("path");
+const fs = require("fs");
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 
@@ -30,19 +32,21 @@ function handleInput() {
         const stderr = (data.tool_result && data.tool_result.stderr) || "";
         if (/error|rejected|denied|failed/i.test(stderr)) return;
 
-        // Obtener SHA
-        let sha;
+        // Obtener SHA y branch
+        let sha, branch;
         try {
             sha = execSync("git rev-parse HEAD", { cwd: PROJECT_DIR, encoding: "utf8" }).trim();
+            branch = execSync("git branch --show-current", { cwd: PROJECT_DIR, encoding: "utf8" }).trim();
         } catch(e) { return; }
-        if (!sha) return;
+        if (!sha || !branch) return;
 
-        // Lanzar monitoreo CI en background
-        const ciMonitor = path.join(PROJECT_DIR, ".claude", "hooks", "ci-monitor.sh");
-        const child = spawn("node", ["-e", `
-            const { execSync } = require("child_process");
-            try { execSync("bash " + JSON.stringify(${JSON.stringify(ciMonitor)}) + " " + ${JSON.stringify(sha)} + " " + ${JSON.stringify(PROJECT_DIR)}, { stdio: "ignore" }); } catch(e) {}
-        `], { detached: true, stdio: "ignore" });
+        // Lanzar monitoreo CI en background (proceso hijo desacoplado)
+        const monitorScript = path.join(__dirname, "ci-monitor-bg.js");
+        const child = spawn(process.execPath, [monitorScript, sha, branch, PROJECT_DIR], {
+            detached: true,
+            stdio: "ignore",
+            env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR }
+        });
         child.unref();
     } catch(e) {}
 }

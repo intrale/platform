@@ -38,9 +38,10 @@ const C = {
 const HIDE_CURSOR = "\x1B[?25l";
 const SHOW_CURSOR = "\x1B[?25h";
 
-// --- Telegram reporter config ---
-const TG_BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
-const TG_CHAT_ID = "6529617704";
+// --- Telegram reporter config (centralizado en telegram-config.json) ---
+const _tgDashCfg = (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, "hooks", "telegram-config.json"), "utf8")); } catch(e) { return { bot_token: "", chat_id: "" }; } })();
+const TG_BOT_TOKEN = _tgDashCfg.bot_token;
+const TG_CHAT_ID = _tgDashCfg.chat_id;
 const TG_MAX_RETRIES = 2;
 const TG_RETRY_DELAY_MS = 1500;
 

@@ -1,7 +1,7 @@
 ---
 description: Auth — Auditoría y gestión de permisos de Claude Code
 user-invocable: true
-argument-hint: "[--audit] [--log] [--clean] [--remove <patron>]"
+argument-hint: "[--audit] [--log] [--clean] [--remove <patron>] [--health]"
 allowed-tools: Bash, Read, Edit, Glob, Grep
 model: claude-haiku-4-5-20251001
 ---
@@ -85,6 +85,78 @@ Categorías (allow):
 3. Detectar permisos redundantes (ej: si existe `Bash(git:*)` y también `Bash(git push:*)`)
 4. Proponer eliminaciones — NO ejecutar sin confirmación del usuario
 5. Si el usuario confirma, usar Edit tool para modificar settings.local.json
+
+### `--health` — Verificar integridad de hooks y configuracion
+
+Verifica que toda la infraestructura de hooks y agentes esta sana:
+
+1. **Hooks registrados vs archivos en disco:**
+   - Leer `.claude/settings.json` con Read tool
+   - Extraer todos los paths de `hooks[*].hooks[*].command`
+   - Para cada path, verificar que el archivo existe en disco usando Glob
+   - Reportar archivos faltantes como ERROR
+
+2. **Referencias internas de hooks:**
+   - Para cada archivo `.js` en `.claude/hooks/`, buscar con Grep `require(` y `path.join(`
+   - Verificar que los archivos referenciados existen
+   - Reportar dependencias rotas como ERROR
+
+3. **Config de Telegram:**
+   - Verificar que `.claude/hooks/telegram-config.json` existe y tiene `bot_token` y `chat_id`
+   - Reportar como ERROR si falta
+
+4. **Skills registrados:**
+   - Listar todos los directorios en `.claude/skills/` con Glob
+   - Verificar que cada uno tiene `SKILL.md`
+   - Verificar que el frontmatter tiene `model:` definido
+   - Reportar skills sin modelo como WARNING
+
+5. **Sessions:**
+   - Contar archivos en `.claude/sessions/`
+   - Reportar archivos invalidos (JSON corrupto) como WARNING
+   - Mostrar cuantas sessions "done" hay y cuantas estan activas
+
+6. **Scripts de orquestacion:**
+   - Verificar que `scripts/Start-Agente.ps1`, `Stop-Agente.ps1`, `Watch-Agentes.ps1` existen
+   - Verificar que `scripts/ask-next-sprint.js` existe
+
+Formato de salida:
+```
+Auth — Health Check
+
+Hooks:
+  ✅ permission-approver.js     (PermissionRequest)
+  ✅ notify-telegram.js         (Notification)
+  ✅ stop-notify.js             (Stop)
+  ✅ post-git-push.js           (PostToolUse[Bash])
+  ✅ post-issue-close.js        (PostToolUse[Bash])
+  ✅ permission-tracker.js      (PostToolUse[*])
+  ✅ activity-logger.js         (PostToolUse[*])
+  ❌ ci-monitor.sh              (referenciado pero no existe)
+
+Dependencias:
+  ✅ telegram-config.json       (bot_token + chat_id OK)
+  ✅ permission-utils.js        (modulo compartido)
+  ✅ ci-monitor-bg.js           (monitoreo CI background)
+
+Skills (N total):
+  ✅ auth         model: haiku
+  ✅ builder      model: haiku
+  ✅ review       model: sonnet
+  ⚠️ monitor      model: (sin definir)
+
+Sessions:
+  📁 N archivos | N done | N activas | N invalidas
+
+Scripts:
+  ✅ Start-Agente.ps1
+  ✅ Stop-Agente.ps1
+  ✅ Watch-Agentes.ps1
+  ✅ ask-next-sprint.js
+
+Veredicto: ✅ SANO | ⚠️ WARNINGS | ❌ ERRORES
+  [Detalle de problemas si los hay]
+```
 
 ### `--remove <patron>` — Eliminar un permiso
 

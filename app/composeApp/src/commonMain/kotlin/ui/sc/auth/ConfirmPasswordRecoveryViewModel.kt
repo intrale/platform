@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.auth.DoConfirmPasswordRecoveryResult
 import asdo.auth.ToDoConfirmPasswordRecovery
+import ar.com.intrale.strings.model.MessageKey
+import ar.com.intrale.strings.resolveMessage
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern
@@ -40,11 +42,11 @@ class ConfirmPasswordRecoveryViewModel(
     fun setupValidation() {
         validation = Validation<ConfirmPasswordRecoveryUIState> {
             ConfirmPasswordRecoveryUIState::email required {
-                pattern(".+@.+\\..+") hint "Correo inválido"
+                pattern(".+@.+\\..+") hint resolveMessage(MessageKey.form_error_invalid_email)
             }
             ConfirmPasswordRecoveryUIState::code required {}
             ConfirmPasswordRecoveryUIState::password required {
-                minLength(8) hint "Debe contener al menos 8 caracteres."
+                minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
             }
         } as Validation<Any>
     }

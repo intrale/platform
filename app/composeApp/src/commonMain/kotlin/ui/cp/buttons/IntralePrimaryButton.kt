@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import ui.th.spacing
 
 @Composable
@@ -71,6 +72,7 @@ fun IntralePrimaryButton(
 
     var buttonModifier = IntraleButtonDefaults
         .baseModifier(modifier, isInteractive)
+        .testTag("btn_primary")
         .graphicsLayer {
             scaleX = scale
             scaleY = scale

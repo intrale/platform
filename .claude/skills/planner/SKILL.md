@@ -1,7 +1,7 @@
 ---
 description: Planner — Planificación estratégica del proyecto — Gantt, dependencias, priorización y nuevas historias
 user-invocable: true
-argument-hint: "[planificar | sprint | proponer | estado]"
+argument-hint: "[planificar | sprint [N] | proponer | estado]"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
 ---
@@ -17,7 +17,7 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 | Argumento | Modo |
 |-----------|------|
 | `planificar` | Plan completo: Gantt, dependencias, streams paralelos |
-| `sprint` | Qué hacer en los próximos días — top 10 accionables |
+| `sprint [N]` | Qué hacer en los próximos días — top N accionables (default: 5) |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
 | sin argumento | Digest rápido: qué bloquea, qué está listo, qué sigue |
 
@@ -177,7 +177,14 @@ gantt
 
 ## Modo: `sprint`
 
-Seleccionar las **top 10 tareas accionables** para los próximos días:
+### Límite de issues
+
+El modo sprint acepta un número opcional **N** como parte del argumento (ej: `/planner sprint 8`).
+Si no se especifica, el default es **5**. Este límite controla cuántos issues se incluyen en el
+`sprint-plan.json` y en el reporte textual. La recolección y el scoring se hacen sobre todos los
+issues del repo; el recorte a N ocurre al final tras el ranking.
+
+Seleccionar las **top N tareas accionables** para los próximos días:
 
 Criterios de selección:
 1. Primero los 🔴 BLOQUEANTES (siempre)
@@ -186,9 +193,9 @@ Criterios de selección:
 4. Balance entre streams (no saturar uno solo)
 5. Preferir S/M sobre L/XL para tener wins rápidos
 
-Formato de salida:
+Formato de salida (máximo N issues, default 5):
 ```
-## Sprint sugerido — [fecha]
+## Sprint sugerido — [fecha] (N issues)
 
 ### Hoy / Mañana
 1. 🔴 #780 Fix test failure (S - 1 día) → Stream A
@@ -199,8 +206,7 @@ Formato de salida:
 4. 🟢 #NNN [título] (S) → Stream C
 5. 🟡 #NNN [título] (M) → Stream A
 
-### Próxima semana
-...
+(máximo N issues en total — si hay más candidatos, priorizar por score)
 ```
 
 ### Generar plan JSON para Start-Agente
@@ -235,35 +241,31 @@ Reglas del JSON:
 - `size`: S/M/L/XL segun estimacion de esfuerzo
 - El archivo NO se commitea (esta en .gitignore)
 
-### Ofrecer lanzar agentes
+### Lanzar agentes automaticamente
 
-Tras escribir `sprint-plan.json`, preguntar al usuario usando AskUserQuestion:
+Tras escribir `sprint-plan.json`, lanzar los agentes **directamente sin preguntar** al usuario.
+Esto permite el ciclo continuo autonomo (Stop-Agente -> /planner sprint -> Start-Agente -> agentes trabajan -> Stop-Agente).
 
-> ✅ Plan generado con N agentes. ¿Lanzar los agentes ahora?
-
-Opciones:
-- **Todos** — lanza todos los agentes del plan en paralelo
-- **Uno específico** — preguntar cuál número y lanzar solo ese
-- **No, solo mostrar el plan** — terminar sin lanzar
-
-Si confirma "todos":
+Ejecutar:
 ```bash
 powershell.exe -NonInteractive -File /c/Workspaces/Intrale/platform/scripts/Start-Agente.ps1 all
 ```
 
-Si confirma uno específico (reemplazar `<N>` por el número elegido):
-```bash
-powershell.exe -NonInteractive -File /c/Workspaces/Intrale/platform/scripts/Start-Agente.ps1 <N>
-```
+`Start-Agente.ps1 all` lanza automaticamente `Watch-Agentes.ps1` en background.
+El watcher vigila las sesiones, ejecuta Stop-Agente al finalizar y notifica via Telegram.
+No es necesario lanzar el watcher manualmente.
 
-Tras ejecutar, reportar al usuario cuántos agentes fueron lanzados:
-> 🚀 N agente(s) lanzado(s) en terminales independientes.
+Tras ejecutar, reportar al usuario cuantos agentes fueron lanzados:
+> 🚀 N agente(s) lanzado(s) en terminales independientes. Watch-Agentes vigilando en background.
+
+Si `Start-Agente.ps1` falla (plan vacio, error de PowerShell, etc.), reportar el error claramente:
+> ❌ Error al lanzar agentes: [mensaje de error]
 
 Consideraciones:
-- **Siempre** pedir confirmación antes de ejecutar — nunca lanzar sin preguntar
-- `Start-Agente.ps1` usa `Start-Process` internamente para abrir terminales, retorna rápido y no bloquea al planner
+- **NO** usar `AskUserQuestion` — lanzar directamente para no romper el ciclo continuo
+- `Start-Agente.ps1` usa `Start-Process` internamente para abrir terminales, retorna rapido y no bloquea al planner
 - `powershell.exe -NonInteractive` evita que el script espere input del usuario
-- Si el usuario rechaza, el flujo termina normalmente mostrando solo el plan
+- El watcher envia notificaciones Telegram al inicio y fin del monitoreo
 
 ---
 

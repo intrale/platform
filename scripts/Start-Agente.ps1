@@ -9,13 +9,18 @@
 .PARAMETER Numero
     Numero de agente (1, 2, 3...) o "all" para lanzar todos en paralelo.
 
+.PARAMETER SkipMerge
+    Si se indica, se pasa -SkipMerge al Watch-Agentes (PRs sin merge automatico).
+
 .EXAMPLE
     .\Start-Agente.ps1 1
     .\Start-Agente.ps1 all
+    .\Start-Agente.ps1 all -SkipMerge
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [string]$Numero
+    [string]$Numero,
+    [switch]$SkipMerge
 )
 
 Set-StrictMode -Version Latest
@@ -130,7 +135,7 @@ function Start-UnAgente {
 
     # Abrir nueva terminal PowerShell con claude ejecutando
     $escapedPrompt = $prompt -replace '"', '\"'
-    $command = "Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude `"$escapedPrompt`""
+    $command = "Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude `"$escapedPrompt`""
 
     Write-Host ">> Abriendo terminal con claude..."
     $proc = Start-Process powershell -ArgumentList "-NoExit", "-Command", $command -PassThru
@@ -164,7 +169,7 @@ function Start-MonitorLive {
     }
 
     $command = "Set-Location '$MainRepo'; " +
-               "Write-Host '  Monitor Live — Dashboard multi-sesion' -ForegroundColor Cyan; " +
+               "Write-Host '  Monitor Live - Dashboard multi-sesion' -ForegroundColor Cyan; " +
                "node '$dashboardPath'"
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $command
     Write-Host ">> Monitor live lanzado." -ForegroundColor Green
@@ -179,6 +184,18 @@ if ($Numero -eq "all") {
     Write-Host ""
     Write-Host ">> Todos los agentes lanzados." -ForegroundColor Green
     Start-MonitorLive
+
+    # Lanzar Watch-Agentes en background para ciclo continuo
+    $watchScript = Join-Path $PSScriptRoot 'Watch-Agentes.ps1'
+    if (Test-Path $watchScript) {
+        $watchArgs = @('-NonInteractive', '-File', $watchScript)
+        if ($SkipMerge) { $watchArgs += '-SkipMerge' }
+        Start-Process powershell -ArgumentList $watchArgs
+        Write-Host ">> Watch-Agentes lanzado en background (ciclo continuo)." -ForegroundColor Magenta
+    }
+    else {
+        Write-Host ">> Watch-Agentes.ps1 no encontrado, omitiendo watcher." -ForegroundColor Yellow
+    }
 }
 else {
     $num = [int]$Numero

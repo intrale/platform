@@ -5,8 +5,9 @@ const querystring = require("querystring");
 const fs = require("fs");
 const path = require("path");
 
-const BOT_TOKEN = "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk";
-const CHAT_ID = "6529617704";
+const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
+const BOT_TOKEN = _tgCfg.bot_token;
+const CHAT_ID = _tgCfg.chat_id;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
 
