@@ -33,7 +33,9 @@ data class ProductFormUiState(
     val basePrice: String = "",
     val unit: String = "",
     val categoryId: String = "",
-    val status: ProductStatus = ProductStatus.Draft
+    val status: ProductStatus = ProductStatus.Draft,
+    val isAvailable: Boolean = true,
+    val stockQuantity: String = ""
 )
 
 class ProductFormViewModel(
@@ -102,7 +104,9 @@ class ProductFormViewModel(
                 basePrice = draft.basePrice?.toString().orEmpty(),
                 unit = draft.unit,
                 categoryId = draft.categoryId,
-                status = draft.status
+                status = draft.status,
+                isAvailable = draft.isAvailable,
+                stockQuantity = draft.stockQuantity?.toString().orEmpty()
             )
         }
         mode = if (uiState.id == null) ProductFormMode.Create else ProductFormMode.Edit
@@ -161,13 +165,16 @@ class ProductFormViewModel(
         if (price <= 0) {
             return Result.failure(IllegalArgumentException(resolveMessage(MessageKey.product_form_error_invalid_price)))
         }
+        val stockQty = uiState.stockQuantity.toIntOrNull()
         val request = ProductRequest(
             name = uiState.name.trim(),
             shortDescription = uiState.shortDescription.ifBlank { null },
             basePrice = price,
             unit = uiState.unit.trim(),
             categoryId = uiState.categoryId.trim(),
-            status = uiState.status
+            status = uiState.status,
+            isAvailable = uiState.isAvailable,
+            stockQuantity = stockQty
         )
         return if (uiState.id == null) {
             createProduct.execute(businessId, request)
@@ -191,6 +198,14 @@ class ProductFormViewModel(
         uiState = uiState.copy(status = status)
     }
 
+    fun updateAvailability(isAvailable: Boolean) {
+        uiState = uiState.copy(isAvailable = isAvailable)
+    }
+
+    fun updateStockQuantity(value: String) {
+        uiState = uiState.copy(stockQuantity = value)
+    }
+
     private fun ProductDTO.toDraft(): ProductDraft = ProductDraft(
         id = id,
         name = name,
@@ -198,6 +213,8 @@ class ProductFormViewModel(
         basePrice = basePrice,
         unit = unit,
         categoryId = categoryId,
-        status = status
+        status = status,
+        isAvailable = isAvailable,
+        stockQuantity = stockQuantity
     )
 }

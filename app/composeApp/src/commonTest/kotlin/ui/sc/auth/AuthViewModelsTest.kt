@@ -1,5 +1,7 @@
 package ui.sc.auth
 
+import ar.com.intrale.strings.model.MessageKey
+import ar.com.intrale.strings.resolveMessage
 import asdo.auth.*
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
@@ -213,6 +215,16 @@ class PasswordRecoveryViewModelTest {
         vm.state = PasswordRecoveryViewModel.PasswordRecoveryUIState("invalido")
         assertFalse(vm.isValid())
     }
+
+    @Test
+    fun `validacion de email invalido muestra mensaje desde MessageKey`() {
+        val vm = PasswordRecoveryViewModel(FakePasswordRecovery(), testLoggerFactory)
+        vm.state = PasswordRecoveryViewModel.PasswordRecoveryUIState("invalido")
+        vm.isValid()
+        val emailState = vm.inputsStates[PasswordRecoveryViewModel.PasswordRecoveryUIState::email.name]!!.value
+        assertFalse(emailState.isValid)
+        assertEquals(resolveMessage(MessageKey.form_error_invalid_email), emailState.details)
+    }
 }
 
 // endregion
@@ -249,6 +261,30 @@ class ConfirmPasswordRecoveryViewModelTest {
             email = "invalido", code = "123456", password = "newpass12"
         )
         assertFalse(vm.isValid())
+    }
+
+    @Test
+    fun `validacion de email invalido muestra mensaje desde MessageKey`() {
+        val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
+        vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
+            email = "invalido", code = "123456", password = "newpass12"
+        )
+        vm.isValid()
+        val emailState = vm.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::email.name]!!.value
+        assertFalse(emailState.isValid)
+        assertEquals(resolveMessage(MessageKey.form_error_invalid_email), emailState.details)
+    }
+
+    @Test
+    fun `validacion de password corta muestra mensaje desde MessageKey`() {
+        val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
+        vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
+            email = "test@test.com", code = "123456", password = "short"
+        )
+        vm.isValid()
+        val passwordState = vm.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::password.name]!!.value
+        assertFalse(passwordState.isValid)
+        assertEquals(resolveMessage(MessageKey.form_error_min_length_8), passwordState.details)
     }
 }
 

@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.auth.DoPasswordRecoveryResult
 import asdo.auth.ToDoPasswordRecovery
+import ar.com.intrale.strings.model.MessageKey
+import ar.com.intrale.strings.resolveMessage
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.pattern
 import org.kodein.di.direct
@@ -35,7 +37,7 @@ class PasswordRecoveryViewModel(
     fun setupValidation() {
         validation = Validation<PasswordRecoveryUIState> {
             PasswordRecoveryUIState::email required {
-                pattern(".+@.+\\..+") hint "Correo inválido"
+                pattern(".+@.+\\..+") hint resolveMessage(MessageKey.form_error_invalid_email)
             }
         } as Validation<Any>
     }

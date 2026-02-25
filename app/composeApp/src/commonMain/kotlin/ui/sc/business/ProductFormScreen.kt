@@ -15,8 +15,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -161,6 +164,16 @@ class ProductFormScreen(
                     onSelect = viewModel::updateStatus
                 )
 
+                AvailabilitySelector(
+                    isAvailable = viewModel.uiState.isAvailable,
+                    onSelect = viewModel::updateAvailability
+                )
+
+                StockQuantityField(
+                    value = viewModel.uiState.stockQuantity,
+                    onValueChange = viewModel::updateStockQuantity
+                )
+
                 viewModel.errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
                     Text(
                         text = message,
@@ -191,7 +204,9 @@ class ProductFormScreen(
                                             basePrice = product.basePrice,
                                             unit = product.unit,
                                             categoryId = product.categoryId,
-                                            status = product.status
+                                            status = product.status,
+                                            isAvailable = product.isAvailable,
+                                            stockQuantity = product.stockQuantity
                                         )
                                     )
                                     coroutineScope.launch {
@@ -371,6 +386,62 @@ private fun StatusChip(
         selected = selected,
         onClick = onClick,
         label = { Text(label) }
+    )
+}
+
+@Composable
+private fun AvailabilitySelector(
+    isAvailable: Boolean,
+    onSelect: (Boolean) -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+    ) {
+        Text(
+            text = Txt(MessageKey.product_form_availability),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            FilterChip(
+                selected = isAvailable,
+                onClick = { onSelect(true) },
+                label = { Text(Txt(MessageKey.product_form_available)) }
+            )
+            FilterChip(
+                selected = !isAvailable,
+                onClick = { onSelect(false) },
+                label = { Text(Txt(MessageKey.product_form_out_of_stock)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun StockQuantityField(
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { newValue ->
+            if (newValue.isEmpty() || newValue.all { it.isDigit() }) {
+                onValueChange(newValue)
+            }
+        },
+        label = {
+            Text(
+                Txt(MessageKey.product_form_stock_quantity),
+                style = MaterialTheme.typography.labelMedium
+            )
+        },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        textStyle = MaterialTheme.typography.bodyLarge,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth()
     )
 }
 

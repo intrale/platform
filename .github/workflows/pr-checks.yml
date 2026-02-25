@@ -426,6 +426,7 @@ jobs:
             exit 1
           fi
 
+
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 

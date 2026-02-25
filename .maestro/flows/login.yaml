@@ -1,0 +1,31 @@
+appId: com.intrale.app.client
+---
+# Flujo: Login con credenciales
+- launchApp
+- waitForAnimationToEnd
+
+# Saltar onboarding (aparece en primer uso)
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Navegar al login desde home
+- tapOn:
+    text: "Ya tengo cuenta"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Interactuar con campos de login
+- tapOn:
+    id: "field_Username"
+- inputText: "admin@intrale.com"
+
+- tapOn:
+    id: "field_Password"
+- inputText: "Admin1234!"
+
+- tapOn:
+    id: "btn_primary"

@@ -33,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -211,6 +212,7 @@ class Login : Screen(LOGIN_PATH) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .testTag("login_screen")
                     .padding(padding)
                     .imePadding()
                     .verticalScroll(scrollState)
