@@ -84,7 +84,9 @@ function handleInput() {
                 target = ti.skill || "--";
                 break;
             case "TaskCreate": case "TaskUpdate":
-                target = ti.subject || (ti.taskId ? "task #" + ti.taskId : "--");
+                target = toolName === "TaskCreate"
+                    ? "[new pending] " + (ti.subject || "--")
+                    : "[#" + (ti.taskId || "?") + " " + (ti.status || "?") + "] " + (ti.subject || "task");
                 break;
             case "WebFetch": case "WebSearch":
                 target = ti.url || ti.query || "--";
@@ -96,7 +98,8 @@ function handleInput() {
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
         const sessionId = data.session_id || "";
-        const entry = JSON.stringify({ ts, session: sessionId.substring(0, 8), tool: toolName, target: target.substring(0, 120) });
+        const logTool = (toolName === "TaskCreate" || toolName === "TaskUpdate") ? "Task" : toolName;
+        const entry = JSON.stringify({ ts, session: sessionId.substring(0, 8), tool: logTool, target: target.substring(0, 120) });
         fs.appendFileSync(LOG_FILE, entry + "\n", "utf8");
 
         // Actualizar archivo de sesion
@@ -144,6 +147,8 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
                 skills_invoked: [],
                 sub_count: 0,
                 permission_mode: "unknown",
+                current_task: null,
+                current_tasks: [],
             };
         }
 
@@ -161,6 +166,42 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
             }
             if (AGENT_MAP[skillName] && !session.agent_name) {
                 session.agent_name = AGENT_MAP[skillName];
+            }
+        }
+
+        // Tracking de tareas para visibilidad cross-session
+        if (toolName === "TaskCreate") {
+            if (!session.current_tasks) session.current_tasks = [];
+            const nextId = String(session.current_tasks.length + 1);
+            session.current_tasks.push({
+                id: nextId,
+                subject: (toolInput.subject || "--").substring(0, 120),
+                status: "pending"
+            });
+        }
+
+        if (toolName === "TaskUpdate" && toolInput.taskId) {
+            if (!session.current_tasks) session.current_tasks = [];
+            const task = session.current_tasks.find(t => t.id === toolInput.taskId);
+            if (task) {
+                if (toolInput.status) task.status = toolInput.status;
+                if (toolInput.subject) task.subject = toolInput.subject.substring(0, 120);
+            } else {
+                // Tarea no trackeada previamente — agregar con los datos disponibles
+                session.current_tasks.push({
+                    id: toolInput.taskId,
+                    subject: (toolInput.subject || "task #" + toolInput.taskId).substring(0, 120),
+                    status: toolInput.status || "pending"
+                });
+            }
+        }
+
+        // Mantener current_task (singular) para activeForm en panel SESIONES
+        if (toolName === "TaskUpdate") {
+            if (toolInput.status === "in_progress" && toolInput.activeForm) {
+                session.current_task = toolInput.activeForm;
+            } else if (toolInput.status === "completed") {
+                session.current_task = null;
             }
         }
 

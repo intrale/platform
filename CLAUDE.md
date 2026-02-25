@@ -144,6 +144,16 @@ Todas las respuestas de servicio deben incluir `statusCode` con valor numérico 
 - Asignar a: `leitolarreta`
 - NO auto-merge
 
+## Protocolo de tareas (obligatorio en toda implementación)
+
+Todo agente que implementa un issue DEBE:
+
+1. **Antes de codear**: crear las tareas con `TaskCreate` que mapeen los pasos del plan
+2. **Al empezar cada paso**: marcar la tarea como `in_progress` con `TaskUpdate`
+3. **Al terminar cada paso**: marcar la tarea como `completed` con `TaskUpdate`
+
+Las tareas deben coincidir con los cambios reales del issue. El `/monitor` muestra el avance con checkboxes (`☐`/`☐►`/`☑`) en tiempo real.
+
 ## Android: Product Flavors
 
 - `client` — `com.intrale.app.client[.slug]`

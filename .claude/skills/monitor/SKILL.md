@@ -44,6 +44,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │ Sesion   │ Agente         │Accs│ Dur. │ Ultima accion    │Estado│
 │──────────┼────────────────┼────┼──────┼──────────────────┼──────│
 │ b08b96a2 │ El Centinela 🗼│ 15 │ 32m  │ Edit: LoginVM…   │ ● ▶ │
+│   └─ ⚙ Compilando APK cliente con testTagsAsResourceId...         │
 │ 67eb3124 │ Claude 🤖      │  3 │ 5m   │ Bash: git diff…  │ ○    │
 ├─ ACTIVIDAD RECIENTE ────────────────────────────────────────────┤
 │ 14:32:00  b08b96a2  Edit      activity-logger.js               │
@@ -57,9 +58,9 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │ #1  #821  notificaciones     S  Stream E                         │
 │ #2  #845  refactor-login     M  Stream A                         │
 ├─ TAREAS ────────────────────────────────────────────────────────┤
-│ ● #1  Implementar login          Vulcano 🔥                      │
-│ ○ #2  Tests de login             — (◄#1)                         │
-│ ✓ #3  Research OAuth             Sabueso 🐕                       │
+│ ☐► #1  Implementar login          Vulcano 🔥                     │
+│ ☐  #2  Tests de login             — (◄#1)                        │
+│ ☑  #3  Research OAuth             Sabueso 🐕                      │
 ├─ ALERTAS ───────────────────────────────────────────────────────┤
 │ ⚠ #2 bloqueada por #1 (in_progress)                              │
 └─────────────────────────────────────────────────────────────────┘
@@ -73,8 +74,10 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 - Columna "Dur.": duracion calculada desde `started_ts` hasta `last_activity_ts`
 - Columna "Ultima accion": `last_tool: last_target` truncado (ej: `Edit: LoginVM…`)
 - Columna "Estado": icono de liveness segun las reglas de arriba
+- Si la sesion tiene `current_task` (y no es `done`), mostrar fila adicional debajo: `  └─ ⚙ [descripcion]` — es el `activeForm` de la tarea en progreso
 - Ordenar por `last_activity_ts` descendente (mas reciente primero)
 - Si no hay sesiones, mostrar "Sin sesiones registradas"
+- Si el session JSON tiene `current_tasks`, el monitor puede usarlas para mostrar tareas de otras sesiones en el panel TAREAS
 
 **Reglas del panel ACTIVIDAD RECIENTE:**
 
@@ -107,7 +110,9 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 
 **Reglas del panel TAREAS:**
 
-- Prefijos: `●` = in_progress, `○` = pending, `✓` = completed
+- Prefijos: `☐►` = in_progress, `☐` = pending, `☑` = completed
+- Mostrar `subject` completo (no truncar innecesariamente)
+- Ordenar: `in_progress` primero, `pending` después, `completed` al final (máx últimas 5 completadas)
 - Si una tarea esta bloqueada, mostrar `(◄#N)` al final con el ID que la bloquea
 - Owner a la derecha
 - Si no hay tareas: "Sin tareas registradas"
