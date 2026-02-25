@@ -53,7 +53,6 @@ qa/.backend.pid
 .claude/permissions-log.jsonl
 .claude/session-state.json
 .claude/sessions/
-.claude/settings.local.json
 .claude/hooks/hook-debug.log
 .claude/hooks/tg-approver-offset.json
 .claude/hooks/tg-commander-offset.json
