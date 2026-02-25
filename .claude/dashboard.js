@@ -251,6 +251,9 @@ function buildReportMessage() {
     const action = lastActionLabel(s);
     const age = formatAge(s.last_activity_ts);
     msg += icon + " " + truncate(agent, 22) + " \u2014 " + action + " (" + age + ")\n";
+    if (s.current_task && label !== "done") {
+      msg += "  \u2514 \u2699 " + truncate(s.current_task, 40) + "\n";
+    }
   }
 
   // Actividad reciente (top 3)
@@ -378,14 +381,18 @@ function render() {
         padEnd(action, 25) +
         icon;
 
+      lines.push(boxLine(row, W));
+      // Mostrar tarea activa si existe
+      if (s.current_task && s.status !== "done") {
+        const taskLine = C.dim + "  \u2514\u2500 \u2699 " + C.reset +
+          C.cyan + truncate(s.current_task, W - 12) + C.reset;
+        lines.push(boxLine(taskLine, W));
+      }
       if (verbose) {
-        lines.push(boxLine(row, W));
         const skills = (s.skills_invoked || []).join(", ") || "\u2014";
         const detail = C.dim + "  rama: " + (s.branch || "?") + "  sub: " + (s.sub_count || 0) +
           "  skills: " + skills + "  mode: " + (s.permission_mode || "?") + C.reset;
         lines.push(boxLine(truncate(detail, W - 4), W));
-      } else {
-        lines.push(boxLine(row, W));
       }
     }
   }

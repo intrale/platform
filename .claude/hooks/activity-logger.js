@@ -196,7 +196,7 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
             }
         }
 
-        // Mantener current_task (singular) para activeForm en panel SESIONES
+        // Capturar tarea activa desde TaskUpdate (activeForm)
         if (toolName === "TaskUpdate") {
             if (toolInput.status === "in_progress" && toolInput.activeForm) {
                 session.current_task = toolInput.activeForm;
