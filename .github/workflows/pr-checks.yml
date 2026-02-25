@@ -412,13 +412,20 @@ jobs:
 
           # Esperar healthcheck
           for i in $(seq 1 30); do
-            STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
+            STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null || true)
+            echo "Intento $i/30 — STATUS: $STATUS"
             if [ "$STATUS" = "400" ]; then
               echo "Backend listo"
               break
             fi
             sleep 3
           done
+
+          if [ "$STATUS" != "400" ]; then
+            echo "ERROR: Backend no respondió después de 90s"
+            exit 1
+          fi
+
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
