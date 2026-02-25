@@ -27,6 +27,7 @@ const POLL_CONFLICT_MAX = 3;          // Máx reintentos seguidos por 409 antes 
 const SHORT_POLL_INTERVAL_MS = 2000;  // Intervalo de short-poll cuando hay conflicto
 const EXEC_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
 const TG_MSG_MAX = 4096;
+const SPRINT_MONITOR_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 
 let _tgCfg;
 try {
@@ -41,6 +42,10 @@ const CHAT_ID = _tgCfg.chat_id;
 let running = true;
 let skills = [];
 let sprintRunning = false;  // Evitar lanzar dos sprints simultáneos
+let sprintMonitorInterval = null;  // ID del setInterval del monitor periódico
+let monitorBusy = false;           // Flag para evitar apilar ejecuciones de monitor
+let sprintMonitorIntervalMs = SPRINT_MONITOR_INTERVAL_MS; // Intervalo configurable
+let sprintStartTime = null;        // Timestamp de inicio del sprint
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -242,9 +247,14 @@ function parseCommand(text) {
         return { type: "stop" };
     }
 
+    // /sprint interval <N> — cambiar intervalo del monitor periódico
     // /sprint [N] — ejecutar sprint completo o un agente específico
     if (trimmed.startsWith("/sprint")) {
         const parts = trimmed.split(/\s+/);
+        if (parts[1] === "interval") {
+            const mins = parseInt(parts[2], 10);
+            return { type: "sprint_interval", minutes: isNaN(mins) ? null : mins };
+        }
         const arg = parts[1] || null; // null = todos, N = agente específico
         return { type: "sprint", agentNumber: arg ? parseInt(arg, 10) : null };
     }
@@ -285,9 +295,12 @@ async function handleHelp() {
     msg += "\n<b>Comandos especiales:</b>\n";
     msg += "  /sprint — Ejecutar sprint completo (secuencial)\n";
     msg += "  /sprint N — Ejecutar solo agente N del plan\n";
+    msg += "  /sprint interval N — Cambiar intervalo del monitor periódico (N minutos)\n";
     msg += "  /help — Esta lista\n";
     msg += "  /status — Estado del daemon\n";
     msg += "  /stop — Detener el commander\n";
+    msg += "\n<b>Monitor periódico:</b>\n";
+    msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min.\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
     await sendLongMessage(msg);
 }
@@ -303,7 +316,19 @@ async function handleStatus() {
     msg += "⏱ Uptime: " + hours + "h " + mins + "m " + secs + "s\n";
     msg += "🔧 Skills: " + skills.length + "\n";
     msg += "🆔 PID: " + process.pid + "\n";
-    msg += "📁 Repo: <code>" + escHtml(REPO_ROOT) + "</code>";
+    msg += "📁 Repo: <code>" + escHtml(REPO_ROOT) + "</code>\n";
+
+    if (sprintRunning) {
+        msg += "\n🏃 <b>Sprint en curso</b>\n";
+        if (sprintMonitorInterval) {
+            msg += "📊 Monitor periódico: activo (cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min)\n";
+        } else {
+            msg += "📊 Monitor periódico: inactivo\n";
+        }
+    } else {
+        msg += "\n💤 Sin sprint activo\n";
+        msg += "📊 Intervalo de monitor: " + Math.round(sprintMonitorIntervalMs / 60000) + " min\n";
+    }
     await sendMessage(msg);
 }
 
@@ -365,6 +390,84 @@ function formatSprintProgress(agentes, currentIdx, results) {
     return msg;
 }
 
+function stopSprintMonitor() {
+    if (sprintMonitorInterval) {
+        clearInterval(sprintMonitorInterval);
+        sprintMonitorInterval = null;
+        log("Monitor periódico detenido");
+    }
+    monitorBusy = false;
+}
+
+function startSprintMonitor() {
+    stopSprintMonitor(); // Limpiar cualquier intervalo previo
+    log("Iniciando monitor periódico cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min");
+
+    sprintMonitorInterval = setInterval(async () => {
+        if (monitorBusy) {
+            log("Monitor periódico: ejecución anterior aún en curso, omitiendo ciclo");
+            return;
+        }
+        if (!running || !sprintRunning) {
+            stopSprintMonitor();
+            return;
+        }
+
+        monitorBusy = true;
+        try {
+            const elapsed = Math.round((Date.now() - sprintStartTime) / 1000);
+            const elapsedMins = Math.floor(elapsed / 60);
+            const elapsedSecs = elapsed % 60;
+
+            log("Monitor periódico: ejecutando /monitor");
+            const result = await executeClaude("/monitor", [
+                "--allowedTools", "Bash,Read,Glob,Grep,TaskList",
+                "--model", "claude-haiku-4-5-20251001"
+            ]);
+
+            if (!running || !sprintRunning) return; // Sprint terminó mientras corría el monitor
+
+            let monitorOutput = "";
+            if (result.code === 0) {
+                try {
+                    const json = JSON.parse(result.stdout);
+                    monitorOutput = json.result || json.text || json.content || result.stdout;
+                } catch (e) {
+                    monitorOutput = result.stdout;
+                }
+            } else {
+                monitorOutput = "(error ejecutando monitor — exit " + result.code + ")";
+            }
+
+            const header = "📊 <b>Monitor — sprint en curso (" + elapsedMins + "m " + elapsedSecs + "s)</b>\n\n";
+            await sendLongMessage(header + escHtml(monitorOutput));
+        } catch (e) {
+            log("Monitor periódico: error — " + e.message);
+        } finally {
+            monitorBusy = false;
+        }
+    }, sprintMonitorIntervalMs);
+}
+
+async function handleSprintInterval(minutes) {
+    if (minutes === null || minutes <= 0) {
+        await sendMessage("⚠️ Uso: <code>/sprint interval N</code> (N = minutos, mayor a 0)");
+        return;
+    }
+    sprintMonitorIntervalMs = minutes * 60 * 1000;
+    log("Intervalo de monitor cambiado a " + minutes + " min");
+
+    let msg = "✅ Intervalo de monitor cambiado a <b>" + minutes + " min</b>";
+
+    // Si hay un sprint corriendo, reiniciar el intervalo con el nuevo valor
+    if (sprintRunning && sprintMonitorInterval) {
+        stopSprintMonitor();
+        startSprintMonitor();
+        msg += "\n📊 Monitor periódico reiniciado con nuevo intervalo.";
+    }
+    await sendMessage(msg);
+}
+
 async function handleSprint(agentNumber) {
     if (sprintRunning) {
         await sendMessage("⚠️ Ya hay un sprint en ejecución. Esperá a que termine o usá /stop para detener el commander.");
@@ -389,14 +492,18 @@ async function handleSprint(agentNumber) {
     }
 
     sprintRunning = true;
+    sprintStartTime = Date.now();
     const results = new Array(agentes.length).fill("pending");
-    const startTime = Date.now();
 
     // Mensaje inicial con checklist
     let header = "🏃 <b>Sprint iniciado</b> — " + escHtml(plan.titulo) + "\n";
-    header += "📅 " + escHtml(plan.fecha) + " · " + agentes.length + " agente(s)\n\n";
+    header += "📅 " + escHtml(plan.fecha) + " · " + agentes.length + " agente(s)\n";
+    header += "📊 Monitor periódico: cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min\n\n";
     header += formatSprintProgress(agentes, 0, results);
     await sendMessage(header);
+
+    // Arrancar monitor periódico
+    startSprintMonitor();
 
     for (let i = 0; i < agentes.length; i++) {
         if (!running) {
@@ -450,8 +557,11 @@ async function handleSprint(agentNumber) {
         }
     }
 
+    // Detener monitor periódico
+    stopSprintMonitor();
+
     // Resumen final
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    const elapsed = Math.round((Date.now() - sprintStartTime) / 1000);
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
     const successCount = results.filter(r => r === "success").length;
@@ -464,6 +574,7 @@ async function handleSprint(agentNumber) {
     await sendMessage(finalMsg);
 
     sprintRunning = false;
+    sprintStartTime = null;
 }
 
 // prompt va por stdin para evitar que cmd.exe rompa args con --/espacios
@@ -679,6 +790,9 @@ async function pollingLoop() {
                     case "sprint":
                         await handleSprint(cmd.agentNumber);
                         break;
+                    case "sprint_interval":
+                        await handleSprintInterval(cmd.minutes);
+                        break;
                     case "unknown_command":
                         await sendMessage("❓ Comando <code>/" + escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
                         break;
@@ -703,6 +817,9 @@ async function shutdown(signal) {
     if (!running) return;
     running = false;
     log("Shutdown por " + signal);
+
+    // Detener monitor periódico si está activo
+    stopSprintMonitor();
 
     try {
         await sendMessage("🔴 <b>Commander offline</b> (" + signal + ")");
