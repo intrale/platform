@@ -1,0 +1,43 @@
+appId: com.intrale.app.client
+---
+# Flujo: Navegacion home -> login -> signup -> login
+- launchApp
+- waitForAnimationToEnd
+
+# Saltar onboarding si aparece
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Navegar al login desde home
+- tapOn:
+    text: "Ya tengo cuenta"
+    optional: true
+
+- waitForAnimationToEnd
+
+- assertVisible:
+    id: "login_screen"
+    label: "Login screen visible"
+
+# Navegar a signup desde login
+- tapOn:
+    text: "Registrarse"
+    optional: true
+
+- waitForAnimationToEnd
+
+- assertVisible:
+    id: "signup_screen"
+    label: "Signup screen visible"
+
+# Volver atras (back navigation)
+- pressKey: back
+
+- waitForAnimationToEnd
+
+- assertVisible:
+    id: "login_screen"
+    label: "De vuelta en login screen"

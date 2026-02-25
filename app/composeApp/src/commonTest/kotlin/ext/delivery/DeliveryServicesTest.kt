@@ -171,6 +171,64 @@ class DeliveryOrdersServiceTest {
 
         assertTrue(result.isFailure)
     }
+
+    @Test
+    fun `fetchOrderDetail exitoso retorna DeliveryOrderDetailDTO`() = runTest {
+        val body = """{
+            "id":"ord-1","publicId":"P-001","shortCode":"SC1",
+            "businessName":"Tienda Centro","neighborhood":"Microcentro",
+            "status":"pending","promisedAt":"2026-02-21T14:00:00",
+            "eta":"12 min","distance":"2.3 km",
+            "address":"Av. Corrientes 1234, Piso 3","addressNotes":"Timbre 3B",
+            "items":[{"name":"Pizza grande","quantity":2,"notes":"Sin cebolla"}],
+            "notes":"Entregar en mano","customerName":"Juan Perez",
+            "customerPhone":"+5491155551234",
+            "createdAt":"2026-02-21T12:00:00","updatedAt":"2026-02-21T12:30:00"
+        }""".trimIndent()
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, body), FakeStorage())
+
+        val result = service.fetchOrderDetail("ord-1")
+
+        assertTrue(result.isSuccess)
+        val detail = result.getOrThrow()
+        assertEquals("ord-1", detail.id)
+        assertEquals("P-001", detail.publicId)
+        assertEquals("Tienda Centro", detail.businessName)
+        assertEquals("Av. Corrientes 1234, Piso 3", detail.address)
+        assertEquals(1, detail.items.size)
+        assertEquals("Pizza grande", detail.items.first().name)
+        assertEquals(2, detail.items.first().quantity)
+        assertEquals("Juan Perez", detail.customerName)
+        assertEquals("+5491155551234", detail.customerPhone)
+    }
+
+    @Test
+    fun `fetchOrderDetail fallido retorna DeliveryExceptionResponse`() = runTest {
+        val body = """{"statusCode":{"value":404,"description":"Not Found"},"message":"Pedido no encontrado"}"""
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.NotFound, body), FakeStorage())
+
+        val result = service.fetchOrderDetail("ord-inexistente")
+
+        assertTrue(result.isFailure)
+    }
+
+    @Test
+    fun `fetchOrderDetail sin token retorna error`() = runTest {
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, "{}"), FakeStorage(token = null))
+
+        val result = service.fetchOrderDetail("ord-1")
+
+        assertTrue(result.isFailure)
+    }
+
+    @Test
+    fun `fetchOrderDetail con body vacio retorna error`() = runTest {
+        val service = DeliveryOrdersService(mockClient(HttpStatusCode.OK, ""), FakeStorage())
+
+        val result = service.fetchOrderDetail("ord-1")
+
+        assertTrue(result.isFailure)
+    }
 }
 
 // endregion

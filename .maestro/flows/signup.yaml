@@ -1,0 +1,26 @@
+appId: com.intrale.app.client
+---
+# Flujo: Signup basico
+- launchApp
+- waitForAnimationToEnd
+
+# Saltar onboarding
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Navegar a registro desde home
+- tapOn:
+    text: "Registrarme"
+
+- waitForAnimationToEnd
+
+- assertVisible:
+    id: "signup_screen"
+    label: "Pantalla de signup visible"
+
+- tapOn:
+    id: "field_Email"
+- inputText: "qa-maestro-test@intrale.com"

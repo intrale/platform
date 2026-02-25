@@ -41,6 +41,12 @@ deps_commonMain.txt
 
 # Entorno local (generado por scripts/local-up.sh)
 .env.local
+.env.qa
+
+# QA E2E — recordings y estado del backend
+qa/recordings/
+qa/.backend.pid
+.maestro/tests/
 
 # Claude Code — estado de sesión y logs (no commitear)
 .claude/activity-log.jsonl
@@ -50,6 +56,8 @@ deps_commonMain.txt
 .claude/settings.local.json
 .claude/hooks/hook-debug.log
 .claude/hooks/tg-approver-offset.json
+.claude/hooks/tg-commander-offset.json
+.claude/hooks/telegram-commander.lock
 
 # Sprint — archivos de agentes (no commitear, local de trabajo)
 scripts/sprint-plan.json
@@ -74,3 +82,9 @@ scripts/planner-plan.json
 
 # Claude Code
 .claude/activity-log.jsonl
+
+# Telegram Commander (daemon)
+.claude/hooks/telegram-commander.lock
+.claude/hooks/tg-commander-offset.json
+.claude/hooks/commander-stdout.log
+.claude/hooks/commander-stderr.log
