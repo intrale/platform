@@ -279,9 +279,9 @@ Identificar **gaps en el codebase** que aún no tienen issue:
 3. **PRs sin labels**: features implementadas por Codex sin issue padre visible
 4. **Patrones del codebase**: pantallas/flows que le faltan tests, endpoints sin implementar
 
-### Formato de propuesta
+### Formato interno de propuesta
 
-Para cada nueva historia sugerida:
+Para cada nueva historia sugerida, mostrar al usuario:
 ```markdown
 ### Historia propuesta: [Título]
 
@@ -290,14 +290,80 @@ Para cada nueva historia sugerida:
 **Esfuerzo estimado**: S/M/L
 **Dependencias**: [issues que deben completarse antes]
 **Stream**: A/B/C/D/E
-
-¿Creo este issue? [S/N]
 ```
 
-Presentar máximo 5 propuestas a la vez y pedir confirmación antes de crear.
+Presentar máximo 5 propuestas a la vez.
 
-### Crear en GitHub (con confirmación)
+### Persistir propuestas y enviar botones Telegram
 
+Tras generar las propuestas, **siempre** ejecutar estos dos pasos:
+
+#### Paso 1: Escribir `planner-proposals.json`
+
+Serializar todas las propuestas en `.claude/hooks/planner-proposals.json`:
+
+```json
+{
+  "generated_at": "2026-02-25T15:00:00.000Z",
+  "proposals": [
+    {
+      "index": 0,
+      "title": "Título de la historia",
+      "labels": ["area:backend", "tipo:feature"],
+      "effort": "M",
+      "stream": "A",
+      "dependencies": [123, 456],
+      "justification": "Razón por la que se propone esta historia",
+      "body": "Body completo propuesto para el issue de GitHub (markdown)",
+      "status": "pending"
+    }
+  ]
+}
+```
+
+Reglas del JSON:
+- `index`: secuencial empezando en 0
+- `title`: título conciso para el issue de GitHub
+- `labels`: array de strings con labels válidos del repo
+- `effort`: S/M/L/XL
+- `stream`: A/B/C/D/E según clasificación de streams
+- `dependencies`: array de números de issues que deben completarse antes (vacío si no hay)
+- `justification`: explicación breve de por qué se propone
+- `body`: body completo para `gh issue create` (incluir ## Objetivo, ## Contexto, etc.)
+- `status`: siempre `"pending"` al crear
+
+Escribir el archivo con:
+```bash
+cat > /c/Workspaces/Intrale/platform/.claude/hooks/planner-proposals.json << 'PROPOSALS_EOF'
+{ ... JSON completo ... }
+PROPOSALS_EOF
+```
+
+#### Paso 2: Enviar botones inline a Telegram
+
+Invocar el script que envía los botones:
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/send-proposal-buttons.js
+```
+
+Este script:
+- Lee `planner-proposals.json`
+- Envía mensaje con botones ✅ Crear / ❌ Descartar por propuesta
+- Agrega botón "✅ Crear todas" al final
+- Guarda `telegram_message_id` en el JSON para que el commander pueda editar el mensaje
+
+#### Flujo posterior (manejado por telegram-commander.js)
+
+El usuario presiona botones en Telegram:
+- **✅ Crear**: se lanza `/historia` con el contexto completo de la propuesta
+- **❌ Descartar**: se marca como descartada y se actualiza el mensaje
+- **✅ Crear todas**: se lanzan sesiones `/historia` para todas las pendientes
+
+**No es necesario esperar la respuesta** — el commander maneja los callbacks de forma asíncrona.
+
+### Crear manualmente (sin Telegram)
+
+Si no hay Telegram disponible, crear directamente con confirmación del usuario:
 ```bash
 gh issue create --repo $GH_REPO \
   --title "$TITLE" \

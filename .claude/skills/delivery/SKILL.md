@@ -2,7 +2,7 @@
 description: DeliveryManager — Commit + push + PR con convenciones Intrale en un solo comando
 user-invocable: true
 argument-hint: "<descripcion-del-cambio> [--issue <N>] [--draft]"
-allowed-tools: Bash, Read, Glob, Grep
+allowed-tools: Bash, Read, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
 ---
 
@@ -17,6 +17,10 @@ Sos veloz, confiable y siempre entregás en tiempo y forma.
 - `<descripcion>` — Descripción breve del cambio (obligatorio)
 - `--issue <N>` — Número de issue que cierra este PR (opcional, agrega `Closes #N` al body)
 - `--draft` — Crear el PR como draft (opcional)
+
+## Pre-flight: Registrar tareas
+
+Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan. Actualizá cada tarea a `in_progress` al comenzar y `completed` al terminar.
 
 ## Paso 1: Setup
 
