@@ -29,7 +29,8 @@ class ConfirmPasswordRecoveryViewModel(
     data class ConfirmPasswordRecoveryUIState(
         val email: String = "",
         val code: String = "",
-        val password: String = ""
+        val password: String = "",
+        val confirmPassword: String = ""
     )
 
     override fun getState(): Any = state
@@ -48,6 +49,11 @@ class ConfirmPasswordRecoveryViewModel(
             ConfirmPasswordRecoveryUIState::password required {
                 minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
             }
+            ConfirmPasswordRecoveryUIState::confirmPassword required {
+                addConstraint(resolveMessage(MessageKey.form_error_passwords_mismatch)) {
+                    it == state.password
+                }
+            }
         } as Validation<Any>
     }
 
@@ -55,7 +61,8 @@ class ConfirmPasswordRecoveryViewModel(
         inputsStates = mutableMapOf(
             entry(ConfirmPasswordRecoveryUIState::email.name),
             entry(ConfirmPasswordRecoveryUIState::code.name),
-            entry(ConfirmPasswordRecoveryUIState::password.name)
+            entry(ConfirmPasswordRecoveryUIState::password.name),
+            entry(ConfirmPasswordRecoveryUIState::confirmPassword.name)
         )
     }
 
