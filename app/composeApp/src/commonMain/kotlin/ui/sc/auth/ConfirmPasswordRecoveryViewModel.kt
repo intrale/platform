@@ -13,6 +13,7 @@ import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ar.com.intrale.strings.model.MessageKey
 import ui.sc.shared.ViewModel
 
 class ConfirmPasswordRecoveryViewModel(
@@ -40,11 +41,11 @@ class ConfirmPasswordRecoveryViewModel(
     fun setupValidation() {
         validation = Validation<ConfirmPasswordRecoveryUIState> {
             ConfirmPasswordRecoveryUIState::email required {
-                pattern(".+@.+\\..+") hint "Correo inválido"
+                pattern(".+@.+\\..+") hint MessageKey.form_error_invalid_email.name
             }
             ConfirmPasswordRecoveryUIState::code required {}
             ConfirmPasswordRecoveryUIState::password required {
-                minLength(8) hint "Debe contener al menos 8 caracteres."
+                minLength(8) hint MessageKey.form_error_min_length_8.name
             }
         } as Validation<Any>
     }
