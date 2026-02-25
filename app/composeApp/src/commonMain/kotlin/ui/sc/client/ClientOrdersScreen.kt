@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -32,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.client.ClientOrder
+import asdo.client.ClientOrderStatus
 import kotlinx.coroutines.launch
 import ui.sc.shared.Screen
 import ui.th.spacing
@@ -42,6 +46,7 @@ class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
 
     override val messageTitle: MessageKey = MessageKey.client_orders_title
 
+    @OptIn(ExperimentalLayoutApi::class)
     @Composable
     override fun screen() {
         val viewModel: ClientOrdersViewModel = viewModel { ClientOrdersViewModel() }
@@ -56,6 +61,14 @@ class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
         val retryLabel = Txt(MessageKey.client_orders_retry)
         val dateLabel = Txt(MessageKey.client_orders_order_date)
         val itemsLabel = Txt(MessageKey.client_orders_order_items)
+        val filterAll = Txt(MessageKey.client_orders_filter_all)
+        val filterPending = Txt(MessageKey.client_orders_status_pending)
+        val filterConfirmed = Txt(MessageKey.client_orders_status_confirmed)
+        val filterPreparing = Txt(MessageKey.client_orders_status_preparing)
+        val filterReady = Txt(MessageKey.client_orders_status_ready)
+        val filterDelivering = Txt(MessageKey.client_orders_status_delivering)
+        val filterDelivered = Txt(MessageKey.client_orders_status_delivered)
+        val filterCancelled = Txt(MessageKey.client_orders_status_cancelled)
 
         LaunchedEffect(Unit) {
             viewModel.loadOrders()
@@ -79,32 +92,81 @@ class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
                 )
             }
         ) { padding ->
-            when (state.status) {
-                ClientOrdersStatus.Idle, ClientOrdersStatus.Loading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize().padding(padding),
-                        contentAlignment = Alignment.Center
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = MaterialTheme.spacing.x4),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
+                contentPadding = PaddingValues(vertical = MaterialTheme.spacing.x4)
+            ) {
+                item {
+                    Text(
+                        text = ordersTitle,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                item {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                     ) {
-                        CircularProgressIndicator()
+                        FilterChip(
+                            selected = state.selectedFilter == null,
+                            onClick = { viewModel.selectFilter(null) },
+                            label = { Text(filterAll) }
+                        )
+                        FilterChip(
+                            selected = state.selectedFilter == ClientOrderStatus.PENDING,
+                            onClick = { viewModel.selectFilter(ClientOrderStatus.PENDING) },
+                            label = { Text(filterPending) }
+                        )
+                        FilterChip(
+                            selected = state.selectedFilter == ClientOrderStatus.CONFIRMED,
+                            onClick = { viewModel.selectFilter(ClientOrderStatus.CONFIRMED) },
+                            label = { Text(filterConfirmed) }
+                        )
+                        FilterChip(
+                            selected = state.selectedFilter == ClientOrderStatus.PREPARING,
+                            onClick = { viewModel.selectFilter(ClientOrderStatus.PREPARING) },
+                            label = { Text(filterPreparing) }
+                        )
+                        FilterChip(
+                            selected = state.selectedFilter == ClientOrderStatus.READY,
+                            onClick = { viewModel.selectFilter(ClientOrderStatus.READY) },
+                            label = { Text(filterReady) }
+                        )
+                        FilterChip(
+                            selected = state.selectedFilter == ClientOrderStatus.DELIVERING,
+                            onClick = { viewModel.selectFilter(ClientOrderStatus.DELIVERING) },
+                            label = { Text(filterDelivering) }
+                        )
+                        FilterChip(
+                            selected = state.selectedFilter == ClientOrderStatus.DELIVERED,
+                            onClick = { viewModel.selectFilter(ClientOrderStatus.DELIVERED) },
+                            label = { Text(filterDelivered) }
+                        )
+                        FilterChip(
+                            selected = state.selectedFilter == ClientOrderStatus.CANCELLED,
+                            onClick = { viewModel.selectFilter(ClientOrderStatus.CANCELLED) },
+                            label = { Text(filterCancelled) }
+                        )
                     }
                 }
 
-                ClientOrdersStatus.Loaded -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .padding(horizontal = MaterialTheme.spacing.x4),
-                        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
-                        contentPadding = PaddingValues(vertical = MaterialTheme.spacing.x4)
-                    ) {
-                        item {
-                            Text(
-                                text = ordersTitle,
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold
-                            )
+                when (state.status) {
+                    ClientOrdersStatus.Idle,
+                    ClientOrdersStatus.Loading -> item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = MaterialTheme.spacing.x6),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
                         }
+                    }
+
+                    ClientOrdersStatus.Loaded -> {
                         items(state.orders, key = { it.id }) { order ->
                             OrderCard(
                                 order = order,
@@ -116,94 +178,58 @@ class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
                             )
                         }
                     }
-                }
 
-                ClientOrdersStatus.Empty -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .padding(horizontal = MaterialTheme.spacing.x4),
-                        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
-                        contentPadding = PaddingValues(vertical = MaterialTheme.spacing.x4)
-                    ) {
-                        item {
-                            Text(
-                                text = ordersTitle,
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold
+                    ClientOrdersStatus.Empty -> item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
                             )
-                        }
-                        item {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(MaterialTheme.spacing.x4),
+                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(MaterialTheme.spacing.x4),
-                                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        text = emptyMessage,
-                                        textAlign = TextAlign.Center,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    TextButton(onClick = {
-                                        coroutineScope.launch { navigate(CLIENT_HOME_PATH) }
-                                    }) {
-                                        Text(viewCatalogLabel)
-                                    }
+                                Text(
+                                    text = emptyMessage,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                TextButton(onClick = {
+                                    coroutineScope.launch { navigate(CLIENT_HOME_PATH) }
+                                }) {
+                                    Text(viewCatalogLabel)
                                 }
                             }
                         }
                     }
-                }
 
-                ClientOrdersStatus.Error -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .padding(horizontal = MaterialTheme.spacing.x4),
-                        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
-                        contentPadding = PaddingValues(vertical = MaterialTheme.spacing.x4)
-                    ) {
-                        item {
-                            Text(
-                                text = ordersTitle,
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold
+                    ClientOrdersStatus.Error -> item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
                             )
-                        }
-                        item {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.errorContainer
-                                )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(MaterialTheme.spacing.x4),
+                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(MaterialTheme.spacing.x4),
-                                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        text = errorMessage,
-                                        textAlign = TextAlign.Center,
-                                        color = MaterialTheme.colorScheme.onErrorContainer
-                                    )
-                                    TextButton(onClick = {
-                                        coroutineScope.launch { viewModel.loadOrders() }
-                                    }) {
-                                        Text(retryLabel)
-                                    }
+                                Text(
+                                    text = errorMessage,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                TextButton(onClick = {
+                                    coroutineScope.launch { viewModel.loadOrders() }
+                                }) {
+                                    Text(retryLabel)
                                 }
                             }
                         }

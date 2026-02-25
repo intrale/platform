@@ -147,4 +147,59 @@ class ClientOrdersViewModelTest {
         assertNull(viewModel.state.selectedOrder)
         assertNull(viewModel.state.detailError)
     }
+
+    @Test
+    fun `selectFilter filtra pedidos por estado`() = runTest {
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadOrders()
+        assertEquals(2, viewModel.state.orders.size)
+
+        viewModel.selectFilter(ClientOrderStatus.PENDING)
+
+        assertEquals(ClientOrdersStatus.Loaded, viewModel.state.status)
+        assertEquals(1, viewModel.state.orders.size)
+        assertEquals("ord-1", viewModel.state.orders[0].id)
+        assertEquals(ClientOrderStatus.PENDING, viewModel.state.selectedFilter)
+    }
+
+    @Test
+    fun `selectFilter sin coincidencias muestra Empty`() = runTest {
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadOrders()
+
+        viewModel.selectFilter(ClientOrderStatus.CANCELLED)
+
+        assertEquals(ClientOrdersStatus.Empty, viewModel.state.status)
+        assertTrue(viewModel.state.orders.isEmpty())
+        assertEquals(ClientOrderStatus.CANCELLED, viewModel.state.selectedFilter)
+    }
+
+    @Test
+    fun `selectFilter null muestra todos los pedidos`() = runTest {
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadOrders()
+        viewModel.selectFilter(ClientOrderStatus.PENDING)
+        assertEquals(1, viewModel.state.orders.size)
+
+        viewModel.selectFilter(null)
+
+        assertEquals(ClientOrdersStatus.Loaded, viewModel.state.status)
+        assertEquals(2, viewModel.state.orders.size)
+        assertNull(viewModel.state.selectedFilter)
+    }
 }
