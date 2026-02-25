@@ -53,6 +53,9 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH) {
         val rejectLabel = Txt(MessageKey.review_join_business_action_reject)
         val approveSelectedLabel = Txt(MessageKey.review_business_approve_selected)
         val rejectSelectedLabel = Txt(MessageKey.review_business_reject_selected)
+        val feedbackApproved = Txt(MessageKey.review_business_feedback_approved)
+        val feedbackRejected = Txt(MessageKey.review_business_feedback_rejected)
+        val noPendingLabel = Txt(MessageKey.review_business_no_pending)
 
         LaunchedEffect(true) {
             logger.debug { "Cargando solicitudes pendientes" }
@@ -82,125 +85,143 @@ class ReviewBusinessScreen : Screen(REVIEW_BUSINESS_PATH) {
                     onValueChange = { viewModel.state = viewModel.state.copy(twoFactorCode = it) }
                 )
                 Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
-                ) {
-                    Checkbox(
-                        checked = viewModel.selected.size == viewModel.pending.size && viewModel.pending.isNotEmpty(),
-                        onCheckedChange = { checked ->
-                            if (checked) viewModel.selectAll() else viewModel.clearSelection()
-                        }
-                    )
-                    Text(selectAllLabel)
-                }
-                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                viewModel.pending.forEach { biz ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(MaterialTheme.spacing.x1),
-                        colors = CardDefaults.cardColors()
+                if (viewModel.pending.isEmpty()) {
+                    Text(noPendingLabel)
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                     ) {
-                        Row(
-                            Modifier.padding(MaterialTheme.spacing.x1),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = viewModel.selected.contains(biz.publicId),
-                                onCheckedChange = { viewModel.toggleSelection(biz.publicId) }
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(biz.name)
-                                val descriptionLabel = Txt(MessageKey.review_business_description_label)
-                                val emailLabel = Txt(MessageKey.business_admin_email)
-                                val autoAcceptLabel = Txt(MessageKey.review_business_auto_accept_deliveries)
-                                Text("$descriptionLabel: ${biz.description}")
-                                Text("$emailLabel: ${biz.emailAdmin}")
-                                Text("$autoAcceptLabel: ${biz.autoAcceptDeliveries}")
+                        Checkbox(
+                            checked = viewModel.selected.size == viewModel.pending.size,
+                            onCheckedChange = { checked ->
+                                if (checked) viewModel.selectAll() else viewModel.clearSelection()
                             }
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Button(
-                                    label = approveLabel,
-                                    loading = viewModel.loading,
-                                    enabled = !viewModel.loading,
-                                    onClick = {
-                                        logger.info { "Aprobando negocio ${biz.publicId}" }
-                                        callService(
-                                            coroutineScope = coroutine,
-                                            snackbarHostState = snackbarHostState,
-                                            setLoading = { viewModel.loading = it },
-                                            serviceCall = { viewModel.approve(biz.publicId) },
-                                            onSuccess = { coroutine.launch { viewModel.loadPending() } }
-                                        )
-                                    }
+                        )
+                        Text(selectAllLabel)
+                    }
+                    Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
+                    viewModel.pending.forEach { biz ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(MaterialTheme.spacing.x1),
+                            colors = CardDefaults.cardColors()
+                        ) {
+                            Row(
+                                Modifier.padding(MaterialTheme.spacing.x1),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = viewModel.selected.contains(biz.publicId),
+                                    onCheckedChange = { viewModel.toggleSelection(biz.publicId) }
                                 )
-                                Spacer(Modifier.size(MaterialTheme.spacing.x0_5))
-                                Button(
-                                    label = rejectLabel,
-                                    loading = viewModel.loading,
-                                    enabled = !viewModel.loading,
-                                    onClick = {
-                                        logger.warning { "Rechazando negocio ${biz.publicId}" }
-                                        callService(
-                                            coroutineScope = coroutine,
-                                            snackbarHostState = snackbarHostState,
-                                            setLoading = { viewModel.loading = it },
-                                            serviceCall = { viewModel.reject(biz.publicId) },
-                                            onSuccess = { coroutine.launch { viewModel.loadPending() } }
-                                        )
-                                    }
-                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(biz.name)
+                                    val descriptionLabel = Txt(MessageKey.review_business_description_label)
+                                    val emailLabel = Txt(MessageKey.business_admin_email)
+                                    val autoAcceptLabel = Txt(MessageKey.review_business_auto_accept_deliveries)
+                                    Text("$descriptionLabel: ${biz.description}")
+                                    Text("$emailLabel: ${biz.emailAdmin}")
+                                    Text("$autoAcceptLabel: ${biz.autoAcceptDeliveries}")
+                                }
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Button(
+                                        label = approveLabel,
+                                        loading = viewModel.loading,
+                                        enabled = !viewModel.loading,
+                                        onClick = {
+                                            logger.info { "Aprobando negocio ${biz.publicId}" }
+                                            callService(
+                                                coroutineScope = coroutine,
+                                                snackbarHostState = snackbarHostState,
+                                                setLoading = { viewModel.loading = it },
+                                                serviceCall = { viewModel.approve(biz.publicId) },
+                                                onSuccess = {
+                                                    coroutine.launch { snackbarHostState.showSnackbar(feedbackApproved) }
+                                                    coroutine.launch { viewModel.loadPending() }
+                                                }
+                                            )
+                                        }
+                                    )
+                                    Spacer(Modifier.size(MaterialTheme.spacing.x0_5))
+                                    Button(
+                                        label = rejectLabel,
+                                        loading = viewModel.loading,
+                                        enabled = !viewModel.loading,
+                                        onClick = {
+                                            logger.warning { "Rechazando negocio ${biz.publicId}" }
+                                            callService(
+                                                coroutineScope = coroutine,
+                                                snackbarHostState = snackbarHostState,
+                                                setLoading = { viewModel.loading = it },
+                                                serviceCall = { viewModel.reject(biz.publicId) },
+                                                onSuccess = {
+                                                    coroutine.launch { snackbarHostState.showSnackbar(feedbackRejected) }
+                                                    coroutine.launch { viewModel.loadPending() }
+                                                }
+                                            )
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
-                }
-                Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
-                ) {
-                    Button(
-                        label = approveSelectedLabel,
-                        loading = viewModel.loading,
-                        enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
-                        onClick = {
-                            logger.info { "Aprobando seleccionados" }
-                            callService(
-                                coroutineScope = coroutine,
-                                snackbarHostState = snackbarHostState,
-                                setLoading = { viewModel.loading = it },
-                                serviceCall = {
-                                    try {
-                                        viewModel.approveSelected()
-                                        Result.success(Unit)
-                                    } catch (e: Throwable) {
-                                        Result.failure(e)
-                                    }},
-                                onSuccess = { coroutine.launch { viewModel.loadPending() } }
-                            )
-                        }
-                    )
-                    Button(
-                        label = rejectSelectedLabel,
-                        loading = viewModel.loading,
-                        enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
-                        onClick = {
-                            logger.warning { "Rechazando seleccionados" }
-                            callService(
-                                coroutineScope = coroutine,
-                                snackbarHostState = snackbarHostState,
-                                setLoading = { viewModel.loading = it },
-                                serviceCall = {
-                                    try {
-                                    viewModel.rejectSelected()
-                                        Result.success(Unit)
-                                    } catch (e: Throwable) {
-                                        Result.failure(e)
-                                    }},
-                                onSuccess = { coroutine.launch { viewModel.loadPending() } }
-                            )
-                        }
-                    )
+                    Spacer(Modifier.size(MaterialTheme.spacing.x1_5))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                    ) {
+                        Button(
+                            label = approveSelectedLabel,
+                            loading = viewModel.loading,
+                            enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
+                            onClick = {
+                                logger.info { "Aprobando seleccionados" }
+                                callService(
+                                    coroutineScope = coroutine,
+                                    snackbarHostState = snackbarHostState,
+                                    setLoading = { viewModel.loading = it },
+                                    serviceCall = {
+                                        try {
+                                            viewModel.approveSelected()
+                                            Result.success(Unit)
+                                        } catch (e: Throwable) {
+                                            Result.failure(e)
+                                        }
+                                    },
+                                    onSuccess = {
+                                        coroutine.launch { snackbarHostState.showSnackbar(feedbackApproved) }
+                                        coroutine.launch { viewModel.loadPending() }
+                                    }
+                                )
+                            }
+                        )
+                        Button(
+                            label = rejectSelectedLabel,
+                            loading = viewModel.loading,
+                            enabled = !viewModel.loading && viewModel.selected.isNotEmpty(),
+                            onClick = {
+                                logger.warning { "Rechazando seleccionados" }
+                                callService(
+                                    coroutineScope = coroutine,
+                                    snackbarHostState = snackbarHostState,
+                                    setLoading = { viewModel.loading = it },
+                                    serviceCall = {
+                                        try {
+                                            viewModel.rejectSelected()
+                                            Result.success(Unit)
+                                        } catch (e: Throwable) {
+                                            Result.failure(e)
+                                        }
+                                    },
+                                    onSuccess = {
+                                        coroutine.launch { snackbarHostState.showSnackbar(feedbackRejected) }
+                                        coroutine.launch { viewModel.loadPending() }
+                                    }
+                                )
+                            }
+                        )
+                    }
                 }
             }
         }
