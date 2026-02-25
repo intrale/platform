@@ -144,6 +144,7 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
                 skills_invoked: [],
                 sub_count: 0,
                 permission_mode: "unknown",
+                current_task: null,
             };
         }
 
@@ -161,6 +162,15 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
             }
             if (AGENT_MAP[skillName] && !session.agent_name) {
                 session.agent_name = AGENT_MAP[skillName];
+            }
+        }
+
+        // Capturar tarea activa desde TaskUpdate (activeForm)
+        if (toolName === "TaskUpdate") {
+            if (toolInput.status === "in_progress" && toolInput.activeForm) {
+                session.current_task = toolInput.activeForm;
+            } else if (toolInput.status === "completed") {
+                session.current_task = null;
             }
         }
 
