@@ -8,6 +8,10 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
+
+private val logger = LoggerFactory.default.newLogger("ui.th", "Theme")
 
 private val IntraleLightColorScheme = lightColorScheme(
     primary = primaryLight,
@@ -91,6 +95,7 @@ fun IntraleTheme(
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (useDarkTheme) IntraleDarkColorScheme else IntraleLightColorScheme
+    logger.info { "Applying theme: ${if (useDarkTheme) "dark" else "light"}" }
     val spacing = remember { IntraleSpacing() }
     val elevations = remember { IntraleElevations() }
 
