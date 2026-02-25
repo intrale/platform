@@ -44,6 +44,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │ Sesion   │ Agente         │Accs│ Dur. │ Ultima accion    │Estado│
 │──────────┼────────────────┼────┼──────┼──────────────────┼──────│
 │ b08b96a2 │ El Centinela 🗼│ 15 │ 32m  │ Edit: LoginVM…   │ ● ▶ │
+│   └─ ⚙ Compilando APK cliente con testTagsAsResourceId...         │
 │ 67eb3124 │ Claude 🤖      │  3 │ 5m   │ Bash: git diff…  │ ○    │
 ├─ ACTIVIDAD RECIENTE ────────────────────────────────────────────┤
 │ 14:32:00  b08b96a2  Edit      activity-logger.js               │
@@ -73,6 +74,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 - Columna "Dur.": duracion calculada desde `started_ts` hasta `last_activity_ts`
 - Columna "Ultima accion": `last_tool: last_target` truncado (ej: `Edit: LoginVM…`)
 - Columna "Estado": icono de liveness segun las reglas de arriba
+- Si la sesion tiene `current_task` (y no es `done`), mostrar fila adicional debajo: `  └─ ⚙ [descripcion]` — es el `activeForm` de la tarea en progreso
 - Ordenar por `last_activity_ts` descendente (mas reciente primero)
 - Si no hay sesiones, mostrar "Sin sesiones registradas"
 
