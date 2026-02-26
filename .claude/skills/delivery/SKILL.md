@@ -47,7 +47,7 @@ git worktree list --porcelain
 | codex/456-bugfix    | —                               | ERROR: …  |
 ```
 
-5. En modo `--all`: **NO auto-mergear** ningún PR (solo reportar estado).
+5. En modo `--all`: **SÍ mergear** cada PR inmediatamente después de crearlo (squash + delete-branch), siguiendo el Paso 6.5. Si el merge falla, registrar el error y continuar con el siguiente.
 
 Si **no** se pasó `--all`: continuar normalmente desde Paso 1 con el worktree/branch actual.
 
@@ -211,24 +211,31 @@ EOF
 
 Si se pasó `--draft`, agregar `--draft` al comando.
 
-## Paso 6.5: Merge post-PR
+## Paso 6.5: Merge post-PR (OBLIGATORIO)
 
-Después de crear (o detectar) el PR:
+Después de crear (o detectar) el PR, **siempre intentar merge**:
 
-1. Verificar estado de CI checks:
+1. Intentar merge inmediatamente (squash + delete-branch):
 ```bash
-gh pr checks "$PR_NUMBER" --repo intrale/platform
+gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
 ```
 
 2. Según el resultado:
-   - **Todos los checks pasan** y **NO** estamos en modo `--all`:
-     Preguntar al usuario si quiere mergear. Si confirma:
-     ```bash
-     gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
-     ```
-   - **Checks todavía corriendo**: solo reportar "CI en progreso" con la URL del PR
-   - **Checks fallaron**: advertir y NO mergear. Reportar qué check falló.
-   - **Modo `--all`**: NUNCA auto-mergear. Solo reportar estado en el resumen tabulado.
+   - **Merge exitoso**: reportar como `MERGED` y limpiar worktree si aplica.
+   - **Merge falla** (conflictos, checks requeridos, etc.):
+     - Verificar CI checks: `gh pr checks "$PR_NUMBER" --repo intrale/platform`
+     - Si los checks están **corriendo**: esperar hasta 60 segundos y reintentar una vez.
+     - Si los checks **fallaron** o hay **conflictos de merge**: cerrar el PR, reabrir el issue con label `backlog-tecnico`, y agregar comentario explicativo:
+       ```bash
+       gh pr close "$PR_NUMBER" --repo intrale/platform --comment "Cerrado: conflictos irreconciliables. Issue reabierto en backlog técnico."
+       ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/codex\/([0-9]+).*/\1/')
+       gh issue reopen "$ISSUE_NUM" --repo intrale/platform
+       gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "backlog-tecnico"
+       gh issue comment "$ISSUE_NUM" --repo intrale/platform --body "PR #$PR_NUMBER cerrado por conflictos. Reimplementar desde main limpio."
+       ```
+     - Reportar como `ERROR` en el resumen.
+
+Este paso se ejecuta **tanto en modo individual como en modo `--all`**. El delivery SIEMPRE cierra el ciclo con merge.
 
 ## Paso 7: Reportar resultado
 
@@ -247,4 +254,5 @@ Mostrar al usuario:
 - Si el build falló en el último commit, advertir antes de crear el PR
 - Base siempre: `main` (salvo indicación explícita)
 - Assignee siempre: `leitolarreta`
-- NO auto-merge
+- **SIEMPRE mergear**: el delivery cierra el ciclo completo (commit → push → PR → merge). Si el merge falla, cerrar PR y mover issue al backlog técnico
+- Si el merge falla por conflictos irreconciliables: cerrar PR, reabrir issue con label `backlog-tecnico`, y limpiar worktree
