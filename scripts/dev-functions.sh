@@ -13,6 +13,22 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 # Directorio principal del repo
 _INTRALE_MAIN="/c/Workspaces/Intrale/platform"
 
+# Pre-registrar confianza del worktree en Claude Code para evitar dialogo de trust
+_pre_trust_worktree() {
+    local abs_path="$1"
+    # Convertir a path Windows para matching con Claude Code
+    local win_path
+    win_path=$(cygpath -w "$abs_path" 2>/dev/null || echo "$abs_path")
+    # Path mangling: reemplazar :, \, / con -
+    local mangled
+    mangled=$(echo "$win_path" | sed 's/[:\\/]/-/g')
+    local trust_dir="$HOME/.claude/projects/$mangled"
+    if [ ! -d "$trust_dir" ]; then
+        mkdir -p "$trust_dir"
+        echo ">> Trust pre-registrado: $mangled"
+    fi
+}
+
 # =============================================================================
 # dev <issue> [slug]
 #
@@ -65,6 +81,9 @@ HELP
 
     # El directorio actual ya cambio (shell integration de worktrunk)
     local current_dir="$(pwd)"
+
+    # Pre-registrar confianza del worktree en Claude Code
+    _pre_trust_worktree "$current_dir"
 
     # Copiar settings.local.json de Claude Code (permisos)
     if [ -f "$_INTRALE_MAIN/.claude/settings.local.json" ]; then

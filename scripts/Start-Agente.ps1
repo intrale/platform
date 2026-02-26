@@ -51,6 +51,19 @@ if (-not (Test-Path $MainRepo)) {
 # --- Leer plan ---
 $Plan = Get-Content $PlanFile -Raw | ConvertFrom-Json
 
+# Pre-registrar confianza del worktree en Claude Code para evitar dialogo interactivo de trust
+function PreRegister-Trust {
+    param([string]$AbsPath)
+    # Claude Code almacena trust en ~/.claude/projects/<path-mangled>/
+    # Path mangling: reemplazar :, \, / con -
+    $mangled = $AbsPath -replace '[:\\/]', '-'
+    $trustDir = Join-Path $env:USERPROFILE ".claude\projects\$mangled"
+    if (-not (Test-Path $trustDir)) {
+        New-Item -ItemType Directory -Path $trustDir -Force | Out-Null
+        Write-Host ">> Trust pre-registrado: $mangled"
+    }
+}
+
 function Start-UnAgente {
     param(
         [Parameter(Mandatory)] $Agente
@@ -95,6 +108,9 @@ function Start-UnAgente {
         # Fallback: buscar en worktree list
         $wtDirResolved = $wtDir
     }
+
+    # Pre-registrar confianza del worktree para evitar dialogo interactivo de trust
+    PreRegister-Trust -AbsPath "$wtDirResolved"
 
     # Symlink de .claude/ para heredar confianza y permisos del repo principal
     $claudeSrc = Join-Path $MainRepo ".claude"
