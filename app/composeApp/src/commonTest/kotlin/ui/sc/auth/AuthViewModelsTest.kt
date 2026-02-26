@@ -237,7 +237,7 @@ class ConfirmPasswordRecoveryViewModelTest {
     fun `confirm exitoso retorna resultado`() = runTest {
         val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
         vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
-            email = "test@test.com", code = "123456", password = "newpass12"
+            email = "test@test.com", code = "123456", password = "newpass12", confirmPassword = "newpass12"
         )
 
         val result = vm.confirm()
@@ -249,7 +249,7 @@ class ConfirmPasswordRecoveryViewModelTest {
     fun `isValid con datos validos retorna true`() {
         val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
         vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
-            email = "test@test.com", code = "123456", password = "newpass12"
+            email = "test@test.com", code = "123456", password = "newpass12", confirmPassword = "newpass12"
         )
         assertTrue(vm.isValid())
     }
@@ -258,7 +258,7 @@ class ConfirmPasswordRecoveryViewModelTest {
     fun `isValid con email invalido retorna false`() {
         val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
         vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
-            email = "invalido", code = "123456", password = "newpass12"
+            email = "invalido", code = "123456", password = "newpass12", confirmPassword = "newpass12"
         )
         assertFalse(vm.isValid())
     }
@@ -267,7 +267,7 @@ class ConfirmPasswordRecoveryViewModelTest {
     fun `validacion de email invalido muestra mensaje desde MessageKey`() {
         val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
         vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
-            email = "invalido", code = "123456", password = "newpass12"
+            email = "invalido", code = "123456", password = "newpass12", confirmPassword = "newpass12"
         )
         vm.isValid()
         val emailState = vm.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::email.name]!!.value
@@ -279,12 +279,33 @@ class ConfirmPasswordRecoveryViewModelTest {
     fun `validacion de password corta muestra mensaje desde MessageKey`() {
         val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
         vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
-            email = "test@test.com", code = "123456", password = "short"
+            email = "test@test.com", code = "123456", password = "short", confirmPassword = "short"
         )
         vm.isValid()
         val passwordState = vm.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::password.name]!!.value
         assertFalse(passwordState.isValid)
         assertEquals(resolveMessage(MessageKey.form_error_min_length_8), passwordState.details)
+    }
+
+    @Test
+    fun `isValid con contrasenas que no coinciden retorna false`() {
+        val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
+        vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
+            email = "test@test.com", code = "123456", password = "newpass12", confirmPassword = "different"
+        )
+        assertFalse(vm.isValid())
+    }
+
+    @Test
+    fun `validacion de contrasenas distintas muestra mensaje desde MessageKey`() {
+        val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
+        vm.state = ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState(
+            email = "test@test.com", code = "123456", password = "newpass12", confirmPassword = "different"
+        )
+        vm.isValid()
+        val confirmState = vm.inputsStates[ConfirmPasswordRecoveryViewModel.ConfirmPasswordRecoveryUIState::confirmPassword.name]!!.value
+        assertFalse(confirmState.isValid)
+        assertEquals(resolveMessage(MessageKey.form_error_passwords_mismatch), confirmState.details)
     }
 }
 
