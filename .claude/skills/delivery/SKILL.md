@@ -1,8 +1,20 @@
 ---
 description: DeliveryManager — Commit + push + PR con convenciones Intrale en un solo comando
 user-invocable: true
+<<<<<<< HEAD
+argument-hint: "<descripcion> [--issue <N>] [--draft] [--all]"
+=======
+<<<<<<< HEAD
+argument-hint: "<descripcion> [--issue <N>] [--draft] [--all]"
+=======
+<<<<<<< HEAD
+argument-hint: "<descripcion> [--issue <N>] [--draft] [--all]"
+=======
 argument-hint: "<descripcion-del-cambio> [--issue <N>] [--draft]"
-allowed-tools: Bash, Read, Glob, Grep
+>>>>>>> e09e95d (feat: protocolo de tareas con checkboxes para agentes y monitor (#920))
+>>>>>>> cd2988b (chore: delivery automático)
+>>>>>>> cef2de8 (chore: delivery automático)
+allowed-tools: Bash, Read, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
 ---
 
@@ -17,6 +29,49 @@ Sos veloz, confiable y siempre entregás en tiempo y forma.
 - `<descripcion>` — Descripción breve del cambio (obligatorio)
 - `--issue <N>` — Número de issue que cierra este PR (opcional, agrega `Closes #N` al body)
 - `--draft` — Crear el PR como draft (opcional)
+- `--all` — Entregar todos los worktrees activos con branch `codex/*` (ejecuta el flujo completo por cada uno)
+
+## Pre-flight: Registrar tareas
+
+Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan. Actualizá cada tarea a `in_progress` al comenzar y `completed` al terminar.
+
+## Paso 0: Modo `--all` (worktrees)
+
+Si se pasó `--all`:
+
+1. Ejecutar desde el repo principal (`/c/Workspaces/Intrale/platform`):
+```bash
+git worktree list --porcelain
+```
+
+2. Filtrar solo los worktrees cuya branch tenga prefijo `codex/` (parsear líneas `branch refs/heads/codex/...`).
+
+3. Para cada worktree encontrado:
+   - `cd` al directorio del worktree
+   - Ejecutar el flujo completo (Pasos 1-7) con la descripción inferida del branch name
+   - Si un worktree **falla** en cualquier paso: registrar el error y **continuar** con el siguiente
+
+4. Al finalizar todos: mostrar resumen tabulado:
+```
+| Branch              | PR URL                          | Estado    |
+|---------------------|---------------------------------|-----------|
+| codex/123-feature   | https://github.com/.../pull/45  | OK        |
+| codex/456-bugfix    | —                               | ERROR: …  |
+```
+
+5. En modo `--all`: **NO auto-mergear** ningún PR (solo reportar estado).
+
+Si **no** se pasó `--all`: continuar normalmente desde Paso 1 con el worktree/branch actual.
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+=======
+
+## Pre-flight: Registrar tareas
+
+Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan. Actualizá cada tarea a `in_progress` al comenzar y `completed` al terminar.
+>>>>>>> cd2988b (chore: delivery automático)
+>>>>>>> cef2de8 (chore: delivery automático)
 
 ## Paso 1: Setup
 
@@ -90,6 +145,46 @@ EOF
 )"
 ```
 
+## Paso 4.5: Resolución de conflictos (rebase antes de push)
+
+Este paso se ejecuta **siempre** (no solo en modo `--all`), entre el commit y el push.
+
+1. Fetch de main:
+```bash
+git fetch origin main
+```
+
+2. Verificar divergencia:
+```bash
+BEHIND=$(git rev-list --count HEAD..origin/main)
+```
+
+3. Si `$BEHIND > 0` (hay commits nuevos en main):
+```bash
+git rebase origin/main
+```
+
+4. Si el rebase es **limpio**: continuar normalmente. Anotar en el body del PR:
+   `Rebase: actualizado con $BEHIND commits de main`
+
+5. Si el rebase tiene **conflictos**, discriminar por tipo de archivo:
+   - **Config/infra** (`.json`, `.toml`, archivos en `.claude/`): resolver automáticamente con nuestra versión:
+     ```bash
+     git checkout --ours <archivo>
+     git add <archivo>
+     ```
+   - **Código fuente** (`.kt`, `.kts`, `.gradle`, `.xml`, otros): **BLOQUEAR**. Abortar el rebase y reportar:
+     ```bash
+     git rebase --abort
+     ```
+     Listar los archivos en conflicto y pedir instrucciones al usuario.
+
+6. Si todos los conflictos se resolvieron automáticamente (solo config/infra):
+```bash
+git rebase --continue
+```
+   Anotar en el body del PR: `Rebase: conflictos en config resueltos automáticamente (--ours)`
+
 ## Paso 5: Push
 
 ```bash
@@ -138,6 +233,25 @@ EOF
 
 Si se pasó `--draft`, agregar `--draft` al comando.
 
+## Paso 6.5: Merge post-PR
+
+Después de crear (o detectar) el PR:
+
+1. Verificar estado de CI checks:
+```bash
+gh pr checks "$PR_NUMBER" --repo intrale/platform
+```
+
+2. Según el resultado:
+   - **Todos los checks pasan** y **NO** estamos en modo `--all`:
+     Preguntar al usuario si quiere mergear. Si confirma:
+     ```bash
+     gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
+     ```
+   - **Checks todavía corriendo**: solo reportar "CI en progreso" con la URL del PR
+   - **Checks fallaron**: advertir y NO mergear. Reportar qué check falló.
+   - **Modo `--all`**: NUNCA auto-mergear. Solo reportar estado en el resumen tabulado.
+
 ## Paso 7: Reportar resultado
 
 Mostrar al usuario:
@@ -150,7 +264,8 @@ Mostrar al usuario:
 
 - NUNCA usar `git push --force`
 - NUNCA commitear archivos `.env`, `credentials`, `application.conf` con secrets
-- Si hay conflictos, reportar y pedir instrucciones
+- Si hay conflictos de rebase en código fuente (.kt, .kts, .gradle, .xml): abortar rebase, reportar archivos y pedir instrucciones
+- Conflictos en config/infra (.json, .toml, .claude/): resolver automáticamente con `--ours`
 - Si el build falló en el último commit, advertir antes de crear el PR
 - Base siempre: `main` (salvo indicación explícita)
 - Assignee siempre: `leitolarreta`

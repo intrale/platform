@@ -20,13 +20,17 @@ const OFFSET_FILE = path.join(HOOKS_DIR, "tg-commander-offset.json");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 const SKILLS_DIR = path.join(REPO_ROOT, ".claude", "skills");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+const PROPOSALS_FILE = path.join(HOOKS_DIR, "planner-proposals.json");
+const SESSION_STORE_FILE = path.join(HOOKS_DIR, "tg-session-store.json");
 
 const POLL_TIMEOUT_SEC = 30;
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutos de inactividad
 const POLL_CONFLICT_RETRY_MS = 5000;  // Espera tras error 409 (otro poller activo)
 const POLL_CONFLICT_MAX = 3;          // Máx reintentos seguidos por 409 antes de bajar a short-poll
 const SHORT_POLL_INTERVAL_MS = 2000;  // Intervalo de short-poll cuando hay conflicto
 const EXEC_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
 const TG_MSG_MAX = 4096;
+const SPRINT_MONITOR_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 
 let _tgCfg;
 try {
@@ -41,6 +45,10 @@ const CHAT_ID = _tgCfg.chat_id;
 let running = true;
 let skills = [];
 let sprintRunning = false;  // Evitar lanzar dos sprints simultáneos
+let sprintMonitorInterval = null;  // ID del setInterval del monitor periódico
+let monitorBusy = false;           // Flag para evitar apilar ejecuciones de monitor
+let sprintMonitorIntervalMs = SPRINT_MONITOR_INTERVAL_MS; // Intervalo configurable
+let sprintStartTime = null;        // Timestamp de inicio del sprint
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -52,22 +60,49 @@ function log(msg) {
 
 // ─── Lockfile ────────────────────────────────────────────────────────────────
 
+const LOCK_STALE_MS = 24 * 60 * 60 * 1000; // 24h — si el lockfile tiene más de esto, es stale seguro
+
+function isProcessAlive(pid) {
+    try {
+        process.kill(pid, 0); // señal 0 = solo chequear existencia
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function isLockStale(data) {
+    // Si no tiene PID válido, es stale
+    if (!data.pid || typeof data.pid !== "number") return true;
+    // Si el proceso no está vivo, es stale
+    if (!isProcessAlive(data.pid)) return true;
+    // Fallback: si tiene más de 24h, considerarlo stale (protección contra PIDs reciclados)
+    if (data.started) {
+        const age = Date.now() - new Date(data.started).getTime();
+        if (age > LOCK_STALE_MS) return true;
+    }
+    return false;
+}
+
 function acquireLock() {
     if (fs.existsSync(LOCK_FILE)) {
+        let data;
         try {
-            const data = JSON.parse(fs.readFileSync(LOCK_FILE, "utf8"));
-            const pid = data.pid;
-            // Verificar si el proceso sigue vivo
-            try {
-                process.kill(pid, 0); // señal 0 = solo chequear existencia
-                console.error("Commander ya corriendo (PID " + pid + "). Abortando.");
-                process.exit(1);
-            } catch (e) {
-                // Proceso muerto — lockfile stale
-                log("Lockfile stale (PID " + pid + " muerto). Reemplazando.");
-            }
+            data = JSON.parse(fs.readFileSync(LOCK_FILE, "utf8"));
         } catch (e) {
             log("Lockfile corrupto. Reemplazando.");
+            try { fs.unlinkSync(LOCK_FILE); } catch (e2) {}
+            data = null;
+        }
+
+        if (data) {
+            if (isLockStale(data)) {
+                log("Lockfile stale (PID " + data.pid + "). Reemplazando.");
+                try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
+            } else {
+                console.error("Commander ya corriendo (PID " + data.pid + "). Abortando.");
+                process.exit(1);
+            }
         }
     }
     fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), "utf8");
@@ -89,6 +124,58 @@ function loadOffset() {
 
 function saveOffset(offset) {
     try { fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset }), "utf8"); } catch (e) {}
+}
+
+// ─── Session store ──────────────────────────────────────────────────────────
+
+function loadSession() {
+    try {
+        const data = JSON.parse(fs.readFileSync(SESSION_STORE_FILE, "utf8"));
+        if (!data.active_session) return null;
+        return data.active_session;
+    } catch (e) {
+        return null;
+    }
+}
+
+function saveSession(sessionId, skill) {
+    const now = new Date().toISOString();
+    const session = loadSession();
+    const data = {
+        active_session: {
+            session_id: sessionId,
+            last_used: now,
+            skill: skill || (session && session.skill) || null,
+            created_at: (session && session.session_id === sessionId && session.created_at) || now
+        }
+    };
+    try {
+        fs.writeFileSync(SESSION_STORE_FILE, JSON.stringify(data, null, 2), "utf8");
+        log("Sesión guardada: " + sessionId + " (skill: " + (data.active_session.skill || "none") + ")");
+    } catch (e) {
+        log("Error guardando sesión: " + e.message);
+    }
+}
+
+function clearSessionStore() {
+    try {
+        fs.writeFileSync(SESSION_STORE_FILE, JSON.stringify({ active_session: null }, null, 2), "utf8");
+        log("Sesión limpiada");
+    } catch (e) {
+        log("Error limpiando sesión: " + e.message);
+    }
+}
+
+function isSessionExpired(session) {
+    if (!session || !session.last_used) return true;
+    const elapsed = Date.now() - new Date(session.last_used).getTime();
+    return elapsed > SESSION_TTL_MS;
+}
+
+function getActiveSessionId() {
+    const session = loadSession();
+    if (!session || isSessionExpired(session)) return null;
+    return session.session_id;
 }
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -242,9 +329,22 @@ function parseCommand(text) {
         return { type: "stop" };
     }
 
+    // /session [clear] — gestión de sesión conversacional
+    if (trimmed === "/session") {
+        return { type: "session" };
+    }
+    if (trimmed === "/session clear") {
+        return { type: "session_clear" };
+    }
+
+    // /sprint interval <N> — cambiar intervalo del monitor periódico
     // /sprint [N] — ejecutar sprint completo o un agente específico
     if (trimmed.startsWith("/sprint")) {
         const parts = trimmed.split(/\s+/);
+        if (parts[1] === "interval") {
+            const mins = parseInt(parts[2], 10);
+            return { type: "sprint_interval", minutes: isNaN(mins) ? null : mins };
+        }
         const arg = parts[1] || null; // null = todos, N = agente específico
         return { type: "sprint", agentNumber: arg ? parseInt(arg, 10) : null };
     }
@@ -285,9 +385,14 @@ async function handleHelp() {
     msg += "\n<b>Comandos especiales:</b>\n";
     msg += "  /sprint — Ejecutar sprint completo (secuencial)\n";
     msg += "  /sprint N — Ejecutar solo agente N del plan\n";
+    msg += "  /sprint interval N — Cambiar intervalo del monitor periódico (N minutos)\n";
+    msg += "  /session — Estado de la sesión conversacional activa\n";
+    msg += "  /session clear — Limpiar sesión e iniciar conversación nueva\n";
     msg += "  /help — Esta lista\n";
     msg += "  /status — Estado del daemon\n";
     msg += "  /stop — Detener el commander\n";
+    msg += "\n<b>Monitor periódico:</b>\n";
+    msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min.\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
     await sendLongMessage(msg);
 }
@@ -303,8 +408,60 @@ async function handleStatus() {
     msg += "⏱ Uptime: " + hours + "h " + mins + "m " + secs + "s\n";
     msg += "🔧 Skills: " + skills.length + "\n";
     msg += "🆔 PID: " + process.pid + "\n";
-    msg += "📁 Repo: <code>" + escHtml(REPO_ROOT) + "</code>";
+    msg += "📁 Repo: <code>" + escHtml(REPO_ROOT) + "</code>\n";
+
+    // Info de sesión conversacional
+    const session = loadSession();
+    if (session && !isSessionExpired(session)) {
+        const elapsed = Date.now() - new Date(session.last_used).getTime();
+        const remainingMins = Math.max(0, Math.floor((SESSION_TTL_MS - elapsed) / 60000));
+        msg += "\n🔗 <b>Sesión activa</b>\n";
+        msg += "🏷 Skill: " + escHtml(session.skill || "(texto libre)") + "\n";
+        msg += "⏳ Expira en: " + remainingMins + " min\n";
+    } else {
+        msg += "\n💬 Sin sesión activa\n";
+    }
+
+    if (sprintRunning) {
+        msg += "\n🏃 <b>Sprint en curso</b>\n";
+        if (sprintMonitorInterval) {
+            msg += "📊 Monitor periódico: activo (cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min)\n";
+        } else {
+            msg += "📊 Monitor periódico: inactivo\n";
+        }
+    } else {
+        msg += "\n💤 Sin sprint activo\n";
+        msg += "📊 Intervalo de monitor: " + Math.round(sprintMonitorIntervalMs / 60000) + " min\n";
+    }
     await sendMessage(msg);
+}
+
+async function handleSession() {
+    const session = loadSession();
+    if (!session || isSessionExpired(session)) {
+        await sendMessage("💤 <b>Sin sesión activa</b>\n\nEl próximo mensaje iniciará una sesión nueva.");
+        return;
+    }
+    const elapsed = Date.now() - new Date(session.last_used).getTime();
+    const remainingMs = SESSION_TTL_MS - elapsed;
+    const remainingMins = Math.max(0, Math.floor(remainingMs / 60000));
+    const remainingSecs = Math.max(0, Math.floor((remainingMs % 60000) / 1000));
+    const createdAt = session.created_at || "?";
+    const lastUsed = session.last_used || "?";
+
+    let msg = "🔗 <b>Sesión activa</b>\n\n";
+    msg += "🆔 ID: <code>" + escHtml(session.session_id) + "</code>\n";
+    msg += "🏷 Skill: " + escHtml(session.skill || "(texto libre)") + "\n";
+    msg += "📅 Creada: " + escHtml(createdAt) + "\n";
+    msg += "🕐 Último uso: " + escHtml(lastUsed) + "\n";
+    msg += "⏳ Expira en: " + remainingMins + "m " + remainingSecs + "s\n";
+    msg += "\nUsá <code>/session clear</code> para iniciar una sesión nueva.";
+    await sendMessage(msg);
+}
+
+async function handleSessionClear() {
+    clearSessionStore();
+    await sendMessage("🗑 <b>Sesión limpiada</b>\n\nEl próximo mensaje iniciará una conversación nueva.");
 }
 
 async function handleSkill(skill, args) {
@@ -330,14 +487,14 @@ async function handleSkill(skill, args) {
         extraArgs.push("--model", skill.model);
     }
 
-    const result = await executeClaude(prompt, extraArgs);
+    const result = await executeClaude(prompt, extraArgs, { useSession: true, skill: skill.name });
     await sendResult(skillLabel, result);
 }
 
 async function handleFreetext(text) {
     await sendMessage("💬 Procesando: <code>" + escHtml(text.substring(0, 100)) + (text.length > 100 ? "…" : "") + "</code>");
 
-    const result = await executeClaude(text);
+    const result = await executeClaude(text, [], { useSession: true, skill: null });
     await sendResult("prompt", result);
 }
 
@@ -365,7 +522,88 @@ function formatSprintProgress(agentes, currentIdx, results) {
     return msg;
 }
 
+function stopSprintMonitor() {
+    if (sprintMonitorInterval) {
+        clearInterval(sprintMonitorInterval);
+        sprintMonitorInterval = null;
+        log("Monitor periódico detenido");
+    }
+    monitorBusy = false;
+}
+
+function startSprintMonitor() {
+    stopSprintMonitor(); // Limpiar cualquier intervalo previo
+    log("Iniciando monitor periódico cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min");
+
+    sprintMonitorInterval = setInterval(async () => {
+        if (monitorBusy) {
+            log("Monitor periódico: ejecución anterior aún en curso, omitiendo ciclo");
+            return;
+        }
+        if (!running || !sprintRunning) {
+            stopSprintMonitor();
+            return;
+        }
+
+        monitorBusy = true;
+        try {
+            const elapsed = Math.round((Date.now() - sprintStartTime) / 1000);
+            const elapsedMins = Math.floor(elapsed / 60);
+            const elapsedSecs = elapsed % 60;
+
+            log("Monitor periódico: ejecutando /monitor");
+            const result = await executeClaude("/monitor", [
+                "--allowedTools", "Bash,Read,Glob,Grep,TaskList",
+                "--model", "claude-haiku-4-5-20251001"
+            ]);
+
+            if (!running || !sprintRunning) return; // Sprint terminó mientras corría el monitor
+
+            let monitorOutput = "";
+            if (result.code === 0) {
+                try {
+                    const json = JSON.parse(result.stdout);
+                    monitorOutput = json.result || json.text || json.content || result.stdout;
+                } catch (e) {
+                    monitorOutput = result.stdout;
+                }
+            } else {
+                monitorOutput = "(error ejecutando monitor — exit " + result.code + ")";
+            }
+
+            const header = "📊 <b>Monitor — sprint en curso (" + elapsedMins + "m " + elapsedSecs + "s)</b>\n\n";
+            await sendLongMessage(header + escHtml(monitorOutput));
+        } catch (e) {
+            log("Monitor periódico: error — " + e.message);
+        } finally {
+            monitorBusy = false;
+        }
+    }, sprintMonitorIntervalMs);
+}
+
+async function handleSprintInterval(minutes) {
+    if (minutes === null || minutes <= 0) {
+        await sendMessage("⚠️ Uso: <code>/sprint interval N</code> (N = minutos, mayor a 0)");
+        return;
+    }
+    sprintMonitorIntervalMs = minutes * 60 * 1000;
+    log("Intervalo de monitor cambiado a " + minutes + " min");
+
+    let msg = "✅ Intervalo de monitor cambiado a <b>" + minutes + " min</b>";
+
+    // Si hay un sprint corriendo, reiniciar el intervalo con el nuevo valor
+    if (sprintRunning && sprintMonitorInterval) {
+        stopSprintMonitor();
+        startSprintMonitor();
+        msg += "\n📊 Monitor periódico reiniciado con nuevo intervalo.";
+    }
+    await sendMessage(msg);
+}
+
 async function handleSprint(agentNumber) {
+    // Sprint siempre inicia sesión nueva (contexto independiente)
+    clearSessionStore();
+
     if (sprintRunning) {
         await sendMessage("⚠️ Ya hay un sprint en ejecución. Esperá a que termine o usá /stop para detener el commander.");
         return;
@@ -389,14 +627,18 @@ async function handleSprint(agentNumber) {
     }
 
     sprintRunning = true;
+    sprintStartTime = Date.now();
     const results = new Array(agentes.length).fill("pending");
-    const startTime = Date.now();
 
     // Mensaje inicial con checklist
     let header = "🏃 <b>Sprint iniciado</b> — " + escHtml(plan.titulo) + "\n";
-    header += "📅 " + escHtml(plan.fecha) + " · " + agentes.length + " agente(s)\n\n";
+    header += "📅 " + escHtml(plan.fecha) + " · " + agentes.length + " agente(s)\n";
+    header += "📊 Monitor periódico: cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min\n\n";
     header += formatSprintProgress(agentes, 0, results);
     await sendMessage(header);
+
+    // Arrancar monitor periódico
+    startSprintMonitor();
 
     for (let i = 0; i < agentes.length; i++) {
         if (!running) {
@@ -450,8 +692,11 @@ async function handleSprint(agentNumber) {
         }
     }
 
+    // Detener monitor periódico
+    stopSprintMonitor();
+
     // Resumen final
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    const elapsed = Math.round((Date.now() - sprintStartTime) / 1000);
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
     const successCount = results.filter(r => r === "success").length;
@@ -464,15 +709,30 @@ async function handleSprint(agentNumber) {
     await sendMessage(finalMsg);
 
     sprintRunning = false;
+    sprintStartTime = null;
 }
 
 // prompt va por stdin para evitar que cmd.exe rompa args con --/espacios
-function executeClaude(prompt, extraArgs) {
+// options: { useSession: bool, skill: string } — si useSession=true, intenta --resume
+function executeClaude(prompt, extraArgs, options) {
+    const opts = options || {};
     return new Promise((resolve) => {
         // --permission-mode bypassPermissions evita que permission-approver.js
         // active su propio getUpdates, lo cual causa 409 Conflict con nuestro polling.
         // Es seguro porque: tools restringidos via --allowedTools + prompts controlados.
         const args = ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions"].concat(extraArgs || []);
+
+        // Soporte de sesión: agregar --resume si hay sesión activa
+        let resumedSessionId = null;
+        if (opts.useSession) {
+            const activeId = getActiveSessionId();
+            if (activeId) {
+                args.push("--resume", activeId);
+                resumedSessionId = activeId;
+                log("Resumiendo sesión: " + activeId);
+            }
+        }
+
         log("Ejecutando: claude " + args.join(" ") + " (prompt via stdin, " + prompt.length + " chars)");
 
         const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: REPO_ROOT };
@@ -503,7 +763,34 @@ function executeClaude(prompt, extraArgs) {
             clearTimeout(timer);
             log("claude terminó con código " + code + " (stdout: " + stdout.length + " bytes, stderr: " + stderr.length + " bytes)");
             if (stderr) log("STDERR: " + stderr.substring(0, 500));
-            resolve({ code, stdout, stderr });
+
+            // Extraer session_id del JSON de respuesta y persistir
+            let sessionId = null;
+            if (opts.useSession && code === 0) {
+                try {
+                    const json = JSON.parse(stdout);
+                    sessionId = json.session_id || null;
+                    if (sessionId) {
+                        saveSession(sessionId, opts.skill || null);
+                    }
+                } catch (e) {
+                    log("No se pudo parsear session_id del output: " + e.message);
+                }
+            }
+
+            // Si resumimos pero claude falló (sesión inválida), reintentar sin --resume
+            if (opts.useSession && resumedSessionId && code !== 0) {
+                const stderrLower = (stderr || "").toLowerCase();
+                if (stderrLower.includes("session") || stderrLower.includes("invalid") || stderrLower.includes("not found")) {
+                    log("Sesión inválida detectada — limpiando y reintentando sin --resume");
+                    clearSessionStore();
+                    // Reintentar sin useSession (evitar recursión infinita)
+                    executeClaude(prompt, extraArgs, { useSession: false, skill: opts.skill }).then(resolve);
+                    return;
+                }
+            }
+
+            resolve({ code, stdout, stderr, sessionId });
         }
 
         const timer = setTimeout(() => {
@@ -551,6 +838,233 @@ async function sendResult(label, result) {
     await sendLongMessage(output);
 }
 
+// ─── Proposal callbacks (planner proponer) ──────────────────────────────────
+
+function loadProposals() {
+    try {
+        return JSON.parse(fs.readFileSync(PROPOSALS_FILE, "utf8"));
+    } catch (e) {
+        return null;
+    }
+}
+
+function saveProposals(data) {
+    try {
+        fs.writeFileSync(PROPOSALS_FILE, JSON.stringify(data, null, 2), "utf8");
+    } catch (e) {
+        log("Error guardando planner-proposals.json: " + e.message);
+    }
+}
+
+function buildProposalStatusText(data) {
+    const EFFORT_LABELS = { S: "S (1d)", M: "M (2-3d)", L: "L (1sem)", XL: "XL (2+sem)" };
+    const STATUS_ICONS = { pending: "⏳", created: "✅", discarded: "❌" };
+    let text = "📋 <b>Propuestas del Planner</b>\n";
+    text += "<i>Generado: " + escHtml(data.generated_at || "?") + "</i>\n\n";
+    for (const p of data.proposals) {
+        const icon = STATUS_ICONS[p.status] || "⏳";
+        const effort = EFFORT_LABELS[p.effort] || p.effort;
+        const statusLabel = p.status === "created" ? " — Creado"
+            : p.status === "discarded" ? " — Descartado"
+            : "";
+        text += icon + " <b>" + (p.index + 1) + ". " + escHtml(p.title) + "</b>" + statusLabel + "\n";
+        text += "   📏 " + escHtml(effort) + " · 🏷 " + escHtml((p.labels || []).join(", ")) + "\n";
+    }
+    return text;
+}
+
+function buildRemainingKeyboard(data) {
+    const keyboard = [];
+    for (const p of data.proposals) {
+        if (p.status !== "pending") continue;
+        keyboard.push([
+            { text: "✅ " + (p.index + 1) + ". Crear", callback_data: "create_proposal:" + p.index },
+            { text: "❌ " + (p.index + 1) + ". Descartar", callback_data: "discard_proposal:" + p.index }
+        ]);
+    }
+    const pendingCount = data.proposals.filter(p => p.status === "pending").length;
+    if (pendingCount > 1) {
+        keyboard.push([
+            { text: "✅ Crear todas las propuestas", callback_data: "create_all_proposals" }
+        ]);
+    }
+    return keyboard;
+}
+
+async function handleProposalCallback(callbackData, callbackQueryId) {
+    const data = loadProposals();
+    if (!data || !data.proposals) {
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "No hay propuestas activas",
+            show_alert: true
+        }, 5000);
+        return;
+    }
+
+    const msgId = data.telegram_message_id;
+
+    if (callbackData === "create_all_proposals") {
+        // Crear todas las propuestas pendientes
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Creando todas las propuestas...",
+            show_alert: false
+        }, 5000);
+
+        const pending = data.proposals.filter(p => p.status === "pending");
+        if (pending.length === 0) {
+            await sendMessage("⚠️ No hay propuestas pendientes.");
+            return;
+        }
+
+        // Marcar todas como creadas y actualizar mensaje
+        for (const p of pending) {
+            p.status = "created";
+        }
+        saveProposals(data);
+
+        // Editar mensaje: quitar botones, mostrar estado final
+        if (msgId) {
+            try {
+                await telegramPost("editMessageText", {
+                    chat_id: CHAT_ID,
+                    message_id: msgId,
+                    text: buildProposalStatusText(data),
+                    parse_mode: "HTML"
+                }, 8000);
+            } catch (e) { log("Error editando mensaje de propuestas: " + e.message); }
+        }
+
+        // Lanzar /historia por cada propuesta (secuencialmente para no saturar)
+        for (const p of pending) {
+            await launchHistoriaForProposal(p);
+        }
+
+        await sendMessage("✅ <b>" + pending.length + " propuesta(s) enviadas a /historia</b>");
+        return;
+    }
+
+    // create_proposal:<idx> o discard_proposal:<idx>
+    const parts = callbackData.split(":");
+    const action = parts[0];
+    const idx = parseInt(parts[1], 10);
+
+    const proposal = data.proposals.find(p => p.index === idx);
+    if (!proposal) {
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Propuesta no encontrada",
+            show_alert: true
+        }, 5000);
+        return;
+    }
+
+    if (proposal.status !== "pending") {
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Propuesta ya procesada: " + proposal.status,
+            show_alert: false
+        }, 5000);
+        return;
+    }
+
+    if (action === "create_proposal") {
+        proposal.status = "created";
+        saveProposals(data);
+
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "✅ Creando: " + proposal.title.substring(0, 50),
+            show_alert: false
+        }, 5000);
+
+        // Editar mensaje con estado actualizado y botones restantes
+        if (msgId) {
+            try {
+                const keyboard = buildRemainingKeyboard(data);
+                const editParams = {
+                    chat_id: CHAT_ID,
+                    message_id: msgId,
+                    text: buildProposalStatusText(data),
+                    parse_mode: "HTML"
+                };
+                if (keyboard.length > 0) {
+                    editParams.reply_markup = { inline_keyboard: keyboard };
+                }
+                await telegramPost("editMessageText", editParams, 8000);
+            } catch (e) { log("Error editando mensaje de propuestas: " + e.message); }
+        }
+
+        // Lanzar /historia
+        await launchHistoriaForProposal(proposal);
+
+    } else if (action === "discard_proposal") {
+        proposal.status = "discarded";
+        saveProposals(data);
+
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "❌ Descartada: " + proposal.title.substring(0, 50),
+            show_alert: false
+        }, 5000);
+
+        // Editar mensaje con estado actualizado y botones restantes
+        if (msgId) {
+            try {
+                const keyboard = buildRemainingKeyboard(data);
+                const editParams = {
+                    chat_id: CHAT_ID,
+                    message_id: msgId,
+                    text: buildProposalStatusText(data),
+                    parse_mode: "HTML"
+                };
+                if (keyboard.length > 0) {
+                    editParams.reply_markup = { inline_keyboard: keyboard };
+                }
+                await telegramPost("editMessageText", editParams, 8000);
+            } catch (e) { log("Error editando mensaje de propuestas: " + e.message); }
+        }
+    }
+}
+
+async function launchHistoriaForProposal(proposal) {
+    const labels = (proposal.labels || []).join(", ");
+    const deps = (proposal.dependencies || []).length > 0
+        ? "Dependencias: " + proposal.dependencies.map(d => "#" + d).join(", ")
+        : "";
+
+    // Construir prompt completo para /historia con todo el contexto de la propuesta
+    let prompt = "/historia " + proposal.title + "\n\n";
+    prompt += "Justificación: " + (proposal.justification || "") + "\n";
+    prompt += "Labels: " + labels + "\n";
+    prompt += "Esfuerzo estimado: " + (proposal.effort || "M") + "\n";
+    prompt += "Stream: " + (proposal.stream || "") + "\n";
+    if (deps) prompt += deps + "\n";
+    if (proposal.body) prompt += "\nDetalle:\n" + proposal.body + "\n";
+
+    log("Lanzando /historia para propuesta #" + proposal.index + ": " + proposal.title);
+    await sendMessage("⚡ Creando issue: <b>" + escHtml(proposal.title) + "</b>...");
+
+    // Buscar skill historia para obtener sus tools y model
+    const historiaSkill = skills.find(s => s.name === "historia");
+    const toolsList = ["Skill"];
+    if (historiaSkill && historiaSkill.allowedTools) {
+        const extras = historiaSkill.allowedTools.split(",").map(t => t.trim()).filter(t => t);
+        for (const t of extras) {
+            if (!toolsList.includes(t)) toolsList.push(t);
+        }
+    }
+
+    const extraArgs = ["--allowedTools", toolsList.join(",")];
+    if (historiaSkill && historiaSkill.model) {
+        extraArgs.push("--model", historiaSkill.model);
+    }
+
+    const result = await executeClaude(prompt, extraArgs, { useSession: true, skill: "historia" });
+    await sendResult("/historia — " + proposal.title, result);
+}
+
 // ─── Polling loop ────────────────────────────────────────────────────────────
 
 async function pollingLoop() {
@@ -563,7 +1077,7 @@ async function pollingLoop() {
             const pending = await telegramPost("getUpdates", {
                 limit: 100,
                 timeout: 0,
-                allowed_updates: ["message"]
+                allowed_updates: ["message", "callback_query"]
             }, 5000);
             if (pending && pending.length > 0) {
                 const maxId = pending[pending.length - 1].update_id;
@@ -594,7 +1108,7 @@ async function pollingLoop() {
             updates = await telegramPost("getUpdates", {
                 offset: offset,
                 timeout: pollTimeout,
-                allowed_updates: ["message"]
+                allowed_updates: ["message", "callback_query"]
             }, (pollTimeout + 10) * 1000);
             // Éxito — resetear conflicto
             if (conflictStreak > 0) {
@@ -641,6 +1155,33 @@ async function pollingLoop() {
                 saveOffset(offset);
             }
 
+            // Manejar callback_query (botones inline de propuestas)
+            const cq = update.callback_query;
+            if (cq && cq.data) {
+                const cbChatId = cq.message && cq.message.chat && cq.message.chat.id;
+                if (String(cbChatId) === String(CHAT_ID)) {
+                    const cbData = cq.data;
+                    // Solo manejar callbacks de propuestas — los de permisos (allow:/always:/deny:)
+                    // los maneja permission-approver.js
+                    if (cbData.startsWith("create_proposal:") || cbData.startsWith("discard_proposal:") || cbData === "create_all_proposals") {
+                        log("Callback de propuesta recibido: " + cbData);
+                        try {
+                            await handleProposalCallback(cbData, cq.id);
+                        } catch (e) {
+                            log("Error procesando callback de propuesta: " + e.message);
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Error: " + e.message.substring(0, 100),
+                                    show_alert: true
+                                }, 5000);
+                            } catch (e2) {}
+                        }
+                    }
+                }
+                continue;
+            }
+
             const msg = update.message;
             if (!msg) continue;
 
@@ -670,6 +1211,12 @@ async function pollingLoop() {
                         await sendMessage("🔴 Commander apagándose...");
                         running = false;
                         break;
+                    case "session":
+                        await handleSession();
+                        break;
+                    case "session_clear":
+                        await handleSessionClear();
+                        break;
                     case "skill":
                         await handleSkill(cmd.skill, cmd.args);
                         break;
@@ -678,6 +1225,9 @@ async function pollingLoop() {
                         break;
                     case "sprint":
                         await handleSprint(cmd.agentNumber);
+                        break;
+                    case "sprint_interval":
+                        await handleSprintInterval(cmd.minutes);
                         break;
                     case "unknown_command":
                         await sendMessage("❓ Comando <code>/" + escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
@@ -704,6 +1254,9 @@ async function shutdown(signal) {
     running = false;
     log("Shutdown por " + signal);
 
+    // Detener monitor periódico si está activo
+    stopSprintMonitor();
+
     try {
         await sendMessage("🔴 <b>Commander offline</b> (" + signal + ")");
     } catch (e) {
@@ -716,6 +1269,18 @@ async function shutdown(signal) {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// Capturar errores no manejados para limpiar lockfile siempre
+process.on("uncaughtException", (e) => {
+    log("uncaughtException: " + e.message);
+    releaseLock();
+    process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+    log("unhandledRejection: " + String(reason));
+    releaseLock();
+    process.exit(1);
+});
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
