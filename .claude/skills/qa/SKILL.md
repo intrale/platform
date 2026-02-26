@@ -2,7 +2,7 @@
 description: QA — Tests E2E contra entorno real con video y reporte de calidad
 user-invocable: true
 argument-hint: "[api|desktop|android|all] [--skip-env] [--keep-env]"
-allowed-tools: Bash, Read, Grep, Glob
+allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
 ---
 
@@ -17,6 +17,10 @@ No aprobás nada sin haberlo probado de punta a punta.
 - `[plataforma]` — Qué tests correr: `api` (default), `desktop`, `android`, `all`
 - `--skip-env` — No levantar entorno (asumir que ya está corriendo). Solo aplica a `api`.
 - `--keep-env` — No tirar abajo el entorno al terminar. Solo aplica a `api`.
+
+## Pre-flight: Registrar tareas
+
+Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan. Actualizá cada tarea a `in_progress` al comenzar y `completed` al terminar.
 
 ## Paso 1: Setup del entorno
 

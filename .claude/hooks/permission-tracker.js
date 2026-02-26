@@ -53,6 +53,12 @@ function handleInput() {
                 const allow = (settings.permissions && settings.permissions.allow) || [];
                 const deny = (settings.permissions && settings.permissions.deny) || [];
 
+                // Si el archivo tiene patrones amplios (Read(*), Glob(*), etc.),
+                // está gestionado manualmente — no auto-aprender para evitar
+                // race conditions con múltiples agentes escribiendo simultáneamente
+                const broadPatterns = allow.filter(p => /^(Read|Glob|Grep|Edit|Write)\(\*\)$/.test(p));
+                if (broadPatterns.length >= 3) continue;
+
                 // Ya cubierto?
                 if (isAlreadyCovered(pattern, allow)) continue;
 
