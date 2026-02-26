@@ -196,7 +196,14 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
             }
         }
 
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+>>>>>>> cd2988b (chore: delivery automático)
         // Capturar tarea activa desde TaskUpdate (activeForm)
+=======
+        // Mantener current_task (singular) para activeForm en panel SESIONES
+>>>>>>> e09e95d (feat: protocolo de tareas con checkboxes para agentes y monitor (#920))
         if (toolName === "TaskUpdate") {
             if (toolInput.status === "in_progress" && toolInput.activeForm) {
                 session.current_task = toolInput.activeForm;
