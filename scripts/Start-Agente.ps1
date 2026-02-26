@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Lanza agentes Claude en worktrees aislados consumiendo el plan del Oraculo.
 
@@ -133,6 +133,17 @@ function Start-UnAgente {
         }
     }
 
+    # Pre-crear trust directory para que Claude no muestre el dialogo interactivo
+    # Claude Code almacena confianza en ~/.claude/projects/<path-mangled>/
+    # Path mangling: C:/Workspaces/Intrale/platform.codex-123-slug → C--Workspaces-Intrale-platform.codex-123-slug
+    $wtAbsPath = (Resolve-Path $wtDirResolved).Path -replace '\\', '/'
+    $mangledPath = ($wtAbsPath -replace '^/', '' -replace '/', '-' -replace ':', '-')
+    $trustDir = Join-Path $env:USERPROFILE ".claude\projects\$mangledPath"
+    if (-not (Test-Path $trustDir)) {
+        New-Item -ItemType Directory -Path $trustDir -Force | Out-Null
+        Write-Host ">> Trust pre-registrado: $mangledPath"
+    }
+
     # Abrir nueva terminal PowerShell con claude ejecutando
     # La terminal se cierra automaticamente al terminar claude (sin -NoExit)
     # Output se loguea a scripts/logs/agente_N.log via Start-Transcript
@@ -140,7 +151,11 @@ function Start-UnAgente {
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     $logFile = Join-Path $logDir "agente_$($Agente.numero).log"
 
-    $escapedPrompt = $prompt -replace '"', '\"'
+    # Escribir prompt a archivo para evitar que newlines/caracteres especiales
+    # rompan el parsing de -Command en Start-Process
+    $promptFile = Join-Path $logDir "prompt_$($Agente.numero).txt"
+    Set-Content -Path $promptFile -Value $prompt -Encoding UTF8 -NoNewline
+
     $command = "Start-Transcript -Path '$logFile' -Force | Out-Null; " +
                "Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; " +
                "Set-Location '$wtDirResolved'; " +
@@ -149,7 +164,7 @@ function Start-UnAgente {
                "Write-Host '  Branch: $branch' -ForegroundColor Cyan; " +
                "Write-Host '  Log: $logFile' -ForegroundColor DarkGray; " +
                "Write-Host ''; " +
-               "claude --dangerously-skip-permissions `"$escapedPrompt`"; " +
+               "Get-Content '$promptFile' -Raw | claude -p --dangerously-skip-permissions; " +
                "Write-Host ''; " +
                "Write-Host ('  claude finalizo (exit ' + `$LASTEXITCODE + ')') -ForegroundColor Yellow; " +
                "Stop-Transcript | Out-Null; " +
@@ -172,17 +187,22 @@ function Start-UnAgente {
 }
 
 function Start-MonitorLive {
-    $monitorProcs = Get-Process -Name 'node' -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match 'dashboard\.js' }
+    try {
+        $monitorProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match 'dashboard\.js' }
 
-    if ($monitorProcs) {
-        Write-Host ">> Monitor ya activo (PID: $($monitorProcs.Id)) — reutilizando." -ForegroundColor Yellow
-        return
+        if ($monitorProcs) {
+            Write-Host ">> Monitor ya activo (PID: $($monitorProcs.ProcessId)) - reutilizando." -ForegroundColor Yellow
+            return
+        }
+    }
+    catch {
+        # StrictMode puede fallar en Get-CimInstance si no hay procesos node - ignorar
     }
 
     $dashboardPath = Join-Path $MainRepo ".claude\dashboard.js"
     if (-not (Test-Path $dashboardPath)) {
-        Write-Host ">> dashboard.js no encontrado en: $dashboardPath — omitiendo monitor." -ForegroundColor Yellow
+        Write-Host ">> dashboard.js no encontrado en: $dashboardPath - omitiendo monitor." -ForegroundColor Yellow
         return
     }
 
@@ -219,10 +239,13 @@ if ($Numero -eq "all") {
     $guardianScript = Join-Path $PSScriptRoot 'Guardian-Sprint.ps1'
     if (Test-Path $guardianScript) {
         # Verificar si ya hay un guardian corriendo
-        $guardianRunning = Get-Process -Name 'powershell' -ErrorAction SilentlyContinue |
-            Where-Object { try { $_.CommandLine -match 'Guardian-Sprint' } catch { $false } }
+        $guardianRunning = $null
+        try {
+            $guardianRunning = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -match 'Guardian-Sprint' }
+        } catch {}
         if ($guardianRunning) {
-            Write-Host ">> Guardian-Sprint ya esta corriendo (PID: $($guardianRunning.Id)). Reutilizando." -ForegroundColor Yellow
+            Write-Host ">> Guardian-Sprint ya esta corriendo (PID: $($guardianRunning.ProcessId)). Reutilizando." -ForegroundColor Yellow
         }
         else {
             Start-Process powershell -ArgumentList '-NonInteractive', '-File', $guardianScript
