@@ -61,6 +61,7 @@ qa/.backend.pid
 .claude/hooks/tg-commander-offset.json
 .claude/hooks/telegram-commander.lock
 .claude/hooks/planner-proposals.json
+.claude/hooks/tg-session-store.json
 
 # Sprint — archivos de agentes (no commitear, local de trabajo)
 scripts/sprint-plan.json
