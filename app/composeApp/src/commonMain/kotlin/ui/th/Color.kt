@@ -1,6 +1,10 @@
 package ui.th
 
 import androidx.compose.ui.graphics.Color
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
+
+private val logger = LoggerFactory.default.newLogger("ui.th", "Color")
 
 val primaryLight = Color(0xFF415F91)
 val onPrimaryLight = Color(0xFFFFFFFF)

@@ -11,13 +11,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.Font
+import org.kodein.log.LoggerFactory
+import org.kodein.log.newLogger
 import ui.rs.Res
 import ui.rs.intrale_medium
 import ui.rs.intrale_regular
 import ui.rs.intrale_semibold
 
+private val logger = LoggerFactory.default.newLogger("ui.th", "Type")
+
 @Composable
 fun IntraleTypography(): Typography {
+    logger.info { "Loading Intrale typography" }
     val regular = Font(Res.font.intrale_regular, weight = FontWeight.Normal)
     val medium = Font(Res.font.intrale_medium, weight = FontWeight.Medium)
     val semiBold = Font(Res.font.intrale_semibold, weight = FontWeight.SemiBold)
