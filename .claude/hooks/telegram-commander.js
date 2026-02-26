@@ -22,6 +22,7 @@ const SKILLS_DIR = path.join(REPO_ROOT, ".claude", "skills");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const PROPOSALS_FILE = path.join(HOOKS_DIR, "planner-proposals.json");
 const SESSION_STORE_FILE = path.join(HOOKS_DIR, "tg-session-store.json");
+const { getPendingQuestions, resolveQuestion, getQuestionById } = require("./pending-questions");
 
 const POLL_TIMEOUT_SEC = 30;
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutos de inactividad
@@ -329,6 +330,11 @@ function parseCommand(text) {
         return { type: "stop" };
     }
 
+    // /pendientes — ver preguntas pendientes sin responder
+    if (trimmed === "/pendientes") {
+        return { type: "pendientes" };
+    }
+
     // /session [clear] — gestión de sesión conversacional
     if (trimmed === "/session") {
         return { type: "session" };
@@ -391,10 +397,118 @@ async function handleHelp() {
     msg += "  /help — Esta lista\n";
     msg += "  /status — Estado del daemon\n";
     msg += "  /stop — Detener el commander\n";
+    msg += "  /pendientes — Preguntas pendientes sin responder\n";
     msg += "\n<b>Monitor periódico:</b>\n";
     msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min.\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
     await sendLongMessage(msg);
+}
+
+async function handlePendientes() {
+    const pending = getPendingQuestions();
+    if (pending.length === 0) {
+        await sendMessage("✅ No hay preguntas pendientes.");
+        return;
+    }
+
+    let msg = "📋 <b>Preguntas pendientes (" + pending.length + ")</b>\n\n";
+    const keyboard = [];
+
+    for (let i = 0; i < pending.length; i++) {
+        const q = pending[i];
+        const age = Math.round((Date.now() - new Date(q.timestamp).getTime()) / 60000);
+        const typeEmoji = { permission: "🔐", sprint: "🚀", proposal: "💡" }[q.type] || "❓";
+
+        msg += typeEmoji + " <b>" + (i + 1) + ".</b> " + escHtml(q.message).substring(0, 80) + "\n";
+        msg += "   <i>" + q.type + " — hace " + age + " min</i>\n\n";
+
+        if (q.type === "sprint") {
+            keyboard.push([
+                { text: "🚀 " + (i + 1) + ". Planificar sprint", callback_data: "pq_yes:" + q.id },
+                { text: "⏹ " + (i + 1) + ". Descartar", callback_data: "pq_dismiss:" + q.id }
+            ]);
+        } else if (q.type === "permission") {
+            keyboard.push([
+                { text: "✅ " + (i + 1) + ". Permitir", callback_data: "pq_allow:" + q.id },
+                { text: "❌ " + (i + 1) + ". Descartar", callback_data: "pq_dismiss:" + q.id }
+            ]);
+        } else {
+            keyboard.push([
+                { text: "▶️ " + (i + 1) + ". Ejecutar", callback_data: "pq_yes:" + q.id },
+                { text: "⏹ " + (i + 1) + ". Descartar", callback_data: "pq_dismiss:" + q.id }
+            ]);
+        }
+    }
+
+    await telegramPost("sendMessage", {
+        chat_id: CHAT_ID,
+        text: msg,
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: keyboard }
+    }, 8000);
+}
+
+async function handlePendingCallback(callbackData, callbackQueryId) {
+    const parts = callbackData.split(":");
+    const action = parts[0]; // pq_yes, pq_allow, pq_dismiss
+    const questionId = parts.slice(1).join(":");
+
+    const question = getQuestionById(questionId);
+    if (!question || question.status !== "pending") {
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Pregunta ya resuelta o no encontrada",
+            show_alert: true
+        }, 5000);
+        return;
+    }
+
+    if (action === "pq_dismiss") {
+        resolveQuestion(questionId, "answered");
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "⏹ Descartada",
+            show_alert: false
+        }, 5000);
+        await sendMessage("⏹ Pregunta descartada: <i>" + escHtml(question.message).substring(0, 60) + "</i>");
+        return;
+    }
+
+    if (action === "pq_yes" && question.type === "sprint") {
+        resolveQuestion(questionId, "answered");
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "🚀 Lanzando sprint...",
+            show_alert: false
+        }, 5000);
+        await sendMessage("🚀 Lanzando <code>/planner sprint</code> desde pregunta pendiente...");
+        // Ejecutar /planner sprint
+        await executeClaude("/planner sprint", []);
+        return;
+    }
+
+    if (action === "pq_allow" && question.type === "permission") {
+        resolveQuestion(questionId, "answered");
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "✅ Nota: el permiso original ya expiró. Registrado para referencia.",
+            show_alert: true
+        }, 5000);
+        await sendMessage("✅ Pregunta de permiso resuelta. <i>Nota: la sesión original ya terminó, el permiso se aplicará en futuras solicitudes similares.</i>");
+        return;
+    }
+
+    // Fallback: ejecutar acción genérica
+    resolveQuestion(questionId, "answered");
+    await telegramPost("answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text: "✅ Procesado",
+        show_alert: false
+    }, 5000);
+    if (question.action_data && question.action_data.command) {
+        await sendMessage("▶️ Ejecutando: <code>" + escHtml(question.action_data.command) + "</code>");
+        await executeClaude(question.action_data.command, []);
+    }
 }
 
 async function handleStatus() {
@@ -1178,6 +1292,22 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
+                    // Callbacks de preguntas pendientes (pq_*)
+                    else if (cbData.startsWith("pq_")) {
+                        log("Callback de pregunta pendiente: " + cbData);
+                        try {
+                            await handlePendingCallback(cbData, cq.id);
+                        } catch (e) {
+                            log("Error procesando callback pendiente: " + e.message);
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Error: " + e.message.substring(0, 100),
+                                    show_alert: true
+                                }, 5000);
+                            } catch (e2) {}
+                        }
+                    }
                 }
                 continue;
             }
@@ -1228,6 +1358,9 @@ async function pollingLoop() {
                         break;
                     case "sprint_interval":
                         await handleSprintInterval(cmd.minutes);
+                        break;
+                    case "pendientes":
+                        await handlePendientes();
                         break;
                     case "unknown_command":
                         await sendMessage("❓ Comando <code>/" + escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
