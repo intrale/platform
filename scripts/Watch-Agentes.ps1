@@ -152,8 +152,16 @@ function Test-AgentDone {
 
 function Test-NoClaude {
     # Failsafe: verificar si hay ALGUN proceso claude corriendo
-    $procs = Get-Process -Name 'claude' -ErrorAction SilentlyContinue
-    return (-not $procs -or @($procs).Count -eq 0)
+    # Claude Code corre como node.exe ejecutando cli.js, no como "claude"
+    # Usar Get-CimInstance porque Get-Process no expone CommandLine en PS 5.1
+    $nodeProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue
+    if (-not $nodeProcs) { return $true }
+    foreach ($p in $nodeProcs) {
+        if ($p.CommandLine -match 'claude-code[/\\]cli\.js' -and $p.CommandLine -match 'bypassPermissions') {
+            return $false
+        }
+    }
+    return $true
 }
 
 # --- Polling loop ---

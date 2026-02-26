@@ -91,14 +91,65 @@ function livenessStatus(session) {
   return "stale";
 }
 
+// Cache de CPU snapshots para detectar zombies (CPU=0 entre polls)
+let prevCpuSnapshot = {};
+
+function getClaudeProcesses() {
+  try {
+    const output = execSync(
+      'wmic process where "Name=\'node.exe\'" get ProcessId,CommandLine,CreationDate,UserModeTime /format:list',
+      { cwd: REPO_ROOT, timeout: 10000, windowsHide: true }
+    ).toString();
+
+    const records = output.split(/\r?\n\r?\n/).filter(r => r.trim());
+    const claudeProcs = [];
+
+    for (const record of records) {
+      const fields = {};
+      for (const line of record.split(/\r?\n/)) {
+        const eq = line.indexOf("=");
+        if (eq === -1) continue;
+        fields[line.substring(0, eq).trim()] = line.substring(eq + 1).trim();
+      }
+      if (!fields.CommandLine || !fields.CommandLine.match(/claude-code[/\\]cli\.js/)) continue;
+
+      const pid = parseInt(fields.ProcessId, 10);
+      const isAgent = /bypassPermissions/.test(fields.CommandLine);
+      const cpuTime = parseInt(fields.UserModeTime, 10) || 0;
+
+      // Detectar zombie: CPU identica entre polls
+      const prevCpu = prevCpuSnapshot[pid];
+      const isZombie = prevCpu !== undefined && prevCpu === cpuTime;
+
+      // Parsear CreationDate de WMI (yyyyMMddHHmmss.ffffff±UUU)
+      let startedAt = null;
+      if (fields.CreationDate) {
+        const m = fields.CreationDate.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+        if (m) startedAt = new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]).toISOString();
+      }
+
+      claudeProcs.push({ pid, isAgent, startedAt, cpuTime, isZombie });
+    }
+
+    // Actualizar snapshot de CPU
+    const newSnapshot = {};
+    for (const p of claudeProcs) newSnapshot[p.pid] = p.cpuTime;
+    prevCpuSnapshot = newSnapshot;
+
+    return claudeProcs;
+  } catch (e) { return []; }
+}
+
 function collectData() {
   const allSessions = loadSessions();
   const sessions = allSessions.map(s => ({
     ...s,
     liveness: livenessStatus(s)
   }));
+  const processes = getClaudeProcesses();
   return {
     sessions,
+    processes,
     activity: loadRecentActivity(),
     sprintPlan: loadSprintPlan(),
     git: getGitInfo(),
@@ -403,6 +454,8 @@ function getHTML() {
   ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: #484f58; }
 
+  .status-zombie { color: #f85149; }
+  .row-zombie { background: #3d1f1f !important; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -439,6 +492,25 @@ function getHTML() {
           </tr>
         </thead>
         <tbody id="sessions-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Procesos Claude -->
+  <div id="processes-panel" class="panel panel-sessions hidden">
+    <div class="panel-header">Procesos Claude</div>
+    <div class="panel-body">
+      <table>
+        <thead>
+          <tr>
+            <th>PID</th>
+            <th>Tipo</th>
+            <th>Inicio</th>
+            <th>CPU (s)</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody id="processes-body"></tbody>
       </table>
     </div>
   </div>
@@ -530,6 +602,8 @@ function getHTML() {
   var activityList = document.getElementById("activity-list");
   var gitBranch = document.getElementById("git-branch");
   var gitCommit = document.getElementById("git-commit");
+  var processesPanel = document.getElementById("processes-panel");
+  var processesBody = document.getElementById("processes-body");
   var sprintPanel = document.getElementById("sprint-panel");
   var sprintTitle = document.getElementById("sprint-title");
   var sprintBody = document.getElementById("sprint-body");
@@ -710,8 +784,46 @@ function getHTML() {
     sprintBody.innerHTML = html;
   }
 
+  function renderProcesses(processes, sessions) {
+    if (!processes || processes.length === 0) {
+      processesPanel.classList.add("hidden");
+      return;
+    }
+    // Solo mostrar agentes (bypassPermissions) — los procesos interactivos no interesan
+    var agents = processes.filter(function(p) { return p.isAgent; });
+    if (agents.length === 0) {
+      processesPanel.classList.add("hidden");
+      return;
+    }
+    processesPanel.classList.remove("hidden");
+    var html = "";
+    for (var i = 0; i < agents.length; i++) {
+      var p = agents[i];
+      var tipo = "Agente";
+      var cpuSecs = Math.round((p.cpuTime || 0) / 10000000);
+      var started = p.startedAt ? formatTime(p.startedAt) : "--";
+      var statusHtml;
+      var rowClass = "";
+      if (p.isZombie) {
+        statusHtml = '<span class="status-dot status-zombie">&#x2620;</span> zombie';
+        rowClass = ' class="row-zombie"';
+      } else {
+        statusHtml = '<span class="status-dot status-active">&#x25CF;</span> activo';
+      }
+      html += "<tr" + rowClass + ">" +
+        "<td><code>" + p.pid + "</code></td>" +
+        "<td>" + tipo + "</td>" +
+        "<td>" + started + "</td>" +
+        "<td>" + cpuSecs + "</td>" +
+        "<td>" + statusHtml + "</td>" +
+        "</tr>";
+    }
+    processesBody.innerHTML = html;
+  }
+
   function renderAll(data) {
     renderSessions(data.sessions || []);
+    renderProcesses(data.processes || [], data.sessions || []);
     renderActivity(data.activity || []);
     renderGit(data.git || {});
     renderSprint(data.sprintPlan);
