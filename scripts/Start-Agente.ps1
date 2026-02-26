@@ -149,7 +149,7 @@ function Start-UnAgente {
                "Write-Host '  Branch: $branch' -ForegroundColor Cyan; " +
                "Write-Host '  Log: $logFile' -ForegroundColor DarkGray; " +
                "Write-Host ''; " +
-               "claude --permission-mode bypassPermissions `"$escapedPrompt`"; " +
+               "claude --dangerously-skip-permissions `"$escapedPrompt`"; " +
                "Write-Host ''; " +
                "Write-Host ('  claude finalizo (exit ' + `$LASTEXITCODE + ')') -ForegroundColor Yellow; " +
                "Stop-Transcript | Out-Null; " +
