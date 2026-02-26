@@ -892,23 +892,13 @@ function buildRemainingKeyboard(data) {
 }
 
 async function handleProposalCallback(callbackData, callbackQueryId) {
-    // Helper: answerCallbackQuery es solo feedback visual (quita el spinner del botón).
-    // Si falla (query expirado, timeout, etc.) no debe abortar el flujo real.
-    async function ackCallback(text, showAlert) {
-        try {
-            await telegramPost("answerCallbackQuery", {
-                callback_query_id: callbackQueryId,
-                text: text,
-                show_alert: !!showAlert
-            }, 5000);
-        } catch (e) {
-            log("answerCallbackQuery falló (no fatal): " + e.message);
-        }
-    }
-
     const data = loadProposals();
     if (!data || !data.proposals) {
-        await ackCallback("No hay propuestas activas", true);
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "No hay propuestas activas",
+            show_alert: true
+        }, 5000);
         return;
     }
 
@@ -916,7 +906,11 @@ async function handleProposalCallback(callbackData, callbackQueryId) {
 
     if (callbackData === "create_all_proposals") {
         // Crear todas las propuestas pendientes
-        await ackCallback("Creando todas las propuestas...", false);
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Creando todas las propuestas...",
+            show_alert: false
+        }, 5000);
 
         const pending = data.proposals.filter(p => p.status === "pending");
         if (pending.length === 0) {
@@ -958,12 +952,20 @@ async function handleProposalCallback(callbackData, callbackQueryId) {
 
     const proposal = data.proposals.find(p => p.index === idx);
     if (!proposal) {
-        await ackCallback("Propuesta no encontrada", true);
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Propuesta no encontrada",
+            show_alert: true
+        }, 5000);
         return;
     }
 
     if (proposal.status !== "pending") {
-        await ackCallback("Propuesta ya procesada: " + proposal.status, false);
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Propuesta ya procesada: " + proposal.status,
+            show_alert: false
+        }, 5000);
         return;
     }
 
@@ -971,7 +973,11 @@ async function handleProposalCallback(callbackData, callbackQueryId) {
         proposal.status = "created";
         saveProposals(data);
 
-        await ackCallback("✅ Creando: " + proposal.title.substring(0, 50), false);
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "✅ Creando: " + proposal.title.substring(0, 50),
+            show_alert: false
+        }, 5000);
 
         // Editar mensaje con estado actualizado y botones restantes
         if (msgId) {
@@ -997,7 +1003,11 @@ async function handleProposalCallback(callbackData, callbackQueryId) {
         proposal.status = "discarded";
         saveProposals(data);
 
-        await ackCallback("❌ Descartada: " + proposal.title.substring(0, 50), false);
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "❌ Descartada: " + proposal.title.substring(0, 50),
+            show_alert: false
+        }, 5000);
 
         // Editar mensaje con estado actualizado y botones restantes
         if (msgId) {
