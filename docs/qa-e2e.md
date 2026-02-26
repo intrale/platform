@@ -171,6 +171,59 @@ El skill `/delivery` verifica si hay resultados QA recientes antes de crear un P
 2. Usar `id: "tag_name"` para encontrar elementos por testTag
 3. Probar localmente: `maestro test .maestro/flows/nuevo-flow.yaml`
 
+## Evidencias historicas
+
+Las evidencias de cada ejecucion QA se persisten en `qa/evidence/` para consulta permanente, evitando depender de artifacts de CI que expiran a los 14 dias.
+
+### Estructura
+
+```
+qa/evidence/
+├── 2026-02-25_14-30/          # Run con timestamp
+│   ├── summary.md             # Tabla de resultados (tests/passed/failed/skipped)
+│   ├── api/
+│   │   ├── html/              # Reporte HTML de Gradle (index.html)
+│   │   ├── junit/             # Archivos JUnit XML
+│   │   ├── traces/            # Traces Playwright (.zip)
+│   │   └── screenshots/       # Screenshots (.png)
+│   ├── desktop/
+│   │   └── html/              # Reporte desktopTest (si existe)
+│   └── android/
+│       ├── maestro-results.xml
+│       └── maestro-output.log
+├── latest/                    # Copia del ultimo run (sin symlinks, compatible Windows)
+└── .gitkeep
+```
+
+### Navegar el reporte
+
+Abrir `qa/evidence/latest/api/html/index.html` en un navegador para ver el reporte HTML con el detalle de cada test (passed/failed, duracion, stack traces).
+
+### Uso local
+
+Despues de correr tests (ej: `/qa api`), ejecutar:
+
+```bash
+bash qa/scripts/collect-evidence.sh
+```
+
+Opciones:
+- `--dry-run` — muestra que archivos copiaria sin ejecutar nada
+
+El script detecta automaticamente que niveles tienen resultados (API, Desktop, Android) y solo recolecta lo que exista.
+
+### En CI
+
+El job `e2e-qa` en `pr-checks.yml` ejecuta `collect-evidence.sh` automaticamente despues de los tests y commitea las evidencias a la rama del PR. Esto permite:
+
+- Ver el historial de evidencias directamente en el repo
+- Comparar resultados entre distintas ejecuciones
+- Consultar reportes sin depender de artifacts temporales
+
+### Artifacts de CI
+
+Los artifacts de CI (`qa-e2e-reports`, `qa-e2e-recordings`) siguen disponibles durante 14 dias para archivos grandes como videos. Las evidencias versionadas en `qa/evidence/` son complementarias.
+
 ## Limitaciones conocidas
 
 - **No hay tests de UI web**: Compose Wasm renderiza en canvas, inaccesible para Playwright

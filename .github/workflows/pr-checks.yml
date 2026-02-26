@@ -287,6 +287,8 @@ jobs:
       needs.detect-changes.outputs.backend == 'true' ||
       needs.detect-changes.outputs.users == 'true' ||
       needs.detect-changes.outputs.shared == 'true'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     services:
       dynamodb-local:
@@ -453,6 +455,16 @@ jobs:
           path: qa/recordings/
           retention-days: 14
           if-no-files-found: ignore
+
+      - name: Collect and commit QA evidence
+        if: always()
+        run: |
+          bash qa/scripts/collect-evidence.sh
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add qa/evidence/
+          git diff --cached --quiet || git commit -m "chore(qa): evidencias E2E $(date +%Y-%m-%d)"
+          git push origin HEAD:${{ github.head_ref }}
 
   # ── Gate final — todos los checks deben pasar ───────────────────
   pr-status:
