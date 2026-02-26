@@ -19,6 +19,7 @@ const POLL_TIMEOUT_SEC = 20;   // Telegram long-poll: esperar hasta 20s por upda
 const MAX_POLL_CYCLES = 15;    // 15 ciclos × 20s = ~5 minutos antes de timeout
 const ANSWER_TIMEOUT = 5000;   // Timeout para answerCallbackQuery y editMessage
 
+const { addPendingQuestion, resolveQuestion } = require(path.join(__dirname, "..", ".claude", "hooks", "pending-questions"));
 const REPO_ROOT = "C:\\Workspaces\\Intrale\\platform";
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 const OFFSET_FILE = path.join(REPO_ROOT, ".claude", "hooks", "tg-approver-offset.json");
@@ -202,6 +203,19 @@ async function main() {
             }
         }, 8000);
         log("Mensaje enviado msg_id=" + sentMsg.message_id + " requestId=" + requestId);
+
+        // Registrar pregunta pendiente
+        addPendingQuestion({
+            id: requestId,
+            type: "sprint",
+            message: "¿Planificar siguiente sprint?",
+            telegram_message_id: sentMsg.message_id,
+            options: [
+                { label: "Si, planificar", action: "yes" },
+                { label: "No, terminar", action: "no" }
+            ],
+            action_data: { command: "/planner sprint" }
+        });
     } catch(e) {
         log("Error enviando mensaje: " + e.message);
         process.stdout.write(JSON.stringify({ confirmed: false, error: "send" }) + "\n");
@@ -217,6 +231,7 @@ async function main() {
     if (!decision) {
         // Timeout: editar mensaje y salir
         log("Timeout sin respuesta. Latencia: " + latencyMs + "ms");
+        resolveQuestion(requestId, "expired");
         saveOffset(offset);
         try {
             await telegramPost("editMessageText", {
@@ -256,6 +271,7 @@ async function main() {
     } catch(e) { log("Error editando mensaje con decision: " + e.message); }
 
     log("Resultado: " + (isYes ? "confirmed" : "rejected") + " en " + latencyMs + "ms");
+    resolveQuestion(requestId, "answered");
     process.stdout.write(JSON.stringify({ confirmed: isYes }) + "\n");
     process.exit(0);
 }

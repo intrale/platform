@@ -15,6 +15,7 @@ const fs = require("fs");
 const path = require("path");
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern } = require("./permission-utils");
 
+const { addPendingQuestion, resolveQuestion } = require("./pending-questions");
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
@@ -341,6 +342,20 @@ async function processInput() {
             }
         }, 8000);
         log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId);
+
+        // Registrar pregunta pendiente
+        addPendingQuestion({
+            id: requestId,
+            type: "permission",
+            message: action,
+            telegram_message_id: sentMsg.message_id,
+            options: [
+                { label: "Permitir", action: "allow" },
+                { label: "Siempre", action: "always" },
+                { label: "Denegar", action: "deny" }
+            ],
+            action_data: { tool_name: toolName, tool_input: toolInput, agent: agent }
+        });
     } catch(e) {
         log("Error enviando mensaje: " + e.message);
         process.exit(0); // fallback: Claude muestra prompt local
@@ -355,6 +370,7 @@ async function processInput() {
     if (!decision) {
         // Timeout: editar mensaje para indicarlo y dejar que Claude muestre UI local
         log("Timeout sin respuesta tras " + PERMISSION_TIMEOUT_MIN + " min (" + MAX_POLL_CYCLES + " ciclos). Latencia: " + latencyMs + "ms");
+        resolveQuestion(requestId, "expired");
         saveOffset(offset); // persistir el offset aunque no hubo respuesta
         try {
             await telegramPost("editMessageText", {
@@ -390,6 +406,7 @@ async function processInput() {
     } catch(e) { log("Error editando mensaje con decisión: " + e.message); }
 
     log("Decisión: " + decision.action + " en " + latencyMs + "ms");
+    resolveQuestion(requestId, "answered");
 
     // 6. Si es "siempre": persistir en settings.local.json ANTES de responder
     //    (escritura síncrona — garantiza que el archivo existe antes del allow)
