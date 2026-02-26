@@ -110,7 +110,10 @@ function Get-WorktreePath {
 }
 
 function Test-AgentDone {
-    param([string]$WtDir)
+    param(
+        [string]$WtDir,
+        [int]$AgentNumber
+    )
 
     # Worktree no existe → done (nunca arranco o ya fue limpiado)
     if (-not (Test-Path $WtDir)) { return $true }
@@ -118,8 +121,20 @@ function Test-AgentDone {
     $wtResolved = (Resolve-Path $WtDir -ErrorAction SilentlyContinue)
     if (-not $wtResolved) { return $true }
 
-    # Buscar session files con status "done" en .claude/sessions/ del worktree
-    # El hook stop-notify.js marca la sesion como "done" cuando claude finaliza
+    # Check principal: verificar si la terminal del agente sigue viva (via PID)
+    # Sin -NoExit, la terminal se cierra cuando claude termina → PID muerto = done
+    $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
+    if ((Test-Path $pidsFile) -and $AgentNumber -gt 0) {
+        $pidsData = Get-Content $pidsFile -Raw | ConvertFrom-Json
+        $pidKey = "agente_$AgentNumber"
+        $terminalPid = $pidsData.$pidKey
+        if ($terminalPid) {
+            $proc = Get-Process -Id $terminalPid -ErrorAction SilentlyContinue
+            if (-not $proc) { return $true }
+        }
+    }
+
+    # Fallback: buscar session files con status "done" en .claude/sessions/
     $sessionsDir = Join-Path $wtResolved '.claude' 'sessions'
     if (Test-Path $sessionsDir) {
         $sessionFiles = Get-ChildItem $sessionsDir -Filter '*.json' -ErrorAction SilentlyContinue
@@ -152,7 +167,7 @@ while (-not $allDone) {
 
     foreach ($a in $Plan.agentes) {
         $wtDir = Get-WorktreePath $a
-        $isDone = Test-AgentDone $wtDir
+        $isDone = Test-AgentDone -WtDir $wtDir -AgentNumber $a.numero
         if ($isDone) {
             $doneCount++
             $statusParts += ('{0}:OK' -f $a.numero)
@@ -267,7 +282,7 @@ $cmdSprint = "Set-Location '$MainRepo'; " +
              "Write-Host ''; " +
              "claude '/planner sprint'"
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdSprint
+Start-Process powershell -ArgumentList "-Command", $cmdSprint
 
 # Lanzar /planner proponer en paralelo (segunda terminal)
 if (-not $NoAutoProponer) {
@@ -277,7 +292,7 @@ if (-not $NoAutoProponer) {
                    "Write-Host '  Analizando codebase para nuevas propuestas...' -ForegroundColor Magenta; " +
                    "Write-Host ''; " +
                    "claude '/planner proponer'"
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdProponer
+    Start-Process powershell -ArgumentList "-Command", $cmdProponer
 }
 
 $bannerMsg = if ($NoAutoProponer) { 'sprint iniciado' } else { 'sprint + proponer iniciados' }
