@@ -59,6 +59,20 @@ function log(msg) {
     console.log(line);
 }
 
+// ─── Trust pre-registration ──────────────────────────────────────────────────
+
+function preTrustDirectory(absPath) {
+    // Claude Code almacena trust en ~/.claude/projects/<path-mangled>/
+    // Path mangling: reemplazar :, \, / con -
+    const mangled = absPath.replace(/[:\\/]/g, "-");
+    const homeDir = process.env.USERPROFILE || process.env.HOME;
+    const trustDir = path.join(homeDir, ".claude", "projects", mangled);
+    if (!fs.existsSync(trustDir)) {
+        fs.mkdirSync(trustDir, { recursive: true });
+        log("Trust pre-registrado: " + mangled);
+    }
+}
+
 // ─── Lockfile ────────────────────────────────────────────────────────────────
 
 const LOCK_STALE_MS = 24 * 60 * 60 * 1000; // 24h — si el lockfile tiene más de esto, es stale seguro
@@ -752,6 +766,9 @@ async function handleSprint(agentNumber) {
     await sendMessage(header);
 
     // Arrancar monitor periódico
+    // Pre-registrar confianza del directorio de trabajo
+    preTrustDirectory(REPO_ROOT);
+
     startSprintMonitor();
 
     for (let i = 0; i < agentes.length; i++) {
@@ -848,6 +865,9 @@ function executeClaude(prompt, extraArgs, options) {
         }
 
         log("Ejecutando: claude " + args.join(" ") + " (prompt via stdin, " + prompt.length + " chars)");
+
+        // Pre-registrar confianza del directorio de trabajo
+        preTrustDirectory(REPO_ROOT);
 
         const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: REPO_ROOT };
         delete cleanEnv.CLAUDECODE;
