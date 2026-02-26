@@ -160,10 +160,14 @@ Muestra:
 │   ▶  Sesion actual (ejecuta /monitor)               │
 │                                                     │
 │ Dashboard live: node .claude/dashboard.js           │
+│   --report N   Imagen PNG a Telegram cada N min     │
 │ Datos: .claude/sessions/*.json                      │
 │ Log:   .claude/activity-log.jsonl                   │
 │ Hook:  activity-logger.js (PostToolUse)             │
 │        stop-notify.js (Stop → marca "done")         │
+│                                                     │
+│ Dependencia imagen: npm install canvas              │
+│ (sin canvas, --report envía texto plano)            │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -176,3 +180,6 @@ Muestra:
 - `last_tool` y `last_target` muestran la ultima herramienta usada y su objetivo
 - `activity-log.jsonl` ahora incluye `session` (ID corto) en cada entrada
 - Para monitoreo en tiempo real con auto-refresh: `node .claude/dashboard.js` en terminal externa
+- El flag `--report N` envía una imagen PNG del dashboard a Telegram cada N minutos
+- Requiere `npm install canvas` para generar imágenes PNG; sin canvas, el reporte se envía como texto plano (fallback automático)
+- La imagen incluye: lista de agentes con color según estado (verde/amarillo/gris), última acción, duración, métricas de CI y contadores
