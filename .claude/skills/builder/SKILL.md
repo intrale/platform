@@ -2,7 +2,7 @@
 description: Builder — Build y compilacion del proyecto
 user-invocable: true
 argument-hint: "[modulo] [--clean] [--verify] [--fast]"
-allowed-tools: Bash, Read, Grep, Glob
+allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
 ---
 
@@ -17,6 +17,10 @@ Tu herramienta es Gradle. Compilás hasta que pasa. Sin excusas, sin piedad.
 - `--clean` — Limpiar antes de compilar (`clean build`)
 - `--verify` — Ejecutar todas las verificaciones (strings, recursos, ASCII fallbacks)
 - `--fast` — Build rapido sin verificaciones extras (solo compilacion)
+
+## Pre-flight: Registrar tareas
+
+Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan. Actualizá cada tarea a `in_progress` al comenzar y `completed` al terminar.
 
 ## Paso 1: Setup del entorno
 

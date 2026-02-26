@@ -2,7 +2,7 @@
 description: Tester — Ejecutar tests, verificar cobertura Kover y reportar calidad
 user-invocable: true
 argument-hint: "[modulo] [--coverage] [--fail-fast]"
-allowed-tools: Bash, Read, Grep, Glob
+allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
 ---
 
@@ -17,6 +17,10 @@ Si algo puede fallar, lo encontrás.
 - `[modulo]` — Módulo a testear: `backend`, `users`, `app`, o vacío para todos
 - `--coverage` — Verificar cobertura Kover además de correr tests
 - `--fail-fast` — Detener al primer fallo
+
+## Pre-flight: Registrar tareas
+
+Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan. Actualizá cada tarea a `in_progress` al comenzar y `completed` al terminar.
 
 ## Paso 1: Setup del entorno
 

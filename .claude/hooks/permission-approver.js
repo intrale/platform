@@ -13,7 +13,7 @@ const querystring = require("querystring");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot } = require("./permission-utils");
+const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern } = require("./permission-utils");
 
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
@@ -230,6 +230,54 @@ setTimeout(() => {
     if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} processInput(); }
 }, 3000);
 
+// ─── Auto-approve: fast-path para comandos ya cubiertos por settings ─────────
+
+function isCommandCoveredByRules(toolName, toolInput) {
+    const pattern = generatePattern(toolName, toolInput);
+    if (!pattern) return false;
+
+    // Para Bash con comandos compuestos (;, &&, |), verificar cada sub-comando
+    if (toolName === "Bash" && toolInput.command) {
+        const cmd = toolInput.command.trim();
+        const separators = /;|&&/;
+        if (separators.test(cmd)) {
+            // Extraer todos los sub-comandos y verificar cada uno
+            const subCmds = cmd.split(separators).map(s => s.trim()).filter(Boolean);
+            const settingsPaths = getSettingsPaths(REPO_ROOT);
+            for (const sp of settingsPaths) {
+                try {
+                    const s = JSON.parse(fs.readFileSync(sp, "utf8"));
+                    const allow = (s.permissions && s.permissions.allow) || [];
+                    const deny = (s.permissions && s.permissions.deny) || [];
+                    const allCovered = subCmds.every(sub => {
+                        const subPattern = generateBashPattern(sub);
+                        return subPattern && isAlreadyCovered(subPattern, allow);
+                    });
+                    // Verificar que el patrón principal no colisione con deny
+                    const denyMatch = deny.some(d => {
+                        const dm = d.match(/^Bash\((.+?):\*\)$/);
+                        if (!dm) return false;
+                        return subCmds.some(sub => sub.startsWith(dm[1]));
+                    });
+                    if (allCovered && !denyMatch) return true;
+                } catch(e) {}
+            }
+            return false;
+        }
+    }
+
+    // Caso simple: un solo comando o tool no-Bash
+    const settingsPaths = getSettingsPaths(REPO_ROOT);
+    for (const sp of settingsPaths) {
+        try {
+            const s = JSON.parse(fs.readFileSync(sp, "utf8"));
+            const allow = (s.permissions && s.permissions.allow) || [];
+            if (isAlreadyCovered(pattern, allow)) return true;
+        } catch(e) {}
+    }
+    return false;
+}
+
 async function processInput() {
     const startTime = Date.now();
     log("INPUT: " + rawInput.substring(0, 300));
@@ -246,6 +294,20 @@ async function processInput() {
     const requestId = crypto.randomBytes(8).toString("hex");
 
     log("REPO_ROOT=" + REPO_ROOT + " MAIN=" + MAIN_REPO_ROOT + " tool=" + toolName);
+
+    // Fast-path: auto-aprobar si ya está cubierto por reglas existentes
+    if (isCommandCoveredByRules(toolName, toolInput)) {
+        log("AUTO-APPROVE: tool=" + toolName + " cubierto por settings rules");
+        const response = {
+            hookSpecificOutput: {
+                hookEventName: "PermissionRequest",
+                decision: { behavior: "allow" }
+            }
+        };
+        process.stdout.write(JSON.stringify(response) + "\n", () => process.exit(0));
+        setTimeout(() => process.exit(0), 500);
+        return;
+    }
 
     const action = formatAction(toolName, toolInput);
 
