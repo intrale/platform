@@ -12,15 +12,20 @@
 .PARAMETER SkipMerge
     Si se indica, se pasa -SkipMerge al Watch-Agentes (PRs sin merge automatico).
 
+.PARAMETER WithGuardian
+    Si se indica, lanza Guardian-Sprint.ps1 en background (keepalive autonomo).
+
 .EXAMPLE
     .\Start-Agente.ps1 1
     .\Start-Agente.ps1 all
     .\Start-Agente.ps1 all -SkipMerge
+    .\Start-Agente.ps1 all -WithGuardian
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$Numero,
-    [switch]$SkipMerge
+    [switch]$SkipMerge,
+    [switch]$WithGuardian
 )
 
 Set-StrictMode -Version Latest
@@ -195,6 +200,26 @@ if ($Numero -eq "all") {
     }
     else {
         Write-Host ">> Watch-Agentes.ps1 no encontrado, omitiendo watcher." -ForegroundColor Yellow
+    }
+
+    # Lanzar Guardian-Sprint si se solicito
+    if ($WithGuardian) {
+        $guardianScript = Join-Path $PSScriptRoot 'Guardian-Sprint.ps1'
+        if (Test-Path $guardianScript) {
+            # Verificar si ya hay un guardian corriendo
+            $guardianRunning = Get-Process -Name 'powershell' -ErrorAction SilentlyContinue |
+                Where-Object { try { $_.CommandLine -match 'Guardian-Sprint' } catch { $false } }
+            if ($guardianRunning) {
+                Write-Host ">> Guardian-Sprint ya esta corriendo (PID: $($guardianRunning.Id)). Reutilizando." -ForegroundColor Yellow
+            }
+            else {
+                Start-Process powershell -ArgumentList '-NonInteractive', '-File', $guardianScript
+                Write-Host ">> Guardian-Sprint lanzado en background (keepalive autonomo)." -ForegroundColor Green
+            }
+        }
+        else {
+            Write-Host ">> Guardian-Sprint.ps1 no encontrado, omitiendo guardian." -ForegroundColor Yellow
+        }
     }
 }
 else {
