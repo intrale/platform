@@ -90,17 +90,11 @@ Segun los labels de app:
 - Si tiene `app:delivery` → Backlog DELIVERY
 - Si es backend/infra sin app → Backlog NEGOCIO (por defecto)
 
-### Paso 6: Presentar al usuario para confirmacion
+### Paso 6: Crear el issue en GitHub
 
-Antes de crear el issue, mostrar:
-- Titulo propuesto
-- Body completo
-- Labels a asignar
-- Backlog destino
-
-Preguntar: "Creo este issue? Podes pedir cambios antes."
-
-### Paso 7: Crear el issue en GitHub
+Crear el issue directamente **sin pedir confirmación**. Esto permite que `/historia`
+funcione de forma autónoma cuando es invocada por otros agentes (ej: `/planner proponer`
+→ botón Telegram → `/historia`).
 
 ```bash
 gh issue create --repo intrale/platform \
@@ -113,20 +107,20 @@ EOF
   --assignee leitolarreta
 ```
 
-### Paso 8: Agregar al Project V2
+### Paso 7: Agregar al Project V2
 
 Seguir los patrones de `../refinar/api-patterns.md`:
 1. Agregar al proyecto: `gh project item-add 1 --owner intrale --url "https://github.com/intrale/platform/issues/$ISSUE_NUMBER"`
 2. Cambiar status al Backlog correspondiente (ver Paso 5)
 
-### Paso 9: Detectar sub-tareas (opcional)
+### Paso 8: Detectar sub-tareas (opcional)
 
 Si la historia es grande, sugerir al usuario dividirla en sub-tareas:
 - Identificar componentes independientes
 - Proponer issues separados para cada uno
 - Si el usuario acepta, crear cada sub-issue referenciando al principal
 
-### Paso 10: Reportar resultado
+### Paso 9: Reportar resultado
 
 Mostrar:
 - Numero del issue creado con link
@@ -138,4 +132,4 @@ Mostrar:
 
 - `gh` CLI disponible en `/c/Workspaces/gh-cli/bin/` — usar `--json` y `--jq` para parsear JSON
 - Assignee por defecto: `leitolarreta`
-- Siempre pedir confirmacion antes de crear el issue
+- Crear el issue directamente sin pedir confirmacion (flujo autonomo)
