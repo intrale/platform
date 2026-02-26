@@ -43,7 +43,11 @@
       "Skill(historia)",
       "Skill(qa)",
       "Skill(auth)",
-      "Skill(planner)"
+      "Skill(planner)",
+      "Bash(echo gh not found in PATH:*)",
+      "Bash(powershell:*)",
+      "Bash(npm list:*)",
+      "Bash(\"/c/Program Files/nodejs/node\":*)"
     ],
     "deny": [
       "Bash(git push --force*)",
