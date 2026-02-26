@@ -149,6 +149,60 @@ function Test-IsActive {
     }
 }
 
+function Ensure-Permissions {
+    # Auto-healing: verificar que settings.local.json tenga las reglas baseline
+    $claudeDir = Join-Path $MainRepo ".claude"
+    $baselineFile = Join-Path $claudeDir "permissions-baseline.json"
+    $settingsFile = Join-Path $claudeDir "settings.local.json"
+
+    if (-not (Test-Path $baselineFile)) { return $false }
+
+    try {
+        $baseline = Get-Content $baselineFile -Raw | ConvertFrom-Json
+        $baseAllow = @($baseline.allow)
+        $baseDeny  = @($baseline.deny)
+
+        $settings = if (Test-Path $settingsFile) {
+            Get-Content $settingsFile -Raw | ConvertFrom-Json
+        } else {
+            [PSCustomObject]@{ permissions = [PSCustomObject]@{ allow = @(); deny = @() } }
+        }
+
+        if (-not $settings.permissions) {
+            $settings | Add-Member -NotePropertyName 'permissions' -NotePropertyValue ([PSCustomObject]@{ allow = @(); deny = @() }) -Force
+        }
+
+        $currentAllow = @($settings.permissions.allow)
+        $currentDeny  = @($settings.permissions.deny)
+        $modified = $false
+
+        foreach ($rule in $baseAllow) {
+            if ($rule -notin $currentAllow) {
+                $currentAllow += $rule
+                $modified = $true
+            }
+        }
+        foreach ($rule in $baseDeny) {
+            if ($rule -notin $currentDeny) {
+                $currentDeny += $rule
+                $modified = $true
+            }
+        }
+
+        if ($modified) {
+            $settings.permissions.allow = $currentAllow
+            $settings.permissions.deny  = $currentDeny
+            $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsFile -Encoding UTF8
+            Write-Log 'Permissions auto-healed: reglas baseline restauradas' 'Yellow'
+            return $true
+        }
+    }
+    catch {
+        Write-Log ('Ensure-Permissions error: {0}' -f $_.Exception.Message) 'Red'
+    }
+    return $false
+}
+
 # --- Banner ---
 Write-Host ''
 Write-Host '============================================' -ForegroundColor Green
@@ -168,6 +222,10 @@ $prevCpuSnapshot = @{}
 
 while ($true) {
     $cycleCount++
+
+    # Auto-healing de permisos (cada ciclo, idempotente)
+    Ensure-Permissions | Out-Null
+
     $state = Test-IsActive
 
     # Deteccion de zombies: comparar CPU entre ciclos
