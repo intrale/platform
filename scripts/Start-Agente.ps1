@@ -139,11 +139,29 @@ function Start-UnAgente {
     }
 
     # Abrir nueva terminal PowerShell con claude ejecutando
+    # La terminal se cierra automaticamente al terminar claude (sin -NoExit)
+    # Output se loguea a scripts/logs/agente_N.log via Start-Transcript
+    $logDir = Join-Path $PSScriptRoot 'logs'
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    $logFile = Join-Path $logDir "agente_$($Agente.numero).log"
+
     $escapedPrompt = $prompt -replace '"', '\"'
-    $command = "Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; Set-Location '$wtDirResolved'; Write-Host ''; Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; Write-Host '  Branch: $branch' -ForegroundColor Cyan; Write-Host ''; claude --permission-mode bypassPermissions `"$escapedPrompt`""
+    $command = "Start-Transcript -Path '$logFile' -Force | Out-Null; " +
+               "Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; " +
+               "Set-Location '$wtDirResolved'; " +
+               "Write-Host ''; " +
+               "Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; " +
+               "Write-Host '  Branch: $branch' -ForegroundColor Cyan; " +
+               "Write-Host '  Log: $logFile' -ForegroundColor DarkGray; " +
+               "Write-Host ''; " +
+               "claude --permission-mode bypassPermissions `"$escapedPrompt`"; " +
+               "Write-Host ''; " +
+               "Write-Host ('  claude finalizo (exit ' + `$LASTEXITCODE + ')') -ForegroundColor Yellow; " +
+               "Stop-Transcript | Out-Null; " +
+               "Start-Sleep -Seconds 3"
 
     Write-Host ">> Abriendo terminal con claude..."
-    $proc = Start-Process powershell -ArgumentList "-NoExit", "-Command", $command -PassThru
+    $proc = Start-Process powershell -ArgumentList "-Command", $command -PassThru
 
     # Guardar PID en sprint-pids.json
     $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
@@ -176,7 +194,7 @@ function Start-MonitorLive {
     $command = "Set-Location '$MainRepo'; " +
                "Write-Host '  Monitor Live - Dashboard multi-sesion' -ForegroundColor Cyan; " +
                "node '$dashboardPath'"
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", $command
+    Start-Process powershell -ArgumentList "-Command", $command
     Write-Host ">> Monitor live lanzado." -ForegroundColor Green
 }
 

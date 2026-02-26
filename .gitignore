@@ -66,6 +66,7 @@ qa/.backend.pid
 # Sprint — archivos de agentes (no commitear, local de trabajo)
 scripts/sprint-plan.json
 scripts/sprint-pids.json
+scripts/logs/
 
 # Binarios de gh-cli descargados localmente
 gh-cli/
