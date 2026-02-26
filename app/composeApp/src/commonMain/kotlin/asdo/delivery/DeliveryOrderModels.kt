@@ -39,6 +39,8 @@ data class DeliveryOrderDetail(
     val notes: String?,
     val customerName: String?,
     val customerPhone: String?,
+    val paymentMethod: String?,
+    val collectOnDelivery: Boolean?,
     val createdAt: String?,
     val updatedAt: String?
 )
@@ -77,6 +79,8 @@ fun DeliveryOrderDetailDTO.toDomain(): DeliveryOrderDetail = DeliveryOrderDetail
     notes = notes,
     customerName = customerName,
     customerPhone = customerPhone,
+    paymentMethod = paymentMethod,
+    collectOnDelivery = collectOnDelivery,
     createdAt = createdAt,
     updatedAt = updatedAt
 )

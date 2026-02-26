@@ -168,7 +168,10 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                         items(state.orders, key = { it.id }) { order ->
                             DeliveryOrderCard(
                                 order = order,
-                                onOpen = { /* TODO: navegar al detalle del pedido */ },
+                                onOpen = {
+                                    DeliveryOrderSelectionStore.select(order.id)
+                                    navigate(DELIVERY_ORDER_DETAIL_PATH)
+                                },
                                 onStartDelivery = {
                                     coroutineScope.launch {
                                         viewModel.updateStatus(order.id, DeliveryOrderStatus.IN_PROGRESS)
