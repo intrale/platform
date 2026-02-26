@@ -70,8 +70,14 @@ function Send-TelegramMessage {
 # --- Deteccion de actividad ---
 
 function Test-ClaudeRunning {
-    $procs = Get-Process -Name 'claude' -ErrorAction SilentlyContinue
-    return ($procs -and @($procs).Count -gt 0)
+    # Claude Code corre como node.exe ejecutando cli.js, no como "claude"
+    # Usar Get-CimInstance porque Get-Process no expone CommandLine en PS 5.1
+    $nodeProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue
+    if (-not $nodeProcs) { return $false }
+    foreach ($p in $nodeProcs) {
+        if ($p.CommandLine -match 'claude-code[/\\]cli\.js') { return $true }
+    }
+    return $false
 }
 
 function Test-CodexWorktrees {
@@ -86,14 +92,48 @@ function Test-CodexWorktrees {
 }
 
 function Test-WatcherRunning {
-    $psProcs = Get-Process -Name 'powershell' -ErrorAction SilentlyContinue
+    # Usar Get-CimInstance porque Get-Process no expone CommandLine en PS 5.1
+    $psProcs = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue
     if (-not $psProcs) { return $false }
     foreach ($p in $psProcs) {
-        try {
-            if ($p.CommandLine -match 'Watch-Agentes') { return $true }
-        } catch {}
+        if ($p.CommandLine -match 'Watch-Agentes') { return $true }
     }
     return $false
+}
+
+function Get-ClaudeAgentPids {
+    # Retorna hashtable PID → UserModeTime de agentes Claude (bypassPermissions)
+    $result = @{}
+    $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue
+    if (-not $procs) { return $result }
+    foreach ($p in $procs) {
+        if ($p.CommandLine -match 'claude-code[/\\]cli\.js' -and $p.CommandLine -match 'bypassPermissions') {
+            $result[[int]$p.ProcessId] = [long]$p.UserModeTime
+        }
+    }
+    return $result
+}
+
+function Find-ZombieAgents {
+    param([hashtable]$PrevSnapshot, [hashtable]$CurrSnapshot)
+    # Zombie = PID presente en ambos snapshots con CPU identico
+    $zombies = @()
+    foreach ($pid in $CurrSnapshot.Keys) {
+        if ($PrevSnapshot.ContainsKey($pid) -and $CurrSnapshot[$pid] -eq $PrevSnapshot[$pid]) {
+            $zombies += $pid
+        }
+    }
+    return $zombies
+}
+
+function Stop-ZombieAgents {
+    param([int[]]$Pids)
+    foreach ($pid in $Pids) {
+        try {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+            Write-Log ('Zombie eliminado: PID {0}' -f $pid) 'Red'
+        } catch {}
+    }
 }
 
 function Test-IsActive {
@@ -124,12 +164,28 @@ Send-TelegramMessage "🛡️ <b>Guardian-Sprint iniciado</b>`nPolling cada $([m
 # --- Loop principal ---
 $lastLaunchTime = [DateTime]::MinValue
 $cycleCount = 0
+$prevCpuSnapshot = @{}
 
 while ($true) {
     $cycleCount++
     $state = Test-IsActive
 
+    # Deteccion de zombies: comparar CPU entre ciclos
+    $currCpuSnapshot = Get-ClaudeAgentPids
+    if ($prevCpuSnapshot.Count -gt 0 -and $currCpuSnapshot.Count -gt 0) {
+        $zombies = Find-ZombieAgents -PrevSnapshot $prevCpuSnapshot -CurrSnapshot $currCpuSnapshot
+        if ($zombies.Count -gt 0) {
+            $zombieStr = ($zombies | ForEach-Object { $_.ToString() }) -join ', '
+            Write-Log ('ZOMBIE detectado: PID {0} (CPU=0 entre ciclos). Eliminando...' -f $zombieStr) 'Red'
+            Send-TelegramMessage "🛡️ <b>Guardian: zombie(s) detectado(s)</b>`nPID: $zombieStr — CPU inactiva entre ciclos.`nEliminando procesos..."
+            Stop-ZombieAgents -Pids $zombies
+        }
+    }
+    $prevCpuSnapshot = $currCpuSnapshot
+
     $stateStr = 'claude={0} worktrees={1} watcher={2}' -f $state.Claude, $state.Worktrees, $state.Watcher
+    $agentCount = $currCpuSnapshot.Count
+    if ($agentCount -gt 0) { $stateStr += ' agents={0}' -f $agentCount }
 
     if ($state.Active) {
         Write-Log ('Ciclo {0}: activo [{1}]' -f $cycleCount, $stateStr)

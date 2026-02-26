@@ -174,6 +174,41 @@ function getGitInfo() {
   } catch(e) { return { branch: "???", commit: "???" }; }
 }
 
+// Cache de CPU snapshots para detectar zombies
+let _prevCpuSnap = {};
+
+function getClaudeAgentCount() {
+  try {
+    const output = execSync(
+      'wmic process where "Name=\'node.exe\'" get ProcessId,CommandLine,UserModeTime /format:list',
+      { cwd: REPO_ROOT, timeout: 10000, windowsHide: true }
+    ).toString();
+
+    const records = output.split(/\r?\n\r?\n/).filter(r => r.trim());
+    let agents = 0, zombies = 0;
+    const newSnap = {};
+
+    for (const record of records) {
+      const fields = {};
+      for (const line of record.split(/\r?\n/)) {
+        const eq = line.indexOf("=");
+        if (eq === -1) continue;
+        fields[line.substring(0, eq).trim()] = line.substring(eq + 1).trim();
+      }
+      if (!fields.CommandLine || !fields.CommandLine.match(/claude-code[/\\]cli\.js/)) continue;
+      if (!/bypassPermissions/.test(fields.CommandLine)) continue;
+
+      const pid = parseInt(fields.ProcessId, 10);
+      const cpu = parseInt(fields.UserModeTime, 10) || 0;
+      newSnap[pid] = cpu;
+      agents++;
+      if (_prevCpuSnap[pid] !== undefined && _prevCpuSnap[pid] === cpu) zombies++;
+    }
+    _prevCpuSnap = newSnap;
+    return { agents, zombies };
+  } catch(e) { return { agents: 0, zombies: 0 }; }
+}
+
 function getCIStatus() {
   try {
     // Usar bash explicitamente para compatibilidad Windows (Git Bash / MSYS2)
@@ -395,6 +430,17 @@ function render() {
         lines.push(boxLine(truncate(detail, W - 4), W));
       }
     }
+  }
+
+  // Panel PROCESOS CLAUDE
+  const procInfo = getClaudeAgentCount();
+  if (procInfo.agents > 0) {
+    lines.push(boxMid("PROCESOS", W));
+    let procLine = C.green + "\u25CF " + procInfo.agents + " agente(s)" + C.reset;
+    if (procInfo.zombies > 0) {
+      procLine += "  " + C.red + "\u2620 " + procInfo.zombies + " zombie(s)" + C.reset;
+    }
+    lines.push(boxLine(procLine, W));
   }
 
   // Panel ACTIVIDAD RECIENTE
