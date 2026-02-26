@@ -169,7 +169,10 @@ class DeliveryHomeScreen : Screen(DELIVERY_HOME_PATH) {
                         ordersState.orders.forEach { order ->
                             DeliveryOrderCard(
                                 order = order,
-                                onOpen = { navigate(DELIVERY_DASHBOARD_PATH) },
+                                onOpen = {
+                                    DeliveryOrderSelectionStore.select(order.id)
+                                    navigate(DELIVERY_ORDER_DETAIL_PATH)
+                                },
                                 onStartDelivery = {
                                     coroutineScope.launch {
                                         viewModel.updateStatus(order.id, DeliveryOrderStatus.IN_PROGRESS)

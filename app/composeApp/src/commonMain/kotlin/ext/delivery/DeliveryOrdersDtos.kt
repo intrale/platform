@@ -60,6 +60,8 @@ data class DeliveryOrderDetailDTO(
     val notes: String? = null,
     @SerialName("customerName") val customerName: String? = null,
     @SerialName("customerPhone") val customerPhone: String? = null,
+    @SerialName("paymentMethod") val paymentMethod: String? = null,
+    @SerialName("collectOnDelivery") val collectOnDelivery: Boolean? = null,
     @SerialName("createdAt") val createdAt: String? = null,
     @SerialName("updatedAt") val updatedAt: String? = null
 )

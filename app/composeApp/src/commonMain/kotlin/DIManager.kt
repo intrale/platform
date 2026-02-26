@@ -186,6 +186,7 @@ import ui.sc.client.ClientCartScreen
 import ui.sc.client.ClientProductDetailScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
+import ui.sc.delivery.DeliveryOrderDetailScreen
 import ui.sc.delivery.DeliveryProfileScreen
 import ui.sc.client.AddressFormScreen
 import ui.sc.client.AddressListScreen
@@ -226,6 +227,7 @@ public const val REGISTER_SALER = "registerSaler"
 public const val DELIVERY_HOME = "deliveryHome"
 public const val DELIVERY_DASHBOARD = "deliveryDashboard"
 public const val DELIVERY_PROFILE = "deliveryProfile"
+public const val DELIVERY_ORDER_DETAIL = "deliveryOrderDetail"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
@@ -387,6 +389,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = DELIVERY_HOME) { DeliveryHomeScreen() }
     bindSingleton(tag = DELIVERY_DASHBOARD) { DeliveryDashboardScreen() }
     bindSingleton(tag = DELIVERY_PROFILE) { DeliveryProfileScreen() }
+    bindSingleton(tag = DELIVERY_ORDER_DETAIL) { DeliveryOrderDetailScreen() }
     bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
     bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
     bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
@@ -433,6 +436,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = DELIVERY_HOME))
                     add(instance(tag = INIT))
                     add(instance(tag = DELIVERY_DASHBOARD))
+                    add(instance(tag = DELIVERY_ORDER_DETAIL))
                     add(instance(tag = DELIVERY_PROFILE))
                     add(instance(tag = SIGNUP_DELIVERY))
                     add(instance(tag = CONFIRM_SIGNUP))
