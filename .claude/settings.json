@@ -64,6 +64,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/activity-logger.js",
             "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/commander-launcher.js",
+            "timeout": 5000
           }
         ]
       }

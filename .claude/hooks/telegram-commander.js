@@ -58,22 +58,49 @@ function log(msg) {
 
 // ─── Lockfile ────────────────────────────────────────────────────────────────
 
+const LOCK_STALE_MS = 24 * 60 * 60 * 1000; // 24h — si el lockfile tiene más de esto, es stale seguro
+
+function isProcessAlive(pid) {
+    try {
+        process.kill(pid, 0); // señal 0 = solo chequear existencia
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function isLockStale(data) {
+    // Si no tiene PID válido, es stale
+    if (!data.pid || typeof data.pid !== "number") return true;
+    // Si el proceso no está vivo, es stale
+    if (!isProcessAlive(data.pid)) return true;
+    // Fallback: si tiene más de 24h, considerarlo stale (protección contra PIDs reciclados)
+    if (data.started) {
+        const age = Date.now() - new Date(data.started).getTime();
+        if (age > LOCK_STALE_MS) return true;
+    }
+    return false;
+}
+
 function acquireLock() {
     if (fs.existsSync(LOCK_FILE)) {
+        let data;
         try {
-            const data = JSON.parse(fs.readFileSync(LOCK_FILE, "utf8"));
-            const pid = data.pid;
-            // Verificar si el proceso sigue vivo
-            try {
-                process.kill(pid, 0); // señal 0 = solo chequear existencia
-                console.error("Commander ya corriendo (PID " + pid + "). Abortando.");
-                process.exit(1);
-            } catch (e) {
-                // Proceso muerto — lockfile stale
-                log("Lockfile stale (PID " + pid + " muerto). Reemplazando.");
-            }
+            data = JSON.parse(fs.readFileSync(LOCK_FILE, "utf8"));
         } catch (e) {
             log("Lockfile corrupto. Reemplazando.");
+            try { fs.unlinkSync(LOCK_FILE); } catch (e2) {}
+            data = null;
+        }
+
+        if (data) {
+            if (isLockStale(data)) {
+                log("Lockfile stale (PID " + data.pid + "). Reemplazando.");
+                try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
+            } else {
+                console.error("Commander ya corriendo (PID " + data.pid + "). Abortando.");
+                process.exit(1);
+            }
         }
     }
     fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), "utf8");
@@ -1088,6 +1115,18 @@ async function shutdown(signal) {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// Capturar errores no manejados para limpiar lockfile siempre
+process.on("uncaughtException", (e) => {
+    log("uncaughtException: " + e.message);
+    releaseLock();
+    process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+    log("unhandledRejection: " + String(reason));
+    releaseLock();
+    process.exit(1);
+});
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
