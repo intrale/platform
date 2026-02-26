@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.client.ClientOrder
 import asdo.client.ClientOrderDetail
+import asdo.client.ClientOrderStatus
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import ext.client.toClientException
@@ -21,6 +22,7 @@ data class ClientOrdersUiState(
     val status: ClientOrdersStatus = ClientOrdersStatus.Idle,
     val orders: List<ClientOrder> = emptyList(),
     val errorMessage: String? = null,
+    val selectedFilter: ClientOrderStatus? = null,
     val selectedOrder: ClientOrderDetail? = null,
     val loadingDetail: Boolean = false,
     val detailError: String? = null
@@ -37,6 +39,8 @@ class ClientOrdersViewModel(
     var state by mutableStateOf(ClientOrdersUiState())
         private set
 
+    private var allOrders: List<ClientOrder> = emptyList()
+
     init {
         initInputState()
     }
@@ -51,11 +55,8 @@ class ClientOrdersViewModel(
         state = state.copy(status = ClientOrdersStatus.Loading, errorMessage = null)
         getClientOrders.execute()
             .onSuccess { orders ->
-                state = if (orders.isEmpty()) {
-                    state.copy(status = ClientOrdersStatus.Empty, orders = emptyList())
-                } else {
-                    state.copy(status = ClientOrdersStatus.Loaded, orders = orders)
-                }
+                allOrders = orders
+                applyFilter()
             }
             .onFailure { throwable ->
                 logger.error(throwable) { "Error al cargar pedidos del cliente" }
@@ -64,6 +65,20 @@ class ClientOrdersViewModel(
                     errorMessage = throwable.message ?: "Error al cargar pedidos"
                 )
             }
+    }
+
+    fun selectFilter(filter: ClientOrderStatus?) {
+        state = state.copy(selectedFilter = filter)
+        applyFilter()
+    }
+
+    private fun applyFilter() {
+        val filtered = state.selectedFilter?.let { f -> allOrders.filter { it.status == f } } ?: allOrders
+        state = if (filtered.isEmpty()) {
+            state.copy(status = ClientOrdersStatus.Empty, orders = emptyList())
+        } else {
+            state.copy(status = ClientOrdersStatus.Loaded, orders = filtered)
+        }
     }
 
     suspend fun loadOrderDetail(orderId: String) {
