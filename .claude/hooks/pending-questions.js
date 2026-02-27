@@ -91,6 +91,34 @@ function getPendingQuestions() {
 }
 
 /**
+ * Obtener preguntas expiradas de las últimas 24h.
+ * @returns {Array} preguntas expiradas
+ */
+function getExpiredQuestions() {
+    const data = loadQuestions();
+    const cutoff = Date.now() - MAX_AGE_MS;
+    return data.questions.filter(q =>
+        q.status === "expired" &&
+        new Date(q.timestamp).getTime() > cutoff
+    );
+}
+
+/**
+ * Reintentar una pregunta expirada: cambia status a "retried" y retorna action_data.
+ * @param {string} id - ID de la pregunta
+ * @returns {object|null} action_data de la pregunta, o null si no se encontró/no era expired
+ */
+function retryQuestion(id) {
+    const data = loadQuestions();
+    const q = data.questions.find(q => q.id === id);
+    if (!q || q.status !== "expired") return null;
+    q.status = "retried";
+    q.retried_at = new Date().toISOString();
+    saveQuestions(data);
+    return q.action_data || null;
+}
+
+/**
  * Obtener una pregunta por ID.
  * @param {string} id
  * @returns {object|null}
@@ -104,6 +132,8 @@ module.exports = {
     addPendingQuestion,
     resolveQuestion,
     getPendingQuestions,
+    getExpiredQuestions,
+    retryQuestion,
     getQuestionById,
     loadQuestions,
     saveQuestions
