@@ -51,7 +51,17 @@
       "Skill(priorizar)",
       "Skill(historia)",
       "WebSearch",
-      "Bash(#:*)"
+      "Bash(#:*)",
+      "Bash(taskkill:*)",
+      "Bash(STATUS=*)",
+      "Bash(docker:*)",
+      "Bash(where:*)",
+      "Bash(INIT_LOGS=*)",
+      "Bash(export ANDROID_SDK=*)",
+      "Bash(PID=*)",
+      "Bash(sleep:*)",
+      "Bash(npm install:*)",
+      "Bash(rm:*)"
     ],
     "deny": [
       "Bash(git push --force*)",

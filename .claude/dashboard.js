@@ -1,15 +1,19 @@
 #!/usr/bin/env node
-// Monitor v3 — Dashboard Live Multi-Sesion + Reporter Telegram
-// Script standalone Node.js puro — sin dependencias externas
+// Monitor v3 — Dashboard Live Multi-Sesion + Reporter Telegram con PNG
 // Uso: node .claude/dashboard.js [--verbose] [--report <minutos>]
-//   --report N   enviar resumen a Telegram cada N minutos (defecto: deshabilitado)
+//   --report N   enviar resumen PNG a Telegram cada N minutos (defecto: deshabilitado)
 //   --report 0   deshabilitar reporter explícitamente
 // Teclado: q=salir, v=toggle verbose, r=refresh manual
+// Dependencia opcional: npm install canvas (para reporte PNG; sin canvas usa texto plano)
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const querystring = require("querystring");
 const { execSync } = require("child_process");
+
+// Canvas opcional — si no está disponible, fallback a texto plano
+let createCanvas = null;
+try { createCanvas = require("canvas").createCanvas; } catch(e) { /* canvas no disponible */ }
 
 // --- config ---
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -44,6 +48,18 @@ const TG_BOT_TOKEN = _tgDashCfg.bot_token;
 const TG_CHAT_ID = _tgDashCfg.chat_id;
 const TG_MAX_RETRIES = 2;
 const TG_RETRY_DELAY_MS = 1500;
+
+// Colores para imagen PNG del dashboard
+const IMG = {
+  BG: "#1E1E2E", PANEL_BG: "#2A2A3E", HEADER: "#CDD6F4", TEXT: "#BAC2DE",
+  DIM: "#6C7086", GREEN: "#2ECC71", YELLOW: "#F1C40F", GRAY: "#7F8C8D",
+  RED: "#E74C3C", CYAN: "#89B4FA", ACCENT: "#B4BEFE",
+};
+
+const DEBUG_LOG = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+function debugLog(msg) {
+  try { fs.appendFileSync(DEBUG_LOG, "[" + new Date().toISOString() + "] dashboard-img: " + msg + "\n"); } catch(e) {}
+}
 
 function parseReportInterval() {
   const idx = process.argv.indexOf("--report");
@@ -320,18 +336,284 @@ function buildReportMessage() {
   return msg;
 }
 
+// --- Imagen PNG para Telegram ---
+
+function buildReportImage(sessions, recentActivity, git, ci) {
+  if (!createCanvas) return null;
+
+  const W = 800;
+  const agentRows = Math.max(sessions.length, 1);
+  const taskRows = sessions.filter(s => s.current_task && s.status !== "done").length;
+  const H = Math.max(420, 110 + (agentRows * 32) + (taskRows * 20) + 130);
+
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = IMG.BG;
+  ctx.fillRect(0, 0, W, H);
+  ctx.textBaseline = "top";
+
+  let y = 0;
+
+  // === HEADER ===
+  ctx.fillStyle = IMG.PANEL_BG;
+  ctx.fillRect(0, y, W, 50);
+  ctx.fillStyle = IMG.ACCENT;
+  ctx.fillRect(0, y + 48, W, 2);
+
+  ctx.font = "bold 18px monospace";
+  ctx.fillStyle = IMG.HEADER;
+  ctx.fillText("Sprint Monitor", 16, y + 14);
+
+  const timeStr = new Date().toTimeString().substring(0, 8);
+  ctx.font = "14px monospace";
+  ctx.fillStyle = IMG.DIM;
+  ctx.fillText(timeStr + "  |  " + (git.branch || "???"), W - 380, y + 18);
+  y += 56;
+
+  // === PANEL AGENTES ===
+  ctx.font = "bold 14px monospace";
+  ctx.fillStyle = IMG.ACCENT;
+  ctx.fillText("AGENTES", 16, y);
+  y += 22;
+
+  if (sessions.length === 0) {
+    ctx.font = "14px monospace";
+    ctx.fillStyle = IMG.DIM;
+    ctx.fillText("Sin sesiones registradas", 30, y);
+    y += 28;
+  } else {
+    for (const s of sessions) {
+      const label = livenessLabel(s);
+      const statusColor = label === "activa" ? IMG.GREEN : label === "idle" ? IMG.YELLOW : IMG.GRAY;
+      const agent = s.agent_name || "Claude";
+      const action = lastActionLabel(s);
+      const duration = formatDuration(s.started_ts, s.last_activity_ts);
+      const actions = String(s.action_count || 0);
+
+      // Barra lateral de color
+      ctx.fillStyle = statusColor;
+      ctx.fillRect(16, y, 4, 22);
+
+      // Punto de estado
+      ctx.beginPath();
+      ctx.arc(32, y + 11, 5, 0, Math.PI * 2);
+      ctx.fillStyle = statusColor;
+      ctx.fill();
+
+      // Nombre del agente
+      ctx.font = "bold 14px monospace";
+      ctx.fillStyle = IMG.HEADER;
+      ctx.fillText(truncate(agent, 20), 44, y + 3);
+
+      // Acción
+      ctx.font = "14px monospace";
+      ctx.fillStyle = IMG.TEXT;
+      ctx.fillText(action, 240, y + 3);
+
+      // Duración
+      ctx.fillStyle = IMG.DIM;
+      ctx.fillText(duration, 490, y + 3);
+
+      // Acciones count
+      ctx.fillStyle = IMG.CYAN;
+      ctx.fillText(actions + " accs", 560, y + 3);
+
+      // Estado texto
+      ctx.fillStyle = statusColor;
+      ctx.fillText(label, 650, y + 3);
+
+      y += 28;
+
+      // Tarea activa
+      if (s.current_task && s.status !== "done") {
+        ctx.font = "12px monospace";
+        ctx.fillStyle = IMG.DIM;
+        ctx.fillText("  > " + truncate(s.current_task, 65), 44, y);
+        y += 20;
+      }
+    }
+  }
+  y += 8;
+
+  // === PANEL CI ===
+  ctx.fillStyle = IMG.PANEL_BG;
+  ctx.fillRect(0, y, W, 44);
+  ctx.fillStyle = IMG.ACCENT;
+  ctx.fillRect(0, y, W, 1);
+  y += 8;
+
+  ctx.font = "bold 14px monospace";
+  ctx.fillStyle = IMG.ACCENT;
+  ctx.fillText("CI", 16, y);
+
+  let ciStatusText, ciColor;
+  if (ci.status === "completed" && ci.conclusion === "success") { ciStatusText = "OK success"; ciColor = IMG.GREEN; }
+  else if (ci.status === "completed" && ci.conclusion === "failure") { ciStatusText = "FAIL"; ciColor = IMG.RED; }
+  else if (ci.status === "in_progress") { ciStatusText = "in_progress"; ciColor = IMG.YELLOW; }
+  else { ciStatusText = ci.status || "?"; ciColor = IMG.DIM; }
+
+  ctx.font = "14px monospace";
+  ctx.fillStyle = ciColor;
+  ctx.fillText(ciStatusText, 50, y);
+  ctx.fillStyle = IMG.DIM;
+  ctx.fillText("(" + truncate(ci.branch || "?", 30) + ")", 240, y);
+  y += 36;
+
+  // === PANEL MÉTRICAS ===
+  ctx.fillStyle = IMG.ACCENT;
+  ctx.fillRect(0, y, W, 1);
+  y += 8;
+
+  ctx.font = "bold 14px monospace";
+  ctx.fillStyle = IMG.ACCENT;
+  ctx.fillText("METRICAS", 16, y);
+  y += 22;
+
+  const activos = sessions.filter(s => livenessLabel(s) === "activa").length;
+  const idle = sessions.filter(s => livenessLabel(s) === "idle").length;
+  const total = sessions.length;
+
+  const metrics = [
+    { label: "Activos", value: String(activos), color: IMG.GREEN },
+    { label: "Idle", value: String(idle), color: IMG.YELLOW },
+    { label: "Total", value: String(total), color: IMG.HEADER },
+  ];
+
+  let mx = 30;
+  for (const m of metrics) {
+    ctx.fillStyle = IMG.PANEL_BG;
+    ctx.fillRect(mx, y, 100, 36);
+    ctx.strokeStyle = m.color;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(mx, y, 100, 36);
+
+    ctx.font = "bold 18px monospace";
+    ctx.fillStyle = m.color;
+    ctx.fillText(m.value, mx + 12, y + 4);
+
+    ctx.font = "12px monospace";
+    ctx.fillStyle = IMG.DIM;
+    ctx.fillText(m.label, mx + 40, y + 10);
+
+    mx += 130;
+  }
+
+  // Recortar canvas al alto real usado
+  const finalH = y + 50;
+  const finalCanvas = createCanvas(W, finalH);
+  const fctx = finalCanvas.getContext("2d");
+  fctx.drawImage(canvas, 0, 0);
+
+  return finalCanvas.toBuffer("image/png");
+}
+
+function sendTelegramPhoto(imageBuffer, caption) {
+  return new Promise((resolve, reject) => {
+    const boundary = "----DashBoundary" + Date.now().toString(36);
+    const CRLF = "\r\n";
+
+    // Construir multipart/form-data manualmente con https nativo
+    let textParts = "";
+    textParts += "--" + boundary + CRLF;
+    textParts += "Content-Disposition: form-data; name=\"chat_id\"" + CRLF + CRLF;
+    textParts += TG_CHAT_ID + CRLF;
+
+    if (caption) {
+      textParts += "--" + boundary + CRLF;
+      textParts += "Content-Disposition: form-data; name=\"caption\"" + CRLF + CRLF;
+      textParts += caption + CRLF;
+    }
+
+    const preFile = Buffer.from(
+      textParts +
+      "--" + boundary + CRLF +
+      "Content-Disposition: form-data; name=\"photo\"; filename=\"dashboard.png\"" + CRLF +
+      "Content-Type: image/png" + CRLF + CRLF
+    );
+    const postFile = Buffer.from(CRLF + "--" + boundary + "--" + CRLF);
+    const fullBody = Buffer.concat([preFile, imageBuffer, postFile]);
+
+    const req = https.request({
+      hostname: "api.telegram.org",
+      path: "/bot" + TG_BOT_TOKEN + "/sendPhoto",
+      method: "POST",
+      headers: {
+        "Content-Type": "multipart/form-data; boundary=" + boundary,
+        "Content-Length": fullBody.length,
+      },
+      timeout: 15000
+    }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) resolve(r);
+          else reject(new Error(d));
+        } catch(e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.on("error", (e) => reject(e));
+    req.write(fullBody);
+    req.end();
+  });
+}
+
 async function sendReport() {
   try {
-    const msg = buildReportMessage();
-    if (!msg) return;
-    for (let attempt = 1; attempt <= TG_MAX_RETRIES; attempt++) {
+    const sessions = loadSessions();
+    if (sessions.length === 0) return;
+    const hasActive = sessions.some(s => livenessLabel(s) !== "done");
+    if (!hasActive) return;
+
+    const recentActivity = loadRecentActivity();
+    const git = getGitInfo();
+    const ci = getCIStatus();
+
+    // Intentar enviar imagen PNG primero
+    let imageSent = false;
+    if (createCanvas) {
       try {
-        await sendTelegram(msg, attempt);
-        lastReportTs = new Date().toISOString();
-        return;
+        const imgBuf = buildReportImage(sessions, recentActivity, git, ci);
+        if (imgBuf) {
+          const activos = sessions.filter(s => livenessLabel(s) === "activa").length;
+          const caption = "\uD83D\uDCCA Sprint " + new Date().toTimeString().substring(0, 5) +
+            " | " + activos + "/" + sessions.length + " activos | " + (git.branch || "?");
+
+          for (let attempt = 1; attempt <= TG_MAX_RETRIES; attempt++) {
+            try {
+              await sendTelegramPhoto(imgBuf, caption);
+              imageSent = true;
+              lastReportTs = new Date().toISOString();
+              break;
+            } catch(e) {
+              debugLog("sendTelegramPhoto intento " + attempt + " fallo: " + e.message);
+              if (attempt < TG_MAX_RETRIES) {
+                await new Promise(r => setTimeout(r, TG_RETRY_DELAY_MS));
+              }
+            }
+          }
+        }
       } catch(e) {
-        if (attempt < TG_MAX_RETRIES) {
-          await new Promise(r => setTimeout(r, TG_RETRY_DELAY_MS));
+        debugLog("buildReportImage fallo: " + e.message);
+      }
+    }
+
+    // Fallback a texto si la imagen falló o canvas no disponible
+    if (!imageSent) {
+      const msg = buildReportMessage();
+      if (!msg) return;
+      for (let attempt = 1; attempt <= TG_MAX_RETRIES; attempt++) {
+        try {
+          await sendTelegram(msg, attempt);
+          lastReportTs = new Date().toISOString();
+          return;
+        } catch(e) {
+          if (attempt < TG_MAX_RETRIES) {
+            await new Promise(r => setTimeout(r, TG_RETRY_DELAY_MS));
+          }
         }
       }
     }
