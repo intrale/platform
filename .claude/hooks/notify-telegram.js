@@ -1,9 +1,13 @@
 // Hook Notification: reenvia notificaciones de Claude Code a Telegram
+// Enriquecido con contexto de sesión (agente, branch, issue, tarea activa)
 // Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
 const fs = require("fs");
 const path = require("path");
+
+const { readSessionContext } = require("./context-reader");
+const { resolveMainRepoRoot } = require("./permission-utils");
 
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
@@ -12,15 +16,59 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
-const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
+const LOG_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Notification: " + msg + "\n"); } catch(e) {}
 }
 
+function escHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function abbreviate(str, max) {
+    if (!str) return "";
+    str = str.trim();
+    return str.length > max ? str.substring(0, max) + "\u2026" : str;
+}
+
+/**
+ * Genera la sección de contexto del mensaje (agente, rama, issue, tarea activa).
+ * Reutiliza la misma lógica que permission-approver.js.
+ */
+function formatContext(sessionId, repoRoot) {
+    const ctx = readSessionContext(sessionId, repoRoot);
+    const lines = [];
+
+    // Agente / skill activo
+    if (ctx.agentName) {
+        lines.push("\ud83e\udd16 " + escHtml(ctx.agentName));
+    } else if (ctx.skill) {
+        lines.push("\u26a1 /" + escHtml(ctx.skill));
+    }
+
+    // Rama + issue
+    if (ctx.branch && ctx.branch !== "main" && ctx.branch !== "develop") {
+        let branchDisplay = escHtml(ctx.branch);
+        const issueMatch = ctx.branch.match(/(?:agent|feature|bugfix)\/(\d+)/);
+        if (issueMatch) {
+            branchDisplay += " (<a href=\"https://github.com/intrale/platform/issues/" + issueMatch[1] + "\">#" + issueMatch[1] + "</a>)";
+        }
+        lines.push("\ud83d\udd00 " + branchDisplay);
+    }
+
+    // Tarea activa
+    if (ctx.task) {
+        lines.push("\ud83d\udccc " + escHtml(abbreviate(ctx.task, 60)));
+    }
+
+    return lines.length > 0 ? lines.join("\n") : "";
+}
+
 function sendTelegram(text, attempt) {
     return new Promise((resolve, reject) => {
-        const postData = querystring.stringify({ chat_id: CHAT_ID, text: text, parse_mode: "HTML" });
+        const postData = querystring.stringify({ chat_id: CHAT_ID, text: text, parse_mode: "HTML", disable_web_page_preview: true });
         const req = https.request({
             hostname: "api.telegram.org",
             path: "/bot" + BOT_TOKEN + "/sendMessage",
@@ -98,7 +146,17 @@ async function processInput() {
         displayMessage = "Claude Code requiere tu aprobaci\u00f3n para continuar con el plan de trabajo. Revis\u00e1 la terminal para ver el detalle y confirmar o cancelar.";
     }
 
-    const text = emoji + " <b>" + agent + " \u2014 " + displayTitle + "</b>\n" + displayMessage;
+    // Enriquecer con contexto de sesión
+    const sessionId = data.session_id || "";
+    const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
+
+    let text = emoji + " <b>" + escHtml(agent) + " \u2014 " + displayTitle + "</b>\n";
+    if (contextLine) {
+        text += contextLine + "\n";
+    }
+    if (displayMessage) {
+        text += "\n" + escHtml(displayMessage);
+    }
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
