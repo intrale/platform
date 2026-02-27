@@ -22,7 +22,8 @@ const SKILLS_DIR = path.join(REPO_ROOT, ".claude", "skills");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const PROPOSALS_FILE = path.join(HOOKS_DIR, "planner-proposals.json");
 const SESSION_STORE_FILE = path.join(HOOKS_DIR, "tg-session-store.json");
-const { getPendingQuestions, resolveQuestion, getQuestionById } = require("./pending-questions");
+const { getPendingQuestions, getExpiredQuestions, retryQuestion, resolveQuestion, getQuestionById } = require("./pending-questions");
+const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot } = require("./permission-utils");
 
 const POLL_TIMEOUT_SEC = 30;
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutos de inactividad
@@ -349,6 +350,11 @@ function parseCommand(text) {
         return { type: "pendientes" };
     }
 
+    // /retry — ver y reactivar preguntas expiradas
+    if (trimmed === "/retry") {
+        return { type: "retry" };
+    }
+
     // /session [clear] — gestión de sesión conversacional
     if (trimmed === "/session") {
         return { type: "session" };
@@ -412,6 +418,7 @@ async function handleHelp() {
     msg += "  /status — Estado del daemon\n";
     msg += "  /stop — Detener el commander\n";
     msg += "  /pendientes — Preguntas pendientes sin responder\n";
+    msg += "  /retry — Reactivar permisos expirados\n";
     msg += "\n<b>Monitor periódico:</b>\n";
     msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min.\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
@@ -523,6 +530,169 @@ async function handlePendingCallback(callbackData, callbackQueryId) {
         await sendMessage("▶️ Ejecutando: <code>" + escHtml(question.action_data.command) + "</code>");
         await executeClaude(question.action_data.command, []);
     }
+}
+
+async function handleRetry() {
+    const expired = getExpiredQuestions();
+    if (expired.length === 0) {
+        await sendMessage("✅ No hay preguntas expiradas en las últimas 24h.");
+        return;
+    }
+
+    let msg = "⏱ <b>Preguntas expiradas (" + expired.length + ")</b>\n";
+    msg += "<i>Reactivar = aprobar siempre para futuras ejecuciones</i>\n\n";
+    const keyboard = [];
+
+    for (let i = 0; i < expired.length; i++) {
+        const q = expired[i];
+        const age = Math.round((Date.now() - new Date(q.timestamp).getTime()) / 60000);
+        const ageLabel = age >= 60 ? Math.floor(age / 60) + "h " + (age % 60) + "m" : age + " min";
+
+        msg += "🔐 <b>" + (i + 1) + ".</b> <code>" + escHtml((q.message || "").substring(0, 80)) + "</code>\n";
+        msg += "   <i>hace " + ageLabel + "</i>\n\n";
+
+        keyboard.push([
+            { text: "🔄 " + (i + 1) + ". Reactivar", callback_data: "reactivate:" + q.id },
+            { text: "⏹ " + (i + 1) + ". Descartar", callback_data: "dismiss_expired:" + q.id }
+        ]);
+    }
+
+    if (expired.length > 1) {
+        keyboard.push([
+            { text: "🔄 Reactivar todas", callback_data: "reactivate_all" }
+        ]);
+    }
+
+    await telegramPost("sendMessage", {
+        chat_id: CHAT_ID,
+        text: msg,
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: keyboard }
+    }, 8000);
+}
+
+async function handleReactivateCallback(callbackData, callbackQueryId, messageId) {
+    if (callbackData === "reactivate_all") {
+        const expired = getExpiredQuestions();
+        if (expired.length === 0) {
+            await telegramPost("answerCallbackQuery", {
+                callback_query_id: callbackQueryId,
+                text: "No hay preguntas expiradas",
+                show_alert: true
+            }, 5000);
+            return;
+        }
+
+        let persisted = 0;
+        for (const q of expired) {
+            const actionData = retryQuestion(q.id);
+            if (actionData && actionData.tool_name) {
+                persistPermissionFromActionData(actionData);
+                persisted++;
+            }
+        }
+
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "🔄 " + persisted + " permisos reactivados",
+            show_alert: false
+        }, 5000);
+
+        // Editar mensaje: quitar botones
+        try {
+            await telegramPost("editMessageText", {
+                chat_id: CHAT_ID,
+                message_id: messageId,
+                text: "✅ <b>" + persisted + " permisos reactivados</b>\n<i>Próximas ejecuciones se aprobarán automáticamente.</i>",
+                parse_mode: "HTML"
+            }, 8000);
+        } catch (e) { log("Error editando mensaje retry: " + e.message); }
+
+        return;
+    }
+
+    // reactivate:<id> o dismiss_expired:<id>
+    const parts = callbackData.split(":");
+    const action = parts[0];
+    const questionId = parts.slice(1).join(":");
+
+    const question = getQuestionById(questionId);
+    if (!question) {
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "Pregunta no encontrada",
+            show_alert: true
+        }, 5000);
+        return;
+    }
+
+    if (action === "dismiss_expired") {
+        resolveQuestion(questionId, "answered");
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "⏹ Descartada",
+            show_alert: false
+        }, 5000);
+
+        // Editar mensaje original para quitar botones
+        try {
+            await telegramPost("editMessageReplyMarkup", {
+                chat_id: CHAT_ID,
+                message_id: messageId,
+                reply_markup: { inline_keyboard: [] }
+            }, 5000);
+        } catch (e) { /* puede fallar si ya no hay botones */ }
+        return;
+    }
+
+    if (action === "reactivate") {
+        if (question.status !== "expired") {
+            await telegramPost("answerCallbackQuery", {
+                callback_query_id: callbackQueryId,
+                text: "Pregunta ya procesada: " + question.status,
+                show_alert: false
+            }, 5000);
+            return;
+        }
+
+        const actionData = retryQuestion(questionId);
+        if (actionData && actionData.tool_name) {
+            persistPermissionFromActionData(actionData);
+        }
+
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "🔄 Permiso reactivado — se aprobará automáticamente",
+            show_alert: true
+        }, 5000);
+
+        // Editar el mensaje original para reflejar la reactivación
+        const desc = (question.message || "").substring(0, 80);
+        try {
+            await telegramPost("editMessageText", {
+                chat_id: CHAT_ID,
+                message_id: messageId,
+                text: "🔄 <b>Permiso reactivado</b>\n<code>" + escHtml(desc) + "</code>\n<i>Próximas ejecuciones se aprobarán automáticamente.</i>",
+                parse_mode: "HTML"
+            }, 5000);
+        } catch (e) { log("Error editando mensaje reactivado: " + e.message); }
+        return;
+    }
+}
+
+function persistPermissionFromActionData(actionData) {
+    const toolName = actionData.tool_name;
+    const toolInput = actionData.tool_input || {};
+
+    const pattern = generatePattern(toolName, toolInput);
+    if (!pattern) {
+        log("persistPermissionFromActionData: no se pudo generar patrón para " + toolName);
+        return;
+    }
+
+    const settingsPaths = getSettingsPaths(REPO_ROOT);
+    persistPattern(pattern, settingsPaths, log);
+    log("Permiso persistido via retry: " + pattern);
 }
 
 async function handleStatus() {
@@ -1312,6 +1482,22 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
+                    // Callbacks de reactivación de permisos expirados
+                    else if (cbData.startsWith("reactivate:") || cbData.startsWith("dismiss_expired:") || cbData === "reactivate_all") {
+                        log("Callback de reactivación: " + cbData);
+                        try {
+                            await handleReactivateCallback(cbData, cq.id, cq.message && cq.message.message_id);
+                        } catch (e) {
+                            log("Error procesando callback de reactivación: " + e.message);
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Error: " + e.message.substring(0, 100),
+                                    show_alert: true
+                                }, 5000);
+                            } catch (e2) {}
+                        }
+                    }
                     // Callbacks de preguntas pendientes (pq_*)
                     else if (cbData.startsWith("pq_")) {
                         log("Callback de pregunta pendiente: " + cbData);
@@ -1381,6 +1567,9 @@ async function pollingLoop() {
                         break;
                     case "pendientes":
                         await handlePendientes();
+                        break;
+                    case "retry":
+                        await handleRetry();
                         break;
                     case "unknown_command":
                         await sendMessage("❓ Comando <code>/" + escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
