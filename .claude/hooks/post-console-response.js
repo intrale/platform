@@ -1,13 +1,12 @@
-// post-console-response.js — Hook PostToolUse
+// post-console-response.js — Hook PostToolUse (Stop)
 // Detecta preguntas Telegram pendientes que fueron respondidas localmente en consola
-// y actualiza el mensaje de Telegram para reflejar el estado "Respondido en consola".
+// y actualiza el mensaje de Telegram para reflejar el estado.
 //
-// Lógica:
-//   - Lee pending-questions.json buscando preguntas con status:"pending" y telegram_message_id
-//   - Verifica si el timestamp de la pregunta es anterior al arranque de Claude Code
-//     (indicando que el hook permission-approver.js ya no está en polling)
-//   - Para cada una, llama editMessageText en Telegram con "Respondido en consola" y sin botones
-//   - Marca la pregunta como resolveQuestion(id, "answered", "console")
+// Casos que maneja:
+//   1. Preguntas "pending" con más de 60s de antigüedad → el approver ya murió
+//      (el hook tiene timeout de 55s). Marca como "answered via console" y edita Telegram.
+//   2. Preguntas "answered" via "console" sin sincronizar → actualiza Telegram.
+//      (para edge cases donde el approver marcó la pregunta pero no pudo editar Telegram)
 //
 // Pure Node.js — sin dependencias externas
 
@@ -32,10 +31,9 @@ const _tgCfg = JSON.parse(fs.readFileSync(path.join(MAIN_REPO_HOOKS_DIR, "telegr
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 
-// Tiempo máximo desde que se creó la pregunta para considerarla "activa en polling"
-// Si PERMISSION_TIMEOUT_MIN está configurado, usarlo; de lo contrario usar 60 min
-const APPROVER_TIMEOUT_MIN = _tgCfg.permission_timeout_min || 60;
-const APPROVER_TIMEOUT_MS = APPROVER_TIMEOUT_MIN * 60 * 1000;
+// El approver tiene timeout de 50s internamente (55s de hook timeout en settings.json)
+// Si una pregunta tiene más de 60s y sigue "pending", el approver está muerto
+const APPROVER_DEAD_THRESHOLD_MS = 60000; // 60 segundos
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] PostConsole: " + msg + "\n"); } catch (e) {}
@@ -85,25 +83,21 @@ function saveQuestions(data) {
     } catch (e) { log("Error guardando pending-questions.json: " + e.message); }
 }
 
-function resolveAsConsole(data, q) {
-    q.status = "answered";
-    q.answered_at = new Date().toISOString();
-    q.answered_via = "console";
-    saveQuestions(data);
+function escHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-async function processStaleQuestion(data, q) {
+/**
+ * Editar mensaje de Telegram para indicar que fue respondido en consola.
+ * Elimina los botones inline.
+ */
+async function syncToTelegram(q) {
     const msgId = q.telegram_message_id;
-    if (!msgId) {
-        log("Pregunta " + q.id + " sin telegram_message_id — marcando como consola sin editar");
-        resolveAsConsole(data, q);
-        return;
-    }
+    if (!msgId) return;
 
-    // Preparar texto del mensaje original (máx 200 chars)
     const originalMsg = (q.message || "").substring(0, 200);
     const newText = "⌨️ <b>Respondido en consola</b>\n\n"
-        + "<code>" + originalMsg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</code>\n\n"
+        + "<code>" + escHtml(originalMsg) + "</code>\n\n"
         + "<i>El usuario respondió directamente en la consola de Claude Code.</i>";
 
     try {
@@ -114,18 +108,15 @@ async function processStaleQuestion(data, q) {
             parse_mode: "HTML"
             // Sin reply_markup: elimina los botones inline
         }, 8000);
-        log("Mensaje " + msgId + " editado: respondido en consola (pregunta " + q.id + ")");
+        log("Mensaje " + msgId + " sincronizado: respondido en consola (pregunta " + q.id + ")");
     } catch (e) {
         const errMsg = e.message || "";
-        // "message is not modified" es OK — el mensaje ya tenía ese texto
         if (errMsg.includes("message is not modified")) {
-            log("Mensaje " + msgId + " sin cambios (ya tenía el texto correcto)");
+            log("Mensaje " + msgId + " sin cambios (ya actualizado)");
         } else {
             log("Error editando mensaje " + msgId + ": " + errMsg);
         }
     }
-
-    resolveAsConsole(data, q);
 }
 
 async function main() {
@@ -139,44 +130,72 @@ async function main() {
         process.stdin.on("error", () => { clearTimeout(timeout); resolve(); });
     });
 
-    log("Activado (input: " + rawInput.substring(0, 100) + ")");
-
     const data = loadQuestions();
     if (!data.questions || data.questions.length === 0) {
-        log("Sin preguntas registradas — saliendo");
         process.exit(0);
         return;
     }
 
     const now = Date.now();
+    let changed = false;
 
-    // Buscar preguntas pending cuyo tiempo de polling ya expiró
-    // (es decir, permission-approver.js ya no debería estar en polling)
-    const stale = data.questions.filter(q => {
+    // Caso 1: Preguntas "pending" cuyo approver ya está muerto (>60s)
+    // El approver normalmente marca como "expired" antes de morir (a los 50s),
+    // pero si fue killed por Claude antes de poder hacerlo, la pregunta queda "pending".
+    const orphaned = data.questions.filter(q => {
         if (q.status !== "pending") return false;
+        if (q.type !== "permission") return false;
         if (!q.telegram_message_id) return false;
         const age = now - new Date(q.timestamp).getTime();
-        // Si la pregunta tiene más tiempo que el timeout del approver, ya no está siendo polleada
-        return age > APPROVER_TIMEOUT_MS;
+        return age > APPROVER_DEAD_THRESHOLD_MS;
     });
 
-    if (stale.length === 0) {
-        log("Sin preguntas pendientes expiradas — saliendo");
+    // Caso 2: Preguntas answered via console pero sin sincronizar a Telegram
+    const unsyncedConsole = data.questions.filter(q => {
+        if (q.status !== "answered") return false;
+        if (q.answered_via !== "console") return false;
+        if (q.telegram_synced) return false;
+        if (!q.telegram_message_id) return false;
+        return true;
+    });
+
+    const toProcess = orphaned.length + unsyncedConsole.length;
+    if (toProcess === 0) {
         process.exit(0);
         return;
     }
 
-    log("Encontradas " + stale.length + " pregunta(s) pendientes expiradas — actualizando Telegram");
+    log("Encontradas " + orphaned.length + " huérfana(s) + " + unsyncedConsole.length + " sin sincronizar");
 
-    for (const q of stale) {
+    // Procesar huérfanas: marcar como respondido en consola + sincronizar Telegram
+    for (const q of orphaned) {
         try {
-            await processStaleQuestion(data, q);
+            q.status = "answered";
+            q.answered_at = new Date().toISOString();
+            q.answered_via = "console";
+            q.telegram_synced = true;
+            changed = true;
+            await syncToTelegram(q);
         } catch (e) {
-            log("Error procesando pregunta " + q.id + ": " + e.message);
+            log("Error procesando huérfana " + q.id + ": " + e.message);
         }
     }
 
-    log("Procesamiento completado");
+    // Procesar no sincronizadas: solo actualizar Telegram
+    for (const q of unsyncedConsole) {
+        try {
+            q.telegram_synced = true;
+            changed = true;
+            await syncToTelegram(q);
+        } catch (e) {
+            log("Error sincronizando " + q.id + ": " + e.message);
+        }
+    }
+
+    if (changed) {
+        saveQuestions(data);
+    }
+
     process.exit(0);
 }
 

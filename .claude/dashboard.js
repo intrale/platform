@@ -292,6 +292,83 @@ function stepIcon(step, completedSteps, currentStep, allSteps) {
   return "\u25CB"; // ○
 }
 
+// --- Progress & ETA helpers ---
+
+/**
+ * Calcula progreso de un agente desde sus current_tasks[].
+ * Tareas completadas = 1.0, in_progress con sub-steps = fraccion proporcional.
+ * Retorna { done, total, percent }
+ */
+function calcAgentProgress(session) {
+  if (!session.current_tasks || session.current_tasks.length === 0) return { done: 0, total: 0, percent: 0 };
+  let done = 0;
+  const total = session.current_tasks.length;
+  for (const t of session.current_tasks) {
+    if (t.status === "completed") { done += 1; continue; }
+    if (t.status === "in_progress") {
+      if (t.progress) { done += t.progress / 100; continue; }
+      if (Array.isArray(t.steps) && t.steps.length > 0) {
+        const completedSteps = (t.completed_steps || []).length;
+        done += completedSteps / t.steps.length;
+        continue;
+      }
+      done += 0.1; // progreso minimo para in_progress sin detalles
+    }
+  }
+  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+  return { done: Math.round(done * 10) / 10, total, percent };
+}
+
+/**
+ * Estima tiempo restante: elapsed * (100 - progress) / progress.
+ * Solo calcula si progress >= 10%. Retorna string "~15m" o null.
+ */
+function calcAgentETA(session, progressPercent) {
+  if (!progressPercent || progressPercent < 10) return null;
+  if (progressPercent >= 100) return "done";
+  if (!session.started_ts) return null;
+  const elapsed = Date.now() - new Date(session.started_ts).getTime();
+  if (elapsed <= 0) return null;
+  const remaining = elapsed * (100 - progressPercent) / progressPercent;
+  if (remaining > 24 * 3600 * 1000) return ">24h";
+  const mins = Math.round(remaining / 60000);
+  if (mins < 60) return "~" + mins + "m";
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return "~" + hours + "h" + (remMins > 0 ? remMins + "m" : "");
+}
+
+/**
+ * Tiempo transcurrido desde started_ts hasta ahora.
+ */
+function formatElapsed(session) {
+  if (!session.started_ts) return "---";
+  const diff = Date.now() - new Date(session.started_ts).getTime();
+  if (diff < 0) return "0s";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return secs + "s";
+  const mins = Math.floor(secs / 60);
+  const remSecs = secs % 60;
+  if (mins < 60) return mins + "m" + (remSecs > 0 ? remSecs + "s" : "");
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return hours + "h" + (remMins > 0 ? remMins + "m" : "");
+}
+
+/**
+ * Progreso ponderado global de todos los agentes (excluyendo done).
+ */
+function calcGlobalProgress(sessions) {
+  let totalTasks = 0, weightedDone = 0;
+  for (const s of sessions) {
+    if (s.status === "done") continue;
+    const prog = calcAgentProgress(s);
+    totalTasks += prog.total;
+    weightedDone += prog.done;
+  }
+  return totalTasks > 0 ? Math.round((weightedDone / totalTasks) * 100) : 0;
+}
+
 /**
  * Extrae y formatea las tareas de todas las sesiones activas.
  * Retorna { sections: [{ agent, duration, tasks: [{ id, subject, status, percent, steps? }] }], globalDone, globalTotal }
@@ -411,19 +488,33 @@ function buildReportMessage() {
   const timeStr = now.toTimeString().substring(0, 5);
   const total = sessions.length;
   const activos = sessions.filter(s => livenessLabel(s) === "activa").length;
+  const globalProg = calcGlobalProgress(sessions);
 
-  let msg = "\uD83D\uDCCA Sprint \u2014 " + timeStr + "\n\n";
-  msg += "\uD83E\uDD16 Agentes (" + activos + " activos / " + total + " total):\n";
+  let msg = "\uD83D\uDCCA Sprint \u2014 " + timeStr + " | " + activos + "/" + total + " agentes | " + globalProg + "%\n\n";
+  msg += "\uD83E\uDD16 Agentes:\n";
 
   for (const s of sessions) {
     const label = livenessLabel(s);
     const icon = label === "activa" ? "\u25CF" : label === "idle" ? "\u25D0" : label === "done" ? "\u2717" : "\u25CB";
     const agent = agentDisplayName(s);
+    const prog = calcAgentProgress(s);
+    const elapsed = formatElapsed(s);
+    const eta = calcAgentETA(s, prog.percent);
     const action = lastActionLabel(s);
-    const age = formatAge(s.last_activity_ts);
-    msg += icon + " " + truncate(agent, 28) + " \u2014 " + action + " (" + age + ")\n";
-    if (s.current_task && label !== "done") {
-      msg += "  \u2514 \u2699 " + truncate(s.current_task, 40) + "\n";
+    const branch = s.branch ? truncate(s.branch, 30) : "???";
+
+    // Linea 1: nombre + progress bar + elapsed + ETA + estado + acciones
+    const bar = prog.total > 0 ? progressBarAscii(prog.percent, 8) + " " + prog.percent + "%" : "---";
+    const etaStr = eta ? "  ETA " + eta : "";
+    msg += icon + " " + truncate(agent, 22) + "  " + bar + "  " + elapsed + etaStr + "  " + label + "  " + (s.action_count || 0) + " accs\n";
+
+    if (label !== "done") {
+      // Linea 2: branch + last action
+      msg += "  " + branch + "  " + action + "\n";
+      // Linea 3: current task
+      if (s.current_task) {
+        msg += "  > " + truncate(s.current_task, 50) + "\n";
+      }
     }
   }
 
@@ -461,27 +552,37 @@ function buildReportMessage() {
 
 // --- Imagen PNG para Telegram ---
 
-function buildReportImage(sessions, recentActivity, git, ci) {
+function buildReportImage(sessions, recentActivity, ci) {
   if (!createCanvas) return null;
 
   const W = 800;
-  const agentRows = Math.max(sessions.length, 1);
-  const taskRows = sessions.filter(s => s.current_task && s.status !== "done").length;
+  // Calcular filas por agente: 28px base + 18px branch (si no done) + 16px current_task (si tiene)
+  let agentPanelH = 0;
+  for (const s of sessions) {
+    const label = livenessLabel(s);
+    agentPanelH += 28; // linea principal
+    if (label !== "done") {
+      agentPanelH += 18; // linea branch + action
+      if (s.current_task) agentPanelH += 16; // linea current task
+    }
+  }
+  if (sessions.length === 0) agentPanelH = 28;
+
   // Pre-calcular tareas para estimar altura
   const tasksData = formatTasksSection(sessions);
   let taskPanelRows = 0;
   if (tasksData.sections.length > 0) {
-    taskPanelRows += 1; // título "TAREAS"
+    taskPanelRows += 1; // titulo "TAREAS"
     for (const sec of tasksData.sections) {
       taskPanelRows += 1; // nombre agente
       for (const t of sec.tasks) {
-        taskPanelRows += 1; // línea de tarea
+        taskPanelRows += 1; // linea de tarea
         if (t.steps && t.status === "in_progress") taskPanelRows += t.steps.length;
       }
       taskPanelRows += 1; // global
     }
   }
-  const H = Math.max(420, 110 + (agentRows * 32) + (taskRows * 20) + (taskPanelRows * 20) + 180);
+  const H = Math.max(420, 110 + agentPanelH + (taskPanelRows * 20) + 180);
 
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
@@ -503,9 +604,11 @@ function buildReportImage(sessions, recentActivity, git, ci) {
   ctx.fillText("Sprint Monitor", 16, y + 14);
 
   const timeStr = new Date().toTimeString().substring(0, 8);
+  const activos = sessions.filter(s => livenessLabel(s) === "activa").length;
+  const globalProg = calcGlobalProgress(sessions);
   ctx.font = "14px monospace";
   ctx.fillStyle = IMG.DIM;
-  ctx.fillText(timeStr + "  |  " + (git.branch || "???"), W - 380, y + 18);
+  ctx.fillText(timeStr + "  |  " + activos + "/" + sessions.length + " agentes  |  " + globalProg + "%", W - 420, y + 18);
   y += 56;
 
   // === PANEL AGENTES ===
@@ -524,13 +627,15 @@ function buildReportImage(sessions, recentActivity, git, ci) {
       const label = livenessLabel(s);
       const statusColor = label === "activa" ? IMG.GREEN : label === "idle" ? IMG.YELLOW : IMG.GRAY;
       const agent = agentDisplayName(s);
-      const action = lastActionLabel(s);
-      const duration = formatDuration(s.started_ts, s.last_activity_ts);
+      const elapsed = formatElapsed(s);
+      const prog = calcAgentProgress(s);
+      const eta = calcAgentETA(s, prog.percent);
       const actions = String(s.action_count || 0);
 
       // Barra lateral de color
+      const sideBarH = 28 + (label !== "done" ? 18 : 0) + (label !== "done" && s.current_task ? 16 : 0);
       ctx.fillStyle = statusColor;
-      ctx.fillRect(16, y, 4, 22);
+      ctx.fillRect(16, y, 4, sideBarH);
 
       // Punto de estado
       ctx.beginPath();
@@ -541,33 +646,65 @@ function buildReportImage(sessions, recentActivity, git, ci) {
       // Nombre del agente
       ctx.font = "bold 14px monospace";
       ctx.fillStyle = IMG.HEADER;
-      ctx.fillText(truncate(agent, 20), 44, y + 3);
+      ctx.fillText(truncate(agent, 18), 44, y + 3);
 
-      // Acción
+      // Progress bar visual (80px)
+      if (prog.total > 0) {
+        const barX = 210, barW = 80, barH = 12;
+        ctx.fillStyle = IMG.PANEL_BG;
+        ctx.fillRect(barX, y + 5, barW, barH);
+        ctx.fillStyle = prog.percent >= 100 ? IMG.GREEN : statusColor;
+        ctx.fillRect(barX, y + 5, Math.round((prog.percent / 100) * barW), barH);
+        ctx.strokeStyle = statusColor;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(barX, y + 5, barW, barH);
+
+        ctx.font = "12px monospace";
+        ctx.fillStyle = statusColor;
+        ctx.fillText(prog.percent + "%", barX + barW + 4, y + 5);
+      } else {
+        ctx.font = "12px monospace";
+        ctx.fillStyle = IMG.DIM;
+        ctx.fillText("---", 210, y + 5);
+      }
+
+      // Elapsed
       ctx.font = "14px monospace";
       ctx.fillStyle = IMG.TEXT;
-      ctx.fillText(action, 240, y + 3);
+      ctx.fillText(elapsed, 360, y + 3);
 
-      // Duración
+      // ETA
       ctx.fillStyle = IMG.DIM;
-      ctx.fillText(duration, 490, y + 3);
-
-      // Acciones count
-      ctx.fillStyle = IMG.CYAN;
-      ctx.fillText(actions + " accs", 560, y + 3);
+      ctx.fillText(eta ? "ETA " + eta : "---", 440, y + 3);
 
       // Estado texto
       ctx.fillStyle = statusColor;
-      ctx.fillText(label, 650, y + 3);
+      ctx.fillText(label, 560, y + 3);
+
+      // Acciones count
+      ctx.fillStyle = IMG.CYAN;
+      ctx.fillText(actions + " accs", 650, y + 3);
 
       y += 28;
 
-      // Tarea activa
-      if (s.current_task && s.status !== "done") {
+      // Linea 2: branch + last action (solo si no done)
+      if (label !== "done") {
+        const branch = s.branch ? truncate(s.branch, 28) : "???";
+        const action = lastActionLabel(s);
         ctx.font = "12px monospace";
+        ctx.fillStyle = IMG.CYAN;
+        ctx.fillText(branch, 44, y);
         ctx.fillStyle = IMG.DIM;
-        ctx.fillText("  > " + truncate(s.current_task, 65), 44, y);
-        y += 20;
+        ctx.fillText(action, 340, y);
+        y += 18;
+
+        // Linea 3: tarea activa
+        if (s.current_task) {
+          ctx.font = "12px monospace";
+          ctx.fillStyle = IMG.DIM;
+          ctx.fillText("> " + truncate(s.current_task, 70), 44, y);
+          y += 16;
+        }
       }
     }
   }
@@ -642,7 +779,7 @@ function buildReportImage(sessions, recentActivity, git, ci) {
       }
     }
 
-    // Línea de progreso global
+    // Linea de progreso global
     const globalPercent = tasksData.globalTotal > 0 ? Math.round((tasksData.globalDone / tasksData.globalTotal) * 100) : 0;
     ctx.font = "bold 13px monospace";
     ctx.fillStyle = IMG.ACCENT;
@@ -674,7 +811,7 @@ function buildReportImage(sessions, recentActivity, git, ci) {
   ctx.fillText("(" + truncate(ci.branch || "?", 30) + ")", 240, y);
   y += 36;
 
-  // === PANEL MÉTRICAS ===
+  // === PANEL METRICAS ===
   ctx.fillStyle = IMG.ACCENT;
   ctx.fillRect(0, y, W, 1);
   y += 8;
@@ -684,12 +821,12 @@ function buildReportImage(sessions, recentActivity, git, ci) {
   ctx.fillText("METRICAS", 16, y);
   y += 22;
 
-  const activos = sessions.filter(s => livenessLabel(s) === "activa").length;
+  const imgActivos = sessions.filter(s => livenessLabel(s) === "activa").length;
   const idle = sessions.filter(s => livenessLabel(s) === "idle").length;
   const total = sessions.length;
 
   const metrics = [
-    { label: "Activos", value: String(activos), color: IMG.GREEN },
+    { label: "Activos", value: String(imgActivos), color: IMG.GREEN },
     { label: "Idle", value: String(idle), color: IMG.YELLOW },
     { label: "Total", value: String(total), color: IMG.HEADER },
   ];
@@ -783,18 +920,18 @@ async function sendReport() {
     if (!hasActive) return;
 
     const recentActivity = loadRecentActivity();
-    const git = getGitInfo();
     const ci = getCIStatus();
+    const globalProg = calcGlobalProgress(sessions);
 
     // Intentar enviar imagen PNG primero
     let imageSent = false;
     if (createCanvas) {
       try {
-        const imgBuf = buildReportImage(sessions, recentActivity, git, ci);
+        const imgBuf = buildReportImage(sessions, recentActivity, ci);
         if (imgBuf) {
           const activos = sessions.filter(s => livenessLabel(s) === "activa").length;
           const caption = "\uD83D\uDCCA Sprint " + new Date().toTimeString().substring(0, 5) +
-            " | " + activos + "/" + sessions.length + " activos | " + (git.branch || "?");
+            " | " + activos + "/" + sessions.length + " agentes | " + globalProg + "%";
 
           for (let attempt = 1; attempt <= TG_MAX_RETRIES; attempt++) {
             try {
@@ -815,7 +952,7 @@ async function sendReport() {
       }
     }
 
-    // Fallback a texto si la imagen falló o canvas no disponible
+    // Fallback a texto si la imagen fallo o canvas no disponible
     if (!imageSent) {
       const msg = buildReportMessage();
       if (!msg) return;
