@@ -32,6 +32,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/stop-notify.js",
             "timeout": 15000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-console-response.js",
+            "timeout": 10000
           }
         ]
       }

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="E2E — Business endpoints contra backend real" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-02-26T22:14:27.988Z" hostname="DESKTOP-TOTQAUE" time="0.61">
+  <properties/>
+  <testcase name="POST /intrale/searchBusinesses con query vacia responde 200" classname="ar.com.intrale.e2e.api.ApiBusinessE2ETest" time="0.268"/>
+  <testcase name="POST /intrale/searchBusinesses con filtro APPROVED encuentra intrale" classname="ar.com.intrale.e2e.api.ApiBusinessE2ETest" time="0.05"/>
+  <testcase name="POST /intrale/searchBusinesses sin body responde 400" classname="ar.com.intrale.e2e.api.ApiBusinessE2ETest" time="0.052"/>
+  <testcase name="POST /intrale/registerBusiness con datos validos responde 200" classname="ar.com.intrale.e2e.api.ApiBusinessE2ETest" time="0.209"/>
+  <testcase name="POST /intrale/registerBusiness sin body responde 400" classname="ar.com.intrale.e2e.api.ApiBusinessE2ETest" time="0.026"/>
+  <system-out><![CDATA[19:14:12.835 [Test worker] INFO  ar.com.intrale.e2e - Iniciando Playwright [ApiBusinessE2ETest] — baseUrl=http://localhost:80, recordings=C:\Workspaces\Intrale\platform\qa\recordings
+19:14:27.984 [Test worker] INFO  ar.com.intrale.e2e - Tracing iniciado [ApiBusinessE2ETest]
+19:14:28.184 [Test worker] INFO  ar.com.intrale.e2e - SearchBusinesses query vacia: status=200
+19:14:28.190 [Test worker] INFO  ar.com.intrale.e2e - SearchBusinesses body: {"businesses":[{"businessId":"intrale-001","publicId":"intrale","name":"intrale","description":"Intrale (local dev)","emailAdmin":"admin@intrale.com","autoAcceptDeliveries":false,"status":"APPROVED"}],"statusCode":{"value":200,"description":"OK"}}
+19:14:28.300 [Test worker] INFO  ar.com.intrale.e2e - SearchBusinesses filtro APPROVED: status=200
+19:14:28.300 [Test worker] INFO  ar.com.intrale.e2e - SearchBusinesses body: {"businesses":[{"businessId":"intrale-001","publicId":"intrale","name":"intrale","description":"Intrale (local dev)","emailAdmin":"admin@intrale.com","autoAcceptDeliveries":false,"status":"APPROVED"}],"statusCode":{"value":200,"description":"OK"}}
+19:14:28.362 [Test worker] INFO  ar.com.intrale.e2e - SearchBusinesses sin body: status=400
+19:14:28.569 [Test worker] INFO  ar.com.intrale.e2e - RegisterBusiness: status=200
+19:14:28.569 [Test worker] INFO  ar.com.intrale.e2e - RegisterBusiness body: {"statusCode":{"value":200,"description":"OK"}}
+19:14:28.595 [Test worker] INFO  ar.com.intrale.e2e - RegisterBusiness sin body: status=400
+19:14:28.636 [Test worker] INFO  ar.com.intrale.e2e - Trace guardado: C:\Workspaces\Intrale\platform\qa\recordings\ApiBusinessE2ETest-trace.zip
+19:14:29.018 [Test worker] INFO  ar.com.intrale.e2e - Cerrando Playwright [ApiBusinessE2ETest]
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

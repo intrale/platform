@@ -66,13 +66,15 @@ function addPendingQuestion(question) {
  * Marcar una pregunta como respondida.
  * @param {string} id - ID de la pregunta
  * @param {string} status - "answered" | "expired"
+ * @param {string|null} via - "console" | "telegram" | null (origen de la respuesta)
  */
-function resolveQuestion(id, status) {
+function resolveQuestion(id, status, via) {
     const data = loadQuestions();
     const q = data.questions.find(q => q.id === id);
     if (q) {
         q.status = status || "answered";
         q.answered_at = new Date().toISOString();
+        if (via) q.answered_via = via;
         saveQuestions(data);
     }
 }
