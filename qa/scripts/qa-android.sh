@@ -6,7 +6,7 @@
 # Optimizaciones de rendimiento:
 # - Reutiliza emulador ya corriendo (detecta por AVD name, 0s boot)
 # - Snapshot 'qa-ready': boot en ~5s vs ~90s cold boot
-# - GPU host (hardware real, no swiftshader)
+# - GPU auto (mejor modo para el host, evita swiftshader forzado)
 # - Memoria limitada a 2048MB
 # - Audio, camaras, GPS y sensores deshabilitados
 set -euo pipefail
@@ -89,8 +89,9 @@ else
         echo "  Modo: cold boot (~60s). Se creara snapshot al finalizar."
     fi
 
-    # Arrancar emulador headless con GPU hardware y memoria limitada
-    # -gpu host: usa GPU real del host (10-50x mas rapido que swiftshader)
+    # Arrancar emulador headless con GPU auto y memoria limitada
+    # -gpu auto: deja al emulador elegir el mejor modo GPU
+    #   (angle_indirect o host segun compatibilidad, nunca swiftshader forzado)
     # -memory 2048: limita RAM a 2GB (evita acaparar memoria del host)
     # -no-audio: elimina ~15% CPU continuo del subsistema de audio
     # -no-boot-anim: salta animacion de boot (~5-10s menos)
@@ -99,7 +100,7 @@ else
         -no-audio \
         -no-boot-anim \
         -no-window \
-        -gpu host \
+        -gpu auto \
         -memory 2048 \
         $SNAPSHOT_FLAGS \
         2>/dev/null &
