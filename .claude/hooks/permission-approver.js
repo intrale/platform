@@ -368,7 +368,7 @@ async function processInput() {
     const latencyMs = Date.now() - startTime;
 
     if (!decision) {
-        // Timeout: editar mensaje para indicarlo y dejar que Claude muestre UI local
+        // Timeout: editar mensaje con botón "Reactivar" para persistir el permiso tardíamente
         log("Timeout sin respuesta tras " + PERMISSION_TIMEOUT_MIN + " min (" + MAX_POLL_CYCLES + " ciclos). Latencia: " + latencyMs + "ms");
         resolveQuestion(requestId, "expired");
         saveOffset(offset); // persistir el offset aunque no hubo respuesta
@@ -376,8 +376,14 @@ async function processInput() {
             await telegramPost("editMessageText", {
                 chat_id: CHAT_ID,
                 message_id: msgId,
-                text: msgText + "\n\n⏱ <i>Sin respuesta — se muestra el prompt local</i>",
-                parse_mode: "HTML"
+                text: msgText + "\n\n⏱ <i>Expirado — el agente continuó sin este permiso</i>",
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: "🔄 Reactivar (aprobar siempre)", callback_data: "reactivate:" + requestId },
+                        { text: "⏹ Descartar", callback_data: "dismiss_expired:" + requestId }
+                    ]]
+                }
             }, ANSWER_TIMEOUT);
         } catch(e) { log("Error editando mensaje timeout: " + e.message); }
         process.exit(0); // fallback al prompt local
