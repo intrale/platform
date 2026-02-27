@@ -2,6 +2,13 @@
 # qa-android.sh — Build APK + emulador auto + Maestro E2E + video recording
 # Uso: bash qa/scripts/qa-android.sh
 # 100% autonomo: arranca emulador, compila, instala, graba video, corre tests, limpia.
+#
+# Optimizaciones de rendimiento:
+# - Reutiliza emulador ya corriendo (detecta por AVD name, 0s boot)
+# - Snapshot 'qa-ready': boot en ~5s vs ~90s cold boot
+# - GPU host (hardware real, no swiftshader)
+# - Memoria limitada a 2048MB
+# - Audio, camaras, GPS y sensores deshabilitados
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,9 +45,30 @@ echo "[2/9] Verificando dispositivo/emulador..."
 # Iniciar adb server
 adb start-server 2>/dev/null || true
 
-DEVICE_COUNT=$(adb devices 2>/dev/null | grep -c 'device$' || true)
+# Nombre del snapshot para boot rapido (3-8s vs 60-120s cold boot)
+QA_SNAPSHOT="qa-ready"
 
-if [ "$DEVICE_COUNT" -eq 0 ]; then
+# ── 2a. Detectar si el AVD especifico ya esta corriendo ─────
+RUNNING_EMULATOR=""
+for serial in $(adb devices 2>/dev/null | grep "emulator-" | awk '{print $1}'); do
+    avd_name=$(adb -s "$serial" emu avd name 2>/dev/null | tr -d '\r' | head -1)
+    if [ "$avd_name" = "$AVD_NAME" ]; then
+        RUNNING_EMULATOR="$serial"
+        break
+    fi
+done
+
+# Tambien detectar dispositivos fisicos
+PHYSICAL_DEVICE=""
+if [ -z "$RUNNING_EMULATOR" ]; then
+    PHYSICAL_DEVICE=$(adb devices 2>/dev/null | grep -v "emulator-" | grep 'device$' | awk '{print $1}' | head -1)
+fi
+
+if [ -n "$RUNNING_EMULATOR" ]; then
+    echo "  Emulador '$AVD_NAME' ya corriendo en $RUNNING_EMULATOR — reutilizando (0s boot)"
+elif [ -n "$PHYSICAL_DEVICE" ]; then
+    echo "  Dispositivo fisico detectado: $PHYSICAL_DEVICE — usando directamente"
+else
     echo "  No hay dispositivo conectado. Arrancando emulador '$AVD_NAME'..."
 
     if [ ! -f "$EMULATOR_BIN" ]; then
@@ -48,11 +76,36 @@ if [ "$DEVICE_COUNT" -eq 0 ]; then
         exit 1
     fi
 
-    # Arrancar emulador headless con WHPX acceleration y cold boot
-    "$EMULATOR_BIN" -avd "$AVD_NAME" -no-audio -no-boot-anim -no-window -no-snapshot-load -gpu swiftshader_indirect 2>/dev/null &
+    # ── 2b. Determinar modo de boot: snapshot (rapido) o cold boot ──
+    # Verificar si el snapshot qa-ready existe en el directorio del AVD
+    AVD_DIR="${HOME}/.android/avd/${AVD_NAME}.avd"
+    if [ -d "${AVD_DIR}/snapshots/${QA_SNAPSHOT}" ]; then
+        SNAPSHOT_FLAGS="-snapshot ${QA_SNAPSHOT} -no-snapshot-save"
+        BOOT_TIMEOUT=30
+        echo "  Modo: snapshot '${QA_SNAPSHOT}' (boot rapido ~5s)"
+    else
+        SNAPSHOT_FLAGS=""
+        BOOT_TIMEOUT=120
+        echo "  Modo: cold boot (~60s). Se creara snapshot al finalizar."
+    fi
+
+    # Arrancar emulador headless con GPU hardware y memoria limitada
+    # -gpu host: usa GPU real del host (10-50x mas rapido que swiftshader)
+    # -memory 2048: limita RAM a 2GB (evita acaparar memoria del host)
+    # -no-audio: elimina ~15% CPU continuo del subsistema de audio
+    # -no-boot-anim: salta animacion de boot (~5-10s menos)
+    # -no-window: headless, sin renderizado de ventana
+    "$EMULATOR_BIN" -avd "$AVD_NAME" \
+        -no-audio \
+        -no-boot-anim \
+        -no-window \
+        -gpu host \
+        -memory 2048 \
+        $SNAPSHOT_FLAGS \
+        2>/dev/null &
     EMULATOR_PID=$!
     STARTED_EMULATOR=true
-    echo "  Emulador PID: $EMULATOR_PID"
+    echo "  Emulador PID: $EMULATOR_PID (timeout: ${BOOT_TIMEOUT}s)"
 
     # Esperar a que adb vea el dispositivo
     echo "  Esperando dispositivo adb..."
@@ -60,7 +113,6 @@ if [ "$DEVICE_COUNT" -eq 0 ]; then
 
     # Esperar boot completo
     echo "  Esperando boot del emulador..."
-    BOOT_TIMEOUT=120
     BOOT_ELAPSED=0
     while [ $BOOT_ELAPSED -lt $BOOT_TIMEOUT ]; do
         BOOT_STATUS=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
@@ -69,8 +121,8 @@ if [ "$DEVICE_COUNT" -eq 0 ]; then
             echo "  Emulador arrancado en ${BOOT_ELAPSED}s"
             break
         fi
-        sleep 5
-        BOOT_ELAPSED=$((BOOT_ELAPSED + 5))
+        sleep 2
+        BOOT_ELAPSED=$((BOOT_ELAPSED + 2))
         printf "."
     done
     echo ""
@@ -95,9 +147,17 @@ if [ "$DEVICE_COUNT" -eq 0 ]; then
     done
 
     # Esperar extras (launcher, servicios)
-    sleep 5
-else
-    echo "  Dispositivo(s) conectado(s): $DEVICE_COUNT"
+    sleep 3
+
+    # ── 2c. Guardar snapshot si fue cold boot (para proximas corridas) ──
+    if [ -z "$SNAPSHOT_FLAGS" ]; then
+        echo "  Guardando snapshot '${QA_SNAPSHOT}' para reutilizacion futura..."
+        if adb emu avd snapshot save "$QA_SNAPSHOT" 2>/dev/null; then
+            echo "  Snapshot guardado. Proximas corridas iniciaran en ~5s."
+        else
+            echo "  WARN: No se pudo guardar snapshot (corridas futuras usaran cold boot)"
+        fi
+    fi
 fi
 
 # ── 3. Verificar Maestro ────────────────────────────────────
@@ -140,11 +200,13 @@ cleanup() {
     # Detener screenrecord si está corriendo
     adb shell "pkill -INT screenrecord" 2>/dev/null || true
     sleep 1
-    # Matar emulador si lo arrancamos
+    # Solo matar emulador si nosotros lo arrancamos (no si lo reutilizamos)
     if $STARTED_EMULATOR; then
-        echo "  Deteniendo emulador..."
+        echo "  Deteniendo emulador (arrancado por este script)..."
         adb emu kill 2>/dev/null || true
         sleep 2
+    else
+        echo "  Emulador reutilizado — se mantiene corriendo para proximas corridas"
     fi
 }
 trap cleanup EXIT
