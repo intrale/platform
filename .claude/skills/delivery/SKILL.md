@@ -1,7 +1,7 @@
 ---
 description: DeliveryManager — Commit + push + PR con convenciones Intrale en un solo comando
 user-invocable: true
-argument-hint: "<descripcion> [--issue <N>] [--draft] [--all]"
+argument-hint: "<descripcion> [--issue <N>] [--draft] [--all] [--clean]"
 allowed-tools: Bash, Read, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
 ---
@@ -17,7 +17,8 @@ Sos veloz, confiable y siempre entregás en tiempo y forma.
 - `<descripcion>` — Descripción breve del cambio (obligatorio)
 - `--issue <N>` — Número de issue que cierra este PR (opcional, agrega `Closes #N` al body)
 - `--draft` — Crear el PR como draft (opcional)
-- `--all` — Entregar todos los worktrees activos con branch `agent/*` (ejecuta el flujo completo por cada uno)
+- `--all` — Entregar todos los worktrees activos con branch `agent/*` o `codex/*` (ejecuta el flujo completo por cada uno)
+- `--clean` — Limpiar worktrees innecesarios (sin cambios reales, PRs mergeados/cerrados)
 
 ## Pre-flight: Registrar tareas
 
@@ -32,7 +33,7 @@ Si se pasó `--all`:
 git worktree list --porcelain
 ```
 
-2. Filtrar solo los worktrees cuya branch tenga prefijo `agent/` (parsear líneas `branch refs/heads/agent/...`).
+2. Filtrar los worktrees cuya branch tenga prefijo `agent/` o `codex/` (parsear líneas `branch refs/heads/agent/...` y `branch refs/heads/codex/...`).
 
 3. Para cada worktree encontrado:
    - `cd` al directorio del worktree
@@ -48,6 +49,8 @@ git worktree list --porcelain
 ```
 
 5. En modo `--all`: **SÍ mergear** cada PR inmediatamente después de crearlo (squash + delete-branch), siguiendo el Paso 6.5. Si el merge falla, registrar el error y continuar con el siguiente.
+
+6. **Después de procesar todos los worktrees**: ejecutar automáticamente el Paso 8 (`--clean`) para limpiar worktrees que quedaron vacíos o cuyo PR fue mergeado/cerrado. Esto evita acumulación de worktrees innecesarios en disco.
 
 Si **no** se pasó `--all`: continuar normalmente desde Paso 1 con el worktree/branch actual.
 
@@ -221,14 +224,14 @@ gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
 ```
 
 2. Según el resultado:
-   - **Merge exitoso**: reportar como `MERGED` y limpiar worktree si aplica.
+   - **Merge exitoso**: reportar como `MERGED` y **limpiar worktree** (ver Paso 6.6).
    - **Merge falla** (conflictos, checks requeridos, etc.):
      - Verificar CI checks: `gh pr checks "$PR_NUMBER" --repo intrale/platform`
      - Si los checks están **corriendo**: esperar hasta 60 segundos y reintentar una vez.
      - Si los checks **fallaron** o hay **conflictos de merge**: cerrar el PR, reabrir el issue con label `backlog-tecnico`, y agregar comentario explicativo:
        ```bash
        gh pr close "$PR_NUMBER" --repo intrale/platform --comment "Cerrado: conflictos irreconciliables. Issue reabierto en backlog técnico."
-       ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/codex\/([0-9]+).*/\1/')
+       ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/(agent|codex)\/([0-9]+).*/\2/')
        gh issue reopen "$ISSUE_NUM" --repo intrale/platform
        gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "backlog-tecnico"
        gh issue comment "$ISSUE_NUM" --repo intrale/platform --body "PR #$PR_NUMBER cerrado por conflictos. Reimplementar desde main limpio."
@@ -237,6 +240,37 @@ gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
 
 Este paso se ejecuta **tanto en modo individual como en modo `--all`**. El delivery SIEMPRE cierra el ciclo con merge.
 
+## Paso 6.6: Limpieza de worktree post-merge
+
+Después de un merge exitoso, **limpiar el worktree automáticamente** si el directorio actual NO es el repo principal:
+
+1. Volver al repo principal:
+```bash
+cd /c/Workspaces/Intrale/platform
+```
+
+2. Desmontar junction de `.claude/` (seguro en Windows, evita borrar el original):
+```bash
+cmd /c rmdir "<WORKTREE_PATH>\.claude" 2>/dev/null || true
+```
+
+3. Eliminar el worktree con git:
+```bash
+git worktree remove "<WORKTREE_PATH>" --force
+```
+
+4. Eliminar branch local (la remota ya se borró con `--delete-branch` del merge):
+```bash
+git branch -D "$BRANCH" 2>/dev/null || true
+```
+
+5. Podar referencias huérfanas:
+```bash
+git worktree prune
+```
+
+**CRITICO**: NUNCA usar `rm -rf` sobre directorios de worktrees — sigue symlinks/junctions y puede borrar `.claude/` del repo principal. SIEMPRE usar `git worktree remove`.
+
 ## Paso 7: Reportar resultado
 
 Mostrar al usuario:
@@ -244,6 +278,52 @@ Mostrar al usuario:
 - URL del PR creado (o existente)
 - Commits incluidos
 - Recordatorio: El Vigía está monitoreando el CI automáticamente
+
+## Paso 8: Modo `--clean` (limpieza de worktrees)
+
+Si se pasó `--clean` (puede combinarse con `--all` o usarse solo):
+
+1. Ejecutar desde el repo principal:
+```bash
+cd /c/Workspaces/Intrale/platform
+git worktree list --porcelain
+```
+
+2. Para cada worktree (excepto el principal), evaluar si es **candidato a limpieza**:
+
+```bash
+cd "$WORKTREE_PATH"
+BRANCH=$(git branch --show-current)
+COMMITS=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+REAL_CHANGES=$(git status --porcelain | grep -v "\.claude" | wc -l)
+PR_STATE=$(gh pr list --repo intrale/platform --head "$BRANCH" --state all --json state --jq '.[0].state' 2>/dev/null)
+```
+
+3. Clasificar como **LIMPIAR** si cumple CUALQUIERA de estas condiciones:
+   - `COMMITS == 0` Y `REAL_CHANGES == 0` (worktree vacío, sin trabajo real)
+   - `PR_STATE == "MERGED"` Y `REAL_CHANGES == 0` (PR ya mergeado, sin cambios pendientes)
+   - `PR_STATE == "CLOSED"` Y `COMMITS == 0` Y `REAL_CHANGES == 0` (PR cerrado sin trabajo residual)
+
+4. **CONSERVAR** si:
+   - Tiene commits nuevos con PR OPEN
+   - Tiene cambios reales sin commitear (trabajo en progreso)
+   - Tiene commits nuevos sin PR (trabajo sin entregar)
+
+5. Mostrar la clasificación al usuario antes de proceder:
+```
+| Branch              | Commits | Cambios | PR        | Acción    |
+|---------------------|---------|---------|-----------|-----------|
+| agent/123-feature   | 0       | 0       | —         | LIMPIAR   |
+| codex/456-bugfix    | 2       | 0       | #45 OPEN  | CONSERVAR |
+```
+
+6. Limpiar cada worktree candidato usando el mismo procedimiento seguro del Paso 6.6:
+   - Desmontar junction `.claude/` con `cmd /c rmdir`
+   - `git worktree remove --force`
+   - `git branch -D` (branch local)
+   - `git push origin --delete` (branch remota, si existe)
+
+7. Al finalizar: `git worktree prune` y mostrar resumen de espacio liberado.
 
 ## Reglas
 
@@ -256,3 +336,6 @@ Mostrar al usuario:
 - Assignee siempre: `leitolarreta`
 - **SIEMPRE mergear**: el delivery cierra el ciclo completo (commit → push → PR → merge). Si el merge falla, cerrar PR y mover issue al backlog técnico
 - Si el merge falla por conflictos irreconciliables: cerrar PR, reabrir issue con label `backlog-tecnico`, y limpiar worktree
+- **NUNCA usar `rm -rf` sobre directorios de worktrees** — sigue symlinks/junctions y puede borrar `.claude/` del repo principal. SIEMPRE usar `git worktree remove --force`
+- En modo `--all`: ejecutar limpieza automática (`--clean`) al finalizar todos los deliveries
+- En modo `--clean`: mostrar clasificación al usuario y proceder con la limpieza sin confirmación adicional

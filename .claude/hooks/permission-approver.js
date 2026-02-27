@@ -16,6 +16,7 @@ const path = require("path");
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern } = require("./permission-utils");
 
 const { addPendingQuestion, resolveQuestion, getQuestionById } = require("./pending-questions");
+const { readSessionContext } = require("./context-reader");
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
@@ -87,28 +88,104 @@ function escHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function shortenPath(fullPath) {
+    if (!fullPath) return "";
+    const normalized = fullPath.replace(/\\/g, "/");
+    const markers = ["/platform/", "/Intrale/"];
+    for (const m of markers) {
+        const idx = normalized.indexOf(m);
+        if (idx >= 0) return normalized.substring(idx + m.length);
+    }
+    // Fallback: últimos 3 segmentos
+    const parts = normalized.split("/");
+    return parts.length > 3 ? "…/" + parts.slice(-3).join("/") : normalized;
+}
+
+function abbreviate(str, max) {
+    if (!str) return "";
+    str = str.trim();
+    return str.length > max ? str.substring(0, max) + "…" : str;
+}
+
 function formatAction(toolName, toolInput) {
     switch (toolName) {
         case "Bash": {
             const cmd = (toolInput.command || "").trim();
+            const desc = (toolInput.description || "").trim();
             const display = cmd.length > 250 ? cmd.substring(0, 250) + "…" : cmd;
-            return "$ " + escHtml(display);
+            let result = "";
+            if (desc) {
+                result += "🔧 <b>" + escHtml(abbreviate(desc, 80)) + "</b>\n";
+            }
+            result += "<code>$ " + escHtml(display) + "</code>";
+            return result;
         }
-        case "Edit":
-            return "Edit " + escHtml(toolInput.file_path || "");
-        case "Write":
-            return "Write " + escHtml(toolInput.file_path || "");
+        case "Edit": {
+            const shortPath = shortenPath(toolInput.file_path);
+            let result = "📝 <b>Editar</b> <code>" + escHtml(shortPath) + "</code>";
+            const oldStr = (toolInput.old_string || "").trim();
+            const newStr = (toolInput.new_string || "").trim();
+            if (oldStr || newStr) {
+                result += "\n<pre>";
+                if (oldStr) result += "- " + escHtml(abbreviate(oldStr, 120)) + "\n";
+                if (newStr) result += "+ " + escHtml(abbreviate(newStr, 120));
+                result += "</pre>";
+            }
+            return result;
+        }
+        case "Write": {
+            const shortPath = shortenPath(toolInput.file_path);
+            const content = (toolInput.content || "").trim();
+            let result = "📄 <b>Escribir</b> <code>" + escHtml(shortPath) + "</code>";
+            if (content) {
+                const preview = content.split("\n").slice(0, 3).join("\n");
+                result += "\n<pre>" + escHtml(abbreviate(preview, 150)) + "</pre>";
+            }
+            return result;
+        }
         case "Task":
-            return "Task [" + escHtml(toolInput.subagent_type || "?") + "] " + escHtml(toolInput.description || "");
+            return "🤖 <b>Subagente</b> [" + escHtml(toolInput.subagent_type || "?") + "] " + escHtml(abbreviate(toolInput.description || "", 80));
         case "Skill":
-            return "/" + escHtml(toolInput.skill || "") + (toolInput.args ? " " + escHtml(toolInput.args) : "");
+            return "⚡ <b>Skill</b> /" + escHtml(toolInput.skill || "") + (toolInput.args ? " " + escHtml(abbreviate(toolInput.args, 60)) : "");
         case "WebFetch":
-            return "fetch " + escHtml(toolInput.url || "");
+            return "🌐 <b>Fetch</b> " + escHtml(abbreviate(toolInput.url || "", 100));
         case "WebSearch":
-            return "search " + escHtml(toolInput.query || "");
+            return "🔍 <b>Buscar</b> " + escHtml(abbreviate(toolInput.query || "", 80));
         default:
             return escHtml(toolName) + " " + escHtml(JSON.stringify(toolInput).substring(0, 100));
     }
+}
+
+/**
+ * Genera la sección de contexto del mensaje (agente, rama, tarea activa).
+ */
+function formatContext(sessionId, repoRoot) {
+    const ctx = readSessionContext(sessionId, repoRoot);
+    const lines = [];
+
+    // Agente / skill activo
+    if (ctx.agentName) {
+        lines.push("🤖 " + escHtml(ctx.agentName));
+    } else if (ctx.skill) {
+        lines.push("⚡ /" + escHtml(ctx.skill));
+    }
+
+    // Rama + issue
+    if (ctx.branch && ctx.branch !== "main" && ctx.branch !== "develop") {
+        let branchDisplay = escHtml(ctx.branch);
+        const issueMatch = ctx.branch.match(/(?:agent|feature|bugfix)\/(\d+)/);
+        if (issueMatch) {
+            branchDisplay += " (#" + issueMatch[1] + ")";
+        }
+        lines.push("🔀 " + branchDisplay);
+    }
+
+    // Tarea activa
+    if (ctx.task) {
+        lines.push("📌 " + escHtml(abbreviate(ctx.task, 60)));
+    }
+
+    return lines.length > 0 ? lines.join("  ·  ") : "";
 }
 
 // ─── Patrón de permiso para persistencia ("Siempre") ──────────────────────────
@@ -336,9 +413,14 @@ async function processInput() {
     }
 
     const action = formatAction(toolName, toolInput);
+    const sessionId = data.session_id || "";
+    const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
 
-    const msgText = "⚠️ <b>" + escHtml(agent) + " — Permiso requerido</b>\n\n"
-        + "<code>" + action + "</code>\n\n"
+    let msgText = "⚠️ <b>" + escHtml(agent) + " — Permiso requerido</b>\n";
+    if (contextLine) {
+        msgText += contextLine + "\n";
+    }
+    msgText += "\n" + action + "\n\n"
         + "¿Qué hacemos?";
 
     // 1. Obtener offset actual ANTES de enviar el mensaje
