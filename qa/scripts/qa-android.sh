@@ -5,8 +5,8 @@
 #
 # Optimizaciones de rendimiento:
 # - Reutiliza emulador ya corriendo (detecta por AVD name, 0s boot)
-# - Snapshot 'qa-ready': boot en ~5s vs ~90s cold boot
-# - GPU auto (mejor modo para el host, evita swiftshader forzado)
+# - Snapshot 'qa-ready': boot en ~40s vs ~130s cold boot
+# - GPU auto (mejor modo para el host, swiftshader_indirect en headless)
 # - Memoria limitada a 2048MB
 # - Audio, camaras, GPS y sensores deshabilitados
 set -euo pipefail
@@ -80,13 +80,13 @@ else
     # Verificar si el snapshot qa-ready existe en el directorio del AVD
     AVD_DIR="${HOME}/.android/avd/${AVD_NAME}.avd"
     if [ -d "${AVD_DIR}/snapshots/${QA_SNAPSHOT}" ]; then
-        SNAPSHOT_FLAGS="-snapshot ${QA_SNAPSHOT} -no-snapshot-save"
-        BOOT_TIMEOUT=30
-        echo "  Modo: snapshot '${QA_SNAPSHOT}' (boot rapido ~5s)"
+        SNAPSHOT_FLAGS="-snapshot ${QA_SNAPSHOT}"
+        BOOT_TIMEOUT=60
+        echo "  Modo: snapshot '${QA_SNAPSHOT}' (boot rapido ~40s vs ~130s cold)"
     else
         SNAPSHOT_FLAGS=""
         BOOT_TIMEOUT=120
-        echo "  Modo: cold boot (~60s). Se creara snapshot al finalizar."
+        echo "  Modo: cold boot (~130s). Se creara snapshot al finalizar."
     fi
 
     # Arrancar emulador headless con GPU auto y memoria limitada
