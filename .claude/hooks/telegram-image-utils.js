@@ -161,4 +161,127 @@ function sendTelegramPhoto(botToken, chatId, imageBuffer, caption) {
     });
 }
 
-module.exports = { renderTextAsPng, sendTelegramPhoto };
+// --- Card rendering (stop-notify) ---
+
+function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+}
+
+function wrapTextPixel(ctx, text, maxWidth) {
+    const rawLines = text.split("\n");
+    const result = [];
+    for (const rawLine of rawLines) {
+        if (rawLine.trim() === "") { result.push(""); continue; }
+        if (ctx.measureText(rawLine).width <= maxWidth) { result.push(rawLine); continue; }
+        const words = rawLine.split(" ");
+        let current = "";
+        for (const word of words) {
+            const test = current ? current + " " + word : word;
+            if (ctx.measureText(test).width <= maxWidth) {
+                current = test;
+            } else {
+                if (current) result.push(current);
+                current = word;
+            }
+        }
+        if (current) result.push(current);
+    }
+    return result;
+}
+
+/**
+ * Renderiza una card estilo terminal con header, separador, cuerpo y timestamp.
+ * Tema oscuro Catppuccin Mocha. Ideal para notificaciones de fin de sesion.
+ *
+ * @param {string} title  Titulo del header (ej: "Claude Code — Listo")
+ * @param {string} body   Texto del cuerpo (ya limpio de markdown)
+ * @returns {Buffer|null}  Buffer PNG, o null si canvas no esta disponible
+ */
+function renderCardAsPng(title, body) {
+    if (!createCanvas) return null;
+
+    const W = 600;
+    const PAD = 24;
+    const TITLE_SIZE = 16;
+    const BODY_SIZE = 14;
+    const FOOTER_SIZE = 11;
+    const BODY_LH = BODY_SIZE + 7;
+    const RADIUS = 12;
+
+    const now = new Date();
+    const footer = now.toLocaleDateString("es-AR", { day: "2-digit", month: "short", year: "numeric" }) +
+        " \u00b7 " + now.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+
+    // Measure pass
+    const tmp = createCanvas(1, 1);
+    const tCtx = tmp.getContext("2d");
+    tCtx.font = BODY_SIZE + "px monospace";
+    const maxW = W - PAD * 2;
+    const bodyLines = wrapTextPixel(tCtx, body || "", maxW);
+
+    // Height calculation
+    const titleH = PAD + TITLE_SIZE + 16;
+    const sepGap = 16;
+    const bodyH = Math.max(1, bodyLines.length) * BODY_LH;
+    const footerH = 36;
+    const totalH = titleH + sepGap + bodyH + footerH + PAD;
+
+    // Render
+    const canvas = createCanvas(W, totalH);
+    const ctx = canvas.getContext("2d");
+
+    // Background
+    roundRect(ctx, 0, 0, W, totalH, RADIUS);
+    ctx.fillStyle = "#1E1E2E";
+    ctx.fill();
+
+    // Border
+    roundRect(ctx, 0.5, 0.5, W - 1, totalH - 1, RADIUS);
+    ctx.strokeStyle = "#313244";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Title (green accent)
+    ctx.font = "bold " + TITLE_SIZE + "px sans-serif";
+    ctx.fillStyle = "#A6E3A1";
+    ctx.textBaseline = "top";
+    ctx.fillText(title, PAD, PAD);
+
+    // Separator
+    const sepY = PAD + TITLE_SIZE + 8;
+    ctx.beginPath();
+    ctx.moveTo(PAD, sepY);
+    ctx.lineTo(W - PAD, sepY);
+    ctx.strokeStyle = "#45475A";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Body
+    let y = sepY + sepGap;
+    ctx.font = BODY_SIZE + "px monospace";
+    ctx.fillStyle = "#CDD6F4";
+    for (const line of bodyLines) {
+        ctx.fillText(line, PAD, y);
+        y += BODY_LH;
+    }
+
+    // Footer (right-aligned timestamp)
+    ctx.font = FOOTER_SIZE + "px monospace";
+    ctx.fillStyle = "#6C7086";
+    const fW = ctx.measureText(footer).width;
+    ctx.fillText(footer, W - PAD - fW, totalH - PAD);
+
+    return canvas.toBuffer("image/png");
+}
+
+module.exports = { renderTextAsPng, renderCardAsPng, sendTelegramPhoto };
