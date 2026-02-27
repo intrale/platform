@@ -24,6 +24,7 @@ const REFRESH_MS = 5000;
 const ACTIVE_THRESHOLD = 5 * 60 * 1000;   // 5 min
 const IDLE_THRESHOLD = 15 * 60 * 1000;    // 15 min
 const DONE_DISPLAY_HOURS = 1;
+const STALE_EXPIRY_HOURS = 2;          // sesiones "active" sin actividad → tratar como expiradas
 const RECENT_ACTIVITY_COUNT = 5;
 
 // --- ANSI colors ---
@@ -117,6 +118,25 @@ function formatDuration(startTs, endTs) {
   return hours + "h" + (remMins > 0 ? remMins + "m" : "");
 }
 
+/**
+ * Extrae el número de issue de la rama (ej: agent/1045-slug → #1045)
+ */
+function extractIssueFromBranch(branch) {
+  if (!branch) return null;
+  const m = branch.match(/(?:agent|codex|fix|feature|bugfix|docs|refactor)\/(\d+)/);
+  return m ? "#" + m[1] : null;
+}
+
+/**
+ * Nombre de display del agente: "Guru (#1045)" o "Claude (main)"
+ */
+function agentDisplayName(session) {
+  const name = session.agent_name || "Claude";
+  const issue = extractIssueFromBranch(session.branch);
+  if (issue) return name + " (" + issue + ")";
+  return name;
+}
+
 function lastActionLabel(session) {
   if (!session.last_tool || session.last_tool === "--") return "\u2014";
   let t = session.last_target || "--";
@@ -154,12 +174,14 @@ function loadSessions() {
       if (!file.endsWith(".json")) continue;
       try {
         const data = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
-        // Solo parent, y done solo si < 1h
+        // Solo parent, filtrar done expiradas y zombis stale
         if (data.type === "sub") continue;
+        const age = Date.now() - new Date(data.last_activity_ts).getTime();
         if (data.status === "done") {
-          const age = Date.now() - new Date(data.last_activity_ts).getTime();
           if (age > DONE_DISPLAY_HOURS * 3600 * 1000) continue;
         }
+        // Auto-expirar sesiones "active" sin actividad por más de STALE_EXPIRY_HOURS
+        if (data.status === "active" && age > STALE_EXPIRY_HOURS * 3600 * 1000) continue;
         sessions.push(data);
       } catch(e) { /* skip corrupt */ }
     }
@@ -281,7 +303,7 @@ function formatTasksSection(sessions) {
   for (const s of sessions) {
     if (s.status === "done" || !s.current_tasks || s.current_tasks.length === 0) continue;
 
-    const agent = s.agent_name || "Claude";
+    const agent = agentDisplayName(s);
     const duration = formatDuration(s.started_ts, s.last_activity_ts);
     const tasks = [];
 
@@ -396,10 +418,10 @@ function buildReportMessage() {
   for (const s of sessions) {
     const label = livenessLabel(s);
     const icon = label === "activa" ? "\u25CF" : label === "idle" ? "\u25D0" : label === "done" ? "\u2717" : "\u25CB";
-    const agent = s.agent_name || s.branch || s.id;
+    const agent = agentDisplayName(s);
     const action = lastActionLabel(s);
     const age = formatAge(s.last_activity_ts);
-    msg += icon + " " + truncate(agent, 22) + " \u2014 " + action + " (" + age + ")\n";
+    msg += icon + " " + truncate(agent, 28) + " \u2014 " + action + " (" + age + ")\n";
     if (s.current_task && label !== "done") {
       msg += "  \u2514 \u2699 " + truncate(s.current_task, 40) + "\n";
     }
@@ -501,7 +523,7 @@ function buildReportImage(sessions, recentActivity, git, ci) {
     for (const s of sessions) {
       const label = livenessLabel(s);
       const statusColor = label === "activa" ? IMG.GREEN : label === "idle" ? IMG.YELLOW : IMG.GRAY;
-      const agent = s.agent_name || "Claude";
+      const agent = agentDisplayName(s);
       const action = lastActionLabel(s);
       const duration = formatDuration(s.started_ts, s.last_activity_ts);
       const actions = String(s.action_count || 0);
@@ -879,7 +901,7 @@ function render() {
 
     for (const s of sessions) {
       const icon = livenessIcon(s);
-      const agent = s.agent_name || "Claude \uD83E\uDD16";
+      const agent = agentDisplayName(s);
       const duration = formatDuration(s.started_ts, s.last_activity_ts);
       const action = lastActionLabel(s);
       let row =
