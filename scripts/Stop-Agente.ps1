@@ -47,6 +47,29 @@ function Write-Log {
     Write-Host "$P $Msg" -ForegroundColor $Color
 }
 
+# --- Safe worktree removal ---
+# Remove-Item -Recurse -Force sigue junctions/symlinks y BORRA el contenido real de .claude/.
+# Esta funcion primero desvincula la junction con rmdir (sin /s), que NO sigue el enlace.
+function Safe-RemoveWorktreeDir {
+    param([string]$WtPath)
+
+    if (-not (Test-Path $WtPath)) { return }
+
+    # Desvincular junction/symlink .claude/ ANTES de borrar recursivamente
+    $claudeLink = Join-Path $WtPath ".claude"
+    if (Test-Path $claudeLink) {
+        $item = Get-Item $claudeLink -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            # Es junction o symlink: usar rmdir que NO sigue el enlace
+            cmd /c rmdir "$claudeLink" 2>$null
+            Write-Log "Junction .claude/ desvinculada (contenido real preservado)." "Cyan"
+        }
+    }
+
+    # Ahora si es seguro borrar recursivamente
+    Remove-Item $WtPath -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # --- Validaciones ---
 if (-not (Test-Path $PlanFile)) {
     Write-Error ('No se encontro el plan: {0}' -f $PlanFile)
@@ -152,10 +175,8 @@ function Stop-UnAgente {
         }
         catch { }
         finally { Pop-Location }
-        # Fallback: borrar directorio si sigue existiendo
-        if (Test-Path $wtDirResolved) {
-            Remove-Item $wtDirResolved -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        # Fallback: borrar directorio si sigue existiendo (safe: desvincula junction primero)
+        Safe-RemoveWorktreeDir $wtDirResolved
         Close-AgenteTerminal -Agente $Agente
         Write-Log 'Limpiado.' 'Green'
         return
@@ -180,9 +201,8 @@ function Stop-UnAgente {
             git branch -D $branch 2>$null
             git worktree prune 2>$null
             $ErrorActionPreference = $prevEAP
-            if (Test-Path $wtDirResolved) {
-                Remove-Item $wtDirResolved -Recurse -Force -ErrorAction SilentlyContinue
-            }
+            # Safe: desvincula junction .claude/ antes de borrar
+            Safe-RemoveWorktreeDir $wtDirResolved
             Close-AgenteTerminal -Agente $Agente
             Write-Log 'Worktree limpiado (sin cambios).' 'Green'
             return
