@@ -1,7 +1,11 @@
 // permission-approver.js — PoC spike #834
 // Hook PermissionRequest v2: aprobación remota vía Telegram inline buttons
-// Flujo: envía mensaje con botones → polling callback_query → devuelve decisión via stdout
+// Flujo: envía mensaje con botones → telegram-commander procesa el callback →
+//        approver lee la decisión desde pending-questions.json → devuelve via stdout
 // Pure Node.js — sin dependencia de bash
+//
+// IMPORTANTE: Este hook NO usa getUpdates de Telegram. El telegram-commander.js
+// es el único consumidor de getUpdates, evitando conflictos de offset/409.
 //
 // Salidas posibles:
 //   stdout {"behavior": "allow"}             → Claude aprueba sin mostrar UI local
@@ -9,7 +13,6 @@
 //   sin stdout (timeout)                     → Claude muestra prompt local como fallback
 
 const https = require("https");
-const querystring = require("querystring");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -20,16 +23,16 @@ const { readSessionContext } = require("./context-reader");
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
-const POLL_TIMEOUT_SEC = 20;   // Telegram long-poll: esperar hasta 20s por update
-const MAX_WAIT_HOURS = 1;      // Espera máxima por defecto: 1 hora
-const PERMISSION_TIMEOUT_MIN = _tgCfg.permission_timeout_min || (MAX_WAIT_HOURS * 60);
-const MAX_POLL_CYCLES = Math.ceil((PERMISSION_TIMEOUT_MIN * 60) / POLL_TIMEOUT_SEC);
-const ANSWER_TIMEOUT = 5000;   // Timeout para answerCallbackQuery y editMessage
+const ANSWER_TIMEOUT = 5000;   // Timeout para editMessage
+
+// Tiempos de polling: el hook tiene timeout de 55s en settings.json
+// Salir 5s antes para poder hacer cleanup (marcar expired, editar mensaje)
+const HOOK_TIMEOUT_MS = 50000;   // 50s — margen de 5s antes del kill
+const POLL_INTERVAL_MS = 1500;   // Verificar pending-questions.json cada 1.5s
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
 const LOG_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "hook-debug.log");
-const OFFSET_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "tg-approver-offset.json");
 const SESSION_STORE_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "tg-session-store.json");
 
 function getSkillContext() {
@@ -80,6 +83,10 @@ function telegramPost(method, params, timeoutMs) {
         req.write(postData);
         req.end();
     });
+}
+
+function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
 }
 
 // ─── Formato de acción para el mensaje ────────────────────────────────────────
@@ -204,115 +211,30 @@ function persistAlways(toolName, toolInput) {
     persistPattern(pattern, settingsPaths, log);
 }
 
-// ─── Offset persistente (compartido entre invocaciones del hook) ──────────────
-// Evita que dos hooks corran simultáneamente desde offset=0 o se pisen entre sí
+// ─── Polling de pending-questions.json ────────────────────────────────────────
+// Lee el archivo cada POLL_INTERVAL_MS para detectar cuando el commander
+// procesó el callback del botón y escribió la decisión.
 
-function loadOffset() {
-    try {
-        const data = JSON.parse(fs.readFileSync(OFFSET_FILE, "utf8"));
-        return data.offset || 0;
-    } catch(e) { return 0; }
-}
-
-function saveOffset(offset) {
-    try { fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset }), "utf8"); } catch(e) {}
-}
-
-// ─── Telegram: obtener offset actual (para ignorar updates previos) ────────────
-
-async function getCurrentOffset() {
-    // Primero revisar el archivo persistente
-    const saved = loadOffset();
-
-    try {
-        const updates = await telegramPost("getUpdates", {
-            limit: 1,
-            timeout: 0,
-            allowed_updates: ["callback_query"]
-        }, 5000);
-        if (updates && updates.length > 0) {
-            const fresh = updates[updates.length - 1].update_id + 1;
-            // Usar el mayor entre el guardado y el actual (nunca retroceder)
-            return Math.max(saved, fresh);
-        }
-        // Sin updates nuevos: confiar en el guardado (ya está al día)
-        return saved;
-    } catch(e) {
-        log("getCurrentOffset error: " + e.message);
-        return saved;
-    }
-}
-
-// ─── Telegram: poll para nuestro requestId ────────────────────────────────────
-
-async function pollForDecision(requestId, msgId, offset) {
-    let currentOffset = offset;
-
-    for (let cycle = 0; cycle < MAX_POLL_CYCLES; cycle++) {
-        // Verificar si la pregunta fue respondida en consola (via pending-questions.json)
+async function pollQuestionStatus(requestId, startTime) {
+    while (Date.now() - startTime < HOOK_TIMEOUT_MS) {
         try {
             const q = getQuestionById(requestId);
-            if (q && q.answered_via === "console") {
-                log("Pregunta " + requestId + " respondida en consola — terminando polling");
-                saveOffset(currentOffset);
-                return { action: "__console__", callbackQueryId: null, messageId: msgId };
+            if (!q) {
+                log("Pregunta " + requestId + " desapareció de pending-questions.json");
+                return null;
             }
-        } catch(e) {}
-
-        log("Ciclo de polling " + (cycle + 1) + "/" + MAX_POLL_CYCLES + " offset=" + currentOffset);
-
-        let updates;
-        try {
-            updates = await telegramPost("getUpdates", {
-                offset: currentOffset,
-                timeout: POLL_TIMEOUT_SEC,
-                allowed_updates: ["callback_query"]
-            }, (POLL_TIMEOUT_SEC + 5) * 1000);
+            if (q.status !== "pending") {
+                log("Pregunta " + requestId + " cambió a: " + q.status
+                    + " via=" + (q.answered_via || "?")
+                    + " action=" + (q.action_result || "?"));
+                return q;
+            }
         } catch(e) {
-            log("getUpdates error ciclo " + cycle + ": " + e.message);
-            continue;
+            log("Error leyendo pregunta " + requestId + ": " + e.message);
         }
-
-        if (!updates || !Array.isArray(updates)) continue;
-
-        for (const update of updates) {
-            if (update.update_id >= currentOffset) {
-                currentOffset = update.update_id + 1;
-            }
-
-            const cq = update.callback_query;
-            if (!cq || !cq.data) continue;
-
-            // Verificar seguridad: solo aceptar del chat correcto
-            if (String(cq.message && cq.message.chat && cq.message.chat.id) !== String(CHAT_ID)) {
-                log("Callback de chat desconocido: " + JSON.stringify(cq.message && cq.message.chat));
-                continue;
-            }
-
-            // Verificar que el callback es para NUESTRO mensaje (doble seguridad)
-            if (cq.message && cq.message.message_id !== msgId) {
-                log("Callback de otro mensaje: " + cq.message.message_id + " (esperaba " + msgId + ")");
-                continue;
-            }
-
-            // Extraer acción y requestId del callback_data
-            const parts = cq.data.split(":");
-            if (parts.length < 2) continue;
-            const action = parts[0]; // "allow", "always", "deny"
-            const cbRequestId = parts.slice(1).join(":"); // el resto es el requestId
-
-            if (cbRequestId !== requestId) {
-                log("Callback de otra solicitud: " + cbRequestId + " (esperaba " + requestId + ")");
-                continue;
-            }
-
-            log("Decisión recibida: " + action + " para " + requestId + " en ciclo " + cycle);
-            saveOffset(currentOffset); // persistir el offset al recibir decisión
-            return { action, callbackQueryId: cq.id, messageId: cq.message && cq.message.message_id };
-        }
+        await sleep(POLL_INTERVAL_MS);
     }
-
-    return null; // timeout
+    return null; // timeout — el hook se va a morir pronto
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
@@ -423,17 +345,7 @@ async function processInput() {
     msgText += "\n" + action + "\n\n"
         + "¿Qué hacemos?";
 
-    // 1. Obtener offset actual ANTES de enviar el mensaje
-    let offset;
-    try {
-        offset = await getCurrentOffset();
-        log("Offset inicial: " + offset);
-    } catch(e) {
-        log("Error obteniendo offset: " + e.message);
-        process.exit(0);
-    }
-
-    // 2. Enviar mensaje con inline buttons
+    // 1. Enviar mensaje con inline buttons
     let sentMsg;
     try {
         sentMsg = await telegramPost("sendMessage", {
@@ -450,11 +362,12 @@ async function processInput() {
         }, 8000);
         log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId);
 
-        // Registrar pregunta pendiente
+        // Registrar pregunta pendiente (con HTML original para que el commander lo use al editar)
         addPendingQuestion({
             id: requestId,
             type: "permission",
             message: action,
+            original_html: msgText,
             telegram_message_id: sentMsg.message_id,
             options: [
                 { label: "Permitir", action: "allow" },
@@ -471,84 +384,59 @@ async function processInput() {
 
     const msgId = sentMsg.message_id;
 
-    // 3. Polling esperando la decisión del usuario
-    const decision = await pollForDecision(requestId, msgId, offset);
+    // 2. Polling de pending-questions.json esperando que el commander procese el callback
+    //    El commander es el único consumidor de getUpdates — no hay conflicto de offsets
+    const result = await pollQuestionStatus(requestId, startTime);
     const latencyMs = Date.now() - startTime;
 
-    if (decision && decision.action === "__console__") {
-        // Respondido en consola: no hacer nada, el post-console-response.js ya editó el mensaje
-        log("Respondido en consola — saliendo sin respuesta stdout (fallback a prompt local)");
-        process.exit(0);
+    // 3. Manejar resultado
+    if (result && result.status === "answered") {
+        const actionResult = result.action_result;
+
+        if (result.answered_via === "console") {
+            // Respondido en consola — no necesitamos hacer nada, salir sin stdout
+            log("Respondido en consola — saliendo sin stdout (" + latencyMs + "ms)");
+            process.exit(0);
+        }
+
+        // Respondido via Telegram (el commander ya editó el mensaje y persistió si era "always")
+        log("Decisión via Telegram: " + actionResult + " en " + latencyMs + "ms");
+
+        const isAllow = (actionResult === "allow" || actionResult === "always");
+        const response = {
+            hookSpecificOutput: {
+                hookEventName: "PermissionRequest",
+                decision: isAllow
+                    ? { behavior: "allow" }
+                    : { behavior: "deny", message: "Denegado por el usuario vía Telegram" }
+            }
+        };
+
+        process.stdout.write(JSON.stringify(response) + "\n", () => {
+            process.exit(0);
+        });
+        // Fallback: si el callback nunca se invoca, salir después de 2s
+        setTimeout(() => process.exit(0), 2000);
+        return;
     }
 
-    if (!decision) {
-        // Timeout: editar mensaje con botón "Reactivar" para persistir el permiso tardíamente
-        log("Timeout sin respuesta tras " + PERMISSION_TIMEOUT_MIN + " min (" + MAX_POLL_CYCLES + " ciclos). Latencia: " + latencyMs + "ms");
-        resolveQuestion(requestId, "expired", null);
-        saveOffset(offset); // persistir el offset aunque no hubo respuesta
-        try {
-            await telegramPost("editMessageText", {
-                chat_id: CHAT_ID,
-                message_id: msgId,
-                text: msgText + "\n\n⏱ <i>Expirado — el agente continuó sin este permiso</i>",
-                parse_mode: "HTML",
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: "🔄 Reactivar (aprobar siempre)", callback_data: "reactivate:" + requestId },
-                        { text: "⏹ Descartar", callback_data: "dismiss_expired:" + requestId }
-                    ]]
-                }
-            }, ANSWER_TIMEOUT);
-        } catch(e) { log("Error editando mensaje timeout: " + e.message); }
-        process.exit(0); // fallback al prompt local
-    }
-
-    // 4. Responder al callback (quitar spinner del botón en Telegram)
-    const confirmText = { allow: "✅ Permitido", always: "✅ Permitido siempre", deny: "❌ Denegado" }[decision.action] || "OK";
-    try {
-        await telegramPost("answerCallbackQuery", {
-            callback_query_id: decision.callbackQueryId,
-            text: confirmText,
-            show_alert: false
-        }, ANSWER_TIMEOUT);
-    } catch(e) { log("Error en answerCallbackQuery: " + e.message); }
-
-    // 5. Editar mensaje: quitar botones, mostrar decisión tomada
-    const emojiDecision = { allow: "✅", always: "✅✅", deny: "❌" }[decision.action] || "•";
+    // 4. Timeout — el usuario no respondió dentro de los ~50s
+    //    Marcar como expired y editar mensaje ANTES de que Claude nos mate a los 55s
+    log("Timeout sin respuesta (" + latencyMs + "ms). Editando mensaje a expirado.");
+    resolveQuestion(requestId, "expired", null);
     try {
         await telegramPost("editMessageText", {
             chat_id: CHAT_ID,
             message_id: msgId,
-            text: msgText + "\n\n" + emojiDecision + " <b>" + confirmText + "</b>"
-                + " <i>(" + latencyMs + "ms)</i>",
-            parse_mode: "HTML"
+            text: msgText + "\n\n⏱ <i>Expirado — respondiendo en consola</i>",
+            parse_mode: "HTML",
+            reply_markup: {
+                inline_keyboard: [[
+                    { text: "🔄 Reactivar (aprobar siempre)", callback_data: "reactivate:" + requestId },
+                    { text: "⏹ Descartar", callback_data: "dismiss_expired:" + requestId }
+                ]]
+            }
         }, ANSWER_TIMEOUT);
-    } catch(e) { log("Error editando mensaje con decisión: " + e.message); }
-
-    log("Decisión: " + decision.action + " en " + latencyMs + "ms");
-    resolveQuestion(requestId, "answered", "telegram");
-
-    // 6. Si es "siempre": persistir en settings.local.json ANTES de responder
-    //    (escritura síncrona — garantiza que el archivo existe antes del allow)
-    if (decision.action === "always") {
-        persistAlways(toolName, toolInput);
-    }
-
-    // 7. Escribir decisión a stdout para Claude Code (después de persistir)
-    //    Formato requerido: hookSpecificOutput.decision.behavior
-    const isAllow = (decision.action === "allow" || decision.action === "always");
-    const response = {
-        hookSpecificOutput: {
-            hookEventName: "PermissionRequest",
-            decision: isAllow
-                ? { behavior: "allow" }
-                : { behavior: "deny", message: "Denegado por el usuario vía Telegram" }
-        }
-    };
-
-    process.stdout.write(JSON.stringify(response) + "\n", () => {
-        process.exit(0);
-    });
-    // Fallback: si el callback nunca se invoca, salir después de 2s
-    setTimeout(() => process.exit(0), 2000);
+    } catch(e) { log("Error editando mensaje timeout: " + e.message); }
+    process.exit(0); // fallback al prompt local
 }
