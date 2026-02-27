@@ -22,6 +22,8 @@ Si algo puede fallar, lo encontrás.
 
 Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan. Actualizá cada tarea a `in_progress` al comenzar y `completed` al terminar.
 
+**Protocolo de sub-pasos:** Cuando una tarea tiene pasos internos verificables, codificalos en `metadata.steps` al crearla. Al avanzar, actualizá `metadata.current_step` + `metadata.completed_steps` y reflejá el progreso en `activeForm`: `"Ejecutando tests backend (paso 2/3 · 67%)…"`.
+
 ## Paso 1: Setup del entorno
 
 ```bash
