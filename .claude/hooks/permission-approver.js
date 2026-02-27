@@ -15,7 +15,7 @@ const fs = require("fs");
 const path = require("path");
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern } = require("./permission-utils");
 
-const { addPendingQuestion, resolveQuestion } = require("./pending-questions");
+const { addPendingQuestion, resolveQuestion, getQuestionById } = require("./pending-questions");
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
@@ -172,6 +172,16 @@ async function pollForDecision(requestId, msgId, offset) {
     let currentOffset = offset;
 
     for (let cycle = 0; cycle < MAX_POLL_CYCLES; cycle++) {
+        // Verificar si la pregunta fue respondida en consola (via pending-questions.json)
+        try {
+            const q = getQuestionById(requestId);
+            if (q && q.answered_via === "console") {
+                log("Pregunta " + requestId + " respondida en consola — terminando polling");
+                saveOffset(currentOffset);
+                return { action: "__console__", callbackQueryId: null, messageId: msgId };
+            }
+        } catch(e) {}
+
         log("Ciclo de polling " + (cycle + 1) + "/" + MAX_POLL_CYCLES + " offset=" + currentOffset);
 
         let updates;
@@ -383,10 +393,16 @@ async function processInput() {
     const decision = await pollForDecision(requestId, msgId, offset);
     const latencyMs = Date.now() - startTime;
 
+    if (decision && decision.action === "__console__") {
+        // Respondido en consola: no hacer nada, el post-console-response.js ya editó el mensaje
+        log("Respondido en consola — saliendo sin respuesta stdout (fallback a prompt local)");
+        process.exit(0);
+    }
+
     if (!decision) {
         // Timeout: editar mensaje con botón "Reactivar" para persistir el permiso tardíamente
         log("Timeout sin respuesta tras " + PERMISSION_TIMEOUT_MIN + " min (" + MAX_POLL_CYCLES + " ciclos). Latencia: " + latencyMs + "ms");
-        resolveQuestion(requestId, "expired");
+        resolveQuestion(requestId, "expired", null);
         saveOffset(offset); // persistir el offset aunque no hubo respuesta
         try {
             await telegramPost("editMessageText", {
@@ -428,7 +444,7 @@ async function processInput() {
     } catch(e) { log("Error editando mensaje con decisión: " + e.message); }
 
     log("Decisión: " + decision.action + " en " + latencyMs + "ms");
-    resolveQuestion(requestId, "answered");
+    resolveQuestion(requestId, "answered", "telegram");
 
     // 6. Si es "siempre": persistir en settings.local.json ANTES de responder
     //    (escritura síncrona — garantiza que el archivo existe antes del allow)

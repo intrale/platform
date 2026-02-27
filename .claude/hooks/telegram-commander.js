@@ -22,8 +22,9 @@ const SKILLS_DIR = path.join(REPO_ROOT, ".claude", "skills");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const PROPOSALS_FILE = path.join(HOOKS_DIR, "planner-proposals.json");
 const SESSION_STORE_FILE = path.join(HOOKS_DIR, "tg-session-store.json");
-const { getPendingQuestions, getExpiredQuestions, retryQuestion, resolveQuestion, getQuestionById } = require("./pending-questions");
+const { getPendingQuestions, getExpiredQuestions, retryQuestion, resolveQuestion, getQuestionById, loadQuestions, saveQuestions } = require("./pending-questions");
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot } = require("./permission-utils");
+const PENDING_QUESTIONS_FILE = path.join(HOOKS_DIR, "pending-questions.json");
 
 const POLL_TIMEOUT_SEC = 30;
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutos de inactividad
@@ -1566,6 +1567,22 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
+                    // Callbacks de permisos (allow:/always:/deny:) — pueden llegar aquí si el approver ya terminó
+                    else if (cbData.startsWith("allow:") || cbData.startsWith("always:") || cbData.startsWith("deny:")) {
+                        const parts = cbData.split(":");
+                        const cbRequestId = parts.slice(1).join(":");
+                        log("Callback de permiso recibido en commander: " + cbData);
+                        // Verificar si la pregunta ya fue respondida
+                        const q = getQuestionById(cbRequestId);
+                        const alreadyAnswered = q && (q.status === "answered" || q.answered_via);
+                        try {
+                            await telegramPost("answerCallbackQuery", {
+                                callback_query_id: cq.id,
+                                text: alreadyAnswered ? "Ya fue respondido" : "Procesando...",
+                                show_alert: false
+                            }, 5000);
+                        } catch (e2) {}
+                    }
                     // Callbacks de preguntas pendientes (pq_*)
                     else if (cbData.startsWith("pq_")) {
                         log("Callback de pregunta pendiente: " + cbData);
@@ -1657,6 +1674,103 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ─── Pending Questions Watch (sync consola ↔ Telegram) ───────────────────────
+
+let _pqWatcher = null;
+let _pqLastSnapshot = {};  // { [id]: answered_via } — para detectar cambios
+
+function takePqSnapshot() {
+    try {
+        const data = JSON.parse(fs.readFileSync(PENDING_QUESTIONS_FILE, "utf8"));
+        const snap = {};
+        for (const q of (data.questions || [])) {
+            snap[q.id] = { status: q.status, answered_via: q.answered_via || null, msgId: q.telegram_message_id };
+        }
+        return snap;
+    } catch (e) { return {}; }
+}
+
+async function onPendingQuestionsChange() {
+    const newSnap = takePqSnapshot();
+    for (const id of Object.keys(newSnap)) {
+        const cur = newSnap[id];
+        const prev = _pqLastSnapshot[id];
+        // Detectar transición a answered_via:"console"
+        if (cur.answered_via === "console" && (!prev || prev.answered_via !== "console") && cur.msgId) {
+            log("PQ Watch: pregunta " + id + " respondida en consola — editando mensaje " + cur.msgId);
+            try {
+                await telegramPost("editMessageText", {
+                    chat_id: CHAT_ID,
+                    message_id: cur.msgId,
+                    text: "⌨️ <b>Respondido en consola</b>\n\n<i>El usuario respondió directamente en la consola de Claude Code.</i>",
+                    parse_mode: "HTML"
+                }, 8000);
+            } catch (e) {
+                const errMsg = e.message || "";
+                if (!errMsg.includes("message is not modified")) {
+                    log("PQ Watch: error editando mensaje " + cur.msgId + ": " + errMsg);
+                }
+            }
+        }
+    }
+    _pqLastSnapshot = newSnap;
+}
+
+function startPendingQuestionsWatch() {
+    _pqLastSnapshot = takePqSnapshot();
+    try {
+        _pqWatcher = fs.watch(PENDING_QUESTIONS_FILE, { persistent: false }, (eventType) => {
+            if (eventType === "change") {
+                // Debounce: esperar 200ms para evitar lecturas parciales
+                setTimeout(() => { onPendingQuestionsChange().catch(e => log("PQ Watch error: " + e.message)); }, 200);
+            }
+        });
+        _pqWatcher.on("error", (e) => {
+            log("PQ Watcher error: " + e.message);
+            _pqWatcher = null;
+        });
+        log("PQ Watch iniciado sobre " + PENDING_QUESTIONS_FILE);
+    } catch (e) {
+        log("No se pudo iniciar PQ Watch: " + e.message);
+    }
+}
+
+function stopPendingQuestionsWatch() {
+    if (_pqWatcher) {
+        try { _pqWatcher.close(); } catch (e) {}
+        _pqWatcher = null;
+        log("PQ Watch detenido");
+    }
+}
+
+async function cleanStaleQuestionsOnStartup() {
+    const data = loadQuestions();
+    if (!data.questions || data.questions.length === 0) return;
+    const stale = data.questions.filter(q => q.status === "pending" && q.telegram_message_id);
+    if (stale.length === 0) return;
+
+    log("Limpiando " + stale.length + " pregunta(s) pendientes de sesiones anteriores");
+    for (const q of stale) {
+        try {
+            await telegramPost("editMessageText", {
+                chat_id: CHAT_ID,
+                message_id: q.telegram_message_id,
+                text: "⌨️ <b>Respondido fuera de Telegram</b>\n\n<i>Esta pregunta fue resuelta en una sesión anterior.</i>",
+                parse_mode: "HTML"
+            }, 8000);
+        } catch (e) {
+            const errMsg = e.message || "";
+            if (!errMsg.includes("message is not modified")) {
+                log("Error editando stale msg " + q.telegram_message_id + ": " + errMsg);
+            }
+        }
+        q.status = "answered";
+        q.answered_at = new Date().toISOString();
+        q.answered_via = "console";
+    }
+    saveQuestions(data);
+}
+
 // ─── Shutdown ────────────────────────────────────────────────────────────────
 
 async function shutdown(signal) {
@@ -1664,8 +1778,9 @@ async function shutdown(signal) {
     running = false;
     log("Shutdown por " + signal);
 
-    // Detener monitor periódico si está activo
+    // Detener monitor periódico y watcher de pending questions
     stopSprintMonitor();
+    stopPendingQuestionsWatch();
 
     try {
         await sendMessage("🔴 <b>Commander offline</b> (" + signal + ")");
@@ -1721,6 +1836,12 @@ async function main() {
         releaseLock();
         process.exit(1);
     }
+
+    // Limpiar preguntas pendientes de sesiones anteriores
+    await cleanStaleQuestionsOnStartup();
+
+    // Iniciar watcher de pending-questions.json (sync consola ↔ Telegram)
+    startPendingQuestionsWatch();
 
     // Polling principal
     await pollingLoop();
