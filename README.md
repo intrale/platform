@@ -158,7 +158,7 @@ Estas tareas también se ejecutan automáticamente como parte de `./gradlew buil
 
 | Contexto | Formato de rama | Base |
 |---|---|---|
-| Codex (bots) | `codex/<issue>-<slug>` | `origin/main` |
+| Agentes IA | `agent/<issue>-<slug>` | `origin/main` |
 | Feature manual | `feature/<desc>` | `develop` |
 | Bugfix manual | `bugfix/<desc>` | `develop` |
 | Docs manual | `docs/<desc>` | `develop` |

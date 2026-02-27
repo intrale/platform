@@ -12,6 +12,6 @@ Prefijos:
 | Documentación   | docs/<desc>        |
 | Refactorización | refactor/<desc>    |
 
-**Regla de agentes (Codex)**
-- Las ramas creadas automáticamente **siempre** usan el formato **`codex/<issue>-<slug>`** y base **`origin/main`**.
+**Regla de agentes IA**
+- Las ramas creadas automáticamente **siempre** usan el formato **`agent/<issue>-<slug>`** y base **`origin/main`**.
 - Los prefijos `feature/`, `bugfix/`, `refactor/`, `docs/` se reservan para trabajo **manual**.

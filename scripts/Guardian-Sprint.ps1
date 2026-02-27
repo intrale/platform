@@ -9,7 +9,7 @@
 
     Condiciones de inactividad (TODAS deben cumplirse):
     - No hay procesos claude corriendo
-    - No hay worktrees codex/* activos
+    - No hay worktrees agent/* activos
     - No hay Watch-Agentes.ps1 corriendo
 
     Cooldown de 10 minutos entre relanzamientos para evitar loops.
@@ -80,12 +80,12 @@ function Test-ClaudeRunning {
     return $false
 }
 
-function Test-CodexWorktrees {
+function Test-AgentWorktrees {
     Push-Location $MainRepo
     try {
         $wtOutput = git worktree list --porcelain 2>$null
-        $codexBranches = $wtOutput | Select-String 'branch refs/heads/codex/'
-        return ($codexBranches -and @($codexBranches).Count -gt 0)
+        $agentBranches = $wtOutput | Select-String 'branch refs/heads/agent/'
+        return ($agentBranches -and @($agentBranches).Count -gt 0)
     }
     catch { return $false }
     finally { Pop-Location }
@@ -138,7 +138,7 @@ function Stop-ZombieAgents {
 
 function Test-IsActive {
     $claude   = Test-ClaudeRunning
-    $worktrees = Test-CodexWorktrees
+    $worktrees = Test-AgentWorktrees
     $watcher  = Test-WatcherRunning
 
     return @{

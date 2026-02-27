@@ -1,6 +1,6 @@
-# Comandos básicos para Codex (lenguaje natural) — intrale/platform
+# Comandos básicos para Agentes IA (lenguaje natural) — intrale/platform
 
-Estos comandos están alineados con nuestras reglas: PRs desde `main`, ramas `codex/<issue>-<slug>`, y estados del Project V2: **Backlog, Refined, Todo, In Progress, Ready, Done, Blocked**. Se aplican al repo **intrale/platform** y al Project **“Intrale” nº 1**.
+Estos comandos están alineados con nuestras reglas: PRs desde `main`, ramas `agent/<issue>-<slug>`, y estados del Project V2: **Backlog, Refined, Todo, In Progress, Ready, Done, Blocked**. Se aplican al repo **intrale/platform** y al Project **“Intrale” nº 1**.
 
 > **Frase canónica (refinamiento) — usar exactamente esta:**
 > **Refinar la issue #<N> del repo intrale/platform escribiendo el detalle en el CUERPO de la issue (sobrescribí el cuerpo con la plantilla estándar). No crees ni modifiques archivos en docs/ ni publiques comentarios. Dejala en Refined.**
@@ -33,7 +33,7 @@ Usar exactamente estos nombres: **Backlog, Refined, Todo, In Progress, Ready, Do
 ## 3) Crear PR correcto desde `main` (una rama por issue)
 **Prompt:**
 > Para la **issue #{N}** en **intrale/platform**:
-> 1) Crear rama **`codex/{N}-{slug-del-título}`** **desde `origin/main`**.
+> 1) Crear rama **`agent/{N}-{slug-del-título}`** **desde `origin/main`**.
 > 2) Hacer un **commit mínimo**: {descripción breve}.
 > 3) Abrir **PR contra `main`** con título: `[auto] {título} (Closes #{N})`.
 > 4) Asignar el PR a **leitolarreta** y devolver los links.
@@ -80,29 +80,29 @@ Usar exactamente estos nombres: **Backlog, Refined, Todo, In Progress, Ready, Do
 
 ## 8) Agrupadores: Desarrollar (una o varias)
 
-> Regla: **siempre** crear rama desde `origin/main` con formato `codex/{N}-{slug}`, abrir PR **contra `main`**, título `[auto] {título} (Closes #{N})`, asignado a **leitolarreta**. No hacer merge.
+> Regla: **siempre** crear rama desde `origin/main` con formato `agent/{N}-{slug}`, abrir PR **contra `main`**, título `[auto] {título} (Closes #{N})`, asignado a **leitolarreta**. No hacer merge.
 
 ### 8.1 Desarrollar UNA historia
 > **Desarrollar la issue #{N}** en **intrale/platform**:
 > - Mover la issue a **In Progress**.
-> - Crear rama **`codex/{N}-{slug}`** desde `origin/main`.
+> - Crear rama **`agent/{N}-{slug}`** desde `origin/main`.
 > - Implementar lo mínimo para cumplir criterios de aceptación (o lo indicado).
 > - Abrir **PR a `main`** con `[auto] {título} (Closes #{N})`, asignar a **leitolarreta**.
 > - **Mover la issue a “Ready”** y devolver links de rama y PR.
 
 ### 8.2 Desarrollar VARIAS historias por lista
 > **Desarrollar las issues #{N1}, #{N2}, #{N3}** en **intrale/platform**:
-> - Para **cada** issue: mover a **In Progress**; crear rama **`codex/{N}-{slug}`** desde `origin/main`; implementar lo mínimo; abrir **PR a `main`** con `[auto] {título} (Closes #{N})`, asignar a **leitolarreta**; **mover a “Ready”**.
+> - Para **cada** issue: mover a **In Progress**; crear rama **`agent/{N}-{slug}`** desde `origin/main`; implementar lo mínimo; abrir **PR a `main`** con `[auto] {título} (Closes #{N})`, asignar a **leitolarreta**; **mover a “Ready”**.
 > - Entregar una **tabla** con: issue, rama, PR, estado final.
 
 ### 8.3 Desarrollar las próximas K priorizadas en “Todo”
 > **Desarrollar las próximas {K} historias en “Todo”** del Project **“Intrale” nº 1** (según prioridad):
-> - Para **cada** issue: mover a **In Progress**; crear rama **`codex/{N}-{slug}`** desde `origin/main`; implementar lo mínimo; abrir **PR a `main`** con `[auto] {título} (Closes #{N})`, asignar a **leitolarreta**; **mover a “Ready”**.
+> - Para **cada** issue: mover a **In Progress**; crear rama **`agent/{N}-{slug}`** desde `origin/main`; implementar lo mínimo; abrir **PR a `main`** con `[auto] {título} (Closes #{N})`, asignar a **leitolarreta**; **mover a “Ready”**.
 > - Devolver links y un **resumen** de progreso.
 
 ### 8.4 Finalizar desarrollo pendiente (reintentos de PR)
 > **Para todas las issues en “In Progress”** del Project **“Intrale” nº 1**:
-> - Si **no** existe PR: crear rama **`codex/{N}-{slug}`** desde `origin/main`, hacer commit mínimo, abrir **PR a `main`** con `[auto] {título} (Closes #{N})`, asignar a **leitolarreta**.
+> - Si **no** existe PR: crear rama **`agent/{N}-{slug}`** desde `origin/main`, hacer commit mínimo, abrir **PR a `main`** con `[auto] {título} (Closes #{N})`, asignar a **leitolarreta**.
 > - Si **ya hay** PR: actualizar con los cambios pendientes y **mover la issue a “Ready”** si cumple criterios.
 > - Entregar una **tabla** con: issue, rama, PR, estado final.
 

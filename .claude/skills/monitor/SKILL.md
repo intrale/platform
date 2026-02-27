@@ -51,9 +51,9 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │ 14:31:45  b08b96a2  Bash      git status                       │
 │ 14:30:12  67eb3124  Write     LoginViewModel.kt                │
 ├─ REPO ──────────────────────────────────────────────────────────┤
-│ Rama: codex/829-centinela-v3                                     │
+│ Rama: agent/829-centinela-v3                                     │
 │ Commit: 2b29ad5 migrar hooks de bash…                            │
-│ CI: ⏳ in_progress (codex/829-centinela-v3)                       │
+│ CI: ⏳ in_progress (agent/829-centinela-v3)                       │
 ├─ PLAN (2026-02-20) ────────────────────────────────────────────┤
 │ #1  #821  notificaciones     S  Stream E                         │
 │ #2  #845  refactor-login     M  Stream A                         │

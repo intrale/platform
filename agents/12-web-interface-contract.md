@@ -1,10 +1,10 @@
-# 🕹️ Contrato con la Interfaz Web de Codex (Actualizado a `main`)
+# 🕹️ Contrato con la Interfaz Web de Agentes (Actualizado a `main`)
 
 Interpretación de órdenes (lenguaje natural)
 
 Si el usuario pide “crear PR”, el agente debe:
 1) Resolver `issue-number` y `repo`.
-2) Crear rama **desde `origin/main`** con el formato **`codex/<issue-number>-<slug>`**.
+2) Crear rama **desde `origin/main`** con el formato **`agent/<issue-number>-<slug>`**.
 3) Hacer el cambio mínimo solicitado (si aplica).
 4) Crear **PR contra `main`** con `Closes #<issue>`.
 
@@ -13,7 +13,7 @@ Validaciones previas
 
 Criterios de aceptación
 - PR apunta a `main`.
-- Rama cumple `codex/<issue>-<slug>`.
+- Rama cumple `agent/<issue>-<slug>`.
 - Issue referenciado en título/cuerpo del PR (`Closes #N`).
 
 En caso de incumplimiento

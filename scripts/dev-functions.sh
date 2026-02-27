@@ -36,9 +36,9 @@ _pre_trust_worktree() {
 # Copia automaticamente la config de Claude Code (permisos, etc).
 #
 # Ejemplos:
-#   dev 42 auth-2fa        → branch codex/42-auth-2fa
-#   dev 43 catalogo        → branch codex/43-catalogo
-#   dev 50                 → branch codex/50-feature
+#   dev 42 auth-2fa        → branch agent/42-auth-2fa
+#   dev 43 catalogo        → branch agent/43-catalogo
+#   dev 50                 → branch agent/50-feature
 # =============================================================================
 dev() {
     local issue="${1}"
@@ -62,8 +62,8 @@ HELP
         return 1
     fi
 
-    local branch="codex/${issue}-${slug}"
-    local wt_dir="${_INTRALE_MAIN}/../platform.codex-${issue}-${slug}"
+    local branch="agent/${issue}-${slug}"
+    local wt_dir="${_INTRALE_MAIN}/../platform.agent-${issue}-${slug}"
 
     # Ir al worktree principal
     cd "$_INTRALE_MAIN" 2>/dev/null || {
@@ -129,7 +129,7 @@ dev-go() {
     cd "$_INTRALE_MAIN" 2>/dev/null
 
     # Intentar match exacto primero
-    git-wt switch "codex/${search}" 2>/dev/null && return 0
+    git-wt switch "agent/${search}" 2>/dev/null && return 0
 
     # Buscar parcial en branches con worktrees
     local match=$(git worktree list --porcelain 2>/dev/null \
