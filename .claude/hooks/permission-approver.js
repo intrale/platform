@@ -29,6 +29,21 @@ const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\pl
 const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
 const LOG_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 const OFFSET_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "tg-approver-offset.json");
+const SESSION_STORE_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "tg-session-store.json");
+
+function getSkillContext() {
+    try {
+        const data = JSON.parse(fs.readFileSync(SESSION_STORE_FILE, "utf8"));
+        const session = data.active_session;
+        if (!session || !session.skill) return null;
+        // Verificar que la sesión no esté expirada (30 min)
+        const elapsed = Date.now() - new Date(session.last_used).getTime();
+        if (elapsed > 30 * 60 * 1000) return null;
+        return session.skill;
+    } catch (e) {
+        return null;
+    }
+}
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] Approver: " + msg + "\n"); } catch(e) {}
@@ -354,7 +369,8 @@ async function processInput() {
                 { label: "Siempre", action: "always" },
                 { label: "Denegar", action: "deny" }
             ],
-            action_data: { tool_name: toolName, tool_input: toolInput, agent: agent }
+            action_data: { tool_name: toolName, tool_input: toolInput, agent: agent },
+            skill_context: getSkillContext()
         });
     } catch(e) {
         log("Error enviando mensaje: " + e.message);
@@ -368,7 +384,7 @@ async function processInput() {
     const latencyMs = Date.now() - startTime;
 
     if (!decision) {
-        // Timeout: editar mensaje para indicarlo y dejar que Claude muestre UI local
+        // Timeout: editar mensaje con botón "Reactivar" para persistir el permiso tardíamente
         log("Timeout sin respuesta tras " + PERMISSION_TIMEOUT_MIN + " min (" + MAX_POLL_CYCLES + " ciclos). Latencia: " + latencyMs + "ms");
         resolveQuestion(requestId, "expired");
         saveOffset(offset); // persistir el offset aunque no hubo respuesta
@@ -376,8 +392,14 @@ async function processInput() {
             await telegramPost("editMessageText", {
                 chat_id: CHAT_ID,
                 message_id: msgId,
-                text: msgText + "\n\n⏱ <i>Sin respuesta — se muestra el prompt local</i>",
-                parse_mode: "HTML"
+                text: msgText + "\n\n⏱ <i>Expirado — el agente continuó sin este permiso</i>",
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: "🔄 Reactivar (aprobar siempre)", callback_data: "reactivate:" + requestId },
+                        { text: "⏹ Descartar", callback_data: "dismiss_expired:" + requestId }
+                    ]]
+                }
             }, ANSWER_TIMEOUT);
         } catch(e) { log("Error editando mensaje timeout: " + e.message); }
         process.exit(0); // fallback al prompt local
