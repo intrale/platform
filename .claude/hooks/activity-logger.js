@@ -173,26 +173,61 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
         if (toolName === "TaskCreate") {
             if (!session.current_tasks) session.current_tasks = [];
             const nextId = String(session.current_tasks.length + 1);
-            session.current_tasks.push({
+            const meta = toolInput.metadata || {};
+            const taskEntry = {
                 id: nextId,
                 subject: (toolInput.subject || "--").substring(0, 120),
                 status: "pending"
-            });
+            };
+            // Sub-pasos: persistir steps si vienen en metadata
+            if (Array.isArray(meta.steps) && meta.steps.length > 0) {
+                taskEntry.steps = meta.steps.map(s => String(s).substring(0, 80));
+                taskEntry.completed_steps = [];
+                taskEntry.current_step = 0;
+                taskEntry.progress = 0;
+            }
+            session.current_tasks.push(taskEntry);
         }
 
         if (toolName === "TaskUpdate" && toolInput.taskId) {
             if (!session.current_tasks) session.current_tasks = [];
             const task = session.current_tasks.find(t => t.id === toolInput.taskId);
+            const meta = toolInput.metadata || {};
             if (task) {
                 if (toolInput.status) task.status = toolInput.status;
                 if (toolInput.subject) task.subject = toolInput.subject.substring(0, 120);
+                // Sub-pasos: actualizar progreso desde metadata
+                if (meta.current_step != null) task.current_step = Number(meta.current_step);
+                if (Array.isArray(meta.completed_steps)) {
+                    task.completed_steps = meta.completed_steps.map(s => String(s).substring(0, 80));
+                }
+                // Calcular progress automáticamente
+                if (Array.isArray(task.steps) && task.steps.length > 0) {
+                    const done = Array.isArray(task.completed_steps) ? task.completed_steps.length : 0;
+                    task.progress = Math.round((done / task.steps.length) * 100);
+                } else if (meta.current_step != null && meta.total_steps != null) {
+                    task.progress = Math.round((Number(meta.current_step) / Number(meta.total_steps)) * 100);
+                }
+                // Marcar 100% al completar
+                if (toolInput.status === "completed" && Array.isArray(task.steps)) {
+                    task.progress = 100;
+                    task.current_step = task.steps.length;
+                    task.completed_steps = task.steps.slice();
+                }
             } else {
                 // Tarea no trackeada previamente — agregar con los datos disponibles
-                session.current_tasks.push({
+                const newTask = {
                     id: toolInput.taskId,
                     subject: (toolInput.subject || "task #" + toolInput.taskId).substring(0, 120),
                     status: toolInput.status || "pending"
-                });
+                };
+                if (Array.isArray(meta.steps) && meta.steps.length > 0) {
+                    newTask.steps = meta.steps.map(s => String(s).substring(0, 80));
+                    newTask.completed_steps = Array.isArray(meta.completed_steps) ? meta.completed_steps : [];
+                    newTask.current_step = meta.current_step != null ? Number(meta.current_step) : 0;
+                    newTask.progress = Math.round((newTask.completed_steps.length / newTask.steps.length) * 100);
+                }
+                session.current_tasks.push(newTask);
             }
         }
 
