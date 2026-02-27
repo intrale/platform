@@ -7,9 +7,9 @@ propio directorio aislado (worktree), sin riesgo de que se pisen entre sí.
 
 ```
 platform/                          ← main (coordinación, nunca se codea)
-platform.codex-42-auth/            ← Claude #1 trabajando en issue #42
-platform.codex-43-catalogo/        ← Claude #2 trabajando en issue #43
-platform.codex-44-pagos/           ← Claude #3 trabajando en issue #44
+platform.agent-42-auth/            ← Claude #1 trabajando en issue #42
+platform.agent-43-catalogo/        ← Claude #2 trabajando en issue #43
+platform.agent-44-pagos/           ← Claude #3 trabajando en issue #44
 ```
 
 Cada worktree comparte el mismo `.git/` (objetos, refs), pero tiene su propio
@@ -21,7 +21,7 @@ Solo 6 comandos, todos empiezan con `dev`:
 
 | Comando | Qué hace |
 |---------|----------|
-| `dev 42 auth-2fa` | Crear worktree + branch `codex/42-auth-2fa` |
+| `dev 42 auth-2fa` | Crear worktree + branch `agent/42-auth-2fa` |
 | `dev-list` | Ver todos los worktrees activos |
 | `dev-go 42` | Ir a un worktree existente |
 | `dev-done` | Mergear a main (squash) + limpiar |
@@ -66,8 +66,8 @@ dev-clean
 ```
 dev 42 auth
   ├─ git fetch origin main
-  ├─ git-wt switch --create codex/42-auth
-  │    └─ crea worktree en ../platform.codex-42-auth
+  ├─ git-wt switch --create agent/42-auth
+  │    └─ crea worktree en ../platform.agent-42-auth
   ├─ copia .claude/settings.local.json (permisos de Claude Code)
   └─ imprime instrucciones
 ```
@@ -101,7 +101,7 @@ source "/c/Workspaces/Intrale/platform/scripts/dev-functions.sh"
 
 | Origen | Formato | Ejemplo |
 |--------|---------|---------|
-| Agente Claude | `codex/<issue>-<slug>` | `codex/42-auth-2fa` |
+| Agente Claude | `agent/<issue>-<slug>` | `agent/42-auth-2fa` |
 | Feature manual | `feature/<desc>` | `feature/dark-mode` |
 | Bugfix manual | `bugfix/<desc>` | `bugfix/login-crash` |
 

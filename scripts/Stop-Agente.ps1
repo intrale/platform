@@ -86,8 +86,8 @@ function Stop-UnAgente {
 
     $issue  = $Agente.issue
     $slug   = $Agente.slug
-    $branch = 'codex/{0}-{1}' -f $issue, $slug
-    $wtDir  = '{0}\..\platform.codex-{1}-{2}' -f $MainRepo, $issue, $slug
+    $branch = 'agent/{0}-{1}' -f $issue, $slug
+    $wtDir  = '{0}\..\platform.agent-{1}-{2}' -f $MainRepo, $issue, $slug
 
     Write-Host ''
     Write-Host '============================================' -ForegroundColor Cyan

@@ -69,7 +69,7 @@ curl -s -H "Authorization: token $GITHUB_TOKEN" \
 # crear rama a partir de main
 BASE_SHA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/git/ref/heads/main | jq -r '.object.sha')
-BRANCH="codex/${ISSUE_NUMBER}-auto"
+BRANCH="agent/${ISSUE_NUMBER}-auto"
 
 curl -s -H "Authorization: token $GITHUB_TOKEN" \
   -X POST https://api.github.com/repos/$GH_OWNER/$GH_REPO/git/refs \
