@@ -116,7 +116,44 @@ function handleInput() {
                 fs.writeFileSync(LOG_FILE, lines.slice(-keep).join("\n") + "\n", "utf8");
             }
         } catch(e) {}
+
+        // Auto-iniciar reporter PNG si no esta corriendo
+        ensureReporterRunning();
     } catch(e) {}
+}
+
+// --- Auto-inicio del reporter PNG de Telegram ---
+const REPORTER_PID_FILE = path.join(REPO_ROOT, ".claude", "tmp", "reporter.pid");
+const REPORTER_INTERVAL = (() => {
+    try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, ".claude", "hooks", "telegram-config.json"), "utf8"));
+        const val = parseInt(cfg.task_report_interval_min, 10);
+        return isNaN(val) || val <= 0 ? 5 : val;
+    } catch(e) { return 5; }
+})();
+
+function ensureReporterRunning() {
+    try {
+        // Verificar si ya hay un reporter corriendo
+        if (fs.existsSync(REPORTER_PID_FILE)) {
+            const pid = parseInt(fs.readFileSync(REPORTER_PID_FILE, "utf8").trim(), 10);
+            if (!isNaN(pid)) {
+                try { process.kill(pid, 0); return; } catch(e) { /* PID muerto, reiniciar */ }
+            }
+        }
+
+        // Iniciar reporter en background
+        const dashboard = path.join(REPO_ROOT, ".claude", "dashboard.js");
+        if (!fs.existsSync(dashboard)) return;
+
+        const { spawn } = require("child_process");
+        const child = spawn(process.execPath, [dashboard, "--headless", "--report", String(REPORTER_INTERVAL)], {
+            detached: true,
+            stdio: "ignore",
+            cwd: REPO_ROOT,
+        });
+        child.unref();
+    } catch(e) { /* no bloquear hook */ }
 }
 
 function updateSession(sessionId, ts, toolName, target, toolInput) {

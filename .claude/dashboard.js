@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Monitor v3 — Dashboard Live Multi-Sesion + Reporter Telegram con PNG
-// Uso: node .claude/dashboard.js [--verbose] [--report <minutos>]
+// Uso: node .claude/dashboard.js [--verbose] [--report <minutos>] [--headless]
 //   --report N   enviar resumen PNG a Telegram cada N minutos (defecto: deshabilitado)
 //   --report 0   deshabilitar reporter explícitamente
-// Teclado: q=salir, v=toggle verbose, r=refresh manual
+//   --headless   solo reporter Telegram, sin UI de terminal (para background)
+// Teclado (solo con UI): q=salir, v=toggle verbose, r=refresh manual
 // Dependencia opcional: npm install canvas (para reporte PNG; sin canvas usa texto plano)
 const fs = require("fs");
 const path = require("path");
@@ -70,6 +71,7 @@ function parseReportInterval() {
 
 // --- state ---
 let verbose = process.argv.includes("--verbose") || process.argv.includes("-v");
+const headless = process.argv.includes("--headless");
 const reportIntervalMin = parseReportInterval();
 let refreshTimer = null;
 let reportTimer = null;
@@ -247,6 +249,102 @@ function ciIcon(ci) {
   return C.dim + "\u2014" + C.reset;
 }
 
+// --- Task section helpers ---
+
+function progressBarAscii(percent, width) {
+  width = width || 8;
+  const filled = Math.round((percent / 100) * width);
+  return "\u2588".repeat(filled) + "\u2591".repeat(width - filled);
+}
+
+function taskStatusIcon(status) {
+  if (status === "completed") return "\u2611";  // ☑
+  if (status === "in_progress") return "\u2610\u25BA"; // ☐►
+  return "\u2610"; // ☐
+}
+
+function stepIcon(step, completedSteps, currentStep, allSteps) {
+  if (completedSteps && completedSteps.includes(step)) return "\u2713"; // ✓
+  const idx = allSteps ? allSteps.indexOf(step) : -1;
+  if (currentStep != null && idx === currentStep) return "\u25BA"; // ►
+  return "\u25CB"; // ○
+}
+
+/**
+ * Extrae y formatea las tareas de todas las sesiones activas.
+ * Retorna { sections: [{ agent, duration, tasks: [{ id, subject, status, percent, steps? }] }], globalDone, globalTotal }
+ */
+function formatTasksSection(sessions) {
+  const sections = [];
+  let globalDone = 0, globalTotal = 0;
+
+  for (const s of sessions) {
+    if (s.status === "done" || !s.current_tasks || s.current_tasks.length === 0) continue;
+
+    const agent = s.agent_name || "Claude";
+    const duration = formatDuration(s.started_ts, s.last_activity_ts);
+    const tasks = [];
+
+    for (const t of s.current_tasks) {
+      globalTotal++;
+      if (t.status === "completed") globalDone++;
+
+      const percent = t.status === "completed" ? 100 : (t.progress || 0);
+      const task = {
+        id: t.id,
+        subject: t.subject || "tarea",
+        status: t.status || "pending",
+        percent: percent,
+      };
+
+      if (Array.isArray(t.steps) && t.steps.length > 0) {
+        task.steps = t.steps;
+        task.completedSteps = t.completed_steps || [];
+        task.currentStep = t.current_step || 0;
+      }
+
+      tasks.push(task);
+    }
+
+    sections.push({ agent, duration, tasks });
+  }
+
+  return { sections, globalDone, globalTotal };
+}
+
+/**
+ * Genera el texto de tareas para el reporte Telegram (texto plano).
+ */
+function buildTasksText(sessions) {
+  const { sections, globalDone, globalTotal } = formatTasksSection(sessions);
+  if (sections.length === 0) return "";
+
+  let msg = "\n\uD83D\uDCCB Tareas:\n";
+
+  for (const sec of sections) {
+    msg += "\uD83E\uDD16 " + sec.agent + " (" + sec.duration + ")\n";
+
+    for (const t of sec.tasks) {
+      const icon = taskStatusIcon(t.status);
+      const bar = progressBarAscii(t.percent);
+      msg += icon + " #" + t.id + " " + truncate(t.subject, 30) + " " + bar + " " + t.percent + "%\n";
+
+      // Sub-pasos expandidos solo para in_progress
+      if (t.steps && t.status === "in_progress") {
+        for (const step of t.steps) {
+          const si = stepIcon(step, t.completedSteps, t.currentStep, t.steps);
+          msg += "  " + si + " " + truncate(step, 40) + "\n";
+        }
+      }
+    }
+  }
+
+  const globalPercent = globalTotal > 0 ? Math.round((globalDone / globalTotal) * 100) : 0;
+  msg += "\uD83D\uDCCA Global: " + globalDone + "/" + globalTotal + " \u00B7 " + globalPercent + "%\n";
+
+  return msg;
+}
+
 // --- Telegram reporter ---
 
 function sendTelegram(text, attempt) {
@@ -322,6 +420,9 @@ function buildReportMessage() {
     }
   }
 
+  // Tareas con sub-pasos
+  msg += buildTasksText(sessions);
+
   // CI
   try {
     const ci = getCIStatus();
@@ -344,7 +445,21 @@ function buildReportImage(sessions, recentActivity, git, ci) {
   const W = 800;
   const agentRows = Math.max(sessions.length, 1);
   const taskRows = sessions.filter(s => s.current_task && s.status !== "done").length;
-  const H = Math.max(420, 110 + (agentRows * 32) + (taskRows * 20) + 130);
+  // Pre-calcular tareas para estimar altura
+  const tasksData = formatTasksSection(sessions);
+  let taskPanelRows = 0;
+  if (tasksData.sections.length > 0) {
+    taskPanelRows += 1; // título "TAREAS"
+    for (const sec of tasksData.sections) {
+      taskPanelRows += 1; // nombre agente
+      for (const t of sec.tasks) {
+        taskPanelRows += 1; // línea de tarea
+        if (t.steps && t.status === "in_progress") taskPanelRows += t.steps.length;
+      }
+      taskPanelRows += 1; // global
+    }
+  }
+  const H = Math.max(420, 110 + (agentRows * 32) + (taskRows * 20) + (taskPanelRows * 20) + 180);
 
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
@@ -435,6 +550,83 @@ function buildReportImage(sessions, recentActivity, git, ci) {
     }
   }
   y += 8;
+
+  // === PANEL TAREAS ===
+  if (tasksData.sections.length > 0) {
+    ctx.fillStyle = IMG.ACCENT;
+    ctx.fillRect(0, y, W, 1);
+    y += 6;
+
+    ctx.font = "bold 14px monospace";
+    ctx.fillStyle = IMG.ACCENT;
+    ctx.fillText("TAREAS", 16, y);
+    y += 22;
+
+    const BAR_W = 120, BAR_H = 12;
+
+    for (const sec of tasksData.sections) {
+      // Nombre del agente
+      ctx.font = "bold 13px monospace";
+      ctx.fillStyle = IMG.CYAN;
+      ctx.fillText(sec.agent + " (" + sec.duration + ")", 30, y);
+      y += 20;
+
+      for (const t of sec.tasks) {
+        const statusColor = t.status === "completed" ? IMG.GREEN : t.status === "in_progress" ? IMG.YELLOW : IMG.DIM;
+
+        // Icono de estado
+        ctx.font = "14px monospace";
+        ctx.fillStyle = statusColor;
+        const icon = t.status === "completed" ? "\u2611" : t.status === "in_progress" ? "\u25BA" : "\u2610";
+        ctx.fillText(icon, 40, y);
+
+        // ID + Subject
+        ctx.font = "13px monospace";
+        ctx.fillStyle = IMG.TEXT;
+        ctx.fillText("#" + t.id + " " + truncate(t.subject, 35), 60, y);
+
+        // Barra de progreso visual
+        const barX = 440;
+        ctx.fillStyle = IMG.PANEL_BG;
+        ctx.fillRect(barX, y + 1, BAR_W, BAR_H);
+        ctx.fillStyle = statusColor;
+        ctx.fillRect(barX, y + 1, Math.round((t.percent / 100) * BAR_W), BAR_H);
+        ctx.strokeStyle = statusColor;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(barX, y + 1, BAR_W, BAR_H);
+
+        // Porcentaje
+        ctx.font = "12px monospace";
+        ctx.fillStyle = statusColor;
+        ctx.fillText(t.percent + "%", barX + BAR_W + 8, y + 1);
+
+        y += 20;
+
+        // Sub-pasos (solo in_progress)
+        if (t.steps && t.status === "in_progress") {
+          for (const step of t.steps) {
+            const si = stepIcon(step, t.completedSteps, t.currentStep, t.steps);
+            const siColor = si === "\u2713" ? IMG.GREEN : si === "\u25BA" ? IMG.YELLOW : IMG.DIM;
+
+            ctx.font = "12px monospace";
+            ctx.fillStyle = siColor;
+            ctx.fillText(si, 60, y);
+
+            ctx.fillStyle = IMG.DIM;
+            ctx.fillText(truncate(step, 55), 78, y);
+            y += 18;
+          }
+        }
+      }
+    }
+
+    // Línea de progreso global
+    const globalPercent = tasksData.globalTotal > 0 ? Math.round((tasksData.globalDone / tasksData.globalTotal) * 100) : 0;
+    ctx.font = "bold 13px monospace";
+    ctx.fillStyle = IMG.ACCENT;
+    ctx.fillText("Global: " + tasksData.globalDone + "/" + tasksData.globalTotal + " \u00B7 " + globalPercent + "%", 30, y);
+    y += 22;
+  }
 
   // === PANEL CI ===
   ctx.fillStyle = IMG.PANEL_BG;
@@ -814,6 +1006,41 @@ function cleanup() {
 }
 
 function main() {
+  // Modo headless: solo reporter Telegram, sin UI de terminal
+  if (headless) {
+    if (reportIntervalMin <= 0) {
+      console.error("Error: --headless requiere --report N (N > 0)");
+      process.exit(1);
+    }
+    // Escribir PID para control externo
+    const pidFile = path.join(__dirname, "tmp", "reporter.pid");
+    try { fs.mkdirSync(path.dirname(pidFile), { recursive: true }); } catch(e) {}
+    fs.writeFileSync(pidFile, String(process.pid));
+    process.on("exit", () => { try { fs.unlinkSync(pidFile); } catch(e) {} });
+
+    debugLog("Reporter headless iniciado (PID " + process.pid + ", cada " + reportIntervalMin + " min)");
+    console.log("Reporter headless: PID " + process.pid + ", reporte PNG cada " + reportIntervalMin + " min");
+
+    process.on("SIGINT", () => process.exit(0));
+    process.on("SIGTERM", () => process.exit(0));
+
+    // Solo ejecutar el reporter
+    startReporter();
+
+    // Auto-stop si no hay sesiones activas por 30 minutos
+    setInterval(() => {
+      try {
+        const sessions = loadSessions();
+        const hasActive = sessions.some(s => livenessLabel(s) !== "done");
+        if (!hasActive) {
+          debugLog("Reporter headless: sin sesiones activas, deteniendo");
+          process.exit(0);
+        }
+      } catch(e) {}
+    }, 30 * 60 * 1000);
+    return;
+  }
+
   process.stdout.write("\x1B[2J"); // clear screen
   process.stdout.write(HIDE_CURSOR);
 
