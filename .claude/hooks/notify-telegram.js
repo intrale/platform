@@ -8,6 +8,7 @@ const path = require("path");
 
 const { readSessionContext } = require("./context-reader");
 const { resolveMainRepoRoot } = require("./permission-utils");
+const { registerMessage } = require("./telegram-message-registry");
 
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
@@ -160,7 +161,10 @@ async function processInput() {
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            await sendTelegram(text, attempt);
+            const r = await sendTelegram(text, attempt);
+            if (r && r.result && r.result.message_id) {
+                registerMessage(r.result.message_id, "notification");
+            }
             return;
         } catch(e) {
             if (attempt < MAX_RETRIES) {

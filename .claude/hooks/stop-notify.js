@@ -14,6 +14,8 @@ try {
     sendTelegramPhoto = imgUtils.sendTelegramPhoto;
 } catch(e) { /* fallback a texto */ }
 
+const { registerMessage } = require("./telegram-message-registry");
+
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
@@ -172,7 +174,10 @@ async function processInput() {
                 const caption = truncateSmart(clean, 150);
                 for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                     try {
-                        await sendTelegramPhoto(BOT_TOKEN, CHAT_ID, png, caption);
+                        const photoResult = await sendTelegramPhoto(BOT_TOKEN, CHAT_ID, png, caption);
+                        if (photoResult && photoResult.result && photoResult.result.message_id) {
+                            registerMessage(photoResult.result.message_id, "stop");
+                        }
                         log("Imagen enviada OK intento " + attempt);
                         return;
                     } catch(e) {
@@ -191,7 +196,10 @@ async function processInput() {
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            await sendTelegram(text, attempt);
+            const r = await sendTelegram(text, attempt);
+            if (r && r.result && r.result.message_id) {
+                registerMessage(r.result.message_id, "stop");
+            }
             return;
         } catch(e) {
             if (attempt < MAX_RETRIES) {

@@ -10,6 +10,13 @@ const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 
+let registerMessage;
+try {
+    registerMessage = require("./telegram-message-registry").registerMessage;
+} catch (e) {
+    registerMessage = () => {}; // Fallback si el registry no existe
+}
+
 const SHA = process.argv[2];
 const BRANCH = process.argv[3];
 const PROJECT_DIR = process.argv[4] || process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
@@ -74,7 +81,7 @@ function ghApiGet(apiPath, token) {
 }
 
 function sendTelegram(text) {
-    if (!tgConfig.bot_token || !tgConfig.chat_id) return Promise.resolve();
+    if (!tgConfig.bot_token || !tgConfig.chat_id) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
         const postData = JSON.stringify({ chat_id: tgConfig.chat_id, text: text, parse_mode: "HTML" });
         const req = https.request({
@@ -86,7 +93,15 @@ function sendTelegram(text) {
         }, (res) => {
             let d = "";
             res.on("data", (c) => d += c);
-            res.on("end", () => resolve(d));
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.ok && r.result && r.result.message_id) {
+                        registerMessage(r.result.message_id, "ci");
+                    }
+                    resolve(r);
+                } catch (e) { resolve(null); }
+            });
         });
         req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
         req.on("error", (e) => reject(e));

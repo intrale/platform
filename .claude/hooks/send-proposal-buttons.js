@@ -11,6 +11,8 @@ const path = require("path");
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
+const { registerMessage } = require("./telegram-message-registry");
+
 const HOOKS_DIR = __dirname;
 const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
 const PROPOSALS_FILE = path.join(HOOKS_DIR, "planner-proposals.json");
@@ -148,6 +150,7 @@ async function main() {
         // Guardar message_id en el JSON para que telegram-commander pueda editarlo
         data.telegram_message_id = sent.message_id;
         fs.writeFileSync(PROPOSALS_FILE, JSON.stringify(data, null, 2), "utf8");
+        registerMessage(sent.message_id, "proposal");
 
         log("Mensaje enviado: msg_id=" + sent.message_id + " con " + proposals.length + " propuestas");
     } catch (e) {
