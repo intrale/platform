@@ -20,6 +20,7 @@ const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, 
 
 const { addPendingQuestion, resolveQuestion, getQuestionById } = require("./pending-questions");
 const { readSessionContext } = require("./context-reader");
+const { registerMessage } = require("./telegram-message-registry");
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
@@ -361,6 +362,7 @@ async function processInput() {
             }
         }, 8000);
         log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId);
+        registerMessage(sentMsg.message_id, "permission");
 
         // Registrar pregunta pendiente (con HTML original para que el commander lo use al editar)
         addPendingQuestion({

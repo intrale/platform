@@ -24,6 +24,8 @@ const PROPOSALS_FILE = path.join(HOOKS_DIR, "planner-proposals.json");
 const SESSION_STORE_FILE = path.join(HOOKS_DIR, "tg-session-store.json");
 const { getPendingQuestions, getExpiredQuestions, retryQuestion, resolveQuestion, getQuestionById, loadQuestions, saveQuestions } = require("./pending-questions");
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot } = require("./permission-utils");
+const { registerMessage, getStats: getRegistryStats } = require("./telegram-message-registry");
+const { cleanup: cleanupMessages } = require("./telegram-cleanup");
 const PENDING_QUESTIONS_FILE = path.join(HOOKS_DIR, "pending-questions.json");
 
 const POLL_TIMEOUT_SEC = 30;
@@ -34,6 +36,8 @@ const SHORT_POLL_INTERVAL_MS = 2000;  // Intervalo de short-poll cuando hay conf
 const EXEC_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
 const TG_MSG_MAX = 4096;
 const SPRINT_MONITOR_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
+const CLEANUP_TTL_MS = 4 * 60 * 60 * 1000;       // 4 horas
+const CLEANUP_INTERVAL_MS = 4 * 60 * 60 * 1000;   // cada 4 horas
 
 let _tgCfg;
 try {
@@ -52,6 +56,9 @@ let sprintMonitorInterval = null;  // ID del setInterval del monitor periódico
 let monitorBusy = false;           // Flag para evitar apilar ejecuciones de monitor
 let sprintMonitorIntervalMs = SPRINT_MONITOR_INTERVAL_MS; // Intervalo configurable
 let sprintStartTime = null;        // Timestamp de inicio del sprint
+let cleanupInterval = null;        // ID del setInterval de limpieza de mensajes
+let commandBusy = false;           // Flag para evitar ejecutar dos comandos simultáneos
+let commandBusyLabel = "";         // Descripción del comando en ejecución
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -163,7 +170,8 @@ function saveSession(sessionId, skill) {
             session_id: sessionId,
             last_used: now,
             skill: skill || (session && session.skill) || null,
-            created_at: (session && session.session_id === sessionId && session.created_at) || now
+            created_at: (session && session.session_id === sessionId && session.created_at) || now,
+            source: "commander"
         }
     };
     try {
@@ -192,6 +200,12 @@ function isSessionExpired(session) {
 function getActiveSessionId() {
     const session = loadSession();
     if (!session || isSessionExpired(session)) return null;
+    // Solo resumir sesiones creadas por el commander, nunca sesiones interactivas
+    if (session.source !== "commander") {
+        log("Sesión " + session.session_id + " ignorada (source: " + (session.source || "unknown") + ", no es del commander)");
+        clearSessionStore();
+        return null;
+    }
     return session.session_id;
 }
 
@@ -232,11 +246,15 @@ function escHtml(s) {
 }
 
 async function sendMessage(text, parseMode) {
-    return telegramPost("sendMessage", {
+    const result = await telegramPost("sendMessage", {
         chat_id: CHAT_ID,
         text: text,
         parse_mode: parseMode || "HTML"
     }, 8000);
+    if (result && result.message_id) {
+        registerMessage(result.message_id, "command");
+    }
+    return result;
 }
 
 async function sendLongMessage(text, parseMode) {
@@ -357,6 +375,11 @@ function parseCommand(text) {
         return { type: "retry" };
     }
 
+    // /limpiar — limpiar mensajes antiguos de Telegram
+    if (trimmed === "/limpiar") {
+        return { type: "limpiar" };
+    }
+
     // /session [clear] — gestión de sesión conversacional
     if (trimmed === "/session") {
         return { type: "session" };
@@ -421,6 +444,7 @@ async function handleHelp() {
     msg += "  /stop — Detener el commander\n";
     msg += "  /pendientes — Preguntas pendientes sin responder\n";
     msg += "  /retry — Reactivar permisos expirados\n";
+    msg += "  /limpiar — Borrar mensajes con más de 4 horas\n";
     msg += "\n<b>Monitor periódico:</b>\n";
     msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min.\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
@@ -506,7 +530,7 @@ async function handlePendingCallback(callbackData, callbackQueryId) {
         }, 5000);
         await sendMessage("🚀 Lanzando <code>/planner sprint</code> desde pregunta pendiente...");
         // Ejecutar /planner sprint
-        await executeClaude("/planner sprint", []);
+        await executeClaudeQueued("/planner sprint", []);
         return;
     }
 
@@ -530,7 +554,7 @@ async function handlePendingCallback(callbackData, callbackQueryId) {
     }, 5000);
     if (question.action_data && question.action_data.command) {
         await sendMessage("▶️ Ejecutando: <code>" + escHtml(question.action_data.command) + "</code>");
-        await executeClaude(question.action_data.command, []);
+        await executeClaudeQueued(question.action_data.command, []);
     }
 }
 
@@ -713,6 +737,24 @@ async function handleReactivateCallback(callbackData, callbackQueryId, messageId
     }
 }
 
+async function handleLimpiar() {
+    await sendMessage("🧹 Limpiando mensajes con más de 4 horas...");
+    try {
+        const result = await cleanupMessages(CLEANUP_TTL_MS);
+        let msg = "🧹 <b>Limpieza completada</b>\n\n";
+        msg += "🗑 Borrados: " + result.deleted + "\n";
+        if (result.failed > 0) msg += "⚠️ Fallidos: " + result.failed + "\n";
+        msg += "📊 Total procesados: " + result.total;
+        if (result.total === 0) {
+            msg = "✅ No hay mensajes con más de 4 horas para limpiar.";
+        }
+        await sendMessage(msg);
+    } catch (e) {
+        log("Error en handleLimpiar: " + e.message);
+        await sendMessage("⚠️ Error en limpieza: <code>" + escHtml(e.message) + "</code>");
+    }
+}
+
 function persistPermissionFromActionData(actionData) {
     const toolName = actionData.tool_name;
     const toolInput = actionData.tool_input || {};
@@ -764,6 +806,20 @@ async function handleStatus() {
         msg += "\n💤 Sin sprint activo\n";
         msg += "📊 Intervalo de monitor: " + Math.round(sprintMonitorIntervalMs / 60000) + " min\n";
     }
+
+    // Message registry stats
+    const regStats = getRegistryStats();
+    msg += "\n📨 <b>Message registry</b>\n";
+    msg += "📊 Total: " + regStats.total + " mensajes\n";
+    if (regStats.total > 0) {
+        const cats = Object.entries(regStats.byCategory).map(([k, v]) => k + ":" + v).join(", ");
+        msg += "🏷 Categorías: " + escHtml(cats) + "\n";
+        if (regStats.oldest) {
+            const ageH = Math.round((Date.now() - regStats.oldest) / 3600000);
+            msg += "🕐 Más antiguo: hace " + ageH + "h\n";
+        }
+    }
+
     await sendMessage(msg);
 }
 
@@ -796,6 +852,11 @@ async function handleSessionClear() {
 }
 
 async function handleSkill(skill, args) {
+    if (commandBusy) {
+        await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+        return;
+    }
+
     const skillLabel = "/" + skill.name + (args ? " " + args : "");
     await sendMessage("⚡ Ejecutando <code>" + escHtml(skillLabel) + "</code>...");
 
@@ -818,14 +879,19 @@ async function handleSkill(skill, args) {
         extraArgs.push("--model", skill.model);
     }
 
-    const result = await executeClaude(prompt, extraArgs, { useSession: true, skill: skill.name });
+    const result = await executeClaudeQueued(prompt, extraArgs, { useSession: true, skill: skill.name });
     await sendResult(skillLabel, result);
 }
 
 async function handleFreetext(text) {
+    if (commandBusy) {
+        await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+        return;
+    }
+
     await sendMessage("💬 Procesando: <code>" + escHtml(text.substring(0, 100)) + (text.length > 100 ? "…" : "") + "</code>");
 
-    const result = await executeClaude(text, [], { useSession: true, skill: null });
+    const result = await executeClaudeQueued(text, [], { useSession: true, skill: null });
     await sendResult("prompt", result);
 }
 
@@ -883,7 +949,7 @@ function startSprintMonitor() {
             const elapsedSecs = elapsed % 60;
 
             log("Monitor periódico: ejecutando /monitor");
-            const result = await executeClaude("/monitor", [
+            const result = await executeClaudeQueued("/monitor", [
                 "--allowedTools", "Bash,Read,Glob,Grep,TaskList",
                 "--model", "claude-haiku-4-5-20251001"
             ]);
@@ -990,7 +1056,7 @@ async function handleSprint(agentNumber) {
         await sendMessage(progressMsg);
 
         // Ejecutar claude -p con el prompt del agente (via stdin)
-        const result = await executeClaude(agente.prompt);
+        const result = await executeClaudeQueued(agente.prompt);
 
         if (result.code === 0) {
             results[i] = "success";
@@ -1044,6 +1110,36 @@ async function handleSprint(agentNumber) {
 
     sprintRunning = false;
     sprintStartTime = null;
+}
+
+// ─── Execution lock — una sola sesión activa a la vez ────────────────────────
+
+let _executionBusy = false;
+
+function isCommandBusy() {
+    return _executionBusy;
+}
+
+function getCommandBusyLabel() {
+    return commandBusyLabel;
+}
+
+async function executeClaudeQueued(prompt, extraArgs, options) {
+    if (_executionBusy) {
+        log("executeClaude: ya hay una ejecución en curso — RECHAZANDO (no encolar)");
+        return { code: -2, stdout: "", stderr: "busy", sessionId: null };
+    }
+    _executionBusy = true;
+    commandBusy = true;
+    commandBusyLabel = (prompt || "").substring(0, 80);
+    try {
+        const result = await executeClaude(prompt, extraArgs, options);
+        return result;
+    } finally {
+        _executionBusy = false;
+        commandBusy = false;
+        commandBusyLabel = "";
+    }
 }
 
 // prompt va por stdin para evitar que cmd.exe rompa args con --/espacios
@@ -1398,7 +1494,7 @@ async function launchHistoriaForProposal(proposal) {
         extraArgs.push("--model", historiaSkill.model);
     }
 
-    const result = await executeClaude(prompt, extraArgs, { useSession: true, skill: "historia" });
+    const result = await executeClaudeQueued(prompt, extraArgs, { useSession: true, skill: "historia" });
     await sendResult("/historia — " + proposal.title, result);
 }
 
@@ -1663,10 +1759,25 @@ async function pollingLoop() {
                 continue;
             }
 
+            // Deduplicar: no procesar el mismo message_id dos veces
+            const msgId = msg.message_id;
+            if (msgId && processedMessageIds.has(msgId)) {
+                log("Mensaje duplicado ignorado: message_id=" + msgId);
+                continue;
+            }
+            if (msgId) {
+                processedMessageIds.add(msgId);
+                // Limitar tamaño del set para no consumir memoria indefinidamente
+                if (processedMessageIds.size > PROCESSED_IDS_MAX) {
+                    const iter = processedMessageIds.values();
+                    processedMessageIds.delete(iter.next().value);
+                }
+            }
+
             const text = msg.text;
             if (!text) continue;
 
-            log("Mensaje recibido: " + text.substring(0, 100));
+            log("Mensaje recibido (id=" + msgId + "): " + text.substring(0, 100));
 
             const cmd = parseCommand(text);
             if (!cmd) continue;
@@ -1706,6 +1817,9 @@ async function pollingLoop() {
                         break;
                     case "retry":
                         await handleRetry();
+                        break;
+                    case "limpiar":
+                        await handleLimpiar();
                         break;
                     case "unknown_command":
                         await sendMessage("❓ Comando <code>/" + escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
@@ -1829,9 +1943,10 @@ async function shutdown(signal) {
     running = false;
     log("Shutdown por " + signal);
 
-    // Detener monitor periódico y watcher de pending questions
+    // Detener monitor periódico, cleanup periódico y watcher de pending questions
     stopSprintMonitor();
     stopPendingQuestionsWatch();
+    if (cleanupInterval) { clearInterval(cleanupInterval); cleanupInterval = null; }
 
     try {
         await sendMessage("🔴 <b>Commander offline</b> (" + signal + ")");
@@ -1890,6 +2005,28 @@ async function main() {
 
     // Limpiar preguntas pendientes de sesiones anteriores
     await cleanStaleQuestionsOnStartup();
+
+    // Cleanup de mensajes antiguos al arranque
+    try {
+        const startupCleanup = await cleanupMessages(CLEANUP_TTL_MS);
+        if (startupCleanup.total > 0) {
+            log("Cleanup de arranque: " + startupCleanup.deleted + " borrados, " + startupCleanup.failed + " fallidos");
+        }
+    } catch (e) {
+        log("Error en cleanup de arranque: " + e.message);
+    }
+
+    // Cleanup periódico cada 4 horas
+    cleanupInterval = setInterval(async () => {
+        try {
+            const result = await cleanupMessages(CLEANUP_TTL_MS);
+            if (result.total > 0) {
+                log("Cleanup periódico: " + result.deleted + " borrados, " + result.failed + " fallidos");
+            }
+        } catch (e) {
+            log("Error en cleanup periódico: " + e.message);
+        }
+    }, CLEANUP_INTERVAL_MS);
 
     // Iniciar watcher de pending-questions.json (sync consola ↔ Telegram)
     startPendingQuestionsWatch();
