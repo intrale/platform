@@ -1,9 +1,18 @@
-// Hook Stop: notifica a Telegram y marca sesion como "done"
+// Hook Stop: notifica a Telegram (imagen card) y marca sesion como "done"
 // Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
 const fs = require("fs");
 const path = require("path");
+
+// Image utils (opcional — fallback a texto si canvas no disponible)
+let renderCardAsPng = null;
+let sendTelegramPhoto = null;
+try {
+    const imgUtils = require("./telegram-image-utils");
+    renderCardAsPng = imgUtils.renderCardAsPng;
+    sendTelegramPhoto = imgUtils.sendTelegramPhoto;
+} catch(e) { /* fallback a texto */ }
 
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
@@ -106,6 +115,37 @@ function cleanOldSessions() {
     } catch(e) { log("Error en rotacion de sessions: " + e.message); }
 }
 
+function stripMarkdown(raw) {
+    let t = raw.trim();
+    t = t.replace(/```[\s\S]*?```/g, "");
+    t = t.replace(/^#{1,6}\s+/gm, "");
+    t = t.replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1");
+    t = t.replace(/_{1,3}([^_\s][^_]*[^_\s])_{1,3}/g, "$1");
+    t = t.replace(/`([^`]+)`/g, "$1");
+    t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+    t = t.replace(/^[\s]*[-*+]\s+/gm, "\u2022 ");
+    t = t.replace(/\n{2,}/g, "\n");
+    t = t.replace(/  +/g, " ");
+    return t.trim();
+}
+
+function truncateSmart(text, maxLen) {
+    if (text.length <= maxLen) return text;
+    const sub = text.substring(0, maxLen);
+    const lastSentence = Math.max(
+        sub.lastIndexOf(". "), sub.lastIndexOf(".\n"),
+        sub.lastIndexOf("! "), sub.lastIndexOf("? ")
+    );
+    if (lastSentence > maxLen * 0.4) return sub.substring(0, lastSentence + 1);
+    const lastSpace = sub.lastIndexOf(" ");
+    if (lastSpace > maxLen * 0.6) return sub.substring(0, lastSpace) + "\u2026";
+    return sub + "\u2026";
+}
+
+function escapeHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 async function processInput() {
     log("INPUT: " + rawInput.substring(0, 300));
 
@@ -120,9 +160,33 @@ async function processInput() {
     // Rotacion: limpiar sessions "done" con mas de 24h de antiguedad
     cleanOldSessions();
 
-    let summary = (data.last_assistant_message || "").trim();
-    if (summary.length > 150) summary = summary.substring(0, 150) + "...";
+    const raw = (data.last_assistant_message || "").trim();
+    const clean = stripMarkdown(raw);
 
+    // Intentar enviar como imagen card
+    if (renderCardAsPng && sendTelegramPhoto && clean.length > 0) {
+        const cardBody = truncateSmart(clean, 800);
+        try {
+            const png = renderCardAsPng("\u2705 Claude Code \u2014 Listo", cardBody);
+            if (png) {
+                const caption = truncateSmart(clean, 150);
+                for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                    try {
+                        await sendTelegramPhoto(BOT_TOKEN, CHAT_ID, png, caption);
+                        log("Imagen enviada OK intento " + attempt);
+                        return;
+                    } catch(e) {
+                        log("Imagen fallo intento " + attempt + ": " + e.message);
+                        if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                    }
+                }
+                log("Imagen fallo todos los intentos, fallback a texto");
+            }
+        } catch(e) { log("Error generando card: " + e.message); }
+    }
+
+    // Fallback: texto plano
+    const summary = escapeHtml(truncateSmart(clean, 300));
     const text = "\u2705 <b>[Claude Code] Listo</b>" + (summary ? " \u2014 " + summary : " \u2014 esperando tu siguiente instruccion");
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
