@@ -112,8 +112,19 @@ function Start-UnAgente {
     # Pre-registrar confianza del worktree para evitar dialogo interactivo de trust
     PreRegister-Trust -AbsPath "$wtDirResolved"
 
-    # Symlink de .claude/ para heredar confianza y permisos del repo principal
+    # Verificar integridad de .claude/ en el repo principal antes de linkear
     $claudeSrc = Join-Path $MainRepo ".claude"
+    $settingsCheck = Join-Path $claudeSrc "settings.json"
+    $skillsCheck = Join-Path $claudeSrc "skills"
+    if (-not (Test-Path $settingsCheck) -or -not (Test-Path $skillsCheck)) {
+        Write-Host ">> ADVERTENCIA: .claude/ danado en repo principal. Restaurando desde git..." -ForegroundColor Red
+        Push-Location $MainRepo
+        git checkout HEAD -- .claude/ 2>$null
+        Pop-Location
+        Write-Host ">> .claude/ restaurado." -ForegroundColor Green
+    }
+
+    # Symlink de .claude/ para heredar confianza y permisos del repo principal
     $claudeDst = Join-Path $wtDirResolved ".claude"
     if (Test-Path $claudeSrc) {
         $createSymlink = $false
