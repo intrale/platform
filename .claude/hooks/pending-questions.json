@@ -1493,8 +1493,10 @@
         },
         "agent": "Claude Code"
       },
-      "status": "pending",
-      "answered_at": null
+      "status": "answered",
+      "answered_at": "2026-02-27T22:47:10.288Z",
+      "answered_via": "console",
+      "telegram_synced": true
     },
     {
       "id": "6e24faf80706cf24",

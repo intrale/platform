@@ -1567,21 +1567,72 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
-                    // Callbacks de permisos (allow:/always:/deny:) — pueden llegar aquí si el approver ya terminó
+                    // Callbacks de permisos (allow:/always:/deny:) — el commander es el handler principal
+                    // El approver ya NO usa getUpdates; lee pending-questions.json para la decisión
                     else if (cbData.startsWith("allow:") || cbData.startsWith("always:") || cbData.startsWith("deny:")) {
                         const parts = cbData.split(":");
+                        const permAction = parts[0]; // "allow", "always", "deny"
                         const cbRequestId = parts.slice(1).join(":");
-                        log("Callback de permiso recibido en commander: " + cbData);
-                        // Verificar si la pregunta ya fue respondida
+                        log("Callback de permiso: " + permAction + " para " + cbRequestId);
+
                         const q = getQuestionById(cbRequestId);
-                        const alreadyAnswered = q && (q.status === "answered" || q.answered_via);
-                        try {
-                            await telegramPost("answerCallbackQuery", {
-                                callback_query_id: cq.id,
-                                text: alreadyAnswered ? "Ya fue respondido" : "Procesando...",
-                                show_alert: false
-                            }, 5000);
-                        } catch (e2) {}
+                        const alreadyAnswered = q && (q.status === "answered" || q.status === "expired");
+
+                        if (alreadyAnswered) {
+                            // Ya fue respondido — solo confirmar
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Ya fue respondido",
+                                    show_alert: false
+                                }, 5000);
+                            } catch (e2) {}
+                        } else if (q && q.status === "pending") {
+                            // Procesar la decisión del usuario
+                            resolveQuestion(cbRequestId, "answered", "telegram", permAction);
+
+                            // Si es "siempre", persistir el patrón en settings
+                            if (permAction === "always" && q.action_data) {
+                                persistPermissionFromActionData(q.action_data);
+                            }
+
+                            // Responder al callback (quitar spinner del botón)
+                            const confirmText = { allow: "✅ Permitido", always: "✅ Permitido siempre", deny: "❌ Denegado" }[permAction] || "OK";
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: confirmText,
+                                    show_alert: false
+                                }, 5000);
+                            } catch (e2) {}
+
+                            // Editar mensaje: quitar botones, mostrar decisión
+                            const emojiDecision = { allow: "✅", always: "✅✅", deny: "❌" }[permAction] || "•";
+                            const msgId = cq.message && cq.message.message_id;
+                            if (msgId) {
+                                const originalHtml = q.original_html || escHtml(q.message || "Permiso solicitado");
+                                try {
+                                    await telegramPost("editMessageText", {
+                                        chat_id: CHAT_ID,
+                                        message_id: msgId,
+                                        text: originalHtml + "\n\n" + emojiDecision + " <b>" + confirmText + "</b>",
+                                        parse_mode: "HTML"
+                                    }, 5000);
+                                } catch (e2) {
+                                    log("Error editando mensaje permiso: " + (e2.message || ""));
+                                }
+                            }
+                            log("Permiso procesado: " + permAction + " para " + cbRequestId);
+                        } else {
+                            // Pregunta no encontrada
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Solicitud no encontrada",
+                                    show_alert: false
+                                }, 5000);
+                            } catch (e2) {}
+                        }
                     }
                     // Callbacks de preguntas pendientes (pq_*)
                     else if (cbData.startsWith("pq_")) {
