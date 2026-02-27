@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="E2E — SignIn contra backend real" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-02-26T22:14:36.382Z" hostname="DESKTOP-TOTQAUE" time="0.757">
+  <properties/>
+  <testcase name="POST /intrale/signin con credenciales seed responde 200 con tokens" classname="ar.com.intrale.e2e.api.ApiSignInE2ETest" time="0.599"/>
+  <testcase name="POST /intrale/signin sin body responde 400" classname="ar.com.intrale.e2e.api.ApiSignInE2ETest" time="0.022"/>
+  <testcase name="POST /intrale/signin con password incorrecto responde 401" classname="ar.com.intrale.e2e.api.ApiSignInE2ETest" time="0.078"/>
+  <testcase name="POST /intrale/signin con email inexistente responde error" classname="ar.com.intrale.e2e.api.ApiSignInE2ETest" time="0.055"/>
+  <system-out><![CDATA[19:14:35.254 [Test worker] INFO  ar.com.intrale.e2e - Iniciando Playwright [ApiSignInE2ETest] — baseUrl=http://localhost:80, recordings=C:\Workspaces\Intrale\platform\qa\recordings
+19:14:36.380 [Test worker] INFO  ar.com.intrale.e2e - Tracing iniciado [ApiSignInE2ETest]
+19:14:36.979 [Test worker] INFO  ar.com.intrale.e2e - SignIn response: status=200
+19:14:36.983 [Test worker] INFO  ar.com.intrale.e2e - SignIn body: {"idToken":"eyJ0eXAiOiJKV1QiLCJraWQiOiJkdW1teSIsImFsZyI6IlJTMjU2In0.eyJpc3MiOiJodHRwczovL2NvZ25pdG8taWRwLnVzLWVhc3QtMS5hbWF6b25hd3MuY29tL3VzLWVhc3QtMV9kNTVhZDRjMTRhOTI0MjRiYmIyZWZlZmEzNzIzNzliNCIsInN1YiI6IjQ0YTMzOGFjLWZkZWQtNGMyZS04NTdlLWRjZmU2ZGZkMDcwYyIsImF1ZCI6IjNlMmQ2OGE1ZmVkNTRjOTM5NTViOWY1YjFlIiwidG9rZW5fdXNlIjoiaWQiLCJhdXRoX3RpbWUiOjE3NzIxNDQwNzYsImV4cCI6MTc3MjE0NzY3NiwianRpIjoiYzA4YTQ3OWItZTBlNC00MjM0LThlY2ItYTIwZjM4MzhmOTI4IiwiY29nbml0bzp1c2VybmFtZSI6IjQ0YTMzOGFjLWZkZWQtNGMyZS04NTdlLWRjZmU2ZGZkMDcwYyIsImVtYWlsIjoiYWRtaW5AaW50cmFsZS5jb20iLCJvcmlnaW5fanRpIjoiM2ZiYjc5OGMtYzA4Yi00YTJlLTgxMTMtNTQ2ZTA4YTkzMTUzIn0.Q-vmGMVI46us4g87W81XjtwlwLJvxn2hsAcnJTEc0QFscQYtH3xLX-8c_81JhyF6V_G84riorZiyWiSg0uOdu2JNnzUyOe5j78F_J5g9G1hajCmlFFOuohjwFvgolE7c7ZgLDwnwiawbpmfzCUR9aySFZoYfVLbThsOHn6e3LNGc1Wzepz0W5fvUdnRV-G8IYLdfiH6bE1IRuZNn-vEnZj76pNtKMupMsJE1tOJy6fCvM8gCSSWinzRGkdCRhhkYMvDsLkkOw6H6LWJQkP0ld_Zifd8eIP8W0f7svcA99JXHITKrNeeRzLviUflUyx5BLgXfVoprUEP0yj3W2fpAxQ","accessToken":"eyJ0eXAiOiJKV1QiLCJraWQiOiJkdW1teSIsImFsZyI6IlJTMjU2In0.eyJpc3MiOiJodHRwczovL2NvZ25pdG8taWRwLnVzLWVhc3QtMS5hbWF6b25hd3MuY29tL3VzLWVhc3QtMV9kNTVhZDRjMTRhOTI0MjRiYmIyZWZlZmEzNzIzNzliNCIsInN1YiI6IjQ0YTMzOGFjLWZkZWQtNGMyZS04NTdlLWRjZmU2ZGZkMDcwYyIsImNsaWVudF9pZCI6IjNlMmQ2OGE1ZmVkNTRjOTM5NTViOWY1YjFlIiwidG9rZW5fdXNlIjoiYWNjZXNzIiwiYXV0aF90aW1lIjoxNzcyMTQ0MDc2LCJleHAiOjE3NzIxNDc2NzYsImp0aSI6IjhlYzU1MTMzLTdiMDktNDExNC1hZDg0LTE5NWYxNjc2NTA2MCIsInVzZXJuYW1lIjoiNDRhMzM4YWMtZmRlZC00YzJlLTg1N2UtZGNmZTZkZmQwNzBjIiwib3JpZ2luX2p0aSI6IjNmYmI3OThjLWMwOGItNGEyZS04MTEzLTU0NmUwOGE5MzE1MyIsInNjb3BlIjoiYXdzLmNvZ25pdG8uc2lnbmluLnVzZXIuYWRtaW4ifQ.AyaOJ44QZ2Z-lqyC6LTkvQwTjRBEWVoPLpQKcjvhIyZUsGsV6MW7zeo1CL2vS1tLJ9ZFfHI7olxNla-o6m5mW-hnCyXv6VGAPKddFKmpeRvQ7aVAXQ1Y0hA-WFVpMximU0yKlKg0pfPzjHknSLn7OBMYdJYT7shO64VwMukpy0W0JVFGRK2HCa8lMhwVtJtxQO3SsC2kB-foLSFO5I0GJx1ROpkmit_eWHy3nXL2O-TMpIOV_6a3sMXJVTzc1c9Tzo5kyWZAVx6kcaEY--4FV0muQKZz4OvsDEFE-5wShY5-UNm2MHAzIMxpIn90NN4q_A4-tZmR-4DF8FAf9Ecv3Q","refreshToken":"db2adfdf-8014-4fc2-b06c-cf59921f974a","statusCode":{"value":200,"description":"OK"}}
+19:14:37.005 [Test worker] INFO  ar.com.intrale.e2e - SignIn sin body: status=400
+19:14:37.085 [Test worker] INFO  ar.com.intrale.e2e - SignIn password incorrecto: status=401
+19:14:37.140 [Test worker] INFO  ar.com.intrale.e2e - SignIn email inexistente: status=500
+19:14:37.156 [Test worker] INFO  ar.com.intrale.e2e - Trace guardado: C:\Workspaces\Intrale\platform\qa\recordings\ApiSignInE2ETest-trace.zip
+19:14:37.214 [Test worker] INFO  ar.com.intrale.e2e - Cerrando Playwright [ApiSignInE2ETest]
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

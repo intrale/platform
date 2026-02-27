@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="E2E — SignUp contra backend real" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-02-26T22:14:38.334Z" hostname="DESKTOP-TOTQAUE" time="0.371">
+  <properties/>
+  <testcase name="POST /intrale/signup con email nuevo responde 200" classname="ar.com.intrale.e2e.api.ApiSignUpE2ETest" time="0.174"/>
+  <testcase name="POST /intrale/signup con email duplicado responde 200 (idempotente)" classname="ar.com.intrale.e2e.api.ApiSignUpE2ETest" time="0.148"/>
+  <testcase name="POST /intrale/signup sin body responde 400" classname="ar.com.intrale.e2e.api.ApiSignUpE2ETest" time="0.023"/>
+  <testcase name="POST /intrale/signup con email invalido responde 400" classname="ar.com.intrale.e2e.api.ApiSignUpE2ETest" time="0.023"/>
+  <system-out><![CDATA[19:14:37.237 [Test worker] INFO  ar.com.intrale.e2e - Iniciando Playwright [ApiSignUpE2ETest] — baseUrl=http://localhost:80, recordings=C:\Workspaces\Intrale\platform\qa\recordings
+19:14:38.330 [Test worker] INFO  ar.com.intrale.e2e - Tracing iniciado [ApiSignUpE2ETest]
+19:14:38.506 [Test worker] INFO  ar.com.intrale.e2e - SignUp response: status=200, email=qa-test-1772144077234@intrale.com
+19:14:38.507 [Test worker] INFO  ar.com.intrale.e2e - SignUp body: {"statusCode":{"value":200,"description":"OK"}}
+19:14:38.657 [Test worker] INFO  ar.com.intrale.e2e - SignUp duplicado: status=200
+19:14:38.681 [Test worker] INFO  ar.com.intrale.e2e - SignUp sin body: status=400
+19:14:38.705 [Test worker] INFO  ar.com.intrale.e2e - SignUp email invalido: status=400
+19:14:38.737 [Test worker] INFO  ar.com.intrale.e2e - Trace guardado: C:\Workspaces\Intrale\platform\qa\recordings\ApiSignUpE2ETest-trace.zip
+19:14:38.824 [Test worker] INFO  ar.com.intrale.e2e - Cerrando Playwright [ApiSignUpE2ETest]
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

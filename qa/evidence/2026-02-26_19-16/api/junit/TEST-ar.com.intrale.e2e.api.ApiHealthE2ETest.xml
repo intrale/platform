@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="E2E — Routing y conectividad basica" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-02-26T22:14:31.786Z" hostname="DESKTOP-TOTQAUE" time="0.162">
+  <properties/>
+  <testcase name="POST /intrale/signin con body vacio responde 400 (backend vivo)" classname="ar.com.intrale.e2e.api.ApiHealthE2ETest" time="0.115"/>
+  <testcase name="GET / sin business responde error" classname="ar.com.intrale.e2e.api.ApiHealthE2ETest" time="0.018"/>
+  <testcase name="POST /intrale/funcion-inexistente responde 500 (function not found)" classname="ar.com.intrale.e2e.api.ApiHealthE2ETest" time="0.026"/>
+  <system-out><![CDATA[19:14:30.851 [Test worker] INFO  ar.com.intrale.e2e - Iniciando Playwright [ApiHealthE2ETest] — baseUrl=http://localhost:80, recordings=C:\Workspaces\Intrale\platform\qa\recordings
+19:14:31.786 [Test worker] INFO  ar.com.intrale.e2e - Tracing iniciado [ApiHealthE2ETest]
+19:14:31.861 [Test worker] INFO  ar.com.intrale.e2e - Connectivity check: status=400
+19:14:31.921 [Test worker] INFO  ar.com.intrale.e2e - Root response: status=405
+19:14:31.950 [Test worker] INFO  ar.com.intrale.e2e - Unknown function response: status=500
+19:14:31.973 [Test worker] INFO  ar.com.intrale.e2e - Trace guardado: C:\Workspaces\Intrale\platform\qa\recordings\ApiHealthE2ETest-trace.zip
+19:14:32.035 [Test worker] INFO  ar.com.intrale.e2e - Cerrando Playwright [ApiHealthE2ETest]
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

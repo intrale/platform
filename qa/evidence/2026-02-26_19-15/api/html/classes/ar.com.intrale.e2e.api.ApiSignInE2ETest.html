@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<meta http-equiv="x-ua-compatible" content="IE=edge"/>
+<title>Test results - E2E — SignIn contra backend real</title>
+<link href="../css/base-style.css" rel="stylesheet" type="text/css"/>
+<link href="../css/style.css" rel="stylesheet" type="text/css"/>
+<script src="../js/report.js" type="text/javascript"></script>
+</head>
+<body>
+<div id="content">
+<h1>E2E — SignIn contra backend real</h1>
+<div class="breadcrumbs">
+<a href="../index.html">all</a> &gt; 
+<a href="../packages/ar.com.intrale.e2e.api.html">ar.com.intrale.e2e.api</a> &gt; ApiSignInE2ETest</div>
+<div id="summary">
+<table>
+<tr>
+<td>
+<div class="summaryGroup">
+<table>
+<tr>
+<td>
+<div class="infoBox" id="tests">
+<div class="counter">4</div>
+<p>tests</p>
+</div>
+</td>
+<td>
+<div class="infoBox" id="failures">
+<div class="counter">0</div>
+<p>failures</p>
+</div>
+</td>
+<td>
+<div class="infoBox" id="ignored">
+<div class="counter">0</div>
+<p>ignored</p>
+</div>
+</td>
+<td>
+<div class="infoBox" id="duration">
+<div class="counter">0.754s</div>
+<p>duration</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</td>
+<td>
+<div class="infoBox success" id="successRate">
+<div class="percent">100%</div>
+<p>successful</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+<div class="tab-container">
+<ul class="tabLinks">
+<li>
+<a href="#">Tests</a>
+</li>
+<li>
+<a href="#">Standard output</a>
+</li>
+</ul>
+<div class="tab">
+<h2>Tests</h2>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Method name</th>
+<th>Duration</th>
+<th>Result</th>
+</tr>
+</thead>
+<tr>
+<td class="success">POST /intrale/signin con credenciales seed responde 200 con tokens</td>
+<td class="success">signin con credenciales seed retorna tokens()</td>
+<td class="success">0.599s</td>
+<td class="success">passed</td>
+</tr>
+<tr>
+<td class="success">POST /intrale/signin con email inexistente responde error</td>
+<td class="success">signin con email inexistente responde error()</td>
+<td class="success">0.055s</td>
+<td class="success">passed</td>
+</tr>
+<tr>
+<td class="success">POST /intrale/signin con password incorrecto responde 401</td>
+<td class="success">signin con password incorrecto responde 401()</td>
+<td class="success">0.078s</td>
+<td class="success">passed</td>
+</tr>
+<tr>
+<td class="success">POST /intrale/signin sin body responde 400</td>
+<td class="success">signin sin body responde 400()</td>
+<td class="success">0.022s</td>
+<td class="success">passed</td>
+</tr>
+</table>
+</div>
+<div class="tab">
+<h2>Standard output</h2>
+<span class="code">
+<pre>19:14:35.254 [Test worker] INFO  ar.com.intrale.e2e - Iniciando Playwright [ApiSignInE2ETest] — baseUrl=http://localhost:80, recordings=C:\Workspaces\Intrale\platform\qa\recordings
+19:14:36.380 [Test worker] INFO  ar.com.intrale.e2e - Tracing iniciado [ApiSignInE2ETest]
+19:14:36.979 [Test worker] INFO  ar.com.intrale.e2e - SignIn response: status=200
+19:14:36.983 [Test worker] INFO  ar.com.intrale.e2e - SignIn body: {&quot;idToken&quot;:&quot;eyJ0eXAiOiJKV1QiLCJraWQiOiJkdW1teSIsImFsZyI6IlJTMjU2In0.eyJpc3MiOiJodHRwczovL2NvZ25pdG8taWRwLnVzLWVhc3QtMS5hbWF6b25hd3MuY29tL3VzLWVhc3QtMV9kNTVhZDRjMTRhOTI0MjRiYmIyZWZlZmEzNzIzNzliNCIsInN1YiI6IjQ0YTMzOGFjLWZkZWQtNGMyZS04NTdlLWRjZmU2ZGZkMDcwYyIsImF1ZCI6IjNlMmQ2OGE1ZmVkNTRjOTM5NTViOWY1YjFlIiwidG9rZW5fdXNlIjoiaWQiLCJhdXRoX3RpbWUiOjE3NzIxNDQwNzYsImV4cCI6MTc3MjE0NzY3NiwianRpIjoiYzA4YTQ3OWItZTBlNC00MjM0LThlY2ItYTIwZjM4MzhmOTI4IiwiY29nbml0bzp1c2VybmFtZSI6IjQ0YTMzOGFjLWZkZWQtNGMyZS04NTdlLWRjZmU2ZGZkMDcwYyIsImVtYWlsIjoiYWRtaW5AaW50cmFsZS5jb20iLCJvcmlnaW5fanRpIjoiM2ZiYjc5OGMtYzA4Yi00YTJlLTgxMTMtNTQ2ZTA4YTkzMTUzIn0.Q-vmGMVI46us4g87W81XjtwlwLJvxn2hsAcnJTEc0QFscQYtH3xLX-8c_81JhyF6V_G84riorZiyWiSg0uOdu2JNnzUyOe5j78F_J5g9G1hajCmlFFOuohjwFvgolE7c7ZgLDwnwiawbpmfzCUR9aySFZoYfVLbThsOHn6e3LNGc1Wzepz0W5fvUdnRV-G8IYLdfiH6bE1IRuZNn-vEnZj76pNtKMupMsJE1tOJy6fCvM8gCSSWinzRGkdCRhhkYMvDsLkkOw6H6LWJQkP0ld_Zifd8eIP8W0f7svcA99JXHITKrNeeRzLviUflUyx5BLgXfVoprUEP0yj3W2fpAxQ&quot;,&quot;accessToken&quot;:&quot;eyJ0eXAiOiJKV1QiLCJraWQiOiJkdW1teSIsImFsZyI6IlJTMjU2In0.eyJpc3MiOiJodHRwczovL2NvZ25pdG8taWRwLnVzLWVhc3QtMS5hbWF6b25hd3MuY29tL3VzLWVhc3QtMV9kNTVhZDRjMTRhOTI0MjRiYmIyZWZlZmEzNzIzNzliNCIsInN1YiI6IjQ0YTMzOGFjLWZkZWQtNGMyZS04NTdlLWRjZmU2ZGZkMDcwYyIsImNsaWVudF9pZCI6IjNlMmQ2OGE1ZmVkNTRjOTM5NTViOWY1YjFlIiwidG9rZW5fdXNlIjoiYWNjZXNzIiwiYXV0aF90aW1lIjoxNzcyMTQ0MDc2LCJleHAiOjE3NzIxNDc2NzYsImp0aSI6IjhlYzU1MTMzLTdiMDktNDExNC1hZDg0LTE5NWYxNjc2NTA2MCIsInVzZXJuYW1lIjoiNDRhMzM4YWMtZmRlZC00YzJlLTg1N2UtZGNmZTZkZmQwNzBjIiwib3JpZ2luX2p0aSI6IjNmYmI3OThjLWMwOGItNGEyZS04MTEzLTU0NmUwOGE5MzE1MyIsInNjb3BlIjoiYXdzLmNvZ25pdG8uc2lnbmluLnVzZXIuYWRtaW4ifQ.AyaOJ44QZ2Z-lqyC6LTkvQwTjRBEWVoPLpQKcjvhIyZUsGsV6MW7zeo1CL2vS1tLJ9ZFfHI7olxNla-o6m5mW-hnCyXv6VGAPKddFKmpeRvQ7aVAXQ1Y0hA-WFVpMximU0yKlKg0pfPzjHknSLn7OBMYdJYT7shO64VwMukpy0W0JVFGRK2HCa8lMhwVtJtxQO3SsC2kB-foLSFO5I0GJx1ROpkmit_eWHy3nXL2O-TMpIOV_6a3sMXJVTzc1c9Tzo5kyWZAVx6kcaEY--4FV0muQKZz4OvsDEFE-5wShY5-UNm2MHAzIMxpIn90NN4q_A4-tZmR-4DF8FAf9Ecv3Q&quot;,&quot;refreshToken&quot;:&quot;db2adfdf-8014-4fc2-b06c-cf59921f974a&quot;,&quot;statusCode&quot;:{&quot;value&quot;:200,&quot;description&quot;:&quot;OK&quot;}}
+19:14:37.005 [Test worker] INFO  ar.com.intrale.e2e - SignIn sin body: status=400
+19:14:37.085 [Test worker] INFO  ar.com.intrale.e2e - SignIn password incorrecto: status=401
+19:14:37.140 [Test worker] INFO  ar.com.intrale.e2e - SignIn email inexistente: status=500
+19:14:37.156 [Test worker] INFO  ar.com.intrale.e2e - Trace guardado: C:\Workspaces\Intrale\platform\qa\recordings\ApiSignInE2ETest-trace.zip
+19:14:37.214 [Test worker] INFO  ar.com.intrale.e2e - Cerrando Playwright [ApiSignInE2ETest]
+</pre>
+</span>
+</div>
+</div>
+<div id="footer">
+<p>
+<div>
+<label class="hidden" id="label-for-line-wrapping-toggle" for="line-wrapping-toggle">Wrap lines
+<input id="line-wrapping-toggle" type="checkbox" autocomplete="off"/>
+</label>
+</div>Generated by 
+<a href="https://www.gradle.org">Gradle 8.13</a> at 26 feb 2026 19:14:41</p>
+</div>
+</div>
+</body>
+</html>

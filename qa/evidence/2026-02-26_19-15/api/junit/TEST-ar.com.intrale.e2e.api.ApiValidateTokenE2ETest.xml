@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="E2E — Validate token JWT contra backend real" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-02-26T22:14:40.170Z" hostname="DESKTOP-TOTQAUE" time="0.247">
+  <properties/>
+  <testcase name="POST /intrale/validate sin body responde 400 o 401" classname="ar.com.intrale.e2e.api.ApiValidateTokenE2ETest" time="0.129"/>
+  <testcase name="POST /intrale/validate sin header Authorization responde 401" classname="ar.com.intrale.e2e.api.ApiValidateTokenE2ETest" time="0.034"/>
+  <testcase name="POST /intrale/validate con token invalido responde 401" classname="ar.com.intrale.e2e.api.ApiValidateTokenE2ETest" time="0.032"/>
+  <testcase name="POST /intrale/validate con JWT expirado responde 401" classname="ar.com.intrale.e2e.api.ApiValidateTokenE2ETest" time="0.025"/>
+  <testcase name="POST /intrale/validate con Authorization malformado responde 401" classname="ar.com.intrale.e2e.api.ApiValidateTokenE2ETest" time="0.022"/>
+  <system-out><![CDATA[19:14:38.870 [Test worker] INFO  ar.com.intrale.e2e - Iniciando Playwright [ApiValidateTokenE2ETest] — baseUrl=http://localhost:80, recordings=C:\Workspaces\Intrale\platform\qa\recordings
+19:14:40.169 [Test worker] INFO  ar.com.intrale.e2e - Tracing iniciado [ApiValidateTokenE2ETest]
+19:14:40.298 [Test worker] INFO  ar.com.intrale.e2e - Validate sin body: status=401
+19:14:40.334 [Test worker] INFO  ar.com.intrale.e2e - Validate sin token: status=401
+19:14:40.368 [Test worker] INFO  ar.com.intrale.e2e - Validate con token invalido: status=401
+19:14:40.394 [Test worker] INFO  ar.com.intrale.e2e - Validate con token expirado: status=401
+19:14:40.417 [Test worker] INFO  ar.com.intrale.e2e - Validate con Authorization malformado: status=401
+19:14:40.446 [Test worker] INFO  ar.com.intrale.e2e - Trace guardado: C:\Workspaces\Intrale\platform\qa\recordings\ApiValidateTokenE2ETest-trace.zip
+19:14:40.570 [Test worker] INFO  ar.com.intrale.e2e - Cerrando Playwright [ApiValidateTokenE2ETest]
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

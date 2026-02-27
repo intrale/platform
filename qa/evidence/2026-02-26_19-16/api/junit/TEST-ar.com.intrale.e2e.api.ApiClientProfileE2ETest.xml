@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="E2E — Client Profile contra backend real" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-02-26T22:14:30.235Z" hostname="DESKTOP-TOTQAUE" time="0.501">
+  <properties/>
+  <testcase name="POST /intrale/client/profile sin token responde 401" classname="ar.com.intrale.e2e.api.ApiClientProfileE2ETest" time="0.097"/>
+  <testcase name="POST /intrale/client/profile con token invalido responde 401" classname="ar.com.intrale.e2e.api.ApiClientProfileE2ETest" time="0.379"/>
+  <testcase name="POST /intrale/client/profile sin body responde 400" classname="ar.com.intrale.e2e.api.ApiClientProfileE2ETest" time="0.023"/>
+  <system-out><![CDATA[19:14:29.080 [Test worker] INFO  ar.com.intrale.e2e - Iniciando Playwright [ApiClientProfileE2ETest] — baseUrl=http://localhost:80, recordings=C:\Workspaces\Intrale\platform\qa\recordings
+19:14:30.235 [Test worker] INFO  ar.com.intrale.e2e - Tracing iniciado [ApiClientProfileE2ETest]
+19:14:30.332 [Test worker] INFO  ar.com.intrale.e2e - Client profile sin token: status=401
+19:14:30.713 [Test worker] INFO  ar.com.intrale.e2e - Client profile con token invalido: status=401
+19:14:30.737 [Test worker] INFO  ar.com.intrale.e2e - Client profile sin body: status=401
+19:14:30.760 [Test worker] INFO  ar.com.intrale.e2e - Trace guardado: C:\Workspaces\Intrale\platform\qa\recordings\ApiClientProfileE2ETest-trace.zip
+19:14:30.819 [Test worker] INFO  ar.com.intrale.e2e - Cerrando Playwright [ApiClientProfileE2ETest]
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

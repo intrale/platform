@@ -328,7 +328,8 @@ function parseFrontmatter(content) {
 
 function parseCommand(text) {
     if (!text || typeof text !== "string") return null;
-    const trimmed = text.trim();
+    // Normalizar: quitar @BotName que Telegram agrega a los comandos
+    const trimmed = text.trim().replace(/@\S+/, "");
 
     // /help
     if (trimmed === "/help" || trimmed === "/start") {
@@ -584,12 +585,14 @@ async function handleReactivateCallback(callbackData, callbackQueryId, messageId
         }
 
         let persisted = 0;
+        const skillsToRelaunch = new Set();
         for (const q of expired) {
             const actionData = retryQuestion(q.id);
             if (actionData && actionData.tool_name) {
                 persistPermissionFromActionData(actionData);
                 persisted++;
             }
+            if (q.skill_context) skillsToRelaunch.add(q.skill_context);
         }
 
         await telegramPost("answerCallbackQuery", {
@@ -598,14 +601,31 @@ async function handleReactivateCallback(callbackData, callbackQueryId, messageId
             show_alert: false
         }, 5000);
 
-        // Editar mensaje: quitar botones
+        // Editar mensaje: quitar botones y ofrecer re-lanzar skills
+        const skillList = Array.from(skillsToRelaunch);
+        let editText = "✅ <b>" + persisted + " permisos reactivados</b>\n<i>Próximas ejecuciones se aprobarán automáticamente.</i>";
+        const relaunchKeyboard = [];
+        if (skillList.length > 0) {
+            editText += "\n\n🔄 <b>Skills interrumpidos:</b> " + skillList.map(s => "<code>/" + escHtml(s) + "</code>").join(", ");
+            editText += "\n<i>¿Relanzar?</i>";
+            for (const s of skillList) {
+                relaunchKeyboard.push([
+                    { text: "🚀 Relanzar /" + s, callback_data: "relaunch_skill:" + s }
+                ]);
+            }
+        }
+
         try {
-            await telegramPost("editMessageText", {
+            const editParams = {
                 chat_id: CHAT_ID,
                 message_id: messageId,
-                text: "✅ <b>" + persisted + " permisos reactivados</b>\n<i>Próximas ejecuciones se aprobarán automáticamente.</i>",
+                text: editText,
                 parse_mode: "HTML"
-            }, 8000);
+            };
+            if (relaunchKeyboard.length > 0) {
+                editParams.reply_markup = { inline_keyboard: relaunchKeyboard };
+            }
+            await telegramPost("editMessageText", editParams, 8000);
         } catch (e) { log("Error editando mensaje retry: " + e.message); }
 
         return;
@@ -666,15 +686,27 @@ async function handleReactivateCallback(callbackData, callbackQueryId, messageId
             show_alert: true
         }, 5000);
 
-        // Editar el mensaje original para reflejar la reactivación
+        // Editar el mensaje original para reflejar la reactivación + ofrecer relanzar skill
         const desc = (question.message || "").substring(0, 80);
+        let editText = "🔄 <b>Permiso reactivado</b>\n<code>" + escHtml(desc) + "</code>\n<i>Próximas ejecuciones se aprobarán automáticamente.</i>";
+        const relaunchKb = [];
+        if (question.skill_context) {
+            editText += "\n\n🔄 Skill interrumpido: <code>/" + escHtml(question.skill_context) + "</code>";
+            relaunchKb.push([
+                { text: "🚀 Relanzar /" + question.skill_context, callback_data: "relaunch_skill:" + question.skill_context }
+            ]);
+        }
         try {
-            await telegramPost("editMessageText", {
+            const editParams = {
                 chat_id: CHAT_ID,
                 message_id: messageId,
-                text: "🔄 <b>Permiso reactivado</b>\n<code>" + escHtml(desc) + "</code>\n<i>Próximas ejecuciones se aprobarán automáticamente.</i>",
+                text: editText,
                 parse_mode: "HTML"
-            }, 5000);
+            };
+            if (relaunchKb.length > 0) {
+                editParams.reply_markup = { inline_keyboard: relaunchKb };
+            }
+            await telegramPost("editMessageText", editParams, 5000);
         } catch (e) { log("Error editando mensaje reactivado: " + e.message); }
         return;
     }
@@ -1489,6 +1521,42 @@ async function pollingLoop() {
                             await handleReactivateCallback(cbData, cq.id, cq.message && cq.message.message_id);
                         } catch (e) {
                             log("Error procesando callback de reactivación: " + e.message);
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Error: " + e.message.substring(0, 100),
+                                    show_alert: true
+                                }, 5000);
+                            } catch (e2) {}
+                        }
+                    }
+                    // Callbacks de relanzar skill tras retry
+                    else if (cbData.startsWith("relaunch_skill:")) {
+                        const skillName = cbData.substring("relaunch_skill:".length);
+                        log("Callback de relanzar skill: " + skillName);
+                        try {
+                            await telegramPost("answerCallbackQuery", {
+                                callback_query_id: cq.id,
+                                text: "🚀 Relanzando /" + skillName + "...",
+                                show_alert: false
+                            }, 5000);
+                            // Quitar botones del mensaje
+                            try {
+                                await telegramPost("editMessageReplyMarkup", {
+                                    chat_id: CHAT_ID,
+                                    message_id: cq.message && cq.message.message_id,
+                                    reply_markup: { inline_keyboard: [] }
+                                }, 5000);
+                            } catch (e) { /* ok */ }
+                            // Buscar skill y lanzar
+                            const skill = skills.find(s => s.name === skillName);
+                            if (skill) {
+                                await handleSkill(skill, "");
+                            } else {
+                                await sendMessage("⚠️ Skill <code>/" + escHtml(skillName) + "</code> no encontrado.");
+                            }
+                        } catch (e) {
+                            log("Error relanzando skill: " + e.message);
                             try {
                                 await telegramPost("answerCallbackQuery", {
                                     callback_query_id: cq.id,

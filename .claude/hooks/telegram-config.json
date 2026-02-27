@@ -1,5 +1,6 @@
 {
   "bot_token": "8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk",
   "chat_id": "6529617704",
-  "permission_timeout_min": 60
+  "permission_timeout_min": 60,
+  "task_report_interval_min": 5
 }
