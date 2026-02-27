@@ -57,10 +57,14 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 ├─ PLAN (2026-02-20) ────────────────────────────────────────────┤
 │ #1  #821  notificaciones     S  Stream E                         │
 │ #2  #845  refactor-login     M  Stream A                         │
-├─ TAREAS ────────────────────────────────────────────────────────┤
-│ ☐► #1  Implementar login          Vulcano 🔥                     │
-│ ☐  #2  Tests de login             — (◄#1)                        │
-│ ☑  #3  Research OAuth             Sabueso 🐕                      │
+├─ TAREAS  [████████░░ 75%] ──────────────────────────────────────┤
+│ ☐► #1  Implementar login  ██████░░ 75%  Vulcano 🔥               │
+│     ✓  Crear CommLoginService                                      │
+│     ✓  Crear DoLogin                                               │
+│     ►  Crear LoginViewModel                                        │
+│     ○  Crear LoginScreen                                           │
+│ ☐  #2  Tests de login             — (◄#1)                         │
+│ ☑  #3  Research OAuth  ████████ 100%  Sabueso 🐕                  │
 ├─ ALERTAS ───────────────────────────────────────────────────────┤
 │ ⚠ #2 bloqueada por #1 (in_progress)                              │
 └─────────────────────────────────────────────────────────────────┘
@@ -117,6 +121,33 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 - Owner a la derecha
 - Si no hay tareas: "Sin tareas registradas"
 
+**Progreso y sub-pasos (cuando `steps[]` existe en la tarea):**
+
+El encabezado del panel TAREAS muestra progreso global:
+```
+├─ TAREAS  [██████░░░░ 58%] ────────────────────────────────────┤
+```
+Calculado como: `(tareas_completadas / tareas_totales) * 100`. Si hay sub-pasos, usar promedio ponderado de `progress` por tarea.
+
+Cuando una tarea en `session.current_tasks[]` tiene campo `steps[]`, mostrar barra de progreso y sub-pasos expandidos:
+
+```
+│ ☐► #1  Reescribir qa-android.sh  ████░░░░ 50%  QA 🧪         │
+│     ✓  Configurar JAVA_HOME en el script                       │
+│     ✓  Agregar logica de emulador automatico                   │
+│     ►  Integrar screenrecord con manejo de senales             │
+│     ○  Verificar permisos y cleanup                            │
+```
+
+Reglas para los sub-pasos:
+- `✓` = completado (step esta en `completed_steps[]`)
+- `►` = en progreso (indice == `current_step`, solo si la tarea esta `in_progress`)
+- `○` = pendiente (no completado ni en progreso)
+- Barra de progreso ASCII de 8 chars: `█` llenos + `░` vacios segun `progress` (ej: `████░░░░` para 50%)
+- Formula: `Math.round(progress / 12.5)` bloques llenos
+- Si una tarea NO tiene `steps[]`, mostrar el formato actual sin cambio visual (retrocompatible)
+- Solo expandir sub-pasos en tareas `in_progress` o `pending` con progreso parcial — las `completed` muestran solo la linea principal con `████████ 100%`
+
 **Reglas del panel ALERTAS:**
 
 - Tarea bloqueada por otra que esta `in_progress` → `⚠ #N bloqueada por #M (in_progress)`
@@ -160,10 +191,14 @@ Muestra:
 │   ▶  Sesion actual (ejecuta /monitor)               │
 │                                                     │
 │ Dashboard live: node .claude/dashboard.js           │
+│   --report N   Imagen PNG a Telegram cada N min     │
 │ Datos: .claude/sessions/*.json                      │
 │ Log:   .claude/activity-log.jsonl                   │
 │ Hook:  activity-logger.js (PostToolUse)             │
 │        stop-notify.js (Stop → marca "done")         │
+│                                                     │
+│ Dependencia imagen: npm install canvas              │
+│ (sin canvas, --report envía texto plano)            │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -176,3 +211,6 @@ Muestra:
 - `last_tool` y `last_target` muestran la ultima herramienta usada y su objetivo
 - `activity-log.jsonl` ahora incluye `session` (ID corto) en cada entrada
 - Para monitoreo en tiempo real con auto-refresh: `node .claude/dashboard.js` en terminal externa
+- El flag `--report N` envía una imagen PNG del dashboard a Telegram cada N minutos
+- Requiere `npm install canvas` para generar imágenes PNG; sin canvas, el reporte se envía como texto plano (fallback automático)
+- La imagen incluye: lista de agentes con color según estado (verde/amarillo/gris), última acción, duración, métricas de CI y contadores
