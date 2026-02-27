@@ -154,6 +154,40 @@ Todo agente que implementa un issue DEBE:
 
 Las tareas deben coincidir con los cambios reales del issue. El `/monitor` muestra el avance con checkboxes (`☐`/`☐►`/`☑`) en tiempo real.
 
+### Sub-pasos y progreso (convención `metadata.steps`)
+
+Cuando una tarea tiene pasos internos verificables, codificarlos en `metadata` para dar visibilidad granular:
+
+**Al crear la tarea:**
+```
+TaskCreate(
+  subject: "Reescribir qa-android.sh",
+  activeForm: "Reescribiendo qa-android.sh…",
+  metadata: {
+    "steps": ["Configurar JAVA_HOME", "Agregar emulador auto", "Integrar screenrecord", "Cleanup"]
+  }
+)
+```
+
+**Al avanzar sub-pasos:**
+```
+TaskUpdate(
+  taskId: "1",
+  activeForm: "Reescribiendo qa-android.sh (2/4 · 50%)…",
+  metadata: { "current_step": 2, "completed_steps": ["Configurar JAVA_HOME", "Agregar emulador auto"] }
+)
+```
+
+**Al completar:**
+```
+TaskUpdate(taskId: "1", status: "completed")
+```
+
+- El `activeForm` DEBE incluir el progreso `(N/M · X%)` cuando hay sub-pasos
+- Los `steps` deben ser strings cortos (< 80 chars)
+- El hook `activity-logger.js` calcula `progress` automáticamente y lo persiste en la sesión
+- El `/monitor` muestra barra de progreso ASCII y sub-pasos `✓`/`►`/`○` cuando están disponibles
+
 ## Android: Product Flavors
 
 - `client` — `com.intrale.app.client[.slug]`
