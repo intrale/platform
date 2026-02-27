@@ -151,7 +151,7 @@ Closes #$ISSUE
 # Procesar cada worktree
 cd "$MAIN_REPO"
 while IFS= read -r line; do
-    if [[ $line =~ ^branch\ refs/heads/codex/ ]]; then
+    if [[ $line =~ ^branch\ refs/heads/agent/ ]]; then
         BRANCH=$(echo "$line" | sed 's/branch refs\/heads\///')
         WT_DIR=$(git worktree list --porcelain | grep "branch refs/heads/$BRANCH" | awk '{print $1}')
 

@@ -72,8 +72,8 @@ function Start-UnAgente {
     $issue  = $Agente.issue
     $slug   = $Agente.slug
     $prompt = $Agente.prompt
-    $branch = "codex/$issue-$slug"
-    $wtDir  = "$MainRepo\..\platform.codex-$issue-$slug"
+    $branch = "agent/$issue-$slug"
+    $wtDir  = "$MainRepo\..\platform.agent-$issue-$slug"
 
     Write-Host ""
     Write-Host "============================================" -ForegroundColor Cyan

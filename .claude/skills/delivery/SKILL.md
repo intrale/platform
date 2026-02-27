@@ -17,7 +17,7 @@ Sos veloz, confiable y siempre entregás en tiempo y forma.
 - `<descripcion>` — Descripción breve del cambio (obligatorio)
 - `--issue <N>` — Número de issue que cierra este PR (opcional, agrega `Closes #N` al body)
 - `--draft` — Crear el PR como draft (opcional)
-- `--all` — Entregar todos los worktrees activos con branch `codex/*` (ejecuta el flujo completo por cada uno)
+- `--all` — Entregar todos los worktrees activos con branch `agent/*` (ejecuta el flujo completo por cada uno)
 
 ## Pre-flight: Registrar tareas
 
@@ -32,7 +32,7 @@ Si se pasó `--all`:
 git worktree list --porcelain
 ```
 
-2. Filtrar solo los worktrees cuya branch tenga prefijo `codex/` (parsear líneas `branch refs/heads/codex/...`).
+2. Filtrar solo los worktrees cuya branch tenga prefijo `agent/` (parsear líneas `branch refs/heads/agent/...`).
 
 3. Para cada worktree encontrado:
    - `cd` al directorio del worktree
@@ -43,8 +43,8 @@ git worktree list --porcelain
 ```
 | Branch              | PR URL                          | Estado    |
 |---------------------|---------------------------------|-----------|
-| codex/123-feature   | https://github.com/.../pull/45  | OK        |
-| codex/456-bugfix    | —                               | ERROR: …  |
+| agent/123-feature   | https://github.com/.../pull/45  | OK        |
+| agent/456-bugfix    | —                               | ERROR: …  |
 ```
 
 5. En modo `--all`: **SÍ mergear** cada PR inmediatamente después de crearlo (squash + delete-branch), siguiendo el Paso 6.5. Si el merge falla, registrar el error y continuar con el siguiente.
