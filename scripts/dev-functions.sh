@@ -203,6 +203,12 @@ dev-clean-all() {
             | sed 's/worktree //' \
             | while read wt_path; do
                 echo "  Eliminando: $wt_path"
+                # CRITICO: desvincular junction .claude antes de borrar
+                # cmd /c rmdir sin /s solo remueve el junction, no sigue el enlace
+                if [ -L "$wt_path/.claude" ] || [ -d "$wt_path/.claude" ]; then
+                    local win_path=$(cygpath -w "$wt_path/.claude" 2>/dev/null || echo "$wt_path/.claude")
+                    cmd /c rmdir "$win_path" 2>/dev/null
+                fi
                 git worktree remove "$wt_path" --force 2>/dev/null
             done
         git worktree prune 2>/dev/null
