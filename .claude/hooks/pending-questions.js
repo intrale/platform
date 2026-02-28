@@ -67,14 +67,16 @@ function addPendingQuestion(question) {
  * @param {string} id - ID de la pregunta
  * @param {string} status - "answered" | "expired"
  * @param {string|null} via - "console" | "telegram" | null (origen de la respuesta)
+ * @param {string|null} actionResult - "allow" | "always" | "deny" | null (acción elegida)
  */
-function resolveQuestion(id, status, via) {
+function resolveQuestion(id, status, via, actionResult) {
     const data = loadQuestions();
     const q = data.questions.find(q => q.id === id);
     if (q) {
         q.status = status || "answered";
         q.answered_at = new Date().toISOString();
         if (via) q.answered_via = via;
+        if (actionResult) q.action_result = actionResult;
         saveQuestions(data);
     }
 }
