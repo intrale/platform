@@ -59,6 +59,8 @@ let sprintStartTime = null;        // Timestamp de inicio del sprint
 let cleanupInterval = null;        // ID del setInterval de limpieza de mensajes
 let commandBusy = false;           // Flag para evitar ejecutar dos comandos simultáneos
 let commandBusyLabel = "";         // Descripción del comando en ejecución
+const PROCESSED_IDS_MAX = 200;     // Máx message_ids en set de deduplicación
+const processedMessageIds = new Set(); // Deduplicar mensajes procesados
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -798,14 +800,15 @@ async function handleTextPermissionReply(question, action, msgChatId) {
     const emojiDecision = { allow: "✅", always: "✅✅", deny: "❌" }[action] || "•";
     if (question.telegram_message_id) {
         const originalHtml = question.original_html || escHtml(question.message || "Permiso solicitado");
-        // Quitar la línea de instrucciones "📝 Responder: ..." y agregar la decisión
-        const cleanHtml = originalHtml.replace(/\n📝 Responder:.*$/s, "");
+        // Quitar la línea de instrucciones "📝 ..." y agregar la decisión
+        const cleanHtml = originalHtml.replace(/\n📝 (?:Responder|Usar botones).*$/s, "");
         try {
             await telegramPost("editMessageText", {
                 chat_id: CHAT_ID,
                 message_id: question.telegram_message_id,
                 text: cleanHtml + "\n\n" + emojiDecision + " <b>" + confirmText + "</b> <i>(via texto)</i>",
-                parse_mode: "HTML"
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: [] }
             }, 5000);
         } catch (e) {
             log("Error editando mensaje permiso (texto): " + (e.message || ""));
@@ -967,8 +970,7 @@ async function handleFreetext(text) {
 
     await sendMessage("💬 Procesando: <code>" + escHtml(text.substring(0, 100)) + (text.length > 100 ? "…" : "") + "</code>");
 
-    const result = await executeClaudeQueued(text, [], { useSession: true, skill: null });
-    await sendResult("prompt", result);
+    await executeClaudeQueued(text, [], { useSession: true, skill: null });
 }
 
 // ─── Sprint execution ────────────────────────────────────────────────────────
@@ -1741,9 +1743,7 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
-                    // [LEGACY] Callbacks de permisos (allow:/always:/deny:) — botones inline
-                    // Ya no se generan botones nuevos (reemplazados por texto libre),
-                    // pero se mantiene para mensajes viejos que aún tengan botones inline.
+                    // Callbacks de permisos (allow:/always:/deny:) — botones inline
                     else if (cbData.startsWith("allow:") || cbData.startsWith("always:") || cbData.startsWith("deny:")) {
                         const parts = cbData.split(":");
                         const permAction = parts[0]; // "allow", "always", "deny"
@@ -1791,7 +1791,8 @@ async function pollingLoop() {
                                         chat_id: CHAT_ID,
                                         message_id: msgId,
                                         text: originalHtml + "\n\n" + emojiDecision + " <b>" + confirmText + "</b>",
-                                        parse_mode: "HTML"
+                                        parse_mode: "HTML",
+                                        reply_markup: { inline_keyboard: [] }
                                     }, 5000);
                                 } catch (e2) {
                                     log("Error editando mensaje permiso: " + (e2.message || ""));
@@ -1970,7 +1971,8 @@ async function onPendingQuestionsChange() {
                     chat_id: CHAT_ID,
                     message_id: cur.msgId,
                     text: "⌨️ <b>Respondido en consola</b>\n\n<i>El usuario respondió directamente en la consola de Claude Code.</i>",
-                    parse_mode: "HTML"
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: [] }
                 }, 8000);
             } catch (e) {
                 const errMsg = e.message || "";
@@ -2008,6 +2010,61 @@ function stopPendingQuestionsWatch() {
         _pqWatcher = null;
         log("PQ Watch detenido");
     }
+    if (_pqOrphanInterval) {
+        clearInterval(_pqOrphanInterval);
+        _pqOrphanInterval = null;
+    }
+}
+
+// ─── Orphan approver detection (approver killed by Claude → sync Telegram) ──
+
+let _pqOrphanInterval = null;
+const PQ_ORPHAN_CHECK_MS = 3000; // Cada 3 segundos
+
+async function checkOrphanedApprovers() {
+    try {
+        const data = loadQuestions();
+        if (!data.questions) return;
+        let changed = false;
+        for (const q of data.questions) {
+            if (q.status !== "pending" || q.type !== "permission") continue;
+            if (!q.approver_pid || !q.telegram_message_id) continue;
+            // Si el approver ya no está vivo, el usuario respondió en consola
+            if (!isProcessAlive(q.approver_pid)) {
+                log("Orphan detected: pregunta " + q.id + " approver PID " + q.approver_pid + " muerto — sincronizando");
+                q.status = "answered";
+                q.answered_at = new Date().toISOString();
+                q.answered_via = "console";
+                changed = true;
+                try {
+                    const originalHtml = q.original_html || "";
+                    const cleanHtml = originalHtml.replace(/\n📝 (?:Usar botones|Responder).*$/s, "");
+                    await telegramPost("editMessageText", {
+                        chat_id: CHAT_ID,
+                        message_id: q.telegram_message_id,
+                        text: (cleanHtml || "⚠️ Permiso solicitado") + "\n\n⌨️ <b>Respondido en consola</b>",
+                        parse_mode: "HTML",
+                        reply_markup: { inline_keyboard: [] }
+                    }, 8000);
+                } catch (e) {
+                    const errMsg = e.message || "";
+                    if (!errMsg.includes("message is not modified")) {
+                        log("Orphan: error editando mensaje " + q.telegram_message_id + ": " + errMsg);
+                    }
+                }
+            }
+        }
+        if (changed) saveQuestions(data);
+    } catch (e) {
+        log("checkOrphanedApprovers error: " + e.message);
+    }
+}
+
+function startOrphanDetection() {
+    _pqOrphanInterval = setInterval(() => {
+        checkOrphanedApprovers().catch(e => log("Orphan check error: " + e.message));
+    }, PQ_ORPHAN_CHECK_MS);
+    log("Orphan approver detection iniciado (cada " + (PQ_ORPHAN_CHECK_MS / 1000) + "s)");
 }
 
 async function cleanStaleQuestionsOnStartup() {
@@ -2023,7 +2080,8 @@ async function cleanStaleQuestionsOnStartup() {
                 chat_id: CHAT_ID,
                 message_id: q.telegram_message_id,
                 text: "⌨️ <b>Respondido fuera de Telegram</b>\n\n<i>Esta pregunta fue resuelta en una sesión anterior.</i>",
-                parse_mode: "HTML"
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: [] }
             }, 8000);
         } catch (e) {
             const errMsg = e.message || "";
@@ -2132,6 +2190,7 @@ async function main() {
 
     // Iniciar watcher de pending-questions.json (sync consola ↔ Telegram)
     startPendingQuestionsWatch();
+    // Nota: orphan detection desactivado — post-console-response.js (Stop hook) se encarga
 
     // Polling principal
     await pollingLoop();

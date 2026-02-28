@@ -31,9 +31,9 @@ const _tgCfg = JSON.parse(fs.readFileSync(path.join(MAIN_REPO_HOOKS_DIR, "telegr
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 
-// El approver tiene timeout de 50s internamente (55s de hook timeout en settings.json)
-// Si una pregunta tiene más de 60s y sigue "pending", el approver está muerto
-const APPROVER_DEAD_THRESHOLD_MS = 60000; // 60 segundos
+// El approver tiene timeout de 600s internamente (615s de hook timeout en settings.json)
+// Si una pregunta tiene más de 660s y sigue "pending", el approver está muerto
+const APPROVER_DEAD_THRESHOLD_MS = 660000; // 11 minutos
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] PostConsole: " + msg + "\n"); } catch (e) {}
@@ -105,8 +105,8 @@ async function syncToTelegram(q) {
             chat_id: CHAT_ID,
             message_id: msgId,
             text: newText,
-            parse_mode: "HTML"
-            // Sin reply_markup: elimina los botones inline
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: [] }
         }, 8000);
         log("Mensaje " + msgId + " sincronizado: respondido en consola (pregunta " + q.id + ")");
     } catch (e) {
@@ -130,6 +130,21 @@ async function main() {
         process.stdin.on("error", () => { clearTimeout(timeout); resolve(); });
     });
 
+    // Caso 0: Matar approver activo si existe (el usuario respondió en consola)
+    const APPROVER_PID_FILE = path.join(MAIN_REPO_HOOKS_DIR, "approver-active.pid");
+    try {
+        if (fs.existsSync(APPROVER_PID_FILE)) {
+            const pidData = JSON.parse(fs.readFileSync(APPROVER_PID_FILE, "utf8"));
+            log("Approver activo detectado: PID " + pidData.pid + " requestId=" + pidData.requestId);
+            // Matar al approver zombi
+            try { process.kill(pidData.pid, "SIGTERM"); } catch (e) {}
+            // Limpiar el PID file
+            try { fs.unlinkSync(APPROVER_PID_FILE); } catch (e) {}
+        }
+    } catch (e) {
+        log("Error leyendo approver PID file: " + e.message);
+    }
+
     const data = loadQuestions();
     if (!data.questions || data.questions.length === 0) {
         process.exit(0);
@@ -139,15 +154,27 @@ async function main() {
     const now = Date.now();
     let changed = false;
 
-    // Caso 1: Preguntas "pending" cuyo approver ya está muerto (>60s)
-    // El approver normalmente marca como "expired" antes de morir (a los 50s),
-    // pero si fue killed por Claude antes de poder hacerlo, la pregunta queda "pending".
+    // Caso 1: Preguntas "pending" cuyo approver ya no está vivo
+    // Verificar por PID si disponible, o por antigüedad como fallback
     const orphaned = data.questions.filter(q => {
         if (q.status !== "pending") return false;
         if (q.type !== "permission") return false;
         if (!q.telegram_message_id) return false;
+        // Si tiene approver_pid, verificar si el proceso sigue vivo
+        if (q.approver_pid) {
+            try { process.kill(q.approver_pid, 0); return false; } catch (e) { return true; }
+        }
+        // Sin PID: verificar si ALGÚN approver está corriendo
+        // Si no hay approver-active.pid, el approver ya murió
+        try {
+            if (fs.existsSync(APPROVER_PID_FILE)) {
+                const pidData = JSON.parse(fs.readFileSync(APPROVER_PID_FILE, "utf8"));
+                try { process.kill(pidData.pid, 0); return false; } catch (e) { /* pid muerto */ }
+            }
+        } catch (e) {}
+        // No hay approver vivo → es huérfana (con mínimo 5s para evitar race conditions)
         const age = now - new Date(q.timestamp).getTime();
-        return age > APPROVER_DEAD_THRESHOLD_MS;
+        return age > 5000;
     });
 
     // Caso 2: Preguntas answered via console pero sin sincronizar a Telegram
