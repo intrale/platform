@@ -154,6 +154,10 @@
   .agent-card.deliver         { border-color: #4c1d95; }
   .agent-card.deliver:hover   { border-color: #a78bfa; }
 
+  .agent-card.dev::before    { background: linear-gradient(90deg, #ef4444, #f87171); }
+  .agent-card.dev            { border-color: #7f1d1d; }
+  .agent-card.dev:hover      { border-color: #ef4444; }
+
   .agent-card.ops::before    { background: linear-gradient(90deg, #64748b, #94a3b8); }
   .agent-card.ops            { border-color: #334155; }
   .agent-card.ops:hover      { border-color: #64748b; }
@@ -186,6 +190,7 @@
   .label-test     { background: #064e3b; color: #6ee7b7; }
   .label-review   { background: #831843; color: #fda4af; }
   .label-deliver  { background: #4c1d95; color: #c4b5fd; }
+  .label-dev      { background: #7f1d1d; color: #fca5a5; }
   .label-ops      { background: #1e293b; color: #94a3b8; }
 
   .agent-desc {
@@ -270,6 +275,7 @@
   .dot-test     { background: #10b981; }
   .dot-review   { background: #f472b6; }
   .dot-deliver  { background: #a78bfa; }
+  .dot-dev      { background: #ef4444; }
   .dot-ops      { background: #64748b; }
 
   /* ---- Stats ---- */
@@ -314,11 +320,11 @@
 <!-- Stats -->
 <div class="stats">
   <div class="stat">
-    <div class="stat-number">14</div>
+    <div class="stat-number">19</div>
     <div class="stat-label">Agentes disponibles</div>
   </div>
   <div class="stat">
-    <div class="stat-number">7</div>
+    <div class="stat-number">8</div>
     <div class="stat-label">Fases del ciclo</div>
   </div>
   <div class="stat">
@@ -331,6 +337,7 @@
 <div class="legend">
   <div class="legend-item"><div class="legend-dot dot-plan"></div>Planificacion</div>
   <div class="legend-item"><div class="legend-dot dot-research"></div>Investigacion</div>
+  <div class="legend-item"><div class="legend-dot dot-dev"></div>Desarrollo</div>
   <div class="legend-item"><div class="legend-dot dot-build"></div>Build</div>
   <div class="legend-item"><div class="legend-dot dot-test"></div>Testing</div>
   <div class="legend-item"><div class="legend-dot dot-review"></div>Review</div>
@@ -353,6 +360,14 @@
       <div class="phase-icon">🔍</div>
       <div class="phase-name" style="color: #38bdf8;">Investigar</div>
       <div class="phase-desc">Research tecnico, docs, Context7</div>
+    </div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="phase">
+    <div class="phase-header" style="border-color: #7f1d1d;">
+      <div class="phase-icon">💻</div>
+      <div class="phase-name" style="color: #f87171;">Desarrollar</div>
+      <div class="phase-desc">Codigo especializado por plataforma</div>
     </div>
   </div>
   <div class="arrow">→</div>
@@ -508,6 +523,97 @@
         <span class="trigger">como funciona</span>
         <span class="trigger">investigar</span>
         <span class="trigger">Context7</span>
+      </div>
+    </div>
+
+    <!-- DESARROLLO -->
+    <div class="agent-card dev">
+      <div class="agent-top">
+        <div class="agent-emoji">⚙️</div>
+        <div class="agent-name">/backend-dev</div>
+      </div>
+      <div class="agent-label label-dev">Desarrollo</div>
+      <div class="agent-desc">
+        Especialista backend: Ktor, DynamoDB, Cognito, Lambda.
+        Funciones, Kodein DI, responses con statusCode.
+      </div>
+      <div class="agent-model"><span>Modelo:</span> claude-sonnet-4-6</div>
+      <div class="agent-triggers">
+        <span class="trigger">endpoint</span>
+        <span class="trigger">function</span>
+        <span class="trigger">backend</span>
+      </div>
+    </div>
+
+    <div class="agent-card dev">
+      <div class="agent-top">
+        <div class="agent-emoji">🤖</div>
+        <div class="agent-name">/android-dev</div>
+      </div>
+      <div class="agent-label label-dev">Desarrollo</div>
+      <div class="agent-desc">
+        Especialista Android: Compose, Material3, product flavors,
+        Coil, resString(). Domina commonMain + androidMain.
+      </div>
+      <div class="agent-model"><span>Modelo:</span> claude-sonnet-4-6</div>
+      <div class="agent-triggers">
+        <span class="trigger">android</span>
+        <span class="trigger">compose</span>
+        <span class="trigger">flavor</span>
+      </div>
+    </div>
+
+    <div class="agent-card dev">
+      <div class="agent-top">
+        <div class="agent-emoji">🍎</div>
+        <div class="agent-name">/ios-dev</div>
+      </div>
+      <div class="agent-label label-dev">Desarrollo</div>
+      <div class="agent-desc">
+        Especialista iOS: ComposeUIViewController, framework binaries,
+        actual/expect, integracion con Xcode.
+      </div>
+      <div class="agent-model"><span>Modelo:</span> claude-sonnet-4-6</div>
+      <div class="agent-triggers">
+        <span class="trigger">iOS</span>
+        <span class="trigger">swift</span>
+        <span class="trigger">xcode</span>
+      </div>
+    </div>
+
+    <div class="agent-card dev">
+      <div class="agent-top">
+        <div class="agent-emoji">🌐</div>
+        <div class="agent-name">/web-dev</div>
+      </div>
+      <div class="agent-label label-dev">Desarrollo</div>
+      <div class="agent-desc">
+        Especialista Web: Kotlin/Wasm, PWA, Webpack, browser APIs.
+        ComposeViewport y service worker.
+      </div>
+      <div class="agent-model"><span>Modelo:</span> claude-sonnet-4-6</div>
+      <div class="agent-triggers">
+        <span class="trigger">wasm</span>
+        <span class="trigger">PWA</span>
+        <span class="trigger">web</span>
+      </div>
+    </div>
+
+    <div class="agent-card dev">
+      <div class="agent-top">
+        <div class="agent-emoji">🖥️</div>
+        <div class="agent-name">/desktop-dev</div>
+      </div>
+      <div class="agent-label label-dev">Desarrollo</div>
+      <div class="agent-desc">
+        Especialista Desktop JVM: Window API, system tray,
+        menus nativos, Swing+Compose interop.
+      </div>
+      <div class="agent-model"><span>Modelo:</span> claude-sonnet-4-6</div>
+      <div class="agent-triggers">
+        <span class="trigger">desktop</span>
+        <span class="trigger">window</span>
+        <span class="trigger">JVM</span>
       </div>
     </div>
 
@@ -677,17 +783,25 @@
                                                                         │
         ┌───────────────────────────────────────────────────────────────┘
         ▼
-  ╔══════════════╗     ╔══════════════╗     ╔══════════════╗     ╔══════════════╗
-  ║    /guru     ║────►║   CODEAR     ║────►║   /builder   ║────►║   /tester    ║
-  ║  Research    ║     ║  (Agente)    ║     ║  Compilar    ║     ║  Unit Tests  ║
-  ╚══════════════╝     ╚══════════════╝     ╚══════════════╝     ╚══════╤═══════╝
-                                                                        │
-        ┌───────────────────────────────────────────────────────────────┘
+  ╔══════════════╗     ╔══════════════════════════════════╗     ╔══════════════╗
+  ║    /guru     ║────►║  <span style="color: #f87171;">DESARROLLAR</span>  (segun plataforma)  ║────►║   /builder   ║
+  ║  Research    ║     ║  /backend-dev  /android-dev      ║     ║  Compilar    ║
+  ╚══════════════╝     ║  /ios-dev  /web-dev  /desktop-dev║     ╚══════╤═══════╝
+                       ╚══════════════════════════════════╝            │
+        ┌──────────────────────────────────────────────────────────────┘
         ▼
   ╔══════════════╗     ╔══════════════╗     ╔══════════════╗     ╔══════════════╗
-  ║     /qa      ║────►║  /delivery   ║────►║   /review    ║────►║   MERGE ✓    ║
-  ║  E2E Tests   ║     ║  PR + Push   ║     ║  Code Review ║     ║  CI/CD       ║
-  ╚══════════════╝     ╚══════════════╝     ╚══════════════╝     ╚══════════════╝
+  ║   /tester    ║────►║     /qa      ║────►║  /delivery   ║────►║   /review    ║
+  ║  Unit Tests  ║     ║  E2E Tests   ║     ║  PR + Push   ║     ║  Code Review ║
+  ╚══════╤═══════╝     ╚══════════════╝     ╚══════════════╝     ╚══════╤═══════╝
+         │                                                               │
+         │                                                               ▼
+         │                                                        ╔══════════════╗
+         │                                                        ║   MERGE ✓    ║
+         │                                                        ║  CI/CD       ║
+         │                                                        ╚══════════════╝
+         │
+         └──── Si fallan tests, vuelve a <span style="color: #f87171;">DESARROLLAR</span> para corregir
 
         ╔══════════════╗  ╔══════════════╗  ╔══════════════╗
         ║   /monitor   ║  ║    /auth     ║  ║   /cleanup   ║
@@ -702,11 +816,16 @@
     ┌──────────────────────────────────────────────────────────────────────┐
     │                                                                      │
     │   <span style="color: #c4b5fd; font-weight: bold;">claude-sonnet-4-6</span>  (Tareas complejas, razonamiento profundo)       │
-    │   ├── /guru      — Investigacion tecnica con Context7                │
-    │   ├── /planner   — Planificacion estrategica y Gantt                 │
-    │   ├── /doc       — Gestion de backlog                                │
-    │   ├── /review    — Code review de PRs                                │
-    │   └── /qa        — Tests E2E contra entorno real                     │
+    │   ├── /guru        — Investigacion tecnica con Context7              │
+    │   ├── /planner     — Planificacion estrategica y Gantt               │
+    │   ├── /doc         — Gestion de backlog                              │
+    │   ├── /review      — Code review de PRs                              │
+    │   ├── /qa          — Tests E2E contra entorno real                   │
+    │   ├── /backend-dev — Desarrollo backend Ktor + AWS                   │
+    │   ├── /android-dev — Desarrollo Android Compose                      │
+    │   ├── /ios-dev     — Desarrollo iOS + ComposeUIViewController        │
+    │   ├── /web-dev     — Desarrollo Web Kotlin/Wasm + PWA                │
+    │   └── /desktop-dev — Desarrollo Desktop JVM + Window API             │
     │                                                                      │
     │   <span style="color: #fde68a; font-weight: bold;">claude-haiku-4-5</span>   (Tareas rapidas, ejecucion directa)              │
     │   ├── /builder   — Build y compilacion                               │
