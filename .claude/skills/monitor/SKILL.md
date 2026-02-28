@@ -33,7 +33,9 @@ Calcula la diferencia entre `last_activity_ts` y el momento actual:
 - **< 5 minutos** → `active` → icono `●`
 - **5-15 minutos** → `idle` → icono `◐`
 - **> 15 minutos** → `stale` → icono `○`
-- **`status: "done"`** → sesion terminada → icono `✗` (mostrar solo si < 1 hora de antiguedad)
+- **`status: "done"`** → sesion terminada → icono `✗` (mostrar solo si < 15 minutos de antiguedad)
+- **`status: "active"`** con `last_activity_ts > 30 min` → omitir (zombie sin hook Stop)
+- **`status: "active"`** con `pid` y proceso muerto → omitir (zombie detectado por PID)
 
 Para identificar la sesion actual (la que ejecuta `/monitor`): lee `.claude/session-state.json` y usa `current_session` como ID de la sesion propia. Agrega `▶` al lado del icono de estado de esa sesion.
 
@@ -73,7 +75,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 **Reglas del panel SESIONES:**
 
 - Solo mostrar sesiones con `type: "parent"` (ignorar `type: "sub"`)
-- Columna "Agente": usar `agent_name` del JSON. Si es `null`, mostrar `Claude 🤖`
+- Columna "Agente": usar `agent_name` del JSON. Si es `null` y la branch tiene formato `agent/<N>-<slug>`, mostrar `Ad-hoc (#N)`. Si es `null` y branch es otra, mostrar `Claude 🤖`
 - Columna "Accs": valor de `action_count`
 - Columna "Dur.": duracion calculada desde `started_ts` hasta `last_activity_ts`
 - Columna "Ultima accion": `last_tool: last_target` truncado (ej: `Edit: LoginVM…`)
@@ -214,7 +216,8 @@ Muestra:
 - Cada sesion de Claude Code genera su propio archivo en `.claude/sessions/`
 - Sub-agentes (type: "sub") NO se muestran en el dashboard — su actividad incrementa `sub_count` en la sesion padre
 - La deteccion de liveness usa `last_activity_ts` del JSON de sesion (actualizado en cada PostToolUse por el hook)
-- Sesiones marcadas como `status: "done"` por el hook Stop se muestran con `✗` (solo si < 1h de antiguedad)
+- Sesiones marcadas como `status: "done"` por el hook Stop se muestran con `✗` (solo si < 15min de antiguedad)
+- Sesiones `"active"` sin actividad por >30 min o con PID muerto se omiten automáticamente (zombie)
 - `last_tool` y `last_target` muestran la ultima herramienta usada y su objetivo
 - `activity-log.jsonl` ahora incluye `session` (ID corto) en cada entrada
 - Para monitoreo en tiempo real con auto-refresh: `node .claude/dashboard.js` en terminal externa

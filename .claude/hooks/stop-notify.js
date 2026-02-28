@@ -91,7 +91,7 @@ function cleanOldSessions() {
         if (!fs.existsSync(SESSIONS_DIR)) return;
         const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
         const now = Date.now();
-        const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 horas
+        const MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 horas (safety net — dashboard ya filtra a 15min)
         let cleaned = 0;
 
         for (const file of files) {
@@ -159,7 +159,7 @@ async function processInput() {
     // Marcar sesion como terminada
     markSessionDone(data.session_id || "");
 
-    // Rotacion: limpiar sessions "done" con mas de 24h de antiguedad
+    // Rotacion: limpiar sessions "done" con mas de 2h de antiguedad
     cleanOldSessions();
 
     const raw = (data.last_assistant_message || "").trim();

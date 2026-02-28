@@ -23,8 +23,8 @@ const LOG_FILE = path.join(REPO_ROOT, ".claude", "activity-log.jsonl");
 const REFRESH_MS = 5000;
 const ACTIVE_THRESHOLD = 5 * 60 * 1000;   // 5 min
 const IDLE_THRESHOLD = 15 * 60 * 1000;    // 15 min
-const DONE_DISPLAY_HOURS = 1;
-const STALE_EXPIRY_HOURS = 2;          // sesiones "active" sin actividad → tratar como expiradas
+const DONE_DISPLAY_HOURS = 0.25;       // 15 min — sesiones "done" desaparecen rápido
+const STALE_EXPIRY_HOURS = 0.5;        // 30 min — sesiones "active" sin actividad → tratar como expiradas
 const RECENT_ACTIVITY_COUNT = 5;
 
 // --- ANSI colors ---
@@ -166,26 +166,78 @@ function livenessLabel(session) {
 
 // --- data collection ---
 
+/**
+ * Descubre sesiones en worktrees activos (evita duplicados por session id).
+ */
+function discoverWorktreeSessions(knownIds) {
+  const extra = [];
+  try {
+    const output = execSync("git worktree list --porcelain", { cwd: REPO_ROOT, timeout: 5000 })
+      .toString();
+    const lines = output.split(/\r?\n/);
+    for (const line of lines) {
+      if (!line.startsWith("worktree ")) continue;
+      const wtPath = line.substring(9).trim();
+      // Saltar el repo principal (ya lo leímos)
+      if (path.resolve(wtPath) === path.resolve(REPO_ROOT)) continue;
+      const wtSessions = path.join(wtPath, ".claude", "sessions");
+      if (!fs.existsSync(wtSessions)) continue;
+      for (const file of fs.readdirSync(wtSessions)) {
+        if (!file.endsWith(".json")) continue;
+        const sid = file.replace(".json", "");
+        if (knownIds.has(sid)) continue; // evitar duplicados
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(wtSessions, file), "utf8"));
+          extra.push(data);
+          knownIds.add(sid);
+        } catch(e) { /* skip corrupt */ }
+      }
+    }
+  } catch(e) { /* git worktree no disponible — ignorar */ }
+  return extra;
+}
+
 function loadSessions() {
   const sessions = [];
+  const knownIds = new Set();
+  const livePids = getLiveClaudePids();
+
+  // Función interna para filtrar una sesión
+  function shouldInclude(data) {
+    if (data.type === "sub") return false;
+    const age = Date.now() - new Date(data.last_activity_ts).getTime();
+    if (data.status === "done") {
+      if (age > DONE_DISPLAY_HOURS * 3600 * 1000) return false;
+    }
+    // Auto-expirar sesiones "active" sin actividad por más de STALE_EXPIRY_HOURS
+    if (data.status === "active" && age > STALE_EXPIRY_HOURS * 3600 * 1000) return false;
+    // Cruce PID: si la sesión tiene PID y podemos verificar, descartar zombies
+    if (data.pid && livePids !== null && data.status === "active") {
+      if (!livePids.has(data.pid)) return false;
+    }
+    return true;
+  }
+
   try {
-    if (!fs.existsSync(SESSIONS_DIR)) return sessions;
-    for (const file of fs.readdirSync(SESSIONS_DIR)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
-        // Solo parent, filtrar done expiradas y zombis stale
-        if (data.type === "sub") continue;
-        const age = Date.now() - new Date(data.last_activity_ts).getTime();
-        if (data.status === "done") {
-          if (age > DONE_DISPLAY_HOURS * 3600 * 1000) continue;
-        }
-        // Auto-expirar sesiones "active" sin actividad por más de STALE_EXPIRY_HOURS
-        if (data.status === "active" && age > STALE_EXPIRY_HOURS * 3600 * 1000) continue;
-        sessions.push(data);
-      } catch(e) { /* skip corrupt */ }
+    if (fs.existsSync(SESSIONS_DIR)) {
+      for (const file of fs.readdirSync(SESSIONS_DIR)) {
+        if (!file.endsWith(".json")) continue;
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
+          if (!shouldInclude(data)) continue;
+          sessions.push(data);
+          knownIds.add(data.id || file.replace(".json", ""));
+        } catch(e) { /* skip corrupt */ }
+      }
     }
   } catch(e) {}
+
+  // Escanear worktrees para sesiones adicionales
+  const wtSessions = discoverWorktreeSessions(knownIds);
+  for (const data of wtSessions) {
+    if (shouldInclude(data)) sessions.push(data);
+  }
+
   // Ordenar por last_activity_ts desc
   sessions.sort((a, b) => new Date(b.last_activity_ts) - new Date(a.last_activity_ts));
   return sessions;
@@ -247,6 +299,42 @@ function getClaudeAgentCount() {
     _prevCpuSnap = newSnap;
     return { agents, zombies };
   } catch(e) { return { agents: 0, zombies: 0 }; }
+}
+
+// Cache de PIDs vivos de Claude Code (refresco cada 10s)
+let _livePidsCache = null;
+let _livePidsCacheTs = 0;
+const LIVE_PIDS_CACHE_MS = 10000;
+
+function getLiveClaudePids() {
+  const now = Date.now();
+  if (_livePidsCache !== null && (now - _livePidsCacheTs) < LIVE_PIDS_CACHE_MS) return _livePidsCache;
+  try {
+    const output = execSync(
+      'wmic process where "Name=\'node.exe\'" get ProcessId,CommandLine /format:list',
+      { cwd: REPO_ROOT, timeout: 10000, windowsHide: true }
+    ).toString();
+    const records = output.split(/\r?\n\r?\n/).filter(r => r.trim());
+    const pids = new Set();
+    for (const record of records) {
+      const fields = {};
+      for (const line of record.split(/\r?\n/)) {
+        const eq = line.indexOf("=");
+        if (eq === -1) continue;
+        fields[line.substring(0, eq).trim()] = line.substring(eq + 1).trim();
+      }
+      if (!fields.CommandLine || !fields.CommandLine.match(/claude/i)) continue;
+      const pid = parseInt(fields.ProcessId, 10);
+      if (!isNaN(pid)) pids.add(pid);
+    }
+    _livePidsCache = pids;
+    _livePidsCacheTs = now;
+    return pids;
+  } catch(e) {
+    _livePidsCache = null;
+    _livePidsCacheTs = now;
+    return null; // degradación elegante — sin filtro PID
+  }
 }
 
 function getCIStatus() {
