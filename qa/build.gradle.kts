@@ -2,7 +2,14 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
 }
 
-kotlin { jvmToolchain(21) }
+kotlin {
+    jvmToolchain(21)
+    sourceSets {
+        test {
+            kotlin.srcDirs("src/test/kotlin", "generated/api")
+        }
+    }
+}
 
 tasks.withType<Test> {
     useJUnitPlatform()
