@@ -32,7 +32,7 @@ const POLL_TIMEOUT_SEC = 30;
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutos de inactividad
 const POLL_CONFLICT_RETRY_MS = 5000;  // Espera tras error 409 (otro poller activo)
 const POLL_CONFLICT_MAX = 3;          // Máx reintentos seguidos por 409 antes de bajar a short-poll
-const SHORT_POLL_INTERVAL_MS = 2000;  // Intervalo de short-poll cuando hay conflicto
+// SHORT_POLL_INTERVAL_MS removido: si hay 409 persistente, el proceso se mata (no degrada a short-poll)
 const EXEC_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
 const TG_MSG_MAX = 4096;
 const SPRINT_MONITOR_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
@@ -1583,6 +1583,7 @@ async function pollingLoop() {
 
     // Avanzar offset para ignorar updates anteriores al arranque
     // Reintentar hasta 3 veces si hay conflicto 409 con otro poller
+    let startupConflicts = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             const pending = await telegramPost("getUpdates", {
@@ -1597,39 +1598,43 @@ async function pollingLoop() {
                     log("Descartados " + pending.length + " updates previos. Nuevo offset: " + offset);
                 }
             }
+            startupConflicts = 0; // Éxito — resetear
             break;
         } catch (e) {
             const is409 = (e.message || "").includes("409");
             log("Error obteniendo updates iniciales (intento " + (attempt + 1) + "): " + e.message);
-            if (is409 && attempt < 2) {
-                await sleep(2000);
+            if (is409) {
+                startupConflicts++;
+                if (attempt < 2) {
+                    await sleep(2000);
+                }
             }
         }
+    }
+
+    // Si todos los intentos de startup dieron 409, otro commander está activo — SALIR
+    if (startupConflicts >= 3) {
+        log("FATAL: 3 conflictos 409 en startup — otro Commander ya controla el polling. SALIENDO.");
+        releaseLock();
+        process.exit(1);
     }
 
     saveOffset(offset);
 
     let conflictStreak = 0;  // Contador de 409s consecutivos
-    let useShortPoll = false; // Degradar a short-poll si hay conflicto persistente
 
     while (running) {
-        const pollTimeout = useShortPoll ? 0 : POLL_TIMEOUT_SEC;
         let updates;
         try {
             updates = await telegramPost("getUpdates", {
                 offset: offset,
-                timeout: pollTimeout,
+                timeout: POLL_TIMEOUT_SEC,
                 allowed_updates: ["message", "callback_query"]
-            }, (pollTimeout + 10) * 1000);
+            }, (POLL_TIMEOUT_SEC + 10) * 1000);
             // Éxito — resetear conflicto
             if (conflictStreak > 0) {
                 log("Polling OK — reseteando conflicto streak");
                 conflictStreak = 0;
-            }
-            // Si estábamos en short-poll y funciona, intentar volver a long-poll
-            if (useShortPoll) {
-                useShortPoll = false;
-                log("Volviendo a long-poll");
             }
         } catch (e) {
             const errStr = e.message || "";
@@ -1639,23 +1644,18 @@ async function pollingLoop() {
                 if (conflictStreak <= POLL_CONFLICT_MAX) {
                     log("Conflicto 409 (" + conflictStreak + "/" + POLL_CONFLICT_MAX + ") — reintentando en " + POLL_CONFLICT_RETRY_MS + "ms");
                     await sleep(POLL_CONFLICT_RETRY_MS);
-                } else if (!useShortPoll) {
-                    log("Conflicto persistente — degradando a short-poll cada " + SHORT_POLL_INTERVAL_MS + "ms");
-                    useShortPoll = true;
-                    await sleep(SHORT_POLL_INTERVAL_MS);
                 } else {
-                    await sleep(SHORT_POLL_INTERVAL_MS);
+                    // Otro poller activo — este proceso DEBE morir para evitar respuestas duplicadas
+                    log("FATAL: Conflicto 409 persistente (" + conflictStreak + " seguidos) — otro Commander ya controla el polling. SALIENDO.");
+                    running = false;
+                    releaseLock();
+                    process.exit(1);
                 }
             } else {
                 log("Error en polling: " + errStr);
                 await sleep(3000);
             }
             continue;
-        }
-
-        // Pausa entre short-polls para no saturar la API
-        if (useShortPoll) {
-            await sleep(SHORT_POLL_INTERVAL_MS);
         }
 
         if (!updates || !Array.isArray(updates) || updates.length === 0) continue;
