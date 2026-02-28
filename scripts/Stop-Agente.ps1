@@ -48,25 +48,25 @@ function Write-Log {
 }
 
 # --- Safe worktree removal ---
-# Remove-Item -Recurse -Force sigue junctions/symlinks y BORRA el contenido real de .claude/.
-# Esta funcion primero desvincula la junction con rmdir (sin /s), que NO sigue el enlace.
+# Maneja junctions legacy de .claude/ (creadas antes de 2026-02-27).
+# Desde esa fecha, Start-Agente usa Copy-Item en vez de junction, por lo que
+# Remove-Item -Recurse es seguro. Esta proteccion se mantiene para worktrees
+# creados antes del cambio.
 function Safe-RemoveWorktreeDir {
     param([string]$WtPath)
 
     if (-not (Test-Path $WtPath)) { return }
 
-    # Desvincular junction/symlink .claude/ ANTES de borrar recursivamente
+    # Desvincular junction/symlink legacy de .claude/ ANTES de borrar recursivamente
     $claudeLink = Join-Path $WtPath ".claude"
     if (Test-Path $claudeLink) {
         $item = Get-Item $claudeLink -Force -ErrorAction SilentlyContinue
         if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-            # Es junction o symlink: usar rmdir que NO sigue el enlace
             cmd /c rmdir "$claudeLink" 2>$null
-            Write-Log "Junction .claude/ desvinculada (contenido real preservado)." "Cyan"
+            Write-Log "Junction legacy .claude/ desvinculada." "Yellow"
         }
     }
 
-    # Ahora si es seguro borrar recursivamente
     Remove-Item $WtPath -Recurse -Force -ErrorAction SilentlyContinue
 }
 

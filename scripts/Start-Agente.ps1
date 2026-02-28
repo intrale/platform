@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Lee sprint-plan.json y crea worktrees para los agentes indicados.
-    Enlaza .claude/ del repo principal via symlink y abre nueva terminal PowerShell con claude ejecutando.
+    Copia .claude/ del repo principal y abre nueva terminal PowerShell con claude ejecutando.
 
 .PARAMETER Numero
     Numero de agente (1, 2, 3...) o "all" para lanzar todos en paralelo.
@@ -112,7 +112,7 @@ function Start-UnAgente {
     # Pre-registrar confianza del worktree para evitar dialogo interactivo de trust
     PreRegister-Trust -AbsPath "$wtDirResolved"
 
-    # Verificar integridad de .claude/ en el repo principal antes de linkear
+    # Verificar integridad de .claude/ en el repo principal antes de copiar
     $claudeSrc = Join-Path $MainRepo ".claude"
     $settingsCheck = Join-Path $claudeSrc "settings.json"
     $skillsCheck = Join-Path $claudeSrc "skills"
@@ -124,40 +124,21 @@ function Start-UnAgente {
         Write-Host ">> .claude/ restaurado." -ForegroundColor Green
     }
 
-    # Symlink de .claude/ para heredar confianza y permisos del repo principal
+    # Copiar .claude/ del repo principal (NO junction/symlink — seguro contra rm -rf)
     $claudeDst = Join-Path $wtDirResolved ".claude"
     if (Test-Path $claudeSrc) {
-        $createSymlink = $false
-
         if (Test-Path $claudeDst) {
             $item = Get-Item $claudeDst -Force
             if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                Write-Host ">> Symlink .claude/ ya existe, reutilizando"
-            }
-            elseif (-not $wtExists) {
-                # Worktree recien creado: reemplazar .claude/ checkeado por git con symlink
+                # Legacy: junction de ejecucion anterior — desvincular primero
+                cmd /c rmdir "$claudeDst" 2>$null
+            } else {
+                # Directorio real de git checkout — eliminar para reemplazar con copia fresca
                 Remove-Item $claudeDst -Recurse -Force
-                $createSymlink = $true
-            }
-            else {
-                Write-Host ">> .claude/ real existente, no se sobreescribe" -ForegroundColor Yellow
             }
         }
-        else {
-            $createSymlink = $true
-        }
-
-        if ($createSymlink) {
-            try {
-                New-Item -ItemType SymbolicLink -Path $claudeDst -Target $claudeSrc -Force | Out-Null
-                Write-Host ">> Symlink .claude/ creado"
-            }
-            catch {
-                # Fallback: junction si symlink falla (permisos Windows)
-                cmd /c mklink /J "$claudeDst" "$claudeSrc" 2>$null | Out-Null
-                Write-Host ">> Junction .claude/ creado (fallback)"
-            }
-        }
+        Copy-Item -Path $claudeSrc -Destination $claudeDst -Recurse -Force
+        Write-Host ">> .claude/ copiado (sin junction)"
     }
 
     # Pre-crear trust directory para que Claude no muestre el dialogo interactivo
