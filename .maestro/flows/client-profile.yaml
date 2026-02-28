@@ -1,0 +1,121 @@
+appId: com.intrale.app.client
+---
+# Flujo: Perfil del cliente — login + navegacion a perfil + verificacion de secciones
+- launchApp
+- waitForAnimationToEnd
+
+# Cerrar dialogos del sistema (Bluetooth keeps stopping, etc.)
+- tapOn:
+    text: "Close app"
+    optional: true
+- tapOn:
+    text: "Cerrar app"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Saltar onboarding (aparece en primer uso)
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Navegar al login desde la pantalla de entrada
+- tapOn:
+    text: "Ya tengo cuenta"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Ingresar credenciales de login
+# Campo Usuario: tocar el campo por label y escribir
+- tapOn:
+    text: "Usuario"
+- inputText: "admin@intrale.com"
+
+# Campo Contraseña: tocar el campo por label y escribir
+- tapOn:
+    text: "Contraseña"
+- inputText: "Admin1234!"
+
+- hideKeyboard
+
+# Boton Ingresar
+- tapOn:
+    text: "Ingresar"
+
+- waitForAnimationToEnd
+
+# Esperar a que cargue el home del cliente (tab Perfil visible en bottom bar)
+- extendedWaitUntil:
+    visible:
+      text: "Perfil"
+    timeout: 15000
+
+# Navegar a la pestana Perfil
+- tapOn:
+    text: "Perfil"
+
+- waitForAnimationToEnd
+
+# Esperar carga del perfil (puede haber loading spinner)
+- extendedWaitUntil:
+    visible:
+      text: "Datos personales"
+    timeout: 10000
+
+# Verificar secciones principales del perfil
+- assertVisible:
+    text: "Datos personales"
+    label: "Seccion datos personales visible"
+
+- assertVisible:
+    text: "Nombre completo"
+    label: "Campo nombre completo visible"
+
+# Tomar screenshot de datos personales
+- takeScreenshot: "client-profile-personal-data"
+
+# Scroll para ver seccion seguridad
+- scrollUntilVisible:
+    element:
+      text: "Seguridad"
+    direction: "DOWN"
+    timeout: 5000
+
+- assertVisible:
+    text: "Seguridad"
+    label: "Seccion seguridad visible"
+
+# Scroll para ver direcciones
+- scrollUntilVisible:
+    element:
+      text: "Direcciones"
+    direction: "DOWN"
+    timeout: 5000
+
+- assertVisible:
+    text: "Direcciones"
+    label: "Seccion direcciones visible"
+
+# Tomar screenshot de direcciones
+- takeScreenshot: "client-profile-addresses"
+
+# Scroll para ver preferencias
+- scrollUntilVisible:
+    element:
+      text: "Preferencias"
+    direction: "DOWN"
+    timeout: 5000
+
+- assertVisible:
+    text: "Preferencias"
+    label: "Seccion preferencias visible"
+
+- assertVisible:
+    text: "Idioma"
+    label: "Selector de idioma visible"
+
+# Tomar screenshot final de preferencias
+- takeScreenshot: "client-profile-preferences"
