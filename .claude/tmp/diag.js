@@ -1,0 +1,13 @@
+const d = JSON.parse(require('fs').readFileSync('C:/Workspaces/Intrale/platform/.claude/hooks/pending-questions.json','utf8'));
+const qs = d.questions;
+const answered = qs.filter(q => q.status === 'answered');
+const expired = qs.filter(q => q.status === 'expired');
+console.log('Answered total:', answered.length);
+console.log('  via telegram:', answered.filter(q => q.answered_via === 'telegram').length);
+console.log('  via console:', answered.filter(q => q.answered_via === 'console').length);
+console.log('  con action_result:', answered.filter(q => q.action_result).length);
+console.log('  SIN action_result:', answered.filter(q => q.action_result === undefined || q.action_result === null).length);
+console.log('Expired:', expired.length);
+console.log('Pending:', qs.filter(q => q.status === 'pending').length);
+console.log('---');
+console.log('Ratio expired/(expired+answered):', (expired.length / (expired.length + answered.length) * 100).toFixed(1) + '%');
