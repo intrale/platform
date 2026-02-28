@@ -1,8 +1,9 @@
 // Hook PreToolUse[Bash]: bloquea git push cuando estamos en main
 // Previene pushes directos a main — toda modificación debe ir por rama
+// IMPORTANTE: Solo intercepta comandos "git push" reales, NO "gh" o pipes
 const { execSync } = require("child_process");
 
-const MAX_READ = 4096;
+const MAX_READ = 8192;
 let input = "";
 let done = false;
 
@@ -19,16 +20,28 @@ setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } ca
 function handleInput() {
     try {
         const data = JSON.parse(input || "{}");
+        const toolName = data.tool_name || "";
         const command = (data.tool_input && data.tool_input.command) || "";
 
-        // Solo interceptar comandos git push
-        if (!command.match(/git\s+push/)) {
+        // Solo interceptar Bash
+        if (toolName !== "Bash") {
             process.exit(0);
             return;
         }
 
-        // Caso 1: push explícito a main/master
-        if (command.match(/git\s+push\s+(origin\s+)?(main|master)\b/)) {
+        // IMPORTANTE: El comando debe COMENZAR con "git push"
+        // NO ejecutar para comandos que contengan "git push" dentro de un string
+        const trimmedCmd = command.trim();
+
+        // No matches "gh" o comandos que no sean git
+        if (!trimmedCmd.match(/^git\s+push\b/)) {
+            process.exit(0);
+            return;
+        }
+
+        // Ahora sabemos que es un comando "git push"
+        // Bloquear si va explícitamente a main o master
+        if (trimmedCmd.match(/^git\s+push\s+(?:-[a-z]+\s+)*(?:origin\s+)?(main|master)\b/)) {
             const msg = JSON.stringify({
                 decision: "block",
                 reason: "BLOQUEADO: push directo a main. Creá una rama con `/branch <issue> [slug]` antes de hacer cambios. Convención: agent/<issue>-<slug>"
@@ -38,26 +51,18 @@ function handleInput() {
             return;
         }
 
-        // Caso 2: push implícito (sin branch explícito) — verificar rama actual
-        // Matches: "git push", "git push origin", "git push -u origin"
-        // No matches: "git push origin agent/123-foo" (tiene rama explícita no-main)
-        const pushWithExplicitBranch = command.match(/git\s+push\s+(?:-[a-zA-Z]+\s+)*\S+\s+(\S+)/);
-        if (pushWithExplicitBranch) {
-            const targetBranch = pushWithExplicitBranch[1];
-            // Si la rama explícita no es main/master, permitir
-            if (targetBranch !== "main" && targetBranch !== "master" && !targetBranch.startsWith('"main') && !targetBranch.startsWith("$")) {
-                process.exit(0);
-                return;
-            }
-        }
+        // Si el comando es "git push" sin especificar rama explícitamente,
+        // verificar la rama actual
+        const hasExplicitBranch = trimmedCmd.match(/^git\s+push\s+(?:-[a-z]+\s+)*(?:origin|\S+)\s+(\S+)/);
 
-        // Para pushes sin rama explícita o con variable, verificar rama actual
-        if (!pushWithExplicitBranch || pushWithExplicitBranch[1].startsWith("$")) {
+        if (!hasExplicitBranch) {
+            // "git push" implícito — verificar rama actual
             try {
                 const currentBranch = execSync("git branch --show-current", {
                     encoding: "utf8",
                     timeout: 5000,
-                    cwd: process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform"
+                    cwd: process.env.CLAUDE_PROJECT_DIR || "C:\Workspaces\Intrale\platform",
+                    stdio: ["pipe", "pipe", "pipe"]
                 }).trim();
 
                 if (currentBranch === "main" || currentBranch === "master") {
@@ -70,14 +75,20 @@ function handleInput() {
                     return;
                 }
             } catch (e) {
-                // Si no podemos determinar la rama, permitir (fail-open para no bloquear)
+                // Si no podemos determinar rama, permitir (fail-open)
             }
         }
 
-        // Permitir el push
+        // Si tiene rama explícita que NO es main/master, permitir
+        if (hasExplicitBranch && hasExplicitBranch[1] !== "main" && hasExplicitBranch[1] !== "master") {
+            process.exit(0);
+            return;
+        }
+
+        // Permitir por defecto
         process.exit(0);
     } catch (e) {
-        // Error parseando input — no bloquear
+        // Error parseando — permitir sin bloquear
         process.exit(0);
     }
 }
