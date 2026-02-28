@@ -87,22 +87,54 @@ Basándote en el diff, clasificá:
 - `docs:` — solo documentación
 - `chore:` — tareas de mantenimiento
 
-## Paso 3.5: Verificar QA E2E
+## Paso 3.5: Verificar QA E2E (gate obligatorio)
 
-Antes de crear el PR, verificar si hay resultados recientes de QA:
+Antes de crear el PR, verificar que QA validó el issue:
+
+### 3.5.1: Extraer issue number del branch
 
 ```bash
-# Buscar resultados de tests QA recientes (ultimas 2 horas)
+BRANCH=$(git branch --show-current)
+ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/(agent|codex)\/([0-9]+).*/\2/')
+```
+
+### 3.5.2: Buscar qa-report.json
+
+Si se pudo extraer `ISSUE_NUM` (no vacío y numérico):
+
+```bash
+QA_REPORT="qa/evidence/$ISSUE_NUM/qa-report.json"
+[ -f "$QA_REPORT" ] && cat "$QA_REPORT" || echo "NO_REPORT"
+```
+
+**Evaluar resultado:**
+
+- Si **existe** y `verdict == "APROBADO"`:
+  - Continuar normalmente
+  - Agregar al body del PR: `QA Validate #<issue>: APROBADO ✅ — [ver reporte](qa/evidence/<issue>/qa-report.json)`
+  - Incluir resumen de tests: `Tests: <generated_passed>/<generated_executed> generados + <pre_existing_passed>/<pre_existing_executed> regresión`
+
+- Si **existe** y `verdict == "RECHAZADO"`:
+  - **BLOQUEAR**: "QA Validate #<issue> RECHAZADO ❌ — corregir los fallos y re-ejecutar `/qa validate <issue>`"
+  - Mostrar `verdict_reason` del reporte
+  - NO continuar. NO ofrecer saltear.
+
+- Si **NO existe** (`NO_REPORT`):
+  - **BLOQUEAR**: "No se encontró qa-report.json para issue #<issue>. Ejecutar `/qa validate <issue>` antes de delivery."
+  - NO continuar hasta que el usuario confirme explícitamente que quiere saltear QA.
+  - Si el usuario confirma saltear, agregar al body del PR: `QA Validate: omitido por decisión del usuario ⚠️`
+
+### 3.5.3: Fallback (sin issue number)
+
+Si NO se pudo extraer `ISSUE_NUM` del branch (branch no sigue convención `agent/<N>-*`):
+
+Usar el check legacy:
+```bash
 find qa/build/test-results/test -name "*.xml" -mmin -120 2>/dev/null | head -5
 ```
 
-- Si **NO hay resultados** de QA recientes (directorio vacio o archivos antiguos):
-  - BLOQUEAR: "No se detectaron tests E2E recientes. Ejecuta /qa antes de crear el PR."
-  - NO continuar hasta que el usuario confirme explicitamente que quiere saltear QA.
-  - Si el usuario confirma saltear, agregar al body del PR: `QA E2E: omitido por decision del usuario`
-
-- Si **HAY resultados** recientes: agregar al body del PR la linea:
-  `QA E2E: tests ejecutados [fecha del ultimo resultado]`
+- Si hay resultados recientes: `QA E2E: tests ejecutados [fecha]`
+- Si no hay resultados: BLOQUEAR como antes (pedir `/qa` o confirmación del usuario)
 
 ## Paso 4: Stage y commit
 

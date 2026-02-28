@@ -47,6 +47,9 @@ deps_commonMain.txt
 qa/recordings/
 qa/.backend.pid
 
+# QA E2E — tests generados (efímeros, se regeneran con /qa validate)
+qa/generated/
+
 # QA E2E — evidencias versionadas (NO ignorar)
 !qa/evidence/
 .maestro/tests/
