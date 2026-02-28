@@ -1,7 +1,7 @@
 // permission-approver.js — PoC spike #834
-// Hook PermissionRequest v2: aprobación remota vía Telegram inline buttons
-// Flujo: envía mensaje con botones → telegram-commander procesa el callback →
-//        approver lee la decisión desde pending-questions.json → devuelve via stdout
+// Hook PermissionRequest v2: aprobación remota vía Telegram (texto libre)
+// Flujo: envía mensaje con instrucciones → usuario responde "si"/"siempre"/"no" →
+//        telegram-commander procesa el texto → approver lee la decisión via pending-questions.json
 // Pure Node.js — sin dependencia de bash
 //
 // IMPORTANTE: Este hook NO usa getUpdates de Telegram. El telegram-commander.js
@@ -344,22 +344,15 @@ async function processInput() {
         msgText += contextLine + "\n";
     }
     msgText += "\n" + action + "\n\n"
-        + "¿Qué hacemos?";
+        + "📝 Responder: <b>si</b> · <b>siempre</b> · <b>no</b>";
 
-    // 1. Enviar mensaje con inline buttons
+    // 1. Enviar mensaje de texto (sin botones inline — el usuario responde con texto libre)
     let sentMsg;
     try {
         sentMsg = await telegramPost("sendMessage", {
             chat_id: CHAT_ID,
             text: msgText,
-            parse_mode: "HTML",
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: "✅ Permitir", callback_data: "allow:" + requestId },
-                    { text: "✅ Siempre",  callback_data: "always:" + requestId },
-                    { text: "❌ Denegar",  callback_data: "deny:" + requestId }
-                ]]
-            }
+            parse_mode: "HTML"
         }, 8000);
         log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId);
         registerMessage(sentMsg.message_id, "permission");
@@ -430,14 +423,8 @@ async function processInput() {
         await telegramPost("editMessageText", {
             chat_id: CHAT_ID,
             message_id: msgId,
-            text: msgText + "\n\n⏱ <i>Expirado — respondiendo en consola</i>",
-            parse_mode: "HTML",
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: "🔄 Reactivar (aprobar siempre)", callback_data: "reactivate:" + requestId },
-                    { text: "⏹ Descartar", callback_data: "dismiss_expired:" + requestId }
-                ]]
-            }
+            text: msgText + "\n\n⏱ <i>Expirado — respondiendo en consola</i>\n📝 Responder <b>siempre</b> para guardar el permiso",
+            parse_mode: "HTML"
         }, ANSWER_TIMEOUT);
     } catch(e) { log("Error editando mensaje timeout: " + e.message); }
     process.exit(0); // fallback al prompt local
