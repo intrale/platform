@@ -279,6 +279,35 @@ Mostrar al usuario:
 - Commits incluidos
 - Recordatorio: El Vigía está monitoreando el CI automáticamente
 
+### 7.1: Enviar reporte PNG a Telegram
+
+Después del texto en consola, enviar imagen de resumen a Telegram ejecutando en background:
+
+```bash
+# Recopilar datos para el reporte
+BRANCH=$(git branch --show-current)
+COMMITS_LIST=$(git log origin/main..HEAD --oneline | head -5)
+FILES_LIST=$(git diff --stat origin/main..HEAD | tail -10)
+# CHANGES_DESC = los bullets del body del PR (reutilizar la síntesis ya redactada)
+# PR_URL = URL del PR creado o existente
+# PR_NUM = número del PR
+# STATE = "MERGED" si merge exitoso, "ERROR" si falló
+
+node .claude/hooks/delivery-report.js \
+  --branch "$BRANCH" \
+  --pr "$PR_URL" \
+  --pr-number "$PR_NUM" \
+  --state "$STATE" \
+  --commits "$COMMITS_LIST" \
+  --files "$FILES_LIST" \
+  --changes "$CHANGES_DESC" &
+```
+
+- El argumento `--changes` se genera con los bullets que ya se redactaron para el body del PR
+- Si el merge falla (estado=ERROR), invocar con `--state ERROR` para notificar el fallo
+- Ejecutar con `&` en background para no bloquear el flujo del delivery
+- Si el script falla, no debe afectar el resultado del delivery (best-effort)
+
 ## Paso 8: Modo `--clean` (limpieza de worktrees)
 
 Si se pasó `--clean` (puede combinarse con `--all` o usarse solo):
