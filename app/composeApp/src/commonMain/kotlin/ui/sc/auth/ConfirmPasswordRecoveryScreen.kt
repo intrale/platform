@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -63,6 +64,7 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
         val titleText = Txt(MessageKey.confirm_password_recovery_title)
         val subtitleText = Txt(MessageKey.confirm_password_recovery_subtitle)
         val saveText = Txt(MessageKey.confirm_password_recovery_save)
+        val successMessage = Txt(MessageKey.confirm_password_recovery_success)
         val genericErrorMessage = Txt(MessageKey.error_generic)
         val userIconDescription = Txt(MessageKey.login_user_icon_content_description)
         val passwordIconDescription = Txt(MessageKey.login_password_icon_content_description)
@@ -78,7 +80,12 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
                     snackbarHostState = snackbarHostState,
                     setLoading = { viewModel.loading = it },
                     serviceCall = { viewModel.confirm() },
-                    onSuccess = { navigateClearingBackStack(LOGIN_PATH) },
+                    onSuccess = {
+                        coroutine.launch {
+                            snackbarHostState.showSnackbar(successMessage)
+                        }
+                        navigateClearingBackStack(LOGIN_PATH)
+                    },
                     onError = { error ->
                         logger.error { "Error al confirmar recuperación: ${error.message}" }
                         snackbarHostState.showSnackbar(error.message ?: genericErrorMessage)
