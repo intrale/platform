@@ -85,11 +85,16 @@ HELP
     # Pre-registrar confianza del worktree en Claude Code
     _pre_trust_worktree "$current_dir"
 
-    # Copiar settings.local.json de Claude Code (permisos)
-    if [ -f "$_INTRALE_MAIN/.claude/settings.local.json" ]; then
-        mkdir -p "$current_dir/.claude" 2>/dev/null
-        cp "$_INTRALE_MAIN/.claude/settings.local.json" "$current_dir/.claude/settings.local.json"
-        echo ">> Copiado permisos de Claude Code"
+    # Copiar .claude/ completo (NO junction — seguro contra rm -rf)
+    if [ -d "$_INTRALE_MAIN/.claude" ]; then
+        # Si hay junction legacy, desvincular primero
+        if [ -L "$current_dir/.claude" ]; then
+            local win_path=$(cygpath -w "$current_dir/.claude" 2>/dev/null)
+            cmd /c rmdir "$win_path" 2>/dev/null
+        fi
+        rm -rf "$current_dir/.claude" 2>/dev/null
+        cp -r "$_INTRALE_MAIN/.claude" "$current_dir/.claude"
+        echo ">> .claude/ copiado completo (sin junction)"
     fi
 
     echo ""
@@ -203,9 +208,9 @@ dev-clean-all() {
             | sed 's/worktree //' \
             | while read wt_path; do
                 echo "  Eliminando: $wt_path"
-                # CRITICO: desvincular junction .claude antes de borrar
-                # cmd /c rmdir sin /s solo remueve el junction, no sigue el enlace
-                if [ -L "$wt_path/.claude" ] || [ -d "$wt_path/.claude" ]; then
+                # Desvincular junction legacy .claude/ si existe (worktrees creados antes de 2026-02-27)
+                # Worktrees nuevos usan copia, no junction — pero mantenemos para backward compat
+                if [ -L "$wt_path/.claude" ] || [ -h "$wt_path/.claude" ]; then
                     local win_path=$(cygpath -w "$wt_path/.claude" 2>/dev/null || echo "$wt_path/.claude")
                     cmd /c rmdir "$win_path" 2>/dev/null
                 fi
