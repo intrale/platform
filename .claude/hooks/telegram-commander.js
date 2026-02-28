@@ -770,6 +770,82 @@ function persistPermissionFromActionData(actionData) {
     log("Permiso persistido via retry: " + pattern);
 }
 
+// ─── Permisos por texto libre ─────────────────────────────────────────────────
+// Reemplaza los botones inline: el usuario escribe "si", "siempre" o "no" en el chat.
+
+function matchPermissionKeyword(text) {
+    const t = text.trim().toLowerCase();
+    if (["si", "sí", "s", "1", "ok", "dale", "allow"].includes(t)) return "allow";
+    if (["siempre", "always", "2"].includes(t)) return "always";
+    if (["no", "n", "3", "deny", "denegar"].includes(t)) return "deny";
+    return null;
+}
+
+async function handleTextPermissionReply(question, action, msgChatId) {
+    const requestId = question.id;
+    log("Permiso por texto: " + action + " para " + requestId);
+
+    // 1. Marcar como respondida en pending-questions.json
+    resolveQuestion(requestId, "answered", "telegram", action);
+
+    // 2. Si es "siempre", persistir el patrón en settings
+    if (action === "always" && question.action_data) {
+        persistPermissionFromActionData(question.action_data);
+    }
+
+    // 3. Editar el mensaje original del permiso para mostrar la decisión
+    const confirmText = { allow: "✅ Permitido", always: "✅ Permitido siempre", deny: "❌ Denegado" }[action] || "OK";
+    const emojiDecision = { allow: "✅", always: "✅✅", deny: "❌" }[action] || "•";
+    if (question.telegram_message_id) {
+        const originalHtml = question.original_html || escHtml(question.message || "Permiso solicitado");
+        // Quitar la línea de instrucciones "📝 Responder: ..." y agregar la decisión
+        const cleanHtml = originalHtml.replace(/\n📝 Responder:.*$/s, "");
+        try {
+            await telegramPost("editMessageText", {
+                chat_id: CHAT_ID,
+                message_id: question.telegram_message_id,
+                text: cleanHtml + "\n\n" + emojiDecision + " <b>" + confirmText + "</b> <i>(via texto)</i>",
+                parse_mode: "HTML"
+            }, 5000);
+        } catch (e) {
+            log("Error editando mensaje permiso (texto): " + (e.message || ""));
+        }
+    }
+
+    // 4. Confirmar al usuario
+    await sendMessage(confirmText);
+    log("Permiso procesado via texto: " + action + " para " + requestId);
+}
+
+async function handleLatePermissionReply(question, action, msgChatId) {
+    const requestId = question.id;
+    log("Permiso tardío por texto: " + action + " para " + requestId);
+
+    // El hook ya murió (timeout), pero podemos persistir para la próxima vez
+    if (action === "always" && question.action_data) {
+        persistPermissionFromActionData(question.action_data);
+        resolveQuestion(requestId, "answered", "telegram_late", action);
+        // Editar el mensaje original si existe
+        if (question.telegram_message_id) {
+            const originalHtml = question.original_html || escHtml(question.message || "Permiso solicitado");
+            const cleanHtml = originalHtml.replace(/\n📝 Responder.*$/s, "").replace(/\n⏱.*$/s, "");
+            try {
+                await telegramPost("editMessageText", {
+                    chat_id: CHAT_ID,
+                    message_id: question.telegram_message_id,
+                    text: cleanHtml + "\n\n✅✅ <b>Guardado siempre</b> <i>(tardío)</i>",
+                    parse_mode: "HTML"
+                }, 5000);
+            } catch (e) { /* ok — puede fallar si el mensaje es muy viejo */ }
+        }
+        await sendMessage("⏱ El hook ya expiró, pero guardé el permiso para la próxima vez");
+    } else if (action === "allow") {
+        // "allow" tardío no tiene efecto real (hook ya murió), pero informar al usuario
+        resolveQuestion(requestId, "answered", "telegram_late", action);
+        await sendMessage("⏱ El hook ya expiró — el permiso puntual no aplica. Usá <b>siempre</b> para guardarlo.");
+    }
+}
+
 async function handleStatus() {
     const uptime = process.uptime();
     const hours = Math.floor(uptime / 3600);
@@ -1611,7 +1687,9 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
-                    // Callbacks de reactivación de permisos expirados
+                    // [LEGACY] Callbacks de reactivación de permisos expirados
+                    // Ya no se generan botones nuevos (reemplazados por texto libre),
+                    // pero se mantiene para mensajes viejos que aún tengan botones inline.
                     else if (cbData.startsWith("reactivate:") || cbData.startsWith("dismiss_expired:") || cbData === "reactivate_all") {
                         log("Callback de reactivación: " + cbData);
                         try {
@@ -1663,8 +1741,9 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
-                    // Callbacks de permisos (allow:/always:/deny:) — el commander es el handler principal
-                    // El approver ya NO usa getUpdates; lee pending-questions.json para la decisión
+                    // [LEGACY] Callbacks de permisos (allow:/always:/deny:) — botones inline
+                    // Ya no se generan botones nuevos (reemplazados por texto libre),
+                    // pero se mantiene para mensajes viejos que aún tengan botones inline.
                     else if (cbData.startsWith("allow:") || cbData.startsWith("always:") || cbData.startsWith("deny:")) {
                         const parts = cbData.split(":");
                         const permAction = parts[0]; // "allow", "always", "deny"
@@ -1803,9 +1882,32 @@ async function pollingLoop() {
                     case "skill":
                         await handleSkill(cmd.skill, cmd.args);
                         break;
-                    case "freetext":
+                    case "freetext": {
+                        // Interceptar keywords de permiso ANTES de freetext
+                        const permAction = matchPermissionKeyword(cmd.text);
+                        if (permAction) {
+                            const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
+                            if (pendingPerms.length > 0) {
+                                // Tomar la más reciente
+                                const q = pendingPerms[pendingPerms.length - 1];
+                                await handleTextPermissionReply(q, permAction, CHAT_ID);
+                                break;
+                            }
+                            // También revisar expiradas recientes (últimos 5 min) para persistir "siempre"
+                            const expiredPerms = getExpiredQuestions().filter(q =>
+                                q.type === "permission" &&
+                                Date.now() - new Date(q.timestamp).getTime() < 5 * 60 * 1000
+                            );
+                            if (expiredPerms.length > 0 && permAction !== "deny") {
+                                const q = expiredPerms[expiredPerms.length - 1];
+                                await handleLatePermissionReply(q, permAction, CHAT_ID);
+                                break;
+                            }
+                        }
+                        // No es keyword de permiso o no hay preguntas pendientes → freetext normal
                         await handleFreetext(cmd.text);
                         break;
+                    }
                     case "sprint":
                         await handleSprint(cmd.agentNumber);
                         break;

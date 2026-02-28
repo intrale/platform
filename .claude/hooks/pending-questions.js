@@ -53,9 +53,11 @@ function addPendingQuestion(question) {
         type: question.type,
         timestamp: new Date().toISOString(),
         message: question.message,
+        original_html: question.original_html || null,
         telegram_message_id: question.telegram_message_id || null,
         options: question.options || [],
         action_data: question.action_data || {},
+        skill_context: question.skill_context || null,
         status: "pending",
         answered_at: null
     });
