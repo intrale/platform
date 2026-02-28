@@ -556,15 +556,13 @@ function buildReportImage(sessions, recentActivity, ci) {
   if (!createCanvas) return null;
 
   const W = 800;
-  // Calcular filas por agente: 28px base + 18px branch (si no done) + 16px current_task (si tiene)
+  // Calcular filas por agente: 28px base + 18px branch (siempre) + 16px current_task (si tiene y no done)
   let agentPanelH = 0;
   for (const s of sessions) {
     const label = livenessLabel(s);
     agentPanelH += 28; // linea principal
-    if (label !== "done") {
-      agentPanelH += 18; // linea branch + action
-      if (s.current_task) agentPanelH += 16; // linea current task
-    }
+    agentPanelH += 18; // linea branch + action (siempre)
+    if (label !== "done" && s.current_task) agentPanelH += 16; // linea current task
   }
   if (sessions.length === 0) agentPanelH = 28;
 
@@ -632,8 +630,8 @@ function buildReportImage(sessions, recentActivity, ci) {
       const eta = calcAgentETA(s, prog.percent);
       const actions = String(s.action_count || 0);
 
-      // Barra lateral de color
-      const sideBarH = 28 + (label !== "done" ? 18 : 0) + (label !== "done" && s.current_task ? 16 : 0);
+      // Barra lateral de color (rama siempre visible + current_task si no done)
+      const sideBarH = 28 + 18 + (label !== "done" && s.current_task ? 16 : 0);
       ctx.fillStyle = statusColor;
       ctx.fillRect(16, y, 4, sideBarH);
 
@@ -673,9 +671,20 @@ function buildReportImage(sessions, recentActivity, ci) {
       ctx.fillStyle = IMG.TEXT;
       ctx.fillText(elapsed, 360, y + 3);
 
-      // ETA
-      ctx.fillStyle = IMG.DIM;
-      ctx.fillText(eta ? "ETA " + eta : "---", 440, y + 3);
+      // ETA (mostrar valor calculado o razon de por que no hay)
+      if (eta === "done") {
+        ctx.fillStyle = IMG.GREEN;
+        ctx.fillText("done", 440, y + 3);
+      } else if (eta) {
+        ctx.fillStyle = IMG.YELLOW;
+        ctx.fillText("ETA " + eta, 440, y + 3);
+      } else if (prog.percent > 0 && prog.percent < 10) {
+        ctx.fillStyle = IMG.DIM;
+        ctx.fillText("ETA <10%", 440, y + 3);
+      } else {
+        ctx.fillStyle = IMG.DIM;
+        ctx.fillText("---", 440, y + 3);
+      }
 
       // Estado texto
       ctx.fillStyle = statusColor;
@@ -687,24 +696,22 @@ function buildReportImage(sessions, recentActivity, ci) {
 
       y += 28;
 
-      // Linea 2: branch + last action (solo si no done)
-      if (label !== "done") {
-        const branch = s.branch ? truncate(s.branch, 28) : "???";
-        const action = lastActionLabel(s);
-        ctx.font = "12px monospace";
-        ctx.fillStyle = IMG.CYAN;
-        ctx.fillText(branch, 44, y);
-        ctx.fillStyle = IMG.DIM;
-        ctx.fillText(action, 340, y);
-        y += 18;
+      // Linea 2: branch + last action (siempre visible)
+      const branch = s.branch ? truncate(s.branch, 28) : "main";
+      const action = lastActionLabel(s);
+      ctx.font = "12px monospace";
+      ctx.fillStyle = IMG.CYAN;
+      ctx.fillText("\u2387 " + branch, 44, y);
+      ctx.fillStyle = IMG.DIM;
+      ctx.fillText(action, 340, y);
+      y += 18;
 
-        // Linea 3: tarea activa
-        if (s.current_task) {
-          ctx.font = "12px monospace";
-          ctx.fillStyle = IMG.DIM;
-          ctx.fillText("> " + truncate(s.current_task, 70), 44, y);
-          y += 16;
-        }
+      // Linea 3: tarea activa (solo si no done)
+      if (label !== "done" && s.current_task) {
+        ctx.font = "12px monospace";
+        ctx.fillStyle = IMG.DIM;
+        ctx.fillText("> " + truncate(s.current_task, 70), 44, y);
+        y += 16;
       }
     }
   }
@@ -1009,7 +1016,6 @@ function render() {
   const timeStr = now.toTimeString().substring(0, 8);
 
   const sessions = loadSessions();
-  const git = getGitInfo();
   const recentActivity = loadRecentActivity();
 
   const lines = [];
@@ -1024,43 +1030,60 @@ function render() {
   if (sessions.length === 0) {
     lines.push(boxLine(C.dim + "Sin sesiones registradas" + C.reset, W));
   } else {
-    // Header row
-    lines.push(boxLine(
-      C.bold +
-      padEnd("ID", 10) +
-      padEnd("Agente", 16) +
-      padEnd("Accs", 5) +
-      padEnd("Dur.", 7) +
-      padEnd("Ultima accion", 25) +
-      "Est." +
-      C.reset, W
-    ));
-
     for (const s of sessions) {
       const icon = livenessIcon(s);
       const agent = agentDisplayName(s);
-      const duration = formatDuration(s.started_ts, s.last_activity_ts);
-      const action = lastActionLabel(s);
-      let row =
-        padEnd(s.id, 10) +
-        padEnd(truncate(agent, 15), 16) +
-        padEnd(String(s.action_count || 0), 5) +
-        padEnd(duration, 7) +
-        padEnd(action, 25) +
-        icon;
+      const elapsed = formatElapsed(s);
+      const prog = calcAgentProgress(s);
+      const eta = calcAgentETA(s, prog.percent);
 
-      lines.push(boxLine(row, W));
-      // Mostrar tarea activa si existe
+      // Row 1: icon Agent  [████░░░░] XX%  elapsed  ETA  estado
+      let row1 = icon + " " + C.bold + padEnd(truncate(agent, 20), 21) + C.reset;
+      if (prog.total > 0) {
+        const bar = progressBarAscii(prog.percent, 8);
+        row1 += " [" + C.cyan + bar + C.reset + "] " + padEnd(prog.percent + "%", 5);
+      } else {
+        row1 += " " + padEnd("", 16);
+      }
+      row1 += padEnd(elapsed, 8);
+      if (eta && eta !== "done") {
+        row1 += C.yellow + "ETA " + padEnd(eta, 6) + C.reset;
+      } else if (eta === "done") {
+        row1 += C.green + padEnd("done", 10) + C.reset;
+      } else {
+        row1 += padEnd("", 10);
+      }
+      lines.push(boxLine(row1, W));
+
+      // Row 2: branch + last_action + accs
+      const branch = s.branch || "main";
+      const action = lastActionLabel(s);
+      const accs = String(s.action_count || 0);
+      const row2 = C.dim + "  \u2387 " + C.reset +
+        C.cyan + padEnd(truncate(branch, 30), 31) + C.reset +
+        padEnd(action, 24) +
+        C.dim + "Accs:" + accs + C.reset;
+      lines.push(boxLine(row2, W));
+
+      // Row 3: tarea activa (si existe)
       if (s.current_task && s.status !== "done") {
         const taskLine = C.dim + "  \u2514\u2500 \u2699 " + C.reset +
           C.cyan + truncate(s.current_task, W - 12) + C.reset;
         lines.push(boxLine(taskLine, W));
       }
+
+      // Verbose: skills, sub_count, permission_mode
       if (verbose) {
         const skills = (s.skills_invoked || []).join(", ") || "\u2014";
-        const detail = C.dim + "  rama: " + (s.branch || "?") + "  sub: " + (s.sub_count || 0) +
-          "  skills: " + skills + "  mode: " + (s.permission_mode || "?") + C.reset;
+        const detail = C.dim + "  skills: " + skills +
+          "  sub: " + (s.sub_count || 0) +
+          "  mode: " + (s.permission_mode || "?") + C.reset;
         lines.push(boxLine(truncate(detail, W - 4), W));
+      }
+
+      // Separador entre agentes (si no es el ultimo)
+      if (s !== sessions[sessions.length - 1]) {
+        lines.push(boxLine(C.dim + "\u2500".repeat(W - 4) + C.reset, W));
       }
     }
   }
@@ -1097,17 +1120,13 @@ function render() {
     }
   }
 
-  // Panel REPO
-  lines.push(boxMid("REPO", W));
-  lines.push(boxLine("Rama: " + C.cyan + (git.branch || "?") + C.reset, W));
-  lines.push(boxLine("Commit: " + C.dim + truncate(git.commit, W - 14) + C.reset, W));
-
-  // CI (solo si no es la primera carga — es lento)
+  // Panel CI
+  lines.push(boxMid("CI", W));
   let ciLine = C.dim + "CI: cargando..." + C.reset;
   try {
     const ci = getCIStatus();
     const icon = ciIcon(ci);
-    ciLine = "CI: " + icon + " " + ci.status + (ci.conclusion !== "-" ? " " + ci.conclusion : "") +
+    ciLine = icon + " " + ci.status + (ci.conclusion !== "-" ? " " + ci.conclusion : "") +
       C.dim + " (" + truncate(ci.branch, 25) + ")" + C.reset;
   } catch(e) {}
   lines.push(boxLine(ciLine, W));
