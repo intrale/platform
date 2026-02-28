@@ -50,6 +50,7 @@
       "Skill(refinar)",
       "Skill(priorizar)",
       "Skill(historia)",
+      "Skill(cleanup)",
       "WebSearch",
       "Bash(#:*)",
       "Bash(taskkill:*)",
