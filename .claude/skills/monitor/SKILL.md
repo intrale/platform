@@ -198,7 +198,7 @@ Muestra:
 │ Hook:  activity-logger.js (PostToolUse)             │
 │        stop-notify.js (Stop → marca "done")         │
 │                                                     │
-│ Reporter PNG automatico (cada 5 min):               │
+│ Reporter PNG automatico (cada 10 min):              │
 │   Auto-inicia con activity-logger.js                │
 │   node .claude/hooks/reporter-bg.js status          │
 │   node .claude/hooks/reporter-bg.js stop            │
@@ -220,7 +220,7 @@ Muestra:
 - Para monitoreo en tiempo real con auto-refresh: `node .claude/dashboard.js` en terminal externa
 - El flag `--report N` envía una imagen PNG del dashboard a Telegram cada N minutos
 - `--headless` ejecuta solo el reporter sin UI de terminal (ideal para background)
-- **Auto-inicio**: el hook `activity-logger.js` inicia automaticamente el reporter PNG en background (cada 5 min) al detectar actividad de agentes; se auto-detiene si no hay sesiones activas por 30 min
+- **Auto-inicio**: el hook `activity-logger.js` inicia automaticamente el reporter PNG en background (cada 10 min) al detectar actividad de agentes; se auto-detiene si no hay sesiones activas por 30 min
 - Control manual: `node .claude/hooks/reporter-bg.js [start|stop|status] [minutos]`
 - Requiere `npm install canvas` para generar imágenes PNG; sin canvas, el reporte se envía como texto plano (fallback automático)
 - La imagen incluye: lista de agentes con color según estado (verde/amarillo/gris), última acción, duración, métricas de CI y contadores

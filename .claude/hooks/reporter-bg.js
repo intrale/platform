@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Reporter Background — Inicia/detiene el reporter PNG de Telegram
 // Uso:
-//   node .claude/hooks/reporter-bg.js start [minutos]   (defecto: 5)
+//   node .claude/hooks/reporter-bg.js start [minutos]   (defecto: 10)
 //   node .claude/hooks/reporter-bg.js stop
 //   node .claude/hooks/reporter-bg.js status
 const { spawn, execSync } = require("child_process");
@@ -104,7 +104,7 @@ function status() {
 
 // --- CLI ---
 const cmd = process.argv[2] || "start";
-const interval = parseInt(process.argv[3], 10) || 5;
+const interval = parseInt(process.argv[3], 10) || 10;
 
 if (cmd === "start") {
   start(interval);
