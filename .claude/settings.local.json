@@ -56,6 +56,7 @@
       "Skill(ios-dev)",
       "Skill(web-dev)",
       "Skill(desktop-dev)",
+      "Skill(branch)",
       "WebSearch",
       "Bash(#:*)",
       "Bash(taskkill:*)",
@@ -67,7 +68,14 @@
       "Bash(PID=*)",
       "Bash(sleep:*)",
       "Bash(npm install:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(for:*)",
+      "Bash(kill:*)",
+      "Bash(do echo:*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\(''status''\\), d.get\\(''last_activity_ts''\\), d.get\\(''agent_name''\\), d.get\\(''branch''\\)\\)\")",
+      "Bash(done)",
+      "Bash(CLAUDE_PROJECT_DIR=\"C:\\\\Workspaces\\\\Intrale\\\\platform\" echo {\"\"tool_name\"\":\"\"Bash\"\",\"\"tool_input\"\":{\"\"command\"\":\"\"git push\"\"}}:*)",
+      "Bash(CLAUDE_PROJECT_DIR=*)"
     ],
     "deny": [
       "Bash(git push --force*)",
