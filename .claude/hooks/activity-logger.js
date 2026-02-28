@@ -5,7 +5,25 @@ const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 
-const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
+// Resolver REPO_ROOT al repo principal (no al worktree)
+function resolveMainRepoRoot() {
+    const candidate = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
+    try {
+        const gitCommon = execSync("git rev-parse --git-common-dir", { cwd: candidate, timeout: 3000 })
+            .toString().trim().replace(/\\/g, "/");
+        // Si retorna ".git" → estamos en el repo principal
+        if (gitCommon === ".git") return candidate;
+        // Si retorna ruta absoluta (ej: /c/Workspaces/Intrale/platform/.git/worktrees/...)
+        // buscar el componente ".git" y tomar su padre
+        const gitIdx = gitCommon.indexOf("/.git");
+        if (gitIdx !== -1) return gitCommon.substring(0, gitIdx);
+        // Fallback: subir desde gitCommon hasta encontrar .git
+        return path.resolve(gitCommon, "..");
+    } catch(e) { return candidate; }
+}
+
+const WORKTREE_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
+const REPO_ROOT = resolveMainRepoRoot();
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "activity-log.jsonl");
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 const MAX_LINES = 500;
@@ -43,7 +61,7 @@ setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } ca
 
 function getBranch() {
     try {
-        return execSync("git branch --show-current", { cwd: REPO_ROOT, timeout: 3000 })
+        return execSync("git branch --show-current", { cwd: WORKTREE_ROOT, timeout: 3000 })
             .toString().trim();
     } catch(e) { return "unknown"; }
 }
@@ -178,6 +196,7 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
                 action_count: 0,
                 status: "active",
                 branch: getBranch(),
+                pid: process.ppid,
                 last_tool: toolName,
                 last_target: target.substring(0, 120),
                 agent_name: null,
@@ -203,6 +222,17 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
             }
             if (AGENT_MAP[skillName] && !session.agent_name) {
                 session.agent_name = AGENT_MAP[skillName];
+            }
+        }
+
+        // Fallback agent_name desde branch (solo si aún es null y tiene >2 acciones)
+        if (!session.agent_name && session.action_count > 2 && session.branch) {
+            const branchMatch = session.branch.match(/^agent\/(\d+)/);
+            if (branchMatch) {
+                session.agent_name = "Ad-hoc (#" + branchMatch[1] + ")";
+            } else if (session.branch !== "main" && session.branch !== "develop" && session.branch !== "unknown") {
+                const slug = session.branch.replace(/^[^/]+\//, "").substring(0, 20);
+                session.agent_name = "Ad-hoc (" + slug + ")";
             }
         }
 
