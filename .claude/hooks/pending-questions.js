@@ -58,6 +58,7 @@ function addPendingQuestion(question) {
         options: question.options || [],
         action_data: question.action_data || {},
         skill_context: question.skill_context || null,
+        approver_pid: question.approver_pid || null,
         status: "pending",
         answered_at: null
     });

@@ -26,10 +26,10 @@ const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 const ANSWER_TIMEOUT = 5000;   // Timeout para editMessage
 
-// Tiempos de polling: el hook tiene timeout de 55s en settings.json
-// Salir 5s antes para poder hacer cleanup (marcar expired, editar mensaje)
-const HOOK_TIMEOUT_MS = 50000;   // 50s — margen de 5s antes del kill
-const POLL_INTERVAL_MS = 1500;   // Verificar pending-questions.json cada 1.5s
+// Tiempos de polling: el hook tiene timeout de 615s en settings.json
+// Salir 15s antes para poder hacer cleanup (marcar expired, editar mensaje)
+const HOOK_TIMEOUT_MS = 600000;   // 10 min — margen de 15s antes del kill
+const POLL_INTERVAL_MS = 500;    // Verificar pending-questions.json cada 0.5s
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
@@ -216,6 +216,9 @@ function persistAlways(toolName, toolInput) {
 // Lee el archivo cada POLL_INTERVAL_MS para detectar cuando el commander
 // procesó el callback del botón y escribió la decisión.
 
+// Archivo PID para que otros hooks puedan detectar/matar este approver
+const APPROVER_PID_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-active.pid");
+
 async function pollQuestionStatus(requestId, startTime) {
     while (Date.now() - startTime < HOOK_TIMEOUT_MS) {
         try {
@@ -232,6 +235,11 @@ async function pollQuestionStatus(requestId, startTime) {
             }
         } catch(e) {
             log("Error leyendo pregunta " + requestId + ": " + e.message);
+        }
+        // Log de diagnóstico cada 10 ciclos (~15s)
+        const elapsed = Date.now() - startTime;
+        if (Math.floor(elapsed / POLL_INTERVAL_MS) % 10 === 0) {
+            log("Polling " + requestId + ": " + Math.round(elapsed/1000) + "s, aún pending, pid=" + process.pid);
         }
         await sleep(POLL_INTERVAL_MS);
     }
@@ -344,15 +352,21 @@ async function processInput() {
         msgText += contextLine + "\n";
     }
     msgText += "\n" + action + "\n\n"
-        + "📝 Responder: <b>si</b> · <b>siempre</b> · <b>no</b>";
+        + "📝 Usar botones o responder: <b>siempre</b> (para persistir)";
 
-    // 1. Enviar mensaje de texto (sin botones inline — el usuario responde con texto libre)
+    // 1. Enviar mensaje con botones inline + instrucción de texto libre
     let sentMsg;
     try {
         sentMsg = await telegramPost("sendMessage", {
             chat_id: CHAT_ID,
             text: msgText,
-            parse_mode: "HTML"
+            parse_mode: "HTML",
+            reply_markup: {
+                inline_keyboard: [[
+                    { text: "✅ Permitir", callback_data: "allow:" + requestId },
+                    { text: "❌ Rechazar", callback_data: "deny:" + requestId }
+                ]]
+            }
         }, 8000);
         log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId);
         registerMessage(sentMsg.message_id, "permission");
@@ -366,11 +380,11 @@ async function processInput() {
             telegram_message_id: sentMsg.message_id,
             options: [
                 { label: "Permitir", action: "allow" },
-                { label: "Siempre", action: "always" },
                 { label: "Denegar", action: "deny" }
             ],
             action_data: { tool_name: toolName, tool_input: toolInput, agent: agent },
-            skill_context: getSkillContext()
+            skill_context: getSkillContext(),
+            approver_pid: process.pid
         });
     } catch(e) {
         log("Error enviando mensaje: " + e.message);
@@ -379,8 +393,14 @@ async function processInput() {
 
     const msgId = sentMsg.message_id;
 
+    // Escribir PID file para que otros hooks puedan detectarnos/matarnos
+    try { fs.writeFileSync(APPROVER_PID_FILE, JSON.stringify({ pid: process.pid, requestId, msgId, timestamp: new Date().toISOString() })); } catch(e) {}
+    function cleanupPidFile() { try { fs.unlinkSync(APPROVER_PID_FILE); } catch(e) {} }
+    process.on("exit", cleanupPidFile);
+
     // 2. Polling de pending-questions.json esperando que el commander procese el callback
     //    El commander es el único consumidor de getUpdates — no hay conflicto de offsets
+    log("Iniciando polling para " + requestId + " (PID=" + process.pid + ", timeout=" + HOOK_TIMEOUT_MS + "ms)");
     const result = await pollQuestionStatus(requestId, startTime);
     const latencyMs = Date.now() - startTime;
 
@@ -424,7 +444,8 @@ async function processInput() {
             chat_id: CHAT_ID,
             message_id: msgId,
             text: msgText + "\n\n⏱ <i>Expirado — respondiendo en consola</i>\n📝 Responder <b>siempre</b> para guardar el permiso",
-            parse_mode: "HTML"
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: [] }
         }, ANSWER_TIMEOUT);
     } catch(e) { log("Error editando mensaje timeout: " + e.message); }
     process.exit(0); // fallback al prompt local
