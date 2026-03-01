@@ -128,6 +128,8 @@ function Stop-UnAgente {
 
     # --- Modo Abort: descartar todo y limpiar ---
     if ($Abort) {
+        Close-AgenteTerminal -Agente $Agente
+        Start-Sleep -Seconds 2  # Dar tiempo al proceso para liberar file handles
         Write-Log 'ABORT: descartando cambios y limpiando worktree...' 'Red'
         Push-Location $wtDirResolved
         try {
@@ -149,7 +151,6 @@ function Stop-UnAgente {
             Pop-Location
         }
 
-        Close-AgenteTerminal -Agente $Agente
         Write-Log ('Agente {0} abortado y limpiado.' -f $Agente.numero) 'Green'
         return
     }
@@ -182,15 +183,24 @@ function Stop-UnAgente {
         return
     }
 
+    # --- Cerrar terminal ANTES de cleanup (evita Permission denied en worktree removal) ---
+    Close-AgenteTerminal -Agente $Agente
+    Start-Sleep -Seconds 2  # Dar tiempo al proceso para liberar file handles
+
     Push-Location $wtDirResolved
     try {
-        # --- Verificar cambios ---
+        # --- Verificar cambios REALES (excluir .claude/ transientes) ---
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'SilentlyContinue'
         $status = git status --porcelain 2>$null
+        # Filtrar cambios en .claude/ — son transientes y NUNCA deben commitearse por Stop-Agente
+        $realChanges = $status | Where-Object { $_ -and $_ -notmatch '^\s*\??\s*\.claude/' -and $_ -notmatch '^\s*M\s*\.claude/' }
         $ErrorActionPreference = $prevEAP
-        if (-not $status) {
-            Write-Log 'Sin cambios en el worktree.' 'Yellow'
+        if (-not $realChanges) {
+            Write-Log 'Sin cambios reales en el worktree (solo .claude/ transientes).' 'Yellow'
+
+            # Descartar cambios transientes de .claude/ antes de limpiar
+            git checkout -- .claude/ 2>$null
 
             # Solo limpiar
             Pop-Location
@@ -203,13 +213,12 @@ function Stop-UnAgente {
             $ErrorActionPreference = $prevEAP
             # Safe: desvincula junction .claude/ antes de borrar
             Safe-RemoveWorktreeDir $wtDirResolved
-            Close-AgenteTerminal -Agente $Agente
-            Write-Log 'Worktree limpiado (sin cambios).' 'Green'
+            Write-Log 'Worktree limpiado (sin cambios reales).' 'Green'
             return
         }
 
-        Write-Log 'Cambios detectados:' 'Yellow'
-        git status --short
+        Write-Log 'Cambios reales detectados:' 'Yellow'
+        $realChanges | ForEach-Object { Write-Host "  $_" }
 
         # --- Obtener titulo del issue desde GitHub ---
         $issueTitle = ''
@@ -221,9 +230,25 @@ function Stop-UnAgente {
         }
         if (-not $issueTitle) { $issueTitle = $slug }
 
-        # --- Commit ---
-        Write-Log 'Committing cambios...' 'White'
-        git add -A
+        # --- Commit (excluir .claude/ transientes) ---
+        Write-Log 'Committing cambios reales...' 'White'
+        git add -A -- ':!.claude/'
+        # Verificar que hay algo staged despues de excluir .claude/
+        $staged = git diff --cached --name-only 2>$null
+        if (-not $staged) {
+            Write-Log 'Nada staged despues de excluir .claude/ — abortando commit.' 'Yellow'
+            Pop-Location
+            Push-Location $MainRepo
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'SilentlyContinue'
+            git worktree remove $wtDirResolved --force 2>$null
+            git branch -D $branch 2>$null
+            git worktree prune 2>$null
+            $ErrorActionPreference = $prevEAP
+            Safe-RemoveWorktreeDir $wtDirResolved
+            Write-Log 'Worktree limpiado (nada real que commitear).' 'Green'
+            return
+        }
         $coAuthor = 'Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>'
         $commitMsg = ('feat: {0} (Closes #{1})' -f $issueTitle, $issue) + "`n`n$coAuthor"
         git commit -m $commitMsg
@@ -307,7 +332,7 @@ function Stop-UnAgente {
         Pop-Location
     }
 
-    Close-AgenteTerminal -Agente $Agente
+    # Close-AgenteTerminal ya se ejecuto al inicio de Stop-UnAgente
     Write-Log ('Agente {0} finalizado.' -f $Agente.numero) 'Green'
 }
 
