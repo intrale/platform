@@ -1,0 +1,1387 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Login / SignIn</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .overlay-example { background: #111; color: #fff; border-radius: 4px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; margin: 6px 0; position: relative; }
+  .overlay-example .ov-id { color: #64b5f6; font-weight: bold; }
+  .overlay-example .ov-step { color: #81c784; }
+  .overlay-example .ov-result { color: #ffb74d; }
+  .overlay-example .ov-time { color: #bbb; position: absolute; right: 10px; top: 10px; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Login / SignIn</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
+    guiones de video y criterios de evidencia para la funcionalidad<br>
+    de Login/SignIn de la plataforma Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-03-01</p>
+    <p><strong>Issue:</strong> #1112</p>
+    <p><strong>Generado por:</strong> PO + QA Agents</p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Indice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo</a></li>
+  <li><a href="#s2">Estandar de Evidencia en Video</a></li>
+  <li><a href="#s3">Arquitectura del Login</a></li>
+  <li><a href="#s4">Flujo A — Login Basico (email + password)</a></li>
+  <li><a href="#s5">Flujo B — Auto-Login (sesion anterior)</a></li>
+  <li><a href="#s6">Flujo C — Cambio de Contrasena Forzado</a></li>
+  <li><a href="#s7">Flujo D — Logout</a></li>
+  <li><a href="#s8">Flujos Cross-App (Client / Business / Delivery)</a></li>
+  <li><a href="#s9">Catalogo Consolidado de Validaciones</a></li>
+  <li><a href="#s10">Resumen y Cobertura</a></li>
+  <li><a href="#s11">Gaps y Recomendaciones</a></li>
+</ol>
+
+<!-- ========== 1. RESUMEN ========== -->
+<h2 id="s1">1. Resumen Ejecutivo</h2>
+<p>La funcionalidad de Login/SignIn es la <strong>entrada principal</strong> a toda la plataforma Intrale. Este reporte documenta <strong>4 flujos diferenciados</strong> y <strong>48 casos de prueba</strong> con:</p>
+<ul>
+  <li>Diagramas de flujo Mermaid por cada flujo y sub-flujo</li>
+  <li>Guion de video paso a paso para cada caso de prueba</li>
+  <li>Criterios de evidencia visual que debe capturar el video</li>
+  <li>Narracion (texto/audio) de cada paso durante la grabacion</li>
+</ul>
+
+<table>
+  <tr><th>#</th><th>Flujo</th><th>App</th><th>Auth</th><th>Estado inicial</th><th>Casos</th></tr>
+  <tr><td>A</td><td>Login Basico (email + password)</td><td>Todas</td><td>No</td><td>Usuario registrado</td><td>18</td></tr>
+  <tr><td>B</td><td>Auto-Login (sesion anterior)</td><td>Todas</td><td>Token guardado</td><td>Login previo exitoso</td><td>8</td></tr>
+  <tr><td>C</td><td>Cambio de Contrasena Forzado</td><td>Todas</td><td>No</td><td>Primer login (Cognito)</td><td>10</td></tr>
+  <tr><td>D</td><td>Logout</td><td>Todas</td><td>Si (JWT)</td><td>Sesion activa</td><td>6</td></tr>
+  <tr><td>X</td><td>Cross-App (Client/Business/Delivery)</td><td>Multiples</td><td>Variable</td><td>Variable</td><td>6</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td></td><td>48</td></tr>
+</table>
+
+<!-- ========== 2. ESTANDAR DE VIDEO ========== -->
+<h2 id="s2">2. Estandar de Evidencia en Video</h2>
+
+<h3>2.1 Nomenclatura de archivos</h3>
+<div class="video-std">
+  <code>{FLUJO}-{ID}_{slug-descriptivo}.mp4</code><br>
+  Ejemplos:<br>
+  <code>LG-A-001_login-exitoso-credenciales-validas.mp4</code><br>
+  <code>LG-B-003_auto-login-token-expirado.mp4</code><br>
+  <code>LG-C-002_cambio-password-exitoso.mp4</code>
+</div>
+
+<h3>2.2 Estructura del video</h3>
+<p>Cada video de evidencia DEBE contener estas 4 fases:</p>
+<table>
+  <tr><th>Fase</th><th>Duracion</th><th>Contenido</th></tr>
+  <tr><td><strong>1. Titulo</strong></td><td>3-5 seg</td><td>Overlay con ID del caso, nombre completo, fecha y entorno</td></tr>
+  <tr><td><strong>2. Precondiciones</strong></td><td>3-5 seg</td><td>Mostrar/narrar el estado inicial requerido</td></tr>
+  <tr><td><strong>3. Ejecucion</strong></td><td>Variable</td><td>Cada paso narrado con overlay de numero de paso</td></tr>
+  <tr><td><strong>4. Verificacion</strong></td><td>5-10 seg</td><td>Evidencia explicita de CADA resultado esperado</td></tr>
+</table>
+
+<h3>2.3 Overlay de pantalla (formato obligatorio)</h3>
+<div class="overlay-example">
+  <span class="ov-id">LG-A-001</span> | Login exitoso con credenciales validas<span class="ov-time">00:12</span><br>
+  <span class="ov-step">&#9658; Paso 3/5:</span> Ingresar password (Admin1234!)<br>
+  <span class="ov-result">&#9673; Verificar: Spinner aparece en boton "Ingresar"</span>
+</div>
+<p>El overlay debe ser visible pero no obstruir la interfaz. Posicion sugerida: franja semi-transparente en la parte inferior.</p>
+
+<h3>2.4 Narracion</h3>
+<table>
+  <tr><th>Metodo</th><th>Formato</th><th>Cuando usar</th></tr>
+  <tr><td><strong>Audio TTS</strong> (ideal)</td><td>Voz sintetizada relatando cada paso</td><td>Videos finales para stakeholders</td></tr>
+  <tr><td><strong>Texto overlay</strong></td><td>Subtitulos con cada accion</td><td>Videos automatizados (Maestro/script)</td></tr>
+  <tr><td><strong>Audio + texto</strong></td><td>Ambos simultaneamente</td><td>Videos de demostracion formal</td></tr>
+</table>
+
+<h3>2.5 Evidencia de resultados esperados</h3>
+<div class="video-std">
+  <strong>Obligatorio para CADA resultado esperado:</strong>
+  <ol>
+    <li><strong>Pausa visual</strong> (2-3 seg): mostrar claramente el resultado en pantalla</li>
+    <li><strong>Highlight/marca</strong>: flecha, recuadro o zoom al elemento que evidencia el resultado</li>
+    <li><strong>Overlay de verificacion</strong>: texto <code>&#10003; VERIFICADO: [descripcion del resultado]</code> o <code>&#10007; FALLO: [descripcion]</code></li>
+    <li><strong>Screenshot automatico</strong>: captura individual del momento de verificacion</li>
+  </ol>
+</div>
+
+<h3>2.6 Ejemplo de guion de video completo</h3>
+<table>
+  <tr><th>Tiempo</th><th>Overlay</th><th>Narracion</th><th>Accion en pantalla</th></tr>
+  <tr><td>00:00</td><td><code>LG-A-001 | Login exitoso con credenciales validas</code></td><td>"Caso de prueba LG-A-001: Login exitoso con credenciales validas"</td><td>Pantalla negra con titulo</td></tr>
+  <tr><td>00:04</td><td><code>Precondicion: Usuario registrado y confirmado</code></td><td>"Precondicion: tenemos un usuario registrado con cuenta confirmada"</td><td>Mostrar app abierta en Login</td></tr>
+  <tr><td>00:08</td><td><code>&#9658; Paso 1/5: Abrir app</code></td><td>"Paso uno: abrimos la aplicacion"</td><td>App visible en pantalla de Login</td></tr>
+  <tr><td>00:12</td><td><code>&#9658; Paso 2/5: Ingresar email</code></td><td>"Paso dos: ingresamos el email del usuario"</td><td>Escribir admin@intrale.com</td></tr>
+  <tr><td>00:16</td><td><code>&#9658; Paso 3/5: Ingresar password</code></td><td>"Paso tres: ingresamos la contrasena"</td><td>Escribir Admin1234!</td></tr>
+  <tr><td>00:20</td><td><code>&#9658; Paso 4/5: Tocar Ingresar</code></td><td>"Paso cuatro: tocamos el boton Ingresar"</td><td>Tap en boton btn_primary</td></tr>
+  <tr><td>00:22</td><td><code>&#9673; Verificando: Spinner en boton</code></td><td>"Verificamos: el spinner aparece y el boton se deshabilita"</td><td>Spinner visible, pausa 2s</td></tr>
+  <tr><td>00:26</td><td><code>&#10003; VERIFICADO: Navega a Home</code></td><td>"Verificado: la app navego a la pantalla principal"</td><td>Home visible, screenshot</td></tr>
+  <tr><td>00:31</td><td><code>&#10003; RESULTADO: PASS</code></td><td>"Caso LG-A-001: resultado PASS"</td><td>Pantalla final verde</td></tr>
+</table>
+
+<!-- ========== 3. ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura del Login</h2>
+
+<h3>3.1 Diagrama general de capas</h3>
+<pre class="mermaid">
+graph LR
+  UI["Login Screen<br>(Compose)"] --> VM["LoginViewModel<br>(Estado + Konform)"]
+  VM --> DO["DoLogin<br>(Logica negocio)"]
+  DO --> CL["ClientLoginService /<br>DeliveryLoginService<br>(HTTP Client)"]
+  CL --> BE["Backend Ktor<br>/{biz}/signin"]
+  BE --> COG["Amazon Cognito<br>(Identity)"]
+  BE --> DDB["DynamoDB<br>(UserBusinessProfile)"]
+</pre>
+
+<h3>3.2 Mapa de navegacion completo</h3>
+<pre class="mermaid">
+graph TD
+  LOGIN["Login Screen<br>/login"]
+  LOGIN -->|"Credenciales validas<br>(CLIENT)"| HOME_C["Client Home<br>/clientHome"]
+  LOGIN -->|"Credenciales validas<br>(BUSINESS)"| HOME_B["Dashboard<br>/dashboard"]
+  LOGIN -->|"Credenciales validas<br>(DELIVERY)"| HOME_D["Delivery Dashboard<br>/deliveryDashboard"]
+  LOGIN -->|"Registrarme<br>(CLIENT)"| SIGNUP["/signup"]
+  LOGIN -->|"Solicitar acceso<br>(DELIVERY)"| SIGNUP_D["/signupDelivery"]
+  LOGIN -->|"Registrar negocio<br>(BUSINESS)"| REG_BIZ["/registerNewBusiness"]
+  LOGIN -->|"Recuperar contrasena"| PWD_REC["/passwordRecovery"]
+  LOGIN -->|"NEW_PASSWORD_REQUIRED"| CHG_PWD["Campos adicionales<br>(nuevo password + nombre)"]
+  CHG_PWD -->|"Exito"| HOME_C
+  HOME_C -->|"Logout"| LOGIN
+  HOME_B -->|"Logout"| LOGIN
+  HOME_D -->|"Logout"| LOGIN
+
+  style LOGIN fill:#fff3e0,stroke:#e65100
+  style HOME_C fill:#e8f5e9,stroke:#2e7d32
+  style HOME_B fill:#e8f5e9,stroke:#2e7d32
+  style HOME_D fill:#e8f5e9,stroke:#2e7d32
+  style CHG_PWD fill:#e3f2fd,stroke:#1565c0
+</pre>
+
+<h3>3.3 Endpoints del backend</h3>
+<table>
+  <tr><th>Endpoint</th><th>Metodo</th><th>Auth</th><th>Funcion</th><th>Clase</th></tr>
+  <tr><td><code>/{biz}/signin</code></td><td>POST</td><td>No</td><td>Login con email + password</td><td><code>SignIn.kt</code></td></tr>
+  <tr><td><code>/{biz}/validate</code></td><td>POST</td><td>JWT</td><td>Validar token existente</td><td><code>Validate.kt</code></td></tr>
+</table>
+
+<h3>3.4 Componentes del sistema</h3>
+<table>
+  <tr><th>Capa</th><th>Componente</th><th>Archivo</th><th>Responsabilidad</th></tr>
+  <tr><td>UI</td><td><code>Login</code></td><td><code>ui/sc/auth/Login.kt</code></td><td>Pantalla Compose: campos email/password, boton Ingresar, links secundarios</td></tr>
+  <tr><td>UI</td><td><code>LoginViewModel</code></td><td><code>ui/sc/auth/LoginViewModel.kt</code></td><td>Estado UI, validacion Konform, ejecucion de login</td></tr>
+  <tr><td>asdo</td><td><code>ToDoLogin / DoLogin</code></td><td><code>asdo/auth/DoLogin.kt</code></td><td>Logica de negocio: verificar token, llamar servicio, almacenar token</td></tr>
+  <tr><td>asdo</td><td><code>ToDoCheckPreviousLogin</code></td><td><code>asdo/auth/DoCheckPreviousLogin.kt</code></td><td>Auto-login: verificar si hay token guardado</td></tr>
+  <tr><td>asdo</td><td><code>ToDoResetLoginCache</code></td><td><code>asdo/auth/DoResetLoginCache.kt</code></td><td>Logout: limpiar token, cache de perfil, idioma</td></tr>
+  <tr><td>ext</td><td><code>ClientLoginService</code></td><td><code>ext/auth/ClientLoginService.kt</code></td><td>HTTP POST /signin para flavors client y business</td></tr>
+  <tr><td>ext</td><td><code>DeliveryLoginService</code></td><td><code>ext/auth/DeliveryLoginService.kt</code></td><td>HTTP POST /signin para flavor delivery</td></tr>
+  <tr><td>ext</td><td><code>CommKeyValueStorage</code></td><td><code>ext/storage/CommKeyValueStorage.kt</code></td><td>Persistencia de token, cache, idioma</td></tr>
+  <tr><td>backend</td><td><code>SignIn</code></td><td><code>users/.../SignIn.kt</code></td><td>Endpoint: validar, autenticar con Cognito, verificar perfil</td></tr>
+  <tr><td>backend</td><td><code>Validate</code></td><td><code>users/.../Validate.kt</code></td><td>Endpoint: verificar JWT valido (SecuredFunction)</td></tr>
+  <tr><td>DI</td><td><code>DIManager</code></td><td><code>DIManager.kt</code></td><td>Binding de servicios por flavor (isDelivery)</td></tr>
+</table>
+
+<h3>3.5 Seleccion de servicio por flavor</h3>
+<pre class="mermaid">
+graph TD
+  DI["DIManager<br>bindSingleton CommLoginService"]
+  DI -->|"isDelivery == true"| DEL["DeliveryLoginService<br>POST DELIVERY/signin"]
+  DI -->|"isDelivery == false"| CLI["ClientLoginService<br>POST BUSINESS/signin"]
+  CLI --> HTTP["Ktor HttpClient"]
+  DEL --> HTTP
+
+  style DI fill:#e3f2fd,stroke:#1565c0
+  style DEL fill:#fce4ec,stroke:#c62828
+  style CLI fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<!-- ========== 4. FLUJO A — LOGIN BASICO ========== -->
+<h2 id="s4">4. Flujo A — Login Basico (email + password)</h2>
+
+<h3>4.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El usuario ingresa su email y contrasena en la pantalla de Login. El sistema valida los campos con Konform en frontend, envia POST a <code>/{biz}/signin</code>, Cognito autentica, el backend verifica que el usuario tenga perfil APPROVED en el business, y retorna tokens JWT. El token se almacena en storage local para auto-login futuro.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> App instalada | Conexion a internet | Usuario registrado y confirmado en Cognito | Perfil con state=APPROVED en DynamoDB
+</div>
+
+<h3>4.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LOGIN["Pantalla Login<br>Campos: email + password"]
+  LOGIN --> INPUT["Usuario ingresa<br>email y contrasena"]
+  INPUT --> VAL_FE{"Validacion<br>Frontend<br>(Konform)"}
+  VAL_FE -->|"Email vacio"| ERR_REQ["Error inline:<br>'Campo obligatorio'"]
+  VAL_FE -->|"Email sin formato"| ERR_EM["Error inline:<br>'Correo invalido'"]
+  VAL_FE -->|"Password vacio"| ERR_PW1["Error inline:<br>'Campo obligatorio'"]
+  VAL_FE -->|"Password < 8 chars"| ERR_PW2["Error inline:<br>'Minimo 8 caracteres'"]
+  ERR_REQ --> LOGIN
+  ERR_EM --> LOGIN
+  ERR_PW1 --> LOGIN
+  ERR_PW2 --> LOGIN
+  VAL_FE -->|"Campos validos"| LOADING["Boton: spinner +<br>deshabilitado"]
+  LOADING --> HTTP["POST /{biz}/signin<br>{email, password}"]
+  HTTP --> VAL_BE{"Backend:<br>Validacion"}
+  VAL_BE -->|"Body vacio"| E400["HTTP 400<br>Snackbar error"]
+  VAL_BE -->|"Campos validos"| COGNITO["Cognito:<br>adminInitiateAuth"]
+  COGNITO -->|"NotAuthorizedException"| E401["HTTP 401<br>Credenciales invalidas"]
+  COGNITO -->|"NEW_PASSWORD_REQUIRED"| CHGPW["Mostrar campos<br>adicionales<br>(Flujo C)"]
+  COGNITO -->|"Auth OK"| PROFILE{"Verificar<br>UserBusinessProfile"}
+  PROFILE -->|"Sin perfil APPROVED"| E401_P["HTTP 401<br>Usuario sin acceso"]
+  PROFILE -->|"Perfil APPROVED"| TOKENS["Retorna:<br>idToken + accessToken<br>+ refreshToken"]
+  E400 --> LOGIN
+  E401 --> MARK["Marcar campos<br>como invalidos"]
+  E401_P --> MARK
+  MARK --> LOGIN
+  TOKENS --> STORE["Almacenar token<br>en KeyValueStorage"]
+  STORE --> SESSION["SessionStore:<br>updateRole()"]
+  SESSION --> HOME["Navegar a Home<br>(segun flavor)"]
+
+  style ERR_REQ fill:#ffebee,stroke:#c62828
+  style ERR_EM fill:#ffebee,stroke:#c62828
+  style ERR_PW1 fill:#ffebee,stroke:#c62828
+  style ERR_PW2 fill:#ffebee,stroke:#c62828
+  style E400 fill:#ffebee,stroke:#c62828
+  style E401 fill:#ffebee,stroke:#c62828
+  style E401_P fill:#ffebee,stroke:#c62828
+  style LOADING fill:#e3f2fd,stroke:#1565c0
+  style TOKENS fill:#e8f5e9,stroke:#2e7d32
+  style HOME fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>4.3 Campos y validaciones</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo</th><th>Test Tag</th><th>Validacion Frontend (Konform)</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
+  <tr><td>email (user)</td><td>TextField</td><td><code>field_Username</code></td><td>required + <code>.+@.+\..+</code></td><td>required (not-empty)</td><td><code>form_error_required</code> / <code>form_error_invalid_email</code></td></tr>
+  <tr><td>password</td><td>PasswordField</td><td><code>field_Password</code></td><td>required + minLength(8)</td><td>required (not-empty)</td><td><code>form_error_required</code> / <code>form_error_min_length_8</code></td></tr>
+</table>
+
+<h3>4.4 Manejo de errores HTTP</h3>
+<table>
+  <tr><th>Codigo HTTP</th><th>Causa</th><th>Accion en UI</th></tr>
+  <tr><td>200</td><td>Login exitoso</td><td>Almacenar token, navegar a Home</td></tr>
+  <tr><td>400</td><td>Body vacio o malformado</td><td>Snackbar con error generico</td></tr>
+  <tr><td>401</td><td>Credenciales invalidas o sin perfil APPROVED</td><td><code>markCredentialsAsInvalid()</code> — campos marcados en rojo</td></tr>
+  <tr><td>403 / 423</td><td>Usuario bloqueado</td><td>Mensaje especial: "Tu usuario esta bloqueado"</td></tr>
+  <tr><td>500</td><td>Error interno del servidor</td><td>Snackbar: error generico de login</td></tr>
+</table>
+
+<h3>4.5 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Login exitoso con credenciales validas</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso LG-A-001: Login exitoso con credenciales validas"<br>
+      <strong>&#9658; P1</strong> "Abrimos la app, estamos en Login"<br>
+      <strong>&#9658; P2</strong> "Ingresamos email: admin@intrale.com"<br>
+      <strong>&#9658; P3</strong> "Ingresamos password: Admin1234!"<br>
+      <strong>&#9658; P4</strong> "Tocamos el boton 'Ingresar'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: spinner visible en el boton"<br>
+      <strong>&#9673; V2</strong> "Verificamos: boton deshabilitado durante carga"<br>
+      <strong>&#9673; V3</strong> "Verificamos: la app navego al Home"
+    </td>
+    <td class="evidence-col">
+      &#10003; Spinner aparece en boton (screenshot)<br>
+      &#10003; Boton queda deshabilitado<br>
+      &#10003; Pantalla Home visible<br>
+      &#10003; No hay mensaje de error
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email vacio</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso LG-A-002: Validacion con email vacio"<br>
+      <strong>&#9658; P1</strong> "Estamos en Login Screen"<br>
+      <strong>&#9658; P2</strong> "Dejamos el campo email vacio"<br>
+      <strong>&#9658; P3</strong> "Ingresamos password valido"<br>
+      <strong>&#9658; P4</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Campo obligatorio' visible"<br>
+      <strong>&#9673; V2</strong> "Verificamos: NO se hizo llamada HTTP"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline visible bajo campo email<br>
+      &#10003; Texto del error legible<br>
+      &#10003; Permanece en Login Screen<br>
+      &#10003; Sin snackbar de red
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-003</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Password vacio</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email valido"<br>
+      <strong>&#9658; P2</strong> "Dejamos password vacio"<br>
+      <strong>&#9658; P3</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Campo obligatorio' en password"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline visible bajo campo password<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email sin formato valido (sin @)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos 'usuario.com' (sin @)"<br>
+      <strong>&#9658; P2</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Correo invalido'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline "Correo invalido"<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email sin dominio</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos 'usuario@' (sin dominio)"<br>
+      <strong>&#9658; P2</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline "Correo invalido"
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-006</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email sin TLD</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos 'usuario@dominio' (sin punto)"<br>
+      <strong>&#9658; P2</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: regex .+@.+\..+ requiere punto despues del @"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline "Correo invalido"
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-007</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Password menor a 8 caracteres</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email valido"<br>
+      <strong>&#9658; P2</strong> "Ingresamos password '1234567' (7 chars)"<br>
+      <strong>&#9658; P3</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Debe contener al menos 8 caracteres'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline con texto de minimo 8 chars<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-008</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Credenciales incorrectas (password erroneo)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email valido: admin@intrale.com"<br>
+      <strong>&#9658; P2</strong> "Ingresamos password incorrecto: Wrong12345"<br>
+      <strong>&#9658; P3</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: snackbar/error 'Usuario o contrasena incorrectos'"<br>
+      <strong>&#9673; V2</strong> "Verificamos: campos marcados como invalidos (rojo)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error visible con mensaje de credenciales<br>
+      &#10003; Campos marcados en rojo<br>
+      &#10003; Permanece en Login
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-009</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email inexistente en Cognito</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email no registrado: noexiste@test.com"<br>
+      <strong>&#9658; P2</strong> "Ingresamos password valido"<br>
+      <strong>&#9658; P3</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error de credenciales invalidas"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error visible<br>
+      &#10003; HTTP 401 en respuesta
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Usuario bloqueado (403/423)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Intentamos login con usuario bloqueado"<br>
+      <strong>&#9673; V1</strong> "Verificamos: mensaje especial 'Tu usuario esta bloqueado'"<br>
+      <strong>&#9673; V2</strong> "Verificamos: mensaje diferente al de credenciales invalidas"
+    </td>
+    <td class="evidence-col">
+      &#10003; Mensaje de bloqueo visible<br>
+      &#10003; Diferenciable del error 401
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-011</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Usuario sin perfil APPROVED en el business</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login con usuario que tiene perfil PENDING"<br>
+      <strong>&#9673; V1</strong> "Verificamos: backend retorna 401 (perfil no aprobado)"<br>
+      <strong>&#9673; V2</strong> "Verificamos: error visible en la app"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error 401 del backend<br>
+      &#10003; No se almacena token
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-012</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Boton deshabilitado durante carga (anti doble-tap)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos credenciales validas"<br>
+      <strong>&#9658; P2</strong> "Tocamos Ingresar"<br>
+      <strong>&#9658; P3</strong> "Intentamos tocar de nuevo durante la carga"<br>
+      <strong>&#9673; V1</strong> "Verificamos: boton no responde al segundo tap"
+    </td>
+    <td class="evidence-col">
+      &#10003; Spinner visible en boton<br>
+      &#10003; Segundo tap sin efecto<br>
+      &#10003; No se duplica request
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-013</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Sin conexion a internet</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Desactivamos WiFi/datos (mostrar en settings)"<br>
+      <strong>&#9658; P2</strong> "Ingresamos credenciales validas"<br>
+      <strong>&#9658; P3</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: snackbar con error de red"<br>
+      <strong>&#9673; V2</strong> "Verificamos: no queda en estado inconsistente"
+    </td>
+    <td class="evidence-col">
+      &#10003; Settings mostrando WiFi OFF<br>
+      &#10003; Snackbar de error visible<br>
+      &#10003; App estable, puede reintentar
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-014</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: body vacio (API directa)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Enviamos POST /{biz}/signin sin body via curl/Postman"<br>
+      <strong>&#9673; V1</strong> "Verificamos: HTTP 400 'Request body not found'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Response status 400<br>
+      &#10003; Mensaje de error correcto
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-015</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Email en mayusculas</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos 'ADMIN@INTRALE.COM'"<br>
+      <strong>&#9658; P2</strong> "Ingresamos password correcto"<br>
+      <strong>&#9673; V1</strong> "Verificamos: si Cognito maneja case-insensitive"
+    </td>
+    <td class="evidence-col">
+      &#10003; Comportamiento documentado<br>
+      &#10003; Login funciona o no segun Cognito
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-016</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Email con caracteres especiales</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos 'user+tag@example.com'"<br>
+      <strong>&#9658; P2</strong> "Ingresamos password correcto"<br>
+      <strong>&#9673; V1</strong> "Verificamos: pasa validacion frontend"<br>
+      <strong>&#9673; V2</strong> "Verificamos: Cognito acepta/rechaza"
+    </td>
+    <td class="evidence-col">
+      &#10003; Sin error de validacion frontend<br>
+      &#10003; Resultado documentado
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-017</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Business slug inexistente en URL</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "POST /negocio-invalido/signin via curl"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error del router dinamico"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error HTTP (no 200)<br>
+      &#10003; Business no encontrado
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-A-018</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Respuesta incluye los 3 tokens</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login exitoso via API directa (curl/Postman)"<br>
+      <strong>&#9673; V1</strong> "Verificamos: respuesta contiene idToken"<br>
+      <strong>&#9673; V2</strong> "Verificamos: respuesta contiene accessToken"<br>
+      <strong>&#9673; V3</strong> "Verificamos: respuesta contiene refreshToken"<br>
+      <strong>&#9673; V4</strong> "Verificamos: statusCode.value == 200"
+    </td>
+    <td class="evidence-col">
+      &#10003; JSON con 3 tokens no vacios<br>
+      &#10003; statusCode correcto
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 5. FLUJO B — AUTO-LOGIN ========== -->
+<h2 id="s5">5. Flujo B — Auto-Login (sesion anterior)</h2>
+
+<h3>5.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Al abrir la app, un <code>LaunchedEffect</code> en Login.kt verifica si hay un token guardado en <code>CommKeyValueStorage</code>. Si existe, ejecuta <code>previousLogin()</code> y navega automaticamente al Home sin que el usuario deba ingresar credenciales.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Login exitoso previo | Token almacenado en KeyValueStorage | App cerrada y reabierta
+</div>
+
+<h3>5.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("App abierta")) --> LOGIN["Login Screen<br>LaunchedEffect(Unit)"]
+  LOGIN --> CHECK{"previousLogin()<br>token != null?"}
+  CHECK -->|"Token existe"| TRIGGER["triggerLogin()<br>auto-login"]
+  CHECK -->|"Sin token"| WAIT["Mostrar formulario<br>esperar input"]
+  TRIGGER --> VALIDATE["Verificar token<br>con backend"]
+  VALIDATE -->|"Token valido"| HOME["Navegar a Home<br>(sin mostrar login)"]
+  VALIDATE -->|"Token expirado/invalido"| CLEAR["Limpiar token<br>mostrar formulario"]
+  CLEAR --> WAIT
+
+  style HOME fill:#e8f5e9,stroke:#2e7d32
+  style WAIT fill:#fff8e1,stroke:#ffc107
+  style CLEAR fill:#ffebee,stroke:#c62828
+</pre>
+
+<h3>5.3 Componentes involucrados</h3>
+<table>
+  <tr><th>Componente</th><th>Responsabilidad</th></tr>
+  <tr><td><code>DoCheckPreviousLogin</code></td><td>Retorna <code>commKeyValueStorage.token != null</code></td></tr>
+  <tr><td><code>LoginViewModel.previousLogin()</code></td><td>Ejecuta <code>toDoCheckPreviousLogin.execute()</code></td></tr>
+  <tr><td><code>Login.kt LaunchedEffect</code></td><td>Si <code>previousLogin() == true</code>, dispara <code>triggerLogin()</code></td></tr>
+  <tr><td><code>CommKeyValueStorage</code></td><td>Persistencia platform-specific del token (Settings en Android, localStorage en Web)</td></tr>
+</table>
+
+<h3>5.4 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">LG-B-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Auto-login exitoso con token valido</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login exitoso (LG-A-001), cerrar app"<br>
+      <strong>&#9658; P2</strong> "Reabrir la app"<br>
+      <strong>&#9673; V1</strong> "Verificamos: NO muestra formulario de login"<br>
+      <strong>&#9673; V2</strong> "Verificamos: navega directamente al Home"
+    </td>
+    <td class="evidence-col">
+      &#10003; Pantalla de login no visible (o flash minimo)<br>
+      &#10003; Home cargado automaticamente<br>
+      &#10003; Sin input del usuario
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-B-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Sin sesion previa: muestra formulario</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "App instalada por primera vez (sin token)"<br>
+      <strong>&#9658; P2</strong> "Abrimos la app"<br>
+      <strong>&#9673; V1</strong> "Verificamos: pantalla de Login visible con campos vacios"
+    </td>
+    <td class="evidence-col">
+      &#10003; Formulario de login visible<br>
+      &#10003; Campos vacios<br>
+      &#10003; Sin navegacion automatica
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-B-003</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Token expirado: muestra formulario</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login previo exitoso, esperar expiracion del token"<br>
+      <strong>&#9658; P2</strong> "Reabrir la app"<br>
+      <strong>&#9673; V1</strong> "Verificamos: auto-login falla, muestra formulario"<br>
+      <strong>&#9673; V2</strong> "Verificamos: token limpiado del storage"
+    </td>
+    <td class="evidence-col">
+      &#10003; Formulario visible<br>
+      &#10003; Sin error visible al usuario
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-B-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Auto-login post-logout: NO auto-login</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login exitoso, luego logout"<br>
+      <strong>&#9658; P2</strong> "Cerrar y reabrir la app"<br>
+      <strong>&#9673; V1</strong> "Verificamos: formulario de login (token fue limpiado)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Formulario visible<br>
+      &#10003; No hay auto-login
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-B-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Auto-login preserva sesion correcta</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login como BusinessAdmin, cerrar app"<br>
+      <strong>&#9658; P2</strong> "Reabrir"<br>
+      <strong>&#9673; V1</strong> "Verificamos: navega al dashboard correcto (no clientHome)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Dashboard correcto para el flavor<br>
+      &#10003; Rol de sesion preservado
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-B-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Auto-login con token de otro business</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login en business A, token guardado"<br>
+      <strong>&#9658; P2</strong> "Cambiar config de app a business B"<br>
+      <strong>&#9658; P3</strong> "Reabrir"<br>
+      <strong>&#9673; V1</strong> "Verificamos: token invalido para business B"
+    </td>
+    <td class="evidence-col">
+      &#10003; Auto-login falla<br>
+      &#10003; Formulario visible
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-B-007</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Auto-login sin conexion a internet</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login previo exitoso, desactivar internet"<br>
+      <strong>&#9658; P2</strong> "Reabrir la app"<br>
+      <strong>&#9673; V1</strong> "Verificamos: manejo de error sin conexion"
+    </td>
+    <td class="evidence-col">
+      &#10003; Comportamiento definido (error o offline mode)<br>
+      &#10003; App estable
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-B-008</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>LaunchedEffect se ejecuta solo una vez</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Auto-login falla (token invalido)"<br>
+      <strong>&#9658; P2</strong> "Navegar a otra pantalla y volver a login"<br>
+      <strong>&#9673; V1</strong> "Verificamos: no se dispara auto-login de nuevo"
+    </td>
+    <td class="evidence-col">
+      &#10003; Formulario permanece visible<br>
+      &#10003; Sin loops de navegacion
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 6. FLUJO C — CAMBIO DE CONTRASENA FORZADO ========== -->
+<h2 id="s6">6. Flujo C — Cambio de Contrasena Forzado</h2>
+
+<h3>6.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Cuando Cognito retorna el challenge <code>NEW_PASSWORD_REQUIRED</code> (primer login del usuario con password temporal), la app muestra campos adicionales: nueva contrasena, nombre y apellido. El backend llama <code>adminRespondToAuthChallenge</code>, actualiza atributos del usuario y re-autentica con la nueva contrasena.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Usuario recien creado en Cognito con password temporal | Primer intento de login | Cognito fuerza cambio de contrasena
+</div>
+
+<h3>6.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  LOGIN["Login con password<br>temporal"] --> HTTP["POST /{biz}/signin<br>{email, tempPassword}"]
+  HTTP --> COGNITO["Cognito:<br>adminInitiateAuth"]
+  COGNITO -->|"challengeName ==<br>NEW_PASSWORD_REQUIRED"| MSG["Response:<br>'newPassword is required'"]
+  MSG --> UI_CHG["UI: requirePasswordChange()<br>Mostrar campos adicionales"]
+  UI_CHG --> FIELDS["Campos visibles:<br>- Nueva contrasena<br>- Nombre<br>- Apellido"]
+  FIELDS --> VAL{"Validacion<br>Konform"}
+  VAL -->|"newPassword < 8"| ERR1["Error:<br>'Minimo 8 caracteres'"]
+  VAL -->|"name vacio"| ERR2["Error:<br>'Campo obligatorio'"]
+  VAL -->|"familyName vacio"| ERR3["Error:<br>'Campo obligatorio'"]
+  ERR1 --> FIELDS
+  ERR2 --> FIELDS
+  ERR3 --> FIELDS
+  VAL -->|"Validos"| HTTP2["POST /{biz}/signin<br>{email, tempPwd,<br>newPassword, name,<br>familyName}"]
+  HTTP2 --> RESPOND["Cognito:<br>adminRespondToAuthChallenge<br>+ adminUpdateUserAttributes"]
+  RESPOND --> REAUTH["Re-autenticar con<br>nueva contrasena"]
+  REAUTH --> OK["Tokens retornados<br>Login exitoso"]
+  OK --> HOME["Navegar a Home"]
+
+  style ERR1 fill:#ffebee,stroke:#c62828
+  style ERR2 fill:#ffebee,stroke:#c62828
+  style ERR3 fill:#ffebee,stroke:#c62828
+  style UI_CHG fill:#e3f2fd,stroke:#1565c0
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style HOME fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>6.3 Campos adicionales y validaciones</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo</th><th>Validacion Konform</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
+  <tr><td>newPassword</td><td>PasswordField</td><td>required + minLength(8)</td><td>not-null (Cognito valida complejidad)</td><td><code>form_error_min_length_8</code></td></tr>
+  <tr><td>name</td><td>TextField</td><td>required + minLength(1)</td><td>not-null</td><td><code>form_error_required</code></td></tr>
+  <tr><td>familyName</td><td>TextField</td><td>required + minLength(1)</td><td>not-null</td><td><code>form_error_required</code></td></tr>
+</table>
+
+<h3>6.4 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">LG-C-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cambio de contrasena exitoso (primer login)</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso LG-C-001: Cambio de contrasena forzado exitoso"<br>
+      <strong>&#9658; P1</strong> "Login con usuario seed: admin@intrale.com / Admin1234!"<br>
+      <strong>&#9658; P2</strong> "Backend retorna NEW_PASSWORD_REQUIRED"<br>
+      <strong>&#9658; P3</strong> "Verificamos que aparecen los campos adicionales"<br>
+      <strong>&#9658; P4</strong> "Ingresamos nueva contrasena, nombre y apellido"<br>
+      <strong>&#9658; P5</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: login exitoso, navega a Home"
+    </td>
+    <td class="evidence-col">
+      &#10003; Campos adicionales visibles<br>
+      &#10003; Login completo exitoso<br>
+      &#10003; Home visible
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Campos adicionales aparecen correctamente</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login con password temporal (primer login)"<br>
+      <strong>&#9673; V1</strong> "Verificamos: campo 'Nueva contrasena' visible"<br>
+      <strong>&#9673; V2</strong> "Verificamos: campo 'Nombre' visible"<br>
+      <strong>&#9673; V3</strong> "Verificamos: campo 'Apellido' visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; 3 campos adicionales visibles<br>
+      &#10003; Labels correctos<br>
+      &#10003; Campos originales siguen visibles
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nueva contrasena vacia</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Campos adicionales visibles, nueva contrasena vacia"<br>
+      <strong>&#9658; P2</strong> "Tocamos Ingresar"<br>
+      <strong>&#9673; V1</strong> "Error: 'Campo obligatorio' en nueva contrasena"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline visible<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nueva contrasena menor a 8 caracteres</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos nueva contrasena '1234567' (7 chars)"<br>
+      <strong>&#9673; V1</strong> "Error: 'Debe contener al menos 8 caracteres'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline con minimo 8 chars
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Nombre vacio</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Nueva contrasena OK, nombre vacio"<br>
+      <strong>&#9673; V1</strong> "Error: 'Campo obligatorio' en nombre"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline en campo nombre
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-006</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Apellido vacio</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Nueva contrasena y nombre OK, apellido vacio"<br>
+      <strong>&#9673; V1</strong> "Error: 'Campo obligatorio' en apellido"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline en campo apellido
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-007</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Contrasena nueva no cumple politica Cognito</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos contrasena sin mayuscula ni especial: 'abcdefgh'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: Cognito rechaza la contrasena"<br>
+      <strong>&#9673; V2</strong> "Verificamos: error visible en la app"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error del backend visible<br>
+      &#10003; Permanece en login con campos adicionales
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-008</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: newPassword null cuando challenge activo</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "API directa: enviar signin sin newPassword cuando Cognito requiere cambio"<br>
+      <strong>&#9673; V1</strong> "Verificamos: backend retorna mensaje 'newPassword is required'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Response con mensaje correcto<br>
+      &#10003; Sin crash del server
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-009</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Post cambio: login funciona con nueva contrasena</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Completar cambio de contrasena exitoso"<br>
+      <strong>&#9658; P2</strong> "Logout"<br>
+      <strong>&#9658; P3</strong> "Login con la nueva contrasena"<br>
+      <strong>&#9673; V1</strong> "Verificamos: login exitoso sin challenge"
+    </td>
+    <td class="evidence-col">
+      &#10003; Login directo sin campos adicionales<br>
+      &#10003; Home visible
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-C-010</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Post cambio: password temporal ya no funciona</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Completar cambio de contrasena"<br>
+      <strong>&#9658; P2</strong> "Logout"<br>
+      <strong>&#9658; P3</strong> "Login con password temporal original"<br>
+      <strong>&#9673; V1</strong> "Verificamos: credenciales invalidas (401)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error de credenciales<br>
+      &#10003; Password temporal invalidado
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 7. FLUJO D — LOGOUT ========== -->
+<h2 id="s7">7. Flujo D — Logout</h2>
+
+<h3>7.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El usuario cierra sesion desde el Home. El sistema ejecuta <code>DoResetLoginCache</code> que limpia token, cache de perfil e idioma preferido, luego <code>SessionStore.clear()</code> reinicia el estado de sesion, y finalmente navega de vuelta a la pantalla de Login.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Sesion activa | Token almacenado | Usuario en Home o pantalla autenticada
+</div>
+
+<h3>7.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  HOME["Home / Dashboard<br>(sesion activa)"] --> LOGOUT["Usuario toca<br>'Cerrar sesion'"]
+  LOGOUT --> RESET["DoResetLoginCache:<br>token = null<br>profileCache = null<br>preferredLanguage = null"]
+  RESET --> SESSION["SessionStore.clear():<br>reset rol y business"]
+  SESSION --> NAV["Navegar a /login<br>(limpiar backstack)"]
+  NAV --> LOGIN["Login Screen<br>formulario vacio"]
+  LOGIN --> CHECK{"Auto-login?"}
+  CHECK -->|"token == null"| SHOW["Mostrar formulario<br>(correcto)"]
+
+  style HOME fill:#e3f2fd,stroke:#1565c0
+  style LOGIN fill:#fff3e0,stroke:#e65100
+  style SHOW fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>7.3 Datos limpiados</h3>
+<table>
+  <tr><th>Dato</th><th>Storage</th><th>Accion</th></tr>
+  <tr><td><code>token</code></td><td>CommKeyValueStorage</td><td>Set to null</td></tr>
+  <tr><td><code>profileCache</code></td><td>CommKeyValueStorage</td><td>Set to null</td></tr>
+  <tr><td><code>preferredLanguage</code></td><td>CommKeyValueStorage</td><td>Set to null</td></tr>
+  <tr><td><code>SessionState</code></td><td>SessionStore (memory)</td><td>Reset to default</td></tr>
+</table>
+
+<h3>7.4 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">LG-D-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Logout exitoso</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso LG-D-001: Logout exitoso"<br>
+      <strong>&#9658; P1</strong> "Estamos en Home con sesion activa"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Cerrar sesion'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: navega a Login"<br>
+      <strong>&#9673; V2</strong> "Verificamos: formulario vacio (sin datos previos)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Login Screen visible<br>
+      &#10003; Campos vacios<br>
+      &#10003; Sin auto-login
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-D-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Post-logout: requiere credenciales para volver a entrar</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Completar logout"<br>
+      <strong>&#9658; P2</strong> "Ingresar credenciales validas"<br>
+      <strong>&#9658; P3</strong> "Tocar Ingresar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: login exitoso, Home visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; Login manual requerido<br>
+      &#10003; Home accesible
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-D-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Back button post-logout: NO vuelve al Home</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Completar logout"<br>
+      <strong>&#9658; P2</strong> "Presionar Back"<br>
+      <strong>&#9673; V1</strong> "Verificamos: NO vuelve al Home (backstack limpio)"
+    </td>
+    <td class="evidence-col">
+      &#10003; No acceso a Home sin login<br>
+      &#10003; Sale de la app o queda en Login
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-D-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Logout limpia todo el storage</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login con perfil (tiene cache)"<br>
+      <strong>&#9658; P2</strong> "Logout"<br>
+      <strong>&#9658; P3</strong> "Verificar storage"<br>
+      <strong>&#9673; V1</strong> "Verificamos: token == null"<br>
+      <strong>&#9673; V2</strong> "Verificamos: profileCache == null"<br>
+      <strong>&#9673; V3</strong> "Verificamos: preferredLanguage == null"
+    </td>
+    <td class="evidence-col">
+      &#10003; Storage limpio (debugging/logs)<br>
+      &#10003; 3 valores en null
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-D-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Logout + reabrir app: NO auto-login</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Logout exitoso"<br>
+      <strong>&#9658; P2</strong> "Cerrar app completamente"<br>
+      <strong>&#9658; P3</strong> "Reabrir app"<br>
+      <strong>&#9673; V1</strong> "Verificamos: formulario de login (sin auto-login)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Formulario visible<br>
+      &#10003; Token no persiste post-logout
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-D-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Logout sin conexion: limpia local igualmente</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Desactivar internet"<br>
+      <strong>&#9658; P2</strong> "Logout"<br>
+      <strong>&#9673; V1</strong> "Verificamos: storage local limpio"<br>
+      <strong>&#9673; V2</strong> "Verificamos: navega a Login"
+    </td>
+    <td class="evidence-col">
+      &#10003; Logout funciona offline<br>
+      &#10003; Login Screen visible
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 8. FLUJOS CROSS-APP ========== -->
+<h2 id="s8">8. Flujos Cross-App (Client / Business / Delivery)</h2>
+
+<h3>8.1 Diferencias por flavor <span class="tag tag-po">PO</span></h3>
+<table>
+  <tr><th>Aspecto</th><th>Client</th><th>Business</th><th>Delivery</th></tr>
+  <tr><td><strong>Servicio HTTP</strong></td><td>ClientLoginService</td><td>ClientLoginService</td><td>DeliveryLoginService</td></tr>
+  <tr><td><strong>Endpoint</strong></td><td><code>BUSINESS/signin</code></td><td><code>BUSINESS/signin</code></td><td><code>DELIVERY/signin</code></td></tr>
+  <tr><td><strong>Titulo login</strong></td><td>"Ingresa a tu cuenta"</td><td>"Inicia sesion en Intrale Negocios"</td><td>"Intrale Repartos"</td></tr>
+  <tr><td><strong>Home destino</strong></td><td><code>/clientHome</code></td><td><code>/dashboard</code></td><td><code>/deliveryDashboard</code></td></tr>
+  <tr><td><strong>Rol asignado</strong></td><td><code>UserRole.Client</code></td><td><code>UserRole.BusinessAdmin</code></td><td><code>UserRole.Delivery</code></td></tr>
+  <tr><td><strong>Link registro</strong></td><td>"Registrarme" → /signup</td><td>"Registrar negocio"</td><td>"Solicitar acceso" → /signupDelivery</td></tr>
+  <tr><td><strong>Link pwd recovery</strong></td><td>Si</td><td>Si</td><td>Si</td></tr>
+</table>
+
+<h3>8.2 Diagrama de flujo por flavor</h3>
+<pre class="mermaid">
+graph TD
+  subgraph "Client App"
+    LC["Login<br>'Ingresa a tu cuenta'"]
+    LC -->|"Exito"| HC["/clientHome"]
+    LC -->|"Registro"| SC["/signup"]
+  end
+  subgraph "Business App"
+    LB["Login<br>'Intrale Negocios'"]
+    LB -->|"Exito"| HB["/dashboard"]
+    LB -->|"Registro"| SB["/registerNewBusiness"]
+  end
+  subgraph "Delivery App"
+    LD["Login<br>'Intrale Repartos'"]
+    LD -->|"Exito"| HD["/deliveryDashboard"]
+    LD -->|"Registro"| SD["/signupDelivery"]
+  end
+
+  style LC fill:#e3f2fd
+  style LB fill:#fff8e1
+  style LD fill:#fce4ec
+  style HC fill:#e8f5e9
+  style HB fill:#e8f5e9
+  style HD fill:#e8f5e9
+</pre>
+
+<h3>8.3 Casos cross-app <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">LG-X-001</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Login Client: titulo y navegacion correctos</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "[Client] Verificar titulo 'Ingresa a tu cuenta'"<br>
+      <strong>&#9658; P2</strong> "[Client] Login exitoso"<br>
+      <strong>&#9673; V1</strong> "Verificamos: navega a /clientHome"<br>
+      <strong>&#9673; V2</strong> "Verificamos: link 'Registrarme' visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; Titulo correcto<br>
+      &#10003; /clientHome cargado<br>
+      &#10003; Link Registrarme visible
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-X-002</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Login Business: titulo y navegacion correctos</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "[Business] Verificar titulo 'Inicia sesion en Intrale Negocios'"<br>
+      <strong>&#9658; P2</strong> "[Business] Login exitoso"<br>
+      <strong>&#9673; V1</strong> "Verificamos: navega a /dashboard"<br>
+      <strong>&#9673; V2</strong> "Verificamos: link 'Registrar negocio' visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; Titulo correcto<br>
+      &#10003; /dashboard cargado<br>
+      &#10003; Link Registrar negocio visible
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-X-003</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Login Delivery: titulo, endpoint y navegacion correctos</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "[Delivery] Verificar titulo 'Intrale Repartos'"<br>
+      <strong>&#9658; P2</strong> "[Delivery] Login exitoso"<br>
+      <strong>&#9673; V1</strong> "Verificamos: usa DeliveryLoginService (endpoint /DELIVERY/signin)"<br>
+      <strong>&#9673; V2</strong> "Verificamos: navega a /deliveryDashboard"
+    </td>
+    <td class="evidence-col">
+      &#10003; Titulo correcto<br>
+      &#10003; Endpoint diferente (DELIVERY)<br>
+      &#10003; /deliveryDashboard cargado
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-X-004</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Mismo email, login en los 3 flavors</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login como Client con email@test.com"<br>
+      <strong>&#9658; P2</strong> "Login como Business con email@test.com"<br>
+      <strong>&#9658; P3</strong> "Login como Delivery con email@test.com"<br>
+      <strong>&#9673; V1</strong> "Verificamos: 3 logins exitosos con perfiles diferentes"
+    </td>
+    <td class="evidence-col">
+      &#10003; 3 homes diferentes<br>
+      &#10003; Roles correctos
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-X-005</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Login Delivery con perfil PENDING: falla</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "[Delivery] Login con perfil aun no aprobado"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error 401 (sin perfil APPROVED)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error visible<br>
+      &#10003; No accede al dashboard
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">LG-X-006</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Links secundarios correctos por flavor</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "[Client] Verificar: Registrarme + Recuperar contrasena"<br>
+      <strong>&#9658; P2</strong> "[Business] Verificar: Registrar negocio + Recuperar contrasena"<br>
+      <strong>&#9658; P3</strong> "[Delivery] Verificar: Solicitar acceso + Recuperar contrasena"<br>
+      <strong>&#9673; V1</strong> "Verificamos: links correctos segun flavor"
+    </td>
+    <td class="evidence-col">
+      &#10003; Links presentes y funcionales<br>
+      &#10003; Navegacion correcta
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 9. VALIDACIONES ========== -->
+<h2 id="s9">9. Catalogo Consolidado de Validaciones</h2>
+
+<h3>9.1 Frontend (Konform)</h3>
+<table>
+  <tr><th>Campo</th><th>Modo</th><th>Regla</th><th>Mensaje</th></tr>
+  <tr><td>user (email)</td><td>Login basico</td><td>required + <code>.+@.+\..+</code></td><td><code>form_error_required</code> / <code>form_error_invalid_email</code></td></tr>
+  <tr><td>password</td><td>Login basico</td><td>required + minLength(8)</td><td><code>form_error_required</code> / <code>form_error_min_length_8</code></td></tr>
+  <tr><td>newPassword</td><td>Cambio forzado</td><td>required + minLength(8)</td><td><code>form_error_required</code> / <code>form_error_min_length_8</code></td></tr>
+  <tr><td>name</td><td>Cambio forzado</td><td>required + minLength(1)</td><td><code>form_error_required</code></td></tr>
+  <tr><td>familyName</td><td>Cambio forzado</td><td>required + minLength(1)</td><td><code>form_error_required</code></td></tr>
+</table>
+
+<h3>9.2 Backend (SignIn.kt)</h3>
+<table>
+  <tr><th>Validacion</th><th>HTTP Status</th><th>Cuando</th></tr>
+  <tr><td>Body vacio / malformado</td><td>400</td><td>Request sin body JSON</td></tr>
+  <tr><td><code>email</code> required (not empty)</td><td>400</td><td>Email ausente o vacio</td></tr>
+  <tr><td><code>password</code> required (not empty)</td><td>400</td><td>Password ausente o vacio</td></tr>
+  <tr><td>Cognito: NotAuthorizedException</td><td>401</td><td>Credenciales invalidas</td></tr>
+  <tr><td>Cognito: NEW_PASSWORD_REQUIRED</td><td>200*</td><td>Primer login, requiere cambio (* con mensaje especial)</td></tr>
+  <tr><td>UserBusinessProfile: sin APPROVED</td><td>401</td><td>Usuario sin perfil aprobado en el business</td></tr>
+  <tr><td>Error interno</td><td>500</td><td>Excepcion no controlada</td></tr>
+</table>
+
+<h3>9.3 Backend (Validate.kt)</h3>
+<table>
+  <tr><th>Validacion</th><th>HTTP Status</th><th>Cuando</th></tr>
+  <tr><td>JWT valido (Cognito)</td><td>200</td><td>Token decodificable y no expirado</td></tr>
+  <tr><td>JWT invalido/expirado</td><td>401</td><td>Token no decodificable o expirado (SecuredFunction base)</td></tr>
+</table>
+
+<!-- ========== 10. RESUMEN Y COBERTURA ========== -->
+<h2 id="s10">10. Resumen y Cobertura</h2>
+
+<h3>10.1 Distribucion por flujo</h3>
+<table>
+  <tr><th>Flujo</th><th>Smoke</th><th>Regresion</th><th>Edge</th><th>Total</th></tr>
+  <tr><td>A — Login Basico</td><td>3</td><td>8</td><td>7</td><td>18</td></tr>
+  <tr><td>B — Auto-Login</td><td>2</td><td>4</td><td>2</td><td>8</td></tr>
+  <tr><td>C — Cambio Contrasena Forzado</td><td>2</td><td>5</td><td>3</td><td>10</td></tr>
+  <tr><td>D — Logout</td><td>2</td><td>3</td><td>1</td><td>6</td></tr>
+  <tr><td>X — Cross-App</td><td>3</td><td>0</td><td>3</td><td>6</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td>TOTAL</td><td>12</td><td>20</td><td>16</td><td>48</td></tr>
+</table>
+
+<h3>10.2 Tests existentes vs requeridos</h3>
+<table>
+  <tr><th>Capa</th><th>Existentes</th><th>Tipo</th><th>Estado</th></tr>
+  <tr><td>App ViewModel (LoginViewModelTest)</td><td>8+</td><td>Unit</td><td style="color:#2e7d32">OK</td></tr>
+  <tr><td>App UI (LoginScreenUiTest)</td><td>5</td><td>Desktop UI</td><td style="color:#2e7d32">OK (basicos)</td></tr>
+  <tr><td>QA E2E API (ApiSignInE2ETest)</td><td>4</td><td>API E2E</td><td style="color:#e65100">Parcial</td></tr>
+  <tr><td>Maestro UI (login.yaml)</td><td>1</td><td>E2E Mobile</td><td style="color:#e65100">Parcial (solo happy path)</td></tr>
+  <tr><td>Videos con evidencia v2.0</td><td>0</td><td>Video</td><td style="color:#c62828">FALTANTE</td></tr>
+</table>
+
+<h3>10.3 Cobertura de tests E2E (ApiSignInE2ETest) vs casos del reporte</h3>
+<table>
+  <tr><th>Test E2E existente</th><th>Caso del reporte</th><th>Cubierto</th></tr>
+  <tr><td>signin con credenciales seed retorna tokens</td><td>LG-A-001 + LG-C-001</td><td style="color:#2e7d32">SI</td></tr>
+  <tr><td>signin sin body responde 400</td><td>LG-A-014</td><td style="color:#2e7d32">SI</td></tr>
+  <tr><td>signin con password incorrecto responde 401</td><td>LG-A-008</td><td style="color:#2e7d32">SI</td></tr>
+  <tr><td>signin con email inexistente responde error</td><td>LG-A-009</td><td style="color:#2e7d32">SI</td></tr>
+  <tr><td colspan="2"><em>No cubiertos por tests E2E:</em></td><td style="color:#c62828">44 casos</td></tr>
+</table>
+
+<h3>10.4 Cobertura de Maestro (login.yaml) vs casos del reporte</h3>
+<table>
+  <tr><th>Flow Maestro</th><th>Caso del reporte</th><th>Cubierto</th></tr>
+  <tr><td>login.yaml: happy path Client</td><td>LG-A-001 (parcial) + LG-X-001</td><td style="color:#e65100">PARCIAL</td></tr>
+  <tr><td colspan="2"><em>Gaps: validaciones, errores, flavors, auto-login, logout, cambio password</em></td><td style="color:#c62828">FALTANTE</td></tr>
+</table>
+
+<!-- ========== 11. GAPS ========== -->
+<h2 id="s11">11. Gaps y Recomendaciones</h2>
+
+<h3>11.1 Gaps criticos</h3>
+<table>
+  <tr><th>Prio</th><th>Gap</th><th>Recomendacion</th></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Solo 4 tests E2E API — 44 casos sin cobertura E2E</td><td>Agregar tests E2E para: usuario bloqueado, perfil PENDING, validaciones frontend/backend, cambio password</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Maestro solo tiene happy path Client — sin validaciones ni errores</td><td>Crear flows: login-error.yaml, login-validation.yaml, login-business.yaml, login-delivery.yaml</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin videos de evidencia v2.0 con overlay y narracion</td><td>Crear scripts de grabacion con overlay de caso ID + pasos</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin test E2E para auto-login (flujo B completo)</td><td>Agregar test que verifique persistencia de token y auto-login</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Sin test E2E para logout (flujo D)</td><td>Agregar test: login → logout → verificar token limpio</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Sin test de cambio de contrasena forzado E2E</td><td>Agregar test con usuario seed que requiere NEW_PASSWORD_REQUIRED</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Maestro login.yaml no verifica la pantalla de destino</td><td>Agregar assertVisible de Home/Dashboard post-login</td></tr>
+  <tr><td><span class="tag tag-low">Baja</span></td><td>Sin test de login Delivery (endpoint diferente)</td><td>Agregar test E2E especifico para DeliveryLoginService</td></tr>
+</table>
+
+<h3>11.2 Proximos pasos</h3>
+<ol>
+  <li>Aprobar este reporte como baseline de calidad para Login</li>
+  <li>Crear Maestro flows adicionales para login con overlays de caso ID</li>
+  <li>Expandir ApiSignInE2ETest con los 44 casos faltantes (priorizando Smoke y Alta)</li>
+  <li>Implementar script de grabacion con narracion (TTS o texto) para videos de evidencia</li>
+  <li>Agregar tests E2E para auto-login, logout y cambio de contrasena forzado</li>
+  <li>Crear tests especificos por flavor (Business, Delivery)</li>
+</ol>
+
+<hr>
+<p style="text-align:center;color:#999;font-size:8px;margin-top:20px;">
+  Generado por Intrale PO + QA Agents | v2.0 | 2026-03-01 | Issue #1112
+</p>
+
+</body>
+</html>
