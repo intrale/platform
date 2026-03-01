@@ -135,6 +135,20 @@ function getQuestionById(id) {
     return data.questions.find(q => q.id === id) || null;
 }
 
+/**
+ * Actualizar un campo de una pregunta pendiente.
+ * @param {string} id - ID de la pregunta
+ * @param {object} fields - Campos a actualizar (ej: { telegram_message_id: 123 })
+ */
+function updateQuestionField(id, fields) {
+    const data = loadQuestions();
+    const q = data.questions.find(q => q.id === id);
+    if (q) {
+        Object.assign(q, fields);
+        saveQuestions(data);
+    }
+}
+
 module.exports = {
     addPendingQuestion,
     resolveQuestion,
@@ -142,6 +156,7 @@ module.exports = {
     getExpiredQuestions,
     retryQuestion,
     getQuestionById,
+    updateQuestionField,
     loadQuestions,
     saveQuestions
 };
