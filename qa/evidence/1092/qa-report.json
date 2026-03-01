@@ -1,0 +1,93 @@
+{
+  "issue_number": 1092,
+  "issue_title": "qa(video): Autenticación 2FA — setup y verificación con evidencia en video",
+  "branch": "agent/1092-qa-video-2fa",
+  "timestamp": "2026-02-28T23:12:30Z",
+  "acceptance_criteria": [
+    "Video grabado en emulador Android",
+    "Ambas pantallas (setup + verify) visibles",
+    "Video almacenado en qa/evidence/<issue>/",
+    "Sin crashes ni errores visuales"
+  ],
+  "test_cases": [
+    {
+      "id": "tc-1",
+      "criterion": "Video grabado en emulador Android",
+      "type": "video",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        {
+          "name": "Escenario 1: Navegar a configuración 2FA",
+          "result": "PASSED",
+          "artifact": "qa/evidence/1092/2fa-setup-navigation.mp4"
+        },
+        {
+          "name": "Escenario 2: Pantalla de setup 2FA (detalles)",
+          "result": "PASSED",
+          "artifact": "qa/evidence/1092/2fa-setup-details.mp4"
+        }
+      ]
+    },
+    {
+      "id": "tc-2",
+      "criterion": "Ambas pantallas (setup + verify) visibles",
+      "type": "video",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        {
+          "name": "Escenario 3: Pantalla de verificación 2FA",
+          "result": "PASSED",
+          "artifact": "qa/evidence/1092/2fa-verify-screen.mp4"
+        }
+      ]
+    },
+    {
+      "id": "tc-3",
+      "criterion": "Video almacenado en qa/evidence/<issue>/",
+      "type": "file_system",
+      "file": "qa/evidence/1092/",
+      "tests": [
+        {
+          "name": "Videos presentes en directorio correcto",
+          "result": "PASSED",
+          "artifact": "qa/evidence/1092/"
+        }
+      ]
+    },
+    {
+      "id": "tc-4",
+      "criterion": "Sin crashes ni errores visuales",
+      "type": "video",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        {
+          "name": "Escenario 4: Validación de código incorrecto",
+          "result": "PASSED",
+          "artifact": "qa/evidence/1092/2fa-invalid-code.mp4"
+        },
+        {
+          "name": "Script completó sin crashes",
+          "result": "PASSED",
+          "notes": "Ejecución completada exitosamente sin terminación forzada"
+        }
+      ]
+    }
+  ],
+  "evidence": {
+    "videos": [
+      "qa/evidence/1092/2fa-setup-navigation.mp4",
+      "qa/evidence/1092/2fa-setup-details.mp4",
+      "qa/evidence/1092/2fa-verify-screen.mp4",
+      "qa/evidence/1092/2fa-invalid-code.mp4"
+    ],
+    "screenshots": [
+      "qa/evidence/1092/2fa-setup-screen.png",
+      "qa/evidence/1092/2fa-setup-details.png",
+      "qa/evidence/1092/2fa-verify-screen.png",
+      "qa/evidence/1092/2fa-invalid-short-code.png",
+      "qa/evidence/1092/2fa-invalid-wrong-code.png"
+    ]
+  },
+  "verdict": "APROBADO",
+  "verdict_reason": "Todos los criterios de aceptación validados exitosamente. Se generaron 4 videos de los escenarios 2FA solicitados (setup, setup-detalles, verify, código incorrecto) en el emulador Android virtualAndroid (SDK 35, Android 15, x86_64). El script qa-2fa-video.sh fue creado exitosamente y ejecutado sin crashes. Los videos muestran las pantallas de configuración y verificación de autenticación de dos factores con evidencia visual completa."
+}
