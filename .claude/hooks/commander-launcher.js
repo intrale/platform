@@ -10,10 +10,12 @@ const { spawn } = require("child_process");
 const HOOKS_DIR = __dirname;
 const LOCK_FILE = path.join(HOOKS_DIR, "telegram-commander.lock");
 const LAUNCHING_FILE = path.join(HOOKS_DIR, "telegram-commander.launching");
+const CONFLICT_COOLDOWN_FILE = path.join(HOOKS_DIR, "telegram-commander.conflict");
 const COMMANDER_SCRIPT = path.join(HOOKS_DIR, "telegram-commander.js");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 
 const LAUNCHING_STALE_MS = 30000; // 30s — si el flag de launching tiene más de esto, es stale
+const CONFLICT_COOLDOWN_MS = 45000; // 45s — esperar después de un 409 (> POLL_TIMEOUT_SEC=30s)
 
 function log(msg) {
     const line = "[" + new Date().toISOString() + "] Launcher: " + msg;
@@ -128,11 +130,35 @@ function launchCommander() {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+function isConflictCooldownActive() {
+    if (!fs.existsSync(CONFLICT_COOLDOWN_FILE)) return false;
+    try {
+        const data = JSON.parse(fs.readFileSync(CONFLICT_COOLDOWN_FILE, "utf8"));
+        const age = Date.now() - (data.ts || 0);
+        if (age < CONFLICT_COOLDOWN_MS) {
+            return true; // Cooldown activo — no relanzar aún
+        }
+        // Cooldown expirado — limpiar y continuar
+        try { fs.unlinkSync(CONFLICT_COOLDOWN_FILE); } catch (e2) {}
+    } catch (e) {
+        // Archivo corrupto — limpiar
+        try { fs.unlinkSync(CONFLICT_COOLDOWN_FILE); } catch (e2) {}
+    }
+    return false;
+}
+
 function main() {
     const status = checkLockfile();
 
     if (status.running) {
         // Commander ya corriendo — nada que hacer
+        return;
+    }
+
+    // Verificar cooldown por 409 — el commander anterior murió por conflicto,
+    // esperar a que Telegram libere la conexión vieja (POLL_TIMEOUT_SEC + margen)
+    if (isConflictCooldownActive()) {
+        // NO logear — esto se ejecuta en cada tool use y llenaría el log
         return;
     }
 
