@@ -1,0 +1,94 @@
+{
+  "issue_number": 1092,
+  "issue_title": "qa(video): Autenticación 2FA — setup y verificación con evidencia en video",
+  "branch": "agent/1092-qa-video-2fa",
+  "timestamp": "2026-03-01T00:06:00Z",
+  "acceptance_criteria": [
+    "Video grabado mostrando el flujo completo de setup 2FA",
+    "Pantalla de setup 2FA visible con QR / clave secreta y acciones",
+    "Pantalla de verificación de código 2FA visible",
+    "Videos almacenados en qa/evidence/1092/",
+    "Sin crashes durante la navegación"
+  ],
+  "test_cases": [
+    {
+      "id": "tc-1",
+      "criterion": "Video grabado mostrando el flujo completo de setup 2FA",
+      "type": "android-video",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        { "name": "Escenario 1: Navegación a configuración 2FA", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-setup-navigation.mp4" },
+        { "name": "Escenario 2: Pantalla de setup 2FA con detalles", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-setup-details.mp4" }
+      ]
+    },
+    {
+      "id": "tc-2",
+      "criterion": "Pantalla de setup 2FA visible con QR / clave secreta y acciones",
+      "type": "android-screenshot",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        {
+          "name": "TwoFactorSetupScreen muestra QR pendiente, clave secreta ZGNW****H6VE, botones Copiar clave / Copiar enlace / Buscar autenticador / Compartir",
+          "result": "PASSED",
+          "artifact": "qa/evidence/1092/2fa-setup-screen.png"
+        }
+      ]
+    },
+    {
+      "id": "tc-3",
+      "criterion": "Pantalla de verificación de código 2FA visible",
+      "type": "android-video",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        { "name": "Escenario 3: Pantalla de verificación con campo Código y botón Verificar código", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-verify-screen.mp4" },
+        { "name": "Escenario 4: Validación de código corto (123) muestra error 'Debe contener 6 dígitos'", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-invalid-short-code.png" },
+        { "name": "Escenario 4: Ingreso de código de 6 dígitos incorrecto (000000)", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-invalid-code.mp4" }
+      ]
+    },
+    {
+      "id": "tc-4",
+      "criterion": "Videos almacenados en qa/evidence/1092/",
+      "type": "file-check",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        { "name": "2fa-setup-navigation.mp4 generado (822K)", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-setup-navigation.mp4" },
+        { "name": "2fa-setup-details.mp4 generado (453K)", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-setup-details.mp4" },
+        { "name": "2fa-verify-screen.mp4 generado (652K)", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-verify-screen.mp4" },
+        { "name": "2fa-invalid-code.mp4 generado (367K)", "result": "PASSED", "artifact": "qa/evidence/1092/2fa-invalid-code.mp4" }
+      ]
+    },
+    {
+      "id": "tc-5",
+      "criterion": "Sin crashes durante la navegación",
+      "type": "android-stability",
+      "file": "qa/scripts/qa-2fa-video.sh",
+      "tests": [
+        { "name": "Login exitoso a app Intrale sin crash", "result": "PASSED" },
+        { "name": "Navegación a Perfil sin crash", "result": "PASSED" },
+        { "name": "Apertura de TwoFactorSetupScreen sin crash", "result": "PASSED" },
+        { "name": "Apertura de TwoFactorVerifyScreen sin crash", "result": "PASSED" }
+      ]
+    }
+  ],
+  "pre_existing_tests": { "executed": 0, "passed": 0, "failed": 0 },
+  "generated_tests": { "executed": 4, "passed": 4, "failed": 0 },
+  "evidence": {
+    "videos": [
+      "qa/evidence/1092/2fa-setup-navigation.mp4",
+      "qa/evidence/1092/2fa-setup-details.mp4",
+      "qa/evidence/1092/2fa-verify-screen.mp4",
+      "qa/evidence/1092/2fa-invalid-code.mp4"
+    ],
+    "screenshots": [
+      "qa/evidence/1092/2fa-setup-screen.png",
+      "qa/evidence/1092/2fa-setup-details.png",
+      "qa/evidence/1092/2fa-verify-screen.png",
+      "qa/evidence/1092/2fa-invalid-short-code.png",
+      "qa/evidence/1092/2fa-invalid-wrong-code.png"
+    ],
+    "traces": [],
+    "html_report": null
+  },
+  "verdict": "APROBADO",
+  "verdict_reason": "Todos los criterios de aceptación validados: 4 videos generados mostrando el flujo completo de 2FA (setup + verificación + validación de código inválido), ambas pantallas visibles (TwoFactorSetupScreen y TwoFactorVerifyScreen), validación frontend correcta ('Debe contener 6 dígitos'), sin crashes en ningún escenario."
+}
