@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Signup</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .overlay-example { background: #111; color: #fff; border-radius: 4px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; margin: 6px 0; position: relative; }
+  .overlay-example .ov-id { color: #64b5f6; font-weight: bold; }
+  .overlay-example .ov-step { color: #81c784; }
+  .overlay-example .ov-result { color: #ffb74d; }
+  .overlay-example .ov-time { color: #bbb; position: absolute; right: 10px; top: 10px; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Signup / Registro de Usuarios</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
+    guiones de video y criterios de evidencia para la funcionalidad<br>
+    de Signup de la plataforma Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-03-01</p>
+    <p><strong>Generado por:</strong> PO + QA Agents</p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Indice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo</a></li>
+  <li><a href="#s2">Estandar de Evidencia en Video</a></li>
+  <li><a href="#s3">Arquitectura del Signup</a></li>
+  <li><a href="#s4">Flujo A — Signup Cliente</a></li>
+  <li><a href="#s5">Flujo B — Confirmacion de Cuenta</a></li>
+  <li><a href="#s6">Flujo C — Signup Platform Admin</a></li>
+  <li><a href="#s7">Flujo D — Signup Delivery</a></li>
+  <li><a href="#s8">Flujo E — Registro de Negocio</a></li>
+  <li><a href="#s9">Flujo F — Registro de Vendedor</a></li>
+  <li><a href="#s10">Flujos Cross-App</a></li>
+  <li><a href="#s11">Catalogo de Validaciones</a></li>
+  <li><a href="#s12">Resumen y Cobertura</a></li>
+  <li><a href="#s13">Gaps y Recomendaciones</a></li>
+</ol>
+
+<!-- ========== 1. RESUMEN ========== -->
+<h2 id="s1">1. Resumen Ejecutivo</h2>
+<p>La funcionalidad de Signup comprende <strong>6 flujos diferenciados</strong> que interactuan entre apps (Client, Delivery, Business). Este reporte documenta <strong>76 casos de prueba</strong> con:</p>
+<ul>
+  <li>Diagramas de flujo Mermaid por cada flujo y sub-flujo</li>
+  <li>Guion de video paso a paso para cada caso de prueba</li>
+  <li>Criterios de evidencia visual que debe capturar el video</li>
+  <li>Narracion (texto/audio) de cada paso durante la grabacion</li>
+</ul>
+
+<table>
+  <tr><th>#</th><th>Flujo</th><th>App</th><th>Auth</th><th>Estado inicial</th><th>Casos</th></tr>
+  <tr><td>A</td><td>Signup Cliente</td><td>Client</td><td>No</td><td>DEFAULT/PENDING</td><td>14</td></tr>
+  <tr><td>B</td><td>Confirmacion de Cuenta</td><td>Todas</td><td>No</td><td>N/A</td><td>13</td></tr>
+  <tr><td>C</td><td>Signup Platform Admin</td><td>Business</td><td>No</td><td>PlatformAdmin/APPROVED</td><td>7</td></tr>
+  <tr><td>D</td><td>Signup Delivery</td><td>Delivery, Business</td><td>No</td><td>Delivery/PENDING</td><td>12</td></tr>
+  <tr><td>E</td><td>Registro de Negocio</td><td>Business</td><td>No</td><td>Business PENDING</td><td>13</td></tr>
+  <tr><td>F</td><td>Registro de Vendedor</td><td>Business</td><td>Si (JWT)</td><td>Saler/APPROVED</td><td>11</td></tr>
+  <tr><td>X</td><td>Cross-App</td><td>Multiples</td><td>Variable</td><td>Variable</td><td>6</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td></td><td>76</td></tr>
+</table>
+
+<!-- ========== 2. ESTANDAR DE VIDEO ========== -->
+<h2 id="s2">2. Estandar de Evidencia en Video</h2>
+
+<h3>2.1 Nomenclatura de archivos</h3>
+<div class="video-std">
+  <code>{FLUJO}-{ID}_{slug-descriptivo}.mp4</code><br>
+  Ejemplos:<br>
+  <code>SU-A-001_signup-exitoso-email-valido.mp4</code><br>
+  <code>SU-B-006_codigo-incorrecto.mp4</code><br>
+  <code>SU-X-001_onboarding-completo.mp4</code>
+</div>
+
+<h3>2.2 Estructura del video</h3>
+<p>Cada video de evidencia DEBE contener estas 4 fases:</p>
+<table>
+  <tr><th>Fase</th><th>Duracion</th><th>Contenido</th></tr>
+  <tr><td><strong>1. Titulo</strong></td><td>3-5 seg</td><td>Overlay con ID del caso, nombre completo, fecha y entorno</td></tr>
+  <tr><td><strong>2. Precondiciones</strong></td><td>3-5 seg</td><td>Mostrar/narrar el estado inicial requerido</td></tr>
+  <tr><td><strong>3. Ejecucion</strong></td><td>Variable</td><td>Cada paso narrado con overlay de numero de paso</td></tr>
+  <tr><td><strong>4. Verificacion</strong></td><td>5-10 seg</td><td>Evidencia explicita de CADA resultado esperado</td></tr>
+</table>
+
+<h3>2.3 Overlay de pantalla (formato obligatorio)</h3>
+<div class="overlay-example">
+  <span class="ov-id">SU-A-001</span> | Registro exitoso con email valido<span class="ov-time">00:12</span><br>
+  <span class="ov-step">► Paso 3/4:</span> Ingresar email valido (test@example.com)<br>
+  <span class="ov-result">◉ Verificar: Spinner aparece en boton "Registrarme"</span>
+</div>
+<p>El overlay debe ser visible pero no obstruir la interfaz. Posicion sugerida: franja semi-transparente en la parte inferior.</p>
+
+<h3>2.4 Narracion</h3>
+<table>
+  <tr><th>Metodo</th><th>Formato</th><th>Cuando usar</th></tr>
+  <tr><td><strong>Audio TTS</strong> (ideal)</td><td>Voz sintetizada relatando cada paso</td><td>Videos finales para stakeholders</td></tr>
+  <tr><td><strong>Texto overlay</strong></td><td>Subtitulos con cada accion</td><td>Videos automatizados (Maestro/script)</td></tr>
+  <tr><td><strong>Audio + texto</strong></td><td>Ambos simultaneamente</td><td>Videos de demostracion formal</td></tr>
+</table>
+
+<h3>2.5 Evidencia de resultados esperados</h3>
+<div class="video-std">
+  <strong>Obligatorio para CADA resultado esperado:</strong>
+  <ol>
+    <li><strong>Pausa visual</strong> (2-3 seg): mostrar claramente el resultado en pantalla</li>
+    <li><strong>Highlight/marca</strong>: flecha, recuadro o zoom al elemento que evidencia el resultado</li>
+    <li><strong>Overlay de verificacion</strong>: texto <code>✓ VERIFICADO: [descripcion del resultado]</code> o <code>✗ FALLO: [descripcion]</code></li>
+    <li><strong>Screenshot automatico</strong>: captura individual del momento de verificacion</li>
+  </ol>
+</div>
+
+<h3>2.6 Ejemplo de guion de video completo</h3>
+<table>
+  <tr><th>Tiempo</th><th>Overlay</th><th>Narracion</th><th>Accion en pantalla</th></tr>
+  <tr><td>00:00</td><td><code>SU-A-001 | Registro exitoso con email valido</code></td><td>"Caso de prueba SU-A-001: Registro exitoso con email valido"</td><td>Pantalla negra con titulo</td></tr>
+  <tr><td>00:04</td><td><code>Precondicion: App Client instalada, conexion activa</code></td><td>"Precondicion: tenemos la app Client instalada con conexion a internet"</td><td>Mostrar app abierta en Login</td></tr>
+  <tr><td>00:08</td><td><code>► Paso 1/4: Abrir app Client</code></td><td>"Paso uno: abrimos la aplicacion Client"</td><td>App visible en pantalla de Login</td></tr>
+  <tr><td>00:12</td><td><code>► Paso 2/4: Tocar Registrarme</code></td><td>"Paso dos: tocamos el boton Registrarme"</td><td>Tap en boton, navega a SignUp</td></tr>
+  <tr><td>00:16</td><td><code>► Paso 3/4: Ingresar email valido</code></td><td>"Paso tres: ingresamos un email valido"</td><td>Escribir test@example.com</td></tr>
+  <tr><td>00:22</td><td><code>► Paso 4/4: Tocar Registrarme</code></td><td>"Paso cuatro: tocamos Registrarme para enviar"</td><td>Tap en boton</td></tr>
+  <tr><td>00:24</td><td><code>◉ Verificando: Spinner aparece en boton</code></td><td>"Verificamos: el spinner aparece y el boton se deshabilita"</td><td>Spinner visible, pausa 2s</td></tr>
+  <tr><td>00:28</td><td><code>✓ VERIFICADO: Navega a /confirmSignUp</code></td><td>"Verificado: la app navego a la pantalla de confirmacion"</td><td>ConfirmSignUp visible, screenshot</td></tr>
+  <tr><td>00:33</td><td><code>✓ RESULTADO: PASS</code></td><td>"Caso SU-A-001: resultado PASS"</td><td>Pantalla final verde</td></tr>
+</table>
+
+<!-- ========== 3. ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura del Signup</h2>
+
+<h3>3.1 Diagrama general de capas</h3>
+<pre class="mermaid">
+graph LR
+  UI["UI Screen<br>(Compose)"] --> VM["ViewModel<br>(Estado + Konform)"]
+  VM --> DO["Do[Action]<br>(Logica negocio)"]
+  DO --> CL["Client[Service]<br>(HTTP Client)"]
+  CL --> BE["Backend Ktor<br>(/{biz}/{fn})"]
+  BE --> COG["Amazon Cognito<br>(Identity)"]
+  BE --> DDB["DynamoDB<br>(Persistencia)"]
+</pre>
+
+<h3>3.2 Mapa de navegacion completo</h3>
+<pre class="mermaid">
+graph TD
+  LOGIN["Login Screen"]
+  LOGIN -->|"CLIENT: Registrarme"| SU_CLIENT["/signup<br>SignUpScreen"]
+  LOGIN -->|"DELIVERY: Solicitar acceso"| SU_DEL["/signupDelivery<br>SignUpDeliveryScreen"]
+  LOGIN -->|"BUSINESS: Registrar negocio"| REG_BIZ["/registerNewBusiness<br>RegisterNewBusinessScreen"]
+  LOGIN -->|"BUSINESS: Seleccionar perfil"| SEL_PROF["/selectSignupProfile<br>SelectSignUpProfileScreen"]
+  SEL_PROF -->|"Platform Admin"| SU_PA["/signupPlatformAdmin<br>SignUpPlatformAdminScreen"]
+  SEL_PROF -->|"Delivery"| SU_DEL
+  SU_CLIENT -->|"Exito"| CONFIRM["/confirmSignUp<br>ConfirmSignUpScreen"]
+  CONFIRM -->|"Exito"| LOGIN
+  SU_DEL -->|"Exito"| LOGIN
+  SU_PA -->|"Exito"| LOGIN
+  REG_BIZ -->|"Exito"| LOGIN
+  DASH["Dashboard<br>(Autenticado)"] -->|"Business Admin"| REG_SAL["/registerSaler<br>RegisterSalerScreen"]
+  REG_SAL -->|"Exito"| REG_SAL
+
+  style LOGIN fill:#fff3e0,stroke:#e65100
+  style CONFIRM fill:#e8f5e9,stroke:#2e7d32
+  style DASH fill:#e3f2fd,stroke:#0d47a1
+</pre>
+
+<h3>3.3 Endpoints del backend</h3>
+<table>
+  <tr><th>Endpoint</th><th>Metodo</th><th>Auth</th><th>Funcion</th></tr>
+  <tr><td><code>/{biz}/signup</code></td><td>POST</td><td>No</td><td>SignUp</td></tr>
+  <tr><td><code>/{biz}/confirmSignUp</code></td><td>POST</td><td>No</td><td>ConfirmSignUp</td></tr>
+  <tr><td><code>/{biz}/signupPlatformAdmin</code></td><td>POST</td><td>No</td><td>SignUpPlatformAdmin</td></tr>
+  <tr><td><code>/{bizPublicId}/signupDelivery</code></td><td>POST</td><td>No</td><td>SignUpDelivery</td></tr>
+  <tr><td><code>/{biz}/registerBusiness</code></td><td>POST</td><td>No</td><td>RegisterBusiness</td></tr>
+  <tr><td><code>/{biz}/registerSaler</code></td><td>POST</td><td>JWT</td><td>RegisterSaler</td></tr>
+  <tr><td><code>/{biz}/reviewBusiness</code></td><td>POST</td><td>JWT+2FA</td><td>ReviewBusinessRegistration</td></tr>
+  <tr><td><code>/{biz}/searchBusinesses</code></td><td>GET</td><td>No</td><td>SearchBusinesses</td></tr>
+</table>
+
+<!-- ========== 4. FLUJO A — SIGNUP CLIENTE ========== -->
+<h2 id="s4">4. Flujo A — Signup Cliente</h2>
+
+<h3>4.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Usuario nuevo descarga la app Client y se registra con su email. El sistema crea su cuenta en Cognito, envia codigo de verificacion, y persiste el perfil como DEFAULT/PENDING en DynamoDB.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> App Client instalada | Conexion a internet | Business slug valido y APPROVED
+</div>
+
+<h3>4.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LOGIN["Pantalla Login<br>Flavor CLIENT"]
+  LOGIN -->|"Toca 'Registrarme'"| SIGNUP["Pantalla SignUp<br>Campo: email"]
+  SIGNUP -->|"Ingresa email"| VAL_FE{"Validacion<br>Frontend<br>(Konform)"}
+  VAL_FE -->|"Email vacio o<br>no matchea regex"| ERR_FE["Error inline:<br>'Correo invalido'<br>🎥 Capturar error"]
+  ERR_FE --> SIGNUP
+  VAL_FE -->|"Email valido"| LOADING["Boton: spinner +<br>deshabilitado<br>🎥 Capturar estado"]
+  LOADING --> HTTP["POST /{biz}/signup<br>{email}"]
+  HTTP --> VAL_BE{"Validacion<br>Backend"}
+  VAL_BE -->|"Body vacio"| E400["HTTP 400<br>Snackbar error"]
+  VAL_BE -->|"Email invalido"| E400
+  VAL_BE -->|"Email valido"| COGNITO["Cognito:<br>adminCreateUser"]
+  COGNITO -->|"UsernameExistsException"| SKIP["Ignorar<br>(idempotente)"]
+  COGNITO -->|"Otro error"| E500["HTTP 500<br>Snackbar error"]
+  COGNITO -->|"OK"| STATE{"computeRelationState"}
+  SKIP --> STATE
+  STATE -->|"Tiene perfil APPROVED"| APPROVED["DynamoDB: state=APPROVED"]
+  STATE -->|"Sin perfil previo"| PENDING["DynamoDB: state=PENDING"]
+  APPROVED --> OK200["HTTP 200 OK"]
+  PENDING --> OK200
+  OK200 --> CONFIRM["Navega a /confirmSignUp<br>🎥 Capturar navegacion"]
+  E400 --> SIGNUP
+  E500 --> SIGNUP
+
+  style ERR_FE fill:#ffebee,stroke:#c62828
+  style E400 fill:#ffebee,stroke:#c62828
+  style E500 fill:#ffebee,stroke:#c62828
+  style OK200 fill:#e8f5e9,stroke:#2e7d32
+  style CONFIRM fill:#e8f5e9,stroke:#2e7d32
+  style LOADING fill:#e3f2fd,stroke:#1565c0
+</pre>
+
+<h3>4.3 Campos y validaciones</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo</th><th>Validacion Frontend</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
+  <tr><td>email</td><td>TextField</td><td>required + <code>.+@.+\..+</code></td><td>required + <code>.+@.+\..+</code></td><td><code>form_error_invalid_email</code></td></tr>
+</table>
+
+<h3>4.4 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Registro exitoso con email valido</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso SU-A-001: Registro exitoso con email valido"<br>
+      <strong>► P1</strong> "Abrimos la app Client, estamos en Login"<br>
+      <strong>► P2</strong> "Tocamos el boton Registrarme"<br>
+      <strong>► P3</strong> "Ingresamos un email valido: test@example.com"<br>
+      <strong>► P4</strong> "Tocamos Registrarme para enviar"<br>
+      <strong>◉ V1</strong> "Verificamos: spinner visible en el boton"<br>
+      <strong>◉ V2</strong> "Verificamos: la app navego a ConfirmSignUp"
+    </td>
+    <td class="evidence-col">
+      ✓ Spinner aparece en boton (screenshot)<br>
+      ✓ Boton queda deshabilitado<br>
+      ✓ Pantalla ConfirmSignUp visible<br>
+      ✓ No hay mensaje de error
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email vacio</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso SU-A-002: Validacion con email vacio"<br>
+      <strong>► P1</strong> "Estamos en SignUpScreen"<br>
+      <strong>► P2</strong> "Dejamos el campo email vacio"<br>
+      <strong>► P3</strong> "Tocamos Registrarme"<br>
+      <strong>◉ V1</strong> "Verificamos: error inline 'Correo invalido' visible"<br>
+      <strong>◉ V2</strong> "Verificamos: NO se hizo llamada HTTP"
+    </td>
+    <td class="evidence-col">
+      ✓ Error inline visible bajo campo email<br>
+      ✓ Texto del error legible<br>
+      ✓ Permanece en SignUpScreen<br>
+      ✓ Sin snackbar de red
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email sin arroba</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos 'usuario.com' (sin @)"<br>
+      <strong>► P2</strong> "Tocamos Registrarme"<br>
+      <strong>◉ V1</strong> "Verificamos: error inline visible"
+    </td>
+    <td class="evidence-col">
+      ✓ Error inline "Correo invalido"<br>
+      ✓ Sin llamada HTTP
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email sin dominio</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos 'usuario@' (sin dominio)"<br>
+      <strong>► P2</strong> "Tocamos Registrarme"<br>
+      <strong>◉ V1</strong> "Verificamos: error inline visible"
+    </td>
+    <td class="evidence-col">
+      ✓ Error inline "Correo invalido"
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email sin TLD</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos 'usuario@dominio' (sin punto)"<br>
+      <strong>► P2</strong> "Tocamos Registrarme"<br>
+      <strong>◉ V1</strong> "Verificamos: regex requiere punto despues del @"
+    </td>
+    <td class="evidence-col">
+      ✓ Error inline "Correo invalido"
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email ya existente (idempotente)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Registramos test@example.com (ya existe en Cognito)"<br>
+      <strong>► P2</strong> "Tocamos Registrarme"<br>
+      <strong>◉ V1</strong> "Verificamos: respuesta 200 OK (idempotente)"<br>
+      <strong>◉ V2</strong> "Verificamos: navega a ConfirmSignUp sin error"
+    </td>
+    <td class="evidence-col">
+      ✓ Sin mensaje de error<br>
+      ✓ Navega a ConfirmSignUp<br>
+      ✓ Cognito ignora UsernameExistsException
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-007</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email con perfil APPROVED previo</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Usamos email que ya tiene perfil APPROVED en otro negocio"<br>
+      <strong>► P2</strong> "Registramos en nuevo negocio"<br>
+      <strong>◉ V1</strong> "Verificamos: nuevo perfil con state=APPROVED (no PENDING)"
+    </td>
+    <td class="evidence-col">
+      ✓ Registro exitoso<br>
+      ✓ Verificar en DB: state=APPROVED
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-008</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Email con caracteres especiales</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos 'user+tag@example.com'"<br>
+      <strong>► P2</strong> "Enviamos registro"<br>
+      <strong>◉ V1</strong> "Verificamos: pasa validacion frontend y backend"
+    </td>
+    <td class="evidence-col">
+      ✓ Registro exitoso<br>
+      ✓ Sin errores
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-009</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Email en mayusculas</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos 'USER@EXAMPLE.COM'"<br>
+      <strong>◉ V1</strong> "Verificamos: si se normaliza a minusculas o es case-sensitive"
+    </td>
+    <td class="evidence-col">
+      ✓ Comportamiento documentado<br>
+      ✓ Login posterior funciona
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Sin conexion a internet</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Desactivamos WiFi/datos (mostrar en settings)"<br>
+      <strong>► P2</strong> "Intentamos registrarnos"<br>
+      <strong>◉ V1</strong> "Verificamos: snackbar con error de red"<br>
+      <strong>◉ V2</strong> "Verificamos: no queda en estado inconsistente"
+    </td>
+    <td class="evidence-col">
+      ✓ Settings mostrando WiFi OFF<br>
+      ✓ Snackbar de error visible<br>
+      ✓ App estable, puede reintentar
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-011</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Boton deshabilitado durante carga</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos email valido"<br>
+      <strong>► P2</strong> "Tocamos Registrarme"<br>
+      <strong>► P3</strong> "Intentamos tocar de nuevo durante la carga"<br>
+      <strong>◉ V1</strong> "Verificamos: boton no responde al segundo tap"
+    </td>
+    <td class="evidence-col">
+      ✓ Spinner visible en boton<br>
+      ✓ Segundo tap sin efecto<br>
+      ✓ No se duplica request
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-012</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: body vacio (API directa)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Enviamos POST sin body via curl/Postman"<br>
+      <strong>◉ V1</strong> "Verificamos: HTTP 400 'Request body not found'"
+    </td>
+    <td class="evidence-col">
+      ✓ Response status 400<br>
+      ✓ Mensaje de error correcto
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-013</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Business slug inexistente</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "POST /negocio-invalido/signup"<br>
+      <strong>◉ V1</strong> "Verificamos: error del router dinamico"
+    </td>
+    <td class="evidence-col">
+      ✓ Error HTTP (no 200)<br>
+      ✓ Business debe estar APPROVED
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-A-014</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Navegacion post-signup</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Completamos signup exitoso"<br>
+      <strong>◉ V1</strong> "Verificamos: estamos en ConfirmSignUpScreen"<br>
+      <strong>► P2</strong> "Presionamos Back"<br>
+      <strong>◉ V2</strong> "Verificamos: NO vuelve a SignUp (backstack limpio)"
+    </td>
+    <td class="evidence-col">
+      ✓ ConfirmSignUp visible<br>
+      ✓ Back NO vuelve a SignUp<br>
+      ✓ Sale de la app o queda en Login
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 5. FLUJO B — CONFIRMACION ========== -->
+<h2 id="s5">5. Flujo B — Confirmacion de Cuenta</h2>
+
+<h3>5.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Tras el signup, el usuario recibe email de Cognito con contrasena temporal y codigo de 6 digitos. Debe confirmar su cuenta ingresando email + codigo. Puede reenviar el codigo si lo necesita.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Signup completado (Flujo A) | Email recibido con codigo | Codigo no expirado
+</div>
+
+<h3>5.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Desde Flujo A")) --> SCREEN["Pantalla ConfirmSignUp<br>Campos: email + codigo"]
+  SCREEN --> INPUT["Ingresa email + codigo"]
+  INPUT --> VAL{"Validacion<br>Frontend"}
+  VAL -->|"Email invalido"| ERR_EM["Error: 'Correo invalido'<br>🎥 Capturar"]
+  VAL -->|"Codigo no es 6 digitos"| ERR_CD["Error: 'Codigo invalido'<br>🎥 Capturar"]
+  VAL -->|"Validos"| HTTP["POST /{biz}/confirmSignUp<br>{email, code}"]
+  ERR_EM --> SCREEN
+  ERR_CD --> SCREEN
+  HTTP --> COG{"Cognito:<br>confirmSignUp"}
+  COG -->|"NotAuthorizedException"| E401["HTTP 401<br>Snackbar error"]
+  COG -->|"CodeMismatch /<br>ExpiredCode"| E500["HTTP 500<br>Snackbar error"]
+  COG -->|"OK"| OK["HTTP 200"]
+  E401 --> SCREEN
+  E500 --> SCREEN
+  OK --> LOGIN["Navega a /login<br>(limpia backstack)<br>🎥 Capturar"]
+
+  SCREEN -->|"Toca 'Reenviar codigo'"| RESEND["Llama DoSignUp.execute(email)<br>(mismo endpoint signup)"]
+  RESEND --> SNACK["Snackbar: 'Codigo reenviado'<br>🎥 Capturar"]
+  SNACK --> SCREEN
+
+  style ERR_EM fill:#ffebee,stroke:#c62828
+  style ERR_CD fill:#ffebee,stroke:#c62828
+  style E401 fill:#ffebee,stroke:#c62828
+  style E500 fill:#ffebee,stroke:#c62828
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style LOGIN fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>5.3 Campos y validaciones</h3>
+<table>
+  <tr><th>Campo</th><th>Frontend</th><th>Backend</th><th>Mensaje</th></tr>
+  <tr><td>email</td><td>required + <code>.+@.+\..+</code></td><td>required (not-empty)</td><td><code>form_error_invalid_email</code></td></tr>
+  <tr><td>code</td><td>required + <code>^\d{6}$</code></td><td>required (not-empty) + Cognito valida</td><td><code>form_error_invalid_code</code></td></tr>
+</table>
+
+<h3>5.4 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">SU-B-001</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Confirmacion exitosa</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Completamos signup, obtenemos codigo del email"<br>
+      <strong>► P2</strong> "Ingresamos email y codigo de 6 digitos"<br>
+      <strong>► P3</strong> "Tocamos Confirmar"<br>
+      <strong>◉ V1</strong> "Verificamos: navega a Login"<br>
+      <strong>◉ V2</strong> "Verificamos: podemos hacer login con el usuario"
+    </td>
+    <td class="evidence-col">✓ Login screen visible<br>✓ Backstack limpio<br>✓ Login exitoso</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-002</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Codigo vacio</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Email valido, codigo vacio"<br>
+      <strong>► P2</strong> "Tocamos Confirmar"<br>
+      <strong>◉ V1</strong> "Error inline: 'Codigo invalido'"
+    </td>
+    <td class="evidence-col">✓ Error inline visible<br>✓ Sin llamada HTTP</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-003</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Codigo < 6 digitos</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos codigo '123'"<br>
+      <strong>◉ V1</strong> "Error: regex ^\d{6}$ no matchea"
+    </td>
+    <td class="evidence-col">✓ Error inline visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-004</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Codigo > 6 digitos</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos '1234567'"<br>
+      <strong>◉ V1</strong> "Error inline visible"
+    </td>
+    <td class="evidence-col">✓ Error "Codigo invalido"</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-005</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Codigo con letras</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ingresamos 'abc123'"<br>
+      <strong>◉ V1</strong> "Error: regex solo acepta digitos"
+    </td>
+    <td class="evidence-col">✓ Error inline visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-006</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Codigo incorrecto (000000)</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Email correcto, codigo '000000'"<br>
+      <strong>► P2</strong> "Tocamos Confirmar"<br>
+      <strong>◉ V1</strong> "Verificamos: snackbar con error del backend"<br>
+      <strong>◉ V2</strong> "Verificamos: permanece en la pantalla"
+    </td>
+    <td class="evidence-col">✓ Snackbar error visible<br>✓ Permanece en ConfirmSignUp</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-007</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Codigo expirado</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Esperamos expiracion del codigo"<br>
+      <strong>► P2</strong> "Intentamos confirmar"<br>
+      <strong>◉ V1</strong> "Error de Cognito"<br>
+      <strong>◉ V2</strong> "Reenviar codigo funciona"
+    </td>
+    <td class="evidence-col">✓ Error visible<br>✓ Reenvio exitoso</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-008</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Reenvio de codigo</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Tocamos 'Reenviar codigo'"<br>
+      <strong>◉ V1</strong> "Snackbar: 'Codigo reenviado'"<br>
+      <strong>◉ V2</strong> "Email recibido con nuevo codigo"
+    </td>
+    <td class="evidence-col">✓ Snackbar visible<br>✓ Permanece en pantalla</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-009</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email no registrado</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Email diferente al usado en signup"<br>
+      <strong>◉ V1</strong> "Error de Cognito (usuario no encontrado)"
+    </td>
+    <td class="evidence-col">✓ Snackbar error</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-010</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email vacio</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Email vacio, codigo valido"<br>
+      <strong>◉ V1</strong> "Error inline en campo email"
+    </td>
+    <td class="evidence-col">✓ Error inline visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-011</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Navegacion: back post-confirm</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Confirmamos exitosamente"<br>
+      <strong>► P2</strong> "Presionamos Back"<br>
+      <strong>◉ V1</strong> "NO vuelve a ConfirmSignUp"
+    </td>
+    <td class="evidence-col">✓ Backstack limpio<br>✓ Queda en Login o sale</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-012</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Doble confirmacion</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Usamos codigo ya confirmado"<br>
+      <strong>◉ V1</strong> "Error de Cognito"
+    </td>
+    <td class="evidence-col">✓ Error visible, no crash</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-B-013</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: body vacio</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "POST sin body (API directa)"<br>
+      <strong>◉ V1</strong> "HTTP 400"
+    </td>
+    <td class="evidence-col">✓ Status 400<br>✓ Mensaje correcto</td>
+  </tr>
+</table>
+
+<!-- ========== 6. FLUJO C — PLATFORM ADMIN ========== -->
+<h2 id="s6">6. Flujo C — Signup Platform Admin</h2>
+
+<h3>6.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Flujo unico: solo el <strong>primer usuario del sistema</strong> puede registrarse como PlatformAdmin. Si ya existe cualquier usuario en Cognito, retorna 401. Perfil queda APPROVED automaticamente.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> App Business/Desktop | User pool de Cognito VACIO | Login → Seleccionar perfil → Platform Admin
+</div>
+
+<h3>6.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LOGIN["Login Screen<br>Business/Desktop"]
+  LOGIN -->|"Seleccionar perfil"| SELECT["SelectSignUpProfile<br>2 opciones"]
+  SELECT -->|"Platform Admin"| SCREEN["SignUpPlatformAdmin<br>Campo: email"]
+  SCREEN --> VAL{"Validacion<br>Frontend"}
+  VAL -->|"Invalido"| ERR["Error inline<br>🎥 Capturar"]
+  ERR --> SCREEN
+  VAL -->|"Valido"| HTTP["POST /{biz}/signupPlatformAdmin"]
+  HTTP --> CHECK{"Backend:<br>cognito.listUsers()"}
+  CHECK -->|"Usuarios EXISTEN"| E401["HTTP 401 Unauthorized<br>🎥 Capturar rechazo"]
+  CHECK -->|"Pool VACIO"| SIGNUP["SignUp.execute(email)"]
+  SIGNUP --> PROF["Sobreescribe perfil:<br>PlatformAdmin / APPROVED"]
+  PROF --> OK["HTTP 200 OK"]
+  OK --> RLOGIN["Navega a /login<br>(sin confirmSignUp)<br>🎥 Capturar"]
+  E401 --> SCREEN
+
+  style E401 fill:#ffebee,stroke:#c62828
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style RLOGIN fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>6.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">SU-C-001</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Primer usuario PlatformAdmin</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Pool Cognito vacio (mostrar evidencia)"<br>
+      <strong>► P2</strong> "App Business → Login → Seleccionar perfil"<br>
+      <strong>► P3</strong> "Seleccionamos Platform Admin"<br>
+      <strong>► P4</strong> "Ingresamos email valido"<br>
+      <strong>► P5</strong> "Tocamos Registrarme"<br>
+      <strong>◉ V1</strong> "Navega a Login (no a confirmSignUp)"<br>
+      <strong>◉ V2</strong> "Perfil PlatformAdmin/APPROVED en DB"
+    </td>
+    <td class="evidence-col">✓ Pool vacio (pre-check)<br>✓ 200 OK<br>✓ Navega a Login<br>✓ Perfil APPROVED</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-C-002</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Segundo intento → 401</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Ya existe usuario en Cognito"<br>
+      <strong>► P2</strong> "Intentamos registrar otro PlatformAdmin"<br>
+      <strong>◉ V1</strong> "Snackbar: 401 Unauthorized"<br>
+      <strong>◉ V2</strong> "No se crea usuario en Cognito"
+    </td>
+    <td class="evidence-col">✓ Error 401 visible<br>✓ Permanece en pantalla</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-C-003</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email invalido</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Email sin formato"<br><strong>◉ V1</strong> "Error inline"</td>
+    <td class="evidence-col">✓ Error inline visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-C-004</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Segundo intento mismo email</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Registrar PlatformAdmin, luego reintentar"<br><strong>◉ V1</strong> "401 (pool ya no vacio)"</td>
+    <td class="evidence-col">✓ 401 en segundo intento</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-C-005</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Navegacion SelectSignUpProfile</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Verificar ambas opciones navegan correctamente"</td>
+    <td class="evidence-col">✓ PlatformAdmin → /signupPlatformAdmin<br>✓ Delivery → /signupDelivery</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-C-006</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>No requiere confirmacion</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Navega a /login, NO a /confirmSignUp"</td>
+    <td class="evidence-col">✓ Destino es Login</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-C-007</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>No visible en CLIENT</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Abrir app Client"<br><strong>◉ V1</strong> "No hay opcion PlatformAdmin"</td>
+    <td class="evidence-col">✓ Ruta no disponible</td>
+  </tr>
+</table>
+
+<!-- ========== 7. FLUJO D — DELIVERY ========== -->
+<h2 id="s7">7. Flujo D — Signup Delivery</h2>
+
+<h3>7.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Repartidor se registra para un negocio especifico. Ingresa email y selecciona negocio de un dropdown con busqueda dinamica. Queda PENDING hasta que el Business Admin lo apruebe.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> App Delivery o Business | Al menos un negocio APPROVED | Delivery no registrado previamente para ese negocio
+</div>
+
+<h3>7.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LOGIN["Login Screen"]
+  LOGIN -->|"DELIVERY: 'Solicitar acceso'<br>BUSINESS: 'Registro Delivery'"| SCREEN["SignUpDelivery Screen<br>Campos: email + negocio"]
+  SCREEN --> SEARCH["Tipea en campo 'Negocio'"]
+  SEARCH --> API["GET /searchBusinesses?q=..."]
+  API --> DROP["Dropdown con sugerencias<br>🎥 Capturar dropdown"]
+  DROP -->|"Selecciona negocio"| SELECTED["businessPublicId = seleccion"]
+  SELECTED --> EMAIL["Ingresa email"]
+  EMAIL --> VAL{"Validacion<br>Frontend"}
+  VAL -->|"Email invalido"| ERR_EM["Error: 'Correo invalido'<br>🎥 Capturar"]
+  VAL -->|"Sin negocio"| ERR_BIZ["Error: businessPublicId vacio<br>🎥 Capturar"]
+  VAL -->|"Valido"| HTTP["POST /{bizPublicId}/signupDelivery<br>{email}"]
+  ERR_EM --> SCREEN
+  ERR_BIZ --> SCREEN
+  HTTP --> CHECK{"Backend:<br>Delivery existe?"}
+  CHECK -->|"Ya registrado"| E500["HTTP 500:<br>'Delivery ya registrado'<br>🎥 Capturar"]
+  CHECK -->|"No existe"| COG["Cognito: adminCreateUser"]
+  COG --> SAVE["DynamoDB:<br>Delivery / PENDING"]
+  SAVE --> OK["HTTP 200"]
+  OK --> RLOGIN["Navega a /login<br>🎥 Capturar"]
+  E500 --> SCREEN
+
+  style ERR_EM fill:#ffebee,stroke:#c62828
+  style ERR_BIZ fill:#ffebee,stroke:#c62828
+  style E500 fill:#ffebee,stroke:#c62828
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style RLOGIN fill:#e8f5e9,stroke:#2e7d32
+  style DROP fill:#e3f2fd,stroke:#1565c0
+</pre>
+
+<h3>7.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">SU-D-001</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Registro delivery exitoso</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "App Delivery → 'Solicitar acceso'"<br>
+      <strong>► P2</strong> "Buscamos negocio, seleccionamos del dropdown"<br>
+      <strong>► P3</strong> "Ingresamos email"<br>
+      <strong>► P4</strong> "Tocamos 'Solicitar acceso'"<br>
+      <strong>◉ V1</strong> "Perfil Delivery/PENDING creado"<br>
+      <strong>◉ V2</strong> "Navega a Login"
+    </td>
+    <td class="evidence-col">✓ Dropdown visible<br>✓ Seleccion correcta<br>✓ 200 OK<br>✓ Navega a Login</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-002</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Busqueda muestra resultados</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Tipear en campo negocio"<br><strong>◉ V1</strong> "Dropdown con negocios"</td>
+    <td class="evidence-col">✓ Dropdown visible con items<br>✓ Nombres correctos</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-003</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email vacio</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Seleccionar negocio, email vacio"<br><strong>◉ V1</strong> "Error inline"</td>
+    <td class="evidence-col">✓ Error en campo email</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-004</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Negocio no seleccionado</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Email valido, sin seleccionar negocio"<br><strong>◉ V1</strong> "Validacion falla"</td>
+    <td class="evidence-col">✓ Error visible<br>✓ businessPublicId requerido</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-005</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email invalido</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Email invalido + negocio"<br><strong>◉ V1</strong> "Error 'Correo invalido'"</td>
+    <td class="evidence-col">✓ Error inline (hardcoded)</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-006</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Delivery duplicado mismo negocio</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Registrar delivery (exitoso)"<br>
+      <strong>► P2</strong> "Mismo email, mismo negocio"<br>
+      <strong>◉ V1</strong> "Error: 'Delivery ya registrado'"
+    </td>
+    <td class="evidence-col">✓ Error 500 visible<br>✓ Mensaje claro</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-007</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Mismo delivery, diferente negocio</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Registrar para negocio X, luego negocio Y"<br><strong>◉ V1</strong> "Ambos exitosos"</td>
+    <td class="evidence-col">✓ 200 OK en ambos<br>✓ Dos perfiles creados</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-008</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Busqueda sin resultados</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Tipear texto sin match"<br><strong>◉ V1</strong> "Dropdown vacio o no aparece"</td>
+    <td class="evidence-col">✓ No hay items<br>✓ No puede enviar sin seleccion</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-009</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Seleccion setea publicId</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Seleccionar del dropdown"<br><strong>◉ V1</strong> "Campo muestra nombre correcto"</td>
+    <td class="evidence-col">✓ Nombre visible<br>✓ publicId interno correcto</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-010</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>No requiere confirmacion</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Navega a /login, NO a /confirmSignUp"</td>
+    <td class="evidence-col">✓ Destino es Login</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-011</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Desde Business app</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Business app → 'Registro Delivery'"<br><strong>◉ V1</strong> "Mismo flujo funcional"</td>
+    <td class="evidence-col">✓ Funciona igual</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-D-012</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>No visible en CLIENT</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "No hay ruta ni boton en Client"</td>
+    <td class="evidence-col">✓ Ruta no disponible</td>
+  </tr>
+</table>
+
+<!-- ========== 8. FLUJO E — REGISTRO NEGOCIO ========== -->
+<h2 id="s8">8. Flujo E — Registro de Negocio</h2>
+
+<h3>8.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Comerciante registra su negocio (nombre 7+ chars, email admin, descripcion). Queda PENDING hasta que PlatformAdmin apruebe con 2FA. Al aprobar se crea BusinessAdmin automaticamente en Cognito.</p>
+
+<h3>8.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LOGIN["Login Business/Desktop"]
+  LOGIN -->|"'Registrar negocio'"| SCREEN["RegisterNewBusiness<br>Campos: nombre, email, desc, autoAccept"]
+  SCREEN --> VAL{"Validacion<br>Backend"}
+  VAL -->|"nombre < 7 chars"| E1["400: nombre corto"]
+  VAL -->|"email invalido"| E2["400: email invalido"]
+  VAL -->|"desc vacia"| E3["400: desc requerida"]
+  VAL -->|"Valido"| DUP{"Duplicado<br>PENDING?"}
+  DUP -->|"Mismo name+email PENDING"| E4["400: duplicado"]
+  DUP -->|"No duplicado"| SLUG["Genera slug<br>(lowercase, sin tildes)"]
+  SLUG --> SLUGCHECK{"Slug<br>existe?"}
+  SLUGCHECK -->|"Si"| SUFFIX["Agrega UUID 8 chars"]
+  SLUGCHECK -->|"No"| SAVE
+  SUFFIX --> SAVE["DynamoDB: Business<br>state=PENDING"]
+  SAVE --> OK["HTTP 200<br>🎥 Capturar"]
+
+  OK -.->|"Posterior (PlatformAdmin)"| REVIEW["ReviewBusinessRegistration"]
+  REVIEW --> FA2{"2FA<br>valido?"}
+  FA2 -->|"No"| EAUTH["401 Unauthorized"]
+  FA2 -->|"Si"| DEC{"Decision?"}
+  DEC -->|"APPROVED"| APPROVE["Crear BusinessAdmin<br>en Cognito + DynamoDB<br>Business APPROVED"]
+  DEC -->|"REJECTED"| REJECT["Business REJECTED"]
+
+  E1 --> SCREEN
+  E2 --> SCREEN
+  E3 --> SCREEN
+  E4 --> SCREEN
+
+  style E1 fill:#ffebee,stroke:#c62828
+  style E2 fill:#ffebee,stroke:#c62828
+  style E3 fill:#ffebee,stroke:#c62828
+  style E4 fill:#ffebee,stroke:#c62828
+  style EAUTH fill:#ffebee,stroke:#c62828
+  style REJECT fill:#ffebee,stroke:#c62828
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style APPROVE fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>8.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">SU-E-001</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Registro exitoso</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Business app → 'Registrar negocio'"<br>
+      <strong>► P2</strong> "Nombre 7+ chars, email, descripcion"<br>
+      <strong>► P3</strong> "Enviamos"<br>
+      <strong>◉ V1</strong> "200 OK, negocio PENDING creado"
+    </td>
+    <td class="evidence-col">✓ 200 OK<br>✓ Slug generado<br>✓ State PENDING</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-002</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nombre < 7 chars</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Nombre 'Abc' (3 chars)"<br><strong>◉ V1</strong> "400 Bad Request"</td>
+    <td class="evidence-col">✓ Error 400<br>✓ Mensaje validacion</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-003</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nombre exacto 7 chars</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Nombre de 7 chars exactos"<br><strong>◉ V1</strong> "200 OK (limite aceptado)"</td>
+    <td class="evidence-col">✓ Registro exitoso</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-004</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email admin invalido</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Email sin formato"<br><strong>◉ V1</strong> "400"</td>
+    <td class="evidence-col">✓ Error 400</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-005</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Descripcion vacia</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "400: descripcion requerida"</td>
+    <td class="evidence-col">✓ Error 400</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-006</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Duplicado PENDING</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Registrar negocio"<br><strong>► P2</strong> "Repetir mismo nombre + email"<br><strong>◉ V1</strong> "400 duplicado"</td>
+    <td class="evidence-col">✓ Error 400<br>✓ No crea segundo</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-007</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Mismo nombre, diferente email</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "200 OK con slug + UUID suffix"</td>
+    <td class="evidence-col">✓ Slug con sufijo</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-008</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Nombre con tildes</strong></td>
+    <td class="video-script"><strong>► P1</strong> "'Panaderia Gonzalez'"<br><strong>◉ V1</strong> "Slug: 'panaderia-gonzalez'"</td>
+    <td class="evidence-col">✓ Slug sin tildes</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-009</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Aprobacion por PlatformAdmin</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "PlatformAdmin abre ReviewBusiness"<br>
+      <strong>► P2</strong> "Ingresa codigo 2FA"<br>
+      <strong>► P3</strong> "Aprueba negocio"<br>
+      <strong>◉ V1</strong> "Business APPROVED"<br>
+      <strong>◉ V2</strong> "BusinessAdmin creado en Cognito"
+    </td>
+    <td class="evidence-col">✓ State APPROVED<br>✓ Admin creado<br>✓ 2FA validado</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-010</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Rechazo de negocio</strong></td>
+    <td class="video-script"><strong>► P1</strong> "PlatformAdmin rechaza"<br><strong>◉ V1</strong> "Business REJECTED"<br><strong>◉ V2</strong> "No crea usuario Cognito"</td>
+    <td class="evidence-col">✓ State REJECTED<br>✓ Sin usuario Cognito</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-011</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Aprobacion sin 2FA</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Error: 2FA requerido"</td>
+    <td class="evidence-col">✓ 401 sin 2FA</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-012</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Admin ya existe en Cognito</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Idempotente: no falla"</td>
+    <td class="evidence-col">✓ Perfil creado<br>✓ Sin error</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-E-013</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Flag autoAcceptDeliveries</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Flag persistido en DB"</td>
+    <td class="evidence-col">✓ Valor correcto en DynamoDB</td>
+  </tr>
+</table>
+
+<!-- ========== 9. FLUJO F — REGISTRO SALER ========== -->
+<h2 id="s9">9. Flujo F — Registro de Vendedor (Saler)</h2>
+
+<h3>9.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Business Admin autenticado invita vendedores por email. Requiere JWT valido y perfil BusinessAdmin APPROVED. Vendedor queda APPROVED inmediatamente (sin paso de aprobacion adicional).</p>
+
+<h3>9.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Dashboard<br>Autenticado")) --> SCREEN["RegisterSaler Screen<br>Campo: email"]
+  SCREEN --> TOKEN{"Token en<br>storage?"}
+  TOKEN -->|"null"| ETOK["Error inmediato:<br>'Token no encontrado'<br>🎥 Sin llamada HTTP"]
+  TOKEN -->|"Existe"| VAL{"Validacion<br>Frontend"}
+  VAL -->|"Invalido"| ERR["Error inline<br>🎥 Capturar"]
+  ERR --> SCREEN
+  VAL -->|"Valido"| HTTP["POST /{biz}/registerSaler<br>+ Authorization: token"]
+  HTTP --> JWT{"Backend:<br>Valida JWT"}
+  JWT -->|"Invalido/expirado"| E401A["401 Unauthorized"]
+  JWT -->|"Valido"| PROF{"Perfil<br>BusinessAdmin<br>APPROVED?"}
+  PROF -->|"No"| E401B["401 Unauthorized"]
+  PROF -->|"Si"| VALEMAIL{"Valida<br>email"}
+  VALEMAIL -->|"Invalido"| E400["400 Bad Request"]
+  VALEMAIL -->|"Valido"| DUP{"Saler<br>APPROVED<br>existe?"}
+  DUP -->|"Si"| E409["409 Conflict<br>🎥 Capturar"]
+  DUP -->|"No / PENDING"| COG["Cognito: adminCreateUser"]
+  COG --> SAVE["DynamoDB:<br>Saler / APPROVED"]
+  SAVE --> OK["200 OK"]
+  OK --> RESET["Snackbar exito +<br>reset formulario<br>🎥 Capturar"]
+  RESET --> SCREEN
+
+  ETOK --> SCREEN
+  E401A --> SCREEN
+  E401B --> SCREEN
+  E400 --> SCREEN
+  E409 --> SCREEN
+
+  style ETOK fill:#ffebee,stroke:#c62828
+  style E401A fill:#ffebee,stroke:#c62828
+  style E401B fill:#ffebee,stroke:#c62828
+  style E400 fill:#ffebee,stroke:#c62828
+  style E409 fill:#fff3e0,stroke:#e65100
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style RESET fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>9.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:45px">Tipo</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">SU-F-001</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Registro saler exitoso</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Login como Business Admin"<br>
+      <strong>► P2</strong> "Ir a RegisterSaler"<br>
+      <strong>► P3</strong> "Ingresar email vendedor"<br>
+      <strong>► P4</strong> "Enviar"<br>
+      <strong>◉ V1</strong> "Snackbar exito"<br>
+      <strong>◉ V2</strong> "Formulario reseteado"<br>
+      <strong>◉ V3</strong> "Perfil Saler/APPROVED en DB"
+    </td>
+    <td class="evidence-col">✓ Snackbar visible<br>✓ Campo email vacio<br>✓ Permanece en pantalla</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-002</td><td><span class="tag tag-smoke">Smoke</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Sin token</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Sin autenticacion (token null)"<br><strong>◉ V1</strong> "'Token no encontrado'"<br><strong>◉ V2</strong> "Sin llamada HTTP"</td>
+    <td class="evidence-col">✓ Error inmediato<br>✓ Sin request de red</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-003</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Token expirado</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "401 Unauthorized"</td>
+    <td class="evidence-col">✓ Error 401</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-004</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Sin perfil BusinessAdmin</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Login como usuario sin perfil admin"<br><strong>◉ V1</strong> "401"</td>
+    <td class="evidence-col">✓ Error 401</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-005</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Saler duplicado APPROVED</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Registrar saler, luego repetir"<br><strong>◉ V1</strong> "409 Conflict"</td>
+    <td class="evidence-col">✓ Error 409<br>✓ Mensaje claro</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-006</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Saler PENDING → re-registro</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "200 OK, pasa a APPROVED"</td>
+    <td class="evidence-col">✓ State cambia a APPROVED</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-007</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email invalido</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Error inline frontend"</td>
+    <td class="evidence-col">✓ Error visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-008</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email vacio</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Error inline"</td>
+    <td class="evidence-col">✓ Error visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-009</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Formulario se resetea</strong></td>
+    <td class="video-script"><strong>► P1</strong> "Registrar exitoso"<br><strong>◉ V1</strong> "Campo email vacio despues"</td>
+    <td class="evidence-col">✓ Email limpio<br>✓ Puede registrar otro</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-010</td><td><span class="tag tag-edge">Edge</span></td><td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Saler ya existe en Cognito</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Idempotente, perfil creado"</td>
+    <td class="evidence-col">✓ Sin error<br>✓ Perfil Saler creado</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-F-011</td><td><span class="tag tag-regression">Regresion</span></td><td><span class="tag tag-low">Baja</span></td>
+    <td><strong>No visible en CLIENT/DELIVERY</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Ruta no disponible"</td>
+    <td class="evidence-col">✓ No existe /registerSaler</td>
+  </tr>
+</table>
+
+<!-- ========== 10. CROSS-APP ========== -->
+<h2 id="s10">10. Flujos Cross-App</h2>
+
+<h3>10.1 Diagrama: Onboarding completo de negocio</h3>
+<pre class="mermaid">
+flowchart LR
+  subgraph "1. Bootstrap"
+    PA["PlatformAdmin<br>signup<br>(Business App)"]
+  end
+  subgraph "2. Negocio"
+    RB["Comerciante registra<br>negocio<br>(Business App)"]
+    REV["PlatformAdmin<br>aprueba + 2FA<br>(Business App)"]
+  end
+  subgraph "3. Equipo"
+    SAL["Business Admin<br>registra vendedores<br>(Business App)"]
+    DEL["Repartidores<br>solicitan acceso<br>(Delivery App)"]
+    ADEL["Business Admin<br>aprueba deliveries<br>(Business App)"]
+  end
+  subgraph "4. Clientes"
+    CLI["Clientes se<br>registran + confirman<br>(Client App)"]
+  end
+
+  PA --> RB --> REV --> SAL
+  REV --> DEL --> ADEL
+  REV --> CLI
+
+  style PA fill:#e3f2fd
+  style RB fill:#fff8e1
+  style REV fill:#e8f5e9
+  style SAL fill:#e8eaf6
+  style DEL fill:#fce4ec
+  style ADEL fill:#e8f5e9
+  style CLI fill:#f3e5f5
+</pre>
+
+<h3>10.2 Matriz de disponibilidad</h3>
+<table>
+  <tr><th>Pantalla</th><th>CLIENT</th><th>DELIVERY</th><th>BUSINESS</th><th>Desktop</th></tr>
+  <tr><td>/signup</td><td style="background:#e8f5e9">SI</td><td style="background:#ffebee">NO</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
+  <tr><td>/confirmSignUp</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
+  <tr><td>/selectSignupProfile</td><td style="background:#ffebee">NO</td><td style="background:#ffebee">NO</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
+  <tr><td>/signupPlatformAdmin</td><td style="background:#ffebee">NO</td><td style="background:#ffebee">NO</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
+  <tr><td>/signupDelivery</td><td style="background:#ffebee">NO</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
+  <tr><td>/registerSaler</td><td style="background:#ffebee">NO</td><td style="background:#ffebee">NO</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
+</table>
+
+<h3>10.3 Casos cross-app <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr><th style="width:60px">ID</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr>
+    <td class="case-id">SU-X-001</td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Onboarding completo</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "[Business] Registrar negocio"<br>
+      <strong>► P2</strong> "[Business] PlatformAdmin aprueba + 2FA"<br>
+      <strong>► P3</strong> "[Business] BusinessAdmin registra saler"<br>
+      <strong>► P4</strong> "[Delivery] Repartidor solicita acceso"<br>
+      <strong>► P5</strong> "[Business] Admin aprueba delivery"<br>
+      <strong>◉ V1</strong> "Todos los perfiles existen y login funciona"
+    </td>
+    <td class="evidence-col">✓ Login exitoso de cada perfil<br>✓ Cada estado correcto en DB</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-X-002</td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Bootstrap PlatformAdmin + negocio</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Pool vacio → PlatformAdmin"<br>
+      <strong>► P2</strong> "Registrar y aprobar negocio"<br>
+      <strong>◉ V1</strong> "BusinessAdmin puede login"
+    </td>
+    <td class="evidence-col">✓ PlatformAdmin APPROVED<br>✓ Business APPROVED<br>✓ BusinessAdmin login OK</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-X-003</td><td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Multi-negocio: mismo email</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Registrar en negocio X (APPROVED)"<br>
+      <strong>► P2</strong> "Registrar en negocio Y"<br>
+      <strong>◉ V1</strong> "Segundo perfil con APPROVED automatico"
+    </td>
+    <td class="evidence-col">✓ Dos perfiles en DB<br>✓ Segundo = APPROVED</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-X-004</td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Delivery rechazado</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Delivery REJECTED, no puede login"</td>
+    <td class="evidence-col">✓ Login falla</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-X-005</td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Negocio rechazado, reintento</strong></td>
+    <td class="video-script"><strong>◉ V1</strong> "Puede registrar de nuevo"</td>
+    <td class="evidence-col">✓ Nuevo registro posible</td>
+  </tr>
+  <tr>
+    <td class="case-id">SU-X-006</td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>Un email = Client + Delivery + Saler</strong></td>
+    <td class="video-script">
+      <strong>► P1</strong> "Registrar como Client, Delivery y Saler"<br>
+      <strong>◉ V1</strong> "Una cuenta Cognito, multiples perfiles"
+    </td>
+    <td class="evidence-col">✓ 3 perfiles en DB<br>✓ 1 cuenta Cognito</td>
+  </tr>
+</table>
+
+<!-- ========== 11. VALIDACIONES ========== -->
+<h2 id="s11">11. Catalogo Consolidado de Validaciones</h2>
+
+<h3>11.1 Frontend (Konform)</h3>
+<table>
+  <tr><th>Pantalla</th><th>Campo</th><th>Regla</th><th>Mensaje</th></tr>
+  <tr><td>SignUp</td><td>email</td><td>required + <code>.+@.+\..+</code></td><td><code>form_error_invalid_email</code></td></tr>
+  <tr><td>SignUpPlatformAdmin</td><td>email</td><td>required + <code>.+@.+\..+</code></td><td><code>form_error_invalid_email</code></td></tr>
+  <tr><td>SignUpDelivery</td><td>email</td><td>required + <code>.+@.+\..+</code></td><td><code>"Correo invalido"</code> ⚠ hardcoded</td></tr>
+  <tr><td>SignUpDelivery</td><td>businessPublicId</td><td>required</td><td>—</td></tr>
+  <tr><td>RegisterSaler</td><td>email</td><td>required + <code>.+@.+\..+</code></td><td><code>register_saler_email_invalid</code></td></tr>
+  <tr><td>ConfirmSignUp</td><td>email</td><td>required + <code>.+@.+\..+</code></td><td><code>form_error_invalid_email</code></td></tr>
+  <tr><td>ConfirmSignUp</td><td>code</td><td>required + <code>^\d{6}$</code></td><td><code>form_error_invalid_code</code></td></tr>
+</table>
+
+<h3>11.2 Backend</h3>
+<table>
+  <tr><th>Endpoint</th><th>Validacion</th><th>HTTP Status</th></tr>
+  <tr><td>signup</td><td>body required, email regex</td><td>400</td></tr>
+  <tr><td>signupPlatformAdmin</td><td>email regex, pool vacio</td><td>400, 401</td></tr>
+  <tr><td>signupDelivery</td><td>email regex, no duplicado</td><td>400, 500 ⚠ deberia ser 409</td></tr>
+  <tr><td>registerSaler</td><td>JWT, perfil BusinessAdmin, email, no APPROVED</td><td>401, 400, 409</td></tr>
+  <tr><td>confirmSignUp</td><td>body, email/code not-empty, Cognito valida</td><td>400, 401, 500</td></tr>
+  <tr><td>registerBusiness</td><td>name minLength(7), email regex, desc not-empty, no dup</td><td>400</td></tr>
+  <tr><td>reviewBusiness</td><td>JWT PlatformAdmin, 2FA code</td><td>401</td></tr>
+</table>
+
+<!-- ========== 12. RESUMEN ========== -->
+<h2 id="s12">12. Resumen y Cobertura</h2>
+
+<h3>12.1 Distribucion por flujo</h3>
+<table>
+  <tr><th>Flujo</th><th>Smoke</th><th>Regresion</th><th>Edge</th><th>Total</th></tr>
+  <tr><td>A — Signup Cliente</td><td>2</td><td>6</td><td>6</td><td>14</td></tr>
+  <tr><td>B — Confirmacion</td><td>2</td><td>5</td><td>3</td><td>13</td></tr>
+  <tr><td>C — Platform Admin</td><td>2</td><td>3</td><td>2</td><td>7</td></tr>
+  <tr><td>D — Delivery</td><td>2</td><td>5</td><td>3</td><td>12</td></tr>
+  <tr><td>E — Registro Negocio</td><td>2</td><td>4</td><td>5</td><td>13</td></tr>
+  <tr><td>F — Registro Saler</td><td>2</td><td>5</td><td>3</td><td>11</td></tr>
+  <tr><td>X — Cross-App</td><td>2</td><td>0</td><td>4</td><td>6</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td>TOTAL</td><td>14</td><td>28</td><td>26</td><td>76</td></tr>
+</table>
+
+<h3>12.2 Tests existentes vs requeridos</h3>
+<table>
+  <tr><th>Capa</th><th>Existentes</th><th>Estado</th></tr>
+  <tr><td>App (Do + Ext + ViewModel)</td><td>37</td><td style="color:#2e7d32">OK (gaps menores)</td></tr>
+  <tr><td>Backend (Unit + Integration)</td><td>26</td><td style="color:#e65100">Parcial (tests comentados)</td></tr>
+  <tr><td>QA E2E API</td><td>20</td><td style="color:#2e7d32">OK</td></tr>
+  <tr><td>Maestro UI (Android)</td><td>0</td><td style="color:#c62828">FALTANTE</td></tr>
+  <tr><td>Videos con evidencia</td><td>0</td><td style="color:#c62828">FALTANTE</td></tr>
+</table>
+
+<!-- ========== 13. GAPS ========== -->
+<h2 id="s13">13. Gaps y Recomendaciones</h2>
+
+<h3>13.1 Gaps criticos</h3>
+<table>
+  <tr><th>Prio</th><th>Gap</th><th>Recomendacion</th></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin Maestro flows ni videos para signup</td><td>Crear flows YAML + scripts de grabacion anotada</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>ConfirmSignUp: sin test unitario backend</td><td>Agregar tests: body vacio, email/codigo invalido</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>SignUpDelivery integration: happy path comentado</td><td>Descomentar y completar test TODO</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>SignUpDelivery retorna 500 en vez de 409</td><td>Cambiar a 409 Conflict</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Mensaje hardcoded en SignUpDeliveryViewModel</td><td>Migrar a resString()</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>ViewModels sin test de error handling</td><td>Tests de manejo de DoXXXException</td></tr>
+</table>
+
+<h3>13.2 Proximos pasos</h3>
+<ol>
+  <li>Aprobar este reporte como plantilla estandar</li>
+  <li>Crear Maestro flows de signup con overlays de caso ID</li>
+  <li>Implementar script de grabacion con narracion (TTS o texto)</li>
+  <li>Completar tests backend comentados/faltantes</li>
+  <li>Replicar esta estructura para: Login, Password Recovery, 2FA</li>
+</ol>
+
+<hr>
+<p style="text-align:center;color:#999;font-size:8px;margin-top:20px;">
+  Generado por Intrale PO + QA Agents | v2.0 | 2026-03-01
+</p>
+
+</body>
+</html>
