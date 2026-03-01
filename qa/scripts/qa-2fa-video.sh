@@ -168,14 +168,15 @@ do_login() {
     adb -s "$DEVICE" shell am force-stop "$APP_PKG" 2>/dev/null || true
     wait_sec 2
     adb -s "$DEVICE" shell am start -n "$APP_PKG/$APP_MAIN_ACTIVITY" 2>/dev/null
-    wait_sec 5
+    # Esperar splash screen completo
+    wait_sec 8
 
     # Tap "Ya tengo cuenta"
     find_and_tap "Ya tengo cuenta" 2 || true
     wait_sec 2
 
-    # Ingresar usuario — buscar por label del campo
-    find_and_tap "Correo" 2 || find_and_tap "mail" 2 || true
+    # Campo se llama "Usuario" (no "Correo")
+    find_and_tap "Usuario" 2 || true
     wait_sec 1
     type_text "admin@intrale.com"
     wait_sec 1
@@ -186,9 +187,13 @@ do_login() {
     type_text "Admin1234!"
     wait_sec 1
 
-    # Tap en botón de login
-    find_and_tap "Ingresar" 2 || find_and_tap "Iniciar" 2 || true
-    wait_sec 8
+    # Cerrar teclado antes del tap
+    adb -s "$DEVICE" shell input keyevent KEYCODE_BACK 2>/dev/null || true
+    wait_sec 1
+
+    # Tap botón "Ingresar"
+    find_and_tap "Ingresar" 2 || true
+    wait_sec 10
 
     echo "[Login] Login completado"
 }
