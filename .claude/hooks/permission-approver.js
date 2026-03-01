@@ -18,18 +18,35 @@ const fs = require("fs");
 const path = require("path");
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern } = require("./permission-utils");
 
-const { addPendingQuestion, resolveQuestion, getQuestionById } = require("./pending-questions");
+const { addPendingQuestion, resolveQuestion, getQuestionById, updateQuestionField } = require("./pending-questions");
 const { readSessionContext } = require("./context-reader");
 const { registerMessage } = require("./telegram-message-registry");
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 const ANSWER_TIMEOUT = 5000;   // Timeout para editMessage
+const POLL_INTERVAL_MS = 500;   // Verificar pending-questions.json cada 0.5s
 
-// Tiempos de polling: el hook tiene timeout de 615s en settings.json
-// Salir 15s antes para poder hacer cleanup (marcar expired, editar mensaje)
-const HOOK_TIMEOUT_MS = 600000;   // 10 min — margen de 15s antes del kill
-const POLL_INTERVAL_MS = 500;    // Verificar pending-questions.json cada 0.5s
+// ─── Retry schedule con urgencia escalada ────────────────────────────────────
+// Configurable desde telegram-config.json → retry_intervals_min (array de minutos)
+// Default: [30, 15, 10, 10] = 65 min total
+// Intento 0: mensaje inicial, espera 30 min
+// Intento 1: 🔔 Recordatorio, espera 15 min
+// Intento 2: ⚠️ Agente bloqueado, espera 10 min
+// Intento 3: 🚨 Último aviso, espera 10 min
+// Si no responde → expirado definitivo, fallback a consola
+
+const DEFAULT_RETRY_INTERVALS = [30, 15, 10, 10]; // minutos
+const RETRY_INTERVALS = (_tgCfg.retry_intervals_min || DEFAULT_RETRY_INTERVALS)
+    .map(m => m * 60 * 1000); // convertir a ms
+const TOTAL_TIMEOUT_MS = RETRY_INTERVALS.reduce((a, b) => a + b, 0);
+
+const RETRY_ESCALATION = [
+    null, // intento 0: mensaje inicial (sin prefijo de escalada)
+    { emoji: "🔔", title: "Recordatorio", desc: "Hay un permiso pendiente desde hace rato" },
+    { emoji: "⚠️", title: "Agente bloqueado", desc: "El agente no puede continuar sin tu aprobación" },
+    { emoji: "🚨", title: "Último aviso", desc: "Si no respondés, el agente se detendrá" }
+];
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
@@ -219,8 +236,18 @@ function persistAlways(toolName, toolInput) {
 // Archivo PID para que otros hooks puedan detectar/matar este approver
 const APPROVER_PID_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-active.pid");
 
-async function pollQuestionStatus(requestId, startTime) {
-    while (Date.now() - startTime < HOOK_TIMEOUT_MS) {
+/**
+ * Polling de pending-questions.json por un período específico.
+ * @param {string} requestId - ID de la pregunta
+ * @param {number} durationMs - Duración máxima de este polling en ms
+ * @param {string} attemptLabel - Etiqueta para logs (ej: "intento 1/4")
+ * @returns {object|null} pregunta respondida o null si timeout
+ */
+async function pollQuestionStatus(requestId, durationMs, attemptLabel) {
+    const pollStart = Date.now();
+    const label = attemptLabel || "";
+    let logCounter = 0;
+    while (Date.now() - pollStart < durationMs) {
         try {
             const q = getQuestionById(requestId);
             if (!q) {
@@ -236,14 +263,16 @@ async function pollQuestionStatus(requestId, startTime) {
         } catch(e) {
             log("Error leyendo pregunta " + requestId + ": " + e.message);
         }
-        // Log de diagnóstico cada 10 ciclos (~15s)
-        const elapsed = Date.now() - startTime;
-        if (Math.floor(elapsed / POLL_INTERVAL_MS) % 10 === 0) {
-            log("Polling " + requestId + ": " + Math.round(elapsed/1000) + "s, aún pending, pid=" + process.pid);
+        // Log de diagnóstico cada 30s
+        logCounter++;
+        if (logCounter % 60 === 0) {
+            const elapsed = Math.round((Date.now() - pollStart) / 1000);
+            const remaining = Math.round((durationMs - (Date.now() - pollStart)) / 1000);
+            log("Polling " + label + " " + requestId + ": " + elapsed + "s elapsed, " + remaining + "s left, pid=" + process.pid);
         }
         await sleep(POLL_INTERVAL_MS);
     }
-    return null; // timeout — el hook se va a morir pronto
+    return null; // timeout de este intento
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
@@ -391,62 +420,124 @@ async function processInput() {
         process.exit(0); // fallback: Claude muestra prompt local
     }
 
-    const msgId = sentMsg.message_id;
+    let currentMsgId = sentMsg.message_id;
 
     // Escribir PID file para que otros hooks puedan detectarnos/matarnos
-    try { fs.writeFileSync(APPROVER_PID_FILE, JSON.stringify({ pid: process.pid, requestId, msgId, timestamp: new Date().toISOString() })); } catch(e) {}
+    try { fs.writeFileSync(APPROVER_PID_FILE, JSON.stringify({ pid: process.pid, requestId, msgId: currentMsgId, timestamp: new Date().toISOString() })); } catch(e) {}
     function cleanupPidFile() { try { fs.unlinkSync(APPROVER_PID_FILE); } catch(e) {} }
     process.on("exit", cleanupPidFile);
 
-    // 2. Polling de pending-questions.json esperando que el commander procese el callback
-    //    El commander es el único consumidor de getUpdates — no hay conflicto de offsets
-    log("Iniciando polling para " + requestId + " (PID=" + process.pid + ", timeout=" + HOOK_TIMEOUT_MS + "ms)");
-    const result = await pollQuestionStatus(requestId, startTime);
-    const latencyMs = Date.now() - startTime;
+    // ─── Retry loop con urgencia escalada ────────────────────────────────────
+    // Intento 0: mensaje ya enviado arriba, pollear RETRY_INTERVALS[0]
+    // Intentos 1..N: editar msg anterior → enviar nuevo con escalada → pollear
+    const totalAttempts = RETRY_INTERVALS.length;
 
-    // 3. Manejar resultado
-    if (result && result.status === "answered") {
-        const actionResult = result.action_result;
+    for (let attempt = 0; attempt < totalAttempts; attempt++) {
+        const waitMs = RETRY_INTERVALS[attempt];
+        const label = "intento " + (attempt + 1) + "/" + totalAttempts;
+        log("Iniciando polling " + label + " para " + requestId
+            + " (PID=" + process.pid + ", espera=" + Math.round(waitMs/60000) + "min)");
 
-        if (result.answered_via === "console") {
-            // Respondido en consola — no necesitamos hacer nada, salir sin stdout
-            log("Respondido en consola — saliendo sin stdout (" + latencyMs + "ms)");
-            process.exit(0);
+        const result = await pollQuestionStatus(requestId, waitMs, label);
+
+        // ── Respondido ──
+        if (result && result.status === "answered") {
+            const actionResult = result.action_result;
+            const latencyMs = Date.now() - startTime;
+
+            if (result.answered_via === "console") {
+                log("Respondido en consola — saliendo sin stdout (" + latencyMs + "ms)");
+                process.exit(0);
+            }
+
+            log("Decisión via Telegram: " + actionResult + " en " + latencyMs + "ms (" + label + ")");
+
+            const isAllow = (actionResult === "allow" || actionResult === "always");
+            const response = {
+                hookSpecificOutput: {
+                    hookEventName: "PermissionRequest",
+                    decision: isAllow
+                        ? { behavior: "allow" }
+                        : { behavior: "deny", message: "Denegado por el usuario vía Telegram" }
+                }
+            };
+            process.stdout.write(JSON.stringify(response) + "\n", () => process.exit(0));
+            setTimeout(() => process.exit(0), 2000);
+            return;
         }
 
-        // Respondido via Telegram (el commander ya editó el mensaje y persistió si era "always")
-        log("Decisión via Telegram: " + actionResult + " en " + latencyMs + "ms");
+        // ── Timeout de este intento — ¿hay más reintentos? ──
+        const isLastAttempt = (attempt === totalAttempts - 1);
+        const elapsedTotal = Math.round((Date.now() - startTime) / 1000);
 
-        const isAllow = (actionResult === "allow" || actionResult === "always");
-        const response = {
-            hookSpecificOutput: {
-                hookEventName: "PermissionRequest",
-                decision: isAllow
-                    ? { behavior: "allow" }
-                    : { behavior: "deny", message: "Denegado por el usuario vía Telegram" }
-            }
-        };
+        if (isLastAttempt) {
+            // Sin más reintentos — expirar definitivamente
+            log("Todos los reintentos agotados (" + elapsedTotal + "s total). Expirando.");
+            resolveQuestion(requestId, "expired", null);
+            try {
+                await telegramPost("editMessageText", {
+                    chat_id: CHAT_ID,
+                    message_id: currentMsgId,
+                    text: msgText + "\n\n⏱ <i>Expirado (" + totalAttempts + " intentos) — respondiendo en consola</i>"
+                        + "\n📝 Responder <b>siempre</b> para guardar el permiso",
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: [] }
+                }, ANSWER_TIMEOUT);
+            } catch(e) { log("Error editando mensaje final: " + e.message); }
+            process.exit(0); // fallback al prompt local
+            return;
+        }
 
-        process.stdout.write(JSON.stringify(response) + "\n", () => {
-            process.exit(0);
-        });
-        // Fallback: si el callback nunca se invoca, salir después de 2s
-        setTimeout(() => process.exit(0), 2000);
-        return;
+        // ── Enviar reintento con urgencia escalada ──
+        const nextAttempt = attempt + 1;
+        const escalation = RETRY_ESCALATION[nextAttempt] || RETRY_ESCALATION[RETRY_ESCALATION.length - 1];
+        const nextWaitMin = Math.round(RETRY_INTERVALS[nextAttempt] / 60000);
+
+        log("Timeout " + label + " (" + elapsedTotal + "s). Enviando reintento " + (nextAttempt + 1) + "/" + totalAttempts);
+
+        // Editar mensaje anterior: quitar botones, marcar como expirado
+        try {
+            await telegramPost("editMessageText", {
+                chat_id: CHAT_ID,
+                message_id: currentMsgId,
+                text: msgText + "\n\n⏱ <i>Sin respuesta — reintentando…</i>",
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: [] }
+            }, ANSWER_TIMEOUT);
+        } catch(e) { log("Error editando mensaje expirado: " + e.message); }
+
+        // Construir mensaje de reintento con escalada
+        let retryText = escalation.emoji + " <b>" + escHtml(agent) + " — " + escalation.title + "</b>"
+            + "  <i>(" + (nextAttempt + 1) + "/" + totalAttempts + ")</i>\n";
+        if (contextLine) {
+            retryText += contextLine + "\n";
+        }
+        retryText += "\n" + escalation.desc + "\n\n" + action + "\n\n"
+            + "⏳ Expira en " + nextWaitMin + " min"
+            + "\n📝 Usar botones o responder: <b>siempre</b> (para persistir)";
+
+        // Enviar nuevo mensaje (genera nueva notificación en Telegram)
+        try {
+            const retryMsg = await telegramPost("sendMessage", {
+                chat_id: CHAT_ID,
+                text: retryText,
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: "✅ Permitir", callback_data: "allow:" + requestId },
+                        { text: "❌ Rechazar", callback_data: "deny:" + requestId }
+                    ]]
+                }
+            }, 8000);
+            currentMsgId = retryMsg.message_id;
+            registerMessage(retryMsg.message_id, "permission");
+            // Actualizar message_id en pending question para que el commander lo encuentre
+            updateQuestionField(requestId, { telegram_message_id: retryMsg.message_id });
+            // Actualizar msgText para que el próximo edit/expire use el texto correcto
+            msgText = retryText;
+            log("Reintento " + (nextAttempt + 1) + "/" + totalAttempts + " enviado: msg_id=" + retryMsg.message_id);
+        } catch(e) {
+            log("Error enviando reintento: " + e.message + " — continuando con polling");
+        }
     }
-
-    // 4. Timeout — el usuario no respondió dentro de los ~50s
-    //    Marcar como expired y editar mensaje ANTES de que Claude nos mate a los 55s
-    log("Timeout sin respuesta (" + latencyMs + "ms). Editando mensaje a expirado.");
-    resolveQuestion(requestId, "expired", null);
-    try {
-        await telegramPost("editMessageText", {
-            chat_id: CHAT_ID,
-            message_id: msgId,
-            text: msgText + "\n\n⏱ <i>Expirado — respondiendo en consola</i>\n📝 Responder <b>siempre</b> para guardar el permiso",
-            parse_mode: "HTML",
-            reply_markup: { inline_keyboard: [] }
-        }, ANSWER_TIMEOUT);
-    } catch(e) { log("Error editando mensaje timeout: " + e.message); }
-    process.exit(0); // fallback al prompt local
 }

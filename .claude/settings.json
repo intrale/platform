@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-approver.js",
-            "timeout": 615000
+            "timeout": 4020000
           }
         ]
       }
