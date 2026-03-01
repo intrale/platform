@@ -31,8 +31,8 @@ const PENDING_QUESTIONS_FILE = path.join(HOOKS_DIR, "pending-questions.json");
 const POLL_TIMEOUT_SEC = 30;
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutos de inactividad
 const POLL_CONFLICT_RETRY_MS = 5000;  // Espera tras error 409 (otro poller activo)
-const POLL_CONFLICT_MAX = 3;          // Máx reintentos seguidos por 409 antes de bajar a short-poll
-// SHORT_POLL_INTERVAL_MS removido: si hay 409 persistente, el proceso se mata (no degrada a short-poll)
+const POLL_CONFLICT_MAX = 8;          // 8 reintentos × 5s = 40s (debe superar POLL_TIMEOUT_SEC=30s para outlast stale connections)
+const CONFLICT_COOLDOWN_FILE = path.join(HOOKS_DIR, "telegram-commander.conflict");
 const EXEC_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
 const TG_MSG_MAX = 4096;
 const SPRINT_MONITOR_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
@@ -1615,11 +1615,16 @@ async function pollingLoop() {
     // Si todos los intentos de startup dieron 409, otro commander está activo — SALIR
     if (startupConflicts >= 3) {
         log("FATAL: 3 conflictos 409 en startup — otro Commander ya controla el polling. SALIENDO.");
+        // Escribir cooldown para que el launcher NO relance inmediatamente
+        try { fs.writeFileSync(CONFLICT_COOLDOWN_FILE, JSON.stringify({ ts: Date.now(), pid: process.pid }), "utf8"); } catch (e2) {}
         releaseLock();
         process.exit(1);
     }
 
     saveOffset(offset);
+
+    // Startup exitoso — limpiar cooldown si existe
+    try { fs.unlinkSync(CONFLICT_COOLDOWN_FILE); } catch (e) {}
 
     let conflictStreak = 0;  // Contador de 409s consecutivos
 
@@ -1646,7 +1651,9 @@ async function pollingLoop() {
                     await sleep(POLL_CONFLICT_RETRY_MS);
                 } else {
                     // Otro poller activo — este proceso DEBE morir para evitar respuestas duplicadas
-                    log("FATAL: Conflicto 409 persistente (" + conflictStreak + " seguidos) — otro Commander ya controla el polling. SALIENDO.");
+                    log("FATAL: Conflicto 409 persistente (" + conflictStreak + " seguidos, " + (conflictStreak * POLL_CONFLICT_RETRY_MS / 1000) + "s) — otro Commander ya controla el polling. SALIENDO.");
+                    // Escribir cooldown para que el launcher NO relance inmediatamente
+                    try { fs.writeFileSync(CONFLICT_COOLDOWN_FILE, JSON.stringify({ ts: Date.now(), pid: process.pid }), "utf8"); } catch (e2) {}
                     running = false;
                     releaseLock();
                     process.exit(1);
