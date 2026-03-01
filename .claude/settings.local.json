@@ -76,7 +76,11 @@
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\(''status''\\), d.get\\(''last_activity_ts''\\), d.get\\(''agent_name''\\), d.get\\(''branch''\\)\\)\")",
       "Bash(done)",
       "Bash(CLAUDE_PROJECT_DIR=\"C:\\\\Workspaces\\\\Intrale\\\\platform\" echo {\"\"tool_name\"\":\"\"Bash\"\",\"\"tool_input\"\":{\"\"command\"\":\"\"git push\"\"}}:*)",
-      "Bash(CLAUDE_PROJECT_DIR=*)"
+      "Bash(CLAUDE_PROJECT_DIR=*)",
+      "Bash(cmd.exe:*)",
+      "Bash(/c/Users/Administrator/.jdks/temurin-21.0.7/bin/java:*)",
+      "Bash(curl:*)",
+      "Bash(adb:*)"
     ],
     "deny": [
       "Bash(git push --force*)",
