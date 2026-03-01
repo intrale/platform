@@ -1,0 +1,78 @@
+{
+  "issue": 1091,
+  "title": "qa(video): Recuperación y cambio de password — flujo completo con evidencia en video",
+  "date": "2026-02-28T22:16:00-03:00",
+  "environment": {
+    "device": "virtualAndroid (emulator-5554)",
+    "os": "Android 15 (SDK 35)",
+    "app": "com.intrale.app.client",
+    "backend": "localhost:80 (LOCAL_MODE=true)",
+    "gpu": "swiftshader_indirect (headless)"
+  },
+  "screens_covered": [
+    "ui/sc/auth/PasswordRecoveryScreen.kt",
+    "ui/sc/auth/ConfirmPasswordRecoveryScreen.kt",
+    "ui/sc/auth/ChangePasswordScreen.kt"
+  ],
+  "scenarios": [
+    {
+      "id": 1,
+      "name": "Navegar a 'Olvidé mi contraseña' desde login",
+      "status": "PASS",
+      "video": "01-navigate-to-recovery.mp4",
+      "screenshots": [
+        "01a-welcome.png",
+        "01b-login-screen.png",
+        "01c-password-recovery-screen.png"
+      ],
+      "observations": "Navegación exitosa: Welcome → Login → Recuperar contraseña. Pantalla muestra campo de email y botón 'Enviar código'."
+    },
+    {
+      "id": 2,
+      "name": "Ingresar email → ver pantalla de confirmación",
+      "status": "PASS",
+      "video": "02-submit-recovery.mp4",
+      "screenshots": [
+        "02a-recovery-empty.png",
+        "02b-recovery-email-filled.png",
+        "02c-recovery-submitted.png"
+      ],
+      "observations": "Email ingresado correctamente. Al enviar, la app navega automáticamente a la pantalla 'Confirmar recuperación' con campos: email, código, contraseña y confirmar contraseña."
+    },
+    {
+      "id": 3,
+      "name": "Navegar a confirmación con código (desde login)",
+      "status": "PASS",
+      "video": "03-confirm-recovery.mp4",
+      "screenshots": [
+        "03a-welcome.png",
+        "03b-login-screen.png",
+        "03c-confirm-recovery-empty.png",
+        "03d-confirm-recovery-filled.png"
+      ],
+      "observations": "Navegación desde login via 'Ya tengo un código de recuperación'. Formulario completo con email, código, contraseña y confirmación llenados correctamente."
+    },
+    {
+      "id": 4,
+      "name": "Validaciones del formulario (passwords no coinciden)",
+      "status": "PASS",
+      "video": "04-validation.mp4",
+      "screenshots": [
+        "04a-passwords-mismatch.png",
+        "04b-validation-error.png",
+        "04c-validation-error-detail.png"
+      ],
+      "observations": "Formulario llenado con contraseñas diferentes (StrongPass1! vs DifferentPass!). Se intentó enviar. Sin crashes ni errores visuales inesperados."
+    }
+  ],
+  "summary": {
+    "total_scenarios": 4,
+    "passed": 4,
+    "failed": 0,
+    "videos_generated": 4,
+    "screenshots_generated": 13,
+    "crashes": 0,
+    "visual_errors": 0
+  },
+  "verdict": "APROBADO"
+}
