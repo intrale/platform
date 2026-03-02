@@ -35,12 +35,12 @@ setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } ca
 function getGitHubToken() {
     // Priorizar gh auth token (tiene scope project)
     try {
-        const token = execSync("gh auth token", { encoding: "utf8", cwd: PROJECT_DIR, timeout: 5000 }).trim();
+        const token = execSync("gh auth token", { encoding: "utf8", cwd: PROJECT_DIR, timeout: 5000, windowsHide: true }).trim();
         if (token) return token;
     } catch(e) {}
     // Fallback: git credential fill
     const credInput = "protocol=https\nhost=github.com\n\n";
-    const result = execSync("git credential fill", { input: credInput, encoding: "utf8", cwd: PROJECT_DIR, timeout: 5000 });
+    const result = execSync("git credential fill", { input: credInput, encoding: "utf8", cwd: PROJECT_DIR, timeout: 5000, windowsHide: true });
     const match = result.match(/password=(.+)/);
     if (!match) throw new Error("No se encontro password en git credential fill");
     return match[1].trim();

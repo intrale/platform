@@ -5,6 +5,7 @@
 // Uso: node telegram-commander.js
 // Detener: Ctrl+C o SIGTERM
 
+const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
@@ -283,6 +284,121 @@ async function sendLongMessage(text, parseMode) {
         lastMsg = await sendMessage(chunk, mode);
     }
     return lastMsg;
+}
+
+// ─── Dashboard screenshot + Telegram photo ──────────────────────────────────
+
+const DASHBOARD_PORT = 3100;
+
+function fetchDashboardScreenshot(width, height) {
+    return new Promise((resolve) => {
+        const req = http.get("http://localhost:" + DASHBOARD_PORT + "/screenshot?w=" + width + "&h=" + height, { timeout: 20000 }, (res) => {
+            if (res.statusCode !== 200) { resolve(null); return; }
+            const chunks = [];
+            res.on("data", (c) => chunks.push(c));
+            res.on("end", () => resolve(Buffer.concat(chunks)));
+        });
+        req.on("error", () => resolve(null));
+        req.on("timeout", () => { req.destroy(); resolve(null); });
+    });
+}
+
+function sendTelegramPhoto(photoBuffer, caption, silent) {
+    return new Promise((resolve, reject) => {
+        const boundary = "----FormBoundary" + Date.now().toString(36);
+        let body = "";
+        body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + CHAT_ID + "\r\n";
+        if (caption) {
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n";
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"parse_mode\"\r\n\r\n" + "HTML" + "\r\n";
+        }
+        if (silent) {
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"disable_notification\"\r\n\r\n" + "true" + "\r\n";
+        }
+        const pre = Buffer.from(body + "--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"dashboard.png\"\r\nContent-Type: image/png\r\n\r\n");
+        const post = Buffer.from("\r\n--" + boundary + "--\r\n");
+        const payload = Buffer.concat([pre, photoBuffer, post]);
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + BOT_TOKEN + "/sendPhoto",
+            method: "POST",
+            headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+            timeout: 15000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.ok) {
+                        registerMessage(r.result.message_id, "command");
+                        resolve(r);
+                    } else { reject(new Error(d)); }
+                } catch(e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+        req.on("error", (e) => reject(e));
+        req.write(payload);
+        req.end();
+    });
+}
+
+async function handleMonitorDashboard() {
+    log("Handling /monitor via dashboard screenshot");
+    try {
+        const screenshot = await fetchDashboardScreenshot(600, 800);
+        if (screenshot && screenshot.length > 1000) {
+            const caption = "\ud83d\udcca <b>Intrale Monitor</b>\n" +
+                new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+            await sendTelegramPhoto(screenshot, caption, false);
+            log("/monitor screenshot enviado OK");
+            return true;
+        }
+    } catch (e) {
+        log("/monitor screenshot error: " + e.message);
+    }
+
+    // Fallback: obtener datos JSON y enviar como texto
+    log("/monitor fallback a texto");
+    try {
+        const statusData = await new Promise((resolve) => {
+            const req = http.get("http://localhost:" + DASHBOARD_PORT + "/api/status", { timeout: 5000 }, (res) => {
+                let d = ""; res.on("data", c => d += c);
+                res.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+            });
+            req.on("error", () => resolve(null));
+        });
+        if (statusData) {
+            let text = "\ud83d\udcca <b>Intrale Monitor</b>\n\n";
+            text += "\u25cf Agentes: <b>" + statusData.activeSessions + "</b> activos";
+            if (statusData.idleSessions > 0) text += ", " + statusData.idleSessions + " idle";
+            text += "\n\u25cf Tareas: <b>" + statusData.completedTasks + "/" + statusData.totalTasks + "</b> completadas\n";
+            text += "\u25cf CI: <b>" + (statusData.ciStatus === "ok" ? "\u2705 OK" : statusData.ciStatus === "fail" ? "\u274c FAIL" : statusData.ciStatus) + "</b>\n";
+            text += "\u25cf Acciones: <b>" + statusData.totalActions + "</b>\n";
+            if (statusData.sessions && statusData.sessions.length > 0) {
+                text += "\n<b>Sesiones:</b>\n";
+                for (const s of statusData.sessions) {
+                    const icon = s.status === "active" ? "\ud83d\udfe2" : s.status === "idle" ? "\ud83d\udfe1" : "\u26aa";
+                    text += icon + " <b>" + escHtml(s.agent || s.id) + "</b> (" + escHtml(s.branch || "?") + ") " + s.actions + " acciones\n";
+                    if (s.tasks && s.tasks.length > 0) {
+                        for (const t of s.tasks) {
+                            const tIcon = t.status === "completed" ? "\u2611" : t.status === "in_progress" ? "\u25b6\ufe0f" : "\u2610";
+                            text += "  " + tIcon + " " + escHtml(t.subject) + (t.progress > 0 ? " (" + t.progress + "%)" : "") + "\n";
+                        }
+                    }
+                }
+            }
+            text += "\n\ud83d\udcbb " + new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+            await sendLongMessage(text);
+            return true;
+        }
+    } catch (e) {
+        log("/monitor fallback text error: " + e.message);
+    }
+
+    await sendMessage("\u26a0\ufe0f Dashboard no disponible en localhost:" + DASHBOARD_PORT + ". \u00bfEst\u00e1 corriendo el server?");
+    return false;
 }
 
 // ─── Skill discovery ─────────────────────────────────────────────────────────
@@ -936,6 +1052,13 @@ async function handleSkill(skill, args) {
         return;
     }
 
+    // /monitor sin args: enviar screenshot del dashboard directamente (rápido, sin API call)
+    if (skill.name === "monitor" && (!args || !args.trim())) {
+        await sendMessage("\ud83d\udcca Capturando dashboard...");
+        await handleMonitorDashboard();
+        return;
+    }
+
     const skillLabel = "/" + skill.name + (args ? " " + args : "");
     await sendMessage("⚡ Ejecutando <code>" + escHtml(skillLabel) + "</code>...");
 
@@ -1329,9 +1452,31 @@ async function sendResult(label, result) {
 
     if (result.code !== 0) {
         output = "❌ <b>Error</b> (exit code " + result.code + ")\n\n";
+        // Extraer mensaje útil del error
+        let errorDetail = "";
         if (result.stderr) {
-            output += "<pre>" + escHtml(result.stderr.substring(0, 3000)) + "</pre>";
+            errorDetail = result.stderr.substring(0, 2000);
         }
+        if (!errorDetail && result.stdout) {
+            // Intentar extraer error del JSON de claude
+            try {
+                const json = JSON.parse(result.stdout);
+                const text = json.result || json.text || json.content || "";
+                if (text) errorDetail = text.substring(0, 2000);
+            } catch {
+                // Detectar errores de API comunes
+                if (result.stdout.includes("API Error: 403") || result.stdout.includes("Cloudflare")) {
+                    errorDetail = "API temporalmente no disponible (Cloudflare 403). Reintentar en unos minutos.";
+                } else if (result.stdout.includes("API Error")) {
+                    const m = result.stdout.match(/API Error: \d+/);
+                    errorDetail = m ? m[0] + " — reintentar en unos minutos" : result.stdout.substring(0, 500);
+                } else {
+                    errorDetail = result.stdout.substring(0, 500);
+                }
+            }
+        }
+        if (errorDetail) output += "<pre>" + escHtml(errorDetail) + "</pre>";
+        else output += "<i>Sin detalle de error disponible</i>";
         await sendLongMessage(output);
         return;
     }

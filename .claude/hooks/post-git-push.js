@@ -35,8 +35,8 @@ function handleInput() {
         // Obtener SHA y branch
         let sha, branch;
         try {
-            sha = execSync("git rev-parse HEAD", { cwd: PROJECT_DIR, encoding: "utf8" }).trim();
-            branch = execSync("git branch --show-current", { cwd: PROJECT_DIR, encoding: "utf8" }).trim();
+            sha = execSync("git rev-parse HEAD", { cwd: PROJECT_DIR, encoding: "utf8", windowsHide: true }).trim();
+            branch = execSync("git branch --show-current", { cwd: PROJECT_DIR, encoding: "utf8", windowsHide: true }).trim();
         } catch(e) { return; }
         if (!sha || !branch) return;
 
@@ -45,6 +45,7 @@ function handleInput() {
         const child = spawn(process.execPath, [monitorScript, sha, branch, PROJECT_DIR], {
             detached: true,
             stdio: "ignore",
+            windowsHide: true,
             env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR }
         });
         child.unref();
