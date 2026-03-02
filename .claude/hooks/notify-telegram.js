@@ -298,9 +298,11 @@ async function processInput() {
         "elicitation_dialog":  "Informaci\u00f3n requerida"
     };
 
-    // permission_prompt: verificar si permission-approver.js lo está manejando
-    // Solo ignorar si el approver está activamente esperando respuesta via Telegram (PID vivo)
-    // Si auto-aprobó o crasheó, enviar la notificación normalmente
+    // permission_prompt: solo notificar si el approver crasheó (PID muerto)
+    // Todos los demás casos se ignoran:
+    //   - Approver activo (PID vivo) → ya tiene mensaje con botones en Telegram
+    //   - Auto-approve → usuario ya aprobó el patrón permanentemente
+    //   - Sin PID file → Claude resolvió internamente (settings allow), no hay nada pendiente
     if (type === "permission_prompt") {
         const approverPidFile = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-active.pid");
         try {
@@ -311,34 +313,29 @@ async function processInput() {
                     log("Ignorado permission_prompt: approver PID " + pidData.pid + " activo (Telegram buttons)");
                     return;
                 } catch(e) {
-                    // Proceso muerto — approver crasheó, enviar notificación
-                    log("permission_prompt: approver PID " + pidData.pid + " muerto, enviando notificación");
+                    // Proceso muerto — approver crasheó, notificar al usuario
+                    log("permission_prompt: approver PID " + pidData.pid + " muerto, enviando notificación de fallback");
+                    // Continuar al flujo normal pero no llegar como "Aprobación requerida"
+                    // sino como alerta de que hay un prompt esperando en consola
                 }
             } else {
-                // Sin PID file — el approver auto-aprobó o no corrió
-                // Verificar timestamp: si el approver auto-aprobó hace <10s, ignorar
-                const autoApproveFile = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-last-auto.json");
-                try {
-                    if (fs.existsSync(autoApproveFile)) {
-                        const autoData = JSON.parse(fs.readFileSync(autoApproveFile, "utf8"));
-                        const age = Date.now() - new Date(autoData.timestamp).getTime();
-                        if (age < 10000) {
-                            log("Ignorado permission_prompt: auto-aprobado hace " + Math.round(age/1000) + "s");
-                            return;
-                        }
-                    }
-                } catch(e) {}
-                // No auto-approve reciente — el approver no corrió, enviar notificación
-                log("permission_prompt: sin approver activo ni auto-approve reciente, enviando notificación");
+                // Sin PID file → auto-approve, settings allow, o hook no corrió
+                // En todos estos casos no hay nada pendiente para el usuario
+                log("Ignorado permission_prompt: sin approver activo (auto-resuelto)");
+                return;
             }
         } catch(e) {
-            log("permission_prompt: error verificando approver (" + e.message + "), enviando notificación");
+            log("Ignorado permission_prompt: error verificando approver (" + e.message + ")");
+            return;
         }
     }
 
     // Clasificar urgencia y tipo de notificación
     const classification = classifyNotification(type, message, title);
-    const displayTitle = TIPO_TITULO[type] || title || type;
+    // Para permission_prompt que llega aquí (approver crasheó), usar título de fallback
+    const displayTitle = (type === "permission_prompt")
+        ? "Permiso pendiente en consola"
+        : (TIPO_TITULO[type] || title || type);
 
     let displayMessage = message;
 
