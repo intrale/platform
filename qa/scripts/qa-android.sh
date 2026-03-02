@@ -122,7 +122,8 @@ echo "  ✓ Todos los AVDs iniciados"
 # ── 2c. Esperar boot de todos los emuladores ────────────────
 echo ""
 echo "[2.5/9] Esperando boot de todos los AVDs..."
-BOOT_TIMEOUT=120
+# 180s para cold boot (~130s real) o snapshot fallido; cada iteración duerme 2s
+BOOT_TIMEOUT=180
 for avd_name in "${AVD_NAMES[@]}"; do
     serial="emulator-${AVD_PORTS[$avd_name]}"
     echo "  Esperando boot de $avd_name ($serial)..."
@@ -132,7 +133,8 @@ for avd_name in "${AVD_NAMES[@]}"; do
         # Verificar que el dispositivo esté conectado
         if ! adb devices 2>/dev/null | grep -q "$serial"; then
             printf "."
-            BOOT_ELAPSED=$((BOOT_ELAPSED + 1))
+            sleep 2
+            BOOT_ELAPSED=$((BOOT_ELAPSED + 2))
             continue
         fi
 
@@ -144,7 +146,8 @@ for avd_name in "${AVD_NAMES[@]}"; do
             break
         fi
         printf "."
-        BOOT_ELAPSED=$((BOOT_ELAPSED + 1))
+        sleep 2
+        BOOT_ELAPSED=$((BOOT_ELAPSED + 2))
     done
 
     if [ $BOOT_ELAPSED -ge $BOOT_TIMEOUT ]; then
