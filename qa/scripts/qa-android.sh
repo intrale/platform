@@ -309,4 +309,21 @@ else
     echo "=== QA Android PARALELO: RECHAZADO (ver logs para detalles) ==="
 fi
 
+# ── 10. Compartir videos con stakeholders (best-effort, no bloquea resultado QA) ──
+if command -v node &>/dev/null && [ -f "$SCRIPT_DIR/qa-video-share.js" ]; then
+    VIDEOS_LIST=$(find "$RECORDINGS_DIR" -name "maestro-shard-*.mp4" -type f 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    if [ -n "$VIDEOS_LIST" ]; then
+        VERDICT=$([ $MAESTRO_EXIT -eq 0 ] && echo "APROBADO" || echo "RECHAZADO")
+        echo ""
+        echo "[10] Enviando videos a stakeholders via Telegram..."
+        node "$SCRIPT_DIR/qa-video-share.js" \
+            --issue "${ISSUE_NUMBER:-0}" \
+            --videos "$VIDEOS_LIST" \
+            --verdict "$VERDICT" \
+            --passed "${PASSED:-0}" \
+            --total "${TOTAL_TESTS:-0}" \
+            2>&1 | tail -5 &
+    fi
+fi
+
 exit $MAESTRO_EXIT
