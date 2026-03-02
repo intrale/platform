@@ -77,7 +77,10 @@
       "Bash(done)",
       "Bash(CLAUDE_PROJECT_DIR=\"C:\\\\Workspaces\\\\Intrale\\\\platform\" echo {\"\"tool_name\"\":\"\"Bash\"\",\"\"tool_input\"\":{\"\"command\"\":\"\"git push\"\"}}:*)",
       "Bash(CLAUDE_PROJECT_DIR=*)",
-      "Bash(cmd.exe:*)"
+      "Bash(cmd.exe:*)",
+      "WebFetch(domain:developers.cloudflare.com)",
+      "Skill(ux)",
+      "Skill(scrum)"
     ],
     "deny": [
       "Bash(git push --force*)",
