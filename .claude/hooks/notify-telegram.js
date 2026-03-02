@@ -1,5 +1,11 @@
 // Hook Notification: reenvia notificaciones de Claude Code a Telegram
+// 4 tipos de notificación con urgencia diferenciada:
+//   - critical: CI rojo, tarea bloqueada → vibra (disable_notification: false)
+//   - heartbeat: estado periódico → silencioso (disable_notification: true)
+//   - delivery: PR mergeado, agente terminó → normal
+//   - daily: resumen diario → normal
 // Enriquecido con contexto de sesión (agente, branch, issue, tarea activa)
+// Inline keyboard buttons para acciones rápidas
 // Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
@@ -15,6 +21,7 @@ const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
+const DASHBOARD_PORT = 3100;
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
@@ -67,14 +74,111 @@ function formatContext(sessionId, repoRoot) {
     return lines.length > 0 ? lines.join("\n") : "";
 }
 
-function sendTelegram(text, attempt) {
+/**
+ * Clasifica el tipo de notificación en una de las 4 categorías de urgencia.
+ * Retorna: { category, silent, emoji, inlineKeyboard }
+ */
+function classifyNotification(type, message, title) {
+    const msg = (message || "").toLowerCase();
+    const ttl = (title || "").toLowerCase();
+
+    // CRITICAL: CI rojo, tarea bloqueada, errores graves
+    if (msg.includes("ci") && (msg.includes("fail") || msg.includes("rojo") || msg.includes("error"))) {
+        return {
+            category: "critical",
+            silent: false,
+            emoji: "\ud83d\udea8",
+            inlineKeyboard: [[
+                { text: "\ud83d\udd0d Ver logs", callback_data: "view_ci_logs" },
+                { text: "\ud83d\udcca Dashboard", callback_data: "view_dashboard" }
+            ]]
+        };
+    }
+    if (msg.includes("bloqueada") || msg.includes("blocked") || msg.includes("error critico")) {
+        return {
+            category: "critical",
+            silent: false,
+            emoji: "\ud83d\udea8",
+            inlineKeyboard: [[
+                { text: "\u270b Asignar", callback_data: "assign_task" },
+                { text: "\ud83d\udcca Dashboard", callback_data: "view_dashboard" }
+            ]]
+        };
+    }
+
+    // DELIVERY: PR mergeado, agente terminó, push completado
+    if (type === "stop" || msg.includes("merge") || msg.includes("pr creado") || msg.includes("push")) {
+        return {
+            category: "delivery",
+            silent: false,
+            emoji: "\ud83d\udce6",
+            inlineKeyboard: [[
+                { text: "\ud83d\udc41 Ver PR", callback_data: "view_pr" },
+                { text: "\ud83d\udcca Dashboard", callback_data: "view_dashboard" }
+            ]]
+        };
+    }
+
+    // HEARTBEAT: estado periódico (reportes programados)
+    if (type === "heartbeat" || msg.includes("heartbeat") || msg.includes("reporte peri")) {
+        return {
+            category: "heartbeat",
+            silent: true,
+            emoji: "\ud83d\udc9a",
+            inlineKeyboard: null
+        };
+    }
+
+    // DAILY: resumen diario
+    if (type === "daily_summary" || msg.includes("resumen diario") || msg.includes("daily")) {
+        return {
+            category: "daily",
+            silent: false,
+            emoji: "\ud83d\udcca",
+            inlineKeyboard: [[
+                { text: "\ud83d\udcca Dashboard", callback_data: "view_dashboard" },
+                { text: "\ud83d\udccb Ver issues", callback_data: "view_issues" }
+            ]]
+        };
+    }
+
+    // Default: notificación normal
+    return {
+        category: "normal",
+        silent: false,
+        emoji: {
+            "permission_prompt": "\u26a0\ufe0f",
+            "idle_prompt": "\u2705",
+            "auth_success": "\ud83d\udd11",
+            "elicitation_dialog": "\u2753"
+        }[type] || "\ud83d\udd14",
+        inlineKeyboard: null
+    };
+}
+
+function sendTelegram(text, attempt, options) {
+    const silent = options && options.silent;
+    const inlineKeyboard = options && options.inlineKeyboard;
+
     return new Promise((resolve, reject) => {
-        const postData = querystring.stringify({ chat_id: CHAT_ID, text: text, parse_mode: "HTML", disable_web_page_preview: true });
+        const params = {
+            chat_id: CHAT_ID,
+            text: text,
+            parse_mode: "HTML",
+            disable_web_page_preview: true
+        };
+        if (silent) {
+            params.disable_notification = true;
+        }
+        if (inlineKeyboard) {
+            params.reply_markup = JSON.stringify({ inline_keyboard: inlineKeyboard });
+        }
+        const postData = JSON.stringify(params);
         const req = https.request({
             hostname: "api.telegram.org",
             path: "/bot" + BOT_TOKEN + "/sendMessage",
             method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) },
             timeout: 5000
         }, (res) => {
             let d = "";
@@ -82,7 +186,7 @@ function sendTelegram(text, attempt) {
             res.on("end", () => {
                 try {
                     const r = JSON.parse(d);
-                    if (r.ok) { log("OK intento " + attempt + " msg_id=" + r.result.message_id); resolve(r); }
+                    if (r.ok) { log("OK intento " + attempt + " msg_id=" + r.result.message_id + " cat=" + (options && options.category || "?")); resolve(r); }
                     else { log("API error intento " + attempt + ": " + d); reject(new Error(d)); }
                 } catch(e) { log("Parse error intento " + attempt + ": " + d); reject(e); }
             });
@@ -91,6 +195,73 @@ function sendTelegram(text, attempt) {
         req.on("error", (e) => { log("Net error intento " + attempt + ": " + e.message); reject(e); });
         req.write(postData);
         req.end();
+    });
+}
+
+/**
+ * Envía una foto (screenshot del dashboard) via Telegram.
+ * Se usa para heartbeat y resumen diario.
+ */
+function sendTelegramPhoto(photoBuffer, caption, attempt, options) {
+    const silent = options && options.silent;
+    const inlineKeyboard = options && options.inlineKeyboard;
+
+    return new Promise((resolve, reject) => {
+        const boundary = "----FormBoundary" + Date.now().toString(36);
+        let body = "";
+        body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + CHAT_ID + "\r\n";
+        if (caption) {
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n";
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"parse_mode\"\r\n\r\n" + "HTML" + "\r\n";
+        }
+        if (silent) {
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"disable_notification\"\r\n\r\n" + "true" + "\r\n";
+        }
+        if (inlineKeyboard) {
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"reply_markup\"\r\n\r\n" + JSON.stringify({ inline_keyboard: inlineKeyboard }) + "\r\n";
+        }
+        const pre = Buffer.from(body + "--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"dashboard.png\"\r\nContent-Type: image/png\r\n\r\n");
+        const post = Buffer.from("\r\n--" + boundary + "--\r\n");
+        const payload = Buffer.concat([pre, photoBuffer, post]);
+
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + BOT_TOKEN + "/sendPhoto",
+            method: "POST",
+            headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+            timeout: 15000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.ok) { log("Photo OK intento " + attempt + " msg_id=" + r.result.message_id); resolve(r); }
+                    else { log("Photo API error intento " + attempt + ": " + d); reject(new Error(d)); }
+                } catch(e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+        req.on("error", (e) => reject(e));
+        req.write(payload);
+        req.end();
+    });
+}
+
+/**
+ * Intenta obtener screenshot del dashboard web server (localhost:3100).
+ * Retorna Buffer con PNG o null si el server no está corriendo.
+ */
+function fetchDashboardScreenshot(width, height) {
+    return new Promise((resolve) => {
+        const req = require("http").get("http://localhost:" + DASHBOARD_PORT + "/screenshot?w=" + width + "&h=" + height, { timeout: 12000 }, (res) => {
+            if (res.statusCode !== 200) { resolve(null); return; }
+            const chunks = [];
+            res.on("data", (c) => chunks.push(c));
+            res.on("end", () => resolve(Buffer.concat(chunks)));
+        });
+        req.on("error", () => resolve(null));
+        req.on("timeout", () => { req.destroy(); resolve(null); });
     });
 }
 
@@ -127,31 +298,54 @@ async function processInput() {
         "elicitation_dialog":  "Informaci\u00f3n requerida"
     };
 
-    const emoji = {
-        "permission_prompt": "\u26a0\ufe0f",
-        "idle_prompt": "\u2705",
-        "auth_success": "\ud83d\udd11",
-        "elicitation_dialog": "\u2753"
-    }[type] || "\ud83d\udd14";
-
     // Ignorar permission_prompt: ya lo maneja permission-approver.js con botones inline
     if (type === "permission_prompt") {
         log("Ignorado permission_prompt (manejado por permission-approver.js)");
         return;
     }
 
+    // Clasificar urgencia y tipo de notificación
+    const classification = classifyNotification(type, message, title);
     const displayTitle = TIPO_TITULO[type] || title || type;
 
     let displayMessage = message;
-    if (type === "permission_prompt" && message === "Claude Code needs your approval for the plan") {
-        displayMessage = "Claude Code requiere tu aprobaci\u00f3n para continuar con el plan de trabajo. Revis\u00e1 la terminal para ver el detalle y confirmar o cancelar.";
-    }
 
     // Enriquecer con contexto de sesión
     const sessionId = data.session_id || "";
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
 
-    let text = emoji + " <b>" + escHtml(agent) + " \u2014 " + displayTitle + "</b>\n";
+    // Para heartbeat y daily, intentar enviar screenshot del dashboard
+    if (classification.category === "heartbeat" || classification.category === "daily") {
+        const screenshot = await fetchDashboardScreenshot(375, 640);
+        if (screenshot && screenshot.length > 1000) {
+            let caption = classification.emoji + " <b>" + escHtml(agent) + " \u2014 " + escHtml(displayTitle) + "</b>";
+            if (contextLine) caption += "\n" + contextLine;
+
+            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                try {
+                    const r = await sendTelegramPhoto(screenshot, caption, attempt, {
+                        silent: classification.silent,
+                        inlineKeyboard: classification.inlineKeyboard,
+                        category: classification.category
+                    });
+                    if (r && r.result && r.result.message_id) {
+                        registerMessage(r.result.message_id, classification.category);
+                    }
+                    return;
+                } catch(e) {
+                    if (attempt < MAX_RETRIES) {
+                        await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                    } else {
+                        log("Photo FALLO, fallback a texto");
+                    }
+                }
+            }
+            // Fallback: enviar como texto si la foto falla
+        }
+    }
+
+    // Construir mensaje de texto (default o fallback)
+    let text = classification.emoji + " <b>" + escHtml(agent) + " \u2014 " + escHtml(displayTitle) + "</b>\n";
     if (contextLine) {
         text += contextLine + "\n";
     }
@@ -161,9 +355,13 @@ async function processInput() {
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            const r = await sendTelegram(text, attempt);
+            const r = await sendTelegram(text, attempt, {
+                silent: classification.silent,
+                inlineKeyboard: classification.inlineKeyboard,
+                category: classification.category
+            });
             if (r && r.result && r.result.message_id) {
-                registerMessage(r.result.message_id, "notification");
+                registerMessage(r.result.message_id, classification.category);
             }
             return;
         } catch(e) {

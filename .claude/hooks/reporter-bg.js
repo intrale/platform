@@ -1,17 +1,27 @@
 #!/usr/bin/env node
-// Reporter Background — Inicia/detiene el reporter PNG de Telegram
+// Reporter Background v2 — Gestiona dashboard-server.js + reportes periódicos a Telegram
+// El dashboard web server sirve HTML en localhost:3100 y genera screenshots via Puppeteer.
+// Este script:
+//   1. Arranca dashboard-server.js si no está corriendo
+//   2. Cada N minutos, toma screenshot y lo envía a Telegram como heartbeat (silencioso)
 // Uso:
 //   node .claude/hooks/reporter-bg.js start [minutos]   (defecto: 10)
 //   node .claude/hooks/reporter-bg.js stop
 //   node .claude/hooks/reporter-bg.js status
-const { spawn, execSync } = require("child_process");
+const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
+const https = require("https");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
-const DASHBOARD = path.join(REPO_ROOT, "dashboard.js");
+const DASHBOARD_SERVER = path.join(REPO_ROOT, "dashboard-server.js");
+const DASHBOARD_LEGACY = path.join(REPO_ROOT, "dashboard.js");
 const PID_FILE = path.join(REPO_ROOT, "tmp", "reporter.pid");
+const SERVER_PID_FILE = path.join(REPO_ROOT, "tmp", "dashboard-server.pid");
 const LOG_FILE = path.join(REPO_ROOT, "hooks", "hook-debug.log");
+const TG_CONFIG_FILE = path.join(REPO_ROOT, "hooks", "telegram-config.json");
+const DASHBOARD_PORT = 3100;
 
 function debugLog(msg) {
   try {
@@ -20,90 +30,256 @@ function debugLog(msg) {
 }
 
 function isRunning(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return false;
-  }
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function readPid() {
+function readPid(file) {
   try {
-    if (!fs.existsSync(PID_FILE)) return null;
-    const pid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
+    if (!fs.existsSync(file)) return null;
+    const pid = parseInt(fs.readFileSync(file, "utf8").trim(), 10);
     return isNaN(pid) ? null : pid;
-  } catch (e) {
-    return null;
+  } catch { return null; }
+}
+
+function readTgConfig() {
+  try { return JSON.parse(fs.readFileSync(TG_CONFIG_FILE, "utf8")); }
+  catch { return { bot_token: "", chat_id: "" }; }
+}
+
+// Verificar si el dashboard web server está corriendo
+function isDashboardServerRunning() {
+  const pid = readPid(SERVER_PID_FILE);
+  if (pid && isRunning(pid)) return true;
+  return false;
+}
+
+// Arrancar dashboard-server.js si no está corriendo
+function ensureDashboardServer() {
+  if (isDashboardServerRunning()) {
+    debugLog("Dashboard server ya corriendo");
+    return;
+  }
+
+  const script = fs.existsSync(DASHBOARD_SERVER) ? DASHBOARD_SERVER : DASHBOARD_LEGACY;
+  if (!fs.existsSync(script)) {
+    debugLog("No se encontro script de dashboard: " + script);
+    return;
+  }
+
+  const child = spawn(process.execPath, [script], {
+    detached: true,
+    stdio: "ignore",
+    cwd: path.dirname(script),
+  });
+  child.unref();
+  debugLog("Iniciado dashboard server PID " + child.pid);
+}
+
+// Obtener screenshot del dashboard web
+function fetchScreenshot(width, height) {
+  return new Promise((resolve) => {
+    const req = http.get("http://localhost:" + DASHBOARD_PORT + "/screenshot?w=" + width + "&h=" + height, { timeout: 15000 }, (res) => {
+      if (res.statusCode !== 200) { resolve(null); return; }
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
+// Enviar foto a Telegram (heartbeat silencioso)
+function sendTelegramPhoto(photoBuffer, caption, silent) {
+  const cfg = readTgConfig();
+  if (!cfg.bot_token || !cfg.chat_id) { debugLog("Telegram no configurado"); return Promise.resolve(null); }
+
+  return new Promise((resolve, reject) => {
+    const boundary = "----FormBoundary" + Date.now().toString(36);
+    let body = "";
+    body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + cfg.chat_id + "\r\n";
+    if (caption) {
+      body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n";
+      body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"parse_mode\"\r\n\r\n" + "HTML" + "\r\n";
+    }
+    if (silent) {
+      body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"disable_notification\"\r\n\r\n" + "true" + "\r\n";
+    }
+    const pre = Buffer.from(body + "--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"dashboard.png\"\r\nContent-Type: image/png\r\n\r\n");
+    const post = Buffer.from("\r\n--" + boundary + "--\r\n");
+    const payload = Buffer.concat([pre, photoBuffer, post]);
+
+    const req = https.request({
+      hostname: "api.telegram.org",
+      path: "/bot" + cfg.bot_token + "/sendPhoto",
+      method: "POST",
+      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+      timeout: 15000
+    }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) { debugLog("Heartbeat foto OK msg_id=" + r.result.message_id); resolve(r); }
+          else { debugLog("Heartbeat foto error: " + d); reject(new Error(d)); }
+        } catch(e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.on("error", (e) => reject(e));
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Enviar texto a Telegram (fallback)
+function sendTelegramText(text, silent) {
+  const cfg = readTgConfig();
+  if (!cfg.bot_token || !cfg.chat_id) return Promise.resolve(null);
+
+  return new Promise((resolve, reject) => {
+    const params = JSON.stringify({
+      chat_id: cfg.chat_id, text: text, parse_mode: "HTML",
+      disable_web_page_preview: true, disable_notification: !!silent
+    });
+    const req = https.request({
+      hostname: "api.telegram.org",
+      path: "/bot" + cfg.bot_token + "/sendMessage",
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(params) },
+      timeout: 5000
+    }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+    });
+    req.on("error", () => resolve(null));
+    req.write(params); req.end();
+  });
+}
+
+// Reporte periódico: screenshot + envío a Telegram
+async function sendPeriodicReport() {
+  debugLog("Generando reporte periodico...");
+
+  // Asegurar que el dashboard server está corriendo
+  ensureDashboardServer();
+
+  // Esperar un momento para que arranque
+  await new Promise(r => setTimeout(r, 2000));
+
+  const screenshot = await fetchScreenshot(375, 640);
+  if (screenshot && screenshot.length > 1000) {
+    const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + new Date().toLocaleString("es-AR");
+    try {
+      await sendTelegramPhoto(screenshot, caption, true);
+    } catch(e) {
+      debugLog("Error enviando screenshot: " + e.message);
+      await sendTelegramText("\ud83d\udc9a <b>Heartbeat</b>\nDashboard activo en localhost:" + DASHBOARD_PORT + "\n" + new Date().toLocaleString("es-AR"), true);
+    }
+  } else {
+    debugLog("Screenshot no disponible, enviando texto");
+    // Intentar obtener status JSON
+    try {
+      const statusData = await new Promise((resolve) => {
+        const req = http.get("http://localhost:" + DASHBOARD_PORT + "/api/status", { timeout: 5000 }, (res) => {
+          let d = ""; res.on("data", c => d += c);
+          res.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+        });
+        req.on("error", () => resolve(null));
+      });
+      if (statusData) {
+        const text = "\ud83d\udc9a <b>Heartbeat</b>\n" +
+          "\u25cf " + statusData.activeSessions + " activos, " + statusData.idleSessions + " idle\n" +
+          "\u25cf " + statusData.completedTasks + "/" + statusData.totalTasks + " tareas\n" +
+          "\u25cf CI: " + statusData.ciStatus + "\n" +
+          "\u25cf " + statusData.totalActions + " acciones";
+        await sendTelegramText(text, true);
+      }
+    } catch(e) { debugLog("Fallback text tambien fallo: " + e.message); }
   }
 }
 
 function start(intervalMin) {
-  const existing = readPid();
+  const existing = readPid(PID_FILE);
   if (existing && isRunning(existing)) {
     console.log("Reporter ya corriendo (PID " + existing + ")");
     return existing;
   }
 
-  // Limpiar PID file viejo
-  try { fs.unlinkSync(PID_FILE); } catch (e) {}
+  try { fs.unlinkSync(PID_FILE); } catch {}
+  try { fs.mkdirSync(path.dirname(PID_FILE), { recursive: true }); } catch {}
 
-  // Crear dir tmp si no existe
-  try { fs.mkdirSync(path.dirname(PID_FILE), { recursive: true }); } catch (e) {}
+  // Arrancar dashboard web server
+  ensureDashboardServer();
 
-  const child = spawn(process.execPath, [DASHBOARD, "--headless", "--report", String(intervalMin)], {
+  // Escribir PID del reporter (este proceso en modo loop, o detached)
+  if (process.argv.includes("--daemon")) {
+    // Modo daemon: loop infinito con reportes periódicos
+    fs.writeFileSync(PID_FILE, String(process.pid), "utf8");
+    debugLog("Reporter daemon PID " + process.pid + " cada " + intervalMin + " min");
+    console.log("Reporter daemon: PID " + process.pid + ", reporte cada " + intervalMin + " min");
+
+    // Primer reporte inmediato
+    sendPeriodicReport();
+
+    // Reportes periódicos
+    setInterval(sendPeriodicReport, intervalMin * 60 * 1000);
+    return process.pid;
+  }
+
+  // Modo spawn: lanzar como daemon detached
+  const child = spawn(process.execPath, [__filename, "start", String(intervalMin), "--daemon"], {
     detached: true,
     stdio: "ignore",
     cwd: REPO_ROOT,
   });
-
   child.unref();
-  debugLog("Iniciado reporter headless PID " + child.pid + " cada " + intervalMin + " min");
-  console.log("Reporter iniciado: PID " + child.pid + ", reporte PNG cada " + intervalMin + " min");
+
+  debugLog("Iniciado reporter daemon PID " + child.pid + " cada " + intervalMin + " min");
+  console.log("Reporter iniciado: PID " + child.pid + ", reporte cada " + intervalMin + " min");
   return child.pid;
 }
 
 function stop() {
-  const pid = readPid();
-  if (!pid) {
-    console.log("Reporter no esta corriendo");
-    return false;
+  let stopped = false;
+
+  // Detener reporter
+  const pid = readPid(PID_FILE);
+  if (pid && isRunning(pid)) {
+    try { process.kill(pid, "SIGTERM"); stopped = true; console.log("Reporter detenido (PID " + pid + ")"); } catch {}
   }
-  if (!isRunning(pid)) {
-    console.log("Reporter PID " + pid + " ya no existe, limpiando");
-    try { fs.unlinkSync(PID_FILE); } catch (e) {}
-    return false;
+  try { fs.unlinkSync(PID_FILE); } catch {}
+
+  // Detener dashboard server
+  const serverPid = readPid(SERVER_PID_FILE);
+  if (serverPid && isRunning(serverPid)) {
+    try { process.kill(serverPid, "SIGTERM"); stopped = true; console.log("Dashboard server detenido (PID " + serverPid + ")"); } catch {}
   }
-  try {
-    process.kill(pid, "SIGTERM");
-    console.log("Reporter detenido (PID " + pid + ")");
-    debugLog("Reporter detenido PID " + pid);
-    try { fs.unlinkSync(PID_FILE); } catch (e) {}
-    return true;
-  } catch (e) {
-    console.error("Error deteniendo PID " + pid + ": " + e.message);
-    return false;
-  }
+  try { fs.unlinkSync(SERVER_PID_FILE); } catch {}
+
+  if (!stopped) console.log("Nada corriendo");
+  return stopped;
 }
 
 function status() {
-  const pid = readPid();
-  if (!pid) {
-    console.log("Reporter: detenido");
-    return false;
-  }
-  if (isRunning(pid)) {
-    console.log("Reporter: corriendo (PID " + pid + ")");
-    return true;
-  } else {
-    console.log("Reporter: PID " + pid + " muerto, limpiando");
-    try { fs.unlinkSync(PID_FILE); } catch (e) {}
-    return false;
-  }
+  const pid = readPid(PID_FILE);
+  const serverPid = readPid(SERVER_PID_FILE);
+  const reporterOk = pid && isRunning(pid);
+  const serverOk = serverPid && isRunning(serverPid);
+
+  console.log("Reporter: " + (reporterOk ? "corriendo (PID " + pid + ")" : "detenido"));
+  console.log("Dashboard server: " + (serverOk ? "corriendo (PID " + serverPid + ") → http://localhost:" + DASHBOARD_PORT : "detenido"));
+
+  if (!reporterOk && pid) { try { fs.unlinkSync(PID_FILE); } catch {} }
+  if (!serverOk && serverPid) { try { fs.unlinkSync(SERVER_PID_FILE); } catch {} }
+
+  return reporterOk || serverOk;
 }
 
 // --- CLI ---
-const cmd = process.argv[2] || "start";
+const cmd = (process.argv.includes("--daemon") ? "daemon" : process.argv[2]) || "start";
 const interval = parseInt(process.argv[3], 10) || 10;
 
 if (cmd === "start") {
@@ -112,6 +288,8 @@ if (cmd === "start") {
   stop();
 } else if (cmd === "status") {
   status();
+} else if (cmd === "daemon") {
+  // Interno: no llamar directamente
 } else {
   console.log("Uso: reporter-bg.js [start|stop|status] [minutos]");
 }
