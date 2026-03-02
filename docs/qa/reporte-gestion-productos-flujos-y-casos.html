@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Gestion de Productos</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .overlay-example { background: #111; color: #fff; border-radius: 4px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; margin: 6px 0; position: relative; }
+  .overlay-example .ov-id { color: #64b5f6; font-weight: bold; }
+  .overlay-example .ov-step { color: #81c784; }
+  .overlay-example .ov-result { color: #ffb74d; }
+  .overlay-example .ov-time { color: #bbb; position: absolute; right: 10px; top: 10px; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Gestion de Productos (CRUD)</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
+    guiones de video y criterios de evidencia para la funcionalidad<br>
+    de Gestion de Productos del catalogo de negocio en la plataforma Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-03-02</p>
+    <p><strong>Generado por:</strong> PO + QA Agents</p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Indice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo</a></li>
+  <li><a href="#s2">Estandar de Evidencia en Video</a></li>
+  <li><a href="#s3">Arquitectura de Gestion de Productos</a></li>
+  <li><a href="#s4">Flujo 1 — Listar Productos con Filtros</a></li>
+  <li><a href="#s5">Flujo 2 — Crear Producto</a></li>
+  <li><a href="#s6">Flujo 3 — Editar Producto / Draft</a></li>
+  <li><a href="#s7">Flujo 4 — Eliminar Producto</a></li>
+  <li><a href="#s8">Flujo 5 — Activar/Desactivar Producto</a></li>
+  <li><a href="#s9">Flujo 6 — Gestion de Stock</a></li>
+  <li><a href="#s10">Catalogo de Validaciones</a></li>
+  <li><a href="#s11">Resumen y Cobertura</a></li>
+  <li><a href="#s12">Gaps y Recomendaciones</a></li>
+</ol>
+
+<!-- ========== 1. RESUMEN ========== -->
+<h2 id="s1">1. Resumen Ejecutivo</h2>
+<p>La funcionalidad de <strong>Gestion de Productos</strong> comprende el CRUD completo del catalogo de un negocio. Permite a usuarios con rol <strong>BusinessAdmin</strong> o <strong>PlatformAdmin</strong> listar, crear, editar, eliminar y gestionar el estado y stock de productos. Este reporte documenta <strong>52 casos de prueba</strong> con:</p>
+<ul>
+  <li>Diagramas de flujo Mermaid por cada operacion CRUD</li>
+  <li>Guion de video paso a paso para cada caso de prueba</li>
+  <li>Criterios de evidencia visual que debe capturar el video</li>
+  <li>Narracion (texto/audio) de cada paso durante la grabacion</li>
+</ul>
+
+<table>
+  <tr><th>#</th><th>Flujo</th><th>Pantalla</th><th>Auth</th><th>Casos</th></tr>
+  <tr><td>1</td><td>Listar Productos + Filtros</td><td>ProductListScreen</td><td>JWT (BusinessAdmin/PlatformAdmin)</td><td>10</td></tr>
+  <tr><td>2</td><td>Crear Producto</td><td>ProductFormScreen</td><td>JWT (BusinessAdmin/PlatformAdmin)</td><td>12</td></tr>
+  <tr><td>3</td><td>Editar Producto / Draft</td><td>ProductFormScreen</td><td>JWT (BusinessAdmin/PlatformAdmin)</td><td>10</td></tr>
+  <tr><td>4</td><td>Eliminar Producto</td><td>ProductFormScreen</td><td>JWT (BusinessAdmin/PlatformAdmin)</td><td>7</td></tr>
+  <tr><td>5</td><td>Activar/Desactivar Producto</td><td>ProductFormScreen</td><td>JWT (BusinessAdmin/PlatformAdmin)</td><td>6</td></tr>
+  <tr><td>6</td><td>Gestion de Stock</td><td>ProductFormScreen</td><td>JWT (BusinessAdmin/PlatformAdmin)</td><td>7</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td>52</td></tr>
+</table>
+
+<!-- ========== 2. ESTANDAR DE VIDEO ========== -->
+<h2 id="s2">2. Estandar de Evidencia en Video</h2>
+
+<h3>2.1 Nomenclatura de archivos</h3>
+<div class="video-std">
+  <code>{FLUJO}-{ID}_{slug-descriptivo}.mp4</code><br>
+  Ejemplos:<br>
+  <code>GP-1-001_listar-productos-exitoso.mp4</code><br>
+  <code>GP-2-003_crear-producto-nombre-vacio.mp4</code><br>
+  <code>GP-4-001_eliminar-producto-confirmacion.mp4</code>
+</div>
+
+<h3>2.2 Estructura del video</h3>
+<p>Cada video de evidencia DEBE contener estas 4 fases:</p>
+<table>
+  <tr><th>Fase</th><th>Duracion</th><th>Contenido</th></tr>
+  <tr><td><strong>1. Titulo</strong></td><td>3-5 seg</td><td>Overlay con ID del caso, nombre completo, fecha y entorno</td></tr>
+  <tr><td><strong>2. Precondiciones</strong></td><td>3-5 seg</td><td>Mostrar/narrar el estado inicial requerido</td></tr>
+  <tr><td><strong>3. Ejecucion</strong></td><td>Variable</td><td>Cada paso narrado con overlay de numero de paso</td></tr>
+  <tr><td><strong>4. Verificacion</strong></td><td>5-10 seg</td><td>Evidencia explicita de CADA resultado esperado</td></tr>
+</table>
+
+<h3>2.3 Overlay de pantalla (formato obligatorio)</h3>
+<div class="overlay-example">
+  <span class="ov-id">GP-2-001</span> | Crear producto exitoso<span class="ov-time">00:12</span><br>
+  <span class="ov-step">&#9658; Paso 3/6:</span> Ingresar precio valido (150.50)<br>
+  <span class="ov-result">&#9673; Verificar: Snackbar "Producto guardado" visible</span>
+</div>
+<p>El overlay debe ser visible pero no obstruir la interfaz. Posicion sugerida: franja semi-transparente en la parte inferior.</p>
+
+<h3>2.4 Narracion</h3>
+<table>
+  <tr><th>Metodo</th><th>Formato</th><th>Cuando usar</th></tr>
+  <tr><td><strong>Audio TTS</strong> (ideal)</td><td>Voz sintetizada relatando cada paso</td><td>Videos finales para stakeholders</td></tr>
+  <tr><td><strong>Texto overlay</strong></td><td>Subtitulos con cada accion</td><td>Videos automatizados (Maestro/script)</td></tr>
+  <tr><td><strong>Audio + texto</strong></td><td>Ambos simultaneamente</td><td>Videos de demostracion formal</td></tr>
+</table>
+
+<h3>2.5 Evidencia de resultados esperados</h3>
+<div class="video-std">
+  <strong>Obligatorio para CADA resultado esperado:</strong>
+  <ol>
+    <li><strong>Pausa visual</strong> (2-3 seg): mostrar claramente el resultado en pantalla</li>
+    <li><strong>Highlight/marca</strong>: flecha, recuadro o zoom al elemento que evidencia el resultado</li>
+    <li><strong>Overlay de verificacion</strong>: texto <code>&#10003; VERIFICADO: [descripcion del resultado]</code> o <code>&#10007; FALLO: [descripcion]</code></li>
+    <li><strong>Screenshot automatico</strong>: captura individual del momento de verificacion</li>
+  </ol>
+</div>
+
+<h3>2.6 Ejemplo de guion de video completo</h3>
+<table>
+  <tr><th>Tiempo</th><th>Overlay</th><th>Narracion</th><th>Accion en pantalla</th></tr>
+  <tr><td>00:00</td><td><code>GP-2-001 | Crear producto exitoso</code></td><td>"Caso de prueba GP-2-001: Crear producto exitoso"</td><td>Pantalla negra con titulo</td></tr>
+  <tr><td>00:04</td><td><code>Precondicion: Login BusinessAdmin, negocio seleccionado</code></td><td>"Precondicion: usuario autenticado como BusinessAdmin con negocio seleccionado"</td><td>Dashboard visible</td></tr>
+  <tr><td>00:08</td><td><code>&#9658; Paso 1/6: Ir a /business/products</code></td><td>"Paso uno: navegamos a la lista de productos"</td><td>ProductListScreen visible</td></tr>
+  <tr><td>00:12</td><td><code>&#9658; Paso 2/6: Tocar "Agregar producto"</code></td><td>"Paso dos: tocamos el boton Agregar producto"</td><td>Tap en boton, navega a Form</td></tr>
+  <tr><td>00:16</td><td><code>&#9658; Paso 3/6: Completar nombre</code></td><td>"Paso tres: ingresamos el nombre del producto"</td><td>Escribir "Hamburguesa Clasica"</td></tr>
+  <tr><td>00:20</td><td><code>&#9658; Paso 4/6: Completar precio y unidad</code></td><td>"Paso cuatro: ingresamos precio y unidad"</td><td>Escribir "850.00" y "unidad"</td></tr>
+  <tr><td>00:26</td><td><code>&#9658; Paso 5/6: Seleccionar categoria</code></td><td>"Paso cinco: seleccionamos la categoria"</td><td>Tap en chip de categoria</td></tr>
+  <tr><td>00:30</td><td><code>&#9658; Paso 6/6: Tocar "Guardar"</code></td><td>"Paso seis: tocamos Guardar"</td><td>Tap en boton</td></tr>
+  <tr><td>00:33</td><td><code>&#9673; Verificando: Snackbar "Producto guardado"</code></td><td>"Verificamos: aparece el snackbar confirmando que el producto fue guardado"</td><td>Snackbar visible, pausa 2s</td></tr>
+  <tr><td>00:37</td><td><code>&#10003; VERIFICADO: Navega a /business/products</code></td><td>"Verificado: la app navego de vuelta a la lista de productos"</td><td>ProductListScreen visible con nuevo producto</td></tr>
+  <tr><td>00:42</td><td><code>&#10003; RESULTADO: PASS</code></td><td>"Caso GP-2-001: resultado PASS"</td><td>Pantalla final verde</td></tr>
+</table>
+
+<!-- ========== 3. ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura de Gestion de Productos</h2>
+
+<h3>3.1 Diagrama general de capas</h3>
+<pre class="mermaid">
+graph LR
+  UI["UI Screens<br>(Compose)"] --> VM["ViewModels<br>(Estado + Konform)"]
+  VM --> DO["Do[Action]<br>(Logica negocio)"]
+  DO --> CL["CommProductService<br>(HTTP Client)"]
+  CL --> BE["Backend Ktor<br>(/{biz}/products/*)"]
+  BE --> DDB["DynamoDB<br>(Persistencia)"]
+
+  subgraph "App Screens"
+    PL["ProductListScreen<br>/business/products"]
+    PF["ProductFormScreen<br>/business/products/form"]
+  end
+
+  subgraph "ViewModels"
+    PLV["ProductListViewModel"]
+    PFV["ProductFormViewModel"]
+  end
+
+  subgraph "Store"
+    PES["ProductEditorStore<br>(Singleton Draft)"]
+  end
+
+  PL --> PLV
+  PF --> PFV
+  PLV --> PES
+  PFV --> PES
+</pre>
+
+<h3>3.2 Mapa de navegacion</h3>
+<pre class="mermaid">
+graph TD
+  DASH["Dashboard<br>(Autenticado)"] -->|"Menu: Productos"| LIST["/business/products<br>ProductListScreen"]
+  LIST -->|"Boton: Agregar producto"| FORM_NEW["/business/products/form<br>ProductFormScreen (Create)"]
+  LIST -->|"Tap en producto"| FORM_EDIT["/business/products/form<br>ProductFormScreen (Edit)"]
+  FORM_NEW -->|"Guardar exitoso"| LIST
+  FORM_EDIT -->|"Guardar exitoso"| LIST
+  FORM_EDIT -->|"Eliminar exitoso"| LIST
+
+  DASH_NOACCESS["Dashboard<br>(Sin rol admin)"] -->|"Intenta /products"| ACCESS_DENIED["Acceso denegado<br>Redirige a Dashboard"]
+
+  style DASH fill:#e3f2fd,stroke:#0d47a1
+  style LIST fill:#e8f5e9,stroke:#2e7d32
+  style FORM_NEW fill:#fff8e1,stroke:#f57f17
+  style FORM_EDIT fill:#fff8e1,stroke:#f57f17
+  style ACCESS_DENIED fill:#ffebee,stroke:#c62828
+</pre>
+
+<h3>3.3 Modelo de datos</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo</th><th>Requerido</th><th>Descripcion</th></tr>
+  <tr><td><code>id</code></td><td>String</td><td>Auto</td><td>ID unico del producto (generado por backend)</td></tr>
+  <tr><td><code>businessId</code></td><td>String</td><td>Auto</td><td>ID del negocio propietario</td></tr>
+  <tr><td><code>name</code></td><td>String</td><td>Si</td><td>Nombre del producto</td></tr>
+  <tr><td><code>shortDescription</code></td><td>String?</td><td>No</td><td>Descripcion breve</td></tr>
+  <tr><td><code>basePrice</code></td><td>Double</td><td>Si</td><td>Precio base (debe ser > 0)</td></tr>
+  <tr><td><code>unit</code></td><td>String</td><td>Si</td><td>Unidad de medida (ej: "unidad", "kg", "litro")</td></tr>
+  <tr><td><code>categoryId</code></td><td>String</td><td>Si</td><td>ID de la categoria asociada</td></tr>
+  <tr><td><code>status</code></td><td>ProductStatus</td><td>Si</td><td>Draft o Published</td></tr>
+  <tr><td><code>isAvailable</code></td><td>Boolean</td><td>Si</td><td>Disponibilidad del producto (default: true)</td></tr>
+  <tr><td><code>stockQuantity</code></td><td>Int?</td><td>No</td><td>Cantidad en stock (null = ilimitado)</td></tr>
+</table>
+
+<h3>3.4 Endpoints del backend</h3>
+<table>
+  <tr><th>Operacion</th><th>Metodo HTTP</th><th>Endpoint</th><th>Auth</th><th>Body</th></tr>
+  <tr><td>Listar productos</td><td>GET</td><td><code>/{biz}/products</code></td><td>JWT</td><td>-</td></tr>
+  <tr><td>Obtener producto</td><td>GET</td><td><code>/{biz}/products/{id}</code></td><td>JWT</td><td>-</td></tr>
+  <tr><td>Crear producto</td><td>POST</td><td><code>/{biz}/products</code></td><td>JWT</td><td>ProductRequest</td></tr>
+  <tr><td>Actualizar producto</td><td>PUT</td><td><code>/{biz}/products/{id}</code></td><td>JWT</td><td>ProductRequest</td></tr>
+  <tr><td>Eliminar producto</td><td>DELETE</td><td><code>/{biz}/products/{id}</code></td><td>JWT</td><td>-</td></tr>
+  <tr><td>Listar categorias</td><td>GET</td><td><code>/{biz}/categories</code></td><td>JWT</td><td>-</td></tr>
+</table>
+
+<h3>3.5 Roles permitidos</h3>
+<div class="precond">
+  <strong>Acceso restringido:</strong> Solo <code>BusinessAdmin</code> y <code>PlatformAdmin</code> pueden acceder a la gestion de productos. Otros roles ven un mensaje de acceso denegado con boton para volver al Dashboard.
+</div>
+
+<!-- ========== 4. FLUJO 1 — LISTAR PRODUCTOS ========== -->
+<h2 id="s4">4. Flujo 1 — Listar Productos con Filtros</h2>
+
+<h3>4.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El BusinessAdmin navega a <code>/business/products</code> y ve la lista completa de productos de su negocio. Puede filtrar por categoria usando chips (FilterChip). Si no hay negocio seleccionado, ve un mensaje de error. Si no tiene rol autorizado, se le niega el acceso.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Login como BusinessAdmin o PlatformAdmin | Negocio seleccionado | Conexion a internet
+</div>
+
+<h3>4.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> DASH["Dashboard"]
+  DASH -->|"Menu: Productos"| CHECK_ROLE{"Rol<br>autorizado?"}
+  CHECK_ROLE -->|"No (Client, Delivery...)"| DENIED["Acceso denegado<br>Boton: Ir al Dashboard"]
+  CHECK_ROLE -->|"BusinessAdmin / PlatformAdmin"| CHECK_BIZ{"businessId<br>disponible?"}
+  CHECK_BIZ -->|"null o vacio"| MISSING["MissingBusiness<br>Boton: Ir al Dashboard"]
+  CHECK_BIZ -->|"Disponible"| LOADING["Estado: Loading<br>CircularProgressIndicator"]
+  LOADING --> HTTP_PROD["GET /{biz}/products"]
+  LOADING --> HTTP_CAT["GET /{biz}/categories"]
+  HTTP_CAT -->|"OK"| CATS["Categorias cargadas<br>Chips de filtro visibles"]
+  HTTP_CAT -->|"Error"| CAT_ERR["Snackbar: error categorias"]
+  HTTP_PROD -->|"OK + items > 0"| LOADED["Estado: Loaded<br>LazyColumn con ProductCards"]
+  HTTP_PROD -->|"OK + items = 0"| EMPTY["Estado: Empty<br>Icono + 'Sin productos'<br>Boton: Agregar"]
+  HTTP_PROD -->|"Error"| ERROR["Estado: Error<br>Mensaje + Boton: Reintentar"]
+
+  CATS --> FILTER{"Tap en<br>FilterChip?"}
+  FILTER -->|"Categoria"| FILTERED["Items filtrados<br>por categoryId"]
+  FILTER -->|"Todos"| LOADED
+  FILTERED --> LOADED
+
+  LOADED -->|"Tap en producto"| EDIT["ProductEditorStore.setDraft(item)<br>Navega a /products/form"]
+  LOADED -->|"Tap: Agregar"| CREATE["ProductEditorStore.clear()<br>Navega a /products/form"]
+
+  style DENIED fill:#ffebee,stroke:#c62828
+  style MISSING fill:#ffebee,stroke:#c62828
+  style ERROR fill:#ffebee,stroke:#c62828
+  style CAT_ERR fill:#fff3e0,stroke:#e65100
+  style LOADED fill:#e8f5e9,stroke:#2e7d32
+  style EMPTY fill:#fff8e1,stroke:#f57f17
+  style LOADING fill:#e3f2fd,stroke:#1565c0
+</pre>
+
+<h3>4.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Listar productos exitoso</strong><br>Mostrar lista con al menos 1 producto</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login como BusinessAdmin"<br>
+      <strong>&#9658; P2</strong> "Navegar a /business/products"<br>
+      <strong>&#9673; V1</strong> "CircularProgressIndicator visible durante carga"<br>
+      <strong>&#9673; V2</strong> "ProductCards visibles con nombre, precio, unidad, categoria, status"
+    </td>
+    <td class="evidence-col">&#10003; Spinner durante carga<br>&#10003; Cards con datos completos<br>&#10003; Chips de status (Draft/Published)</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Filtrar por categoria</strong><br>Seleccionar FilterChip de una categoria especifica</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ir a lista de productos"<br>
+      <strong>&#9658; P2</strong> "Tap en FilterChip de categoria X"<br>
+      <strong>&#9673; V1</strong> "Solo productos de categoria X visibles"<br>
+      <strong>&#9658; P3</strong> "Tap en 'Todos'"<br>
+      <strong>&#9673; V2</strong> "Todos los productos visibles de nuevo"
+    </td>
+    <td class="evidence-col">&#10003; Chip seleccionado resaltado<br>&#10003; Items filtrados correctamente<br>&#10003; Reset a "Todos" funciona</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Lista vacia</strong><br>Negocio sin productos muestra estado Empty</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login con negocio sin productos"<br>
+      <strong>&#9673; V1</strong> "Icono ShoppingBag + mensaje 'Sin productos'"<br>
+      <strong>&#9673; V2</strong> "Boton 'Agregar producto' visible"
+    </td>
+    <td class="evidence-col">&#10003; Estado Empty con icono<br>&#10003; Boton agregar funcional</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Acceso denegado por rol</strong><br>Usuario sin BusinessAdmin/PlatformAdmin</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login como Client/Delivery"<br>
+      <strong>&#9658; P2</strong> "Intentar navegar a /business/products"<br>
+      <strong>&#9673; V1</strong> "Mensaje de acceso denegado"<br>
+      <strong>&#9673; V2</strong> "Boton: Ir al Dashboard"
+    </td>
+    <td class="evidence-col">&#10003; Mensaje "acceso denegado"<br>&#10003; No se ve lista de productos<br>&#10003; Boton redirige a Dashboard</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Sin negocio seleccionado</strong><br>businessId es null</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Login sin negocio seleccionado"<br>
+      <strong>&#9673; V1</strong> "Estado MissingBusiness"<br>
+      <strong>&#9673; V2</strong> "Boton: Ir al Dashboard"
+    </td>
+    <td class="evidence-col">&#10003; Mensaje de negocio requerido<br>&#10003; No se cargan productos</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-006</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Error de red al cargar</strong><br>API retorna error</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Sin conexion / API caida"<br>
+      <strong>&#9673; V1</strong> "Estado Error con mensaje"<br>
+      <strong>&#9673; V2</strong> "Boton 'Reintentar' visible"
+    </td>
+    <td class="evidence-col">&#10003; Icono Error visible<br>&#10003; Mensaje de error<br>&#10003; Reintentar recarga</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-007</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Error al cargar categorias</strong><br>Categorias fallan pero productos cargan</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "API categorias falla"<br>
+      <strong>&#9673; V1</strong> "Snackbar con error de categorias"<br>
+      <strong>&#9673; V2</strong> "Productos se muestran sin filtros"
+    </td>
+    <td class="evidence-col">&#10003; Snackbar visible<br>&#10003; Productos cargan normalmente<br>&#10003; Sin chips de filtro</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-008</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>ProductCard muestra datos completos</strong><br>Verificar name, price, unit, category, status, availability</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Producto con todos los campos"<br>
+      <strong>&#9673; V1</strong> "Nombre, precio formateado, unidad, categoria, chip status"<br>
+      <strong>&#9673; V2</strong> "Si no disponible: chip 'Sin stock'"
+    </td>
+    <td class="evidence-col">&#10003; Todos los campos visibles<br>&#10003; Precio formateado correctamente<br>&#10003; Chip "Sin stock" si aplica</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-009</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Descripcion larga truncada</strong><br>shortDescription con maxLines=2 y TextOverflow.Ellipsis</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Producto con descripcion muy larga"<br>
+      <strong>&#9673; V1</strong> "Texto truncado con '...' despues de 2 lineas"
+    </td>
+    <td class="evidence-col">&#10003; Ellipsis visible<br>&#10003; Max 2 lineas</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-1-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Filtro con 0 resultados</strong><br>Categoria seleccionada sin productos asociados</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Seleccionar categoria sin productos"<br>
+      <strong>&#9673; V1</strong> "Estado Empty visible"
+    </td>
+    <td class="evidence-col">&#10003; Estado Empty<br>&#10003; Chip de filtro aun seleccionado</td>
+  </tr>
+</table>
+
+<!-- ========== 5. FLUJO 2 — CREAR PRODUCTO ========== -->
+<h2 id="s5">5. Flujo 2 — Crear Producto</h2>
+
+<h3>5.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Desde la lista de productos, el admin toca "Agregar producto". Se limpia el <code>ProductEditorStore</code> y navega a <code>/business/products/form</code> en modo Create. Debe completar nombre, precio, unidad y seleccionar categoria. Puede opcionalmente agregar descripcion, cambiar estado (Draft/Published), disponibilidad y stock. Al guardar exitosamente, navega de vuelta a la lista.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Login BusinessAdmin/PlatformAdmin | Negocio seleccionado | Al menos 1 categoria creada
+</div>
+
+<h3>5.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LIST["ProductListScreen"]
+  LIST -->|"Tap: Agregar producto"| CLEAR["ProductEditorStore.clear()"]
+  CLEAR --> FORM["ProductFormScreen<br>mode = Create"]
+  FORM --> LOAD_CAT["Cargar categorias<br>GET /{biz}/categories"]
+  LOAD_CAT -->|"OK"| CATS["FilterChips de categorias"]
+  LOAD_CAT -->|"Error"| CAT_ERR["Mensaje error + Reintentar"]
+
+  FORM --> FILL["Completar campos:<br>nombre, descripcion, precio,<br>unidad, categoria, status,<br>disponibilidad, stock"]
+  FILL --> TAP_SAVE["Tap: Guardar"]
+  TAP_SAVE --> VAL{"Validacion<br>Konform"}
+  VAL -->|"name vacio"| E_NAME["Error inline:<br>'Campo requerido'"]
+  VAL -->|"unit vacio"| E_UNIT["Error inline:<br>'Campo requerido'"]
+  VAL -->|"categoryId vacio"| E_CAT["Error inline:<br>'Campo requerido'"]
+  VAL -->|"price vacio o no numerico"| E_PRICE["Error inline:<br>'Precio invalido'"]
+  VAL -->|"Valido"| PRICE_CHECK{"price > 0?"}
+  PRICE_CHECK -->|"No"| E_PRICE2["Error: precio invalido"]
+  PRICE_CHECK -->|"Si"| HTTP["POST /{biz}/products<br>ProductRequest"]
+  HTTP -->|"OK"| SUCCESS["Snackbar: 'Producto guardado'<br>Navega a /business/products"]
+  HTTP -->|"Error"| E_SERVER["Snackbar: error del servidor"]
+
+  E_NAME --> FORM
+  E_UNIT --> FORM
+  E_CAT --> FORM
+  E_PRICE --> FORM
+  E_PRICE2 --> FORM
+  E_SERVER --> FORM
+
+  style E_NAME fill:#ffebee,stroke:#c62828
+  style E_UNIT fill:#ffebee,stroke:#c62828
+  style E_CAT fill:#ffebee,stroke:#c62828
+  style E_PRICE fill:#ffebee,stroke:#c62828
+  style E_PRICE2 fill:#ffebee,stroke:#c62828
+  style E_SERVER fill:#ffebee,stroke:#c62828
+  style SUCCESS fill:#e8f5e9,stroke:#2e7d32
+  style CAT_ERR fill:#fff3e0,stroke:#e65100
+</pre>
+
+<h3>5.3 Campos y validaciones</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo UI</th><th>Validacion Frontend (Konform)</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
+  <tr><td>name</td><td>TextField</td><td>required + minLength(1)</td><td>required</td><td><code>form_error_required</code></td></tr>
+  <tr><td>shortDescription</td><td>TextField</td><td>-</td><td>-</td><td>-</td></tr>
+  <tr><td>basePrice</td><td>TextField</td><td>required + minLength(1) + <code>^\d+(\.\d+)?$</code></td><td>required, > 0</td><td><code>product_form_error_invalid_price</code></td></tr>
+  <tr><td>unit</td><td>TextField</td><td>required + minLength(1)</td><td>required</td><td><code>form_error_required</code></td></tr>
+  <tr><td>categoryId</td><td>FilterChip</td><td>required + minLength(1)</td><td>required</td><td><code>form_error_required</code></td></tr>
+  <tr><td>status</td><td>FilterChip (Draft/Published)</td><td>-</td><td>-</td><td>-</td></tr>
+  <tr><td>isAvailable</td><td>FilterChip (Si/No)</td><td>-</td><td>-</td><td>-</td></tr>
+  <tr><td>stockQuantity</td><td>OutlinedTextField (numerico)</td><td>Solo digitos (UI filter)</td><td>-</td><td>-</td></tr>
+</table>
+
+<h3>5.4 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Crear producto exitoso</strong><br>Todos los campos validos, estado Draft por defecto</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap en 'Agregar producto'"<br>
+      <strong>&#9658; P2</strong> "Titulo: 'Nuevo producto' visible"<br>
+      <strong>&#9658; P3</strong> "Completar nombre: 'Hamburguesa Clasica'"<br>
+      <strong>&#9658; P4</strong> "Precio: '850.00', Unidad: 'unidad'"<br>
+      <strong>&#9658; P5</strong> "Seleccionar categoria"<br>
+      <strong>&#9658; P6</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Snackbar: 'Producto guardado'"<br>
+      <strong>&#9673; V2</strong> "Navega a lista de productos"<br>
+      <strong>&#9673; V3</strong> "Nuevo producto visible en la lista"
+    </td>
+    <td class="evidence-col">&#10003; Formulario Create visible<br>&#10003; Snackbar confirmacion<br>&#10003; Navegacion a lista<br>&#10003; Producto en la lista</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Crear producto con todos los campos</strong><br>Incluye descripcion, status Published, stock</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Completar todos los campos"<br>
+      <strong>&#9658; P2</strong> "Status: Published, Disponible: Si, Stock: 50"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Producto creado con status Published"
+    </td>
+    <td class="evidence-col">&#10003; Status Published en lista<br>&#10003; Descripcion guardada</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nombre vacio</strong><br>Validacion Konform falla</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Dejar nombre vacio, completar resto"<br>
+      <strong>&#9658; P2</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Error inline en campo nombre"<br>
+      <strong>&#9673; V2</strong> "Snackbar: 'Campo requerido'"
+    </td>
+    <td class="evidence-col">&#10003; Error inline visible<br>&#10003; No se envia peticion HTTP</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Precio vacio</strong><br>Validacion Konform falla</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Nombre valido, precio vacio"<br>
+      <strong>&#9658; P2</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Error inline en campo precio"
+    </td>
+    <td class="evidence-col">&#10003; Error en campo precio<br>&#10003; Mensaje: 'Campo requerido'</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Precio no numerico</strong><br>Texto como "abc" en campo precio</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresar 'abc' como precio"<br>
+      <strong>&#9658; P2</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Error: 'Precio invalido'"
+    </td>
+    <td class="evidence-col">&#10003; Error de patron regex<br>&#10003; Mensaje 'Precio invalido'</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-006</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Precio negativo o cero</strong><br>Precio "0" o "-5" falla validacion > 0</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Precio: '0'"<br>
+      <strong>&#9658; P2</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Error: precio debe ser mayor a 0"
+    </td>
+    <td class="evidence-col">&#10003; Error de validacion<br>&#10003; No se crea producto</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-007</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Unidad vacia</strong><br>Validacion Konform falla</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Nombre y precio validos, unidad vacia"<br>
+      <strong>&#9658; P2</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Error inline en campo unidad"
+    </td>
+    <td class="evidence-col">&#10003; Error en campo unidad<br>&#10003; Mensaje: 'Campo requerido'</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-008</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Categoria no seleccionada</strong><br>categoryId vacio</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Completar nombre, precio, unidad, sin seleccionar categoria"<br>
+      <strong>&#9658; P2</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Error: categoria requerida"
+    </td>
+    <td class="evidence-col">&#10003; Error visible<br>&#10003; No se envia request</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-009</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Categorias vacias</strong><br>Sin categorias disponibles en el negocio</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Negocio sin categorias"<br>
+      <strong>&#9673; V1</strong> "Mensaje: 'Sin categorias'"<br>
+      <strong>&#9673; V2</strong> "Boton: Reintentar"
+    </td>
+    <td class="evidence-col">&#10003; Mensaje informativo<br>&#10003; Boton reintentar visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Precio con coma decimal</strong><br>"850,50" se convierte a "850.50" internamente</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresar '850,50' como precio"<br>
+      <strong>&#9658; P2</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Producto creado con precio 850.5"
+    </td>
+    <td class="evidence-col">&#10003; Coma reemplazada por punto<br>&#10003; Precio correcto en lista</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-011</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Sin negocio seleccionado (form)</strong><br>businessId null al abrir el formulario</td>
+    <td class="video-script">
+      <strong>&#9673; V1</strong> "Mensaje: negocio requerido"<br>
+      <strong>&#9673; V2</strong> "Boton: Ir al Dashboard"
+    </td>
+    <td class="evidence-col">&#10003; MissingBusinessMessage visible<br>&#10003; Boton funcional</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-2-012</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Error de servidor al crear</strong><br>Backend retorna error</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Datos validos, API caida"<br>
+      <strong>&#9673; V1</strong> "Snackbar con error"<br>
+      <strong>&#9673; V2</strong> "Permanece en formulario"
+    </td>
+    <td class="evidence-col">&#10003; Snackbar error<br>&#10003; Datos del formulario no se pierden</td>
+  </tr>
+</table>
+
+<!-- ========== 6. FLUJO 3 — EDITAR PRODUCTO ========== -->
+<h2 id="s6">6. Flujo 3 — Editar Producto / Draft</h2>
+
+<h3>6.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El admin toca un producto en la lista, lo que guarda un <code>ProductDraft</code> en el <code>ProductEditorStore</code> (singleton compartido) y navega al formulario en modo <strong>Edit</strong>. El draft pre-carga todos los campos. El admin puede modificar cualquier campo y guardar via <code>PUT /{biz}/products/{id}</code>. Si el producto no se encuentra en la carga lazy (<code>ensureProductLoaded</code>), se recarga desde la API.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Login BusinessAdmin/PlatformAdmin | Negocio con productos existentes | Al menos 1 categoria
+</div>
+
+<h3>6.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LIST["ProductListScreen"]
+  LIST -->|"Tap en producto"| DRAFT["ProductEditorStore.setDraft(item)"]
+  DRAFT --> FORM["ProductFormScreen<br>mode = Edit"]
+  FORM --> APPLY["applyDraft(draft)<br>Carga campos desde draft"]
+  APPLY --> ENSURE["ensureProductLoaded<br>(lazy fetch si necesario)"]
+  ENSURE --> CATS["loadCategories(businessId)"]
+  CATS --> READY["Formulario listo para edicion"]
+  READY --> MODIFY["Admin modifica campos"]
+  MODIFY --> SAVE["Tap: Guardar"]
+  SAVE --> VAL{"Validacion<br>Konform"}
+  VAL -->|"Error"| ERR["Errores inline"]
+  VAL -->|"Valido"| HTTP["PUT /{biz}/products/{id}<br>ProductRequest"]
+  HTTP -->|"OK"| SUCCESS["Snackbar: 'Producto guardado'<br>ProductEditorStore.setDraft(updated)<br>Navega a /business/products"]
+  HTTP -->|"Error"| E_SERVER["Snackbar: error"]
+
+  ERR --> READY
+  E_SERVER --> READY
+
+  style ERR fill:#ffebee,stroke:#c62828
+  style E_SERVER fill:#ffebee,stroke:#c62828
+  style SUCCESS fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>6.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Editar producto exitoso</strong><br>Modificar nombre y guardar</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap en producto existente en lista"<br>
+      <strong>&#9658; P2</strong> "Titulo: 'Editar producto'"<br>
+      <strong>&#9658; P3</strong> "Campos pre-cargados correctamente"<br>
+      <strong>&#9658; P4</strong> "Modificar nombre"<br>
+      <strong>&#9658; P5</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Snackbar: 'Producto guardado'"<br>
+      <strong>&#9673; V2</strong> "Lista muestra nombre actualizado"
+    </td>
+    <td class="evidence-col">&#10003; Modo Edit visible<br>&#10003; Datos pre-cargados<br>&#10003; Snackbar confirmacion<br>&#10003; Nombre actualizado en lista</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Draft pre-carga todos los campos</strong><br>Verificar que todos los campos del draft se reflejan en el form</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap en producto con todos los campos"<br>
+      <strong>&#9673; V1</strong> "Nombre, descripcion, precio, unidad correctos"<br>
+      <strong>&#9673; V2</strong> "Categoria seleccionada correcta"<br>
+      <strong>&#9673; V3</strong> "Status y disponibilidad correctos"<br>
+      <strong>&#9673; V4</strong> "Stock cargado"
+    </td>
+    <td class="evidence-col">&#10003; Cada campo con valor correcto<br>&#10003; Chips de categoria y status seleccionados</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cambiar precio</strong><br>Actualizar precio y verificar en lista</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto, cambiar precio de 850 a 1200"<br>
+      <strong>&#9658; P2</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Precio actualizado en lista"
+    </td>
+    <td class="evidence-col">&#10003; Precio nuevo en ProductCard</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cambiar categoria</strong><br>Seleccionar otra categoria y guardar</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap en otra categoria"<br>
+      <strong>&#9658; P2</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Categoria actualizada en lista"
+    </td>
+    <td class="evidence-col">&#10003; Chip de categoria nuevo<br>&#10003; Filtro por categoria funciona con nuevo valor</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Validaciones en modo Edit</strong><br>Vaciar nombre y guardar falla</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto, borrar nombre"<br>
+      <strong>&#9658; P2</strong> "Tap: Guardar"<br>
+      <strong>&#9673; V1</strong> "Error inline: campo requerido"
+    </td>
+    <td class="evidence-col">&#10003; Mismas validaciones que Create<br>&#10003; Error visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-006</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Cambiar status Draft a Published</strong><br>Producto pasa de borrador a publicado</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto Draft"<br>
+      <strong>&#9658; P2</strong> "Tap en chip Published"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Status Published en lista"
+    </td>
+    <td class="evidence-col">&#10003; Chip Published seleccionado<br>&#10003; Status actualizado en ProductCard</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-007</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>ensureProductLoaded recarga del server</strong><br>Draft parcial se completa desde API</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Abrir producto (draft parcial)"<br>
+      <strong>&#9673; V1</strong> "Campos se completan desde API"
+    </td>
+    <td class="evidence-col">&#10003; Datos del server cargados<br>&#10003; Sin datos corruptos</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-008</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Categoria eliminada del negocio</strong><br>Producto tiene categoryId que ya no existe</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto con categoria eliminada"<br>
+      <strong>&#9673; V1</strong> "categoryId se resetea a vacio"<br>
+      <strong>&#9673; V2</strong> "Debe seleccionar nueva categoria"
+    </td>
+    <td class="evidence-col">&#10003; Sin categoria pre-seleccionada<br>&#10003; Error al guardar sin seleccion</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-009</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Error al guardar actualizacion</strong><br>API retorna error en PUT</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Modificar y guardar con API caida"<br>
+      <strong>&#9673; V1</strong> "Snackbar error"<br>
+      <strong>&#9673; V2</strong> "Formulario mantiene los datos"
+    </td>
+    <td class="evidence-col">&#10003; Error visible<br>&#10003; Datos no se pierden</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-3-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Boton Eliminar visible en modo Edit</strong><br>Solo aparece cuando hay id (modo Edit)</td>
+    <td class="video-script">
+      <strong>&#9673; V1</strong> "En modo Create: NO hay boton Eliminar"<br>
+      <strong>&#9673; V2</strong> "En modo Edit: SI hay boton Eliminar"
+    </td>
+    <td class="evidence-col">&#10003; Boton condicional<br>&#10003; Icono Delete visible solo en Edit</td>
+  </tr>
+</table>
+
+<!-- ========== 7. FLUJO 4 — ELIMINAR PRODUCTO ========== -->
+<h2 id="s7">7. Flujo 4 — Eliminar Producto</h2>
+
+<h3>7.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Desde el formulario en modo Edit, el admin puede eliminar el producto. Se muestra un <code>AlertDialog</code> de confirmacion con titulo, mensaje y botones Aceptar/Cancelar. Al confirmar, se ejecuta <code>DELETE /{biz}/products/{id}</code>, se limpia el <code>ProductEditorStore</code> y navega a la lista con un snackbar de confirmacion.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Login BusinessAdmin/PlatformAdmin | Producto existente abierto en modo Edit
+</div>
+
+<h3>7.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> FORM["ProductFormScreen<br>mode = Edit"]
+  FORM -->|"Tap: Eliminar"| DIALOG["AlertDialog<br>'Confirmar eliminacion'"]
+  DIALOG -->|"Cancelar"| FORM
+  DIALOG -->|"Aceptar"| HTTP["DELETE /{biz}/products/{id}"]
+  HTTP -->|"OK"| CLEAR["ProductEditorStore.clear()"]
+  CLEAR --> SNACK["Snackbar: 'Producto eliminado'"]
+  SNACK --> LIST["Navega a /business/products"]
+  HTTP -->|"Error"| ERR["Snackbar: error"]
+  ERR --> FORM
+
+  style DIALOG fill:#fff8e1,stroke:#f57f17
+  style ERR fill:#ffebee,stroke:#c62828
+  style LIST fill:#e8f5e9,stroke:#2e7d32
+  style SNACK fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>7.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">GP-4-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Eliminar producto con confirmacion</strong><br>Flujo completo: boton → dialogo → aceptar → eliminado</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Abrir producto en modo Edit"<br>
+      <strong>&#9658; P2</strong> "Tap: Eliminar"<br>
+      <strong>&#9673; V1</strong> "AlertDialog visible con titulo y mensaje"<br>
+      <strong>&#9658; P3</strong> "Tap: Aceptar"<br>
+      <strong>&#9673; V2</strong> "Snackbar: 'Producto eliminado'"<br>
+      <strong>&#9673; V3</strong> "Navega a lista, producto ya no aparece"
+    </td>
+    <td class="evidence-col">&#10003; Dialogo confirmacion visible<br>&#10003; Snackbar confirmacion<br>&#10003; Producto removido de lista</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-4-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cancelar eliminacion</strong><br>Dialogo aparece pero usuario cancela</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap: Eliminar"<br>
+      <strong>&#9673; V1</strong> "AlertDialog visible"<br>
+      <strong>&#9658; P2</strong> "Tap: Cancelar"<br>
+      <strong>&#9673; V2</strong> "Dialogo se cierra"<br>
+      <strong>&#9673; V3</strong> "Formulario sigue visible con datos"
+    </td>
+    <td class="evidence-col">&#10003; Dialogo se cierra<br>&#10003; No se elimina nada<br>&#10003; Datos intactos</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-4-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Contenido del dialogo de confirmacion</strong><br>Titulo, mensaje, botones correctos</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap: Eliminar"<br>
+      <strong>&#9673; V1</strong> "Titulo correcto (delete_confirm_title)"<br>
+      <strong>&#9673; V2</strong> "Mensaje correcto (delete_confirm_message)"<br>
+      <strong>&#9673; V3</strong> "Botones: Aceptar y Cancelar"
+    </td>
+    <td class="evidence-col">&#10003; Textos correctos<br>&#10003; Dos botones visibles</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-4-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>ProductEditorStore se limpia tras eliminar</strong><br>El draft se resetea a null</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Eliminar producto exitosamente"<br>
+      <strong>&#9658; P2</strong> "Abrir formulario de nuevo producto"<br>
+      <strong>&#9673; V1</strong> "Formulario limpio (modo Create)"
+    </td>
+    <td class="evidence-col">&#10003; Modo Create (no Edit)<br>&#10003; Campos vacios</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-4-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Boton Eliminar deshabilitado durante carga</strong><br>enabled = !loading</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap Guardar (en progreso)"<br>
+      <strong>&#9673; V1</strong> "Boton Eliminar deshabilitado"
+    </td>
+    <td class="evidence-col">&#10003; Boton no clickeable durante loading</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-4-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Error del servidor al eliminar</strong><br>API DELETE falla</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Confirmar eliminacion con API caida"<br>
+      <strong>&#9673; V1</strong> "No navega a lista"<br>
+      <strong>&#9673; V2</strong> "Error en errorMessage del ViewModel"
+    </td>
+    <td class="evidence-col">&#10003; Permanece en formulario<br>&#10003; Error visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-4-007</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Producto sin id (edge imposible)</strong><br>uiState.id es null en modo Edit</td>
+    <td class="video-script">
+      <strong>&#9673; V1</strong> "Error: 'Producto sin id'"
+    </td>
+    <td class="evidence-col">&#10003; Error controlado<br>&#10003; No crash</td>
+  </tr>
+</table>
+
+<!-- ========== 8. FLUJO 5 — ACTIVAR/DESACTIVAR ========== -->
+<h2 id="s8">8. Flujo 5 — Activar/Desactivar Producto</h2>
+
+<h3>8.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El admin puede cambiar el <strong>status</strong> (Draft/Published) y la <strong>disponibilidad</strong> (isAvailable) de un producto desde el formulario de edicion. El status determina si el producto es visible en el catalogo publico, mientras que la disponibilidad indica si se puede comprar (sin stock = chip "Sin stock" en la lista).</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Login BusinessAdmin/PlatformAdmin | Producto existente en modo Edit
+</div>
+
+<h3>8.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  FORM["ProductFormScreen<br>mode = Edit"] --> STATUS["StatusSelector<br>FilterChips: Draft / Published"]
+  FORM --> AVAIL["AvailabilitySelector<br>FilterChips: Disponible / Sin stock"]
+
+  STATUS -->|"Tap: Draft"| SET_DRAFT["uiState.status = Draft"]
+  STATUS -->|"Tap: Published"| SET_PUB["uiState.status = Published"]
+  AVAIL -->|"Tap: Disponible"| SET_AVAIL["uiState.isAvailable = true"]
+  AVAIL -->|"Tap: Sin stock"| SET_UNAVAIL["uiState.isAvailable = false"]
+
+  SET_DRAFT --> SAVE["Guardar"]
+  SET_PUB --> SAVE
+  SET_AVAIL --> SAVE
+  SET_UNAVAIL --> SAVE
+
+  SAVE --> HTTP["PUT /{biz}/products/{id}"]
+  HTTP -->|"OK"| LIST["Lista actualizada<br>Chip status + availability"]
+
+  style SET_DRAFT fill:#fff8e1,stroke:#f57f17
+  style SET_PUB fill:#e8f5e9,stroke:#2e7d32
+  style SET_AVAIL fill:#e8f5e9,stroke:#2e7d32
+  style SET_UNAVAIL fill:#ffebee,stroke:#c62828
+  style LIST fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>8.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">GP-5-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cambiar Draft a Published</strong><br>Publicar un producto borrador</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto Draft"<br>
+      <strong>&#9658; P2</strong> "Tap en chip 'Published'"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Chip 'Published' en ProductCard"
+    </td>
+    <td class="evidence-col">&#10003; Status Published en lista<br>&#10003; Chip correcto</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-5-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Cambiar Published a Draft</strong><br>Despublicar un producto</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto Published"<br>
+      <strong>&#9658; P2</strong> "Tap en chip 'Draft'"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Chip 'Draft' en ProductCard"
+    </td>
+    <td class="evidence-col">&#10003; Status Draft en lista</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-5-003</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Marcar como no disponible</strong><br>isAvailable = false</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto disponible"<br>
+      <strong>&#9658; P2</strong> "Tap en chip 'Sin stock'"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Chip 'Sin stock' en rojo en ProductCard"
+    </td>
+    <td class="evidence-col">&#10003; AssistChip "Sin stock" visible<br>&#10003; Color rojo (error)</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-5-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Reactivar producto</strong><br>isAvailable = true de nuevo</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto no disponible"<br>
+      <strong>&#9658; P2</strong> "Tap en chip 'Disponible'"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Chip 'Sin stock' desaparece"
+    </td>
+    <td class="evidence-col">&#10003; Sin chip de no disponible<br>&#10003; Solo chip de status visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-5-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Status por defecto: Draft</strong><br>Producto nuevo se crea como Draft</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Crear nuevo producto sin cambiar status"<br>
+      <strong>&#9673; V1</strong> "Chip Draft pre-seleccionado"<br>
+      <strong>&#9673; V2</strong> "Producto creado como Draft"
+    </td>
+    <td class="evidence-col">&#10003; Draft seleccionado por defecto<br>&#10003; Status Draft en lista</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-5-006</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Disponibilidad por defecto: true</strong><br>Producto nuevo isAvailable = true</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Crear nuevo producto sin cambiar disponibilidad"<br>
+      <strong>&#9673; V1</strong> "Chip 'Disponible' pre-seleccionado"<br>
+      <strong>&#9673; V2</strong> "Sin chip 'Sin stock' en lista"
+    </td>
+    <td class="evidence-col">&#10003; Disponible seleccionado por defecto<br>&#10003; No hay chip "Sin stock"</td>
+  </tr>
+</table>
+
+<!-- ========== 9. FLUJO 6 — GESTION DE STOCK ========== -->
+<h2 id="s9">9. Flujo 6 — Gestion de Stock</h2>
+
+<h3>9.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El admin puede gestionar la cantidad de stock desde el formulario de producto usando un <code>OutlinedTextField</code> numerico. El campo acepta solo digitos (filtro en UI). El valor es opcional (null = stock ilimitado). El stock se persiste como <code>stockQuantity: Int?</code> en <code>ProductRequest</code>.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Login BusinessAdmin/PlatformAdmin | Producto existente o nuevo en formulario
+</div>
+
+<h3>9.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  FORM["ProductFormScreen"] --> STOCK["StockQuantityField<br>OutlinedTextField (numerico)"]
+  STOCK -->|"Ingresa digitos"| UPDATE["updateStockQuantity(value)"]
+  STOCK -->|"Ingresa texto"| FILTER["Filtro UI: descarta no-digitos"]
+  STOCK -->|"Deja vacio"| NULL["stockQuantity = null<br>(stock ilimitado)"]
+  UPDATE --> SAVE["Guardar"]
+  NULL --> SAVE
+  SAVE --> HTTP["POST/PUT /{biz}/products"]
+  HTTP -->|"OK"| DONE["Stock guardado correctamente"]
+
+  style FILTER fill:#fff8e1,stroke:#f57f17
+  style NULL fill:#e3f2fd,stroke:#1565c0
+  style DONE fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>9.3 Casos de prueba <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <tr>
+    <td class="case-id">GP-6-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Establecer stock</strong><br>Ingresar cantidad de stock valida</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Crear/editar producto"<br>
+      <strong>&#9658; P2</strong> "Ingresar stock: '50'"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Producto guardado con stock 50"
+    </td>
+    <td class="evidence-col">&#10003; Campo numerico funcional<br>&#10003; Stock persistido</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-6-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Stock vacio = ilimitado</strong><br>Campo vacio envia null (sin limite)</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Dejar campo stock vacio"<br>
+      <strong>&#9658; P2</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Producto guardado sin limite de stock"
+    </td>
+    <td class="evidence-col">&#10003; Campo vacio aceptado<br>&#10003; stockQuantity = null</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-6-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Solo digitos permitidos</strong><br>Caracteres no numericos son descartados</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Intentar ingresar 'abc123'"<br>
+      <strong>&#9673; V1</strong> "Solo '123' aparece en el campo"
+    </td>
+    <td class="evidence-col">&#10003; Filtro UI funciona<br>&#10003; Solo digitos aceptados</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-6-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Actualizar stock existente</strong><br>Cambiar de 50 a 100</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Editar producto con stock 50"<br>
+      <strong>&#9658; P2</strong> "Cambiar a 100"<br>
+      <strong>&#9658; P3</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Stock actualizado"
+    </td>
+    <td class="evidence-col">&#10003; Nuevo valor persistido</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-6-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Stock pre-cargado en modo Edit</strong><br>Draft con stockQuantity se refleja en campo</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Abrir producto con stock 25"<br>
+      <strong>&#9673; V1</strong> "Campo muestra '25'"
+    </td>
+    <td class="evidence-col">&#10003; Valor pre-cargado correcto</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-6-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Stock = 0</strong><br>Valor cero es valido (sin stock)</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresar stock: '0'"<br>
+      <strong>&#9658; P2</strong> "Guardar"<br>
+      <strong>&#9673; V1</strong> "Producto guardado con stock 0"
+    </td>
+    <td class="evidence-col">&#10003; Valor 0 aceptado<br>&#10003; No confundir con null (ilimitado)</td>
+  </tr>
+  <tr>
+    <td class="case-id">GP-6-007</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Teclado numerico</strong><br>KeyboardOptions(keyboardType = Number)</td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tap en campo stock"<br>
+      <strong>&#9673; V1</strong> "Teclado numerico aparece"
+    </td>
+    <td class="evidence-col">&#10003; Teclado numerico (no alfanumerico)</td>
+  </tr>
+</table>
+
+<!-- ========== 10. VALIDACIONES ========== -->
+<h2 id="s10">10. Catalogo Consolidado de Validaciones</h2>
+
+<h3>10.1 Frontend (Konform)</h3>
+<table>
+  <tr><th>Pantalla</th><th>Campo</th><th>Regla</th><th>Mensaje</th></tr>
+  <tr><td>ProductFormScreen</td><td>name</td><td>required + minLength(1)</td><td><code>form_error_required</code></td></tr>
+  <tr><td>ProductFormScreen</td><td>unit</td><td>required + minLength(1)</td><td><code>form_error_required</code></td></tr>
+  <tr><td>ProductFormScreen</td><td>categoryId</td><td>required + minLength(1)</td><td><code>form_error_required</code></td></tr>
+  <tr><td>ProductFormScreen</td><td>basePrice</td><td>required + minLength(1) + <code>^\d+(\.\d+)?$</code></td><td><code>product_form_error_invalid_price</code></td></tr>
+  <tr><td>ProductFormScreen</td><td>stockQuantity</td><td>Solo digitos (filtro UI, no Konform)</td><td>-</td></tr>
+</table>
+
+<h3>10.2 Logica de negocio (ViewModel)</h3>
+<table>
+  <tr><th>Validacion</th><th>Donde</th><th>Efecto</th></tr>
+  <tr><td>price > 0</td><td>ProductFormViewModel.save()</td><td>Result.failure con mensaje "Precio invalido"</td></tr>
+  <tr><td>price coma → punto</td><td>ProductFormViewModel.save()</td><td><code>uiState.basePrice.replace(",", ".")</code> antes de parsear</td></tr>
+  <tr><td>shortDescription blank → null</td><td>ProductFormViewModel.save()</td><td><code>ifBlank { null }</code> en ProductRequest</td></tr>
+  <tr><td>stockQuantity "" → null</td><td>ProductFormViewModel.save()</td><td><code>toIntOrNull()</code> retorna null para string vacio</td></tr>
+  <tr><td>name/unit trimmed</td><td>ProductFormViewModel.save()</td><td><code>.trim()</code> antes de enviar</td></tr>
+</table>
+
+<h3>10.3 Backend</h3>
+<table>
+  <tr><th>Endpoint</th><th>Validacion</th><th>HTTP Status</th></tr>
+  <tr><td>POST /products</td><td>body required, name, price, unit, categoryId</td><td>400</td></tr>
+  <tr><td>PUT /products/{id}</td><td>body required, name, price, unit, categoryId, id valido</td><td>400, 404</td></tr>
+  <tr><td>DELETE /products/{id}</td><td>id requerido, producto debe existir</td><td>404</td></tr>
+  <tr><td>GET /products</td><td>businessId requerido</td><td>400</td></tr>
+  <tr><td>GET /categories</td><td>businessId requerido</td><td>400</td></tr>
+</table>
+
+<!-- ========== 11. RESUMEN ========== -->
+<h2 id="s11">11. Resumen y Cobertura</h2>
+
+<h3>11.1 Distribucion por flujo</h3>
+<table>
+  <tr><th>Flujo</th><th>Smoke</th><th>Regresion</th><th>Edge</th><th>Total</th></tr>
+  <tr><td>1 — Listar Productos</td><td>2</td><td>5</td><td>3</td><td>10</td></tr>
+  <tr><td>2 — Crear Producto</td><td>2</td><td>7</td><td>3</td><td>12</td></tr>
+  <tr><td>3 — Editar Producto</td><td>2</td><td>4</td><td>4</td><td>10</td></tr>
+  <tr><td>4 — Eliminar Producto</td><td>2</td><td>3</td><td>2</td><td>7</td></tr>
+  <tr><td>5 — Activar/Desactivar</td><td>3</td><td>3</td><td>0</td><td>6</td></tr>
+  <tr><td>6 — Gestion de Stock</td><td>2</td><td>3</td><td>2</td><td>7</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td>TOTAL</td><td>13</td><td>25</td><td>14</td><td>52</td></tr>
+</table>
+
+<h3>11.2 Tests existentes vs requeridos</h3>
+<table>
+  <tr><th>Capa</th><th>Existentes</th><th>Estado</th></tr>
+  <tr><td>App ViewModel (ProductFormViewModelTest)</td><td>Si</td><td style="color:#2e7d32">Existente</td></tr>
+  <tr><td>App ViewModel (ProductListViewModelTest)</td><td>Si</td><td style="color:#2e7d32">Existente</td></tr>
+  <tr><td>Backend (Unit + Integration)</td><td>Pendiente de revision</td><td style="color:#e65100">Parcial</td></tr>
+  <tr><td>Maestro UI (Android)</td><td>0</td><td style="color:#c62828">FALTANTE</td></tr>
+  <tr><td>Videos con evidencia</td><td>0</td><td style="color:#c62828">FALTANTE</td></tr>
+</table>
+
+<h3>11.3 Archivos del codebase involucrados</h3>
+<table>
+  <tr><th>Capa</th><th>Archivo</th><th>Responsabilidad</th></tr>
+  <tr><td>UI Screen</td><td><code>ui/sc/business/ProductListScreen.kt</code></td><td>Lista con filtros, cards, estados</td></tr>
+  <tr><td>UI Screen</td><td><code>ui/sc/business/ProductFormScreen.kt</code></td><td>Formulario crear/editar, dialogo eliminar</td></tr>
+  <tr><td>ViewModel</td><td><code>ui/sc/business/ProductListViewModel.kt</code></td><td>Carga, filtrado, mapeo de DTOs</td></tr>
+  <tr><td>ViewModel</td><td><code>ui/sc/business/ProductFormViewModel.kt</code></td><td>CRUD, validacion Konform, draft</td></tr>
+  <tr><td>Store</td><td><code>ui/sc/business/ProductEditorStore.kt</code></td><td>Singleton para compartir draft entre pantallas</td></tr>
+  <tr><td>Model</td><td><code>ui/sc/business/ProductDraft.kt</code></td><td>Data class para draft de producto</td></tr>
+  <tr><td>DTO</td><td><code>ext/business/ProductModels.kt</code></td><td>ProductDTO, ProductRequest, ProductStatus</td></tr>
+  <tr><td>DTO</td><td><code>ext/business/CategoryModels.kt</code></td><td>CategoryDTO, CategoryRequest</td></tr>
+  <tr><td>Service</td><td><code>ext/business/CommProductService.kt</code></td><td>Interface CRUD de productos</td></tr>
+  <tr><td>Action</td><td><code>asdo/business/DoCreateProduct.kt</code></td><td>Logica de negocio: crear</td></tr>
+  <tr><td>Action</td><td><code>asdo/business/ToDoCreateProduct.kt</code></td><td>Interface: crear producto</td></tr>
+  <tr><td>Action</td><td><code>asdo/business/ToDoUpdateProduct.kt</code></td><td>Interface: actualizar producto</td></tr>
+  <tr><td>Action</td><td><code>asdo/business/ToDoDeleteProduct.kt</code></td><td>Interface: eliminar producto</td></tr>
+  <tr><td>Action</td><td><code>asdo/business/ToDoListProducts.kt</code></td><td>Interface: listar productos</td></tr>
+  <tr><td>Test</td><td><code>commonTest/.../ProductFormViewModelTest.kt</code></td><td>Tests unitarios del formulario</td></tr>
+  <tr><td>Test</td><td><code>commonTest/.../ProductListViewModelTest.kt</code></td><td>Tests unitarios de la lista</td></tr>
+</table>
+
+<!-- ========== 12. GAPS ========== -->
+<h2 id="s12">12. Gaps y Recomendaciones</h2>
+
+<h3>12.1 Gaps criticos</h3>
+<table>
+  <tr><th>Prio</th><th>Gap</th><th>Recomendacion</th></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin Maestro flows ni videos E2E para productos</td><td>Crear flows YAML + scripts de grabacion anotada para los 52 casos</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin tests de integracion backend para CRUD de productos</td><td>Agregar tests: create, update, delete, list con validaciones</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Precio negativo acepta regex pero falla en save()</td><td>Considerar agregar validacion Konform para precio > 0 (ademas del check manual)</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Sin validacion de stock maximo en backend</td><td>Agregar limite razonable (ej: stockQuantity <= 999999)</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Sin paginacion en lista de productos</td><td>Implementar paginacion si catalogo crece (> 100 items)</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Sin busqueda por texto en lista</td><td>Agregar SearchBar para buscar por nombre de producto</td></tr>
+  <tr><td><span class="tag tag-low">Baja</span></td><td>Sin confirmacion de datos no guardados al navegar atras</td><td>Agregar dialogo "Descartar cambios?" al salir del formulario sin guardar</td></tr>
+</table>
+
+<h3>12.2 Proximos pasos</h3>
+<ol>
+  <li>Aprobar este reporte como plantilla de referencia para productos</li>
+  <li>Crear Maestro flows de productos con overlays de caso ID</li>
+  <li>Implementar script de grabacion con narracion (TTS o texto)</li>
+  <li>Completar tests de integracion backend para CRUD</li>
+  <li>Agregar validacion Konform para precio > 0 directamente</li>
+  <li>Considerar paginacion y busqueda por nombre para escalabilidad</li>
+</ol>
+
+<hr>
+<p style="text-align:center;color:#999;font-size:8px;margin-top:20px;">
+  Generado por Intrale PO + QA Agents | v2.0 | 2026-03-02
+</p>
+
+</body>
+</html>
