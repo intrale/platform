@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Registro de Negocio</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .overlay-example { background: #111; color: #fff; border-radius: 4px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; margin: 6px 0; position: relative; }
+  .overlay-example .ov-id { color: #64b5f6; font-weight: bold; }
+  .overlay-example .ov-step { color: #81c784; }
+  .overlay-example .ov-result { color: #ffb74d; }
+  .overlay-example .ov-time { color: #bbb; position: absolute; right: 10px; top: 10px; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Registro y Aprobacion de Negocio</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
+    guiones de video y criterios de evidencia para la funcionalidad<br>
+    de Registro de Negocio (RegisterBusiness) y Aprobacion/Rechazo<br>
+    (ReviewBusinessRegistration) de la plataforma Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-03-02</p>
+    <p><strong>Generado por:</strong> PO + QA Agents</p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Indice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo</a></li>
+  <li><a href="#s2">Estandar de Evidencia en Video</a></li>
+  <li><a href="#s3">Arquitectura del Registro de Negocio</a></li>
+  <li><a href="#s4">Flujo 1 — Registro de Negocio (RegisterBusiness)</a></li>
+  <li><a href="#s5">Flujo 2 — Aprobacion / Rechazo (ReviewBusinessRegistration)</a></li>
+  <li><a href="#s6">Flujo 3 — Integracion Post-Aprobacion</a></li>
+  <li><a href="#s7">Catalogo de Validaciones</a></li>
+  <li><a href="#s8">Resumen y Cobertura</a></li>
+  <li><a href="#s9">Gaps y Recomendaciones</a></li>
+</ol>
+
+<!-- ========== 1. RESUMEN ========== -->
+<h2 id="s1">1. Resumen Ejecutivo</h2>
+<p>La funcionalidad de Registro de Negocio comprende <strong>3 flujos diferenciados</strong> que cubren el ciclo completo desde el registro por un usuario anonimo hasta la aprobacion/rechazo por un PlatformAdmin con 2FA obligatorio. Este reporte documenta <strong>42 casos de prueba</strong> con:</p>
+<ul>
+  <li>Diagramas de flujo Mermaid por cada flujo y sub-flujo</li>
+  <li>Guion de video paso a paso para cada caso de prueba</li>
+  <li>Criterios de evidencia visual que debe capturar el video</li>
+  <li>Narracion (texto/audio) de cada paso durante la grabacion</li>
+</ul>
+
+<table>
+  <tr><th>#</th><th>Flujo</th><th>App</th><th>Auth</th><th>Estado inicial</th><th>Casos</th></tr>
+  <tr><td>1</td><td>Registro de Negocio</td><td>Business</td><td>No</td><td>N/A (anonimo)</td><td>18</td></tr>
+  <tr><td>2</td><td>Aprobacion / Rechazo</td><td>Business</td><td>JWT + 2FA</td><td>PlatformAdmin/APPROVED</td><td>18</td></tr>
+  <tr><td>3</td><td>Integracion Post-Aprobacion</td><td>Business, Client</td><td>Variable</td><td>Business APPROVED</td><td>6</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td></td><td>42</td></tr>
+</table>
+
+<div class="note">
+  <strong>Modelo de datos Business:</strong> businessId (UUID), publicId (slug), name (PK), emailAdmin, description, state (PENDING|APPROVED|REJECTED), autoAcceptDeliveries (boolean)
+</div>
+
+<!-- ========== 2. ESTANDAR DE VIDEO ========== -->
+<h2 id="s2">2. Estandar de Evidencia en Video</h2>
+
+<h3>2.1 Nomenclatura de archivos</h3>
+<div class="video-std">
+  <code>{FLUJO}-{ID}_{slug-descriptivo}.mp4</code><br>
+  Ejemplos:<br>
+  <code>RN-1-001_registro-negocio-exitoso.mp4</code><br>
+  <code>RN-2-005_aprobacion-con-2fa.mp4</code><br>
+  <code>RN-3-001_flujo-completo-registro-aprobacion.mp4</code>
+</div>
+
+<h3>2.2 Estructura del video</h3>
+<p>Cada video de evidencia DEBE contener estas 4 fases:</p>
+<table>
+  <tr><th>Fase</th><th>Duracion</th><th>Contenido</th></tr>
+  <tr><td><strong>1. Titulo</strong></td><td>3-5 seg</td><td>Overlay con ID del caso, nombre completo, fecha y entorno</td></tr>
+  <tr><td><strong>2. Precondiciones</strong></td><td>3-5 seg</td><td>Mostrar/narrar el estado inicial requerido</td></tr>
+  <tr><td><strong>3. Ejecucion</strong></td><td>Variable</td><td>Cada paso narrado con overlay de numero de paso</td></tr>
+  <tr><td><strong>4. Verificacion</strong></td><td>5-10 seg</td><td>Evidencia explicita de CADA resultado esperado</td></tr>
+</table>
+
+<h3>2.3 Overlay de pantalla (formato obligatorio)</h3>
+<div class="overlay-example">
+  <span class="ov-id">RN-1-001</span> | Registro de negocio exitoso<span class="ov-time">00:12</span><br>
+  <span class="ov-step">&#9658; Paso 3/5:</span> Ingresar nombre del negocio (7+ caracteres)<br>
+  <span class="ov-result">&#9673; Verificar: Snackbar "Negocio registrado" visible</span>
+</div>
+<p>El overlay debe ser visible pero no obstruir la interfaz. Posicion sugerida: franja semi-transparente en la parte inferior.</p>
+
+<h3>2.4 Narracion</h3>
+<table>
+  <tr><th>Metodo</th><th>Formato</th><th>Cuando usar</th></tr>
+  <tr><td><strong>Audio TTS</strong> (ideal)</td><td>Voz sintetizada relatando cada paso</td><td>Videos finales para stakeholders</td></tr>
+  <tr><td><strong>Texto overlay</strong></td><td>Subtitulos con cada accion</td><td>Videos automatizados (Maestro/script)</td></tr>
+  <tr><td><strong>Audio + texto</strong></td><td>Ambos simultaneamente</td><td>Videos de demostracion formal</td></tr>
+</table>
+
+<h3>2.5 Evidencia de resultados esperados</h3>
+<div class="video-std">
+  <strong>Obligatorio para CADA resultado esperado:</strong>
+  <ol>
+    <li><strong>Pausa visual</strong> (2-3 seg): mostrar claramente el resultado en pantalla</li>
+    <li><strong>Highlight/marca</strong>: flecha, recuadro o zoom al elemento que evidencia el resultado</li>
+    <li><strong>Overlay de verificacion</strong>: texto <code>&#10003; VERIFICADO: [descripcion del resultado]</code> o <code>&#10007; FALLO: [descripcion]</code></li>
+    <li><strong>Screenshot automatico</strong>: captura individual del momento de verificacion</li>
+  </ol>
+</div>
+
+<h3>2.6 Ejemplo de guion de video completo</h3>
+<table>
+  <tr><th>Tiempo</th><th>Overlay</th><th>Narracion</th><th>Accion en pantalla</th></tr>
+  <tr><td>00:00</td><td><code>RN-1-001 | Registro de negocio exitoso</code></td><td>"Caso de prueba RN-1-001: Registro de negocio exitoso"</td><td>Pantalla negra con titulo</td></tr>
+  <tr><td>00:04</td><td><code>Precondicion: App Business, Login Screen visible</code></td><td>"Precondicion: tenemos la app Business abierta en Login"</td><td>Login Screen visible</td></tr>
+  <tr><td>00:08</td><td><code>&#9658; Paso 1/5: Tocar Registrar negocio</code></td><td>"Paso uno: tocamos Registrar negocio"</td><td>Tap en boton, navega a RegisterNewBusinessScreen</td></tr>
+  <tr><td>00:12</td><td><code>&#9658; Paso 2/5: Ingresar nombre</code></td><td>"Paso dos: ingresamos nombre del negocio con 7+ caracteres"</td><td>Escribir "Mi Tienda Online"</td></tr>
+  <tr><td>00:18</td><td><code>&#9658; Paso 3/5: Ingresar email admin</code></td><td>"Paso tres: ingresamos email del administrador"</td><td>Escribir admin@mitienda.com</td></tr>
+  <tr><td>00:22</td><td><code>&#9658; Paso 4/5: Ingresar descripcion</code></td><td>"Paso cuatro: ingresamos descripcion del negocio"</td><td>Escribir "Tienda de productos online"</td></tr>
+  <tr><td>00:28</td><td><code>&#9658; Paso 5/5: Tocar Registrar negocio</code></td><td>"Paso cinco: tocamos el boton Registrar negocio"</td><td>Tap en boton</td></tr>
+  <tr><td>00:30</td><td><code>&#9673; Verificando: Spinner en boton</code></td><td>"Verificamos: el spinner aparece y el boton se deshabilita"</td><td>Spinner visible, pausa 2s</td></tr>
+  <tr><td>00:34</td><td><code>&#10003; VERIFICADO: Snackbar de exito</code></td><td>"Verificado: snackbar muestra registro exitoso"</td><td>Snackbar visible</td></tr>
+  <tr><td>00:38</td><td><code>&#10003; RESULTADO: PASS</code></td><td>"Caso RN-1-001: resultado PASS"</td><td>Pantalla final verde</td></tr>
+</table>
+
+<!-- ========== 3. ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura del Registro de Negocio</h2>
+
+<h3>3.1 Diagrama general de capas</h3>
+<pre class="mermaid">
+graph LR
+  UI["UI Screen<br>(Compose)"] --> VM["ViewModel<br>(Estado + Konform)"]
+  VM --> DO["Do[Action]<br>(Logica negocio)"]
+  DO --> CL["Client[Service]<br>(HTTP Client)"]
+  CL --> BE["Backend Ktor<br>(/{biz}/{fn})"]
+  BE --> COG["Amazon Cognito<br>(Identity)"]
+  BE --> DDB["DynamoDB<br>(Persistencia)"]
+</pre>
+
+<h3>3.2 Mapa de navegacion</h3>
+<pre class="mermaid">
+graph TD
+  LOGIN["Login Screen<br>Flavor BUSINESS"]
+  LOGIN -->|"Registrar negocio"| REG_BIZ["/registerNewBusiness<br>RegisterNewBusinessScreen"]
+  REG_BIZ -->|"Exito: Snackbar +<br>limpia formulario"| REG_BIZ
+  DASH["Dashboard<br>(PlatformAdmin autenticado)"] -->|"Revisar solicitudes"| REV_BIZ["/reviewBusiness<br>ReviewBusinessScreen"]
+  REV_BIZ -->|"Aprobar"| APPROVED["Business APPROVED<br>+ Signup BusinessAdmin"]
+  REV_BIZ -->|"Rechazar"| REJECTED["Business REJECTED"]
+  APPROVED -->|"Email a BusinessAdmin"| LOGIN_BA["BusinessAdmin<br>puede hacer Login"]
+
+  style LOGIN fill:#fff3e0,stroke:#e65100
+  style REG_BIZ fill:#e3f2fd,stroke:#1565c0
+  style DASH fill:#e3f2fd,stroke:#0d47a1
+  style APPROVED fill:#e8f5e9,stroke:#2e7d32
+  style REJECTED fill:#ffebee,stroke:#c62828
+  style LOGIN_BA fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>3.3 Endpoints del backend</h3>
+<table>
+  <tr><th>Endpoint</th><th>Metodo</th><th>Auth</th><th>Funcion</th><th>Descripcion</th></tr>
+  <tr><td><code>/{biz}/registerBusiness</code></td><td>POST</td><td>No</td><td>RegisterBusiness</td><td>Registra un nuevo negocio con estado PENDING</td></tr>
+  <tr><td><code>/{biz}/reviewBusiness</code></td><td>POST</td><td>JWT + 2FA</td><td>ReviewBusinessRegistration</td><td>Aprueba o rechaza un negocio pendiente</td></tr>
+  <tr><td><code>/{biz}/searchBusinesses</code></td><td>GET</td><td>No</td><td>SearchBusinesses</td><td>Lista negocios (filtro por estado)</td></tr>
+</table>
+
+<h3>3.4 Modelo de datos</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo</th><th>Tabla</th><th>Descripcion</th></tr>
+  <tr><td>businessId</td><td>String (UUID)</td><td>Business</td><td>Identificador interno unico</td></tr>
+  <tr><td>publicId</td><td>String (slug)</td><td>Business</td><td>Slug generado a partir del nombre, unico</td></tr>
+  <tr><td>name</td><td>String (PK)</td><td>Business</td><td>Nombre del negocio (Partition Key DynamoDB)</td></tr>
+  <tr><td>emailAdmin</td><td>String</td><td>Business</td><td>Email del administrador del negocio</td></tr>
+  <tr><td>description</td><td>String</td><td>Business</td><td>Descripcion del negocio</td></tr>
+  <tr><td>state</td><td>BusinessState</td><td>Business</td><td>PENDING | APPROVED | REJECTED</td></tr>
+  <tr><td>autoAcceptDeliveries</td><td>Boolean</td><td>Business</td><td>Auto-aceptar repartidores (default: false)</td></tr>
+</table>
+
+<!-- ========== 4. FLUJO 1 — REGISTRO DE NEGOCIO ========== -->
+<h2 id="s4">4. Flujo 1 — Registro de Negocio (RegisterBusiness)</h2>
+
+<h3>4.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Un usuario anonimo accede desde la app Business y registra un nuevo negocio completando nombre (minimo 7 caracteres), email del administrador y descripcion. El sistema valida los campos con Konform en frontend y backend, genera un slug unico (normalizacion + sufijo UUID si hay duplicado), persiste el negocio como PENDING en DynamoDB y muestra snackbar de exito.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> App Business instalada | Conexion a internet | Pantalla Login visible
+</div>
+
+<h3>4.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> LOGIN["Pantalla Login<br>Flavor BUSINESS"]
+  LOGIN -->|"Toca 'Registrar negocio'"| REGSCREEN["RegisterNewBusinessScreen<br>Campos: name, email, description"]
+  REGSCREEN -->|"Completa campos"| VAL_FE{"Validacion<br>Frontend<br>(Konform)"}
+  VAL_FE -->|"name vacio"| ERR_NAME["Error inline:<br>'Campo requerido'"]
+  VAL_FE -->|"email vacio o<br>no matchea regex"| ERR_EMAIL["Error inline:<br>'Correo invalido'"]
+  VAL_FE -->|"description vacia"| ERR_DESC["Error inline:<br>'Campo requerido'"]
+  ERR_NAME --> REGSCREEN
+  ERR_EMAIL --> REGSCREEN
+  ERR_DESC --> REGSCREEN
+  VAL_FE -->|"Todos validos"| LOADING["Boton: spinner +<br>deshabilitado"]
+  LOADING --> HTTP["POST /{biz}/registerBusiness<br>{name, emailAdmin,<br>description, autoAcceptDeliveries}"]
+  HTTP --> VAL_BE{"Validacion<br>Backend<br>(Konform)"}
+  VAL_BE -->|"Body vacio"| E400A["HTTP 400<br>'Request body not found'"]
+  VAL_BE -->|"name < 7 chars"| E400B["HTTP 400<br>'name must have at<br>least 7 characters'"]
+  VAL_BE -->|"email invalido"| E400C["HTTP 400<br>'emailAdmin hint email'"]
+  VAL_BE -->|"description vacia"| E400D["HTTP 400<br>'description required'"]
+  VAL_BE -->|"Validos"| DUP{"Negocio duplicado<br>PENDING + mismo email?"}
+  DUP -->|"Si"| E400E["HTTP 400<br>'Negocio pendiente<br>con mismo nombre'"]
+  DUP -->|"No"| SLUG["Generar slug<br>slugify(name)"]
+  SLUG --> SLUG_DUP{"publicId existe?"}
+  SLUG_DUP -->|"Si"| SLUG_UUID["slug + UUID(8)"]
+  SLUG_DUP -->|"No"| PERSIST["Persiste Business<br>state=PENDING"]
+  SLUG_UUID --> PERSIST
+  PERSIST --> OK["HTTP 200 OK"]
+  OK --> SNACK["Snackbar: exito<br>Limpia formulario"]
+  E400A --> SNACK_ERR["Snackbar: error"]
+  E400B --> SNACK_ERR
+  E400C --> SNACK_ERR
+  E400D --> SNACK_ERR
+  E400E --> SNACK_ERR
+  SNACK_ERR --> REGSCREEN
+
+  style ERR_NAME fill:#ffebee,stroke:#c62828
+  style ERR_EMAIL fill:#ffebee,stroke:#c62828
+  style ERR_DESC fill:#ffebee,stroke:#c62828
+  style E400A fill:#ffebee,stroke:#c62828
+  style E400B fill:#ffebee,stroke:#c62828
+  style E400C fill:#ffebee,stroke:#c62828
+  style E400D fill:#ffebee,stroke:#c62828
+  style E400E fill:#ffebee,stroke:#c62828
+  style SNACK_ERR fill:#ffebee,stroke:#c62828
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style SNACK fill:#e8f5e9,stroke:#2e7d32
+  style LOADING fill:#e3f2fd,stroke:#1565c0
+</pre>
+
+<h3>4.3 Campos y validaciones</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo UI</th><th>Validacion Frontend (Konform)</th><th>Validacion Backend (Konform)</th><th>Mensaje error</th></tr>
+  <tr><td>name</td><td>TextField</td><td>required + minLength(1)</td><td>required + minLength(7)</td><td><code>form_error_required</code> / <code>must have at least 7 characters</code></td></tr>
+  <tr><td>email</td><td>TextField</td><td>required + minLength(1) + <code>.+@.+\..+</code></td><td>required + <code>.+@.+\..+</code></td><td><code>form_error_invalid_email</code></td></tr>
+  <tr><td>description</td><td>TextField</td><td>required + minLength(1)</td><td>required (not-empty)</td><td><code>form_error_required</code></td></tr>
+  <tr><td>autoAcceptDeliveries</td><td>Boolean (default: false)</td><td>N/A</td><td>N/A (optional)</td><td>N/A</td></tr>
+</table>
+
+<div class="note">
+  <strong>Nota:</strong> El frontend valida minLength(1) para name, pero el backend requiere minLength(7). Esto significa que un nombre de 1-6 caracteres pasara validacion frontend pero fallara en backend con error HTTP 400.
+</div>
+
+<h3>4.4 Generacion de slug</h3>
+<div class="note">
+  <strong>Algoritmo slugify():</strong>
+  <ol>
+    <li>Convertir a minusculas: <code>value.lowercase()</code></li>
+    <li>Normalizar NFD (separar diacriticos): <code>Normalizer.normalize(value, NFD)</code></li>
+    <li>Eliminar diacriticos: <code>replace("\\p{InCombiningDiacriticalMarks}+", "")</code></li>
+    <li>Reemplazar caracteres no alfanumericos por guion: <code>replace("[^a-z0-9]+", "-")</code></li>
+    <li>Eliminar guiones al inicio/final: <code>trim('-')</code></li>
+    <li>Si slug ya existe en DB: agregar <code>-{UUID.take(8)}</code></li>
+  </ol>
+</div>
+
+<h3>4.5 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <!-- RN-1-001 -->
+  <tr>
+    <td class="case-id">RN-1-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Registro exitoso con datos validos</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso RN-1-001: Registro de negocio exitoso con datos validos"<br>
+      <strong>&#9658; P1</strong> "Abrimos la app Business, estamos en Login"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9658; P3</strong> "Ingresamos nombre: 'Mi Tienda Online' (14 chars, > 7)"<br>
+      <strong>&#9658; P4</strong> "Ingresamos email: admin@mitienda.com"<br>
+      <strong>&#9658; P5</strong> "Ingresamos descripcion: 'Tienda de productos'"<br>
+      <strong>&#9658; P6</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: spinner visible en el boton"<br>
+      <strong>&#9673; V2</strong> "Verificamos: snackbar 'Negocio registrado' visible"<br>
+      <strong>&#9673; V3</strong> "Verificamos: formulario se limpia"
+    </td>
+    <td class="evidence-col">
+      &#10003; Spinner aparece en boton<br>
+      &#10003; Boton queda deshabilitado<br>
+      &#10003; Snackbar de exito visible<br>
+      &#10003; Formulario limpio (campos vacios)<br>
+      &#10003; No hay mensaje de error
+    </td>
+  </tr>
+  <!-- RN-1-002 -->
+  <tr>
+    <td class="case-id">RN-1-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nombre vacio</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso RN-1-002: Validacion con nombre vacio"<br>
+      <strong>&#9658; P1</strong> "Estamos en RegisterNewBusinessScreen"<br>
+      <strong>&#9658; P2</strong> "Dejamos nombre vacio, completamos email y descripcion"<br>
+      <strong>&#9658; P3</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Campo requerido' bajo nombre"<br>
+      <strong>&#9673; V2</strong> "Verificamos: NO se hizo llamada HTTP"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline visible bajo campo name<br>
+      &#10003; Texto del error legible<br>
+      &#10003; Permanece en RegisterNewBusinessScreen<br>
+      &#10003; Sin snackbar de red
+    </td>
+  </tr>
+  <!-- RN-1-003 -->
+  <tr>
+    <td class="case-id">RN-1-003</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email vacio</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos nombre y descripcion validos, email vacio"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Campo requerido' bajo email"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline visible bajo campo email<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <!-- RN-1-004 -->
+  <tr>
+    <td class="case-id">RN-1-004</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Descripcion vacia</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos nombre y email validos, descripcion vacia"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Campo requerido' bajo descripcion"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline visible bajo campo description<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <!-- RN-1-005 -->
+  <tr>
+    <td class="case-id">RN-1-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Email sin arroba</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email 'adminmitienda.com' (sin @)"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Correo invalido'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline "Correo invalido"<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <!-- RN-1-006 -->
+  <tr>
+    <td class="case-id">RN-1-006</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email sin dominio</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email 'admin@' (sin dominio)"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline "Correo invalido"
+    </td>
+  </tr>
+  <!-- RN-1-007 -->
+  <tr>
+    <td class="case-id">RN-1-007</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Email sin TLD</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email 'admin@dominio' (sin punto)"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: regex requiere punto despues del @"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline "Correo invalido"
+    </td>
+  </tr>
+  <!-- RN-1-008 -->
+  <tr>
+    <td class="case-id">RN-1-008</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nombre con 7 caracteres exactos (limite)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos nombre 'Tiendas' (exactamente 7 chars)"<br>
+      <strong>&#9658; P2</strong> "Completamos email y descripcion validos"<br>
+      <strong>&#9658; P3</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: registro exitoso (7 = minimo aceptado por backend)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Snackbar de exito visible<br>
+      &#10003; Formulario limpio
+    </td>
+  </tr>
+  <!-- RN-1-009 -->
+  <tr>
+    <td class="case-id">RN-1-009</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Nombre con 6 caracteres (bajo limite backend)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos nombre 'Tienda' (6 chars, pasa frontend pero falla backend)"<br>
+      <strong>&#9658; P2</strong> "Completamos email y descripcion validos"<br>
+      <strong>&#9658; P3</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: pasa validacion frontend (minLength(1))"<br>
+      <strong>&#9673; V2</strong> "Verificamos: HTTP 400 del backend (minLength(7))"<br>
+      <strong>&#9673; V3</strong> "Verificamos: snackbar con error del servidor"
+    </td>
+    <td class="evidence-col">
+      &#10003; Spinner aparece brevemente<br>
+      &#10003; Snackbar con error visible<br>
+      &#10003; Formulario permanece con datos
+    </td>
+  </tr>
+  <!-- RN-1-010 -->
+  <tr>
+    <td class="case-id">RN-1-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Nombre con acentos y caracteres especiales (slug)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos nombre 'Panaderia El Rincon' (con tilde en i y o)"<br>
+      <strong>&#9658; P2</strong> "Completamos datos y registramos"<br>
+      <strong>&#9673; V1</strong> "Verificamos: registro exitoso"<br>
+      <strong>&#9673; V2</strong> "Verificamos en DB: slug generado es 'panaderia-el-rincon' (sin tildes)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Registro exitoso<br>
+      &#10003; Slug normalizado correctamente
+    </td>
+  </tr>
+  <!-- RN-1-011 -->
+  <tr>
+    <td class="case-id">RN-1-011</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Nombre duplicado (slug + UUID)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Registramos 'Mi Tienda Online' (ya existe con slug 'mi-tienda-online')"<br>
+      <strong>&#9658; P2</strong> "Completamos datos y registramos"<br>
+      <strong>&#9673; V1</strong> "Verificamos: registro exitoso"<br>
+      <strong>&#9673; V2</strong> "Verificamos en DB: slug es 'mi-tienda-online-{uuid8}'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Registro exitoso<br>
+      &#10003; Slug con sufijo UUID<br>
+      &#10003; No colision de publicId
+    </td>
+  </tr>
+  <!-- RN-1-012 -->
+  <tr>
+    <td class="case-id">RN-1-012</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Negocio duplicado PENDING con mismo email</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Registramos negocio con nombre y email identicos a uno PENDING"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: HTTP 400 'Negocio pendiente con mismo nombre y administrador'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Snackbar con error de duplicado<br>
+      &#10003; No se crea nuevo registro
+    </td>
+  </tr>
+  <!-- RN-1-013 -->
+  <tr>
+    <td class="case-id">RN-1-013</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Boton deshabilitado durante carga</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos datos validos"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9658; P3</strong> "Intentamos tocar de nuevo durante la carga"<br>
+      <strong>&#9673; V1</strong> "Verificamos: boton no responde al segundo tap"
+    </td>
+    <td class="evidence-col">
+      &#10003; Spinner visible en boton<br>
+      &#10003; Segundo tap sin efecto<br>
+      &#10003; No se duplica request
+    </td>
+  </tr>
+  <!-- RN-1-014 -->
+  <tr>
+    <td class="case-id">RN-1-014</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: body vacio (API directa)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Enviamos POST sin body via curl/Postman a /{biz}/registerBusiness"<br>
+      <strong>&#9673; V1</strong> "Verificamos: HTTP 400 'Request body not found'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Response status 400<br>
+      &#10003; Mensaje de error correcto
+    </td>
+  </tr>
+  <!-- RN-1-015 -->
+  <tr>
+    <td class="case-id">RN-1-015</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Sin conexion a internet</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Desactivamos WiFi/datos (mostrar en settings)"<br>
+      <strong>&#9658; P2</strong> "Intentamos registrar negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos: snackbar con error de red"<br>
+      <strong>&#9673; V2</strong> "Verificamos: no queda en estado inconsistente"
+    </td>
+    <td class="evidence-col">
+      &#10003; Settings mostrando WiFi OFF<br>
+      &#10003; Snackbar de error visible<br>
+      &#10003; App estable, puede reintentar
+    </td>
+  </tr>
+  <!-- RN-1-016 -->
+  <tr>
+    <td class="case-id">RN-1-016</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Email con caracteres especiales</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos email 'admin+negocio@example.com'"<br>
+      <strong>&#9658; P2</strong> "Completamos datos y registramos"<br>
+      <strong>&#9673; V1</strong> "Verificamos: pasa validacion frontend y backend"
+    </td>
+    <td class="evidence-col">
+      &#10003; Registro exitoso<br>
+      &#10003; Sin errores
+    </td>
+  </tr>
+  <!-- RN-1-017 -->
+  <tr>
+    <td class="case-id">RN-1-017</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Todos los campos vacios</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Dejamos todos los campos vacios"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Registrar negocio'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: errores inline en los 3 campos"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline en name<br>
+      &#10003; Error inline en email<br>
+      &#10003; Error inline en description<br>
+      &#10003; Sin llamada HTTP
+    </td>
+  </tr>
+  <!-- RN-1-018 -->
+  <tr>
+    <td class="case-id">RN-1-018</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Formulario se limpia tras registro exitoso</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Completamos registro exitoso"<br>
+      <strong>&#9673; V1</strong> "Verificamos: snackbar de exito"<br>
+      <strong>&#9673; V2</strong> "Verificamos: campo name esta vacio"<br>
+      <strong>&#9673; V3</strong> "Verificamos: campo email esta vacio"<br>
+      <strong>&#9673; V4</strong> "Verificamos: campo description esta vacio"
+    </td>
+    <td class="evidence-col">
+      &#10003; Snackbar visible<br>
+      &#10003; Tres campos vacios<br>
+      &#10003; initInputState() ejecutado
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 5. FLUJO 2 — APROBACION / RECHAZO ========== -->
+<h2 id="s5">5. Flujo 2 — Aprobacion / Rechazo (ReviewBusinessRegistration)</h2>
+
+<h3>5.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Un PlatformAdmin autenticado accede a la pantalla de revision de negocios pendientes. Puede ver la lista de negocios en estado PENDING con sus datos (nombre, descripcion, email admin, autoAcceptDeliveries). Debe ingresar un codigo 2FA valido y luego puede aprobar o rechazar negocios individualmente o en lote. Al aprobar:</p>
+<ul>
+  <li>El estado cambia a APPROVED</li>
+  <li>Si el email admin no existe en Cognito, se crea automaticamente (SignUp)</li>
+  <li>Se asigna el perfil BusinessAdmin al usuario para ese negocio</li>
+  <li>Se calcula el relationState via computeRelationState</li>
+</ul>
+<p>Al rechazar, el estado cambia a REJECTED.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Usuario PlatformAdmin autenticado (JWT) | Al menos un negocio PENDING | Codigo 2FA disponible (TOTP activo)
+</div>
+
+<h3>5.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  START(("Inicio")) --> DASH["Dashboard<br>PlatformAdmin"]
+  DASH -->|"Revisar negocios"| SCREEN["ReviewBusinessScreen<br>Campo: twoFactorCode"]
+  SCREEN --> LOAD["LaunchedEffect:<br>loadPending()"]
+  LOAD --> GET["GET searchBusinesses<br>status=PENDING"]
+  GET --> LIST{"Lista vacia?"}
+  LIST -->|"Si"| EMPTY["Texto: 'No hay solicitudes<br>pendientes'"]
+  LIST -->|"No"| CARDS["Cards con negocios:<br>name, description,<br>emailAdmin, autoAccept"]
+  CARDS --> ACTION{"Accion?"}
+  ACTION -->|"Aprobar individual"| VAL_2FA{"Validacion<br>twoFactorCode"}
+  ACTION -->|"Rechazar individual"| VAL_2FA
+  ACTION -->|"Seleccionar + Aprobar lote"| VAL_2FA
+  ACTION -->|"Seleccionar + Rechazar lote"| VAL_2FA
+  VAL_2FA -->|"Codigo vacio"| ERR_2FA["Error inline:<br>'Campo requerido'"]
+  ERR_2FA --> SCREEN
+  VAL_2FA -->|"Codigo valido"| HTTP["POST /{biz}/reviewBusiness<br>{publicId, decision,<br>twoFactorCode}"]
+  HTTP --> JWT{"JWT valido?"}
+  JWT -->|"No"| E401["HTTP 401<br>Unauthorized"]
+  JWT -->|"Si"| ADMIN{"Es PlatformAdmin<br>APPROVED?"}
+  ADMIN -->|"No"| E401
+  ADMIN -->|"Si"| TFA{"2FA correcto?"}
+  TFA -->|"No"| E_2FA["Error 2FA<br>Codigo invalido"]
+  TFA -->|"Si"| BIZ{"Business existe<br>y es PENDING?"}
+  BIZ -->|"No encontrado"| E_NF["Error: Business<br>not found"]
+  BIZ -->|"No PENDING"| E_ST["Error: wrong state"]
+  BIZ -->|"Si"| DEC{"Decision?"}
+  DEC -->|"APPROVED"| APPROVE_FLOW["Aprobar negocio"]
+  DEC -->|"REJECTED"| REJECT_FLOW["Rechazar negocio"]
+  APPROVE_FLOW --> CHK_USER{"Email admin<br>existe en Users?"}
+  CHK_USER -->|"No"| SIGNUP["SignUp email admin<br>en Cognito"]
+  CHK_USER -->|"Si"| PROFILE["Asignar perfil<br>BusinessAdmin"]
+  SIGNUP --> PROFILE
+  PROFILE --> UPDATE_A["Update Business<br>state=APPROVED"]
+  REJECT_FLOW --> UPDATE_R["Update Business<br>state=REJECTED"]
+  UPDATE_A --> OK["HTTP 200 OK"]
+  UPDATE_R --> OK
+  OK --> SNACK["Snackbar feedback<br>Recarga lista"]
+  E401 --> SNACK_ERR["Snackbar error"]
+  E_2FA --> SNACK_ERR
+  E_NF --> SNACK_ERR
+  E_ST --> SNACK_ERR
+
+  style ERR_2FA fill:#ffebee,stroke:#c62828
+  style E401 fill:#ffebee,stroke:#c62828
+  style E_2FA fill:#ffebee,stroke:#c62828
+  style E_NF fill:#ffebee,stroke:#c62828
+  style E_ST fill:#ffebee,stroke:#c62828
+  style SNACK_ERR fill:#ffebee,stroke:#c62828
+  style OK fill:#e8f5e9,stroke:#2e7d32
+  style SNACK fill:#e8f5e9,stroke:#2e7d32
+  style APPROVE_FLOW fill:#e8f5e9,stroke:#2e7d32
+  style REJECT_FLOW fill:#ffebee,stroke:#c62828
+  style EMPTY fill:#fff8e1,stroke:#ffc107
+</pre>
+
+<h3>5.3 Campos y validaciones</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo UI</th><th>Validacion Frontend</th><th>Validacion Backend</th><th>Mensaje</th></tr>
+  <tr><td>twoFactorCode</td><td>TextField</td><td>required (Konform)</td><td>required + minLength(6)</td><td>Campo requerido</td></tr>
+  <tr><td>publicId</td><td>Automatico (card)</td><td>N/A</td><td>required + minLength(7)</td><td>N/A</td></tr>
+  <tr><td>decision</td><td>Boton (approve/reject)</td><td>N/A</td><td>required + pattern <code>^(approved|rejected)$</code></td><td>Debe ser APPROVED o REJECTED</td></tr>
+</table>
+
+<h3>5.4 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <!-- RN-2-001 -->
+  <tr>
+    <td class="case-id">RN-2-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Aprobacion exitosa de negocio con 2FA</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso RN-2-001: Aprobacion exitosa de negocio"<br>
+      <strong>&#9658; P1</strong> "Estamos logueados como PlatformAdmin"<br>
+      <strong>&#9658; P2</strong> "Navegamos a ReviewBusinessScreen"<br>
+      <strong>&#9658; P3</strong> "Vemos lista de negocios PENDING cargada"<br>
+      <strong>&#9658; P4</strong> "Ingresamos codigo 2FA valido"<br>
+      <strong>&#9658; P5</strong> "Tocamos 'Aprobar' en un negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos: spinner en boton"<br>
+      <strong>&#9673; V2</strong> "Verificamos: snackbar 'Negocio aprobado'"<br>
+      <strong>&#9673; V3</strong> "Verificamos: negocio desaparece de la lista"
+    </td>
+    <td class="evidence-col">
+      &#10003; Lista de pendientes visible<br>
+      &#10003; Card con datos del negocio<br>
+      &#10003; Spinner durante proceso<br>
+      &#10003; Snackbar de aprobacion<br>
+      &#10003; Lista actualizada sin el negocio
+    </td>
+  </tr>
+  <!-- RN-2-002 -->
+  <tr>
+    <td class="case-id">RN-2-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Rechazo exitoso de negocio con 2FA</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso RN-2-002: Rechazo de negocio"<br>
+      <strong>&#9658; P1</strong> "Estamos en ReviewBusinessScreen con pendientes"<br>
+      <strong>&#9658; P2</strong> "Ingresamos codigo 2FA valido"<br>
+      <strong>&#9658; P3</strong> "Tocamos 'Rechazar' en un negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos: snackbar 'Negocio rechazado'"<br>
+      <strong>&#9673; V2</strong> "Verificamos: negocio desaparece de la lista"
+    </td>
+    <td class="evidence-col">
+      &#10003; Snackbar de rechazo<br>
+      &#10003; Lista actualizada<br>
+      &#10003; En DB: state=REJECTED
+    </td>
+  </tr>
+  <!-- RN-2-003 -->
+  <tr>
+    <td class="case-id">RN-2-003</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Codigo 2FA vacio</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Dejamos campo 2FA vacio"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Aprobar' en un negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error inline 'Campo requerido'"<br>
+      <strong>&#9673; V2</strong> "Verificamos: NO se hizo llamada HTTP"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error inline visible bajo campo 2FA<br>
+      &#10003; Sin snackbar de red
+    </td>
+  </tr>
+  <!-- RN-2-004 -->
+  <tr>
+    <td class="case-id">RN-2-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Codigo 2FA incorrecto</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Ingresamos codigo 2FA incorrecto (ej: 000000)"<br>
+      <strong>&#9658; P2</strong> "Tocamos 'Aprobar'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error del servidor (2FA invalido)"<br>
+      <strong>&#9673; V2</strong> "Verificamos: negocio sigue en lista PENDING"
+    </td>
+    <td class="evidence-col">
+      &#10003; Snackbar con error<br>
+      &#10003; Negocio sigue visible<br>
+      &#10003; Estado no cambio
+    </td>
+  </tr>
+  <!-- RN-2-005 -->
+  <tr>
+    <td class="case-id">RN-2-005</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Lista vacia (sin negocios PENDING)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Navegamos a ReviewBusinessScreen sin negocios pendientes"<br>
+      <strong>&#9673; V1</strong> "Verificamos: texto 'No hay solicitudes pendientes' visible"<br>
+      <strong>&#9673; V2</strong> "Verificamos: no hay cards de negocio"
+    </td>
+    <td class="evidence-col">
+      &#10003; Mensaje de lista vacia visible<br>
+      &#10003; Sin cards
+    </td>
+  </tr>
+  <!-- RN-2-006 -->
+  <tr>
+    <td class="case-id">RN-2-006</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Datos del negocio visibles en card</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Navegamos a ReviewBusinessScreen con pendientes"<br>
+      <strong>&#9673; V1</strong> "Verificamos: nombre del negocio visible"<br>
+      <strong>&#9673; V2</strong> "Verificamos: descripcion visible"<br>
+      <strong>&#9673; V3</strong> "Verificamos: email admin visible"<br>
+      <strong>&#9673; V4</strong> "Verificamos: autoAcceptDeliveries visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; Card con 4 datos visibles<br>
+      &#10003; Botones aprobar/rechazar visibles<br>
+      &#10003; Checkbox de seleccion visible
+    </td>
+  </tr>
+  <!-- RN-2-007 -->
+  <tr>
+    <td class="case-id">RN-2-007</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Seleccionar todos y aprobar en lote</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Vemos multiples negocios pendientes"<br>
+      <strong>&#9658; P2</strong> "Marcamos checkbox 'Seleccionar todos'"<br>
+      <strong>&#9658; P3</strong> "Ingresamos codigo 2FA"<br>
+      <strong>&#9658; P4</strong> "Tocamos 'Aprobar seleccionados'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: todos aprobados (snackbar)"<br>
+      <strong>&#9673; V2</strong> "Verificamos: lista queda vacia"
+    </td>
+    <td class="evidence-col">
+      &#10003; Todos los checkboxes marcados<br>
+      &#10003; Boton lote habilitado<br>
+      &#10003; Snackbar de aprobacion<br>
+      &#10003; Lista vacia post-operacion
+    </td>
+  </tr>
+  <!-- RN-2-008 -->
+  <tr>
+    <td class="case-id">RN-2-008</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Seleccionar todos y rechazar en lote</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Marcamos 'Seleccionar todos'"<br>
+      <strong>&#9658; P2</strong> "Ingresamos 2FA y tocamos 'Rechazar seleccionados'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: snackbar 'Negocio rechazado'"<br>
+      <strong>&#9673; V2</strong> "Verificamos: lista vacia"
+    </td>
+    <td class="evidence-col">
+      &#10003; Snackbar de rechazo<br>
+      &#10003; Lista actualizada
+    </td>
+  </tr>
+  <!-- RN-2-009 -->
+  <tr>
+    <td class="case-id">RN-2-009</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Botones de lote deshabilitados sin seleccion</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Vemos negocios pendientes sin ninguno seleccionado"<br>
+      <strong>&#9673; V1</strong> "Verificamos: 'Aprobar seleccionados' deshabilitado"<br>
+      <strong>&#9673; V2</strong> "Verificamos: 'Rechazar seleccionados' deshabilitado"
+    </td>
+    <td class="evidence-col">
+      &#10003; Botones de lote deshabilitados<br>
+      &#10003; Botones individuales habilitados
+    </td>
+  </tr>
+  <!-- RN-2-010 -->
+  <tr>
+    <td class="case-id">RN-2-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Toggle seleccion individual</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Seleccionamos un negocio con checkbox"<br>
+      <strong>&#9658; P2</strong> "Deseleccionamos tocando de nuevo"<br>
+      <strong>&#9673; V1</strong> "Verificamos: checkbox se marca/desmarca"<br>
+      <strong>&#9673; V2</strong> "Verificamos: botones de lote se habilitan/deshabilitan"
+    </td>
+    <td class="evidence-col">
+      &#10003; Checkbox cambia estado<br>
+      &#10003; Botones de lote reactivos
+    </td>
+  </tr>
+  <!-- RN-2-011 -->
+  <tr>
+    <td class="case-id">RN-2-011</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Backend: usuario no PlatformAdmin (API directa)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Enviamos POST reviewBusiness con JWT de usuario no-admin"<br>
+      <strong>&#9673; V1</strong> "Verificamos: HTTP 401 Unauthorized"
+    </td>
+    <td class="evidence-col">
+      &#10003; Response status 401<br>
+      &#10003; Sin cambio de estado en DB
+    </td>
+  </tr>
+  <!-- RN-2-012 -->
+  <tr>
+    <td class="case-id">RN-2-012</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Backend: negocio ya APPROVED (doble aprobacion)</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Enviamos reviewBusiness con publicId de negocio APPROVED"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error 'Business is in wrong state'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error response<br>
+      &#10003; Estado no cambio
+    </td>
+  </tr>
+  <!-- RN-2-013 -->
+  <tr>
+    <td class="case-id">RN-2-013</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: publicId inexistente</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Enviamos reviewBusiness con publicId que no existe"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error 'Business not found'"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error response<br>
+      &#10003; Sin side effects
+    </td>
+  </tr>
+  <!-- RN-2-014 -->
+  <tr>
+    <td class="case-id">RN-2-014</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: decision invalida</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Enviamos reviewBusiness con decision='invalid'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error de validacion Konform"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error 400<br>
+      &#10003; Mensaje: "Debe ser APPROVED o REJECTED"
+    </td>
+  </tr>
+  <!-- RN-2-015 -->
+  <tr>
+    <td class="case-id">RN-2-015</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Backend: twoFactorCode < 6 caracteres</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Enviamos reviewBusiness con twoFactorCode='123'"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error de validacion minLength(6)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error 400<br>
+      &#10003; Mensaje de validacion
+    </td>
+  </tr>
+  <!-- RN-2-016 -->
+  <tr>
+    <td class="case-id">RN-2-016</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Boton deshabilitado durante proceso de aprobacion</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Tocamos 'Aprobar' en un negocio"<br>
+      <strong>&#9658; P2</strong> "Intentamos tocar otro boton durante la carga"<br>
+      <strong>&#9673; V1</strong> "Verificamos: todos los botones deshabilitados"
+    </td>
+    <td class="evidence-col">
+      &#10003; Spinner visible<br>
+      &#10003; Botones no clickeables<br>
+      &#10003; No se duplica request
+    </td>
+  </tr>
+  <!-- RN-2-017 -->
+  <tr>
+    <td class="case-id">RN-2-017</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Sin conexion a internet</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Desactivamos WiFi"<br>
+      <strong>&#9658; P2</strong> "Intentamos aprobar un negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos: snackbar con error de red"<br>
+      <strong>&#9673; V2</strong> "Verificamos: negocio sigue en lista"
+    </td>
+    <td class="evidence-col">
+      &#10003; Snackbar de error visible<br>
+      &#10003; Lista intacta
+    </td>
+  </tr>
+  <!-- RN-2-018 -->
+  <tr>
+    <td class="case-id">RN-2-018</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Lista se recarga tras aprobar/rechazar</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Aprobamos un negocio exitosamente"<br>
+      <strong>&#9673; V1</strong> "Verificamos: loadPending() se ejecuta"<br>
+      <strong>&#9673; V2</strong> "Verificamos: lista muestra solo negocios restantes"<br>
+      <strong>&#9673; V3</strong> "Verificamos: seleccion se limpia (selected = emptySet)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Negocio aprobado no esta en lista<br>
+      &#10003; Checkboxes desmarcados<br>
+      &#10003; Conteo correcto de pendientes
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 6. FLUJO 3 — INTEGRACION POST-APROBACION ========== -->
+<h2 id="s6">6. Flujo 3 — Integracion Post-Aprobacion</h2>
+
+<h3>6.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Tras la aprobacion de un negocio, el sistema ejecuta automaticamente: (1) SignUp del BusinessAdmin en Cognito si no existe, (2) asignacion de perfil BusinessAdmin con computeRelationState, (3) el BusinessAdmin recibe email de Cognito con credenciales temporales y puede hacer login.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Negocio aprobado via Flujo 2 | Email admin no registrado previamente (para flujo completo)
+</div>
+
+<h3>6.2 Diagrama de flujo de integracion</h3>
+<pre class="mermaid">
+flowchart LR
+  subgraph REGISTRO["1. Registro"]
+    R1["Usuario anonimo<br>registra negocio"] --> R2["Business creado<br>state=PENDING"]
+  end
+  subgraph REVISION["2. Revision"]
+    R2 --> V1["PlatformAdmin<br>revisa solicitudes"]
+    V1 -->|"Aprueba"| V2["state=APPROVED"]
+    V1 -->|"Rechaza"| V3["state=REJECTED"]
+  end
+  subgraph ONBOARDING["3. Onboarding"]
+    V2 --> O1["SignUp BusinessAdmin<br>en Cognito"]
+    O1 --> O2["Asignar perfil<br>BusinessAdmin"]
+    O2 --> O3["Email con<br>credenciales"]
+    O3 --> O4["BusinessAdmin<br>hace Login"]
+  end
+
+  style R2 fill:#fff8e1,stroke:#ffc107
+  style V2 fill:#e8f5e9,stroke:#2e7d32
+  style V3 fill:#ffebee,stroke:#c62828
+  style O4 fill:#e8f5e9,stroke:#2e7d32
+</pre>
+
+<h3>6.3 Casos de prueba cross-flow <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
+<table>
+  <tr>
+    <th style="width:60px">ID</th>
+    <th style="width:45px">Tipo</th>
+    <th style="width:40px">Prio</th>
+    <th>Caso de prueba</th>
+    <th>Guion de video (narracion paso a paso)</th>
+    <th class="evidence-col">Evidencia requerida en video</th>
+  </tr>
+  <!-- RN-3-001 -->
+  <tr>
+    <td class="case-id">RN-3-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Flujo completo: registro &rarr; aprobacion &rarr; login BusinessAdmin</strong></td>
+    <td class="video-script">
+      <strong>00:00</strong> "Caso RN-3-001: Flujo completo de registro a login"<br>
+      <strong>&#9658; P1</strong> "Registramos negocio con email nuevo"<br>
+      <strong>&#9658; P2</strong> "Login como PlatformAdmin"<br>
+      <strong>&#9658; P3</strong> "Aprobamos negocio con 2FA"<br>
+      <strong>&#9658; P4</strong> "Verificamos email de Cognito recibido"<br>
+      <strong>&#9658; P5</strong> "Login como BusinessAdmin con credenciales"<br>
+      <strong>&#9673; V1</strong> "Verificamos: dashboard de BusinessAdmin visible"
+    </td>
+    <td class="evidence-col">
+      &#10003; Registro exitoso (snackbar)<br>
+      &#10003; Negocio visible en lista pending<br>
+      &#10003; Aprobacion exitosa<br>
+      &#10003; Email de Cognito<br>
+      &#10003; Login exitoso<br>
+      &#10003; Dashboard visible
+    </td>
+  </tr>
+  <!-- RN-3-002 -->
+  <tr>
+    <td class="case-id">RN-3-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Flujo completo: registro &rarr; rechazo</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Registramos negocio"<br>
+      <strong>&#9658; P2</strong> "PlatformAdmin rechaza el negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos en DB: state=REJECTED"<br>
+      <strong>&#9673; V2</strong> "Verificamos: NO se creo usuario en Cognito"
+    </td>
+    <td class="evidence-col">
+      &#10003; Rechazo exitoso<br>
+      &#10003; Sin SignUp en Cognito<br>
+      &#10003; Sin perfil creado
+    </td>
+  </tr>
+  <!-- RN-3-003 -->
+  <tr>
+    <td class="case-id">RN-3-003</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Aprobacion con email admin ya existente en Cognito</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Registramos negocio con email de usuario existente"<br>
+      <strong>&#9658; P2</strong> "Aprobamos el negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos: no falla (SignUp es idempotente)"<br>
+      <strong>&#9673; V2</strong> "Verificamos: perfil BusinessAdmin asignado correctamente"
+    </td>
+    <td class="evidence-col">
+      &#10003; Aprobacion exitosa<br>
+      &#10003; Sin error de usuario duplicado<br>
+      &#10003; Perfil asignado
+    </td>
+  </tr>
+  <!-- RN-3-004 -->
+  <tr>
+    <td class="case-id">RN-3-004</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>computeRelationState calcula APPROVED si tiene perfil previo</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Registramos negocio con email que ya tiene perfil APPROVED en otro negocio"<br>
+      <strong>&#9658; P2</strong> "Aprobamos el negocio"<br>
+      <strong>&#9673; V1</strong> "Verificamos en DB: nuevo perfil con relationState=APPROVED"
+    </td>
+    <td class="evidence-col">
+      &#10003; Perfil creado con estado correcto<br>
+      &#10003; computeRelationState consultado
+    </td>
+  </tr>
+  <!-- RN-3-005 -->
+  <tr>
+    <td class="case-id">RN-3-005</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Aprobacion cuando SignUp de BusinessAdmin falla</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Simulamos fallo en SignUp (Cognito no disponible)"<br>
+      <strong>&#9658; P2</strong> "Intentamos aprobar"<br>
+      <strong>&#9673; V1</strong> "Verificamos: error propagado (no 200)"<br>
+      <strong>&#9673; V2</strong> "Verificamos: negocio sigue PENDING (transaccion no completa)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Error de SignUp propagado<br>
+      &#10003; Estado sigue PENDING
+    </td>
+  </tr>
+  <!-- RN-3-006 -->
+  <tr>
+    <td class="case-id">RN-3-006</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Multiples negocios aprobados para mismo email admin</strong></td>
+    <td class="video-script">
+      <strong>&#9658; P1</strong> "Registramos 2 negocios con mismo email admin"<br>
+      <strong>&#9658; P2</strong> "Aprobamos ambos secuencialmente"<br>
+      <strong>&#9673; V1</strong> "Verificamos: ambos perfiles BusinessAdmin creados"<br>
+      <strong>&#9673; V2</strong> "Verificamos: un solo usuario en Cognito (idempotente)"
+    </td>
+    <td class="evidence-col">
+      &#10003; Ambos negocios APPROVED<br>
+      &#10003; Dos perfiles BusinessAdmin<br>
+      &#10003; Un usuario en Cognito
+    </td>
+  </tr>
+</table>
+
+<!-- ========== 7. CATALOGO DE VALIDACIONES ========== -->
+<h2 id="s7">7. Catalogo de Validaciones</h2>
+
+<h3>7.1 Validaciones Frontend (Konform) — RegisterBusinessViewModel</h3>
+<table>
+  <tr><th>Campo</th><th>Regla</th><th>Hint / Mensaje</th><th>Archivo</th></tr>
+  <tr><td>name</td><td><code>required + minLength(1)</code></td><td><code>form_error_required</code></td><td>RegisterBusinessViewModel.kt:38-39</td></tr>
+  <tr><td>email</td><td><code>required + minLength(1) + pattern(".+@.+\\..+")</code></td><td><code>form_error_required</code> / <code>form_error_invalid_email</code></td><td>RegisterBusinessViewModel.kt:41-43</td></tr>
+  <tr><td>description</td><td><code>required + minLength(1)</code></td><td><code>form_error_required</code></td><td>RegisterBusinessViewModel.kt:45-46</td></tr>
+</table>
+
+<h3>7.2 Validaciones Frontend (Konform) — ReviewBusinessViewModel</h3>
+<table>
+  <tr><th>Campo</th><th>Regla</th><th>Hint / Mensaje</th><th>Archivo</th></tr>
+  <tr><td>twoFactorCode</td><td><code>required {}</code></td><td>Campo requerido</td><td>ReviewBusinessViewModel.kt:37</td></tr>
+</table>
+
+<h3>7.3 Validaciones Backend (Konform) — RegisterBusiness</h3>
+<table>
+  <tr><th>Campo</th><th>Regla</th><th>Hint / Mensaje</th><th>Archivo</th></tr>
+  <tr><td>name</td><td><code>required + minLength(7)</code></td><td><code>must have at least 7 characters</code></td><td>RegisterBusiness.kt:34-36</td></tr>
+  <tr><td>emailAdmin</td><td><code>required + pattern(".+@.+\\..+")</code></td><td><code>El campo emailAdmin debe tener formato de email. Valor actual: '{value}'</code></td><td>RegisterBusiness.kt:37-39</td></tr>
+  <tr><td>description</td><td><code>required {}</code></td><td>required (not-empty)</td><td>RegisterBusiness.kt:40</td></tr>
+  <tr><td>Body HTTP</td><td>textBody.isEmpty()</td><td><code>Request body not found</code></td><td>RegisterBusiness.kt:66</td></tr>
+</table>
+
+<h3>7.4 Validaciones Backend (Konform) — ReviewBusinessRegistration</h3>
+<table>
+  <tr><th>Campo</th><th>Regla</th><th>Hint / Mensaje</th><th>Archivo</th></tr>
+  <tr><td>publicId</td><td><code>required + minLength(7)</code></td><td>must have at least 7 characters</td><td>ReviewBusinessRegistration.kt:36-38</td></tr>
+  <tr><td>decision</td><td><code>required + pattern("^(approved|rejected)$", IGNORE_CASE)</code></td><td><code>Debe ser APPROVED o REJECTED</code></td><td>ReviewBusinessRegistration.kt:39-41</td></tr>
+  <tr><td>twoFactorCode</td><td><code>required + minLength(6)</code></td><td>must have at least 6 characters</td><td>ReviewBusinessRegistration.kt:42-44</td></tr>
+  <tr><td>Perfil requerido</td><td>requireApprovedProfile(PLATFORM_ADMIN)</td><td>HTTP 401 Unauthorized</td><td>ReviewBusinessRegistration.kt:50-52</td></tr>
+  <tr><td>2FA</td><td>twoFactorVerify.execute()</td><td>Error de verificacion 2FA</td><td>ReviewBusinessRegistration.kt:56-59</td></tr>
+  <tr><td>Estado negocio</td><td>businessData.state != PENDING</td><td><code>Business is in wrong state</code></td><td>ReviewBusinessRegistration.kt:66-68</td></tr>
+</table>
+
+<div class="note">
+  <strong>Discrepancia detectada:</strong> El frontend valida <code>name minLength(1)</code> mientras el backend valida <code>name minLength(7)</code>. Un nombre de 1-6 caracteres pasara el frontend pero sera rechazado por el backend. Se recomienda alinear ambas validaciones a minLength(7).
+</div>
+
+<!-- ========== 8. RESUMEN Y COBERTURA ========== -->
+<h2 id="s8">8. Resumen y Cobertura</h2>
+
+<h3>8.1 Distribucion por flujo</h3>
+<table>
+  <tr><th>Flujo</th><th>Smoke</th><th>Regresion</th><th>Edge</th><th>Total</th></tr>
+  <tr><td>1 — Registro de Negocio</td><td>4</td><td>6</td><td>8</td><td>18</td></tr>
+  <tr><td>2 — Aprobacion / Rechazo</td><td>4</td><td>6</td><td>8</td><td>18</td></tr>
+  <tr><td>3 — Integracion Post-Aprobacion</td><td>2</td><td>2</td><td>2</td><td>6</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td>TOTAL</td><td>10</td><td>14</td><td>18</td><td>42</td></tr>
+</table>
+
+<h3>8.2 Distribucion por prioridad</h3>
+<table>
+  <tr><th>Prioridad</th><th>Cantidad</th><th>Porcentaje</th></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>20</td><td>47.6%</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>17</td><td>40.5%</td></tr>
+  <tr><td><span class="tag tag-low">Baja</span></td><td>5</td><td>11.9%</td></tr>
+</table>
+
+<h3>8.3 Cobertura funcional</h3>
+<table>
+  <tr><th>Area</th><th>Cobertura</th><th>Notas</th></tr>
+  <tr><td>Validaciones Konform frontend (Register)</td><td>100%</td><td>3 campos: name, email, description</td></tr>
+  <tr><td>Validaciones Konform backend (Register)</td><td>100%</td><td>3 campos + body vacio</td></tr>
+  <tr><td>Validaciones Konform backend (Review)</td><td>100%</td><td>publicId, decision, twoFactorCode</td></tr>
+  <tr><td>Generacion de slug</td><td>100%</td><td>Normal + acentos + duplicados</td></tr>
+  <tr><td>Estados del negocio</td><td>100%</td><td>PENDING, APPROVED, REJECTED</td></tr>
+  <tr><td>Auth: JWT + 2FA</td><td>100%</td><td>Valido, invalido, no-admin</td></tr>
+  <tr><td>Operaciones en lote</td><td>100%</td><td>Seleccionar todos, aprobar/rechazar lote</td></tr>
+  <tr><td>SignUp automatico BusinessAdmin</td><td>100%</td><td>Nuevo usuario + existente</td></tr>
+  <tr><td>UI: loading states</td><td>100%</td><td>Spinner, botones deshabilitados</td></tr>
+  <tr><td>UI: feedback</td><td>100%</td><td>Snackbar exito/error, lista vacia</td></tr>
+</table>
+
+<!-- ========== 9. GAPS Y RECOMENDACIONES ========== -->
+<h2 id="s9">9. Gaps y Recomendaciones</h2>
+
+<h3>9.1 Gaps identificados</h3>
+<table>
+  <tr><th>#</th><th>Gap</th><th>Impacto</th><th>Recomendacion</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>Discrepancia en validacion de name:</strong> Frontend valida minLength(1) pero backend valida minLength(7)</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Alinear frontend a minLength(7) para feedback inmediato al usuario</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>autoAcceptDeliveries no visible en registro:</strong> El campo existe en el request pero no hay UI para configurarlo</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Agregar Switch/Checkbox en RegisterNewBusinessScreen o documentar que siempre es false</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Sin control de acceso en ReviewBusinessScreen:</strong> Hay un TODO en el codigo (linea 65) que indica falta restriccion</td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Implementar verificacion de rol PlatformAdmin antes de mostrar la pantalla</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>Sin notificacion al usuario tras aprobacion/rechazo:</strong> Hay un TODO en ReviewBusinessRegistration.kt (linea 113)</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Implementar envio de email/push notification al Business Admin</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>Transaccion no atomica en aprobacion:</strong> Si falla el SignUp del BusinessAdmin, el negocio queda en estado inconsistente (no se actualizo aun)</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Evaluar mecanismo de rollback o saga pattern</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><strong>Sin tests Maestro E2E para estos flujos:</strong> No existen flujos Maestro automatizados para registro/aprobacion de negocio</td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Crear flujos Maestro: register-business.yaml, review-business.yaml</td>
+  </tr>
+</table>
+
+<h3>9.2 Archivos fuente analizados</h3>
+<table>
+  <tr><th>Capa</th><th>Archivo</th><th>Descripcion</th></tr>
+  <tr><td>UI</td><td><code>ui/sc/business/RegisterNewBusinessScreen.kt</code></td><td>Pantalla de registro de negocio</td></tr>
+  <tr><td>UI</td><td><code>ui/sc/business/ReviewBusinessScreen.kt</code></td><td>Pantalla de revision/aprobacion</td></tr>
+  <tr><td>ViewModel</td><td><code>ui/sc/business/RegisterBusinessViewModel.kt</code></td><td>Estado y validaciones del registro</td></tr>
+  <tr><td>ViewModel</td><td><code>ui/sc/business/ReviewBusinessViewModel.kt</code></td><td>Estado y validaciones de la revision</td></tr>
+  <tr><td>Do</td><td><code>asdo/business/DoRegisterBusiness.kt</code></td><td>Logica de negocio del registro</td></tr>
+  <tr><td>Do</td><td><code>asdo/business/DoReviewBusinessRegistration.kt</code></td><td>Logica de negocio de la revision</td></tr>
+  <tr><td>Backend</td><td><code>users/.../RegisterBusiness.kt</code></td><td>Handler del endpoint registerBusiness</td></tr>
+  <tr><td>Backend</td><td><code>users/.../ReviewBusinessRegistration.kt</code></td><td>Handler del endpoint reviewBusiness</td></tr>
+  <tr><td>Modelo</td><td><code>users/.../Business.kt</code></td><td>Entidad DynamoDB Business</td></tr>
+  <tr><td>Modelo</td><td><code>users/.../BusinessState.kt</code></td><td>Enum: PENDING, APPROVED, REJECTED</td></tr>
+  <tr><td>Request</td><td><code>users/.../RegisterBusinessRequest.kt</code></td><td>DTO: name, emailAdmin, description, autoAcceptDeliveries</td></tr>
+  <tr><td>Request</td><td><code>users/.../ReviewBusinessRegistrationRequest.kt</code></td><td>DTO: publicId, decision, twoFactorCode</td></tr>
+</table>
+
+</body>
+</html>
