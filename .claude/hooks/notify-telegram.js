@@ -298,36 +298,39 @@ async function processInput() {
         "elicitation_dialog":  "Informaci\u00f3n requerida"
     };
 
-    // permission_prompt: solo notificar si el approver crasheó (PID muerto)
-    // Todos los demás casos se ignoran:
-    //   - Approver activo (PID vivo) → ya tiene mensaje con botones en Telegram
-    //   - Auto-approve → usuario ya aprobó el patrón permanentemente
-    //   - Sin PID file → Claude resolvió internamente (settings allow), no hay nada pendiente
+    // permission_prompt: decidir si notificar o ignorar
+    // Solo IGNORAR si: approver activo (PID vivo) O auto-approve reciente (<10s)
+    // En cualquier otro caso: NOTIFICAR (el usuario tiene un prompt esperando en consola)
     if (type === "permission_prompt") {
         const approverPidFile = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-active.pid");
+        const autoApproveFile = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-last-auto.json");
+
+        // Check 1: approver activo con botones en Telegram
         try {
             if (fs.existsSync(approverPidFile)) {
                 const pidData = JSON.parse(fs.readFileSync(approverPidFile, "utf8"));
                 try {
-                    process.kill(pidData.pid, 0); // Signal 0 = verificar si vive
+                    process.kill(pidData.pid, 0);
                     log("Ignorado permission_prompt: approver PID " + pidData.pid + " activo (Telegram buttons)");
                     return;
-                } catch(e) {
-                    // Proceso muerto — approver crasheó, notificar al usuario
-                    log("permission_prompt: approver PID " + pidData.pid + " muerto, enviando notificación de fallback");
-                    // Continuar al flujo normal pero no llegar como "Aprobación requerida"
-                    // sino como alerta de que hay un prompt esperando en consola
-                }
-            } else {
-                // Sin PID file → auto-approve, settings allow, o hook no corrió
-                // En todos estos casos no hay nada pendiente para el usuario
-                log("Ignorado permission_prompt: sin approver activo (auto-resuelto)");
-                return;
+                } catch(e) { /* PID muerto, continuar */ }
             }
-        } catch(e) {
-            log("Ignorado permission_prompt: error verificando approver (" + e.message + ")");
-            return;
-        }
+        } catch(e) { /* error leyendo PID, continuar */ }
+
+        // Check 2: auto-approve reciente (el approver resolvió silenciosamente)
+        try {
+            if (fs.existsSync(autoApproveFile)) {
+                const autoData = JSON.parse(fs.readFileSync(autoApproveFile, "utf8"));
+                const age = Date.now() - new Date(autoData.timestamp).getTime();
+                if (age < 10000) {
+                    log("Ignorado permission_prompt: auto-aprobado hace " + Math.round(age/1000) + "s");
+                    return;
+                }
+            }
+        } catch(e) { /* error leyendo auto-approve, continuar */ }
+
+        // Ningún mecanismo lo manejó → hay un prompt esperando en consola → NOTIFICAR
+        log("permission_prompt: sin approver ni auto-approve reciente, notificando al usuario");
     }
 
     // Clasificar urgencia y tipo de notificación

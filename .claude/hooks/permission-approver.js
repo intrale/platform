@@ -25,7 +25,7 @@ const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirn
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 const ANSWER_TIMEOUT = 5000;   // Timeout para editMessage
-const POLL_INTERVAL_MS = 500;   // Verificar pending-questions.json cada 0.5s
+const POLL_INTERVAL_MS = 150;   // Verificar pending-questions.json cada 150ms (respuesta rápida)
 
 // ─── Retry schedule con urgencia escalada ────────────────────────────────────
 // Configurable desde telegram-config.json → retry_intervals_min (array de minutos)
