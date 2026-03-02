@@ -129,10 +129,10 @@ function collectData() {
   let branch = "unknown";
   let lastCommits = [];
   try {
-    branch = execSync("git branch --show-current", { cwd: REPO_ROOT, timeout: 3000 }).toString().trim();
+    branch = execSync("git branch --show-current", { cwd: REPO_ROOT, timeout: 3000, windowsHide: true }).toString().trim();
   } catch {}
   try {
-    const gitLog = execSync('git log --oneline -5 --format="%h|%s|%cr|%an"', { cwd: REPO_ROOT, timeout: 5000 }).toString().trim();
+    const gitLog = execSync('git log --oneline -5 --format="%h|%s|%cr|%an"', { cwd: REPO_ROOT, timeout: 5000, windowsHide: true }).toString().trim();
     lastCommits = gitLog.split("\n").filter(Boolean).map(l => {
       const [hash, ...rest] = l.split("|");
       return { hash, message: rest[0] || "", age: rest[1] || "", author: rest[2] || "" };
@@ -144,7 +144,7 @@ function collectData() {
   try {
     const ghPath = "/c/Workspaces/gh-cli/bin/gh.exe";
     if (fs.existsSync(ghPath.replace(/\//g, "\\"))) {
-      const raw = execSync(ghPath + ' run list --limit 5 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 10000 }).toString().trim();
+      const raw = execSync(ghPath + ' run list --limit 5 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 10000, windowsHide: true }).toString().trim();
       ciRuns = JSON.parse(raw || "[]");
     }
   } catch {}

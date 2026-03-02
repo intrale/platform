@@ -9,7 +9,7 @@ const { execSync } = require("child_process");
 function resolveMainRepoRoot() {
     const candidate = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
     try {
-        const gitCommon = execSync("git rev-parse --git-common-dir", { cwd: candidate, timeout: 3000 })
+        const gitCommon = execSync("git rev-parse --git-common-dir", { cwd: candidate, timeout: 3000, windowsHide: true })
             .toString().trim().replace(/\\/g, "/");
         // Si retorna ".git" → estamos en el repo principal
         if (gitCommon === ".git") return candidate;
@@ -61,7 +61,7 @@ setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } ca
 
 function getBranch() {
     try {
-        return execSync("git branch --show-current", { cwd: WORKTREE_ROOT, timeout: 3000 })
+        return execSync("git branch --show-current", { cwd: WORKTREE_ROOT, timeout: 3000, windowsHide: true })
             .toString().trim();
     } catch(e) { return "unknown"; }
 }

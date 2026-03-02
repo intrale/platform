@@ -42,13 +42,13 @@ function getGitHubToken() {
     try {
         const ghPath = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
         if (fs.existsSync(ghPath)) {
-            return execSync(ghPath + " auth token", { encoding: "utf8", timeout: 5000 }).trim();
+            return execSync(ghPath + " auth token", { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
         }
     } catch(e) {}
     // Fallback: git credential fill
     try {
         const credInput = "protocol=https\nhost=github.com\n\n";
-        const result = execSync("git credential fill", { input: credInput, encoding: "utf8", cwd: PROJECT_DIR, timeout: 5000 });
+        const result = execSync("git credential fill", { input: credInput, encoding: "utf8", cwd: PROJECT_DIR, timeout: 5000, windowsHide: true });
         const match = result.match(/password=(.+)/);
         if (match) return match[1].trim();
     } catch(e) {}

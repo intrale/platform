@@ -172,7 +172,7 @@ function livenessLabel(session) {
 function discoverWorktreeSessions(knownIds) {
   const extra = [];
   try {
-    const output = execSync("git worktree list --porcelain", { cwd: REPO_ROOT, timeout: 5000 })
+    const output = execSync("git worktree list --porcelain", { cwd: REPO_ROOT, timeout: 5000, windowsHide: true })
       .toString();
     const lines = output.split(/\r?\n/);
     for (const line of lines) {
@@ -258,9 +258,9 @@ function loadRecentActivity() {
 
 function getGitInfo() {
   try {
-    const branch = execSync("git branch --show-current", { cwd: REPO_ROOT, timeout: 3000 })
+    const branch = execSync("git branch --show-current", { cwd: REPO_ROOT, timeout: 3000, windowsHide: true })
       .toString().trim();
-    const commit = execSync("git log --oneline -1", { cwd: REPO_ROOT, timeout: 3000 })
+    const commit = execSync("git log --oneline -1", { cwd: REPO_ROOT, timeout: 3000, windowsHide: true })
       .toString().trim();
     return { branch, commit };
   } catch(e) { return { branch: "???", commit: "???" }; }
@@ -344,7 +344,7 @@ function getCIStatus() {
     const cmd = 'export PATH="/c/Workspaces/gh-cli/bin:$PATH" && ' +
       'export GH_TOKEN=$(printf \'protocol=https\\nhost=github.com\\n\' | git credential fill 2>/dev/null | sed -n \'s/^password=//p\') && ' +
       'gh run list --limit 1 --json status,conclusion,headBranch --jq \'.[0] | "\\(.status) \\(.conclusion // "-") \\(.headBranch)"\'';
-    const result = execSync(cmd, { cwd: REPO_ROOT, timeout: 15000, shell: bashPath })
+    const result = execSync(cmd, { cwd: REPO_ROOT, timeout: 15000, shell: bashPath, windowsHide: true })
       .toString().trim();
     const parts = result.split(" ");
     return { status: parts[0] || "?", conclusion: parts[1] || "-", branch: parts.slice(2).join(" ") || "?" };
