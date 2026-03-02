@@ -96,6 +96,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/commander-launcher.js",
             "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/health-check.js",
+            "timeout": 15000
           }
         ]
       }

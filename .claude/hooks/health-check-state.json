@@ -1,0 +1,14 @@
+{
+  "last_check": 1772480859121,
+  "last_check_iso": "2026-03-02T19:47:39.121Z",
+  "all_ok": true,
+  "issues_found": 0,
+  "checks": {
+    "commander": true,
+    "approvers": true,
+    "telegram": true,
+    "settings": true,
+    "hooks": true,
+    "worktrees": true
+  }
+}
