@@ -696,7 +696,8 @@ function renderHTML(data, theme) {
     const saved = localStorage.getItem('theme');
     if (saved) document.documentElement.setAttribute('data-theme', saved);
 
-    // SSE auto-refresh
+    // SSE auto-refresh (deshabilitado con ?nosse=1 para screenshot)
+    if (location.search.includes('nosse=1')) { return; }
     let lastUpdate = Date.now();
     const evtSource = new EventSource('/events');
     evtSource.onmessage = function(event) {
@@ -832,7 +833,9 @@ let puppeteerBrowser = null;
 async function takeScreenshot(width, height) {
   let puppeteer;
   try { puppeteer = require("puppeteer"); } catch {
-    throw new Error("puppeteer not installed");
+    // Fallback: Puppeteer instalado en docs/qa/
+    try { puppeteer = require(path.join(REPO_ROOT, "docs", "qa", "node_modules", "puppeteer")); }
+    catch { throw new Error("puppeteer not installed — run: cd docs/qa && npm install"); }
   }
 
   if (!puppeteerBrowser || !puppeteerBrowser.isConnected()) {
@@ -845,7 +848,10 @@ async function takeScreenshot(width, height) {
   const page = await puppeteerBrowser.newPage();
   try {
     await page.setViewport({ width, height });
-    await page.goto("http://localhost:" + PORT + "/?theme=dark", { waitUntil: "networkidle0", timeout: 10000 });
+    // Usar domcontentloaded (no networkidle0) porque SSE mantiene conexión abierta permanente
+    await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "domcontentloaded", timeout: 15000 });
+    // Esperar 1s para que CSS/JS inicialicen
+    await new Promise(r => setTimeout(r, 1000));
     const buf = await page.screenshot({ type: "png", fullPage: false });
     return buf;
   } finally {
@@ -928,20 +934,75 @@ function sendTelegramText(text, silent) {
   req.end();
 }
 
-function sendHeartbeat() {
+function sendTelegramPhoto(photoBuffer, caption, silent) {
+  if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) return Promise.resolve(null);
+  const https = require("https");
+  return new Promise((resolve, reject) => {
+    const boundary = "----FormBoundary" + Date.now().toString(36);
+    let body = "";
+    body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + TG_CONFIG.chat_id + "\r\n";
+    if (caption) {
+      body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n";
+      body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"parse_mode\"\r\n\r\n" + "HTML" + "\r\n";
+    }
+    if (silent) {
+      body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"disable_notification\"\r\n\r\n" + "true" + "\r\n";
+    }
+    const pre = Buffer.from(body + "--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"dashboard.png\"\r\nContent-Type: image/png\r\n\r\n");
+    const post = Buffer.from("\r\n--" + boundary + "--\r\n");
+    const payload = Buffer.concat([pre, photoBuffer, post]);
+    const req = https.request({
+      hostname: "api.telegram.org",
+      path: "/bot" + TG_CONFIG.bot_token + "/sendPhoto",
+      method: "POST",
+      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+      timeout: 15000
+    }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) { console.log("[heartbeat] Foto OK msg_id=" + r.result.message_id); resolve(r); }
+          else { console.log("[heartbeat] Foto error: " + d.substring(0, 200)); reject(new Error(d)); }
+        } catch(e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.on("error", (e) => reject(e));
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function sendHeartbeat() {
   try {
     console.log("[heartbeat] Generando heartbeat...");
     const data = collectData();
     console.log("[heartbeat] Sessions: active=" + data.activeSessions + " idle=" + data.idleSessions);
-    // Siempre enviar si el server está corriendo (aunque no haya sesiones activas)
-    const text = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n\n" +
+    const caption = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n" +
+      new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+
+    // Intentar screenshot del dashboard
+    try {
+      const screenshot = await takeScreenshot(600, 800);
+      if (screenshot && screenshot.length > 1000) {
+        await sendTelegramPhoto(screenshot, caption, true);
+        console.log("[heartbeat] Screenshot enviado OK");
+        return;
+      }
+    } catch (e) {
+      console.log("[heartbeat] Screenshot no disponible: " + e.message + " — fallback a texto");
+    }
+
+    // Fallback: texto resumido
+    const text = caption + "\n\n" +
       "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
       "\u25cf Tareas: <b>" + data.completedTasks + "/" + data.totalTasks + "</b> completadas\n" +
       "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
       "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
-      (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "") +
-      "\n\ud83d\udcbb " + new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-    sendTelegramText(text, false); // NO silencioso para poder verificar que llega
+      (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "");
+    sendTelegramText(text, true);
   } catch (e) {
     console.log("[heartbeat] Error: " + e.message);
   }
