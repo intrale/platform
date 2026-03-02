@@ -171,6 +171,7 @@ function ensureReporterRunning() {
             const child = spawn(process.execPath, [reporterBg, "start", String(REPORTER_INTERVAL)], {
                 detached: true,
                 stdio: "ignore",
+                windowsHide: true,
                 cwd: REPO_ROOT,
             });
             child.unref();
@@ -184,6 +185,7 @@ function ensureReporterRunning() {
             const child = spawn(process.execPath, [dashboardLegacy, "--headless", "--report", String(REPORTER_INTERVAL)], {
                 detached: true,
                 stdio: "ignore",
+                windowsHide: true,
                 cwd: REPO_ROOT,
             });
             child.unref();
@@ -209,6 +211,7 @@ function ensureDashboardServerRunning() {
         const child = spawn(process.execPath, [dashboardServer], {
             detached: true,
             stdio: "ignore",
+            windowsHide: true,
             cwd: path.dirname(dashboardServer),
         });
         child.unref();

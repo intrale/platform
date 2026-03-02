@@ -45,6 +45,7 @@ function handleInput() {
         const child = spawn(process.execPath, [monitorScript, sha, branch, PROJECT_DIR], {
             detached: true,
             stdio: "ignore",
+            windowsHide: true,
             env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR }
         });
         child.unref();

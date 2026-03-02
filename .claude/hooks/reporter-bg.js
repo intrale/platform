@@ -69,6 +69,7 @@ function ensureDashboardServer() {
   const child = spawn(process.execPath, [script], {
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
     cwd: path.dirname(script),
   });
   child.unref();
@@ -233,6 +234,7 @@ function start(intervalMin) {
   const child = spawn(process.execPath, [__filename, "start", String(intervalMin), "--daemon"], {
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
     cwd: REPO_ROOT,
   });
   child.unref();
