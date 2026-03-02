@@ -298,10 +298,42 @@ async function processInput() {
         "elicitation_dialog":  "Informaci\u00f3n requerida"
     };
 
-    // Ignorar permission_prompt: ya lo maneja permission-approver.js con botones inline
+    // permission_prompt: verificar si permission-approver.js lo está manejando
+    // Solo ignorar si el approver está activamente esperando respuesta via Telegram (PID vivo)
+    // Si auto-aprobó o crasheó, enviar la notificación normalmente
     if (type === "permission_prompt") {
-        log("Ignorado permission_prompt (manejado por permission-approver.js)");
-        return;
+        const approverPidFile = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-active.pid");
+        try {
+            if (fs.existsSync(approverPidFile)) {
+                const pidData = JSON.parse(fs.readFileSync(approverPidFile, "utf8"));
+                try {
+                    process.kill(pidData.pid, 0); // Signal 0 = verificar si vive
+                    log("Ignorado permission_prompt: approver PID " + pidData.pid + " activo (Telegram buttons)");
+                    return;
+                } catch(e) {
+                    // Proceso muerto — approver crasheó, enviar notificación
+                    log("permission_prompt: approver PID " + pidData.pid + " muerto, enviando notificación");
+                }
+            } else {
+                // Sin PID file — el approver auto-aprobó o no corrió
+                // Verificar timestamp: si el approver auto-aprobó hace <10s, ignorar
+                const autoApproveFile = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-last-auto.json");
+                try {
+                    if (fs.existsSync(autoApproveFile)) {
+                        const autoData = JSON.parse(fs.readFileSync(autoApproveFile, "utf8"));
+                        const age = Date.now() - new Date(autoData.timestamp).getTime();
+                        if (age < 10000) {
+                            log("Ignorado permission_prompt: auto-aprobado hace " + Math.round(age/1000) + "s");
+                            return;
+                        }
+                    }
+                } catch(e) {}
+                // No auto-approve reciente — el approver no corrió, enviar notificación
+                log("permission_prompt: sin approver activo ni auto-approve reciente, enviando notificación");
+            }
+        } catch(e) {
+            log("permission_prompt: error verificando approver (" + e.message + "), enviando notificación");
+        }
     }
 
     // Clasificar urgencia y tipo de notificación
