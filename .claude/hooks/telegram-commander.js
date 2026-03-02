@@ -1329,9 +1329,31 @@ async function sendResult(label, result) {
 
     if (result.code !== 0) {
         output = "❌ <b>Error</b> (exit code " + result.code + ")\n\n";
+        // Extraer mensaje útil del error
+        let errorDetail = "";
         if (result.stderr) {
-            output += "<pre>" + escHtml(result.stderr.substring(0, 3000)) + "</pre>";
+            errorDetail = result.stderr.substring(0, 2000);
         }
+        if (!errorDetail && result.stdout) {
+            // Intentar extraer error del JSON de claude
+            try {
+                const json = JSON.parse(result.stdout);
+                const text = json.result || json.text || json.content || "";
+                if (text) errorDetail = text.substring(0, 2000);
+            } catch {
+                // Detectar errores de API comunes
+                if (result.stdout.includes("API Error: 403") || result.stdout.includes("Cloudflare")) {
+                    errorDetail = "API temporalmente no disponible (Cloudflare 403). Reintentar en unos minutos.";
+                } else if (result.stdout.includes("API Error")) {
+                    const m = result.stdout.match(/API Error: \d+/);
+                    errorDetail = m ? m[0] + " — reintentar en unos minutos" : result.stdout.substring(0, 500);
+                } else {
+                    errorDetail = result.stdout.substring(0, 500);
+                }
+            }
+        }
+        if (errorDetail) output += "<pre>" + escHtml(errorDetail) + "</pre>";
+        else output += "<i>Sin detalle de error disponible</i>";
         await sendLongMessage(output);
         return;
     }

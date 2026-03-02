@@ -21,6 +21,15 @@ const SESSIONS_DIR = path.join(CLAUDE_DIR, "sessions");
 const LOG_FILE = path.join(CLAUDE_DIR, "activity-log.jsonl");
 const PID_FILE = path.join(CLAUDE_DIR, "tmp", "dashboard-server.pid");
 const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
+const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
+
+// Logging a archivo (detached processes no tienen stdio)
+const _origLog = console.log;
+console.log = function() {
+  const msg = Array.prototype.join.call(arguments, " ");
+  _origLog.apply(console, arguments);
+  try { fs.appendFileSync(SERVER_LOG_FILE, "[" + new Date().toISOString() + "] " + msg + "\n"); } catch {}
+};
 
 const DEFAULT_PORT = 3100;
 const SSE_INTERVAL_MS = 5000;
@@ -888,7 +897,10 @@ const TG_CONFIG = (() => {
 const REPORT_INTERVAL_MIN = parseInt(TG_CONFIG.task_report_interval_min, 10) || 10;
 
 function sendTelegramText(text, silent) {
-  if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) return;
+  if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) {
+    console.log("[heartbeat] Sin config Telegram, ignorando");
+    return;
+  }
   const https = require("https");
   const params = JSON.stringify({
     chat_id: TG_CONFIG.chat_id, text, parse_mode: "HTML",
@@ -899,26 +911,40 @@ function sendTelegramText(text, silent) {
     path: "/bot" + TG_CONFIG.bot_token + "/sendMessage",
     method: "POST",
     headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(params) },
-    timeout: 5000
-  }, () => {});
-  req.on("error", () => {});
+    timeout: 10000
+  }, (res) => {
+    let body = "";
+    res.on("data", (c) => body += c);
+    res.on("end", () => {
+      try {
+        const r = JSON.parse(body);
+        if (r.ok) console.log("[heartbeat] Telegram OK msg_id=" + r.result.message_id);
+        else console.log("[heartbeat] Telegram error: " + body.substring(0, 200));
+      } catch { console.log("[heartbeat] Telegram respuesta no-JSON: " + body.substring(0, 200)); }
+    });
+  });
+  req.on("error", (e) => console.log("[heartbeat] Telegram req error: " + e.message));
   req.write(params);
   req.end();
 }
 
 function sendHeartbeat() {
   try {
+    console.log("[heartbeat] Generando heartbeat...");
     const data = collectData();
-    if (data.activeSessions === 0 && data.idleSessions === 0) return; // No reportar si no hay nadie
+    console.log("[heartbeat] Sessions: active=" + data.activeSessions + " idle=" + data.idleSessions);
+    // Siempre enviar si el server está corriendo (aunque no haya sesiones activas)
     const text = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n\n" +
       "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
       "\u25cf Tareas: <b>" + data.completedTasks + "/" + data.totalTasks + "</b> completadas\n" +
       "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
       "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
       (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "") +
-      "\n\ud83c\udf10 http://localhost:" + PORT;
-    sendTelegramText(text, true); // Silencioso
-  } catch {}
+      "\n\ud83d\udcbb " + new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+    sendTelegramText(text, false); // NO silencioso para poder verificar que llega
+  } catch (e) {
+    console.log("[heartbeat] Error: " + e.message);
+  }
 }
 
 // --- Start server ---
@@ -934,10 +960,14 @@ server.listen(PORT, () => {
   // Auto-stop check every 5 min
   setInterval(checkAutoStop, 5 * 60 * 1000);
 
-  // Telegram heartbeat every N min (solo si hay sesiones activas)
+  // Telegram heartbeat every N min
   if (TG_CONFIG.bot_token && REPORT_INTERVAL_MIN > 0) {
     console.log("[dashboard-server] Heartbeat Telegram cada " + REPORT_INTERVAL_MIN + " min");
+    // Primer heartbeat inmediato (con delay de 5s para que collectData tenga datos)
+    setTimeout(sendHeartbeat, 5000);
     setInterval(sendHeartbeat, REPORT_INTERVAL_MIN * 60 * 1000);
+  } else {
+    console.log("[dashboard-server] Heartbeat desactivado (bot_token=" + !!TG_CONFIG.bot_token + " interval=" + REPORT_INTERVAL_MIN + ")");
   }
 });
 
