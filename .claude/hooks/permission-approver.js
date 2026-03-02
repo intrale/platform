@@ -361,6 +361,9 @@ async function processInput() {
     // Fast-path: auto-aprobar si ya está cubierto por reglas existentes
     if (isCommandCoveredByRules(toolName, toolInput)) {
         log("AUTO-APPROVE: tool=" + toolName + " cubierto por settings rules");
+        // Escribir marker para que notify-telegram.js sepa que fue auto-aprobado
+        const autoApproveFile = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-last-auto.json");
+        try { fs.writeFileSync(autoApproveFile, JSON.stringify({ timestamp: new Date().toISOString(), tool: toolName })); } catch(e) {}
         const response = {
             hookSpecificOutput: {
                 hookEventName: "PermissionRequest",
