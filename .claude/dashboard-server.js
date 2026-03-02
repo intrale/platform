@@ -880,6 +880,47 @@ function cleanup() {
   if (puppeteerBrowser) { try { puppeteerBrowser.close(); } catch {} }
 }
 
+// --- Telegram Heartbeat Reporter (integrado en el server) ---
+const TG_CONFIG = (() => {
+  try { return JSON.parse(fs.readFileSync(TG_CONFIG_FILE, "utf8")); }
+  catch { return { bot_token: "", chat_id: "", task_report_interval_min: 10 }; }
+})();
+const REPORT_INTERVAL_MIN = parseInt(TG_CONFIG.task_report_interval_min, 10) || 10;
+
+function sendTelegramText(text, silent) {
+  if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) return;
+  const https = require("https");
+  const params = JSON.stringify({
+    chat_id: TG_CONFIG.chat_id, text, parse_mode: "HTML",
+    disable_web_page_preview: true, disable_notification: !!silent
+  });
+  const req = https.request({
+    hostname: "api.telegram.org",
+    path: "/bot" + TG_CONFIG.bot_token + "/sendMessage",
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(params) },
+    timeout: 5000
+  }, () => {});
+  req.on("error", () => {});
+  req.write(params);
+  req.end();
+}
+
+function sendHeartbeat() {
+  try {
+    const data = collectData();
+    if (data.activeSessions === 0 && data.idleSessions === 0) return; // No reportar si no hay nadie
+    const text = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n\n" +
+      "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
+      "\u25cf Tareas: <b>" + data.completedTasks + "/" + data.totalTasks + "</b> completadas\n" +
+      "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
+      "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
+      (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "") +
+      "\n\ud83c\udf10 http://localhost:" + PORT;
+    sendTelegramText(text, true); // Silencioso
+  } catch {}
+}
+
 // --- Start server ---
 const server = http.createServer(handleRequest);
 
@@ -892,6 +933,12 @@ server.listen(PORT, () => {
 
   // Auto-stop check every 5 min
   setInterval(checkAutoStop, 5 * 60 * 1000);
+
+  // Telegram heartbeat every N min (solo si hay sesiones activas)
+  if (TG_CONFIG.bot_token && REPORT_INTERVAL_MIN > 0) {
+    console.log("[dashboard-server] Heartbeat Telegram cada " + REPORT_INTERVAL_MIN + " min");
+    setInterval(sendHeartbeat, REPORT_INTERVAL_MIN * 60 * 1000);
+  }
 });
 
 server.on("error", (err) => {

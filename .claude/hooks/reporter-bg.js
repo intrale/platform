@@ -53,10 +53,25 @@ function isDashboardServerRunning() {
   return false;
 }
 
+// Verificar si el dashboard responde via HTTP (más fiable que PID file)
+function isDashboardServerReachable() {
+  try {
+    const { execSync } = require("child_process");
+    execSync("node -e \"const r=require('http').get('http://localhost:" + DASHBOARD_PORT + "/health',{timeout:2000},s=>{process.exit(s.statusCode===200?0:1)});r.on('error',()=>process.exit(1))\"", { timeout: 4000, windowsHide: true, stdio: "ignore" });
+    return true;
+  } catch { return false; }
+}
+
 // Arrancar dashboard-server.js si no está corriendo
 function ensureDashboardServer() {
+  // 1. Check PID file
   if (isDashboardServerRunning()) {
-    debugLog("Dashboard server ya corriendo");
+    debugLog("Dashboard server ya corriendo (PID)");
+    return;
+  }
+  // 2. Check HTTP health (cubre caso de server sin PID file)
+  if (isDashboardServerReachable()) {
+    debugLog("Dashboard server ya corriendo (HTTP health OK)");
     return;
   }
 
@@ -72,6 +87,7 @@ function ensureDashboardServer() {
     windowsHide: true,
     cwd: path.dirname(script),
   });
+  child.on("error", () => {}); // No crashear si spawn falla
   child.unref();
   debugLog("Iniciado dashboard server PID " + child.pid);
 }

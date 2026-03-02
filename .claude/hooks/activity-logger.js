@@ -151,51 +151,15 @@ const REPORTER_INTERVAL = (() => {
     } catch(e) { return 5; }
 })();
 
+// El heartbeat de Telegram ahora está integrado en dashboard-server.js.
+// Este hook solo necesita asegurar que el dashboard server esté corriendo.
 function ensureReporterRunning() {
-    try {
-        // 1. Intentar arrancar dashboard-server.js (web server) si no está corriendo
-        ensureDashboardServerRunning();
-
-        // 2. Verificar si ya hay un reporter corriendo
-        if (fs.existsSync(REPORTER_PID_FILE)) {
-            const pid = parseInt(fs.readFileSync(REPORTER_PID_FILE, "utf8").trim(), 10);
-            if (!isNaN(pid)) {
-                try { process.kill(pid, 0); return; } catch(e) { /* PID muerto, reiniciar */ }
-            }
-        }
-
-        // 3. Iniciar reporter-bg.js en background (el reporter gestiona heartbeats a Telegram)
-        const reporterBg = path.join(REPO_ROOT, ".claude", "hooks", "reporter-bg.js");
-        if (fs.existsSync(reporterBg)) {
-            const { spawn } = require("child_process");
-            const child = spawn(process.execPath, [reporterBg, "start", String(REPORTER_INTERVAL)], {
-                detached: true,
-                stdio: "ignore",
-                windowsHide: true,
-                cwd: REPO_ROOT,
-            });
-            child.unref();
-            return;
-        }
-
-        // Fallback: intentar dashboard.js legacy si reporter-bg.js no existe
-        const dashboardLegacy = path.join(REPO_ROOT, ".claude", "dashboard.js");
-        if (fs.existsSync(dashboardLegacy)) {
-            const { spawn } = require("child_process");
-            const child = spawn(process.execPath, [dashboardLegacy, "--headless", "--report", String(REPORTER_INTERVAL)], {
-                detached: true,
-                stdio: "ignore",
-                windowsHide: true,
-                cwd: REPO_ROOT,
-            });
-            child.unref();
-        }
-    } catch(e) { /* no bloquear hook */ }
+    ensureDashboardServerRunning();
 }
 
 function ensureDashboardServerRunning() {
     try {
-        // Verificar PID file del dashboard web server
+        // 1. Verificar PID file del dashboard web server
         if (fs.existsSync(DASHBOARD_SERVER_PID_FILE)) {
             const pid = parseInt(fs.readFileSync(DASHBOARD_SERVER_PID_FILE, "utf8").trim(), 10);
             if (!isNaN(pid)) {
@@ -203,7 +167,13 @@ function ensureDashboardServerRunning() {
             }
         }
 
-        // Arrancar dashboard-server.js
+        // 2. HTTP health check (cubre server sin PID file)
+        try {
+            execSync('node -e "const r=require(\'http\').get(\'http://localhost:3100/health\',{timeout:2000},s=>{process.exit(s.statusCode===200?0:1)});r.on(\'error\',()=>process.exit(1))"', { timeout: 4000, windowsHide: true, stdio: "ignore" });
+            return; // Server responde, no arrancar otro
+        } catch(e) { /* server no responde, arrancar */ }
+
+        // 3. Arrancar dashboard-server.js
         const dashboardServer = path.join(REPO_ROOT, ".claude", "dashboard-server.js");
         if (!fs.existsSync(dashboardServer)) return;
 
@@ -214,6 +184,7 @@ function ensureDashboardServerRunning() {
             windowsHide: true,
             cwd: path.dirname(dashboardServer),
         });
+        child.on("error", () => {});
         child.unref();
     } catch(e) { /* no bloquear hook */ }
 }
