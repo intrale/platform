@@ -85,7 +85,7 @@ function resolveQuestion(id, status, via, actionResult) {
 }
 
 /**
- * Obtener preguntas pendientes (no respondidas ni expiradas).
+ * Obtener preguntas pendientes (no respondidas ni expiradas ni canceladas).
  * @returns {Array} preguntas pendientes
  */
 function getPendingQuestions() {

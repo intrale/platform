@@ -80,7 +80,9 @@
       "Bash(cmd.exe:*)",
       "WebFetch(domain:developers.cloudflare.com)",
       "Skill(ux)",
-      "Skill(scrum)"
+      "Skill(scrum)",
+      "Bash(python3:*)",
+      "Bash(read line:*)"
     ],
     "deny": [
       "Bash(git push --force*)",

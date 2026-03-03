@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Propuesta: Paralelización de Evidencia QA — Intrale Platform</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1a1a2e; background: #f8f9fa; }
+
+  .cover { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: white; padding: 60px 50px; min-height: 200px; page-break-after: always; }
+  .cover h1 { font-size: 32px; font-weight: 700; margin-bottom: 12px; }
+  .cover h2 { font-size: 18px; font-weight: 300; opacity: 0.85; margin-bottom: 30px; }
+  .cover-meta { display: flex; gap: 40px; margin-top: 30px; }
+  .cover-meta-item { font-size: 12px; opacity: 0.75; }
+  .cover-meta-item strong { display: block; font-size: 14px; opacity: 1; margin-bottom: 4px; }
+  .badge { display: inline-block; background: #e94560; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-bottom: 16px; }
+
+  .container { max-width: 900px; margin: 0 auto; padding: 30px 40px; }
+
+  h1 { font-size: 26px; color: #0f3460; border-bottom: 3px solid #e94560; padding-bottom: 10px; margin: 40px 0 20px; }
+  h2 { font-size: 20px; color: #16213e; margin: 30px 0 14px; border-left: 4px solid #e94560; padding-left: 12px; }
+  h3 { font-size: 16px; color: #0f3460; margin: 20px 0 10px; }
+  h4 { font-size: 14px; color: #16213e; margin: 14px 0 8px; font-weight: 600; }
+
+  p { margin-bottom: 12px; }
+
+  .executive-summary { background: white; border-left: 5px solid #0f3460; padding: 20px 24px; border-radius: 0 8px 8px 0; margin: 20px 0 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .executive-summary p { font-size: 15px; }
+
+  .problem-box { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+  .problem-box .problem-title { font-weight: 700; color: #856404; margin-bottom: 8px; }
+
+  .solution-card { background: white; border-radius: 10px; box-shadow: 0 3px 12px rgba(0,0,0,0.1); margin: 20px 0; overflow: hidden; }
+  .solution-card .card-header { padding: 16px 24px; color: white; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; }
+  .solution-card .card-header.recommended { background: linear-gradient(135deg, #1a7a4a, #2ea865); }
+  .solution-card .card-header.viable { background: linear-gradient(135deg, #1565c0, #1e88e5); }
+  .solution-card .card-header.partial { background: linear-gradient(135deg, #e65100, #f57c00); }
+  .solution-card .card-header.not-viable { background: linear-gradient(135deg, #b71c1c, #e53935); }
+  .solution-card .card-body { padding: 20px 24px; }
+
+  .badge-pill { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .badge-recommended { background: #d4edda; color: #155724; }
+  .badge-viable { background: #d1ecf1; color: #0c5460; }
+  .badge-partial { background: #fff3cd; color: #856404; }
+  .badge-not-viable { background: #f8d7da; color: #721c24; }
+  .badge-effort-low { background: #d4edda; color: #155724; }
+  .badge-effort-med { background: #fff3cd; color: #856404; }
+  .badge-effort-high { background: #f8d7da; color: #721c24; }
+
+  .pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+  .pros { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 6px; padding: 12px 16px; }
+  .cons { background: #fff5f5; border: 1px solid #feb2b2; border-radius: 6px; padding: 12px 16px; }
+  .pros h4, .cons h4 { margin-top: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .pros h4 { color: #276749; }
+  .cons h4 { color: #9b2c2c; }
+  .pros ul, .cons ul { padding-left: 18px; margin: 0; font-size: 13px; }
+  .pros li, .cons li { margin-bottom: 4px; }
+
+  .comparison-table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 13px; }
+  .comparison-table th { background: #16213e; color: white; padding: 10px 14px; text-align: left; font-weight: 600; }
+  .comparison-table td { padding: 10px 14px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  .comparison-table tr:nth-child(even) { background: #f8f9fa; }
+  .comparison-table tr:hover { background: #eef2ff; }
+  .comparison-table .highlight { background: #e8f5e9 !important; font-weight: 600; }
+
+  .metric { display: inline-flex; align-items: center; gap: 6px; background: #f0f4ff; border: 1px solid #c7d2fe; border-radius: 6px; padding: 6px 12px; margin: 4px; font-size: 13px; }
+  .metric-value { font-weight: 700; color: #4338ca; }
+
+  .mermaid { background: white; border-radius: 8px; padding: 24px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.06); overflow-x: auto; }
+
+  .timeline { margin: 20px 0; }
+  .timeline-item { display: flex; gap: 16px; margin-bottom: 16px; }
+  .timeline-dot { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 14px; }
+  .timeline-dot.phase1 { background: #1565c0; }
+  .timeline-dot.phase2 { background: #2e7d32; }
+  .timeline-dot.phase3 { background: #6a1b9a; }
+  .timeline-content { flex: 1; }
+  .timeline-content h4 { margin-top: 0; color: #1a1a2e; }
+  .timeline-content p { font-size: 13px; color: #444; margin: 0; }
+
+  .cost-box { background: white; border-radius: 8px; padding: 16px 20px; margin: 12px 0; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+  .cost-box .cost-title { font-weight: 700; color: #0f3460; font-size: 15px; margin-bottom: 8px; }
+  .cost-box .cost-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+  .cost-box .cost-row:last-child { border-bottom: none; font-weight: 700; }
+
+  .callout { border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+  .callout.info { background: #e8f4fd; border-left: 4px solid #3498db; }
+  .callout.warning { background: #fef9e7; border-left: 4px solid #f39c12; }
+  .callout.success { background: #e9f7ef; border-left: 4px solid #27ae60; }
+  .callout.danger { background: #fdecea; border-left: 4px solid #e74c3c; }
+  .callout strong { display: block; margin-bottom: 6px; }
+
+  .code-block { background: #1e1e2e; color: #cdd6f4; border-radius: 8px; padding: 16px 20px; font-family: 'Consolas', monospace; font-size: 12px; overflow-x: auto; margin: 12px 0; }
+  .code-block .comment { color: #6c7086; }
+  .code-block .command { color: #89b4fa; }
+  .code-block .string { color: #a6e3a1; }
+
+  .decision-matrix { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 12px; }
+  .decision-matrix th { background: #0f3460; color: white; padding: 8px 12px; text-align: center; font-weight: 600; }
+  .decision-matrix td { padding: 8px 12px; border: 1px solid #e2e8f0; text-align: center; }
+  .decision-matrix .label-col { text-align: left; font-weight: 600; }
+  .score-5 { background: #d4edda; color: #155724; font-weight: 700; }
+  .score-4 { background: #d1ecf1; color: #0c5460; font-weight: 600; }
+  .score-3 { background: #fff3cd; color: #856404; }
+  .score-2 { background: #fde8d8; color: #8b3900; }
+  .score-1 { background: #f8d7da; color: #721c24; }
+
+  .recommendation-box { background: linear-gradient(135deg, #0f3460, #16213e); color: white; border-radius: 12px; padding: 28px 32px; margin: 30px 0; }
+  .recommendation-box h2 { color: white; border-left: 4px solid #e94560; padding-left: 12px; margin: 0 0 16px; }
+  .recommendation-box p { opacity: 0.9; }
+  .recommendation-box .rec-items { margin: 16px 0; }
+  .recommendation-box .rec-item { display: flex; gap: 12px; margin-bottom: 12px; align-items: flex-start; }
+  .recommendation-box .rec-num { background: #e94560; color: white; border-radius: 50%; width: 24px; height: 24px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-top: 2px; }
+  .recommendation-box .rec-text { font-size: 14px; }
+  .recommendation-box .rec-text strong { display: block; margin-bottom: 2px; }
+
+  @media print {
+    body { background: white; }
+    .container { padding: 20px; }
+    .cover { page-break-after: always; }
+    h1 { page-break-before: auto; }
+  }
+
+  footer { text-align: center; padding: 30px; color: #888; font-size: 12px; border-top: 1px solid #e2e8f0; margin-top: 40px; }
+</style>
+</head>
+<body>
+
+<!-- PORTADA -->
+<div class="cover">
+  <div class="badge">PROPUESTA TÉCNICA · CONFIDENCIAL</div>
+  <h1>Paralelización de Evidencia QA</h1>
+  <h2>Propuesta de arquitectura para acelerar la validación multiplataforma con video evidence</h2>
+  <div class="cover-meta">
+    <div class="cover-meta-item"><strong>Proyecto</strong>Intrale Platform</div>
+    <div class="cover-meta-item"><strong>Fecha</strong>Marzo 2026</div>
+    <div class="cover-meta-item"><strong>Versión</strong>v1.0</div>
+    <div class="cover-meta-item"><strong>Tipo</strong>Investigación técnica · ADR</div>
+    <div class="cover-meta-item"><strong>Estado actual</strong>Secuencial (1 emulador local)</div>
+  </div>
+</div>
+
+<!-- CONTENIDO -->
+<div class="container">
+
+<h1>1. Resumen Ejecutivo</h1>
+
+<div class="executive-summary">
+  <p>Actualmente el proceso de evidencia QA es <strong>100% secuencial</strong>: un emulador Android local (AVD virtualAndroid, API 35), un script <code>qa-android.sh</code>, y grabación con <code>screenrecord</code>. Esto significa que validar 3 issues con 3 flows cada uno tarda ~30 minutos en ejecución serial.</p>
+  <p>Esta investigación evaluó 6 estrategias para paralelizar el proceso. La <strong>solución recomendada a corto plazo</strong> es <strong>Maestro Shards con múltiples AVDs locales</strong> (esfuerzo bajo, impacto inmediato, sin cambio de infraestructura). A mediano plazo, integrar <strong>GitHub Actions con matrix strategy</strong> (esfuerzo medio, escalabilidad ilimitada).</p>
+</div>
+
+<div class="problem-box">
+  <div class="problem-title">⚠️ Problema actual</div>
+  <p>Con el plan de QA compliance (16 issues, ~48 flows de Maestro), el tiempo total en modo secuencial es <strong>~8 horas</strong> de grabación continua en un solo emulador. Esto bloquea el ciclo de entrega.</p>
+</div>
+
+<div style="display: flex; gap: 16px; flex-wrap: wrap; margin: 20px 0;">
+  <div class="metric"><span>Issues QA pendientes</span><span class="metric-value">16</span></div>
+  <div class="metric"><span>Flows estimados</span><span class="metric-value">~48</span></div>
+  <div class="metric"><span>Tiempo secuencial</span><span class="metric-value">~8h</span></div>
+  <div class="metric"><span>Tiempo con 3 AVDs</span><span class="metric-value">~2.5h</span></div>
+  <div class="metric"><span>Tiempo con CI/CD</span><span class="metric-value">~45min</span></div>
+</div>
+
+
+<h1>2. Opciones Evaluadas</h1>
+
+<!-- OPCIÓN 1: RECOMENDADA -->
+<div class="solution-card">
+  <div class="card-header recommended">
+    ★ OPCIÓN RECOMENDADA — Maestro Shards con múltiples AVDs locales
+    <span class="badge-pill badge-effort-low" style="margin-left: auto; background: rgba(255,255,255,0.25); color: white;">ESFUERZO BAJO</span>
+  </div>
+  <div class="card-body">
+    <p><span class="badge-pill badge-recommended">Recomendado</span> Usar <code>maestro test --shards N</code> (disponible desde Maestro v1.37.0) con múltiples AVDs corriendo simultáneamente en la misma máquina Windows. Maestro distribuye los flows automáticamente entre los AVDs disponibles.</p>
+
+    <h4>¿Cómo funciona?</h4>
+    <p>Maestro detecta todos los dispositivos/emuladores conectados vía <code>adb devices</code> y distribuye los flows en paralelo cuando se usa <code>--shards N</code>. Cada shard corre en un emulador diferente.</p>
+
+    <div class="code-block">
+      <div class="comment"># Arrancar 3 AVDs simultáneamente</div>
+      <div class="command">$EMULATOR -avd virtualAndroid -no-window -gpu auto -port 5554 &</div>
+      <div class="command">$EMULATOR -avd virtualAndroid2 -no-window -gpu auto -port 5556 &</div>
+      <div class="command">$EMULATOR -avd virtualAndroid3 -no-window -gpu auto -port 5558 &</div>
+      <br>
+      <div class="comment"># Ejecutar todos los flows distribuidos en 3 shards</div>
+      <div class="command">maestro test qa/generated/maestro/ --shards 3 \</div>
+      <div class="command">  --format junit --output qa/recordings/results.xml</div>
+    </div>
+
+    <h4>Requisito de hardware</h4>
+    <p>Cada AVD consume ~2GB RAM + ~15% CPU. Para 3 AVDs: ~6GB RAM + ~45% CPU. La máquina actual (Windows 11 Pro) debería soportarlo si tiene ≥16GB RAM.</p>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✓ Ventajas</h4>
+        <ul>
+          <li>Cero cambio de infraestructura</li>
+          <li>Maestro soportado nativamente</li>
+          <li>3x más rápido con 3 AVDs</li>
+          <li>Funciona hoy mismo (crear 2 AVDs extra)</li>
+          <li>Snapshots por AVD = boot rápido</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>✗ Limitaciones</h4>
+        <ul>
+          <li>Limitado por RAM/CPU del host</li>
+          <li>Los videos de shards requieren lógica custom</li>
+          <li>Máximo ~4 AVDs simultáneos prácticos</li>
+          <li>No escala fuera de la máquina local</li>
+        </ul>
+      </div>
+    </div>
+
+    <h4>Pasos de implementación</h4>
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="timeline-dot phase1">1</div>
+        <div class="timeline-content">
+          <h4>Crear 2 AVDs adicionales (30 min)</h4>
+          <p>Clonar virtualAndroid como virtualAndroid2 y virtualAndroid3. Crear snapshots <code>qa-ready</code> en cada uno.</p>
+        </div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-dot phase1">2</div>
+        <div class="timeline-content">
+          <h4>Modificar qa-android.sh (2h)</h4>
+          <p>Agregar soporte para arrancar múltiples AVDs en paralelo y pasar <code>--shards</code> a Maestro. Lógica de screenrecord por shard.</p>
+        </div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-dot phase1">3</div>
+        <div class="timeline-content">
+          <h4>Validar con 3 flows (1h)</h4>
+          <p>Ejecutar el suite de login/recovery/2FA en modo paralelo. Verificar que los videos se generan correctamente.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- OPCIÓN 2: GITHUB ACTIONS -->
+<div class="solution-card">
+  <div class="card-header viable">
+    OPCIÓN 2 — GitHub Actions con matrix strategy (Mediano plazo)
+    <span class="badge-pill" style="margin-left: auto; background: rgba(255,255,255,0.25); color: white;">ESFUERZO MEDIO</span>
+  </div>
+  <div class="card-body">
+    <p><span class="badge-pill badge-viable">Viable</span> Usar GitHub Actions con <code>strategy.matrix</code> para ejecutar múltiples jobs de QA en paralelo en runners. Cada job corre un subset de flows en un emulador Android en CI.</p>
+
+    <div class="code-block">
+      <div class="comment"># .github/workflows/qa-parallel.yml (fragmento)</div>
+      <div class="command">strategy:</div>
+      <div class="command">  matrix:</div>
+      <div class="command">    issue: [1112, 1113, 1114, 1115]</div>
+      <div class="command">jobs:</div>
+      <div class="command">  qa-validate:</div>
+      <div class="command">    runs-on: ubuntu-latest  # Con KVM habilitado</div>
+      <div class="command">    steps:</div>
+      <div class="command">      - uses: reactivecircus/android-emulator-runner@v2</div>
+      <div class="command">        with:</div>
+      <div class="command">          api-level: 34  <span class="comment"># API 34 max en GitHub Actions</span></div>
+      <div class="command">          script: bash qa/scripts/qa-validate.sh ${{ "{{" }} matrix.issue {{ "}}" }}</div>
+    </div>
+
+    <div class="callout warning">
+      <strong>⚠️ Limitación crítica: Android 15 (API 35)</strong>
+      El AVD actual es API 35. GitHub Actions <code>ubuntu-latest</code> soporta hasta API 34 con <code>android-emulator-runner</code>. Para API 35 se requiere runner con KVM y configuración manual (más complejo).
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✓ Ventajas</h4>
+        <ul>
+          <li>Escala sin límite de hardware local</li>
+          <li>Ejecución automática en push/PR</li>
+          <li>GitHub almacena artifacts (videos, XML)</li>
+          <li>N issues en paralelo gratis en repos públicos</li>
+          <li>Integración nativa con el repo actual</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>✗ Limitaciones</h4>
+        <ul>
+          <li>API 34 máximo (nuestro AVD es API 35)</li>
+          <li>Sin KVM en Linux runners: emulador lento</li>
+          <li>Requiere reescribir qa-validate.sh para CI</li>
+          <li>Tiempo de setup del runner: ~5-8 min por job</li>
+          <li>Minutos de Actions: repo privado = costo</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- OPCIÓN 3: DOCKER ANDROID -->
+<div class="solution-card">
+  <div class="card-header partial">
+    OPCIÓN 3 — Docker con Android Emulator (Limitado)
+    <span class="badge-pill" style="margin-left: auto; background: rgba(255,255,255,0.25); color: white;">ESFUERZO ALTO</span>
+  </div>
+  <div class="card-body">
+    <p><span class="badge-pill badge-partial">Parcialmente viable</span> Usar <a href="https://github.com/budtmo/docker-android">budtmo/docker-android</a> para correr emuladores Android en contenedores Docker. Soporta hasta <strong>API 34</strong> en versión open source. API 35 requiere licencia Pro.</p>
+
+    <div class="callout danger">
+      <strong>🚫 Bloqueante para el proyecto actual</strong>
+      El AVD de producción es Android 15 (API 35). budtmo/docker-android open source soporta hasta API 34. <strong>No es compatible directamente</strong>. Se podría bajar a API 34 para las pruebas, pero existe riesgo de divergencia de comportamiento UI.
+    </div>
+
+    <h4>Requisitos de hardware</h4>
+    <p>Requiere <strong>KVM habilitado en el host</strong>. En Windows, esto significa ejecutar Docker dentro de WSL2 con KVM anidado, lo cual no siempre está disponible en máquinas virtuales o cloud.</p>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✓ Ventajas (si se resuelve API 35)</h4>
+        <ul>
+          <li>Aislamiento completo por container</li>
+          <li>Reproducibilidad garantizada</li>
+          <li>Fácil de escalar horizontalmente</li>
+          <li>Funciona bien en CI/CD Linux</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>✗ Limitaciones actuales</h4>
+        <ul>
+          <li>API 35 no soportado en open source</li>
+          <li>Requiere KVM (no siempre disponible)</li>
+          <li>En Windows: Docker + WSL2 + KVM anidado</li>
+          <li>Overhead de configuración alto</li>
+          <li>screenrecord dentro de container: complejo</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- OPCIÓN 4: iOS SIMULATOR -->
+<div class="solution-card">
+  <div class="card-header not-viable">
+    OPCIÓN 4 — iOS Simulator en Docker
+  </div>
+  <div class="card-body">
+    <p><span class="badge-pill badge-not-viable">NO VIABLE</span> No existe ninguna forma legalmente soportada de correr el simulador de iOS en Docker o en hardware que no sea macOS con Xcode instalado. Apple no ofrece imágenes Docker y el simulador requiere el runtime de Xcode.</p>
+
+    <div class="callout info">
+      <strong>Alternativa para iOS</strong>
+      Para CI/CD de iOS se usa macOS runners de GitHub Actions (<code>macos-14</code> con Apple Silicon). Costo: 10x el precio de runners Linux. Para el proyecto Intrale, esto está fuera de scope actual ya que las pruebas Maestro se enfocan en Android.
+    </div>
+  </div>
+</div>
+
+
+<!-- OPCIÓN 5: CLOUD TESTING -->
+<div class="solution-card">
+  <div class="card-header viable">
+    OPCIÓN 5 — Cloud Testing Services (Firebase Test Lab / BrowserStack)
+  </div>
+  <div class="card-body">
+    <p><span class="badge-pill badge-viable">Viable a largo plazo</span> Servicios como Firebase Test Lab, BrowserStack App Automate, o Sauce Labs permiten ejecutar tests Maestro (o Espresso/XCUITest) contra dispositivos reales en la nube, con video recording incluido.</p>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Servicio</th>
+          <th>Maestro</th>
+          <th>Video</th>
+          <th>API 35</th>
+          <th>Costo estimado</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Firebase Test Lab</strong></td>
+          <td>No nativo (usa Robo/Espresso)</td>
+          <td>Sí</td>
+          <td>Sí</td>
+          <td>~$1-5/test</td>
+        </tr>
+        <tr>
+          <td><strong>BrowserStack App Automate</strong></td>
+          <td>Sí (soporte experimental)</td>
+          <td>Sí</td>
+          <td>Sí</td>
+          <td>~$400/mes (unlimited)</td>
+        </tr>
+        <tr>
+          <td><strong>Sauce Labs</strong></td>
+          <td>No directo (convertir a WebDriver)</td>
+          <td>Sí</td>
+          <td>Sí</td>
+          <td>~$500/mes</td>
+        </tr>
+        <tr class="highlight">
+          <td><strong>Maestro Cloud</strong></td>
+          <td>Sí (nativo)</td>
+          <td>Sí</td>
+          <td>Sí</td>
+          <td>~$200/mes (100 runs)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout success">
+      <strong>💡 Maestro Cloud — la opción más directa</strong>
+      <a href="https://cloud.mobile.dev">Maestro Cloud</a> ejecuta flows .yaml nativamente, con video recording automático y API para integración CI/CD. Es la plataforma SaaS oficial de Maestro. Ofrece tier gratuito limitado.
+    </div>
+  </div>
+</div>
+
+
+<!-- OPCIÓN 6: WEB/WASM -->
+<div class="solution-card">
+  <div class="card-header viable">
+    OPCIÓN 6 — Web/Wasm con Playwright en Docker
+  </div>
+  <div class="card-body">
+    <p><span class="badge-pill badge-viable">Viable</span> Para la versión Web (Wasm) de la app, Playwright corre perfectamente en Docker headless con <code>mcr.microsoft.com/playwright</code>. Esto ya está parcialmente implementado en el proyecto (QATestBase usa Playwright para tests API).</p>
+
+    <div class="code-block">
+      <div class="comment"># Playwright en Docker — ya funciona para tests API</div>
+      <div class="command">docker run --rm -v $(pwd):/app mcr.microsoft.com/playwright:v1.41.0-jammy \</div>
+      <div class="command">  npx playwright test --project=chromium</div>
+    </div>
+
+    <p>Para la versión Wasm, se necesitaría primero implementar el servidor de desarrollo Wasm y luego apuntar Playwright al <code>localhost</code> del container.</p>
+  </div>
+</div>
+
+
+<h1>3. Matriz de Decisión</h1>
+
+<table class="decision-matrix">
+  <thead>
+    <tr>
+      <th>Criterio</th>
+      <th>Peso</th>
+      <th>AVDs locales + Shards</th>
+      <th>GitHub Actions matrix</th>
+      <th>Docker Android</th>
+      <th>Maestro Cloud</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="label-col">Compatibilidad API 35</td>
+      <td>25%</td>
+      <td class="score-5">5 — Nativo</td>
+      <td class="score-3">3 — API 34 max</td>
+      <td class="score-2">2 — Requiere Pro</td>
+      <td class="score-5">5 — Soportado</td>
+    </tr>
+    <tr>
+      <td class="label-col">Esfuerzo de implementación</td>
+      <td>20%</td>
+      <td class="score-5">5 — Bajo</td>
+      <td class="score-3">3 — Medio</td>
+      <td class="score-1">1 — Alto</td>
+      <td class="score-4">4 — Bajo-medio</td>
+    </tr>
+    <tr>
+      <td class="label-col">Costo operativo</td>
+      <td>20%</td>
+      <td class="score-5">5 — $0</td>
+      <td class="score-4">4 — Gratis en público</td>
+      <td class="score-5">5 — $0</td>
+      <td class="score-2">2 — $200/mes</td>
+    </tr>
+    <tr>
+      <td class="label-col">Video recording</td>
+      <td>20%</td>
+      <td class="score-4">4 — Custom script</td>
+      <td class="score-3">3 — Artifacts</td>
+      <td class="score-3">3 — Complejo</td>
+      <td class="score-5">5 — Nativo</td>
+    </tr>
+    <tr>
+      <td class="label-col">Escalabilidad</td>
+      <td>15%</td>
+      <td class="score-3">3 — 4 AVDs máx</td>
+      <td class="score-5">5 — Ilimitado</td>
+      <td class="score-4">4 — Alta</td>
+      <td class="score-5">5 — Ilimitado</td>
+    </tr>
+    <tr style="font-weight: 700;">
+      <td class="label-col">SCORE PONDERADO</td>
+      <td>100%</td>
+      <td class="score-5">4.55</td>
+      <td class="score-4">3.65</td>
+      <td class="score-2">2.50</td>
+      <td class="score-4">4.10</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<h1>4. Arquitectura Propuesta</h1>
+
+<div class="mermaid">
+graph LR
+    A["/qa validate issue"] --> B{Tipo de app}
+    B -->|Android| C[Maestro Shards]
+    B -->|Web/Wasm| D[Playwright Docker]
+    B -->|Desktop JVM| E[Compose UI Test]
+
+    C --> C1[AVD virtualAndroid\nemulator-5554]
+    C --> C2[AVD virtualAndroid2\nemulator-5556]
+    C --> C3[AVD virtualAndroid3\nemulator-5558]
+
+    C1 --> V1[screenrecord ➜ mp4]
+    C2 --> V2[screenrecord ➜ mp4]
+    C3 --> V3[screenrecord ➜ mp4]
+
+    D --> W1[Chromium headless]
+    D --> W2[Firefox headless]
+
+    V1 --> R[qa/evidence/\nreporte + videos]
+    V2 --> R
+    V3 --> R
+    W1 --> R
+    W2 --> R
+    E --> R
+</div>
+
+<h2>4.1 Flujo de paralelización con AVDs</h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Script as qa-validate-parallel.sh
+    participant AVD1 as emulator-5554
+    participant AVD2 as emulator-5556
+    participant AVD3 as emulator-5558
+    participant M as Maestro (shards)
+
+    Script->>AVD1: Arrancar + boot snapshot
+    Script->>AVD2: Arrancar + boot snapshot
+    Script->>AVD3: Arrancar + boot snapshot
+    Script->>AVD1: Install APK
+    Script->>AVD2: Install APK
+    Script->>AVD3: Install APK
+    Script->>M: maestro test --shards 3
+    M->>AVD1: Flow: login-happy-path
+    M->>AVD2: Flow: login-invalid-creds
+    M->>AVD3: Flow: login-empty-fields
+    AVD1-->>Script: PASS + video
+    AVD2-->>Script: PASS + video
+    AVD3-->>Script: PASS + video
+    Script->>Script: Merge results + qa-report.json
+</div>
+
+
+<h1>5. Plan de Implementación</h1>
+
+<div class="timeline">
+  <div class="timeline-item">
+    <div class="timeline-dot phase1">1</div>
+    <div class="timeline-content">
+      <h4>Fase 1: Múltiples AVDs locales (Sprint actual — 4h)</h4>
+      <p>Crear <code>virtualAndroid2</code> y <code>virtualAndroid3</code> con los mismos specs que <code>virtualAndroid</code>. Crear snapshots <code>qa-ready</code>. Modificar <code>qa/scripts/qa-android.sh</code> para arrancar múltiples AVDs y usar <code>--shards N</code>. Validar con los 3 issues actuales (#1112, #1113, #1114).</p>
+    </div>
+  </div>
+  <div class="timeline-item">
+    <div class="timeline-dot phase2">2</div>
+    <div class="timeline-content">
+      <h4>Fase 2: Screenrecord por shard (Sprint +1 — 3h)</h4>
+      <p>Maestro <code>--shards</code> no captura screenrecord automáticamente. Implementar wrapper que para cada shard inicia <code>adb -s emulatorX shell screenrecord</code> en background y lo mata al terminar. Asociar videos al flow correspondiente.</p>
+    </div>
+  </div>
+  <div class="timeline-item">
+    <div class="timeline-dot phase3">3</div>
+    <div class="timeline-content">
+      <h4>Fase 3: GitHub Actions (Sprint +2 — 1 día)</h4>
+      <p>Crear workflow <code>.github/workflows/qa-parallel.yml</code> con matrix strategy por issue. Cada job usa <code>reactivecircus/android-emulator-runner@v2</code> con API 34. Storear videos como GitHub Actions artifacts. Trigger: push a branches <code>agent/*</code>.</p>
+    </div>
+  </div>
+</div>
+
+
+<h1>6. Costo-Beneficio</h1>
+
+<div class="cost-box">
+  <div class="cost-title">Costo de implementación estimado</div>
+  <div class="cost-row"><span>Fase 1: AVDs + qa-android.sh</span><span>~4h de desarrollo</span></div>
+  <div class="cost-row"><span>Fase 2: Screenrecord por shard</span><span>~3h de desarrollo</span></div>
+  <div class="cost-row"><span>Fase 3: GitHub Actions</span><span>~8h de desarrollo</span></div>
+  <div class="cost-row"><span>Hardware adicional (RAM)</span><span>$0 (ya disponible)</span></div>
+  <div class="cost-row"><span>TOTAL</span><span>~15h de desarrollo</span></div>
+</div>
+
+<div class="cost-box">
+  <div class="cost-title">Beneficio esperado</div>
+  <div class="cost-row"><span>Tiempo actual (16 issues, secuencial)</span><span>~8h por sprint QA</span></div>
+  <div class="cost-row"><span>Con Fase 1 (3 AVDs)</span><span>~2.5h por sprint QA</span></div>
+  <div class="cost-row"><span>Con Fase 3 (CI/CD parallel)</span><span>~45min por sprint QA</span></div>
+  <div class="cost-row"><span>Ahorro acumulado (10 sprints)</span><span>~75h de tiempo de QA</span></div>
+</div>
+
+
+<h1>7. Recomendación Final</h1>
+
+<div class="recommendation-box">
+  <h2>Plan de acción recomendado</h2>
+  <p>Implementar en 3 fases progresivas, comenzando por el impacto más inmediato con el menor esfuerzo:</p>
+  <div class="rec-items">
+    <div class="rec-item">
+      <div class="rec-num">1</div>
+      <div class="rec-text">
+        <strong>Esta semana: Crear 2 AVDs adicionales + activar Maestro --shards</strong>
+        Crear <code>virtualAndroid2</code> y <code>virtualAndroid3</code>. Modificar <code>qa-android.sh</code> para arrancar los 3 y pasar <code>--shards 3</code>. Resultado: 3x más rápido sin costo ni nueva infraestructura.
+      </div>
+    </div>
+    <div class="rec-item">
+      <div class="rec-num">2</div>
+      <div class="rec-text">
+        <strong>Próxima semana: Screenrecord paralelo</strong>
+        Wrapper de screenrecord por emulador/shard. Cada flow tiene su video identificado correctamente en <code>qa/evidence/{issue}/</code>.
+      </div>
+    </div>
+    <div class="rec-item">
+      <div class="rec-num">3</div>
+      <div class="rec-text">
+        <strong>A mediano plazo: GitHub Actions matrix strategy</strong>
+        Escalar a CI/CD con runners Linux + Android emulator. Esto elimina completamente la dependencia del hardware local para la validación QA.
+      </div>
+    </div>
+  </div>
+  <div class="callout info" style="margin-top: 16px; background: rgba(255,255,255,0.1); border-left-color: #89b4fa; color: white;">
+    <strong style="color: white;">Nota sobre iOS y Docker Android</strong>
+    <span style="opacity: 0.9;">iOS en Docker: técnicamente imposible (requiere macOS + Xcode, Apple no ofrece imágenes Docker). Docker Android: viable pero bloqueado por API 35 en versión open source. No se recomienda invertir tiempo en estas opciones en el corto plazo.</span>
+  </div>
+</div>
+
+
+<h1>8. Fuentes y Referencias</h1>
+
+<ul style="margin: 16px 0; padding-left: 24px;">
+  <li>Maestro docs — <code>maestro test --shards</code>: <a href="https://maestro.mobile.dev/cli/test-suites-and-reports">maestro.mobile.dev</a></li>
+  <li>budtmo/docker-android: <a href="https://github.com/budtmo/docker-android">github.com/budtmo/docker-android</a> (API 34 max open source)</li>
+  <li>reactivecircus/android-emulator-runner: <a href="https://github.com/ReactiveCircus/android-emulator-runner">github.com/ReactiveCircus/android-emulator-runner</a></li>
+  <li>Maestro Cloud: <a href="https://cloud.mobile.dev">cloud.mobile.dev</a></li>
+  <li>Microsoft Playwright Docker: <a href="https://playwright.dev/docs/docker">playwright.dev/docs/docker</a></li>
+</ul>
+
+</div>
+
+<footer>
+  Intrale Platform · Reporte técnico generado por Claude Code · Marzo 2026 · v1.0
+</footer>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default', flowchart: { curve: 'basis' } });
+</script>
+</body>
+</html>
