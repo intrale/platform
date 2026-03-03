@@ -1,17 +1,5 @@
 {
   "hooks": {
-    "PermissionRequest": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-approver.js",
-            "timeout": 4020000
-          }
-        ]
-      }
-    ],
     "Notification": [
       {
         "matcher": "",
@@ -49,6 +37,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/branch-guard.js",
             "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-gate.js",
+            "timeout": 1830000
           }
         ]
       }

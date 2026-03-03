@@ -3,5 +3,6 @@
   "chat_id": "6529617704",
   "permission_timeout_min": 60,
   "task_report_interval_min": 10,
-  "retry_intervals_min": [30, 15, 10, 10]
+  "retry_intervals_min": [30, 15, 10, 10],
+  "gate_retry_intervals_min": [15, 8, 5, 2]
 }
