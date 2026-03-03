@@ -4,6 +4,7 @@
 // Usa permission-utils.js para generación de patrones y persistencia (compartido con permission-approver.js)
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("child_process");
 const { generatePattern, isAlreadyCovered, collidesWithDeny, getSettingsPaths, resolveMainRepoRoot } = require("./permission-utils");
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
@@ -76,19 +77,27 @@ function handleInput() {
 
         if (!written) process.exit(0);
 
-        // Log
+        // Log extendido (#1159): incluir context (rama) y approved_by
         const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
         const sessionId = data.session_id || "";
-        const logEntry = JSON.stringify({ ts, action: "added", tool: toolName, pattern, session: sessionId });
+
+        let context = "";
+        try { context = execSync("git branch --show-current 2>/dev/null", { cwd: MAIN_REPO, encoding: "utf8", timeout: 2000 }).trim(); } catch(e) {}
+
+        // approved_by: inferir origen de la aprobación
+        // "auto" si permission-tracker lo detectó (PostToolUse siempre es auto-approved)
+        const approvedBy = "auto";
+
+        const logEntry = JSON.stringify({ ts, action: "added", tool: toolName, pattern, session: sessionId, context, approved_by: approvedBy });
 
         const logDir = path.dirname(LOG_PATH);
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
         fs.appendFileSync(LOG_PATH, logEntry + "\n", "utf8");
 
-        // Rotacion
+        // Rotacion: mantener 500 líneas (#1159)
         try {
             const lines = fs.readFileSync(LOG_PATH, "utf8").trim().split("\n");
-            if (lines.length > 200) fs.writeFileSync(LOG_PATH, lines.slice(-100).join("\n") + "\n", "utf8");
+            if (lines.length > 600) fs.writeFileSync(LOG_PATH, lines.slice(-500).join("\n") + "\n", "utf8");
         } catch(e) {}
     } catch(e) {
         process.exit(0);
