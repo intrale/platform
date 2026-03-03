@@ -890,9 +890,12 @@ function persistPermissionFromActionData(actionData) {
 
 // ─── Permisos por texto libre ─────────────────────────────────────────────────
 // Reemplaza los botones inline: el usuario escribe "si", "siempre" o "no" en el chat.
+// IMPORTANTE: solo intercepta si el texto **trimmed** es EXACTAMENTE la keyword.
+// Esto previene falsos positivos como "siempre lo hace bien" que debería ser freetext normal.
 
 function matchPermissionKeyword(text) {
     const t = text.trim().toLowerCase();
+    // Solo keywords exactas (después de trim y lowercase)
     if (["si", "sí", "s", "1", "ok", "dale", "allow"].includes(t)) return "allow";
     if (["siempre", "always", "2"].includes(t)) return "always";
     if (["no", "n", "3", "deny", "denegar"].includes(t)) return "deny";
@@ -1048,7 +1051,15 @@ async function handleSessionClear() {
 
 async function handleSkill(skill, args) {
     if (commandBusy) {
-        await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+        const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
+        if (pendingPerms.length > 0) {
+            const q = pendingPerms[pendingPerms.length - 1];
+            const toolName = q.action_data && q.action_data.tool_name ? escHtml(q.action_data.tool_name) : "un tool";
+            await sendMessage("⏳ <b>Hay un permiso bloqueante pendiente</b> para " + toolName + ".\n"
+                + "Respondé con: <b>si</b>, <b>siempre</b>, <b>no</b>, o <b>cancelar permiso</b>");
+        } else {
+            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+        }
         return;
     }
 
@@ -1087,7 +1098,15 @@ async function handleSkill(skill, args) {
 
 async function handleFreetext(text) {
     if (commandBusy) {
-        await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+        const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
+        if (pendingPerms.length > 0) {
+            const q = pendingPerms[pendingPerms.length - 1];
+            const toolName = q.action_data && q.action_data.tool_name ? escHtml(q.action_data.tool_name) : "un tool";
+            await sendMessage("⏳ <b>Hay un permiso bloqueante pendiente</b> para " + toolName + ".\n"
+                + "Respondé con: <b>si</b>, <b>siempre</b>, <b>no</b>, o <b>cancelar permiso</b>");
+        } else {
+            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+        }
         return;
     }
 
@@ -2036,16 +2055,40 @@ async function pollingLoop() {
                         await handleSkill(cmd.skill, cmd.args);
                         break;
                     case "freetext": {
-                        // Interceptar keywords de permiso ANTES de freetext
-                        const permAction = matchPermissionKeyword(cmd.text);
-                        if (permAction) {
-                            const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
-                            if (pendingPerms.length > 0) {
-                                // Tomar la más reciente
-                                const q = pendingPerms[pendingPerms.length - 1];
+                        // Detectar permisos pendientes PRIMERO
+                        const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
+                        if (pendingPerms.length > 0) {
+                            // Hay permisos bloqueantes pendientes
+                            const q = pendingPerms[pendingPerms.length - 1];
+                            const trimmedText = cmd.text.trim().toLowerCase();
+                            const permAction = matchPermissionKeyword(cmd.text);
+
+                            // Verificar si el usuario quiere cancelar el permiso
+                            if (trimmedText === "cancelar permiso" || trimmedText === "cancel" || trimmedText === "cancelar") {
+                                resolveQuestion(q.id, "cancelled");
+                                await sendMessage("⏹ Permiso cancelado. Claude continuará en consola.");
+                                break;
+                            }
+
+                            if (permAction) {
+                                // El usuario respondió con keyword explícito → procesar
                                 await handleTextPermissionReply(q, permAction, CHAT_ID);
                                 break;
                             }
+                            // No fue respuesta de permiso → informar que hay permiso pendiente
+                            const actionStr = q.action_data && q.action_data.tool_name ? escHtml(q.action_data.tool_name) : "un tool";
+                            await sendMessage("⚠️ <b>Hay un permiso bloqueante pendiente</b> para " + actionStr + ".\n\n"
+                                + "Respondé con:\n"
+                                + "• <b>si</b> — permitir solo esta vez\n"
+                                + "• <b>siempre</b> — permitir y recordar\n"
+                                + "• <b>no</b> — denegar\n"
+                                + "• <b>cancelar permiso</b> — cancelar y continuar en consola");
+                            break;
+                        }
+
+                        // No hay permisos pendientes → procesar normalmente
+                        const permAction = matchPermissionKeyword(cmd.text);
+                        if (permAction) {
                             // También revisar expiradas recientes (últimos 5 min) para persistir "siempre"
                             const expiredPerms = getExpiredQuestions().filter(q =>
                                 q.type === "permission" &&

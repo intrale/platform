@@ -36,7 +36,7 @@ const POLL_INTERVAL_MS = 150;   // Verificar pending-questions.json cada 150ms (
 // Intento 3: 🚨 Último aviso, espera 10 min
 // Si no responde → expirado definitivo, fallback a consola
 
-const DEFAULT_RETRY_INTERVALS = [30, 15, 10, 10]; // minutos
+const DEFAULT_RETRY_INTERVALS = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3]; // minutos (30 min total)
 const RETRY_INTERVALS = (_tgCfg.retry_intervals_min || DEFAULT_RETRY_INTERVALS)
     .map(m => m * 60 * 1000); // convertir a ms
 const TOTAL_TIMEOUT_MS = RETRY_INTERVALS.reduce((a, b) => a + b, 0);
@@ -45,7 +45,13 @@ const RETRY_ESCALATION = [
     null, // intento 0: mensaje inicial (sin prefijo de escalada)
     { emoji: "🔔", title: "Recordatorio", desc: "Hay un permiso pendiente desde hace rato" },
     { emoji: "⚠️", title: "Agente bloqueado", desc: "El agente no puede continuar sin tu aprobación" },
-    { emoji: "🚨", title: "Último aviso", desc: "Si no respondés, el agente se detendrá" }
+    { emoji: "🚨", title: "Último aviso", desc: "Si no respondés, el agente se detendrá" },
+    { emoji: "⛔", title: "Crítico", desc: "El agente está completamente bloqueado esperando tu respuesta" },
+    { emoji: "⛔", title: "Crítico", desc: "El agente está completamente bloqueado esperando tu respuesta" },
+    { emoji: "⛔", title: "Crítico", desc: "El agente está completamente bloqueado esperando tu respuesta" },
+    { emoji: "⛔", title: "Crítico", desc: "El agente está completamente bloqueado esperando tu respuesta" },
+    { emoji: "⛔", title: "Crítico", desc: "El agente está completamente bloqueado esperando tu respuesta" },
+    { emoji: "⛔", title: "Crítico", desc: "El agente está completamente bloqueado esperando tu respuesta" }
 ];
 
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
@@ -241,18 +247,27 @@ const APPROVER_PID_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approve
  * @param {string} requestId - ID de la pregunta
  * @param {number} durationMs - Duración máxima de este polling en ms
  * @param {string} attemptLabel - Etiqueta para logs (ej: "intento 1/4")
+ * @param {object} countdownOptions - { msgId, baseText } para actualizar countdown cada 30s
  * @returns {object|null} pregunta respondida o null si timeout
  */
-async function pollQuestionStatus(requestId, durationMs, attemptLabel) {
+async function pollQuestionStatus(requestId, durationMs, attemptLabel, countdownOptions) {
     const pollStart = Date.now();
     const label = attemptLabel || "";
     let logCounter = 0;
+    let countdownCounter = 0;
+    const COUNTDOWN_INTERVAL = Math.round(30000 / POLL_INTERVAL_MS); // cada 30s
+
     while (Date.now() - pollStart < durationMs) {
         try {
             const q = getQuestionById(requestId);
             if (!q) {
                 log("Pregunta " + requestId + " desapareció de pending-questions.json");
                 return null;
+            }
+            // Detectar cancelación externa
+            if (q.status === "cancelled") {
+                log("Pregunta " + requestId + " fue cancelada externamente");
+                return q;
             }
             if (q.status !== "pending") {
                 log("Pregunta " + requestId + " cambió a: " + q.status
@@ -263,6 +278,32 @@ async function pollQuestionStatus(requestId, durationMs, attemptLabel) {
         } catch(e) {
             log("Error leyendo pregunta " + requestId + ": " + e.message);
         }
+
+        // Actualizar countdown cada 30s
+        countdownCounter++;
+        if (countdownOptions && countdownOptions.msgId && countdownCounter % COUNTDOWN_INTERVAL === 0) {
+            const elapsed = Math.round((Date.now() - pollStart) / 1000);
+            const remaining = Math.round((durationMs - elapsed) / 1000);
+            if (remaining > 0) {
+                const minRemaining = Math.floor(remaining / 60);
+                const secRemaining = remaining % 60;
+                const countdownStr = minRemaining + ":" + (secRemaining < 10 ? "0" : "") + secRemaining;
+                const updatedText = countdownOptions.baseText.replace(/⏳ Expira en \d+:\d+/, "⏳ Expira en " + countdownStr);
+                try {
+                    await telegramPost("editMessageText", {
+                        chat_id: CHAT_ID,
+                        message_id: countdownOptions.msgId,
+                        text: updatedText,
+                        parse_mode: "HTML",
+                        reply_markup: { inline_keyboard: countdownOptions.inlineKeyboard || [] }
+                    }, ANSWER_TIMEOUT);
+                } catch(e) {
+                    // Rate limit o error — loguear pero continuar (countdown es cosmético)
+                    log("Error actualizando countdown: " + e.message);
+                }
+            }
+        }
+
         // Log de diagnóstico cada 30s
         logCounter++;
         if (logCounter % 60 === 0) {
@@ -378,12 +419,14 @@ async function processInput() {
     const action = formatAction(toolName, toolInput);
     const sessionId = data.session_id || "";
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
+    const totalAttempts = RETRY_INTERVALS.length;
 
-    let msgText = "⚠️ <b>" + escHtml(agent) + " — Permiso requerido</b>\n";
+    let msgText = "⚠️ <b>" + escHtml(agent) + " — Permiso requerido</b> <i>(Intento 1/" + totalAttempts + ")</i>\n";
     if (contextLine) {
         msgText += contextLine + "\n";
     }
     msgText += "\n" + action + "\n\n"
+        + "⏳ Expira en 3:00\n"
         + "📝 Usar botones o responder: <b>siempre</b> (para persistir)";
 
     // 1. Enviar mensaje con botones inline + instrucción de texto libre
@@ -433,7 +476,6 @@ async function processInput() {
     // ─── Retry loop con urgencia escalada ────────────────────────────────────
     // Intento 0: mensaje ya enviado arriba, pollear RETRY_INTERVALS[0]
     // Intentos 1..N: editar msg anterior → enviar nuevo con escalada → pollear
-    const totalAttempts = RETRY_INTERVALS.length;
 
     for (let attempt = 0; attempt < totalAttempts; attempt++) {
         const waitMs = RETRY_INTERVALS[attempt];
@@ -441,7 +483,36 @@ async function processInput() {
         log("Iniciando polling " + label + " para " + requestId
             + " (PID=" + process.pid + ", espera=" + Math.round(waitMs/60000) + "min)");
 
-        const result = await pollQuestionStatus(requestId, waitMs, label);
+        const inlineKeyboard = attempt === 0
+            ? [[
+                { text: "✅ Permitir", callback_data: "allow:" + requestId },
+                { text: "❌ Rechazar", callback_data: "deny:" + requestId }
+            ]]
+            : [];
+
+        const countdownOpts = {
+            msgId: currentMsgId,
+            baseText: attempt === 0 ? msgText : msgText,
+            inlineKeyboard: inlineKeyboard
+        };
+
+        const result = await pollQuestionStatus(requestId, waitMs, label, countdownOpts);
+
+        // ── Cancelado externamente ──
+        if (result && result.status === "cancelled") {
+            log("Permiso cancelado externamente durante " + label);
+            try {
+                await telegramPost("editMessageText", {
+                    chat_id: CHAT_ID,
+                    message_id: currentMsgId,
+                    text: msgText + "\n\n⏹ <i>Cancelado — respondiendo en consola</i>",
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: [] }
+                }, ANSWER_TIMEOUT);
+            } catch(e) { log("Error editando mensaje cancelado: " + e.message); }
+            process.exit(0); // fallback al prompt local
+            return;
+        }
 
         // ── Respondido ──
         if (result && result.status === "answered") {
@@ -511,13 +582,13 @@ async function processInput() {
 
         // Construir mensaje de reintento con escalada
         let retryText = escalation.emoji + " <b>" + escHtml(agent) + " — " + escalation.title + "</b>"
-            + "  <i>(" + (nextAttempt + 1) + "/" + totalAttempts + ")</i>\n";
+            + " <i>(Intento " + (nextAttempt + 1) + "/" + totalAttempts + ")</i>\n";
         if (contextLine) {
             retryText += contextLine + "\n";
         }
         retryText += "\n" + escalation.desc + "\n\n" + action + "\n\n"
-            + "⏳ Expira en " + nextWaitMin + " min"
-            + "\n📝 Usar botones o responder: <b>siempre</b> (para persistir)";
+            + "⏳ Expira en " + nextWaitMin + ":00\n"
+            + "📝 Usar botones o responder: <b>siempre</b> (para persistir)";
 
         // Enviar nuevo mensaje (genera nueva notificación en Telegram)
         try {

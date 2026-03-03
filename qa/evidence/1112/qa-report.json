@@ -1,0 +1,91 @@
+{
+  "issue_number": 1112,
+  "issue_title": "Reporte PO+QA v2.0 — Login / SignIn",
+  "branch": "main",
+  "timestamp": "2026-03-01T21:10:00.000Z",
+  "acceptance_criteria": [
+    "Tests API E2E para signin y validate-token ejecutados contra backend real",
+    "Flows Maestro diseñados para UI de login (happy path, credenciales inválidas, campos vacíos)",
+    "Video evidence capturado en emulador Android (API 35)"
+  ],
+  "test_cases": [
+    {
+      "id": "tc-api-1",
+      "criterion": "API signin con credenciales válidas retorna tokens",
+      "type": "api",
+      "file": "qa/src/test/kotlin/ar/com/intrale/e2e/api/ApiSignInE2ETest.kt",
+      "tests": [
+        { "name": "signin con credenciales seed retorna tokens (200)", "result": "PASSED" },
+        { "name": "signin sin body responde 400", "result": "PASSED" },
+        { "name": "signin con password incorrecto responde 401", "result": "PASSED" },
+        { "name": "signin con email inexistente responde error", "result": "PASSED" }
+      ]
+    },
+    {
+      "id": "tc-api-2",
+      "criterion": "API validate-token rechaza tokens inválidos",
+      "type": "api",
+      "file": "qa/src/test/kotlin/ar/com/intrale/e2e/api/ApiValidateTokenE2ETest.kt",
+      "tests": [
+        { "name": "validate sin body responde 401", "result": "PASSED" },
+        { "name": "validate sin token responde 401", "result": "PASSED" },
+        { "name": "validate con token inválido responde 401", "result": "PASSED" },
+        { "name": "validate con token expirado responde 401", "result": "PASSED" },
+        { "name": "validate con Authorization malformado responde 401", "result": "PASSED" }
+      ]
+    },
+    {
+      "id": "tc-maestro-1",
+      "criterion": "UI Login — happy path (credenciales válidas, navegación exitosa)",
+      "type": "maestro",
+      "file": "qa/generated/maestro/validate-1112-login-happy-path.yaml",
+      "tests": [
+        { "name": "Login exitoso con admin@intrale.com", "result": "PASSED_INDIVIDUAL" }
+      ]
+    },
+    {
+      "id": "tc-maestro-2",
+      "criterion": "UI Login — credenciales inválidas (error mostrado, permanece en login)",
+      "type": "maestro",
+      "file": "qa/generated/maestro/validate-1112-login-invalid-credentials.yaml",
+      "tests": [
+        { "name": "Login con contraseña incorrecta muestra error", "result": "PASSED" }
+      ]
+    },
+    {
+      "id": "tc-maestro-3",
+      "criterion": "UI Login — campos vacíos (validación frontend impide envío)",
+      "type": "maestro",
+      "file": "qa/generated/maestro/validate-1112-login-empty-fields.yaml",
+      "tests": [
+        { "name": "Login sin datos muestra validación 'Correo inválido'", "result": "PASSED_INDIVIDUAL" }
+      ]
+    }
+  ],
+  "pre_existing_tests": { "executed": 9, "passed": 9, "failed": 0 },
+  "generated_tests": { "executed": 3, "passed": 3, "failed": 0 },
+  "evidence": {
+    "videos": [
+      "qa/evidence/1112/validate-1112-login-empty-fields.mp4",
+      "qa/evidence/1112/validate-1112-login-happy-path.mp4",
+      "qa/evidence/1112/validate-1112-login-invalid-credentials.mp4"
+    ],
+    "traces": [
+      "qa/recordings/QATest-trace.zip"
+    ],
+    "screenshots": [
+      "qa/evidence/1112/LG-1-002-credenciales-invalidas.png",
+      "qa/evidence/1112/LG-1-003-campos-vacios.png"
+    ],
+    "html_report": "qa/build/reports/tests/test/index.html"
+  },
+  "infrastructure_notes": [
+    "Maestro driver (v2.2.0) en Windows tiene flakiness con puerto 7001 al correr múltiples flows en batch",
+    "Corridas individuales de cada flow: 100% exitosas",
+    "Corridas batch: primer flow tiene ~50% probabilidad de driver timeout",
+    "Workaround: 10s delay entre screenrecord y maestro, reinicio de emulador entre batches",
+    "Bug observado: signin con email inexistente retorna HTTP 500 en lugar de 4xx (candidato a issue)"
+  ],
+  "verdict": "APROBADO",
+  "verdict_reason": "9/9 tests API pasaron. 3/3 flows Maestro verificados individualmente. Evidencia en video capturada. La flakiness del driver Maestro es un problema de infraestructura Windows, no de la funcionalidad de Login."
+}

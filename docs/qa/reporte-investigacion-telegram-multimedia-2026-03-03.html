@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Investigacion — Capacidades Multimedia Telegram Commander (v2) — 2026-03-03</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f8f9fa; color: #212529; font-size: 14px; line-height: 1.5; }
+  .cover { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: white; padding: 80px 60px; min-height: 280px; display: flex; flex-direction: column; justify-content: center; }
+  .cover h1 { font-size: 32px; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.5px; }
+  .cover h2 { font-size: 20px; font-weight: 300; opacity: 0.85; margin-bottom: 30px; }
+  .cover-meta { display: flex; gap: 40px; margin-top: 20px; }
+  .cover-meta span { opacity: 0.75; font-size: 13px; }
+  .cover-meta strong { opacity: 1; font-size: 14px; display: block; }
+  .cover-version { display: inline-block; background: rgba(255,255,255,0.15); padding: 4px 14px; border-radius: 20px; font-size: 12px; margin-top: 16px; letter-spacing: 0.5px; }
+
+  .container { max-width: 960px; margin: 0 auto; padding: 40px 30px; }
+  h2.section { font-size: 22px; color: #0f3460; border-bottom: 3px solid #0f3460; padding-bottom: 8px; margin: 40px 0 20px; }
+  h3.subsection { font-size: 16px; color: #16213e; margin: 25px 0 12px; font-weight: 600; }
+
+  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 20px 0; }
+  .summary-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 20px 0; }
+  .metric-card { background: white; border-radius: 10px; padding: 20px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-top: 4px solid #0f3460; }
+  .metric-card.red { border-top-color: #dc3545; }
+  .metric-card.green { border-top-color: #28a745; }
+  .metric-card.yellow { border-top-color: #ffc107; }
+  .metric-card.blue { border-top-color: #007bff; }
+  .metric-card.purple { border-top-color: #6f42c1; }
+  .metric-num { font-size: 28px; font-weight: 700; color: #0f3460; line-height: 1; }
+  .metric-card.green .metric-num { color: #28a745; }
+  .metric-card.yellow .metric-num { color: #c77c00; }
+  .metric-card.red .metric-num { color: #dc3545; }
+  .metric-card.blue .metric-num { color: #007bff; }
+  .metric-card.purple .metric-num { color: #6f42c1; }
+  .metric-label { font-size: 12px; color: #6c757d; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin: 16px 0; }
+  th { background: #0f3460; color: white; padding: 10px 14px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 9px 14px; border-bottom: 1px solid #e9ecef; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f8f9fa; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin: 1px; }
+  .tag-green { background: #e8f8f2; color: #1e8449; }
+  .tag-yellow { background: #fef9e7; color: #b7950b; }
+  .tag-red { background: #fde8e8; color: #c0392b; }
+  .tag-blue { background: #e8f4fd; color: #1565c0; }
+  .tag-gray { background: #f5f5f5; color: #555; }
+  .tag-purple { background: #f3e8fd; color: #6f42c1; }
+
+  .alert { padding: 14px 18px; border-radius: 8px; margin: 14px 0; border-left: 5px solid; }
+  .alert-red { background: #fde8e8; border-color: #dc3545; color: #721c24; }
+  .alert-yellow { background: #fff8e1; border-color: #ffc107; color: #856404; }
+  .alert-blue { background: #e7f3fe; border-color: #007bff; color: #004085; }
+  .alert-green { background: #e8f8f2; border-color: #28a745; color: #155724; }
+  .alert-purple { background: #f3e8fd; border-color: #6f42c1; color: #4a1d96; }
+  .alert strong { display: block; margin-bottom: 4px; font-size: 14px; }
+
+  .code-block { background: #1e1e2e; color: #cdd6f4; border-radius: 8px; padding: 16px 20px; margin: 12px 0; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12.5px; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .code-block .comment { color: #6c7086; }
+  .code-block .keyword { color: #cba6f7; }
+  .code-block .string { color: #a6e3a1; }
+  .code-block .func { color: #89b4fa; }
+
+  .flow-box { background: white; border: 2px solid #0f3460; border-radius: 12px; padding: 20px; margin: 16px 0; }
+  .flow-step { display: flex; align-items: flex-start; margin: 10px 0; }
+  .flow-num { background: #0f3460; color: white; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; margin-right: 12px; margin-top: 2px; }
+  .flow-text { flex: 1; }
+  .flow-arrow { text-align: center; color: #0f3460; font-size: 18px; margin: 2px 0; padding-left: 8px; }
+
+  .rec-card { background: white; border-radius: 10px; padding: 22px; margin: 16px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.07); border-left: 5px solid; }
+  .rec-card.high { border-left-color: #28a745; }
+  .rec-card.medium { border-left-color: #ffc107; }
+  .rec-card.low { border-left-color: #6c757d; }
+  .rec-card.new { border-left-color: #6f42c1; }
+  .rec-title { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+  .rec-body { font-size: 13px; color: #495057; }
+
+  .arch-diagram { background: #1e1e2e; color: #cdd6f4; border-radius: 12px; padding: 24px; margin: 16px 0; font-family: 'Cascadia Code', monospace; font-size: 12px; line-height: 1.8; white-space: pre; overflow-x: auto; }
+
+  .new-badge { display: inline-block; background: #6f42c1; color: white; padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; vertical-align: middle; margin-left: 6px; letter-spacing: 0.5px; }
+  .updated-badge { display: inline-block; background: #007bff; color: white; padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; vertical-align: middle; margin-left: 6px; letter-spacing: 0.5px; }
+
+  .cost-table { margin: 16px 0; }
+  .cost-table td:nth-child(n+3) { text-align: right; font-family: 'Cascadia Code', monospace; font-size: 12px; }
+  .cost-table th:nth-child(n+3) { text-align: right; }
+
+  .comparison-winner { background: #e8f8f2 !important; font-weight: 600; }
+
+  @media print {
+    .cover { page-break-after: always; }
+    h2.section { page-break-before: always; }
+    .alert, .rec-card, .flow-box, table { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- PORTADA -->
+<div class="cover">
+  <h1>Investigacion: Capacidades Multimedia</h1>
+  <h2>Imagenes y Audio en Telegram Commander</h2>
+  <div class="cover-version">v2.0 — Incluye evaluacion de servicios OpenAI (ChatGPT) para voz</div>
+  <div class="cover-meta">
+    <span>Fecha<strong>2026-03-03</strong></span>
+    <span>Tipo<strong>Investigacion tecnica</strong></span>
+    <span>Componente<strong>telegram-commander.js</strong></span>
+    <span>Autor<strong>Claude Code (Guru)</strong></span>
+  </div>
+</div>
+
+<!-- CONTENIDO -->
+<div class="container">
+
+  <h2 class="section">1. Resumen Ejecutivo</h2>
+
+  <p style="margin-bottom: 16px;">
+    Se investigo la factibilidad de agregar al <strong>Telegram Commander</strong> la capacidad de
+    recibir e interpretar <strong>imagenes</strong> y <strong>mensajes de audio/voz</strong> enviados desde Telegram,
+    para que Claude pueda procesarlos como parte de su flujo de trabajo.
+  </p>
+
+  <div class="summary-grid-4">
+    <div class="metric-card green">
+      <div class="metric-num">SI</div>
+      <div class="metric-label">Imagenes viables</div>
+    </div>
+    <div class="metric-card green">
+      <div class="metric-num">SI</div>
+      <div class="metric-label">Audio viable (transcripcion)</div>
+    </div>
+    <div class="metric-card blue">
+      <div class="metric-num">SI</div>
+      <div class="metric-label">Respuesta por voz (TTS)</div>
+    </div>
+    <div class="metric-card red">
+      <div class="metric-num">NO</div>
+      <div class="metric-label">Audio nativo en Claude API</div>
+    </div>
+  </div>
+
+  <div class="alert alert-blue">
+    <strong>Conclusion principal</strong>
+    Las imagenes se pueden integrar llamando directamente a la API de Anthropic con content blocks multimodales.
+    El audio requiere un paso intermedio de transcripcion antes de enviar el texto a Claude.
+    <strong>Novedad v2:</strong> OpenAI ofrece modelos de nueva generacion (GPT-4o Transcribe, GPT-4o Mini TTS)
+    que mejoran significativamente la calidad y reducen costos hasta un 50% respecto a Whisper legacy.
+    Ademas, la respuesta por voz (TTS) es viable y nativa para Telegram.
+  </div>
+
+  <div class="alert alert-purple">
+    <strong>Cambios en v2.0 respecto a v1.0</strong>
+    &bull; Seccion 4.3 ampliada: 3 modelos de transcripcion OpenAI + 3 alternativas del mercado<br>
+    &bull; Nueva seccion 5: Respuesta por voz (Text-to-Speech) — evaluacion completa<br>
+    &bull; Nueva seccion 6: Evaluacion de la Realtime API de ChatGPT<br>
+    &bull; Nueva seccion 7: Comparativa detallada de costos por proveedor<br>
+    &bull; Arquitectura actualizada con flujo bidireccional (voz-in + voz-out)<br>
+    &bull; Proyeccion de costos mensuales por escenario de uso
+  </div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">2. Estado Actual del Commander</h2>
+
+  <h3 class="subsection">2.1 Punto de bloqueo identificado</h3>
+
+  <p>El <code>telegram-commander.js</code> actualmente descarta todo mensaje que no sea texto plano:</p>
+
+  <div class="code-block"><span class="comment">// telegram-commander.js, linea 2009-2010</span>
+<span class="keyword">const</span> text = msg.<span class="func">text</span>;
+<span class="keyword">if</span> (!text) <span class="keyword">continue</span>;  <span class="comment">// &larr; AQUI se descartan fotos, audio, documentos, etc.</span></div>
+
+  <h3 class="subsection">2.2 Infraestructura existente aprovechable</h3>
+
+  <table>
+    <tr><th>Archivo</th><th>Funcionalidad</th><th>Relevancia</th></tr>
+    <tr>
+      <td><code>telegram-image-utils.js</code></td>
+      <td>Envio de imagenes PNG a Telegram (<code>sendTelegramPhoto</code>)</td>
+      <td><span class="tag tag-green">Alta</span> — helpers HTTP reutilizables</td>
+    </tr>
+    <tr>
+      <td><code>telegram-commander.js</code></td>
+      <td><code>telegramPost()</code> — helper HTTP para API de Telegram</td>
+      <td><span class="tag tag-green">Alta</span> — ya maneja requests multipart</td>
+    </tr>
+    <tr>
+      <td><code>telegram-config.json</code></td>
+      <td>Bot token + chat ID centralizados</td>
+      <td><span class="tag tag-green">Alta</span> — configuracion lista</td>
+    </tr>
+    <tr>
+      <td><code>executeClaude()</code></td>
+      <td>Spawn de <code>claude -p</code> via stdin</td>
+      <td><span class="tag tag-yellow">Media</span> — solo acepta texto</td>
+    </tr>
+  </table>
+
+  <!-- ================================================================== -->
+  <h2 class="section">3. Imagenes desde Telegram</h2>
+
+  <h3 class="subsection">3.1 Factibilidad: ALTA</h3>
+
+  <div class="alert alert-green">
+    <strong>Veredicto: Totalmente viable</strong>
+    La API de Claude soporta imagenes como content blocks (base64, URL o Files API).
+    Telegram provee las fotos como JPEG, formato nativamente compatible.
+  </div>
+
+  <h3 class="subsection">3.2 Formatos soportados por Claude API</h3>
+
+  <table>
+    <tr><th>Formato</th><th>MIME</th><th>Limite</th><th>Fuente Telegram</th></tr>
+    <tr><td>JPEG</td><td><code>image/jpeg</code></td><td>5 MB</td><td><span class="tag tag-green">msg.photo[]</span></td></tr>
+    <tr><td>PNG</td><td><code>image/png</code></td><td>5 MB</td><td><span class="tag tag-blue">msg.document</span></td></tr>
+    <tr><td>GIF</td><td><code>image/gif</code></td><td>5 MB</td><td><span class="tag tag-blue">msg.document</span></td></tr>
+    <tr><td>WebP</td><td><code>image/webp</code></td><td>5 MB</td><td><span class="tag tag-blue">msg.sticker</span></td></tr>
+  </table>
+
+  <h3 class="subsection">3.3 Flujo tecnico propuesto</h3>
+
+  <div class="flow-box">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div class="flow-text"><strong>Detectar imagen</strong> — Verificar <code>msg.photo</code> (array de tamanios) o <code>msg.document</code> con MIME de imagen</div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div class="flow-text"><strong>Obtener file_id</strong> — Tomar el ultimo elemento de <code>msg.photo[]</code> (mayor resolucion) o <code>msg.document.file_id</code></div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div class="flow-text"><strong>Descargar archivo</strong> — <code>GET /bot{TOKEN}/getFile?file_id=...</code> &rarr; obtener <code>file_path</code> &rarr; <code>GET /file/bot{TOKEN}/{file_path}</code></div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <div class="flow-text"><strong>Codificar en base64</strong> — Convertir el buffer binario a string base64 y determinar media_type</div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">5</div>
+      <div class="flow-text"><strong>Llamar API Anthropic</strong> — <code>POST /v1/messages</code> con content blocks <code>[{type:"image"}, {type:"text"}]</code></div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">6</div>
+      <div class="flow-text"><strong>Devolver respuesta</strong> — Enviar la respuesta de Claude al chat de Telegram</div>
+    </div>
+  </div>
+
+  <h3 class="subsection">3.4 Limitacion critica: claude -p no acepta imagenes</h3>
+
+  <div class="alert alert-yellow">
+    <strong>El CLI <code>claude -p</code> solo acepta texto via stdin</strong>
+    Para enviar imagenes a Claude, se debe llamar directamente a la API REST de Anthropic
+    (<code>https://api.anthropic.com/v1/messages</code>) en lugar de usar <code>executeClaude()</code>.
+    Esto requiere tener <code>ANTHROPIC_API_KEY</code> disponible en el entorno del hook.
+  </div>
+
+  <h3 class="subsection">3.5 Ejemplo de llamada a la API</h3>
+
+  <div class="code-block"><span class="comment">// Llamada directa a Anthropic API con imagen</span>
+<span class="keyword">const</span> body = {
+  model: <span class="string">"claude-sonnet-4-6"</span>,
+  max_tokens: 2048,
+  messages: [{
+    role: <span class="string">"user"</span>,
+    content: [
+      {
+        type: <span class="string">"image"</span>,
+        source: {
+          type: <span class="string">"base64"</span>,
+          media_type: <span class="string">"image/jpeg"</span>,
+          data: imageBase64  <span class="comment">// Buffer.toString("base64")</span>
+        }
+      },
+      {
+        type: <span class="string">"text"</span>,
+        text: caption || <span class="string">"Describe esta imagen y responde en espanol."</span>
+      }
+    ]
+  }]
+};</div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">4. Audio / Voz desde Telegram (Transcripcion) <span class="updated-badge">ACTUALIZADO v2</span></h2>
+
+  <h3 class="subsection">4.1 Factibilidad: ALTA (revisada al alza)</h3>
+
+  <div class="alert alert-green">
+    <strong>Veredicto: Altamente viable con OpenAI</strong>
+    La API de Claude NO soporta audio como input, pero OpenAI ofrece <strong>tres modelos de transcripcion</strong>
+    con precios desde <strong>$0.003/min</strong> y calidad excelente en espanol.
+    La factibilidad se eleva de MEDIA a ALTA gracias a los nuevos modelos GPT-4o Transcribe (marzo 2025).
+  </div>
+
+  <h3 class="subsection">4.2 Formato de audio en Telegram</h3>
+
+  <table>
+    <tr><th>Tipo de mensaje</th><th>Campo</th><th>Formato</th><th>Codec</th></tr>
+    <tr><td>Voice message (microfono)</td><td><code>msg.voice</code></td><td><code>.ogg</code></td><td>Opus</td></tr>
+    <tr><td>Audio file (archivo)</td><td><code>msg.audio</code></td><td><code>.mp3</code>, <code>.m4a</code>, etc.</td><td>Varios</td></tr>
+    <tr><td>Video note (circulo)</td><td><code>msg.video_note</code></td><td><code>.mp4</code></td><td>H.264</td></tr>
+  </table>
+
+  <h3 class="subsection">4.3 Modelos de transcripcion OpenAI (ChatGPT) <span class="new-badge">NUEVO</span></h3>
+
+  <p style="margin-bottom: 12px;">OpenAI ofrece actualmente tres modelos de Speech-to-Text, todos via el mismo endpoint:</p>
+
+  <table>
+    <tr><th>Modelo</th><th>ID</th><th>Precio/min</th><th>Acepta .ogg</th><th>Calidad</th><th>Recomendacion</th></tr>
+    <tr class="comparison-winner">
+      <td><strong>GPT-4o Transcribe</strong></td>
+      <td><code>gpt-4o-transcribe</code></td>
+      <td>$0.006</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td><span class="tag tag-green">Mejor WER</span> — menor tasa de error, mejor manejo de acentos</td>
+      <td><span class="tag tag-green">Recomendado (calidad)</span></td>
+    </tr>
+    <tr>
+      <td><strong>GPT-4o Mini Transcribe</strong></td>
+      <td><code>gpt-4o-mini-transcribe</code></td>
+      <td><strong>$0.003</strong></td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td><span class="tag tag-blue">Buena</span> — 89% menos alucinaciones vs legacy</td>
+      <td><span class="tag tag-blue">Recomendado (costo)</span></td>
+    </tr>
+    <tr>
+      <td>Whisper (legacy)</td>
+      <td><code>whisper-1</code></td>
+      <td>$0.006</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td><span class="tag tag-yellow">Baseline</span> — modelo V2 large</td>
+      <td><span class="tag tag-gray">Superado</span></td>
+    </tr>
+  </table>
+
+  <div class="alert alert-blue">
+    <strong>Ventajas clave de los nuevos modelos (marzo 2025+)</strong>
+    &bull; <strong>gpt-4o-transcribe</strong>: menor Word Error Rate (WER), mejor manejo de ruido y acentos hispanohablantes<br>
+    &bull; <strong>gpt-4o-mini-transcribe</strong>: 50% mas barato que Whisper, 89% menos alucinaciones (snapshot dic 2025)<br>
+    &bull; <strong>Speaker diarization</strong> disponible con variante <code>gpt-4o-transcribe-diarize</code> (mismo precio)<br>
+    &bull; Todos usan el mismo endpoint: <code>POST /v1/audio/transcriptions</code>
+  </div>
+
+  <h3 class="subsection">4.4 Alternativas del mercado <span class="new-badge">NUEVO</span></h3>
+
+  <table>
+    <tr><th>Servicio</th><th>Modelo</th><th>Precio/min</th><th>Acepta .ogg</th><th>Free tier</th><th>Espanol</th><th>Streaming</th></tr>
+    <tr>
+      <td><strong>OpenAI</strong></td>
+      <td>gpt-4o-mini-transcribe</td>
+      <td><strong>$0.003</strong></td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td>$5 credito</td>
+      <td><span class="tag tag-green">Excelente</span></td>
+      <td>No (batch)</td>
+    </tr>
+    <tr>
+      <td><strong>Deepgram</strong></td>
+      <td>Nova-3</td>
+      <td>$0.0043</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td>$200 credito</td>
+      <td><span class="tag tag-green">Excelente</span> (+20% WER)</td>
+      <td><span class="tag tag-green">Si</span></td>
+    </tr>
+    <tr>
+      <td>Google Cloud</td>
+      <td>STT V2 standard</td>
+      <td>$0.016</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td>60 min/mes</td>
+      <td><span class="tag tag-green">125+ langs</span></td>
+      <td><span class="tag tag-green">Si</span></td>
+    </tr>
+    <tr>
+      <td>Google Cloud</td>
+      <td>STT V2 enhanced</td>
+      <td>$0.024-$0.036</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td>60 min/mes</td>
+      <td><span class="tag tag-green">125+ langs</span></td>
+      <td><span class="tag tag-green">Si</span></td>
+    </tr>
+    <tr>
+      <td>AWS</td>
+      <td>Transcribe</td>
+      <td>$0.024</td>
+      <td><span class="tag tag-yellow">Limitado</span></td>
+      <td>60 min/mes (12 meses)</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td><span class="tag tag-green">Si</span></td>
+    </tr>
+    <tr>
+      <td>AssemblyAI</td>
+      <td>Universal-2</td>
+      <td>$0.0065</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td>Freemium</td>
+      <td><span class="tag tag-green">Si</span></td>
+      <td><span class="tag tag-green">Si</span></td>
+    </tr>
+  </table>
+
+  <div class="alert alert-green">
+    <strong>Veredicto comparativa</strong>
+    <strong>OpenAI gpt-4o-mini-transcribe</strong> es la mejor opcion para nuestro caso: el mas barato ($0.003/min),
+    acepta OGG nativamente, excelente calidad en espanol, y ya necesitamos <code>OPENAI_API_KEY</code> igualmente.
+    Deepgram es alternativa competitiva si se necesita streaming en el futuro.
+  </div>
+
+  <h3 class="subsection">4.5 Flujo tecnico propuesto (actualizado)</h3>
+
+  <div class="flow-box">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div class="flow-text"><strong>Detectar audio</strong> — Verificar <code>msg.voice</code> o <code>msg.audio</code></div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div class="flow-text"><strong>Descargar archivo</strong> — <code>getFile</code> &rarr; descargar el <code>.ogg</code> como Buffer</div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div class="flow-text"><strong>Transcribir</strong> — <code>POST /v1/audio/transcriptions</code> con modelo <code>gpt-4o-mini-transcribe</code> (o <code>gpt-4o-transcribe</code> para mayor calidad)</div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <div class="flow-text"><strong>Enviar texto a Claude</strong> — Usar <code>executeClaude(transcripcion)</code> via <code>claude -p</code> normalmente</div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">5</div>
+      <div class="flow-text"><strong>Devolver respuesta</strong> — Texto al chat + opcionalmente voz (ver seccion 5)</div>
+    </div>
+  </div>
+
+  <h3 class="subsection">4.6 Ejemplo de transcripcion (actualizado)</h3>
+
+  <div class="code-block"><span class="comment">// Transcripcion con OpenAI GPT-4o Mini Transcribe (Node.js puro)</span>
+<span class="keyword">async function</span> <span class="func">transcribeAudio</span>(audioBuffer, filename) {
+  <span class="keyword">const</span> boundary = <span class="string">"----TranscribeBoundary"</span> + Date.now().toString(36);
+  <span class="keyword">let</span> body = <span class="string">""</span>;
+  body += <span class="string">"--"</span> + boundary + <span class="string">"\r\n"</span>;
+  body += <span class="string">'Content-Disposition: form-data; name="model"\r\n\r\n'</span>;
+  body += <span class="string">'gpt-4o-mini-transcribe\r\n'</span>;  <span class="comment">// &larr; NUEVO: 50% mas barato que whisper-1</span>
+  body += <span class="string">"--"</span> + boundary + <span class="string">"\r\n"</span>;
+  body += <span class="string">'Content-Disposition: form-data; name="language"\r\n\r\nes\r\n'</span>;
+
+  <span class="keyword">const</span> pre = Buffer.from(
+    body + <span class="string">"--"</span> + boundary + <span class="string">"\r\n"</span> +
+    <span class="string">'Content-Disposition: form-data; name="file"; filename="'</span> + filename + <span class="string">'"\r\n'</span> +
+    <span class="string">'Content-Type: audio/ogg\r\n\r\n'</span>
+  );
+  <span class="keyword">const</span> post = Buffer.from(<span class="string">"\r\n--"</span> + boundary + <span class="string">"--\r\n"</span>);
+  <span class="keyword">const</span> payload = Buffer.concat([pre, audioBuffer, post]);
+
+  <span class="comment">// POST a https://api.openai.com/v1/audio/transcriptions</span>
+  <span class="comment">// Headers: Authorization: Bearer {OPENAI_API_KEY}</span>
+  <span class="comment">// Content-Type: multipart/form-data; boundary={boundary}</span>
+  <span class="keyword">return</span> transcriptionText;
+}</div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">5. Respuesta por Voz (Text-to-Speech) <span class="new-badge">NUEVO en v2</span></h2>
+
+  <h3 class="subsection">5.1 Factibilidad: ALTA</h3>
+
+  <div class="alert alert-green">
+    <strong>Veredicto: Totalmente viable y natural para Telegram</strong>
+    OpenAI ofrece TTS con salida en formato Opus — el mismo codec nativo de Telegram para mensajes de voz.
+    Esto permite que el bot <strong>responda con audio</strong> ademas de texto, creando una experiencia
+    conversacional completa (voz-in &rarr; voz-out).
+  </div>
+
+  <h3 class="subsection">5.2 Modelos de Text-to-Speech disponibles</h3>
+
+  <table>
+    <tr><th>Modelo</th><th>ID</th><th>Precio</th><th>Voces</th><th>Calidad</th><th>Feature clave</th></tr>
+    <tr>
+      <td>TTS Standard</td>
+      <td><code>tts-1</code></td>
+      <td>$15/1M chars</td>
+      <td>6 voces</td>
+      <td>Buena</td>
+      <td>Baja latencia</td>
+    </tr>
+    <tr>
+      <td>TTS HD</td>
+      <td><code>tts-1-hd</code></td>
+      <td>$30/1M chars</td>
+      <td>6 voces</td>
+      <td>Alta</td>
+      <td>Mayor fidelidad</td>
+    </tr>
+    <tr class="comparison-winner">
+      <td><strong>GPT-4o Mini TTS</strong></td>
+      <td><code>gpt-4o-mini-tts</code></td>
+      <td>$12/1M output tokens</td>
+      <td><strong>13 voces</strong></td>
+      <td><strong>Estudio (48kHz)</strong></td>
+      <td><strong>Dirigible</strong> — se puede controlar tono, emocion, ritmo</td>
+    </tr>
+  </table>
+
+  <h3 class="subsection">5.3 Voces disponibles (gpt-4o-mini-tts)</h3>
+
+  <table>
+    <tr><th>Voz</th><th>Caracter</th><th>Recomendacion para bot</th></tr>
+    <tr><td><code>nova</code></td><td>Femenina, joven, energetica</td><td><span class="tag tag-green">Recomendada</span> — natural en espanol</td></tr>
+    <tr><td><code>coral</code></td><td>Femenina, calida, profesional</td><td><span class="tag tag-green">Recomendada</span> — tono asistente</td></tr>
+    <tr><td><code>alloy</code></td><td>Neutral, versatil</td><td><span class="tag tag-blue">Buena opcion</span></td></tr>
+    <tr><td><code>onyx</code></td><td>Masculina, grave, seria</td><td><span class="tag tag-blue">Alternativa</span></td></tr>
+    <tr><td><code>sage</code></td><td>Neutra, experta</td><td><span class="tag tag-blue">Alternativa</span></td></tr>
+    <tr><td><code>ash</code>, <code>ballad</code>, <code>echo</code>, <code>fable</code>, <code>shimmer</code>, <code>verse</code>, <code>marin</code>, <code>cedar</code></td><td>Diversas personalidades</td><td><span class="tag tag-gray">Disponibles</span></td></tr>
+  </table>
+
+  <h3 class="subsection">5.4 Dirigibilidad (feature unico de gpt-4o-mini-tts)</h3>
+
+  <div class="alert alert-blue">
+    <strong>Control fino del estilo de habla</strong>
+    A diferencia de los modelos legacy, <code>gpt-4o-mini-tts</code> acepta instrucciones de estilo:
+    <em>"Habla en tono amigable y profesional, con ritmo moderado, como un asistente tecnico."</em>
+    Esto permite adaptar la personalidad del bot sin cambiar de voz.
+  </div>
+
+  <h3 class="subsection">5.5 Flujo tecnico: respuesta por voz</h3>
+
+  <div class="flow-box">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div class="flow-text"><strong>Claude genera respuesta</strong> — Texto normal del flujo existente</div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div class="flow-text"><strong>Sintetizar voz</strong> — <code>POST /v1/audio/speech</code> con <code>model: "gpt-4o-mini-tts"</code>, <code>response_format: "opus"</code></div>
+    </div>
+    <div class="flow-arrow">&darr;</div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div class="flow-text"><strong>Enviar como voice message</strong> — <code>sendVoice</code> de Telegram Bot API con el buffer Opus</div>
+    </div>
+  </div>
+
+  <h3 class="subsection">5.6 Ejemplo de sintesis de voz</h3>
+
+  <div class="code-block"><span class="comment">// Text-to-Speech con GPT-4o Mini TTS (Node.js puro)</span>
+<span class="keyword">async function</span> <span class="func">textToSpeech</span>(text) {
+  <span class="keyword">const</span> body = JSON.stringify({
+    model: <span class="string">"gpt-4o-mini-tts"</span>,
+    input: text,
+    voice: <span class="string">"nova"</span>,           <span class="comment">// voz natural en espanol</span>
+    response_format: <span class="string">"opus"</span>,  <span class="comment">// formato nativo de Telegram</span>
+    instructions: <span class="string">"Habla en espanol con tono profesional y amigable."</span>
+  });
+
+  <span class="comment">// POST a https://api.openai.com/v1/audio/speech</span>
+  <span class="comment">// Headers: Authorization: Bearer {OPENAI_API_KEY}</span>
+  <span class="comment">// Content-Type: application/json</span>
+  <span class="comment">// Response: binary audio (Opus)</span>
+  <span class="keyword">return</span> audioBuffer;  <span class="comment">// enviar a Telegram via sendVoice</span>
+}</div>
+
+  <h3 class="subsection">5.7 Consideraciones de UX para respuesta por voz</h3>
+
+  <div class="rec-card new">
+    <div class="rec-title">Cuanado responder con voz</div>
+    <div class="rec-body">
+      <strong>Recomendacion:</strong> responder con voz <strong>solo cuando el usuario envio un voice message</strong>.
+      Si envio texto, responder con texto. Esto respeta la preferencia del canal elegido por el usuario.<br><br>
+      Alternativa: agregar un comando <code>/voice on</code> / <code>/voice off</code> para que el usuario elija.
+    </div>
+  </div>
+
+  <div class="rec-card medium">
+    <div class="rec-title">Limites para TTS</div>
+    <div class="rec-body">
+      &bull; Maximo 2,000 tokens por request (aprox. 1,500 palabras en espanol)<br>
+      &bull; Respuestas muy largas deben truncarse o enviarse como texto + resumen en voz<br>
+      &bull; Latencia: 1-3s para respuestas cortas, aceptable para Telegram
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">6. Evaluacion: Realtime API de ChatGPT <span class="new-badge">NUEVO en v2</span></h2>
+
+  <h3 class="subsection">6.1 Que es la Realtime API</h3>
+
+  <p style="margin-bottom: 12px;">
+    La <strong>Realtime API</strong> de OpenAI permite conversaciones de voz bidireccionales en tiempo real
+    via WebSocket. Fue lanzada en produccion como <code>gpt-realtime</code> en octubre 2025.
+  </p>
+
+  <h3 class="subsection">6.2 Precios</h3>
+
+  <table>
+    <tr><th>Modelo</th><th>Audio input</th><th>Audio output</th><th>Costo aprox./min</th></tr>
+    <tr>
+      <td><code>gpt-realtime</code></td>
+      <td>$32/1M tokens</td>
+      <td>$64/1M tokens</td>
+      <td><span class="tag tag-red">~$0.30/min</span></td>
+    </tr>
+    <tr>
+      <td><code>gpt-4o-mini-realtime-preview</code></td>
+      <td>$10/1M tokens</td>
+      <td>$20/1M tokens</td>
+      <td><span class="tag tag-yellow">~$0.10/min</span></td>
+    </tr>
+  </table>
+
+  <h3 class="subsection">6.3 Evaluacion para nuestro caso de uso</h3>
+
+  <div class="alert alert-red">
+    <strong>NO recomendada para Telegram Commander</strong>
+    La Realtime API esta disenada para <strong>conversaciones de voz continuas</strong> con baja latencia
+    (tipo llamada telefonica), no para mensajes discretos de Telegram.<br><br>
+    <strong>Razones para descartarla:</strong><br>
+    &bull; <strong>50-100x mas cara</strong> que el pipeline Transcribe + TTS ($0.30/min vs $0.006/min)<br>
+    &bull; Requiere <strong>WebSocket persistente</strong> — overhead innecesario para mensajes esporadicos<br>
+    &bull; El modelo <strong>no es Claude</strong> — la respuesta la genera GPT-4o, no Claude. Se pierde el contexto del proyecto<br>
+    &bull; <strong>No se integra</strong> con el flujo existente de <code>executeClaude()</code><br>
+    &bull; Beneficio principal (baja latencia) <strong>irrelevante</strong> para Telegram (los mensajes ya son asincronos)
+  </div>
+
+  <div class="alert alert-green">
+    <strong>Arquitectura correcta: pipeline separado</strong>
+    Usar <strong>Transcribe</strong> (voz &rarr; texto) + <strong>Claude</strong> (texto &rarr; respuesta) + <strong>TTS</strong> (respuesta &rarr; voz)
+    es la arquitectura optima porque:<br>
+    &bull; Claude procesa la logica y el contexto del proyecto<br>
+    &bull; OpenAI solo maneja la conversion de/hacia audio<br>
+    &bull; Costo 50-100x menor<br>
+    &bull; Cada componente es reemplazable independientemente
+  </div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">7. Comparativa de Costos por Escenario <span class="new-badge">NUEVO en v2</span></h2>
+
+  <h3 class="subsection">7.1 Costo de transcripcion (voz &rarr; texto)</h3>
+
+  <table class="cost-table">
+    <tr><th>Escenario</th><th>Volumen</th><th>OpenAI Mini</th><th>OpenAI 4o</th><th>Deepgram</th><th>Google STT</th><th>AWS</th></tr>
+    <tr>
+      <td>Uso ligero</td>
+      <td>100 msgs (50 min/mes)</td>
+      <td class="comparison-winner">$0.15</td>
+      <td>$0.30</td>
+      <td>$0.22</td>
+      <td>$0.80</td>
+      <td>$1.20</td>
+    </tr>
+    <tr>
+      <td>Uso moderado</td>
+      <td>1,000 msgs (500 min/mes)</td>
+      <td class="comparison-winner">$1.50</td>
+      <td>$3.00</td>
+      <td>$2.15</td>
+      <td>$8.00</td>
+      <td>$12.00</td>
+    </tr>
+    <tr>
+      <td>Uso intensivo</td>
+      <td>10,000 msgs (5,000 min/mes)</td>
+      <td class="comparison-winner">$15.00</td>
+      <td>$30.00</td>
+      <td>$21.50</td>
+      <td>$80.00</td>
+      <td>$120.00</td>
+    </tr>
+  </table>
+
+  <p style="margin-top: 8px; font-size: 12px; color: #6c757d;">
+    * Asumiendo mensajes de voz promedio de 30 segundos. Precios en USD.
+  </p>
+
+  <h3 class="subsection">7.2 Costo de TTS (texto &rarr; voz, opcional)</h3>
+
+  <table class="cost-table">
+    <tr><th>Escenario</th><th>Respuestas</th><th>gpt-4o-mini-tts</th><th>tts-1</th><th>tts-1-hd</th></tr>
+    <tr>
+      <td>Uso ligero</td>
+      <td>100 respuestas cortas</td>
+      <td class="comparison-winner">~$0.50</td>
+      <td>~$0.75</td>
+      <td>~$1.50</td>
+    </tr>
+    <tr>
+      <td>Uso moderado</td>
+      <td>1,000 respuestas cortas</td>
+      <td class="comparison-winner">~$5.00</td>
+      <td>~$7.50</td>
+      <td>~$15.00</td>
+    </tr>
+  </table>
+
+  <h3 class="subsection">7.3 Costo total mensual proyectado (pipeline completo)</h3>
+
+  <div class="summary-grid">
+    <div class="metric-card green">
+      <div class="metric-num">$0.65</div>
+      <div class="metric-label">Uso ligero (100 msgs + TTS)</div>
+    </div>
+    <div class="metric-card blue">
+      <div class="metric-num">$6.50</div>
+      <div class="metric-label">Uso moderado (1K msgs + TTS)</div>
+    </div>
+    <div class="metric-card yellow">
+      <div class="metric-num">$65</div>
+      <div class="metric-label">Uso intensivo (10K msgs + TTS)</div>
+    </div>
+  </div>
+
+  <p style="font-size: 12px; color: #6c757d;">
+    * Pipeline: gpt-4o-mini-transcribe ($0.003/min) + gpt-4o-mini-tts ($12/1M tokens). No incluye costo de Claude API.
+  </p>
+
+  <!-- ================================================================== -->
+  <h2 class="section">8. Arquitectura Propuesta (v2) <span class="updated-badge">ACTUALIZADO</span></h2>
+
+  <div class="arch-diagram">
+  Telegram                    Commander                      APIs externas
+  =========                   =========                      ==============
+
+  [Foto JPEG] ──msg.photo──&gt; detectar tipo ──base64──&gt; Anthropic API /v1/messages
+                                  │                        (content: image + text)
+                                  │                              │
+  [Voice .ogg] ──msg.voice──&gt; detectar tipo ──buffer──&gt; OpenAI /v1/audio/transcriptions
+                                  │                        (gpt-4o-mini-transcribe)
+                                  │                              │
+                                  │                         texto transcrito
+                                  │                              │
+  [Texto]     ──msg.text────&gt; detectar tipo              claude -p (stdin)
+                                  │                              │
+                                  &lt;────── respuesta &lt;────────────┘
+                                  │
+                                  ├── es voice? ──SI──&gt; OpenAI /v1/audio/speech
+                                  │                      (gpt-4o-mini-tts, opus)
+                                  │                              │
+  [Chat TG]   &lt;── sendVoice ────────────────────────────────────┘
+  [Chat TG]   &lt;── sendMessage──┘ (texto, si no era voice)
+
+
+  Dependencias:
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  ANTHROPIC_API_KEY  (para imagenes, API directa de Claude)          │
+  │  OPENAI_API_KEY     (para transcripcion + TTS, pipeline de audio)   │
+  └──────────────────────────────────────────────────────────────────────┘
+
+  Pipeline de audio completo:
+  ┌─────────┐    ┌──────────────┐    ┌─────────┐    ┌──────────┐    ┌─────────┐
+  │ Telegram │───&gt;│ Transcribe   │───&gt;│ Claude  │───&gt;│ TTS      │───&gt;│Telegram │
+  │ Voice    │    │ (OpenAI STT) │    │ (texto) │    │ (OpenAI) │    │ Voice   │
+  └─────────┘    └──────────────┘    └─────────┘    └──────────┘    └─────────┘
+     .ogg            texto              texto           .opus          .ogg
+    $0.003/min                      (costo Claude)   ~$0.01/resp
+  </div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">9. Dependencias y Requisitos</h2>
+
+  <table>
+    <tr><th>Requisito</th><th>Para</th><th>Estado actual</th><th>Accion</th></tr>
+    <tr>
+      <td><code>ANTHROPIC_API_KEY</code></td>
+      <td>Imagenes (API directa)</td>
+      <td><span class="tag tag-yellow">Verificar</span></td>
+      <td>Agregar a <code>telegram-config.json</code> o variable de entorno</td>
+    </tr>
+    <tr>
+      <td><code>OPENAI_API_KEY</code></td>
+      <td>Transcripcion + TTS</td>
+      <td><span class="tag tag-red">No configurada</span></td>
+      <td>Obtener key de OpenAI y agregar a <code>telegram-config.json</code></td>
+    </tr>
+    <tr>
+      <td>Node.js <code>https</code></td>
+      <td>Todas las llamadas HTTP</td>
+      <td><span class="tag tag-green">Disponible</span></td>
+      <td>Ya incluido en Node.js (sin deps externas)</td>
+    </tr>
+    <tr>
+      <td>Telegram Bot API</td>
+      <td><code>getFile</code>, <code>sendVoice</code>, <code>sendMessage</code></td>
+      <td><span class="tag tag-green">Bot activo</span></td>
+      <td>Ya configurado en <code>telegram-config.json</code></td>
+    </tr>
+    <tr>
+      <td><code>ffmpeg</code> (opcional)</td>
+      <td>Conversion OGG &rarr; MP3 si hay problemas</td>
+      <td><span class="tag tag-gray">Opcional</span></td>
+      <td>Solo si el API no acepta bien el OGG/Opus de Telegram</td>
+    </tr>
+  </table>
+
+  <!-- ================================================================== -->
+  <h2 class="section">10. Estimacion de Esfuerzo <span class="updated-badge">ACTUALIZADO</span></h2>
+
+  <table>
+    <tr><th>Feature</th><th>Complejidad</th><th>Archivos a modificar</th><th>Dependencia externa</th></tr>
+    <tr>
+      <td>Imagenes &rarr; Claude</td>
+      <td><span class="tag tag-yellow">Media</span></td>
+      <td><code>telegram-commander.js</code> (handler + API call)</td>
+      <td><code>ANTHROPIC_API_KEY</code></td>
+    </tr>
+    <tr>
+      <td>Audio/Voz &rarr; Transcripcion &rarr; Claude</td>
+      <td><span class="tag tag-yellow">Media</span></td>
+      <td><code>telegram-commander.js</code> (handler + OpenAI transcribe + Claude)</td>
+      <td><code>OPENAI_API_KEY</code></td>
+    </tr>
+    <tr>
+      <td>Respuesta por voz (TTS) <span class="new-badge">NUEVO</span></td>
+      <td><span class="tag tag-yellow">Media</span></td>
+      <td><code>telegram-commander.js</code> (TTS call + sendVoice)</td>
+      <td><code>OPENAI_API_KEY</code> (misma key)</td>
+    </tr>
+    <tr>
+      <td>Caption como prompt</td>
+      <td><span class="tag tag-green">Baja</span></td>
+      <td><code>telegram-commander.js</code> (extraer <code>msg.caption</code>)</td>
+      <td>Ninguna</td>
+    </tr>
+  </table>
+
+  <div class="alert alert-blue">
+    <strong>Nota sobre esfuerzo de TTS</strong>
+    La complejidad se redujo de Media-Alta a Media porque: (1) <code>OPENAI_API_KEY</code> ya se configura
+    para la transcripcion, (2) el formato Opus sale directo del API sin conversion, (3) <code>sendVoice</code>
+    de Telegram acepta un buffer binario directamente. Son ~30 lineas de codigo adicionales.
+  </div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">11. Riesgos y Mitigaciones</h2>
+
+  <div class="rec-card medium">
+    <div class="rec-title">Costo por uso de APIs</div>
+    <div class="rec-body">
+      Anthropic API (imagenes): ~$0.004/imagen de 1000x1000px.<br>
+      OpenAI Transcribe: $0.003-$0.006/minuto (segun modelo elegido).<br>
+      OpenAI TTS: ~$0.01-$0.02/respuesta corta.<br>
+      <strong>Mitigacion:</strong> Limitar tamanio de imagenes/audio, rate-limiting por chat, mostrar aviso de costo.
+      Usar <code>gpt-4o-mini-transcribe</code> (50% mas barato) por defecto.
+    </div>
+  </div>
+
+  <div class="rec-card medium">
+    <div class="rec-title">Timeout en transcripcion/TTS</div>
+    <div class="rec-body">
+      Audios largos pueden tardar mas en transcribir; respuestas largas tardan mas en sintetizar.<br>
+      <strong>Mitigacion:</strong> Limitar a 2 minutos de audio, timeout de 30s, truncar TTS a 2000 tokens,
+      enviar "Transcribiendo..." / "Generando audio..." al chat con <code>sendChatAction</code>.
+    </div>
+  </div>
+
+  <div class="rec-card high">
+    <div class="rec-title">Seguridad de API keys</div>
+    <div class="rec-body">
+      Las keys no deben quedar en el codigo fuente.<br>
+      <strong>Mitigacion:</strong> Usar <code>telegram-config.json</code> (ya en .gitignore) o variables de entorno del sistema.
+      Una sola <code>OPENAI_API_KEY</code> sirve para transcripcion Y TTS.
+    </div>
+  </div>
+
+  <div class="rec-card medium">
+    <div class="rec-title">Vendor lock-in con OpenAI <span class="new-badge">NUEVO</span></div>
+    <div class="rec-body">
+      Usar OpenAI para transcripcion Y TTS crea dependencia en un solo proveedor.<br>
+      <strong>Mitigacion:</strong> La arquitectura de pipeline permite reemplazar cualquier componente:
+      si OpenAI sube precios o degrada servicio, se puede migrar transcripcion a Deepgram
+      o TTS a otro proveedor sin cambiar el flujo general. Las funciones <code>transcribeAudio()</code>
+      y <code>textToSpeech()</code> encapsulan la dependencia.
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">12. Recomendaciones <span class="updated-badge">ACTUALIZADO</span></h2>
+
+  <div class="rec-card high">
+    <div class="rec-title">1. Implementar imagenes primero</div>
+    <div class="rec-body">
+      Es la feature mas directa y de mayor valor inmediato. Permite enviar capturas de pantalla,
+      diagramas, errores visuales y que Claude los interprete en contexto.
+      Solo requiere <code>ANTHROPIC_API_KEY</code> que probablemente ya este disponible.
+    </div>
+  </div>
+
+  <div class="rec-card high">
+    <div class="rec-title">2. Audio (transcripcion) como segunda fase</div>
+    <div class="rec-body">
+      Usar <strong><code>gpt-4o-mini-transcribe</code></strong> como modelo por defecto: 50% mas barato que Whisper,
+      89% menos alucinaciones, excelente calidad en espanol.
+      Opcionalmente exponer un comando <code>/quality high</code> para usar <code>gpt-4o-transcribe</code> cuando se necesite maxima precision.
+    </div>
+  </div>
+
+  <div class="rec-card new">
+    <div class="rec-title">3. Respuesta por voz (TTS) como tercera fase <span class="new-badge">NUEVO</span></div>
+    <div class="rec-body">
+      Usar <strong><code>gpt-4o-mini-tts</code></strong> con voz <code>nova</code> y formato <code>opus</code>.
+      Activar automaticamente cuando el usuario envie un voice message (espejo del canal).
+      La misma <code>OPENAI_API_KEY</code> sirve, no hay dependencia adicional.
+      Agregar instrucciones de estilo: <em>"Habla en espanol con tono profesional y amigable"</em>.
+    </div>
+  </div>
+
+  <div class="rec-card medium">
+    <div class="rec-title">4. UX: Indicadores de progreso</div>
+    <div class="rec-body">
+      Enviar mensajes intermedios al chat: "Analizando imagen..." / "Transcribiendo audio..." / "Generando respuesta de voz...".
+      Telegram tiene <code>sendChatAction(typing)</code> y <code>sendChatAction(record_voice)</code> que muestran
+      indicadores nativos automaticamente.
+    </div>
+  </div>
+
+  <div class="rec-card low">
+    <div class="rec-title">5. NO usar la Realtime API de ChatGPT</div>
+    <div class="rec-body">
+      La Realtime API ($0.30/min) es 50-100x mas cara y esta disenada para conversaciones continuas,
+      no para mensajes discretos de Telegram. Ademas, reemplazaria a Claude como motor de respuesta,
+      perdiendo todo el contexto del proyecto. El pipeline Transcribe + Claude + TTS es superior en
+      todos los aspectos para este caso de uso.
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <h2 class="section">13. Fuentes</h2>
+
+  <table>
+    <tr><th>Fuente</th><th>Tipo</th></tr>
+    <tr><td>Claude API Vision Docs — <code>platform.claude.com/docs/en/build-with-claude/vision</code></td><td>Documentacion oficial</td></tr>
+    <tr><td>Telegram Bot API — <code>core.telegram.org/bots/api</code></td><td>Documentacion oficial</td></tr>
+    <tr><td>OpenAI Whisper API — <code>platform.openai.com/docs/guides/speech-to-text</code></td><td>Documentacion oficial</td></tr>
+    <tr><td>OpenAI GPT-4o Transcribe — <code>platform.openai.com/docs/models/gpt-4o-transcribe</code></td><td>Documentacion oficial</td></tr>
+    <tr><td>OpenAI GPT-4o Mini TTS — <code>platform.openai.com/docs/models/gpt-4o-mini-tts</code></td><td>Documentacion oficial</td></tr>
+    <tr><td>OpenAI API Pricing — <code>openai.com/api/pricing</code></td><td>Precios oficiales</td></tr>
+    <tr><td>OpenAI Realtime API — <code>openai.com/index/introducing-gpt-realtime</code></td><td>Documentacion oficial</td></tr>
+    <tr><td>Deepgram Nova-3 — <code>deepgram.com/learn/best-speech-to-text-apis-2026</code></td><td>Comparativa</td></tr>
+    <tr><td>Google Cloud STT Pricing — <code>cloud.google.com/speech-to-text/pricing</code></td><td>Precios oficiales</td></tr>
+    <tr><td>AWS Transcribe Pricing — <code>aws.amazon.com/transcribe/pricing</code></td><td>Precios oficiales</td></tr>
+    <tr><td><code>.claude/hooks/telegram-commander.js</code> (lineas 2009-2097)</td><td>Codebase del proyecto</td></tr>
+    <tr><td><code>.claude/hooks/telegram-image-utils.js</code></td><td>Codebase del proyecto</td></tr>
+    <tr><td><code>.claude/hooks/telegram-config.json</code></td><td>Configuracion del proyecto</td></tr>
+  </table>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auditoría Scrum — Intrale Platform — 2026-03-03</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f8f9fa; color: #212529; font-size: 14px; line-height: 1.5; }
+  .cover { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: white; padding: 80px 60px; min-height: 280px; display: flex; flex-direction: column; justify-content: center; }
+  .cover h1 { font-size: 36px; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.5px; }
+  .cover h2 { font-size: 20px; font-weight: 300; opacity: 0.85; margin-bottom: 30px; }
+  .cover-meta { display: flex; gap: 40px; margin-top: 20px; }
+  .cover-meta span { opacity: 0.75; font-size: 13px; }
+  .cover-meta strong { opacity: 1; font-size: 14px; display: block; }
+  .badge-health { display: inline-block; padding: 8px 20px; border-radius: 20px; font-size: 16px; font-weight: 700; margin-top: 20px; }
+  .health-yellow { background: #ffc107; color: #212529; }
+  .health-red { background: #dc3545; color: white; }
+  .health-green { background: #28a745; color: white; }
+
+  .container { max-width: 960px; margin: 0 auto; padding: 40px 30px; }
+  h2.section { font-size: 22px; color: #0f3460; border-bottom: 3px solid #0f3460; padding-bottom: 8px; margin: 40px 0 20px; }
+  h3.subsection { font-size: 16px; color: #16213e; margin: 25px 0 12px; font-weight: 600; }
+
+  .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 20px 0; }
+  .metric-card { background: white; border-radius: 10px; padding: 20px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-top: 4px solid #0f3460; }
+  .metric-card.red { border-top-color: #dc3545; }
+  .metric-card.green { border-top-color: #28a745; }
+  .metric-card.yellow { border-top-color: #ffc107; }
+  .metric-card.blue { border-top-color: #007bff; }
+  .metric-num { font-size: 40px; font-weight: 700; color: #0f3460; line-height: 1; }
+  .metric-card.red .metric-num { color: #dc3545; }
+  .metric-card.green .metric-num { color: #28a745; }
+  .metric-card.yellow .metric-num { color: #c77c00; }
+  .metric-label { font-size: 12px; color: #6c757d; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin: 16px 0; }
+  th { background: #0f3460; color: white; padding: 10px 14px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 9px 14px; border-bottom: 1px solid #e9ecef; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f8f9fa; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin: 1px; }
+  .tag-red { background: #fde8e8; color: #c0392b; }
+  .tag-yellow { background: #fef9e7; color: #b7950b; }
+  .tag-blue { background: #e8f4fd; color: #1565c0; }
+  .tag-green { background: #e8f8f2; color: #1e8449; }
+  .tag-gray { background: #f5f5f5; color: #555; }
+
+  .alert { padding: 14px 18px; border-radius: 8px; margin: 14px 0; border-left: 5px solid; }
+  .alert-red { background: #fde8e8; border-color: #dc3545; color: #721c24; }
+  .alert-yellow { background: #fff8e1; border-color: #ffc107; color: #856404; }
+  .alert-blue { background: #e7f3fe; border-color: #007bff; color: #004085; }
+  .alert-green { background: #e8f8f2; border-color: #28a745; color: #155724; }
+  .alert strong { display: block; margin-bottom: 4px; font-size: 14px; }
+
+  .bar-container { background: #e9ecef; border-radius: 4px; height: 22px; margin: 4px 0; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding: 0 8px; color: white; font-size: 11px; font-weight: 600; transition: width 0.3s; }
+
+  .rec-card { background: white; border-radius: 10px; padding: 22px; margin: 16px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.07); border-left: 5px solid; }
+  .rec-card.critical { border-left-color: #dc3545; }
+  .rec-card.high { border-left-color: #fd7e14; }
+  .rec-card.medium { border-left-color: #ffc107; }
+  .rec-card.low { border-left-color: #28a745; }
+  .rec-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .rec-priority { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px; text-transform: uppercase; }
+  .priority-critical { background: #dc3545; color: white; }
+  .priority-high { background: #fd7e14; color: white; }
+  .priority-medium { background: #ffc107; color: #212529; }
+  .priority-low { background: #28a745; color: white; }
+  .rec-title { font-size: 16px; font-weight: 600; color: #212529; }
+  .rec-body { color: #495057; line-height: 1.6; }
+  .rec-body ul { margin: 8px 0 8px 20px; }
+  .rec-body li { margin: 4px 0; }
+  .rec-impact { margin-top: 10px; font-size: 12px; color: #6c757d; }
+  .rec-impact strong { color: #495057; }
+
+  .donut-container { display: flex; gap: 30px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+  .legend { list-style: none; }
+  .legend li { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+  .legend-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+
+  .timeline { position: relative; margin: 20px 0; }
+  .timeline-item { display: flex; gap: 16px; margin: 12px 0; padding-left: 10px; border-left: 2px solid #dee2e6; padding-bottom: 12px; }
+  .timeline-date { font-size: 11px; color: #6c757d; min-width: 85px; padding-top: 2px; }
+  .timeline-content { font-size: 13px; color: #495057; }
+  .timeline-num { font-weight: 600; color: #0f3460; }
+
+  footer { background: #1a1a2e; color: rgba(255,255,255,0.6); text-align: center; padding: 20px; font-size: 12px; margin-top: 60px; }
+
+  @media print {
+    body { background: white; }
+    .container { padding: 20px; }
+    .rec-card, table, .metric-card { break-inside: avoid; }
+    h2.section { break-before: auto; }
+    .cover { break-after: page; }
+  }
+</style>
+</head>
+<body>
+
+<!-- PORTADA -->
+<div class="cover">
+  <div>
+    <div style="font-size:12px;opacity:0.6;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px">Intrale Platform · Scrum Master Report</div>
+    <h1>Auditoría del Board</h1>
+    <h2>Project V2 — GitHub · Sprint Analysis</h2>
+    <div class="cover-meta">
+      <div><span>Fecha</span><strong>3 de Marzo, 2026</strong></div>
+      <div><span>Items en Board</span><strong>87 issues</strong></div>
+      <div><span>Issues Abiertos</span><strong>182 issues</strong></div>
+      <div><span>Throughput (30d)</span><strong>19 issues cerrados</strong></div>
+    </div>
+    <div class="badge-health health-yellow">🟡 Atención — Board requiere limpieza y reorganización</div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- RESUMEN EJECUTIVO -->
+  <h2 class="section">📊 Resumen Ejecutivo</h2>
+
+  <div class="summary-grid">
+    <div class="metric-card red">
+      <div class="metric-num">19</div>
+      <div class="metric-label">Discrepancias</div>
+    </div>
+    <div class="metric-card red">
+      <div class="metric-num">114</div>
+      <div class="metric-label">Issues Huérfanos</div>
+    </div>
+    <div class="metric-card green">
+      <div class="metric-num">0</div>
+      <div class="metric-label">Items Stale</div>
+    </div>
+    <div class="metric-card blue">
+      <div class="metric-num">19</div>
+      <div class="metric-label">Cerrados (30d)</div>
+    </div>
+  </div>
+
+  <div class="alert alert-yellow">
+    <strong>⚠️ Diagnóstico Principal</strong>
+    El board tiene <strong>87 items</strong> pero solo cubre el <strong>32%</strong> del backlog real (182 issues abiertos + cerrados sin categorizar).
+    Hay <strong>114 issues huérfanos</strong> que no están en el board. Además, 19 issues cerrados quedaron
+    atascados en columnas de Backlog en lugar de moverse a Done. No hay items activos en columnas
+    operativas (Todo / In Progress / Ready / Blocked) — el equipo opera sin sprint activo visible.
+  </div>
+
+  <!-- DISTRIBUCIÓN POR STATUS -->
+  <h2 class="section">📋 Distribución del Board</h2>
+
+  <h3 class="subsection">Estado actual de los 87 items</h3>
+
+  <div style="background:white;border-radius:10px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+    <div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+        <span><span style="color:#0f3460;font-weight:600">Backlog Técnico</span></span>
+        <span style="color:#6c757d">48 items (55%)</span>
+      </div>
+      <div class="bar-container"><div class="bar-fill" style="width:55%;background:#0f3460;">55%</div></div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+        <span><span style="color:#1565c0;font-weight:600">Backlog NEGOCIO</span></span>
+        <span style="color:#6c757d">13 items (15%)</span>
+      </div>
+      <div class="bar-container"><div class="bar-fill" style="width:15%;background:#1565c0;">15%</div></div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+        <span><span style="color:#6f42c1;font-weight:600">Backlog CLIENTE</span></span>
+        <span style="color:#6c757d">9 items (10%)</span>
+      </div>
+      <div class="bar-container"><div class="bar-fill" style="width:10%;background:#6f42c1;">10%</div></div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+        <span><span style="color:#20c997;font-weight:600">Backlog DELIVERY</span></span>
+        <span style="color:#6c757d">9 items (10%)</span>
+      </div>
+      <div class="bar-container"><div class="bar-fill" style="width:10%;background:#20c997;">10%</div></div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+        <span><span style="color:#dc3545;font-weight:600">Sin Status</span></span>
+        <span style="color:#6c757d">8 items (9%)</span>
+      </div>
+      <div class="bar-container"><div class="bar-fill" style="width:9%;background:#dc3545;">9%</div></div>
+    </div>
+  </div>
+
+  <div class="alert alert-blue" style="margin-top:14px">
+    <strong>ℹ️ Observación importante</strong>
+    <strong>Ningún item</strong> está en columnas operativas: Todo (0), In Progress (0), Ready (0), Blocked (0), Done (0 visibles).
+    El board funciona únicamente como <strong>repositorio de backlog</strong>, no como tablero Scrum activo.
+    Las columnas de workflow están vacías, lo que impide visualizar el progreso real del sprint.
+  </div>
+
+  <!-- DISCREPANCIAS -->
+  <h2 class="section">⚠️ Discrepancias Detectadas (19)</h2>
+
+  <div class="alert alert-red">
+    <strong>🔴 19 issues cerrados atascados fuera de Done</strong>
+    Todos los issues cerrados en el board permanecen en columnas de Backlog en lugar de Done.
+    El hook <code>post-issue-close.js</code> parece no estar actualizando correctamente el status del board.
+  </div>
+
+  <table>
+    <tr>
+      <th>Issue</th>
+      <th>Título</th>
+      <th>Status Actual</th>
+      <th>Status Correcto</th>
+      <th>Cerrado</th>
+    </tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/952" style="color:#0f3460;text-decoration:none;">#952</a></td><td>feat(backend): implementar endpoints delivery/*</td><td><span class="tag tag-gray">Backlog DELIVERY</span></td><td><span class="tag tag-green">Done</span></td><td>2026-02-28</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/981" style="color:#0f3460;text-decoration:none;">#981</a></td><td>qa(e2e): tests registros especializados</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-02-28</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/982" style="color:#0f3460;text-decoration:none;">#982</a></td><td>qa(e2e): test changePassword</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-02-28</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/984" style="color:#0f3460;text-decoration:none;">#984</a></td><td>qa(e2e): test validate — validación JWT</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-02</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1075" style="color:#0f3460;text-decoration:none;">#1075</a></td><td>Cambiar frecuencia de informes del monitor</td><td><span class="tag tag-gray">Backlog NEGOCIO</span></td><td><span class="tag tag-green">Done</span></td><td>2026-02-28</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1090" style="color:#0f3460;text-decoration:none;">#1090</a></td><td>qa(video): Login y registro básico</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-01</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1091" style="color:#0f3460;text-decoration:none;">#1091</a></td><td>qa(video): Recuperación y cambio de password</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-01</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1092" style="color:#0f3460;text-decoration:none;">#1092</a></td><td>qa(video): Autenticación 2FA</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-01</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1112" style="color:#0f3460;text-decoration:none;">#1112</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Login</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-01</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1113" style="color:#0f3460;text-decoration:none;">#1113</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Contraseña</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-01</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1114" style="color:#0f3460;text-decoration:none;">#1114</a></td><td>qa(compliance): Reporte PO+QA v2.0 — 2FA</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-01</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1115" style="color:#0f3460;text-decoration:none;">#1115</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Registro</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-02</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1117" style="color:#0f3460;text-decoration:none;">#1117</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Productos</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-02</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1149" style="color:#0f3460;text-decoration:none;">#1149</a></td><td>feat(qa): Paralelización de evidencia QA</td><td><span class="tag tag-gray">Backlog NEGOCIO</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-02</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1151" style="color:#0f3460;text-decoration:none;">#1151</a></td><td>feat(qa): Distribución automática de videos QA</td><td><span class="tag tag-gray">Backlog NEGOCIO</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-02</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1167" style="color:#0f3460;text-decoration:none;">#1167</a></td><td>fix(hooks): migrar permisos PermissionRequest</td><td><span class="tag tag-red">Sin status</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-03</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1170" style="color:#0f3460;text-decoration:none;">#1170</a></td><td>hooks: validar que toda historia corra en rama</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-03</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1180" style="color:#0f3460;text-decoration:none;">#1180</a></td><td>monitor: rediseñar el dashboard ASCII</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-03</td></tr>
+    <tr><td><a href="https://github.com/intrale/platform/issues/1182" style="color:#0f3460;text-decoration:none;">#1182</a></td><td>feat(hooks): health check adaptativo</td><td><span class="tag tag-gray">Backlog Técnico</span></td><td><span class="tag tag-green">Done</span></td><td>2026-03-03</td></tr>
+  </table>
+
+  <!-- HUÉRFANOS -->
+  <h2 class="section">👻 Issues Huérfanos (114 fuera del board)</h2>
+
+  <div class="alert alert-red">
+    <strong>🔴 Cobertura del board: 32% del backlog real</strong>
+    De 182 issues abiertos, solo 87 están en el board (incluyendo cerrados). Hay <strong>114 issues abiertos sin representación</strong> en el tablero.
+    El board no refleja la realidad del proyecto.
+  </div>
+
+  <h3 class="subsection">Categorías de huérfanos</h3>
+
+  <table>
+    <tr>
+      <th>Categoría</th>
+      <th>Cantidad</th>
+      <th>Ejemplos</th>
+      <th>Acción</th>
+    </tr>
+    <tr>
+      <td><span class="tag tag-gray">Issues de pantallas antiguas</span></td>
+      <td>~20</td>
+      <td>#49–#67 — [Pantalla] Visualización de perfiles, Asignación…</td>
+      <td>Evaluar si siguen vigentes o cerrar como obsoletos</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-blue">H2.x — Branding/DynamoDB</span></td>
+      <td>~30</td>
+      <td>#372–#403 — H2.1.S0 a H2.5.S5 — tabla DynamoDB, endpoints</td>
+      <td>Agrupar en épica o mover a Backlog correspondiente</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-yellow">Refactors de strings/i18n</span></td>
+      <td>~15</td>
+      <td>#460–#483 — Migrar strings, compatibilidad Android</td>
+      <td>Agregar al Backlog Técnico si siguen siendo deuda</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-gray">H1.3.Sx — CI/CD por brand</span></td>
+      <td>~10</td>
+      <td>#327–#334 — Jobs Android, iOS, artifacts, secrets por brand</td>
+      <td>Validar si el CI ya los resolvió; cerrar o planificar</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-red">Bugs y bloqueos viejos</span></td>
+      <td>~5</td>
+      <td>#27 (blocked), #70 (blocked), #283, #275</td>
+      <td>Investigar si siguen reproducibles; cerrar o reactivar</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-gray">Issues INTAKE no procesados</span></td>
+      <td>~5</td>
+      <td>#607, #613, #615, #681, #727</td>
+      <td>Descomponer con /priorizar y agregar al board</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-blue">Features recientes</span></td>
+      <td>~5</td>
+      <td>#1138, #1139 — Sistema de reintentos con escalada</td>
+      <td>Agregar al Backlog Técnico inmediatamente</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-gray">Varios</span></td>
+      <td>~24</td>
+      <td>#229–#253, #420, #433, #498, #599–#603…</td>
+      <td>Triaje con /priorizar para clasificar o cerrar</td>
+    </tr>
+  </table>
+
+  <!-- MÉTRICAS DE SALUD -->
+  <h2 class="section">📈 Métricas de Salud</h2>
+
+  <div class="summary-grid">
+    <div class="metric-card green">
+      <div class="metric-num">0</div>
+      <div class="metric-label">WIP (límite: 5)</div>
+    </div>
+    <div class="metric-card green">
+      <div class="metric-num">0</div>
+      <div class="metric-label">Blocked</div>
+    </div>
+    <div class="metric-card green">
+      <div class="metric-num">0</div>
+      <div class="metric-label">Stale</div>
+    </div>
+    <div class="metric-card blue">
+      <div class="metric-num">~4.7</div>
+      <div class="metric-label">Issues/Semana</div>
+    </div>
+  </div>
+
+  <h3 class="subsection">Throughput — Últimos 30 días (cerrados desde 2026-02-01)</h3>
+
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-date">2026-02-28</div>
+      <div class="timeline-content">
+        <span class="timeline-num">6 issues</span> cerrados en 1 día —
+        <span class="tag tag-blue">feat(backend)</span> <span class="tag tag-blue">qa(e2e)</span>
+        Batch de QA automatizado y endpoints delivery
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-date">2026-03-01</div>
+      <div class="timeline-content">
+        <span class="timeline-num">5 issues</span> cerrados —
+        <span class="tag tag-yellow">qa(compliance)</span> <span class="tag tag-blue">qa(video)</span>
+        Reportes PO+QA y videos evidencia (login, password, 2FA)
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-date">2026-03-02</div>
+      <div class="timeline-content">
+        <span class="timeline-num">5 issues</span> cerrados —
+        <span class="tag tag-yellow">qa(compliance)</span> <span class="tag tag-green">feat(qa)</span>
+        Reportes productos, paralelización QA, distribución videos
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-date">2026-03-03</div>
+      <div class="timeline-content">
+        <span class="timeline-num">3+ issues</span> cerrados hoy —
+        <span class="tag tag-red">fix(hooks)</span> <span class="tag tag-blue">hooks</span> <span class="tag tag-blue">monitor</span>
+        Permisos, validación de ramas, dashboard monitor, health check
+      </div>
+    </div>
+  </div>
+
+  <div class="alert alert-green">
+    <strong>✅ Throughput saludable: ~19 issues/mes (~4.7/semana)</strong>
+    El ritmo de entrega es bueno. El equipo está cerrando consistentemente, especialmente en
+    el área de QA, hooks e infraestructura de agentes. Buen momento para planificar el próximo sprint.
+  </div>
+
+  <h3 class="subsection">Distribución por área (top labels)</h3>
+
+  <table>
+    <tr><th>Label/Área</th><th>Issues en board</th><th>Barra</th></tr>
+    <tr><td><span class="tag tag-blue">area:testing</span></td><td>41 (47%)</td><td><div class="bar-container" style="max-width:300px"><div class="bar-fill" style="width:47%;background:#007bff;">47%</div></div></td></tr>
+    <tr><td><span class="tag tag-green">enhancement</span></td><td>28 (32%)</td><td><div class="bar-container" style="max-width:300px"><div class="bar-fill" style="width:32%;background:#28a745;">32%</div></div></td></tr>
+    <tr><td><span class="tag tag-yellow">from-intake</span></td><td>26 (30%)</td><td><div class="bar-container" style="max-width:300px"><div class="bar-fill" style="width:30%;background:#ffc107;">30%</div></div></td></tr>
+    <tr><td><span class="tag tag-blue">app:client</span></td><td>20 (23%)</td><td><div class="bar-container" style="max-width:300px"><div class="bar-fill" style="width:23%;background:#17a2b8;">23%</div></div></td></tr>
+    <tr><td><span class="tag tag-gray">area:pedidos</span></td><td>16 (18%)</td><td><div class="bar-container" style="max-width:300px"><div class="bar-fill" style="width:18%;background:#6c757d;">18%</div></div></td></tr>
+    <tr><td><span class="tag tag-yellow">qa-compliance</span></td><td>16 (18%)</td><td><div class="bar-container" style="max-width:300px"><div class="bar-fill" style="width:18%;background:#fd7e14;">18%</div></div></td></tr>
+    <tr><td><span class="tag tag-gray">tipo:infra</span></td><td>12 (14%)</td><td><div class="bar-container" style="max-width:300px"><div class="bar-fill" style="width:14%;background:#6f42c1;">14%</div></div></td></tr>
+  </table>
+
+  <!-- STALE -->
+  <h2 class="section">⏰ Items Stale</h2>
+  <div class="alert alert-green">
+    <strong>✅ Sin items stale — Excelente</strong>
+    Ningún item en el board supera los umbrales de staleness definidos en la metodología.
+    Nota: esto se debe en parte a que el board no tiene items activos en columnas operativas.
+  </div>
+
+  <!-- RECOMENDACIONES -->
+  <h2 class="section">💡 Recomendaciones de Mejora</h2>
+
+  <div class="alert alert-blue" style="margin-bottom:20px">
+    <strong>ℹ️ Metodología base</strong>
+    Las siguientes recomendaciones están basadas en los datos del board actual y patrones detectados.
+    Son sugerencias — el equipo decide qué adoptar. Ordenadas por prioridad e impacto esperado.
+  </div>
+
+  <!-- REC 1 -->
+  <div class="rec-card critical">
+    <div class="rec-header">
+      <span class="rec-priority priority-critical">Crítico</span>
+      <span class="rec-title">1. Arreglar el hook post-issue-close.js — no mueve issues a Done</span>
+    </div>
+    <div class="rec-body">
+      <p>Los 19 issues cerrados en las últimas semanas no se movieron automáticamente a Done en el board.
+      El hook <code>post-issue-close.js</code> está fallando silenciosamente o no detectando el evento correctamente.</p>
+      <ul>
+        <li>Revisar el hook en <code>.claude/hooks/post-issue-close.js</code></li>
+        <li>Verificar que el campo <code>status_field_id</code> y el option ID de Done (98236657) sean correctos</li>
+        <li>Agregar logging explícito cuando el hook corre exitosamente</li>
+        <li>Correr <code>/scrum sync</code> manualmente para mover los 19 issues a Done</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> El board quedará limpio y reflejará la realidad. La columna Done mostrará
+        el historial real de entregas, mejorando la visibilidad para el equipo y stakeholders.
+      </div>
+    </div>
+  </div>
+
+  <!-- REC 2 -->
+  <div class="rec-card critical">
+    <div class="rec-header">
+      <span class="rec-priority priority-critical">Crítico</span>
+      <span class="rec-title">2. Activar las columnas operativas del board (Todo / In Progress / Ready)</span>
+    </div>
+    <div class="rec-body">
+      <p>El board actualmente funciona solo como repositorio de backlog. Las columnas de workflow
+      (Todo, In Progress, Ready, Blocked) tienen 0 items, lo que significa que el equipo no tiene
+      visibilidad del trabajo activo en curso.</p>
+      <ul>
+        <li>Al comenzar cada sprint, seleccionar issues del Backlog y moverlos a <strong>Todo</strong></li>
+        <li>Al iniciar trabajo en un issue, moverlo a <strong>In Progress</strong></li>
+        <li>Al crear PR, moverlo a <strong>Ready</strong></li>
+        <li>Esto activa las métricas reales: WIP, Blocked ratio, Cycle time</li>
+        <li>Considerar sprint de 1 semana dado el ritmo actual (~5 issues/semana)</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> El board pasará de ser un "archivo de backlog" a una herramienta de gestión
+        real. El equipo puede ver de un vistazo qué está en progreso y qué está bloqueado.
+      </div>
+    </div>
+  </div>
+
+  <!-- REC 3 -->
+  <div class="rec-card high">
+    <div class="rec-header">
+      <span class="rec-priority priority-high">Alta</span>
+      <span class="rec-title">3. Triaje masivo de los 114 issues huérfanos</span>
+    </div>
+    <div class="rec-body">
+      <p>Hay 114 issues abiertos que no están en el board. Esto representa el 68% del backlog real oculto.
+      Se recomienda un proceso de triaje en 3 fases:</p>
+      <ul>
+        <li><strong>Fase 1 — Cerrar obsoletos</strong>: Issues de 2024 (#13–#72) sobre pantallas, builds rotos.
+        Muchos probablemente ya fueron resueltos sin cerrar el issue.</li>
+        <li><strong>Fase 2 — Agrupar épicas</strong>: Los ~30 issues H2.x de Branding/DynamoDB son sub-tareas
+        de una épica que nunca se priorizó. Crear una épica padre y vincularlos.</li>
+        <li><strong>Fase 3 — Agregar al board</strong>: Issues recientes (#1138, #1139) y INTAKE no procesados
+        (#607, #615, etc.) deben entrar al board inmediatamente via <code>/priorizar</code>.</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> El board pasará de representar el 32% al 90%+ del backlog real.
+        Se eliminará la deuda técnica de gestión acumulada en 2 años.
+      </div>
+    </div>
+  </div>
+
+  <!-- REC 4 -->
+  <div class="rec-card high">
+    <div class="rec-header">
+      <span class="rec-priority priority-high">Alta</span>
+      <span class="rec-title">4. Implementar columna "Refined" antes de Todo</span>
+    </div>
+    <div class="rec-body">
+      <p>El board tiene la columna "Refined" configurada pero no se usa en el workflow actual.
+      Activarla como paso intermedio entre Backlog y Todo permitiría:</p>
+      <ul>
+        <li>Distinguir issues listos para sprint (refinados) de los que aún necesitan trabajo de análisis</li>
+        <li>El flujo sería: Backlog → Refined (tras /refinar) → Todo (al entrar al sprint) → In Progress</li>
+        <li>Solo issues en Refined entran al sprint, garantizando que tengan criterios de aceptación claros</li>
+        <li>El skill <code>/refinar</code> puede marcarlos automáticamente al terminar</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> Sprint planning más ágil. Los agentes pueden tomar issues de Refined
+        con confianza de que están bien definidos. Reduce re-trabajo por ambigüedad.
+      </div>
+    </div>
+  </div>
+
+  <!-- REC 5 -->
+  <div class="rec-card medium">
+    <div class="rec-header">
+      <span class="rec-priority priority-medium">Media</span>
+      <span class="rec-title">5. Establecer sprints de 1 semana con capacidad explícita</span>
+    </div>
+    <div class="rec-body">
+      <p>Con un throughput de ~4.7 issues/semana, el equipo (mayormente agentes IA) tiene una
+      cadencia predecible. Se recomienda formalizar esto:</p>
+      <ul>
+        <li>Sprint semanal: lunes a domingo (o 7 días desde inicio)</li>
+        <li>Capacidad: 4–6 issues por sprint (basado en historial)</li>
+        <li>Sprint goal documentado en el board cada semana</li>
+        <li>Revisión de sprint: ejecutar <code>/scrum standup</code> al final de cada sprint</li>
+        <li>El <code>sprint-plan.json</code> podría incluir fechas de sprint explícitas</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> Mejora la predictibilidad y permite estimar cuándo se completan
+        los objetivos del roadmap. Facilita comunicación con stakeholders.
+      </div>
+    </div>
+  </div>
+
+  <!-- REC 6 -->
+  <div class="rec-card medium">
+    <div class="rec-header">
+      <span class="rec-priority priority-medium">Media</span>
+      <span class="rec-title">6. Consolidar el Backlog Técnico — demasiado ancho (48 items)</span>
+    </div>
+    <div class="rec-body">
+      <p>El Backlog Técnico concentra el 55% de todos los items del board (48 issues).
+      Esta columna se usa para todo, lo que dificulta encontrar qué priorizar.</p>
+      <ul>
+        <li>Crear sub-categorías o usar labels para agrupar: <code>infra</code>, <code>qa</code>, <code>tooling</code>, <code>feature</code></li>
+        <li>Separar issues de herramientas de agentes (hooks, monitor, etc.) en un Backlog propio</li>
+        <li>Considerar columna "Backlog Agentes" para issues de hooks, monitor, CI de agentes</li>
+        <li>Issues de QA compliance (16 en board) podrían ir en "Backlog QA" separado</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> Sprint planning más rápido. El equipo puede filtrar por área de trabajo
+        sin sondear todos los 48 items del backlog técnico.
+      </div>
+    </div>
+  </div>
+
+  <!-- REC 7 -->
+  <div class="rec-card low">
+    <div class="rec-header">
+      <span class="rec-priority priority-low">Baja</span>
+      <span class="rec-title">7. Agregar columna "Backlog Agentes/Infra" para separar tooling de features</span>
+    </div>
+    <div class="rec-body">
+      <p>El 47% de los issues en el board tienen el label <code>area:testing</code> y muchos son sobre
+      infraestructura de agentes (hooks, monitor, CI). Mezclarlos con features de negocio
+      hace el board difícil de leer desde perspectiva de producto.</p>
+      <ul>
+        <li>Nueva columna: <strong>Backlog Agentes</strong> para hooks, monitor, CI, tooling de Claude</li>
+        <li>El resto sigue en Backlog Técnico / CLIENTE / NEGOCIO / DELIVERY</li>
+        <li>Facilita que el PO se enfoque en columns de negocio y el equipo técnico en la de agentes</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> Mayor claridad visual. Los stakeholders de negocio ven su backlog
+        sin ruido de infra. El equipo técnico tiene su columna propia.
+      </div>
+    </div>
+  </div>
+
+  <!-- REC 8 -->
+  <div class="rec-card low">
+    <div class="rec-header">
+      <span class="rec-priority priority-low">Baja</span>
+      <span class="rec-title">8. Integrar métricas del board en el reporte semanal de Telegram</span>
+    </div>
+    <div class="rec-body">
+      <p>El bot de Telegram ya envía notificaciones de actividad de agentes. Extenderlo
+      para incluir un resumen semanal automático del board sería de alto valor:</p>
+      <ul>
+        <li>Ejecutar <code>/scrum standup</code> automáticamente cada lunes a las 9am</li>
+        <li>Enviar el resumen a Telegram: issues cerrados, en progreso, bloqueados</li>
+        <li>Incluir throughput de la semana vs semana anterior</li>
+        <li>Alertar automáticamente si hay items stale o WIP excedido</li>
+      </ul>
+      <div class="rec-impact">
+        <strong>Impacto:</strong> Visibilidad proactiva sin necesidad de revisar el board manualmente.
+        El equipo y stakeholders reciben información relevante sin pedirla.
+      </div>
+    </div>
+  </div>
+
+  <!-- PLAN DE ACCIÓN -->
+  <h2 class="section">🎯 Plan de Acción Prioritizado</h2>
+
+  <table>
+    <tr>
+      <th>#</th>
+      <th>Acción</th>
+      <th>Skill</th>
+      <th>Esfuerzo</th>
+      <th>Impacto</th>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>Correr <code>/scrum sync</code> para mover 19 issues a Done</td>
+      <td><span class="tag tag-blue">/scrum sync</span></td>
+      <td>5 min</td>
+      <td><span class="tag tag-green">Alto</span></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Investigar y arreglar <code>post-issue-close.js</code></td>
+      <td>Manual + /auth</td>
+      <td>30 min</td>
+      <td><span class="tag tag-green">Alto</span></td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Triaje de issues huérfanos (cerrar obsoletos)</td>
+      <td><span class="tag tag-yellow">/priorizar</span></td>
+      <td>2h</td>
+      <td><span class="tag tag-green">Alto</span></td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Activar columnas operativas con próximo sprint</td>
+      <td><span class="tag tag-blue">/planner</span></td>
+      <td>1h</td>
+      <td><span class="tag tag-green">Alto</span></td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Activar flujo Refined → Todo en methodology.md</td>
+      <td><span class="tag tag-gray">Manual</span></td>
+      <td>30 min</td>
+      <td><span class="tag tag-yellow">Medio</span></td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Reorganizar Backlog Técnico con sub-labels</td>
+      <td><span class="tag tag-yellow">/priorizar</span></td>
+      <td>1h</td>
+      <td><span class="tag tag-yellow">Medio</span></td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Agregar Backlog Agentes como columna separada</td>
+      <td>Manual (GitHub)</td>
+      <td>15 min</td>
+      <td><span class="tag tag-gray">Bajo</span></td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Automatizar standup semanal a Telegram</td>
+      <td>Nuevo hook</td>
+      <td>2h</td>
+      <td><span class="tag tag-gray">Bajo</span></td>
+    </tr>
+  </table>
+
+  <!-- CONCLUSIONES -->
+  <h2 class="section">✅ Conclusiones</h2>
+
+  <div class="alert alert-yellow">
+    <strong>🟡 Salud general: Atención</strong>
+    El proyecto tiene un throughput saludable (~5 issues/semana) y 0 items stale, lo que indica
+    que el equipo está productivo. Sin embargo, el board no refleja la realidad del trabajo
+    porque: (1) el hook de Done no funciona, (2) las columnas operativas están vacías,
+    y (3) el 68% del backlog está fuera del board. Estas son correcciones de gestión, no
+    problemas de código, y pueden resolverse en 1-2 días.
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px">
+    <div class="alert alert-green" style="margin:0">
+      <strong>✅ Lo que funciona bien</strong>
+      Throughput consistente (~5/sem) · Sin items stale · 0 WIP excedido ·
+      Hooks de CI/notificaciones activos · Agentes entregando regularmente ·
+      Labels y categorías bien definidas
+    </div>
+    <div class="alert alert-red" style="margin:0">
+      <strong>🔴 Lo que necesita corrección</strong>
+      Hook post-issue-close roto · 114 huérfanos fuera del board ·
+      0 items en columnas operativas · Board no refleja sprint activo ·
+      Backlog técnico demasiado grande sin sub-categorías
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <p>Intrale Platform · Scrum Master Report · Generado el 2026-03-03</p>
+  <p style="margin-top:4px">Project V2: <a href="https://github.com/orgs/intrale/projects/1" style="color:rgba(255,255,255,0.5)">github.com/orgs/intrale/projects/1</a> · 87 items analizados · 182 issues abiertos</p>
+</footer>
+
+</body>
+</html>

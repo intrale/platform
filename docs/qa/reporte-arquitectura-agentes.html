@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arquitectura de Agentes — Intrale Platform</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; line-height: 1.6; color: #1a1a2e; background: #f8f9fa; }
+
+  .cover { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: white; padding: 60px 50px; min-height: 280px; page-break-after: always; }
+  .cover h1 { font-size: 34px; font-weight: 700; margin-bottom: 8px; }
+  .cover h2 { font-size: 20px; font-weight: 300; opacity: 0.85; margin-bottom: 8px; }
+  .cover h3 { font-size: 15px; font-weight: 300; opacity: 0.7; margin-bottom: 30px; }
+  .cover-meta { display: flex; gap: 40px; margin-top: 30px; }
+  .cover-meta-item { font-size: 12px; opacity: 0.75; }
+  .cover-meta-item strong { display: block; font-size: 14px; opacity: 1; margin-bottom: 4px; }
+  .badge { display: inline-block; background: #e94560; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-bottom: 16px; }
+
+  .container { max-width: 900px; margin: 0 auto; padding: 30px 40px; }
+
+  h1 { font-size: 24px; color: #0f3460; border-bottom: 3px solid #e94560; padding-bottom: 10px; margin: 40px 0 20px; }
+  h2 { font-size: 18px; color: #16213e; margin: 28px 0 14px; border-left: 4px solid #e94560; padding-left: 12px; }
+  h3 { font-size: 15px; color: #0f3460; margin: 20px 0 10px; }
+  h4 { font-size: 13px; color: #16213e; margin: 14px 0 8px; font-weight: 600; }
+
+  p { margin-bottom: 12px; }
+  ul, ol { margin: 8px 0 16px 24px; }
+  li { margin-bottom: 4px; }
+
+  .executive-summary { background: white; border-left: 5px solid #0f3460; padding: 20px 24px; border-radius: 0 8px 8px 0; margin: 20px 0 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+
+  .section-card { background: white; border-radius: 10px; box-shadow: 0 3px 12px rgba(0,0,0,0.1); margin: 20px 0; overflow: hidden; page-break-inside: avoid; }
+  .section-card .card-header { padding: 14px 24px; color: white; font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 10px; }
+  .section-card .card-header.planning { background: linear-gradient(135deg, #6a1b9a, #8e24aa); }
+  .section-card .card-header.development { background: linear-gradient(135deg, #1565c0, #1e88e5); }
+  .section-card .card-header.testing { background: linear-gradient(135deg, #2e7d32, #43a047); }
+  .section-card .card-header.delivery { background: linear-gradient(135deg, #e65100, #f57c00); }
+  .section-card .card-header.monitoring { background: linear-gradient(135deg, #37474f, #546e7a); }
+  .section-card .card-header.hooks { background: linear-gradient(135deg, #b71c1c, #e53935); }
+  .section-card .card-body { padding: 18px 24px; }
+
+  .agent-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 12px; }
+  .agent-table th { background: #16213e; color: white; padding: 8px 12px; text-align: left; font-weight: 600; }
+  .agent-table td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  .agent-table tr:nth-child(even) { background: #f8f9fa; }
+  .agent-table tr:hover { background: #eef2ff; }
+
+  .badge-pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .badge-haiku { background: #d1ecf1; color: #0c5460; }
+  .badge-sonnet { background: #d4edda; color: #155724; }
+  .badge-opus { background: #f8d7da; color: #721c24; }
+  .badge-gate { background: #fff3cd; color: #856404; }
+  .badge-standalone { background: #e2e8f0; color: #4a5568; }
+
+  .mermaid { background: white; border-radius: 8px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.06); overflow-x: auto; }
+
+  .hook-item { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 18px; margin: 10px 0; }
+  .hook-item h4 { margin: 0 0 6px 0; color: #e53935; }
+  .hook-trigger { display: inline-block; background: #fce4ec; color: #c62828; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-bottom: 6px; }
+  .hook-action { color: #37474f; font-size: 12px; }
+
+  .data-flow-item { display: flex; gap: 12px; margin: 8px 0; align-items: flex-start; }
+  .data-flow-icon { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+
+  .toc { background: white; border-radius: 10px; padding: 24px 30px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .toc h2 { border-left: none; margin-top: 0; }
+  .toc ol { counter-reset: toc; list-style: none; padding: 0; margin: 0; }
+  .toc > ol > li { counter-increment: toc; margin: 8px 0; }
+  .toc > ol > li::before { content: counter(toc) ". "; font-weight: 700; color: #e94560; }
+  .toc a { color: #0f3460; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+  .stat-box { background: white; border-radius: 8px; padding: 16px; text-align: center; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+  .stat-value { font-size: 28px; font-weight: 700; color: #0f3460; }
+  .stat-label { font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; }
+
+  @media print {
+    .cover { page-break-after: always; }
+    .section-card { page-break-inside: avoid; }
+    .mermaid { page-break-inside: avoid; }
+  }
+
+  .info-box { background: #e8f4fd; border: 1px solid #90caf9; border-radius: 8px; padding: 14px 18px; margin: 14px 0; font-size: 12px; }
+  .warning-box { background: #fff8e1; border: 1px solid #ffcc02; border-radius: 8px; padding: 14px 18px; margin: 14px 0; font-size: 12px; }
+  .critical-box { background: #fce4ec; border: 1px solid #ef9a9a; border-radius: 8px; padding: 14px 18px; margin: 14px 0; font-size: 12px; }
+
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 11px; }
+  pre { background: #1a1a2e; color: #e0e0e0; padding: 14px 18px; border-radius: 8px; font-size: 11px; overflow-x: auto; margin: 12px 0; font-family: 'Cascadia Code', 'Fira Code', monospace; line-height: 1.5; }
+</style>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      primaryColor: '#0f3460',
+      primaryTextColor: '#fff',
+      primaryBorderColor: '#1a1a2e',
+      lineColor: '#546e7a',
+      secondaryColor: '#e94560',
+      tertiaryColor: '#f8f9fa',
+      fontSize: '13px'
+    },
+    flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+    sequence: { useMaxWidth: true, actorMargin: 40, messageMargin: 30 }
+  });
+</script>
+</head>
+<body>
+
+<!-- ==================== PORTADA ==================== -->
+<div class="cover">
+  <span class="badge">ARQUITECTURA v1.0</span>
+  <h1>Arquitectura de Agentes</h1>
+  <h2>Diagramas de Flujo e Interaccion</h2>
+  <h3>Intrale Platform — Sistema de Agentes Autonomos Orquestados</h3>
+  <div class="cover-meta">
+    <div class="cover-meta-item">
+      <strong>Proyecto</strong>
+      intrale/platform
+    </div>
+    <div class="cover-meta-item">
+      <strong>Fecha</strong>
+      2026-03-01
+    </div>
+    <div class="cover-meta-item">
+      <strong>Agentes</strong>
+      22 skills + 10 hooks
+    </div>
+    <div class="cover-meta-item">
+      <strong>Stack</strong>
+      Claude Code + Node.js + PowerShell
+    </div>
+  </div>
+</div>
+
+<!-- ==================== INDICE ==================== -->
+<div class="container">
+  <div class="toc">
+    <h2>Indice</h2>
+    <ol>
+      <li><a href="#resumen">Resumen Ejecutivo</a></li>
+      <li><a href="#inventario">Inventario de Agentes</a></li>
+      <li><a href="#flujo-sprint">Diagrama de Flujo: Ciclo de Sprint</a></li>
+      <li><a href="#flujo-implementacion">Diagrama de Flujo: Implementacion de un Issue</a></li>
+      <li><a href="#interaccion-agentes">Diagrama de Interaccion entre Agentes</a></li>
+      <li><a href="#hooks">Sistema de Hooks</a></li>
+      <li><a href="#telegram">Integracion Telegram</a></li>
+      <li><a href="#orquestacion">Orquestacion y Worktrees</a></li>
+      <li><a href="#datos">Flujo de Datos Persistentes</a></li>
+      <li><a href="#modelos">Modelos y Costos</a></li>
+      <li><a href="#protecciones">Protecciones y Gates</a></li>
+    </ol>
+  </div>
+
+  <!-- ==================== 1. RESUMEN ==================== -->
+  <h1 id="resumen">1. Resumen Ejecutivo</h1>
+
+  <div class="executive-summary">
+    <p>Intrale Platform implementa un <strong>sistema de agentes IA autonomos orquestados</strong> que automatiza el ciclo completo de desarrollo de software: planificacion, implementacion, testing, QA, code review y delivery. Los agentes operan en <strong>worktrees Git aislados</strong>, se comunican via <strong>Telegram</strong> y son monitoreados en tiempo real.</p>
+  </div>
+
+  <div class="stat-grid">
+    <div class="stat-box">
+      <div class="stat-value">22</div>
+      <div class="stat-label">Skills / Agentes</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-value">10</div>
+      <div class="stat-label">Hooks Automaticos</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-value">3</div>
+      <div class="stat-label">Agentes en Paralelo</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-value">5</div>
+      <div class="stat-label">Scripts Orquestacion</div>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <strong>Ciclo autonomo:</strong> El sistema puede ejecutar sprints completos sin intervencion humana. El usuario monitorea desde Telegram y solo interviene para aprobar permisos criticos o decidir si iniciar un nuevo sprint.
+  </div>
+
+  <!-- ==================== 2. INVENTARIO ==================== -->
+  <h1 id="inventario">2. Inventario Completo de Agentes</h1>
+
+  <h2>2.1 Clasificacion por Tier</h2>
+
+  <div class="section-card">
+    <div class="card-header planning">Tier 1 — Investigacion y Planificacion</div>
+    <div class="card-body">
+      <table class="agent-table">
+        <tr><th>Skill</th><th>Nombre</th><th>Modelo</th><th>Funcion Principal</th><th>Modos</th></tr>
+        <tr><td><code>/guru</code></td><td>Guru</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Investigacion tecnica con Context7 + codebase</td><td>investigar</td></tr>
+        <tr><td><code>/planner</code></td><td>Planner</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Planificacion estrategica, sprints, propuestas</td><td>sprint, planificar, proponer</td></tr>
+        <tr><td><code>/doc</code></td><td>Doc</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Gestion unificada de backlog</td><td>nueva, refinar, triaje, estado</td></tr>
+        <tr><td><code>/historia</code></td><td>Historia</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Crear historias de usuario como issues GitHub</td><td>crear</td></tr>
+        <tr><td><code>/refinar</code></td><td>Refinar</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Refinar issues existentes con estructura estandar</td><td>refinar</td></tr>
+        <tr><td><code>/priorizar</code></td><td>Priorizar</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Triaje masivo de issues sin labels</td><td>triaje</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div class="card-header development">Tier 2 — Desarrollo por Plataforma</div>
+    <div class="card-body">
+      <table class="agent-table">
+        <tr><th>Skill</th><th>Nombre</th><th>Modelo</th><th>Funcion Principal</th><th>Modulo</th></tr>
+        <tr><td><code>/branch</code></td><td>Branch</td><td><span class="badge-pill badge-haiku">Haiku</span></td><td>Guardian Git, crea ramas, protege main</td><td>Todos</td></tr>
+        <tr><td><code>/backend-dev</code></td><td>BackendDev</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Backend Ktor, DynamoDB, Cognito, Lambda</td><td>:backend, :users</td></tr>
+        <tr><td><code>/android-dev</code></td><td>AndroidDev</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Android Compose, Material3, flavors</td><td>:app (androidMain)</td></tr>
+        <tr><td><code>/ios-dev</code></td><td>iOSDev</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>iOS ComposeUIViewController, framework</td><td>:app (iosMain)</td></tr>
+        <tr><td><code>/web-dev</code></td><td>WebDev</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Web Kotlin/Wasm, PWA, Webpack</td><td>:app (wasmJsMain)</td></tr>
+        <tr><td><code>/desktop-dev</code></td><td>DesktopDev</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Desktop JVM, Window API, Swing</td><td>:app (jvmMain)</td></tr>
+        <tr><td><code>/builder</code></td><td>Builder</td><td><span class="badge-pill badge-haiku">Haiku</span></td><td>Build, compilacion, verificaciones</td><td>Todos</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div class="card-header testing">Tier 3 — Testing y Calidad</div>
+    <div class="card-body">
+      <table class="agent-table">
+        <tr><th>Skill</th><th>Nombre</th><th>Modelo</th><th>Funcion Principal</th><th>Gate</th></tr>
+        <tr><td><code>/tester</code></td><td>Tester</td><td><span class="badge-pill badge-haiku">Haiku</span></td><td>Tests unitarios, cobertura Kover</td><td><span class="badge-pill badge-standalone">No</span></td></tr>
+        <tr><td><code>/qa</code></td><td>QA E2E</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Tests E2E contra entorno real + video</td><td><span class="badge-pill badge-gate">GATE</span></td></tr>
+        <tr><td><code>/review</code></td><td>Review</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Code review automatizado de PRs</td><td><span class="badge-pill badge-standalone">No</span></td></tr>
+        <tr><td><code>/po</code></td><td>Product Owner</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Validacion de negocio, criterios BDD</td><td><span class="badge-pill badge-standalone">No</span></td></tr>
+        <tr><td><code>/ux</code></td><td>UX Specialist</td><td><span class="badge-pill badge-sonnet">Sonnet</span></td><td>Auditoria UX, benchmarking, tendencias</td><td><span class="badge-pill badge-standalone">No</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div class="card-header delivery">Tier 4 — Entrega y Cierre</div>
+    <div class="card-body">
+      <table class="agent-table">
+        <tr><th>Skill</th><th>Nombre</th><th>Modelo</th><th>Funcion Principal</th><th>Gate QA</th></tr>
+        <tr><td><code>/delivery</code></td><td>DeliveryManager</td><td><span class="badge-pill badge-haiku">Haiku</span></td><td>Commit + push + PR + merge en un paso</td><td><span class="badge-pill badge-gate">OBLIGATORIO</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div class="card-header monitoring">Tier 5 — Monitoreo, Seguridad y Mantenimiento</div>
+    <div class="card-body">
+      <table class="agent-table">
+        <tr><th>Skill</th><th>Nombre</th><th>Modelo</th><th>Funcion Principal</th></tr>
+        <tr><td><code>/monitor</code></td><td>Monitor</td><td><span class="badge-pill badge-haiku">Haiku</span></td><td>Dashboard multi-sesion en tiempo real</td></tr>
+        <tr><td><code>/auth</code></td><td>Auth</td><td><span class="badge-pill badge-haiku">Haiku</span></td><td>Gestion de permisos de Claude Code</td></tr>
+        <tr><td><code>/cleanup</code></td><td>Cleanup</td><td><span class="badge-pill badge-haiku">Haiku</span></td><td>Limpieza segura de workspace</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ==================== 3. FLUJO SPRINT ==================== -->
+  <h1 id="flujo-sprint">3. Diagrama de Flujo: Ciclo de Sprint Autonomo</h1>
+
+  <p>El siguiente diagrama muestra el ciclo completo de un sprint, desde la planificacion hasta el cierre y la decision de iniciar el siguiente sprint.</p>
+
+  <div class="mermaid">
+flowchart TB
+    START((Inicio)) --> PLANNER["/planner sprint N"]
+    PLANNER --> |"Genera sprint-plan.json<br/>Top N issues accionables"| LAUNCH["Start-Agente.ps1 all"]
+
+    LAUNCH --> |"Crea worktrees aislados<br/>Copia .claude/ completo"| PARALLEL
+
+    subgraph PARALLEL["Ejecucion Paralela (max 3 agentes)"]
+        direction LR
+        A1["Agente 1<br/>Issue #X"]
+        A2["Agente 2<br/>Issue #Y"]
+        A3["Agente 3<br/>Issue #Z"]
+    end
+
+    LAUNCH --> WATCH["Watch-Agentes.ps1<br/>(background polling 30s)"]
+    LAUNCH --> GUARDIAN["Guardian-Sprint.ps1<br/>(keepalive autonomo)"]
+    LAUNCH --> MONITOR_LIVE["Monitor Live<br/>(dashboard.js)"]
+
+    PARALLEL --> |"Todos finalizan"| WATCH
+    WATCH --> STOP["Stop-Agente.ps1 all"]
+    STOP --> |"Por cada agente:<br/>commit + push + PR + merge"| MERGE_ALL["Todos mergeados a main"]
+
+    MERGE_ALL --> TG_ASK{"Telegram:<br/>Siguiente sprint?"}
+    TG_ASK --> |"Si"| PULL["git pull origin main"]
+    PULL --> PLANNER
+    TG_ASK --> |"No"| FIN((Fin))
+
+    GUARDIAN --> |"Detecta inactividad<br/>(cooldown 10 min)"| PLANNER
+
+    style START fill:#2e7d32,color:#fff
+    style FIN fill:#b71c1c,color:#fff
+    style PLANNER fill:#6a1b9a,color:#fff
+    style LAUNCH fill:#1565c0,color:#fff
+    style A1 fill:#0f3460,color:#fff
+    style A2 fill:#0f3460,color:#fff
+    style A3 fill:#0f3460,color:#fff
+    style WATCH fill:#37474f,color:#fff
+    style GUARDIAN fill:#37474f,color:#fff
+    style MONITOR_LIVE fill:#37474f,color:#fff
+    style STOP fill:#e65100,color:#fff
+    style MERGE_ALL fill:#2e7d32,color:#fff
+    style TG_ASK fill:#f57c00,color:#fff
+    style PULL fill:#1565c0,color:#fff
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#6a1b9a"></div> Planificacion</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#1565c0"></div> Orquestacion</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#0f3460"></div> Agentes de trabajo</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#37474f"></div> Monitoreo/Background</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#e65100"></div> Delivery</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#2e7d32"></div> Exito</div>
+  </div>
+
+  <div class="info-box">
+    <strong>Ciclo continuo:</strong> Cuando todos los agentes terminan, Watch-Agentes pregunta al usuario via Telegram si desea iniciar otro sprint. Si el usuario no responde y hay inactividad, Guardian-Sprint relanza automaticamente el planner (con cooldown de 10 minutos).
+  </div>
+
+  <!-- ==================== 4. FLUJO IMPLEMENTACION ==================== -->
+  <h1 id="flujo-implementacion">4. Diagrama de Flujo: Implementacion de un Issue</h1>
+
+  <p>Cada agente individual sigue este flujo al implementar un issue. Las flechas rojas indican gates (puntos de bloqueo obligatorios).</p>
+
+  <div class="mermaid">
+flowchart TB
+    START((Agente inicia)) --> BRANCH["/branch N slug<br/>Crear rama agent/N-slug"]
+    BRANCH --> READ_ISSUE["gh issue view N<br/>Leer requisitos"]
+    READ_ISSUE --> ANALYZE["Analizar codebase<br/>Grep + Glob + Read"]
+
+    ANALYZE --> IMPLEMENT["Implementar cambios<br/>Edit / Write"]
+    IMPLEMENT --> BUILD["/builder<br/>Compilar modulo"]
+
+    BUILD --> BUILD_OK{Build OK?}
+    BUILD_OK --> |"No"| FIX_BUILD["Corregir errores<br/>de compilacion"]
+    FIX_BUILD --> BUILD
+    BUILD_OK --> |"Si"| TEST["/tester<br/>Tests unitarios"]
+
+    TEST --> TEST_OK{Tests OK?}
+    TEST_OK --> |"No"| FIX_TEST["Corregir tests<br/>fallidos"]
+    FIX_TEST --> IMPLEMENT
+    TEST_OK --> |"Si"| QA_GATE
+
+    subgraph QA_GATE["GATE: QA E2E (obligatorio)"]
+        QA["/qa validate N"]
+        QA --> QA_REPORT["qa-report.json"]
+    end
+
+    QA_REPORT --> QA_OK{Verdict?}
+    QA_OK --> |"RECHAZADO"| FIX_QA["Corregir segun<br/>reporte QA"]
+    FIX_QA --> IMPLEMENT
+    QA_OK --> |"APROBADO"| DELIVERY
+
+    subgraph DELIVERY["Entrega"]
+        DEL["/delivery desc --issue N"]
+        DEL --> COMMIT["Stage + Commit"]
+        COMMIT --> REBASE["Rebase contra main"]
+        REBASE --> PUSH["git push"]
+        PUSH --> PR["gh pr create"]
+        PR --> MERGE["gh pr merge --squash"]
+    end
+
+    MERGE --> CLEANUP["Cleanup worktree"]
+    CLEANUP --> DONE((Agente termina))
+
+    style START fill:#1565c0,color:#fff
+    style DONE fill:#2e7d32,color:#fff
+    style BRANCH fill:#0f3460,color:#fff
+    style QA fill:#e94560,color:#fff
+    style QA_REPORT fill:#e94560,color:#fff
+    style DEL fill:#e65100,color:#fff
+    style MERGE fill:#2e7d32,color:#fff
+    style FIX_BUILD fill:#f57c00,color:#fff
+    style FIX_TEST fill:#f57c00,color:#fff
+    style FIX_QA fill:#f57c00,color:#fff
+  </div>
+
+  <div class="critical-box">
+    <strong>Gate critico:</strong> <code>/delivery</code> BLOQUEA el merge si <code>qa/evidence/&lt;issue&gt;/qa-report.json</code> no existe o su veredicto es "RECHAZADO". El agente debe corregir y re-ejecutar <code>/qa validate</code> hasta obtener aprobacion.
+  </div>
+
+  <!-- ==================== 5. INTERACCION AGENTES ==================== -->
+  <h1 id="interaccion-agentes">5. Diagrama de Interaccion entre Agentes</h1>
+
+  <p>Este diagrama de secuencia muestra como interactuan los distintos agentes durante un sprint tipico, incluyendo las comunicaciones con Telegram y los hooks automaticos.</p>
+
+  <div class="mermaid">
+sequenceDiagram
+    participant U as Usuario (Telegram)
+    participant PL as /planner
+    participant SA as Start-Agente.ps1
+    participant AG as Agente (Dev)
+    participant BR as /branch
+    participant TE as /tester
+    participant QA as /qa
+    participant DL as /delivery
+    participant WA as Watch-Agentes
+    participant MO as /monitor
+    participant TG as Telegram Bot
+
+    U->>PL: /planner sprint 3
+    PL->>PL: Analiza issues abiertos
+    PL->>PL: Genera sprint-plan.json
+    PL->>SA: Lanza Start-Agente.ps1 all
+
+    SA->>SA: Crea 3 worktrees
+    SA->>AG: Lanza Agente 1 (terminal 1)
+    SA->>AG: Lanza Agente 2 (terminal 2)
+    SA->>AG: Lanza Agente 3 (terminal 3)
+    SA->>WA: Lanza Watch-Agentes (background)
+    SA->>MO: Lanza Monitor Live (background)
+
+    AG->>BR: /branch 42 login
+    BR->>BR: git checkout -b agent/42-login
+    BR-->>AG: Rama creada
+
+    AG->>AG: Implementa cambios (Edit/Write)
+    AG->>TE: /tester backend
+    TE->>TE: gradlew :backend:test
+    TE-->>AG: Tests OK
+
+    AG->>QA: /qa validate 42
+    QA->>QA: Genera tests E2E
+    QA->>QA: Ejecuta tests
+    QA-->>AG: qa-report.json (APROBADO)
+
+    AG->>DL: /delivery "feat: login" --issue 42
+    DL->>DL: Verifica qa-report.json
+    DL->>DL: commit + push + PR
+    DL->>DL: gh pr merge --squash
+    DL->>TG: Reporte PNG (background)
+    DL-->>AG: Merge exitoso
+
+    Note over AG: Agente termina (Stop hook)
+    AG->>TG: Sesion terminada
+
+    WA->>WA: Detecta todos terminaron
+    WA->>WA: Stop-Agente.ps1 all
+    WA->>TG: Sprint completado. Siguiente?
+    U->>WA: Si (via Telegram)
+    WA->>PL: Nuevo /planner sprint
+  </div>
+
+  <h2>5.1 Mapa de Invocaciones Cruzadas</h2>
+
+  <p>Quien invoca a quien en el ecosistema de agentes:</p>
+
+  <div class="mermaid">
+flowchart LR
+    subgraph PLANIFICACION["Planificacion"]
+        PL["/planner"]
+        DOC["/doc"]
+        HIS["/historia"]
+        REF["/refinar"]
+        PRI["/priorizar"]
+    end
+
+    subgraph DESARROLLO["Desarrollo"]
+        BR["/branch"]
+        BE["/backend-dev"]
+        AN["/android-dev"]
+        IO["/ios-dev"]
+        WE["/web-dev"]
+        DE["/desktop-dev"]
+        BU["/builder"]
+    end
+
+    subgraph CALIDAD["Calidad"]
+        TE["/tester"]
+        QA["/qa"]
+        RV["/review"]
+        PO["/po"]
+        UX["/ux"]
+    end
+
+    subgraph ENTREGA["Entrega"]
+        DL["/delivery"]
+    end
+
+    subgraph INFRA["Infraestructura"]
+        MO["/monitor"]
+        AU["/auth"]
+        CL["/cleanup"]
+        GU["/guru"]
+    end
+
+    DOC --> HIS
+    DOC --> REF
+    DOC --> PRI
+    PL --> |"sprint-plan.json"| SA["Start-Agente.ps1"]
+    PL --> |"propuestas"| HIS
+    UX --> |"escalar"| HIS
+
+    SA --> BR
+    BE --> TE
+    AN --> TE
+    BE --> QA
+    AN --> QA
+    BE --> DL
+    AN --> DL
+    IO --> DL
+    WE --> DL
+    DE --> DL
+    DL -.-> |"GATE"| QA
+    UX -.-> |"consulta"| PO
+
+    style PL fill:#6a1b9a,color:#fff
+    style DL fill:#e65100,color:#fff
+    style QA fill:#e94560,color:#fff
+    style BR fill:#0f3460,color:#fff
+    style GU fill:#1565c0,color:#fff
+    style MO fill:#37474f,color:#fff
+  </div>
+
+  <h2>5.2 Tabla de Dependencias</h2>
+
+  <table class="agent-table">
+    <tr><th>Skill Origen</th><th>Invoca</th><th>Tipo</th><th>Cuando</th></tr>
+    <tr><td><code>/doc</code></td><td><code>/historia</code>, <code>/refinar</code>, <code>/priorizar</code></td><td>Delegacion</td><td>Segun modo (nueva, refinar, triaje)</td></tr>
+    <tr><td><code>/planner sprint</code></td><td><code>Start-Agente.ps1</code></td><td>Orquestacion</td><td>Al generar sprint-plan.json</td></tr>
+    <tr><td><code>/planner proponer</code></td><td><code>/historia</code> (via Telegram)</td><td>Indirecto</td><td>Usuario aprueba propuesta</td></tr>
+    <tr><td><code>/ux escalar</code></td><td><code>/historia</code></td><td>Creacion</td><td>Detecta problemas UX graves</td></tr>
+    <tr><td>Agentes Dev</td><td><code>/branch</code></td><td>Prerequisito</td><td>Siempre (primer paso)</td></tr>
+    <tr><td>Agentes Dev</td><td><code>/tester</code></td><td>Verificacion</td><td>Post-implementacion</td></tr>
+    <tr><td>Agentes Dev</td><td><code>/qa validate</code></td><td>Gate</td><td>Pre-delivery</td></tr>
+    <tr><td>Agentes Dev</td><td><code>/delivery</code></td><td>Cierre</td><td>Al finalizar</td></tr>
+    <tr><td><code>/delivery</code></td><td><code>/qa</code> (lectura)</td><td><span class="badge-pill badge-gate">GATE</span></td><td>Verifica qa-report.json</td></tr>
+    <tr><td><code>/ux</code></td><td><code>/po</code></td><td>Consulta</td><td>Para reglas de negocio</td></tr>
+  </table>
+
+  <!-- ==================== 6. HOOKS ==================== -->
+  <h1 id="hooks">6. Sistema de Hooks</h1>
+
+  <p>Los hooks son scripts Node.js que se disparan automaticamente en eventos especificos de Claude Code. Constituyen la capa de automatizacion invisible que conecta todas las piezas.</p>
+
+  <div class="mermaid">
+flowchart TB
+    subgraph EVENTOS["Eventos de Claude Code"]
+        PRE["PreToolUse[Bash]"]
+        POST_BASH["PostToolUse[Bash]"]
+        POST_ALL["PostToolUse[*]"]
+        PERM["PermissionRequest"]
+        NOTIF["Notification"]
+        STOP_EV["Stop"]
+    end
+
+    subgraph HOOKS["Hooks Node.js"]
+        BG["branch-guard.js"]
+        PGP["post-git-push.js"]
+        PIC["post-issue-close.js"]
+        AL["activity-logger.js"]
+        PT["permission-tracker.js"]
+        PA["permission-approver.js"]
+        NT["notify-telegram.js"]
+        SN["stop-notify.js"]
+    end
+
+    subgraph SERVICIOS["Servicios Externos"]
+        TG["Telegram Bot"]
+        GH["GitHub Actions"]
+        PJ["Project V2"]
+    end
+
+    subgraph DATOS["Archivos de Estado"]
+        ACT["activity-log.jsonl"]
+        SES["sessions/*.json"]
+        PEN["pending-questions.json"]
+        SET["settings.local.json"]
+    end
+
+    PRE --> BG
+    BG --> |"BLOQUEA push a main"| PRE
+
+    POST_BASH --> PGP
+    PGP --> |"Lanza background"| CI["ci-monitor-bg.js"]
+    CI --> GH
+    CI --> TG
+
+    POST_BASH --> PIC
+    PIC --> PJ
+
+    POST_ALL --> AL
+    AL --> ACT
+    AL --> SES
+
+    POST_ALL --> PT
+    PT --> SET
+
+    PERM --> PA
+    PA --> TG
+    PA --> PEN
+
+    NOTIF --> NT
+    NT --> TG
+
+    STOP_EV --> SN
+    SN --> TG
+    SN --> SES
+
+    style BG fill:#b71c1c,color:#fff
+    style PA fill:#e94560,color:#fff
+    style TG fill:#0088cc,color:#fff
+    style GH fill:#24292e,color:#fff
+  </div>
+
+  <h2>6.1 Detalle de Cada Hook</h2>
+
+  <div class="hook-item">
+    <h4>branch-guard.js</h4>
+    <span class="hook-trigger">PreToolUse[Bash]</span>
+    <p class="hook-action"><strong>Funcion:</strong> Intercepta comandos <code>git push</code>. Si la rama actual es <code>main</code> o <code>master</code>, BLOQUEA la ejecucion y devuelve error. Solo permite push a ramas <code>agent/*</code>, <code>codex/*</code>, <code>feature/*</code>, etc.</p>
+  </div>
+
+  <div class="hook-item">
+    <h4>permission-approver.js</h4>
+    <span class="hook-trigger">PermissionRequest</span>
+    <p class="hook-action"><strong>Funcion:</strong> Cuando Claude necesita aprobacion para una herramienta, envia mensaje a Telegram con botones inline (Permitir / Rechazar). Implementa retry con escalada de urgencia: 4 intentos en ~65 minutos. Si no hay respuesta, cae a prompt local en consola.</p>
+  </div>
+
+  <div class="hook-item">
+    <h4>post-git-push.js</h4>
+    <span class="hook-trigger">PostToolUse[Bash]</span>
+    <p class="hook-action"><strong>Funcion:</strong> Detecta <code>git push</code> exitoso. Extrae SHA y rama, luego lanza <code>ci-monitor-bg.js</code> en background (proceso hijo desacoplado). Este daemon pollea GitHub Actions cada 30s durante max 20 minutos y envia resultado a Telegram.</p>
+  </div>
+
+  <div class="hook-item">
+    <h4>activity-logger.js</h4>
+    <span class="hook-trigger">PostToolUse[*]</span>
+    <p class="hook-action"><strong>Funcion:</strong> Registra cada herramienta ejecutada (excepto lecturas) en <code>activity-log.jsonl</code>. Actualiza la sesion en <code>sessions/*.json</code> con conteo de acciones, ultima herramienta, progreso de tasks (sub-pasos). Arranca el reporter PNG automatico si no esta corriendo.</p>
+  </div>
+
+  <div class="hook-item">
+    <h4>permission-tracker.js</h4>
+    <span class="hook-trigger">PostToolUse[*]</span>
+    <p class="hook-action"><strong>Funcion:</strong> Auto-aprende patrones de permisos exitosos. Si una herramienta se ejecuta sin rechazo, persiste el patron en <code>settings.local.json</code> (allow). Esto evita re-preguntar por la misma accion en futuras sesiones. Respeta deny[] explicitos.</p>
+  </div>
+
+  <div class="hook-item">
+    <h4>post-issue-close.js</h4>
+    <span class="hook-trigger">PostToolUse[Bash]</span>
+    <p class="hook-action"><strong>Funcion:</strong> Detecta <code>gh issue close</code>. Via GraphQL, mueve el issue a la columna "Done" en el Project V2 de GitHub. Automatiza la actualizacion del board sin intervencion manual.</p>
+  </div>
+
+  <div class="hook-item">
+    <h4>notify-telegram.js</h4>
+    <span class="hook-trigger">Notification</span>
+    <p class="hook-action"><strong>Funcion:</strong> Reenvia cualquier notificacion generica de Claude Code a Telegram con formato HTML enriquecido. Incluye contexto del agente activo, rama y tarea actual. Ignora permission_prompts (los maneja permission-approver).</p>
+  </div>
+
+  <div class="hook-item">
+    <h4>stop-notify.js</h4>
+    <span class="hook-trigger">Stop</span>
+    <p class="hook-action"><strong>Funcion:</strong> Al terminar Claude, marca la sesion como "done" en su JSON, limpia sesiones antiguas (>2h), y envia un resumen final a Telegram (intenta como imagen PNG, fallback a texto HTML).</p>
+  </div>
+
+  <!-- ==================== 7. TELEGRAM ==================== -->
+  <h1 id="telegram">7. Integracion Telegram</h1>
+
+  <p>Telegram funciona como canal bidireccional: los agentes envian notificaciones y el usuario puede ejecutar comandos, aprobar permisos y tomar decisiones.</p>
+
+  <div class="mermaid">
+flowchart TB
+    subgraph TELEGRAM["Telegram (Canal Bidireccional)"]
+        direction TB
+        BOT["@Intrale_claude_bot"]
+    end
+
+    subgraph SALIDA["Mensajes de Salida (Agentes a Telegram)"]
+        N1["Notificaciones generales<br/>(notify-telegram.js)"]
+        N2["Permisos pendientes<br/>(permission-approver.js)"]
+        N3["Resultado CI<br/>(ci-monitor-bg.js)"]
+        N4["Sesion terminada<br/>(stop-notify.js)"]
+        N5["Reporte delivery PNG<br/>(delivery-report.js)"]
+        N6["Dashboard periodico<br/>(reporter-bg.js cada 10 min)"]
+        N7["Propuestas del planner<br/>(send-proposal-buttons.js)"]
+        N8["Sprint status / preguntas<br/>(Watch-Agentes.ps1)"]
+    end
+
+    subgraph ENTRADA["Comandos de Entrada (Telegram a Claude)"]
+        C1["/guru pregunta"]
+        C2["/planner sprint"]
+        C3["/historia descripcion"]
+        C4["/delivery descripcion"]
+        C5["/qa validate N"]
+        C6["Botones inline<br/>(permitir/denegar/crear)"]
+        C7["Texto libre<br/>(si/no/siempre)"]
+    end
+
+    subgraph DAEMON["telegram-commander.js (Daemon)"]
+        POLL["Polling getUpdates<br/>cada 30s"]
+        PROC["Procesar comando"]
+        EXEC["Ejecutar skill<br/>(claude -p)"]
+        RESP["Enviar resultado"]
+    end
+
+    N1 --> BOT
+    N2 --> BOT
+    N3 --> BOT
+    N4 --> BOT
+    N5 --> BOT
+    N6 --> BOT
+    N7 --> BOT
+    N8 --> BOT
+
+    BOT --> POLL
+    POLL --> PROC
+    PROC --> |"Comando detectado"| EXEC
+    PROC --> |"Boton inline"| PEN["pending-questions.json"]
+    EXEC --> RESP
+    RESP --> BOT
+
+    C1 --> BOT
+    C2 --> BOT
+    C3 --> BOT
+    C4 --> BOT
+    C5 --> BOT
+    C6 --> BOT
+    C7 --> BOT
+
+    style BOT fill:#0088cc,color:#fff
+    style POLL fill:#37474f,color:#fff
+    style EXEC fill:#1565c0,color:#fff
+  </div>
+
+  <h2>7.1 Flujo de Aprobacion de Permisos</h2>
+
+  <div class="mermaid">
+sequenceDiagram
+    participant AG as Agente
+    participant PA as permission-approver.js
+    participant TG as Telegram
+    participant TC as telegram-commander.js
+    participant PQ as pending-questions.json
+
+    AG->>PA: Intenta tool (ej: git commit)
+    PA->>PA: Genera pattern "Bash(git commit:*)"
+    PA->>PA: Verifica fast-path (settings.allow)
+
+    alt Ya aprobado
+        PA-->>AG: {"behavior": "allow"}
+    else Necesita aprobacion
+        PA->>TG: Boton inline: Permitir / Rechazar
+        PA->>PQ: Registra pregunta (status: pending)
+
+        loop Retry con escalada (max 65 min)
+            PA->>PA: Espera 30/15/10/10 min
+            PA->>PQ: Lee status
+            alt Respondido
+                PQ-->>PA: status: answered
+            else Timeout parcial
+                PA->>TG: Recordatorio con urgencia creciente
+            end
+        end
+
+        TG->>TC: Usuario click "Permitir"
+        TC->>PQ: status: answered, action: allow
+        PA->>PQ: Lee respuesta
+        PA-->>AG: {"behavior": "allow"}
+    end
+  </div>
+
+  <div class="warning-box">
+    <strong>Escalada de urgencia:</strong> Si el usuario no responde, los recordatorios suben de intensidad: mensaje inicial (30 min), recordatorio (15 min), agente bloqueado (10 min), ultimo aviso (10 min). Total ~65 minutos antes de caer a prompt local.
+  </div>
+
+  <!-- ==================== 8. ORQUESTACION ==================== -->
+  <h1 id="orquestacion">8. Orquestacion y Worktrees</h1>
+
+  <h2>8.1 Arquitectura de Worktrees</h2>
+
+  <div class="mermaid">
+flowchart TB
+    MAIN["platform/ (main)<br/>.claude/ (original)"]
+
+    subgraph WORKTREES["Worktrees Aislados"]
+        WT1["platform.agent-42-login/<br/>.claude/ (COPIA)"]
+        WT2["platform.agent-55-signup/<br/>.claude/ (COPIA)"]
+        WT3["platform.agent-78-2fa/<br/>.claude/ (COPIA)"]
+    end
+
+    MAIN --> |"Copy-Item<br/>(NO junction)"| WT1
+    MAIN --> |"Copy-Item<br/>(NO junction)"| WT2
+    MAIN --> |"Copy-Item<br/>(NO junction)"| WT3
+
+    WT1 --> |"Agente 1<br/>(terminal independiente)"| T1["claude -p prompt1"]
+    WT2 --> |"Agente 2<br/>(terminal independiente)"| T2["claude -p prompt2"]
+    WT3 --> |"Agente 3<br/>(terminal independiente)"| T3["claude -p prompt3"]
+
+    T1 --> |"commit + push + merge"| MAIN
+    T2 --> |"commit + push + merge"| MAIN
+    T3 --> |"commit + push + merge"| MAIN
+
+    style MAIN fill:#2e7d32,color:#fff
+    style WT1 fill:#1565c0,color:#fff
+    style WT2 fill:#1565c0,color:#fff
+    style WT3 fill:#1565c0,color:#fff
+  </div>
+
+  <div class="critical-box">
+    <strong>Leccion historica (2026-02-27):</strong> Anteriormente se usaban junctions NTFS para <code>.claude/</code>, pero <code>rm -rf</code> sobre worktrees borraba el directorio original. La solucion definitiva fue reemplazar junctions con <strong>copias completas</strong> (~500KB, instantaneas).
+  </div>
+
+  <h2>8.2 Scripts de Orquestacion</h2>
+
+  <table class="agent-table">
+    <tr><th>Script</th><th>Tipo</th><th>Funcion</th><th>Lanzado por</th></tr>
+    <tr><td><code>Start-Agente.ps1</code></td><td>PowerShell</td><td>Lee sprint-plan.json, crea worktrees, abre terminales con agentes, lanza watchers</td><td><code>/planner sprint</code></td></tr>
+    <tr><td><code>Stop-Agente.ps1</code></td><td>PowerShell</td><td>Commit + push + PR + merge por cada agente, cleanup worktrees</td><td><code>Watch-Agentes.ps1</code></td></tr>
+    <tr><td><code>Watch-Agentes.ps1</code></td><td>PowerShell</td><td>Polling cada 30s, detecta terminacion de todos los agentes, dispara Stop + pregunta siguiente sprint</td><td><code>Start-Agente.ps1 all</code></td></tr>
+    <tr><td><code>Guardian-Sprint.ps1</code></td><td>PowerShell</td><td>Keepalive: detecta inactividad total, relanza /planner sprint con cooldown 10 min</td><td><code>Start-Agente.ps1 all</code></td></tr>
+    <tr><td><code>dev-functions.sh</code></td><td>Bash</td><td>CLI local: dev, dev-list, dev-go, dev-done, dev-clean, dev-home</td><td>Manual (bashrc)</td></tr>
+  </table>
+
+  <!-- ==================== 9. DATOS ==================== -->
+  <h1 id="datos">9. Flujo de Datos Persistentes</h1>
+
+  <p>El sistema mantiene estado distribuido en archivos JSON que diferentes componentes leen y escriben.</p>
+
+  <div class="mermaid">
+flowchart LR
+    subgraph PRODUCTORES["Productores de Datos"]
+        PL["/planner"]
+        AL["activity-logger.js"]
+        PA["permission-approver.js"]
+        PT["permission-tracker.js"]
+        QA["/qa"]
+        SN["stop-notify.js"]
+        TC["telegram-commander.js"]
+    end
+
+    subgraph ARCHIVOS["Archivos de Estado"]
+        SP["sprint-plan.json"]
+        ACTLOG["activity-log.jsonl"]
+        SESS["sessions/*.json"]
+        PEND["pending-questions.json"]
+        SETS["settings.local.json"]
+        QREP["qa-report.json"]
+        PROPS["planner-proposals.json"]
+        OFFSET["tg-commander-offset.json"]
+    end
+
+    subgraph CONSUMIDORES["Consumidores de Datos"]
+        SA["Start-Agente.ps1"]
+        WA["Watch-Agentes.ps1"]
+        MO["/monitor"]
+        DL["/delivery"]
+        PA2["permission-approver.js"]
+        TC2["telegram-commander.js"]
+    end
+
+    PL --> SP
+    PL --> PROPS
+    AL --> ACTLOG
+    AL --> SESS
+    PA --> PEND
+    PT --> SETS
+    QA --> QREP
+    SN --> SESS
+    TC --> OFFSET
+
+    SP --> SA
+    SP --> WA
+    SP --> MO
+    ACTLOG --> MO
+    SESS --> MO
+    SESS --> WA
+    PEND --> PA2
+    PEND --> TC2
+    SETS --> PA2
+    QREP --> DL
+
+    style SP fill:#6a1b9a,color:#fff
+    style QREP fill:#e94560,color:#fff
+    style PEND fill:#f57c00,color:#fff
+  </div>
+
+  <h2>9.1 Tabla de Archivos de Estado</h2>
+
+  <table class="agent-table">
+    <tr><th>Archivo</th><th>Ubicacion</th><th>Escrito por</th><th>Leido por</th><th>Contenido</th></tr>
+    <tr><td><code>sprint-plan.json</code></td><td>scripts/</td><td>/planner</td><td>Start/Stop/Watch-Agente, /monitor</td><td>Plan del sprint: agentes, issues, prompts, streams</td></tr>
+    <tr><td><code>activity-log.jsonl</code></td><td>.claude/</td><td>activity-logger.js</td><td>/monitor, reporter-bg.js</td><td>Log de tools ejecutadas (rotado a 500 lineas)</td></tr>
+    <tr><td><code>sessions/*.json</code></td><td>.claude/sessions/</td><td>activity-logger, stop-notify</td><td>/monitor, Watch-Agentes</td><td>Estado de cada sesion (PID, branch, tasks, progreso)</td></tr>
+    <tr><td><code>pending-questions.json</code></td><td>.claude/hooks/</td><td>permission-approver</td><td>telegram-commander</td><td>Preguntas de permiso esperando respuesta</td></tr>
+    <tr><td><code>settings.local.json</code></td><td>.claude/</td><td>permission-tracker</td><td>permission-approver</td><td>Permisos allow/deny auto-aprendidos</td></tr>
+    <tr><td><code>qa-report.json</code></td><td>qa/evidence/&lt;issue&gt;/</td><td>/qa</td><td>/delivery</td><td>Veredicto QA: APROBADO/RECHAZADO</td></tr>
+    <tr><td><code>planner-proposals.json</code></td><td>.claude/hooks/</td><td>/planner proponer</td><td>send-proposal-buttons, telegram-commander</td><td>Propuestas de mejora con estado</td></tr>
+    <tr><td><code>sprint-pids.json</code></td><td>scripts/</td><td>Start-Agente</td><td>Watch-Agentes</td><td>PIDs de agentes lanzados</td></tr>
+    <tr><td><code>telegram-config.json</code></td><td>.claude/hooks/</td><td>Manual</td><td>Todos los hooks</td><td>bot_token, chat_id, retry intervals</td></tr>
+    <tr><td><code>tg-commander-offset.json</code></td><td>.claude/hooks/</td><td>telegram-commander</td><td>telegram-commander</td><td>Offset de polling Telegram</td></tr>
+  </table>
+
+  <!-- ==================== 10. MODELOS ==================== -->
+  <h1 id="modelos">10. Modelos y Estrategia de Costos</h1>
+
+  <div class="section-card">
+    <div class="card-header development">Distribucion de Modelos</div>
+    <div class="card-body">
+      <table class="agent-table">
+        <tr><th>Modelo</th><th>Tipo de Tarea</th><th>Skills</th><th>Cantidad</th></tr>
+        <tr>
+          <td><span class="badge-pill badge-haiku">Haiku 4.5</span></td>
+          <td>Tareas mecanicas, rapidas, bajo costo</td>
+          <td>/branch, /builder, /tester, /delivery, /monitor, /auth, /cleanup</td>
+          <td>7</td>
+        </tr>
+        <tr>
+          <td><span class="badge-pill badge-sonnet">Sonnet 4.6</span></td>
+          <td>Analisis, sintesis, desarrollo, review</td>
+          <td>/guru, /planner, /doc, /historia, /refinar, /priorizar, /qa, /review, /po, /ux, /backend-dev, /android-dev, /ios-dev, /web-dev, /desktop-dev</td>
+          <td>15</td>
+        </tr>
+        <tr>
+          <td><span class="badge-pill badge-opus">Opus 4.6</span></td>
+          <td>Decisiones arquitectonicas complejas</td>
+          <td>Sesion principal (orquestador)</td>
+          <td>1</td>
+        </tr>
+      </table>
+
+      <div class="info-box">
+        <strong>Estrategia:</strong> Haiku para tareas repetitivas y mecanicas donde la velocidad importa mas que el razonamiento profundo. Sonnet para tareas que requieren comprension de codigo, analisis de contexto y generacion de contenido complejo. Opus solo para el orquestador principal donde se toman decisiones de alto nivel.
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 11. PROTECCIONES ==================== -->
+  <h1 id="protecciones">11. Protecciones y Gates</h1>
+
+  <h2>11.1 Capas de Proteccion</h2>
+
+  <div class="mermaid">
+flowchart TB
+    subgraph CAPA1["Capa 1: Proteccion de Rama"]
+        BG["branch-guard.js<br/>BLOQUEA push a main"]
+        BC["/branch --check<br/>Verifica rama valida"]
+    end
+
+    subgraph CAPA2["Capa 2: Calidad de Codigo"]
+        KSP["KSP Processor<br/>Strings prohibidos = no compila"]
+        TE["/tester<br/>Tests obligatorios"]
+        RV["/review<br/>Convenciones + patrones"]
+    end
+
+    subgraph CAPA3["Capa 3: QA Gate"]
+        QA["/qa validate<br/>Tests E2E obligatorios"]
+        QREP["qa-report.json<br/>APROBADO requerido"]
+    end
+
+    subgraph CAPA4["Capa 4: Delivery Gate"]
+        DL["/delivery<br/>Verifica QA + rebase + merge"]
+    end
+
+    subgraph CAPA5["Capa 5: Permisos Remotos"]
+        PA["permission-approver.js<br/>Aprobacion via Telegram"]
+    end
+
+    CAPA1 --> CAPA2
+    CAPA2 --> CAPA3
+    CAPA3 --> CAPA4
+    CAPA4 --> |"Si todo OK"| MERGE["Merge a main"]
+    CAPA5 -.-> |"Corta transversal"| CAPA1
+    CAPA5 -.-> |"Corta transversal"| CAPA2
+    CAPA5 -.-> |"Corta transversal"| CAPA3
+    CAPA5 -.-> |"Corta transversal"| CAPA4
+
+    style BG fill:#b71c1c,color:#fff
+    style KSP fill:#e65100,color:#fff
+    style QA fill:#e94560,color:#fff
+    style DL fill:#f57c00,color:#fff
+    style PA fill:#6a1b9a,color:#fff
+    style MERGE fill:#2e7d32,color:#fff
+  </div>
+
+  <h2>11.2 Resumen de Gates</h2>
+
+  <table class="agent-table">
+    <tr><th>Gate</th><th>Tipo</th><th>Bloqueante</th><th>Bypass</th></tr>
+    <tr><td><code>branch-guard.js</code></td><td>Hook automatico</td><td>Si (no se puede push a main)</td><td>No existe bypass</td></tr>
+    <tr><td>KSP forbidden-strings</td><td>Compilacion</td><td>Si (no compila)</td><td>No existe bypass</td></tr>
+    <tr><td><code>/qa validate</code></td><td>Reporte JSON</td><td>Si (delivery bloquea)</td><td>Solo con confirmacion explicita del usuario</td></tr>
+    <tr><td><code>/delivery</code> rebase</td><td>Conflictos</td><td>Parcial (auto-resuelve config, bloquea codigo)</td><td>Manual</td></tr>
+    <tr><td><code>permission-approver</code></td><td>Aprobacion humana</td><td>Si (timeout 65 min)</td><td>Fallback a prompt local</td></tr>
+  </table>
+
+  <h2>11.3 Convenciones Criticas</h2>
+
+  <div class="critical-box">
+    <strong>Ramas:</strong> Solo se permite <code>agent/&lt;issue&gt;-&lt;slug&gt;</code> para agentes IA. Push directo a <code>main</code> esta bloqueado por hook automatico. Esto es infalible y no depende de la "memoria" del agente.
+  </div>
+
+  <div class="critical-box">
+    <strong>Strings:</strong> El KSP Processor (<code>forbidden-strings-processor</code>) detecta uso de <code>stringResource()</code>, <code>Res.string.*</code>, <code>R.string.*</code> fuera de <code>ui/util/ResStrings</code> y <strong>falla la compilacion</strong>. Solo se permite <code>resString()</code> con fallback ASCII-safe.
+  </div>
+
+  <div class="critical-box">
+    <strong>QA:</strong> Antes de cualquier merge, debe existir <code>qa/evidence/&lt;issue&gt;/qa-report.json</code> con <code>"verdict": "APROBADO"</code>. <code>/delivery</code> verifica esto automaticamente y BLOQUEA si no se cumple.
+  </div>
+
+  <div class="critical-box">
+    <strong>Worktrees:</strong> NUNCA usar <code>rm -rf</code> sobre directorios de worktree. Siempre usar <code>git worktree remove --force</code> seguido de prune. Los <code>.claude/</code> son copias completas (no junctions) desde 2026-02-27.
+  </div>
+
+  <!-- ==================== PIE ==================== -->
+  <div style="margin-top: 60px; padding-top: 20px; border-top: 2px solid #e2e8f0; text-align: center; color: #718096; font-size: 11px;">
+    <p>Generado automaticamente — Intrale Platform v1.0 — 2026-03-01</p>
+    <p>22 skills &bull; 10 hooks &bull; 5 scripts de orquestacion &bull; Ciclo autonomo continuo</p>
+  </div>
+
+</div>
+
+</body>
+</html>

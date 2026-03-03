@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Propuesta Arquitectural — Sistema de Permisos Telegram v2.0</title>
+<style>
+  @page { size: A4; margin: 18mm 15mm; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 11pt; line-height: 1.5; color: #1a1a2e; max-width: 210mm; margin: 0 auto; padding: 20px; }
+  h1 { color: #0f3460; font-size: 20pt; border-bottom: 3px solid #0f3460; padding-bottom: 8px; margin-top: 0; }
+  h2 { color: #16213e; font-size: 15pt; border-bottom: 2px solid #e94560; padding-bottom: 4px; margin-top: 28px; page-break-after: avoid; }
+  h3 { color: #0f3460; font-size: 12pt; margin-top: 18px; page-break-after: avoid; }
+  h4 { color: #533483; font-size: 11pt; margin-top: 14px; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 10pt; page-break-inside: avoid; }
+  th { background: #0f3460; color: white; padding: 6px 8px; text-align: left; }
+  td { border: 1px solid #ddd; padding: 5px 8px; vertical-align: top; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 9.5pt; }
+  pre { background: #1a1a2e; color: #e0e0e0; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 9pt; line-height: 1.4; page-break-inside: avoid; }
+  pre code { background: none; color: inherit; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 9pt; font-weight: bold; }
+  .must { background: #e94560; color: white; }
+  .should { background: #f39c12; color: white; }
+  .could { background: #3498db; color: white; }
+  .tag { background: #e8f4fd; color: #0f3460; padding: 2px 6px; border-radius: 4px; font-size: 9pt; }
+  .callout { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  .callout-danger { background: #f8d7da; border-left-color: #dc3545; }
+  .callout-success { background: #d4edda; border-left-color: #28a745; }
+  .callout-info { background: #d1ecf1; border-left-color: #17a2b8; }
+  .mockup { background: #1e1e2e; color: #cdd6f4; padding: 14px; border-radius: 10px; font-family: monospace; font-size: 9pt; line-height: 1.5; margin: 10px 0; border: 1px solid #45475a; }
+  .mockup .header { color: #f38ba8; font-weight: bold; }
+  .mockup .context { color: #94e2d5; }
+  .mockup .action { color: #fab387; }
+  .mockup .meta { color: #6c7086; }
+  .mockup .btn { display: inline-block; background: #313244; border: 1px solid #585b70; padding: 3px 10px; border-radius: 4px; margin: 2px; }
+  .mockup .btn-allow { color: #a6e3a1; }
+  .mockup .btn-always { color: #89dceb; }
+  .mockup .btn-deny { color: #f38ba8; }
+  .flow-diagram { text-align: center; margin: 15px 0; }
+  .metric-box { display: inline-block; background: #f8f9fa; border: 2px solid #0f3460; border-radius: 8px; padding: 8px 14px; margin: 4px; text-align: center; }
+  .metric-box .value { font-size: 18pt; font-weight: bold; color: #0f3460; }
+  .metric-box .label { font-size: 8pt; color: #666; }
+  .page-break { page-break-before: always; }
+  .toc { background: #f8f9fa; padding: 15px 20px; border-radius: 8px; margin: 15px 0; }
+  .toc a { color: #0f3460; text-decoration: none; }
+  .toc li { margin: 4px 0; }
+  .version-box { background: #e8f4fd; padding: 10px; border-radius: 6px; font-size: 10pt; margin: 10px 0; }
+  .gap-critical { border-left: 4px solid #e94560; padding-left: 10px; margin: 8px 0; }
+  .gap-moderate { border-left: 4px solid #f39c12; padding-left: 10px; margin: 8px 0; }
+</style>
+</head>
+<body>
+
+<h1>&#x1F512; Propuesta Arquitectural — Sistema de Permisos Telegram v2.0</h1>
+
+<div class="version-box">
+  <strong>Proyecto:</strong> Intrale Platform &nbsp;|&nbsp;
+  <strong>Fecha:</strong> 2026-03-02 &nbsp;|&nbsp;
+  <strong>Version:</strong> 2.0 &nbsp;|&nbsp;
+  <strong>Autores:</strong> Guru + UX + PO + Arquitecto
+</div>
+
+<div class="toc">
+<strong>Contenido</strong>
+<ol>
+  <li><a href="#diagnostico">Diagn&oacute;stico: por qu&eacute; fallan las notificaciones</a></li>
+  <li><a href="#arquitectura">Arquitectura propuesta</a></li>
+  <li><a href="#ux">Dise&ntilde;o UX de mensajes</a></li>
+  <li><a href="#requisitos">Requisitos funcionales y no funcionales</a></li>
+  <li><a href="#gaps">Gaps cr&iacute;ticos a resolver</a></li>
+  <li><a href="#implementacion">Plan de implementaci&oacute;n</a></li>
+  <li><a href="#metricas">M&eacute;tricas de &eacute;xito</a></li>
+</ol>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="diagnostico">1. Diagn&oacute;stico: por qu&eacute; fallan las notificaciones</h2>
+
+<p>Investigaci&oacute;n de Guru revel&oacute; <strong>3 causas ra&iacute;z documentadas</strong> en el repo oficial de Claude Code:</p>
+
+<h3>1.1 — PermissionRequest se dispara de m&aacute;s (Issue #29212)</h3>
+<p>El hook <code>PermissionRequest</code> se ejecuta para <strong>toda evaluaci&oacute;n de permisos</strong>, incluyendo las que Claude ya sabe que va a auto-aprobar desde settings. Esto genera 392 invocaciones donde solo 121 requer&iacute;an acci&oacute;n del usuario.</p>
+
+<h3>1.2 — Race condition entre hook y di&aacute;logo (Issue #12176)</h3>
+<p>Si el hook tarda m&aacute;s de ~1.5 segundos en responder, Claude Code muestra el prompt local <strong>antes</strong> de recibir la respuesta del hook. El usuario ve el prompt en consola aunque el hook ya envi&oacute; el mensaje a Telegram.</p>
+
+<div class="callout-danger callout">
+  <strong>Bug confirmado:</strong> Claude Code captura una snapshot de los hooks al iniciar sesi&oacute;n. Si un hook falla repetidamente, puede degradarse internamente. Las modificaciones a hooks mid-session NO se recargan.
+</div>
+
+<h3>1.3 — Notification(permission_prompt) solo se dispara cuando el di&aacute;logo SE MUESTRA</h3>
+<p>Contrario a lo que asumimos, <code>Notification(permission_prompt)</code> se dispara <strong>solo cuando el usuario ve el di&aacute;logo en consola</strong>, NO cuando el hook lo resuelve program&aacute;ticamente. Esto significa que cuando el approver auto-aprueba r&aacute;pido (v&iacute;a hook), la Notification NO se dispara en absoluto.</p>
+
+<table>
+<tr><th>Evento</th><th>Cu&aacute;ndo se dispara</th><th>Puede controlar decisi&oacute;n</th></tr>
+<tr><td><code>PermissionRequest</code></td><td>En toda evaluaci&oacute;n de permisos (incl. auto-aprobados)</td><td>S&iacute;: allow/deny</td></tr>
+<tr><td><code>Notification(permission_prompt)</code></td><td>Solo cuando el di&aacute;logo se muestra al usuario en consola</td><td>No (solo side-effects)</td></tr>
+</table>
+
+<div class="callout-info callout">
+  <strong>Implicaci&oacute;n:</strong> Usar <code>Notification</code> como fallback es correcto — solo se dispara cuando el PermissionRequest fall&oacute; o no corri&oacute;, que es exactamente cuando necesitamos alertar.
+</div>
+
+<h3>1.4 — Bug de process.kill(pid, 0) en Windows</h3>
+<p>La verificaci&oacute;n de PID con <code>process.kill(pid, 0)</code> puede dar <strong>falsos negativos</strong> en Windows. Cuando hay diferencia de permisos entre procesos, lanza <code>EPERM</code> (el proceso EXISTE pero no tenemos permiso para se&ntilde;alizarlo). El c&oacute;digo actual trata <code>EPERM</code> como "proceso muerto", lo cual es incorrecto.</p>
+
+<pre><code>// ACTUAL (bug):
+try { process.kill(pid, 0); return true; }
+catch(e) { return false; }  // EPERM = false &#x274C;
+
+// CORRECTO:
+try { process.kill(pid, 0); return true; }
+catch(e) { return e.code === "EPERM"; }  // EPERM = true &#x2705;</code></pre>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="arquitectura" class="page-break">2. Arquitectura propuesta</h2>
+
+<h3>2.1 — Principio de dise&ntilde;o: dos canales independientes</h3>
+
+<p>En lugar de intentar coordinar hooks fr&aacute;giles con archivos PID y markers, la arquitectura v2 usa <strong>dos canales completamente independientes</strong> que convergen en el Commander:</p>
+
+<table>
+<tr><th>Canal</th><th>Trigger</th><th>Funci&oacute;n</th><th>Fiabilidad</th></tr>
+<tr>
+  <td><strong>Canal A: Approver</strong></td>
+  <td><code>PermissionRequest</code> hook</td>
+  <td>Env&iacute;a mensaje con botones, espera respuesta, controla la decisi&oacute;n</td>
+  <td>~70% (el hook no siempre se dispara)</td>
+</tr>
+<tr>
+  <td><strong>Canal B: Watchdog</strong></td>
+  <td><code>Notification(permission_prompt)</code> + health-check peri&oacute;dico</td>
+  <td>Detecta prompts hu&eacute;rfanos y notifica al usuario</td>
+  <td>~95% (Notification + health-check como doble red)</td>
+</tr>
+</table>
+
+<h3>2.2 — Flujo completo con fallbacks</h3>
+
+<pre><code>Claude Code necesita permiso
+    &#x2502;
+    &#x251C;&#x2500;&#x2500; PermissionRequest hook se dispara?
+    &#x2502;   &#x2502;
+    &#x2502;   &#x251C;&#x2500; S&Iacute; &#x2192; permission-approver.js
+    &#x2502;   &#x2502;       &#x2502;
+    &#x2502;   &#x2502;       &#x251C;&#x2500; Auto-approve? &#x2192; allow + marker &#x2192; FIN
+    &#x2502;   &#x2502;       &#x2502;
+    &#x2502;   &#x2502;       &#x251C;&#x2500; Enviar Telegram OK? &#x2192; esperar botones &#x2192; FIN
+    &#x2502;   &#x2502;       &#x2502;
+    &#x2502;   &#x2502;       &#x2514;&#x2500; Telegram falla? &#x2192; RETRY 1x &#x2192; si falla &#x2192; exit(0)
+    &#x2502;   &#x2502;                                           &#x2502;
+    &#x2502;   &#x2514;&#x2500; NO &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x253C;&#x2500;&#x2500;&#x2500;&#x2510;
+    &#x2502;                                               &#x2502;   &#x2502;
+    &#x2502;                                  Claude muestra prompt local
+    &#x2502;                                               &#x2502;
+    &#x2502;                                  Notification(permission_prompt) se dispara
+    &#x2502;                                               &#x2502;
+    &#x2502;                                  Canal B: Watchdog
+    &#x2502;                                       &#x2502;
+    &#x2502;                                       &#x251C;&#x2500; Approver activo? &#x2192; ignorar
+    &#x2502;                                       &#x2502;
+    &#x2502;                                       &#x2514;&#x2500; Sin approver &#x2192; NOTIFICAR
+    &#x2502;                                           "&#x1F4F5; Permiso pendiente en consola"
+    &#x2502;
+    &#x2514;&#x2500; Health-check (cada 10 min): verifica prompts hu&eacute;rfanos
+        Si detecta approver muerto con pregunta pending &#x2192; NOTIFICAR</code></pre>
+
+<h3>2.3 — Cambio clave: PID file ANTES del sendMessage</h3>
+
+<div class="callout callout-danger">
+  <strong>Gap cr&iacute;tico actual:</strong> El approver escribe el PID file DESPU&Eacute;S de enviar el mensaje (l&iacute;nea 426). Hay una ventana de ~1-3 segundos donde la Notification puede dispararse, no encontrar PID file, y enviar un duplicado.
+</div>
+
+<p><strong>Fix:</strong> Mover la escritura del PID file al inicio del <code>processInput()</code>, antes de cualquier l&oacute;gica. Si es auto-approve, se borra al salir. Si es Telegram, permanece durante el polling.</p>
+
+<h3>2.4 — Endpoint HTTP en el Commander para respuestas instant&aacute;neas</h3>
+
+<p>Reemplazar el polling de <code>pending-questions.json</code> (150ms) con un endpoint HTTP local en el Commander:</p>
+
+<pre><code>// En telegram-commander.js (ya tiene servidor HTTP en puerto 3100):
+// Agregar endpoint:
+//   GET /api/decision/:requestId  &#x2192; long-poll hasta que haya respuesta
+//   POST /api/decision/:requestId &#x2192; registrar decisi&oacute;n (desde callback)
+
+// En permission-approver.js:
+// Reemplazar polling de archivo con:
+//   fetch("http://localhost:3100/api/decision/" + requestId)
+//   &#x2192; respuesta instant&aacute;nea cuando el usuario presiona bot&oacute;n</code></pre>
+
+<p><strong>Ventajas:</strong> elimina 400 reads/segundo del filesystem, latencia &lt; 5ms, sin race conditions de archivo.</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="ux" class="page-break">3. Dise&ntilde;o UX de mensajes</h2>
+
+<h3>3.1 — Jerarqu&iacute;a visual: cada estado es distinguible en 2 segundos</h3>
+
+<h4>Estado 1: Permiso nuevo (requiere acci&oacute;n)</h4>
+<div class="mockup">
+  <span class="header">&#x1F512; PERMISO REQUERIDO</span><br>
+  <span class="meta">&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;</span><br>
+  <span class="context">&#x1F916; AndroidDev &nbsp;&middot;&nbsp; &#x1F500; agent/1115 (#1115)</span><br>
+  <span class="context">&#x1F4CC; Ejecutar tests E2E</span><br><br>
+  <span class="action">&#x1F527; Ejecutar emulador</span><br>
+  <span class="action">$ ./qa/scripts/qa-android.sh --avd virtual&hellip;</span><br><br>
+  <span class="meta">&#x23F3; Expira en 30 min &nbsp;&middot;&nbsp; 1/4</span><br><br>
+  <span class="btn btn-allow">&#x2705; Permitir</span>
+  <span class="btn btn-always">&#x2705;&#x2705; Siempre</span>
+  <span class="btn btn-deny">&#x274C; Denegar</span>
+</div>
+
+<p><strong>Cambios vs actual:</strong></p>
+<ul>
+  <li>Header distinguido <code>&#x1F512; PERMISO REQUERIDO</code> (antes: <code>&#x26A0;&#xFE0F; Claude Code &mdash; Permiso requerido</code>)</li>
+  <li><strong>3 botones</strong> en vez de 2: se agrega <code>&#x2705;&#x2705; Siempre</code> como bot&oacute;n (antes era solo texto libre)</li>
+  <li>Cron&oacute;metro visible con posici&oacute;n en secuencia <code>1/4</code></li>
+</ul>
+
+<h4>Estado 2: Recordatorio (usuario no respondi&oacute;)</h4>
+<div class="mockup">
+  <span class="header">&#x1F514; RECORDATORIO &mdash; permiso pendiente (2/4)</span><br>
+  <span class="meta">&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;</span><br>
+  <span class="context">&#x1F916; AndroidDev &nbsp;&middot;&nbsp; &#x1F4CC; Ejecutar tests E2E</span><br><br>
+  <span class="meta">&#x2504; mismo permiso de hace 30 min &#x2504;</span><br>
+  <span class="action">$ ./qa/scripts/qa-android.sh --avd virtual&hellip;</span><br><br>
+  <span class="meta">&#x23F3; Expira en 15 min</span><br>
+  <span class="btn btn-allow">&#x2705; Permitir</span>
+  <span class="btn btn-always">&#x2705;&#x2705; Siempre</span>
+  <span class="btn btn-deny">&#x274C; Denegar</span>
+</div>
+
+<h4>Estado 3: Aprobado / Rechazado (resoluci&oacute;n)</h4>
+<div class="mockup">
+  <span style="color: #a6e3a1; font-weight: bold;">&#x2705; Permitido &nbsp;&middot;&nbsp; hace 2 min</span><br>
+  <span class="meta">&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;</span><br>
+  <span class="context">&#x1F916; AndroidDev &nbsp;&middot;&nbsp; &#x1F4CC; Ejecutar tests E2E</span><br>
+  <span class="action">$ ./qa/scripts/qa-android.sh --avd virtual&hellip;</span><br><br>
+  <span class="meta">&#x21B3; patr&oacute;n guardado para futuras ejecuciones</span>
+</div>
+
+<h4>Estado 4: Fallback (hook no corri&oacute;, prompt en consola)</h4>
+<div class="mockup">
+  <span style="color: #f38ba8; font-weight: bold;">&#x1F4F5; SIN CONEXI&Oacute;N &mdash; permiso en consola</span><br>
+  <span class="meta">&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;</span><br>
+  <span class="context">El bot no pudo enviarte la notificaci&oacute;n.</span><br>
+  <span class="context">El agente est&aacute; esperando en la PC.</span><br><br>
+  <span style="color: #fab387;">Acci&oacute;n: ir a la consola y responder el prompt.</span>
+</div>
+
+<h4>Estado 5: Expirado (timeout agotado)</h4>
+<div class="mockup">
+  <span style="color: #6c7086; font-weight: bold;">&#x23F1; Expirado &mdash; 4/4 intentos sin respuesta</span><br>
+  <span class="meta">&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;</span><br>
+  <span class="context">El agente continu&oacute; con prompt local.</span><br>
+  <span class="action">$ ./qa/scripts/qa-android.sh --avd virtual&hellip;</span>
+</div>
+
+<h3>3.2 — Gesti&oacute;n de ruido: auto-aprobados</h3>
+
+<table>
+<tr><th>Capa</th><th>Comportamiento</th><th>Ejemplo</th></tr>
+<tr>
+  <td><strong>Silencio (default)</strong></td>
+  <td>Auto-aprobados no generan notificaci&oacute;n individual</td>
+  <td>Los 252 auto-approves di&aacute;rios van en silencio</td>
+</tr>
+<tr>
+  <td><strong>Batch en heartbeat</strong></td>
+  <td>Cada 10 min, incluir l&iacute;nea: &ldquo;&#x1F512; 12 auto-aprobados&rdquo;</td>
+  <td>Dentro del screenshot del dashboard</td>
+</tr>
+<tr>
+  <td><strong>Confirmaci&oacute;n "Siempre"</strong></td>
+  <td>Cuando el usuario presiona &#x2705;&#x2705;, confirmar qu&eacute; patr&oacute;n se guard&oacute;</td>
+  <td><code>Bash(./qa/scripts/qa-android.sh:*)</code> agregado</td>
+</tr>
+<tr>
+  <td><strong>Comando /permisos</strong></td>
+  <td>Bajo demanda: listar &uacute;ltimos N permisos con estado</td>
+  <td><code>/permisos 10</code> en Telegram</td>
+</tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="requisitos" class="page-break">4. Requisitos funcionales y no funcionales</h2>
+
+<h3>4.1 — Requisitos MUST (obligatorios)</h3>
+
+<table>
+<tr><th>ID</th><th>Requisito</th><th>Criterio de aceptaci&oacute;n</th><th>Estado</th></tr>
+<tr>
+  <td>RF-01</td>
+  <td>Notificaci&oacute;n garantizada de permisos</td>
+  <td>&ge;99% de permisos llegan a Telegram (v&iacute;a approver o fallback) en &lt;5s</td>
+  <td>&#x26A0; Parcial</td>
+</tr>
+<tr>
+  <td>RF-02</td>
+  <td>Aprobaci&oacute;n remota v&iacute;a Telegram</td>
+  <td>Bot&oacute;n presionado &rarr; Claude reanuda en &lt;2s</td>
+  <td>&#x2705; OK</td>
+</tr>
+<tr>
+  <td>RF-03</td>
+  <td>Persistencia "Siempre"</td>
+  <td>Patr&oacute;n guardado en settings.local.json, efectivo cross-session</td>
+  <td>&#x2705; OK</td>
+</tr>
+<tr>
+  <td>RF-04</td>
+  <td>Fallback cuando hook falla</td>
+  <td>Notification(permission_prompt) notifica si no hay approver activo</td>
+  <td>&#x26A0; Parcial</td>
+</tr>
+<tr>
+  <td>RF-05</td>
+  <td>Timeout y escalaci&oacute;n (4 intentos)</td>
+  <td>Secuencia: 30+15+10+10 min con urgencia creciente</td>
+  <td>&#x2705; OK</td>
+</tr>
+<tr>
+  <td>RNF-04</td>
+  <td>Sin dependencia de hooks inconsistentes</td>
+  <td>El sistema funciona aunque PermissionRequest no se dispare</td>
+  <td>&#x274C; Gap</td>
+</tr>
+</table>
+
+<h3>4.2 — Requisitos SHOULD (deseables)</h3>
+
+<table>
+<tr><th>ID</th><th>Requisito</th><th>Estado</th></tr>
+<tr><td>RF-06</td><td>Resumen de permisos auto-aprobados en heartbeat</td><td>&#x274C; No implementado</td></tr>
+<tr><td>RF-07</td><td>Health-check detecta prompts hu&eacute;rfanos</td><td>&#x26A0; Parcial</td></tr>
+<tr><td>RNF-01</td><td>Latencia &le;3s (approver) / &le;5s (fallback)</td><td>&#x2705; En condiciones normales</td></tr>
+<tr><td>RNF-02</td><td>Fiabilidad &ge;99% con mecanismo de medici&oacute;n</td><td>&#x274C; Sin auditor&iacute;a</td></tr>
+<tr><td>RNF-03</td><td>Disponibilidad cuando Telegram est&aacute; ca&iacute;do</td><td>&#x26A0; Sin retry en sendMessage</td></tr>
+</table>
+
+<h3>4.3 — Requisitos COULD (opcionales)</h3>
+
+<table>
+<tr><th>ID</th><th>Requisito</th></tr>
+<tr><td>RF-06.5</td><td>Comando <code>/permisos N</code> en Telegram</td></tr>
+<tr><td>RF-07.6</td><td>Comando <code>/health</code> forzado en Telegram</td></tr>
+<tr><td>UX-01</td><td>Bot&oacute;n "&#x1F50D; Ver m&aacute;s" para comandos truncados</td></tr>
+<tr><td>ARCH-01</td><td>Endpoint HTTP en Commander para reemplazar polling de archivo</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="gaps" class="page-break">5. Gaps cr&iacute;ticos a resolver</h2>
+
+<h3>&#x1F534; Gap 1: PID file se escribe DESPU&Eacute;S del sendMessage</h3>
+<div class="gap-critical">
+  <p><strong>Problema:</strong> El approver escribe <code>approver-active.pid</code> en l&iacute;nea 426, DESPU&Eacute;S de enviar el mensaje a Telegram. En la ventana de 1-3s entre el env&iacute;o y la escritura del PID, la Notification puede dispararse, no encontrar PID, y enviar un duplicado.</p>
+  <p><strong>Fix:</strong> Escribir PID file al INICIO de <code>processInput()</code>. Si es auto-approve, borrarlo al salir.</p>
+  <p><strong>Impacto:</strong> Elimina race condition RF-01.4</p>
+  <p><strong>Esfuerzo:</strong> 5 l&iacute;neas de c&oacute;digo</p>
+</div>
+
+<h3>&#x1F534; Gap 2: EPERM tratado como "proceso muerto"</h3>
+<div class="gap-critical">
+  <p><strong>Problema:</strong> <code>process.kill(pid, 0)</code> en Windows lanza <code>EPERM</code> cuando el proceso existe pero hay diferencia de permisos. El c&oacute;digo actual lo trata como proceso muerto.</p>
+  <p><strong>Fix:</strong> En todos los archivos que usan PID check (<code>notify-telegram.js</code>, <code>commander-launcher.js</code>, <code>health-check.js</code>), cambiar: <code>catch(e) { return e.code === "EPERM"; }</code></p>
+  <p><strong>Impacto:</strong> Elimina falsos negativos en Windows</p>
+  <p><strong>Esfuerzo:</strong> 3 archivos, 1 l&iacute;nea cada uno</p>
+</div>
+
+<h3>&#x1F534; Gap 3: sendMessage sin retry</h3>
+<div class="gap-critical">
+  <p><strong>Problema:</strong> Si el primer <code>sendMessage</code> falla (error transitorio de red, rate limit), el approver hace <code>exit(0)</code> inmediatamente. Un error de 1-2 segundos causa fallback completo.</p>
+  <p><strong>Fix:</strong> Agregar 1 retry con 3s de backoff antes del <code>exit(0)</code>.</p>
+  <p><strong>Impacto:</strong> Resuelve FE-02 (Telegram API ca&iacute;da transitoria)</p>
+  <p><strong>Esfuerzo:</strong> 10 l&iacute;neas</p>
+</div>
+
+<h3>&#x1F7E1; Gap 4: Bot&oacute;n "Siempre" es texto libre, no bot&oacute;n</h3>
+<div class="gap-moderate">
+  <p><strong>Problema:</strong> La opci&oacute;n "siempre" solo existe como instrucci&oacute;n de texto. El usuario mobile ve 2 botones y los usa. El concepto "siempre" queda escondido.</p>
+  <p><strong>Fix:</strong> Agregar tercer bot&oacute;n: <code>{ text: "&#x2705;&#x2705; Siempre", callback_data: "always:" + requestId }</code></p>
+  <p><strong>Impacto:</strong> UX mejora significativa — menos comandos repetidos</p>
+  <p><strong>Esfuerzo:</strong> 3 l&iacute;neas (el commander ya soporta <code>always:</code>)</p>
+</div>
+
+<h3>&#x1F7E1; Gap 5: Callback perdido cuando Commander estaba ca&iacute;do</h3>
+<div class="gap-moderate">
+  <p><strong>Problema:</strong> Si el Commander cae por &gt;30s (POLL_TIMEOUT_SEC), el callback de Telegram puede descartarse de la cola de getUpdates. El usuario cree haber aprobado pero Claude sigue esperando.</p>
+  <p><strong>Fix:</strong> Al arrancar, el Commander verifica preguntas <code>pending</code> con <code>telegram_message_id</code> y solicita reenv&iacute;o de respuesta.</p>
+  <p><strong>Impacto:</strong> Resuelve FE-04 (gap cr&iacute;tico del PO)</p>
+  <p><strong>Esfuerzo:</strong> ~30 l&iacute;neas</p>
+</div>
+
+<h3>&#x1F7E1; Gap 6: answerCallbackQuery tiene timeout de ~15s</h3>
+<div class="gap-moderate">
+  <p><strong>Problema:</strong> Si el Commander est&aacute; ocupado procesando otro comando cuando llega un callback de permiso, puede perder la ventana de 15s para acknowledgearlo.</p>
+  <p><strong>Fix:</strong> Priorizar callbacks de permisos: procesarlos inmediatamente antes de ejecutar comandos largos.</p>
+  <p><strong>Impacto:</strong> Evita "loading..." infinito en Telegram al presionar bot&oacute;n</p>
+  <p><strong>Esfuerzo:</strong> ~20 l&iacute;neas</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="implementacion" class="page-break">6. Plan de implementaci&oacute;n</h2>
+
+<h3>Fase 1 — Fixes cr&iacute;ticos (mismo d&iacute;a) <span class="badge must">MUST</span></h3>
+
+<table>
+<tr><th>#</th><th>Cambio</th><th>Archivo</th><th>L&iacute;neas</th></tr>
+<tr><td>1.1</td><td>Escribir PID file al inicio de processInput (antes de auto-approve check)</td><td>permission-approver.js</td><td>~8</td></tr>
+<tr><td>1.2</td><td>Fix EPERM en process.kill(pid, 0) para Windows</td><td>notify-telegram.js, commander-launcher.js, health-check.js</td><td>~3</td></tr>
+<tr><td>1.3</td><td>Retry 1x con 3s backoff en sendMessage del approver</td><td>permission-approver.js</td><td>~12</td></tr>
+<tr><td>1.4</td><td>Agregar bot&oacute;n &#x2705;&#x2705; Siempre a inline keyboard</td><td>permission-approver.js</td><td>~3</td></tr>
+<tr><td>1.5</td><td>Nuevo header visual por estado (PERMISO REQUERIDO / RECORDATORIO / etc.)</td><td>permission-approver.js</td><td>~25</td></tr>
+</table>
+
+<h3>Fase 2 — Robustez (1-2 d&iacute;as) <span class="badge should">SHOULD</span></h3>
+
+<table>
+<tr><th>#</th><th>Cambio</th><th>Archivo</th><th>L&iacute;neas</th></tr>
+<tr><td>2.1</td><td>Commander: verificar pending questions al arrancar y solicitar reenv&iacute;o</td><td>telegram-commander.js</td><td>~30</td></tr>
+<tr><td>2.2</td><td>Commander: priorizar callbacks de permisos sobre comandos largos</td><td>telegram-commander.js</td><td>~20</td></tr>
+<tr><td>2.3</td><td>Heartbeat: incluir conteo de auto-aprobados</td><td>heartbeat l&oacute;gica (activity-logger o health-check)</td><td>~15</td></tr>
+<tr><td>2.4</td><td>Confirmaci&oacute;n visual al presionar "Siempre" (patr&oacute;n guardado)</td><td>telegram-commander.js</td><td>~10</td></tr>
+<tr><td>2.5</td><td>Health-check: detectar prompts hu&eacute;rfanos (pending &gt;5 min sin approver vivo)</td><td>health-check.js</td><td>~20</td></tr>
+</table>
+
+<h3>Fase 3 — Mejoras opcionales (backlog) <span class="badge could">COULD</span></h3>
+
+<table>
+<tr><th>#</th><th>Cambio</th><th>Archivo</th></tr>
+<tr><td>3.1</td><td>Endpoint HTTP en Commander para reemplazar polling de archivo</td><td>telegram-commander.js + permission-approver.js</td></tr>
+<tr><td>3.2</td><td>Comando <code>/permisos N</code> para auditor&iacute;a</td><td>telegram-commander.js</td></tr>
+<tr><td>3.3</td><td>Bot&oacute;n "&#x1F50D; Ver m&aacute;s" para comandos truncados</td><td>permission-approver.js + telegram-commander.js</td></tr>
+<tr><td>3.4</td><td>Script de auditor&iacute;a autom&aacute;tica (medir tasas de RF/RNF)</td><td>scripts/audit-permissions.js</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2 id="metricas">7. M&eacute;tricas de &eacute;xito</h2>
+
+<div style="text-align: center; margin: 20px 0;">
+  <div class="metric-box">
+    <div class="value">&ge;99%</div>
+    <div class="label">Tasa de notificaci&oacute;n<br>(llegan a Telegram)</div>
+  </div>
+  <div class="metric-box">
+    <div class="value">&ge;80%</div>
+    <div class="label">Resoluci&oacute;n remota<br>(sin ir a consola)</div>
+  </div>
+  <div class="metric-box">
+    <div class="value">&lt;3s</div>
+    <div class="label">Latencia P95<br>(permiso &rarr; Telegram)</div>
+  </div>
+  <div class="metric-box">
+    <div class="value">&lt;2s</div>
+    <div class="label">Latencia P95<br>(bot&oacute;n &rarr; Claude)</div>
+  </div>
+  <div class="metric-box">
+    <div class="value">0%</div>
+    <div class="label">Reaprobaci&oacute;n de<br>patrones "Siempre"</div>
+  </div>
+  <div class="metric-box">
+    <div class="value">&ge;99.5%</div>
+    <div class="label">Disponibilidad<br>del Commander</div>
+  </div>
+</div>
+
+<h3>C&oacute;mo medir</h3>
+<p>Todas las m&eacute;tricas se calculan desde <code>hook-debug.log</code>. Cada permiso tiene un <code>requestId</code> &uacute;nico con timestamps de: invocaci&oacute;n, env&iacute;o, respuesta, resoluci&oacute;n. Un script de auditor&iacute;a puede calcular las tasas autom&aacute;ticamente.</p>
+
+<hr>
+
+<div class="callout-success callout">
+  <strong>Resumen ejecutivo:</strong> El sistema actual funciona en el ~70% de los casos. Los 6 gaps identificados tienen fixes de bajo esfuerzo (Fase 1: ~50 l&iacute;neas, Fase 2: ~95 l&iacute;neas). La Fase 1 sola deber&iacute;a llevar la fiabilidad a &ge;95%. La Fase 2 cubre edge cases para alcanzar el &ge;99%.
+</div>
+
+<p style="text-align: center; margin-top: 30px; color: #666; font-size: 9pt;">
+  &#x1F916; Generado con Claude Code &mdash; Intrale Platform 2026
+</p>
+
+</body>
+</html>
