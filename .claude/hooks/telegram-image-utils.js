@@ -101,7 +101,7 @@ function renderTextAsPng(text, options) {
 
 /**
  * Envía una imagen PNG a Telegram via sendPhoto (multipart/form-data).
- * Firma parametrizada para ser usada tanto desde stop-notify.js como desde dashboard.js.
+ * Firma parametrizada para ser usada desde stop-notify.js y otros hooks.
  *
  * @param {string} botToken      Token del bot de Telegram
  * @param {string} chatId        ID del chat de destino
