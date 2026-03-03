@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Auditoría del Tablero Project V2 — Intrale Platform</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<style>
+  body { font-family: 'Segoe UI', system-ui, sans-serif; margin: 2rem; color: #1a1a2e; background: #fafbfc; line-height: 1.6; }
+  h1 { color: #0d47a1; border-bottom: 3px solid #0d47a1; padding-bottom: 0.5rem; }
+  h2 { color: #1565c0; margin-top: 2rem; border-bottom: 2px solid #e3f2fd; padding-bottom: 0.3rem; }
+  h3 { color: #1976d2; margin-top: 1.5rem; }
+  .meta { color: #666; font-size: 0.9rem; margin-bottom: 2rem; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+  .summary-card { background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .summary-card .number { font-size: 2rem; font-weight: bold; }
+  .summary-card .label-text { font-size: 0.85rem; color: #666; margin-top: 0.3rem; }
+  .ok { color: #2e7d32; }
+  .warning { color: #f57f17; }
+  .danger { color: #c62828; }
+  .info { color: #0d47a1; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.85rem; }
+  th { background: #e3f2fd; color: #0d47a1; padding: 0.6rem 0.8rem; text-align: left; border: 1px solid #bbdefb; }
+  td { padding: 0.5rem 0.8rem; border: 1px solid #e0e0e0; }
+  tr:nth-child(even) { background: #f5f5f5; }
+  tr.stale { background: #fff3e0; }
+  .label { display: inline-block; background: #e3f2fd; color: #0d47a1; padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; margin: 1px; }
+  .bar-chart { margin: 1rem 0; }
+  .bar-row { display: flex; align-items: center; margin: 4px 0; }
+  .bar-label { width: 160px; font-size: 0.85rem; text-align: right; padding-right: 8px; }
+  .bar { height: 24px; background: #42a5f5; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; color: white; font-size: 0.8rem; min-width: 30px; }
+  .bar.backlog { background: #90a4ae; }
+  .bar.todo { background: #7e57c2; }
+  .bar.refined { background: #26a69a; }
+  .bar.progress { background: #ffa726; }
+  .bar.ready { background: #66bb6a; }
+  .bar.done { background: #43a047; }
+  .bar.blocked { background: #ef5350; }
+  .recommendation { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 1rem; margin: 0.8rem 0; border-radius: 4px; }
+  .recommendation.high { background: #fce4ec; border-left-color: #e53935; }
+  .recommendation.medium { background: #fff8e1; border-left-color: #ffa000; }
+  .recommendation .priority { font-weight: bold; text-transform: uppercase; font-size: 0.75rem; }
+  .recommendation .priority.high { color: #c62828; }
+  .recommendation .priority.medium { color: #f57f17; }
+  .recommendation .priority.low { color: #2e7d32; }
+  a { color: #1565c0; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .mermaid { margin: 1.5rem 0; text-align: center; }
+  @media print {
+    body { margin: 0; font-size: 0.8rem; }
+    .summary-card { break-inside: avoid; }
+    table { font-size: 0.75rem; }
+    h2 { break-before: page; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Auditoría del Tablero Project V2 — Intrale Platform</h1>
+<div class="meta">
+  <strong>Fecha:</strong> 3 de marzo de 2026 |
+  <strong>Proyecto:</strong> Intrale (org: intrale, Project #1) |
+  <strong>Generado por:</strong> Scrum Master Agent (Claude)
+</div>
+
+<!-- ============ RESUMEN EJECUTIVO ============ -->
+<h2>1. Resumen Ejecutivo</h2>
+
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="number info">182</div>
+    <div class="label-text">Issues abiertos (repo)</div>
+  </div>
+  <div class="summary-card">
+    <div class="number info">83</div>
+    <div class="label-text">Items en Project V2</div>
+  </div>
+  <div class="summary-card">
+    <div class="number danger">115</div>
+    <div class="label-text">Issues NO en el Project</div>
+  </div>
+  <div class="summary-card">
+    <div class="number danger">132</div>
+    <div class="label-text">Issues estancados (&gt;14d)</div>
+  </div>
+  <div class="summary-card">
+    <div class="number warning">93</div>
+    <div class="label-text">Sin labels</div>
+  </div>
+  <div class="summary-card">
+    <div class="number danger">141</div>
+    <div class="label-text">Sin asignar</div>
+  </div>
+  <div class="summary-card">
+    <div class="number warning">7</div>
+    <div class="label-text">En Project sin status</div>
+  </div>
+  <div class="summary-card">
+    <div class="number">10</div>
+    <div class="label-text">Columnas del board</div>
+  </div>
+</div>
+
+<!-- ============ COLUMNAS ============ -->
+<h2>2. Columnas / Status del Project V2</h2>
+
+<p>El tablero cuenta con <strong>10 columnas</strong>:</p>
+
+<table>
+<tr><th>#</th><th>Columna</th><th>Tipo</th><th>Items totales</th><th>Abiertos</th><th>Cerrados</th></tr>
+<tr><td>1</td><td><strong>Backlog Tecnico</strong></td><td>Backlog</td><td>44</td><td>33</td><td>11</td></tr>
+<tr><td>2</td><td><strong>Backlog CLIENTE</strong></td><td>Backlog</td><td>9</td><td>9</td><td>0</td></tr>
+<tr><td>3</td><td><strong>Backlog NEGOCIO</strong></td><td>Backlog</td><td>13</td><td>10</td><td>3</td></tr>
+<tr><td>4</td><td><strong>Backlog DELIVERY</strong></td><td>Backlog</td><td>9</td><td>8</td><td>1</td></tr>
+<tr><td>5</td><td><strong>Todo</strong></td><td>Flujo</td><td>0</td><td>0</td><td>0</td></tr>
+<tr><td>6</td><td><strong>Refined</strong></td><td>Flujo</td><td>0</td><td>0</td><td>0</td></tr>
+<tr><td>7</td><td><strong>In Progress</strong></td><td>Flujo</td><td>0</td><td>0</td><td>0</td></tr>
+<tr><td>8</td><td><strong>Ready</strong></td><td>Flujo</td><td>0</td><td>0</td><td>0</td></tr>
+<tr><td>9</td><td><strong>Done</strong></td><td>Final</td><td>0</td><td>0</td><td>0</td></tr>
+<tr><td>10</td><td><strong>Blocked</strong></td><td>Excepción</td><td>0</td><td>0</td><td>0</td></tr>
+</table>
+
+<h3>Distribución visual</h3>
+<div class="bar-chart">
+<div class="bar-row"><span class="bar-label">Backlog Tecnico</span><div class="bar backlog" style="width:400px">33</div></div>
+<div class="bar-row"><span class="bar-label">Backlog CLIENTE</span><div class="bar backlog" style="width:109px">9</div></div>
+<div class="bar-row"><span class="bar-label">Backlog NEGOCIO</span><div class="bar backlog" style="width:121px">10</div></div>
+<div class="bar-row"><span class="bar-label">Backlog DELIVERY</span><div class="bar backlog" style="width:97px">8</div></div>
+<div class="bar-row"><span class="bar-label">Todo</span><div class="bar todo" style="width:5px">0</div></div>
+<div class="bar-row"><span class="bar-label">Refined</span><div class="bar refined" style="width:5px">0</div></div>
+<div class="bar-row"><span class="bar-label">In Progress</span><div class="bar progress" style="width:5px">0</div></div>
+<div class="bar-row"><span class="bar-label">Ready</span><div class="bar ready" style="width:5px">0</div></div>
+<div class="bar-row"><span class="bar-label">Done</span><div class="bar done" style="width:5px">0</div></div>
+<div class="bar-row"><span class="bar-label">Blocked</span><div class="bar blocked" style="width:5px">0</div></div>
+</div>
+
+<!-- ============ FLUJO ============ -->
+<h2>3. Análisis de Flujo</h2>
+
+<div class="mermaid">
+graph LR
+  BT["Backlog Tecnico<br/>33"] --> TODO["Todo<br/>0"]
+  BC["Backlog CLIENTE<br/>9"] --> TODO
+  BN["Backlog NEGOCIO<br/>10"] --> TODO
+  BD["Backlog DELIVERY<br/>8"] --> TODO
+  TODO --> REF["Refined<br/>0"]
+  REF --> IP["In Progress<br/>0"]
+  IP --> RDY["Ready<br/>0"]
+  RDY --> DONE["Done<br/>0"]
+  IP --> BLK["Blocked<br/>0"]
+  BLK --> IP
+  style BT fill:#eceff1
+  style BC fill:#e3f2fd
+  style BN fill:#e8f5e9
+  style BD fill:#fff3e0
+  style TODO fill:#ede7f6
+  style REF fill:#e0f2f1
+  style IP fill:#fff8e1
+  style RDY fill:#e8f5e9
+  style DONE fill:#c8e6c9
+  style BLK fill:#ffcdd2
+</div>
+
+<h3>Observaciones del flujo</h3>
+<ul>
+  <li><strong>Backlogs acumulados:</strong> 60 issues en los 4 backlogs (33 técnico, 9 cliente, 10 negocio, 8 delivery)</li>
+  <li><strong>En flujo activo:</strong> 0 Todo + 0 Refined + 0 In Progress + 0 Ready = <strong>0</strong> items</li>
+  <li><strong>Done:</strong> 0 items (0 cerrados, 0 aún abiertos)</li>
+  <li><strong>Blocked:</strong> 0 items</li>
+  <li class="warning"><strong>Issues cerrados NO en Done:</strong> 16 items — posible desincronización de automatización</li>
+  
+</ul>
+
+<!-- ============ ISSUES SIN LABELS ============ -->
+<h2>4. Issues sin Labels</h2>
+
+
+<p class="warning">Se encontraron <strong>93</strong> issues abiertos sin ningún label:</p>
+<table>
+<tr><th>#</th><th>Título</th><th>Asignado</th><th>Última actividad</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/498" target="_blank">#498</a></td><td>Migrar ChangePasswordScreen a Txt + MessageKey</td><td><span class="warning">Sin asignar</span></td><td>30/10/2025 (123d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/497" target="_blank">#497</a></td><td>Migrar ButtonsPreviewScreen a Txt + MessageKey</td><td><span class="warning">Sin asignar</span></td><td>30/10/2025 (123d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/474" target="_blank">#474</a></td><td>Capa KMP de i18n unificada — L10n.t(S.…) con catálogo y overrides por negocio/idioma</td><td><span class="warning">Sin asignar</span></td><td>21/10/2025 (132d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/473" target="_blank">#473</a></td><td>Bloquear en compilación los usos de APIs viejas de string resources con KSP (multiplataforma)</td><td><span class="warning">Sin asignar</span></td><td>21/10/2025 (132d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/472" target="_blank">#472</a></td><td>Issue: Erradicar definitivamente errores Base64 de compose-resources en Android (uso exclusivo de R.string + validación automática)</td><td><span class="warning">Sin asignar</span></td><td>17/10/2025 (136d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/466" target="_blank">#466</a></td><td>Política Codex: ramas siempre desde develop y PRs contra develop</td><td>leitocodexbot</td><td>17/10/2025 (136d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/462" target="_blank">#462</a></td><td>Actualizar navigation-compose a versión estable (evitar alpha bajo recomposición)</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/461" target="_blank">#461</a></td><td>Mantener compatibilidad Android si se decide usar compose-resources (alinear generación y evitar colisiones)</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/460" target="_blank">#460</a></td><td>Migrar strings en Android a androidx.compose.ui.res.stringResource (evitar compose-resources en Android)</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/458" target="_blank">#458</a></td><td>Issue: Crash en stringResource por decodificación Base64 — Corrección y alineación de versiones Compose Resources</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/456" target="_blank">#456</a></td><td>Issue: Error al decodificar recursos de texto (Base64.decode en org.jetbrains.compose.resources)</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/452" target="_blank">#452</a></td><td>Guardado definitivo de la personalización y sincronización con la app</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/451" target="_blank">#451</a></td><td>Vista previa en tiempo real de los cambios de personalización</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/450" target="_blank">#450</a></td><td>Carga de imágenes, logotipo e ícono de app Android</td><td><span class="warning">Sin asignar</span></td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/448" target="_blank">#448</a></td><td>Configuración de colores por componente</td><td><span class="warning">Sin asignar</span></td><td>14/11/2025 (108d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/447" target="_blank">#447</a></td><td>Acceso al panel de personalización</td><td>leitocodexbot</td><td>12/10/2025 (141d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/433" target="_blank">#433</a></td><td>Story: mejorar README general del proyecto</td><td><span class="warning">Sin asignar</span></td><td>8/10/2025 (145d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/416" target="_blank">#416</a></td><td>Resetear main al estado de PRE_UPDATE_BUILD_BY_BRAND (limpieza de baseline)</td><td><span class="warning">Sin asignar</span></td><td>8/10/2025 (145d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/413" target="_blank">#413</a></td><td>[codex] init.sh: no instalar Android por defecto y tolerar SIGPIPE (fix exit 141)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/403" target="_blank">#403</a></td><td>H2.5.S5 — Observabilidad (publish)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/402" target="_blank">#402</a></td><td>H2.5.S4 — Tests e2e: publish / conflict / rollback</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/401" target="_blank">#401</a></td><td>H2.5.S3 — Invalidación de cache del publicado</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/400" target="_blank">#400</a></td><td>H2.5.S2 — Handler: POST publish (+ idempotencia opcional)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/399" target="_blank">#399</a></td><td>H2.5.S1 — Repositorio: setPublished(businessId, newVersion, expectedPrevVersion)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/398" target="_blank">#398</a></td><td>H2.5.S0 — OpenAPI: POST /branding/{businessId}/publish (+ rollback)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/397" target="_blank">#397</a></td><td>H2.4.S4 — Observabilidad (preview)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/396" target="_blank">#396</a></td><td>H2.4.S3 — Tests e2e (preview OK / not found)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/395" target="_blank">#395</a></td><td>H2.4.S2 — Handler: GET preview</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/394" target="_blank">#394</a></td><td>H2.4.S1 — Repositorio: getTheme(businessId, version)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/393" target="_blank">#393</a></td><td>H2.4.S0 — OpenAPI: GET /branding/{businessId}/preview?version=N</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/392" target="_blank">#392</a></td><td>H2.3.S6 — Observabilidad (published)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/391" target="_blank">#391</a></td><td>H2.3.S5 — Tests e2e (published / not found / 304)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/390" target="_blank">#390</a></td><td>H2.3.S4 — Cache en memoria (TTL corto)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/389" target="_blank">#389</a></td><td>H2.3.S3 — ETag / If-None-Match (opcional)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/388" target="_blank">#388</a></td><td>H2.3.S2 — Handler: GET publicado</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/387" target="_blank">#387</a></td><td>H2.3.S1 — Repositorio: getPublished(...)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/386" target="_blank">#386</a></td><td>H2.3.S0 — OpenAPI: GET /branding/{businessId} (published)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/385" target="_blank">#385</a></td><td>H2.2.S7 — Observabilidad: logs y métricas del draft</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/384" target="_blank">#384</a></td><td>H2.2.S6 — Tests e2e con DynamoDB Local</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/383" target="_blank">#383</a></td><td>H2.2.S5 — (Opcional) Validación de assets referenciados</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/382" target="_blank">#382</a></td><td>H2.2.S4 — Handler: POST /draft</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/381" target="_blank">#381</a></td><td>H2.2.S3 — Repositorio: putDraftNextVersion(...)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/380" target="_blank">#380</a></td><td>H2.2.S2 — Validación: JSON Schema mínimo del payload</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/379" target="_blank">#379</a></td><td>H2.2.S1 — Integración con auth existente (sólo contexto)</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/378" target="_blank">#378</a></td><td>H2.2.S0 — OpenAPI: POST /branding/{businessId}/draft</td><td><span class="warning">Sin asignar</span></td><td>2/10/2025 (151d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/377" target="_blank">#377</a></td><td>H2.1.S6 — DynamoDB Local (docker) + tests del repositorio</td><td><span class="warning">Sin asignar</span></td><td>3/10/2025 (150d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/376" target="_blank">#376</a></td><td>H2.1.S5 — Seed Dev: guía manual (Console) + script local (CLI)</td><td><span class="warning">Sin asignar</span></td><td>3/10/2025 (150d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/375" target="_blank">#375</a></td><td>H2.1.S2 — (Opcional) Runbook: Crear GSI de Drafts (si volumen lo requiere)</td><td><span class="warning">Sin asignar</span></td><td>3/10/2025 (150d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/374" target="_blank">#374</a></td><td>H2.1.S1b — Documentación: Naming + IAM mínima para el servicio</td><td><span class="warning">Sin asignar</span></td><td>3/10/2025 (150d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/373" target="_blank">#373</a></td><td>H2.1.S1 — Runbook: Crear la tabla manualmente en AWS Console</td><td><span class="warning">Sin asignar</span></td><td>3/10/2025 (150d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/372" target="_blank">#372</a></td><td>H2.1.S0 — ADR: Modelo single-table DynamoDB (claves y accesos)</td><td><span class="warning">Sin asignar</span></td><td>3/10/2025 (150d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/348" target="_blank">#348</a></td><td>Validar cantidad de request que se atienden por segundo</td><td><span class="warning">Sin asignar</span></td><td>28/9/2025 (155d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/347" target="_blank">#347</a></td><td>H2.1.S6 — Pruebas locales con DynamoDB Local (docker-compose)</td><td><span class="warning">Sin asignar</span></td><td>28/9/2025 (155d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/346" target="_blank">#346</a></td><td>H2.1.S5 — Script de seed (dev): negocio + tema publicado v1</td><td><span class="warning">Sin asignar</span></td><td>28/9/2025 (155d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/345" target="_blank">#345</a></td><td>H2.1.S4 — Publicación: condición de unicidad (marker con ConditionExpression)</td><td><span class="warning">Sin asignar</span></td><td>28/9/2025 (155d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/344" target="_blank">#344</a></td><td>H2.1.S3 — Repositorio: contratos y mapeos (sin endpoints)</td><td><span class="warning">Sin asignar</span></td><td>28/9/2025 (155d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/343" target="_blank">#343</a></td><td>H2.1.S1 — Infra: Crear tabla DynamoDB branding (IaC mínima)</td><td><span class="warning">Sin asignar</span></td><td>28/9/2025 (155d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/334" target="_blank">#334</a></td><td>H1.3.S7 — README CI: cómo agregar una nueva marca</td><td><span class="warning">Sin asignar</span></td><td>26/9/2025 (157d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/333" target="_blank">#333</a></td><td>H1.3.S6 — Smoke tests pos-build (label/ids)</td><td><span class="warning">Sin asignar</span></td><td>26/9/2025 (157d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/332" target="_blank">#332</a></td><td>H1.3.S5 — Naming de artifacts + checksum</td><td><span class="warning">Sin asignar</span></td><td>26/9/2025 (157d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/331" target="_blank">#331</a></td><td>H1.3.S4 — Cache de Gradle y Pods/SPM (opcional, performance)</td><td><span class="warning">Sin asignar</span></td><td>26/9/2025 (157d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/330" target="_blank">#330</a></td><td>H1.3.S3 — Gestión de secretos por brand (firma y endpoints protegidos)</td><td><span class="warning">Sin asignar</span></td><td>26/9/2025 (157d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/329" target="_blank">#329</a></td><td>H1.3.S2 — Job iOS: build por brand y publicación de artifacts</td><td><span class="warning">Sin asignar</span></td><td>26/9/2025 (157d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/328" target="_blank">#328</a></td><td>H1.3.S1 — Job Android: build por brand y publicación de artifacts</td><td><span class="warning">Sin asignar</span></td><td>26/9/2025 (157d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/327" target="_blank">#327</a></td><td>H1.3.S0 — Matriz de marcas y parámetros estándar (Workflows)</td><td><span class="warning">Sin asignar</span></td><td>1/10/2025 (152d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/285" target="_blank">#285</a></td><td>valide la documentacion y que cree un issue nuevo donde mencione todos los puntos a mejorar o actualizar de toda la documentacion del proyecto</td><td><span class="warning">Sin asignar</span></td><td>21/9/2025 (162d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/283" target="_blank">#283</a></td><td>P0 – Bloqueo de navegación por fallos al resolver textos de recursos (Base64/pack de strings). Inaceptable que el Dashboard quede inaccesible tras cambios</td><td><span class="warning">Sin asignar</span></td><td>21/9/2025 (162d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/275" target="_blank">#275</a></td><td>Build roto tras el refactor del menú semicircular — Parche definitivo (Compose MPP)  Tipo: fix / build + ui</td><td><span class="warning">Sin asignar</span></td><td>20/9/2025 (163d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/253" target="_blank">#253</a></td><td>Crear pack de íconos móviles y web con el icono #1 (A-triángulo)</td><td><span class="warning">Sin asignar</span></td><td>18/9/2025 (165d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/232" target="_blank">#232</a></td><td>Documentación y Storybook interno (opcional)</td><td><span class="warning">Sin asignar</span></td><td>17/9/2025 (166d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/230" target="_blank">#230</a></td><td>Ampliación pack de íconos (16–24)</td><td><span class="warning">Sin asignar</span></td><td>17/9/2025 (166d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/229" target="_blank">#229</a></td><td>Accesibilidad y rendimiento de animaciones</td><td><span class="warning">Sin asignar</span></td><td>17/9/2025 (166d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/228" target="_blank">#228</a></td><td>Theming & Tipografía (consistencia)</td><td><span class="warning">Sin asignar</span></td><td>17/9/2025 (166d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/227" target="_blank">#227</a></td><td>Unificación flujo Registro</td><td><span class="warning">Sin asignar</span></td><td>16/9/2025 (167d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/225" target="_blank">#225</a></td><td>Aplicar nuevo botón + íconos en Home</td><td><span class="warning">Sin asignar</span></td><td>16/9/2025 (167d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/155" target="_blank">#155</a></td><td>Agregar botones para acceder a Recuperación y confirmación de contraseña en la pantalla de login</td><td>leitocodexbot</td><td>31/7/2025 (214d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/146" target="_blank">#146</a></td><td>Hacer el componente TextField compatible con ExposedDropdownMenuBox</td><td><span class="warning">Sin asignar</span></td><td>30/7/2025 (215d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/72" target="_blank">#72</a></td><td>Issue al inicializar el front</td><td>leitocodexbot</td><td>8/7/2025 (237d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/67" target="_blank">#67</a></td><td>[Pantalla] Visualización de perfiles disponibles</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/66" target="_blank">#66</a></td><td>[Pantalla] Configuración de autoaceptación de deliveries</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/64" target="_blank">#64</a></td><td>[Pantalla] Asignación de perfiles a usuarios</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/58" target="_blank">#58</a></td><td>[Pantalla] Visualización de perfiles disponibles</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/57" target="_blank">#57</a></td><td>[Pantalla] Configuración de autoaceptación de deliveries</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/56" target="_blank">#56</a></td><td>[Pantalla] Unión de deliveries a negocio</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/55" target="_blank">#55</a></td><td>[Pantalla] Asignación de perfiles a usuarios</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/54" target="_blank">#54</a></td><td>[Pantalla] Registro y aprobación de negocios</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/53" target="_blank">#53</a></td><td>[Pantalla] Cambio de contraseña</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/52" target="_blank">#52</a></td><td>[Pantalla] Autenticación en dos pasos</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/51" target="_blank">#51</a></td><td>[Pantalla] Recuperación y confirmación de contraseña</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/50" target="_blank">#50</a></td><td>[Pantalla] Registro de usuario por perfil</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/49" target="_blank">#49</a></td><td>[auto] Faltan pantallas para cubrir servicios</td><td><span class="warning">Sin asignar</span></td><td>6/7/2025 (239d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/21" target="_blank">#21</a></td><td>Agregar pruebas de integración para Profiles</td><td><span class="warning">Sin asignar</span></td><td>3/7/2025 (242d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/13" target="_blank">#13</a></td><td>[auto] Enumerar funciones sin pruebas de integración</td><td><span class="warning">Sin asignar</span></td><td>2/7/2025 (243d)</td></tr>
+</table>
+
+<!-- ============ ISSUES SIN ASIGNAR ============ -->
+<h2>5. Issues sin Asignar</h2>
+
+<p>Se encontraron <strong>141</strong> issues abiertos sin asignar (77% del total).</p>
+
+<p><em>Se muestran los 20 más recientes. Ver listado completo en el Project V2.</em></p>
+
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th><th>Última actividad</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1127" target="_blank">#1127</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Personalización del negocio</td><td><span class="label">Backlog</span> <span class="label">area:configuracion</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1126" target="_blank">#1126</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Solicitar y revisar unión a negocio</td><td><span class="label">Backlog</span> <span class="label">area:onboarding</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1125" target="_blank">#1125</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Perfil y disponibilidad del repartidor</td><td><span class="label">Backlog</span> <span class="label">area:configuracion</span> <span class="label">area:perfil</span> <span class="label">app:delivery</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1124" target="_blank">#1124</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Detalle de pedido y flujo de estados (delivery)</td><td><span class="label">Backlog</span> <span class="label">area:delivery</span> <span class="label">app:delivery</span> <span class="label">area:estado</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1123" target="_blank">#1123</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Home y dashboard del repartidor</td><td><span class="label">Backlog</span> <span class="label">area:delivery</span> <span class="label">app:delivery</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1122" target="_blank">#1122</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Perfil y direcciones del cliente</td><td><span class="label">Backlog</span> <span class="label">app:client</span> <span class="label">area:perfil</span> <span class="label">area:direcciones</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1121" target="_blank">#1121</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Carrito de compras y pedidos (cliente)</td><td><span class="label">Backlog</span> <span class="label">area:pedidos</span> <span class="label">app:client</span> <span class="label">area:carrito</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1120" target="_blank">#1120</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Catálogo y detalle de producto (cliente)</td><td><span class="label">Backlog</span> <span class="label">area:productos</span> <span class="label">app:client</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1119" target="_blank">#1119</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Entry y onboarding del cliente</td><td><span class="label">Backlog</span> <span class="label">area:onboarding</span> <span class="label">app:client</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1118" target="_blank">#1118</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Gestión de categorías (CRUD)</td><td><span class="label">Backlog</span> <span class="label">area:productos</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1116" target="_blank">#1116</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Dashboard de negocio</td><td><span class="label">Backlog</span> <span class="label">area:dashboard</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026 (1d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/742" target="_blank">#742</a></td><td>DSEC-001 – Integración básica con autenticación en dos pasos (2FA) para delivery</td><td><span class="label">from-intake</span> <span class="label">app:delivery</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/741" target="_blank">#741</a></td><td>DCMM-001 – Contacto con comercio o cliente desde la app delivery</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:comunicacion</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/740" target="_blank">#740</a></td><td>DNOT-001 – Notificaciones de nuevos pedidos y cambios de estado</td><td><span class="label">from-intake</span> <span class="label">area:notificaciones</span> <span class="label">app:delivery</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/737" target="_blank">#737</a></td><td>DHIST-001 – Historial de pedidos del repartidor</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:historial</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/736" target="_blank">#736</a></td><td>DORD-004 – Confirmación de entrega y resultado del pedido</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:estado</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/735" target="_blank">#735</a></td><td>DLOC-001 – Placeholder de ubicación y mapa en app de repartidores</td><td><span class="label">from-intake</span> <span class="label">app:delivery</span> <span class="label">area:ubicacion</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/734" target="_blank">#734</a></td><td>DSTA-001 – Flujo básico de estados de entrega</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:estado</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/732" target="_blank">#732</a></td><td>DORD-002 – Listado de pedidos disponibles para tomar</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:asignacion</span></td><td>18/12/2025 (74d)</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/727" target="_blank">#727</a></td><td>[INTAKE] Backlog DELIVERY – features app de repartidores</td><td><span class="label">intake-processed</span></td><td>18/12/2025 (74d)</td></tr>
+</table>
+
+<!-- ============ ISSUES SIN STATUS ============ -->
+<h2>6. Issues en Project V2 sin Status Definido</h2>
+
+
+<p class="warning">Se encontraron <strong>7</strong> items abiertos en el Project sin status:</p>
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1143" target="_blank">#1143</a></td><td>[UX] Agregar feedback visual durante auto-login con sesión previa</td><td><span class="label">enhancement</span> <span class="label">ux</span></td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1144" target="_blank">#1144</a></td><td>[UX] Mejorar flujo Password Recovery: email pre-cargado, teclado numérico, reenviar código</td><td><span class="label">enhancement</span> <span class="label">ux</span></td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1145" target="_blank">#1145</a></td><td>[UX] Separar cambio de contraseña temporal en pantalla dedicada</td><td><span class="label">enhancement</span> <span class="label">ux</span></td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1146" target="_blank">#1146</a></td><td>[UX] Agregar validación inline en PasswordRecoveryScreen</td><td><span class="label">bug</span> <span class="label">ux</span></td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1147" target="_blank">#1147</a></td><td>[UX] Reorganizar jerarquía de links secundarios en pantalla de Login</td><td><span class="label">enhancement</span> <span class="label">ux</span></td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1148" target="_blank">#1148</a></td><td>[UX] Agregar indicador de fortaleza y coincidencia de contraseñas</td><td><span class="label">enhancement</span> <span class="label">ux</span></td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1159" target="_blank">#1159</a></td><td>feat(hooks): Aprendizaje adaptativo de permisos — permission-memory.js</td><td><span class="label">enhancement</span> <span class="label">tipo:infra</span> <span class="label">area:infra</span> <span class="label">area:seguridad</span></td></tr>
+</table>
+
+<!-- ============ ISSUES NO EN PROJECT ============ -->
+<h2>7. Issues Abiertos NO incluidos en el Project V2</h2>
+
+<p>Se encontraron <strong>115</strong> issues abiertos que NO están en el tablero Project V2.</p>
+
+
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th><th>Asignado</th><th>Creado</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1173" target="_blank">#1173</a></td><td>guard: bloquear ediciones de código fuera de un worktree dedicado</td><td><span class="label">enhancement</span> <span class="label">tipo:infra</span> <span class="label">area:infra</span></td><td>leitolarreta</td><td>3/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1139" target="_blank">#1139</a></td><td>feat: Sistema de reintentos con escalada de urgencia para permisos de Telegram</td><td><span class="label">enhancement</span></td><td>leitolarreta</td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1138" target="_blank">#1138</a></td><td>feat: Sistema de reintentos con escalada de urgencia para permisos de Telegram</td><td><span class="label">enhancement</span></td><td>leitolarreta</td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/727" target="_blank">#727</a></td><td>[INTAKE] Backlog DELIVERY – features app de repartidores</td><td><span class="label">intake-processed</span></td><td><span class="warning">Sin asignar</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/681" target="_blank">#681</a></td><td>[INTAKE] Backlog CLIENTE – features app cliente (usuarios compradores)</td><td><span class="label">app:business</span></td><td><span class="warning">Sin asignar</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/615" target="_blank">#615</a></td><td>[INTAKE] Backlog NEGOCIO – features app de negocios (admin de comercios)</td><td><span class="label">intake-processed</span></td><td><span class="warning">Sin asignar</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/613" target="_blank">#613</a></td><td>BPROD-003 – Publicación de productos hacia la app cliente</td><td><span class="label">stream:NEGOCIO</span> <span class="label">app:business</span> <span class="label">tipo:infra</span> <span class="label">from-intake</span> <span class="label">area:productos</span></td><td><span class="warning">Sin asignar</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/612" target="_blank">#612</a></td><td>BPROD-002 – Alta y edición de producto</td><td><span class="label">stream:NEGOCIO</span> <span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:productos</span></td><td><span class="warning">Sin asignar</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/610" target="_blank">#610</a></td><td>BAPP-003 – Dashboard de administración de negocio</td><td><span class="label">stream:NEGOCIO</span> <span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:dashboard</span></td><td><span class="warning">Sin asignar</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/607" target="_blank">#607</a></td><td>[INTAKE] Backlog NEGOCIO – primera carga de historias</td><td><span class="label">intake-processed</span></td><td><span class="warning">Sin asignar</span></td><td>16/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/603" target="_blank">#603</a></td><td>Home / dashboard de la app de negocio</td><td><span class="label">enhancement</span> <span class="label">stream:NEGOCIO</span> <span class="label">area:dashboard</span></td><td><span class="warning">Sin asignar</span></td><td>26/11/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/602" target="_blank">#602</a></td><td>Onboarding y login de la app de negocio</td><td><span class="label">enhancement</span> <span class="label">stream:NEGOCIO</span> <span class="label">area:onboarding</span></td><td><span class="warning">Sin asignar</span></td><td>26/11/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/601" target="_blank">#601</a></td><td>App de negocio como variante de build (APP_TYPE=BUSINESS)</td><td><span class="label">enhancement</span> <span class="label">stream:NEGOCIO</span> <span class="label">app:business</span></td><td><span class="warning">Sin asignar</span></td><td>26/11/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/599" target="_blank">#599</a></td><td>Ajustar espacio superior en pantallas de cliente</td><td><span class="label">enhancement</span></td><td><span class="warning">Sin asignar</span></td><td>24/11/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/597" target="_blank">#597</a></td><td>Pantalla de carrito y resumen de pedido</td><td><span class="label">enhancement</span> <span class="label">area:pedidos</span></td><td><span class="warning">Sin asignar</span></td><td>24/11/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/498" target="_blank">#498</a></td><td>Migrar ChangePasswordScreen a Txt + MessageKey</td><td></td><td><span class="warning">Sin asignar</span></td><td>30/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/497" target="_blank">#497</a></td><td>Migrar ButtonsPreviewScreen a Txt + MessageKey</td><td></td><td><span class="warning">Sin asignar</span></td><td>30/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/483" target="_blank">#483</a></td><td>Migrar resto de pantallas a nueva API de strings y eliminar dependencias legacy</td><td><span class="label">strings</span> <span class="label">refactor</span></td><td><span class="warning">Sin asignar</span></td><td>28/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/474" target="_blank">#474</a></td><td>Capa KMP de i18n unificada — L10n.t(S.…) con catálogo y overrides por negocio/idioma</td><td></td><td><span class="warning">Sin asignar</span></td><td>21/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/473" target="_blank">#473</a></td><td>Bloquear en compilación los usos de APIs viejas de string resources con KSP (multiplataforma)</td><td></td><td><span class="warning">Sin asignar</span></td><td>21/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/472" target="_blank">#472</a></td><td>Issue: Erradicar definitivamente errores Base64 de compose-resources en Android (uso exclusivo de R.string + validación automática)</td><td></td><td><span class="warning">Sin asignar</span></td><td>17/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/466" target="_blank">#466</a></td><td>Política Codex: ramas siempre desde develop y PRs contra develop</td><td></td><td>leitocodexbot</td><td>17/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/462" target="_blank">#462</a></td><td>Actualizar navigation-compose a versión estable (evitar alpha bajo recomposición)</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/461" target="_blank">#461</a></td><td>Mantener compatibilidad Android si se decide usar compose-resources (alinear generación y evitar colisiones)</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/460" target="_blank">#460</a></td><td>Migrar strings en Android a androidx.compose.ui.res.stringResource (evitar compose-resources en Android)</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/458" target="_blank">#458</a></td><td>Issue: Crash en stringResource por decodificación Base64 — Corrección y alineación de versiones Compose Resources</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/456" target="_blank">#456</a></td><td>Issue: Error al decodificar recursos de texto (Base64.decode en org.jetbrains.compose.resources)</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/452" target="_blank">#452</a></td><td>Guardado definitivo de la personalización y sincronización con la app</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/451" target="_blank">#451</a></td><td>Vista previa en tiempo real de los cambios de personalización</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/450" target="_blank">#450</a></td><td>Carga de imágenes, logotipo e ícono de app Android</td><td></td><td><span class="warning">Sin asignar</span></td><td>12/10/2025</td></tr>
+</table>
+<p><em>... y 85 más.</em></p>
+
+<!-- ============ ISSUES ESTANCADOS ============ -->
+<h2>8. Issues Estancados (&gt;14 días sin actividad)</h2>
+
+<p>Se encontraron <strong>132</strong> issues sin actividad en más de 14 días (73% del total).</p>
+
+<h3>Distribución por antigüedad</h3>
+<div class="bar-chart">
+<div class="bar-row"><span class="bar-label">15-30 días</span><div class="bar blocked" style="width:5px">0</div></div>
+<div class="bar-row"><span class="bar-label">31-60 días</span><div class="bar blocked" style="width:5px">0</div></div>
+<div class="bar-row"><span class="bar-label">61-90 días</span><div class="bar blocked" style="width:100px">33</div></div>
+<div class="bar-row"><span class="bar-label">>90 días</span><div class="bar blocked" style="width:300px">99</div></div>
+</div>
+
+<h3>Top 15 issues más estancados</h3>
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th><th>Última actividad</th><th>Días</th></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/13" target="_blank">#13</a></td><td>[auto] Enumerar funciones sin pruebas de integración</td><td></td><td>2/7/2025</td><td><strong>243</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/27" target="_blank">#27</a></td><td>Agregar pruebas de integración para TestDynamoDB</td><td><span class="label">blocked</span></td><td>3/7/2025</td><td><strong>242</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/21" target="_blank">#21</a></td><td>Agregar pruebas de integración para Profiles</td><td></td><td>3/7/2025</td><td><strong>242</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/49" target="_blank">#49</a></td><td>[auto] Faltan pantallas para cubrir servicios</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/50" target="_blank">#50</a></td><td>[Pantalla] Registro de usuario por perfil</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/51" target="_blank">#51</a></td><td>[Pantalla] Recuperación y confirmación de contraseña</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/53" target="_blank">#53</a></td><td>[Pantalla] Cambio de contraseña</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/52" target="_blank">#52</a></td><td>[Pantalla] Autenticación en dos pasos</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/54" target="_blank">#54</a></td><td>[Pantalla] Registro y aprobación de negocios</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/55" target="_blank">#55</a></td><td>[Pantalla] Asignación de perfiles a usuarios</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/57" target="_blank">#57</a></td><td>[Pantalla] Configuración de autoaceptación de deliveries</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/56" target="_blank">#56</a></td><td>[Pantalla] Unión de deliveries a negocio</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/58" target="_blank">#58</a></td><td>[Pantalla] Visualización de perfiles disponibles</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/64" target="_blank">#64</a></td><td>[Pantalla] Asignación de perfiles a usuarios</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+<tr class="stale"><td><a href="https://github.com/intrale/platform/issues/66" target="_blank">#66</a></td><td>[Pantalla] Configuración de autoaceptación de deliveries</td><td></td><td>6/7/2025</td><td><strong>239</strong></td></tr>
+</table>
+
+<!-- ============ BACKLOGS ============ -->
+<h2>9. Verificación de Backlogs</h2>
+
+<h3>9.1 Backlog CLIENTE (9 items abiertos)</h3>
+
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th><th>Creado</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/716" target="_blank">#716</a></td><td>CPROD-001 – Detalle de producto en la app cliente</td><td><span class="label">from-intake</span> <span class="label">area:productos</span> <span class="label">app:client</span> <span class="label">backlog-tecnico</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/717" target="_blank">#717</a></td><td>CCART-001 – Visualización del carrito de compras</td><td><span class="label">from-intake</span> <span class="label">app:client</span> <span class="label">area:carrito</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/718" target="_blank">#718</a></td><td>CCART-002 – Confirmación de pedido y resumen de compra</td><td><span class="label">from-intake</span> <span class="label">app:client</span> <span class="label">area:carrito</span> <span class="label">area:checkout</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/720" target="_blank">#720</a></td><td>CPAY-001 – Selección de medio de pago en app cliente</td><td><span class="label">from-intake</span> <span class="label">area:pagos</span> <span class="label">app:client</span> <span class="label">area:checkout</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/721" target="_blank">#721</a></td><td>CORD-001 – Listado de pedidos del cliente</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:client</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/722" target="_blank">#722</a></td><td>CORD-002 – Detalle y seguimiento básico de pedido</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:client</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/723" target="_blank">#723</a></td><td>CORD-003 – Repetir un pedido anterior</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:client</span> <span class="label">area:carrito</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/724" target="_blank">#724</a></td><td>CNOT-001 – Notificaciones de pedidos y mensajes del negocio</td><td><span class="label">from-intake</span> <span class="label">app:client</span> <span class="label">area:notificaciones</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/726" target="_blank">#726</a></td><td>CSEC-001 – Integración básica con autenticación en dos pasos (2FA) para cliente</td><td><span class="label">from-intake</span> <span class="label">app:client</span> <span class="label">area:seguridad</span></td><td>18/12/2025</td></tr>
+</table>
+
+<h3>9.2 Backlog NEGOCIO (10 items abiertos)</h3>
+
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th><th>Creado</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/672" target="_blank">#672</a></td><td>BPROD-005 – Configuración de productos destacados y promociones</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:productos</span> <span class="label">area:marketing</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/673" target="_blank">#673</a></td><td>BORD-001 – Listado de pedidos del negocio con filtros básicos</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:pedidos</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/674" target="_blank">#674</a></td><td>BORD-002 – Detalle de pedido y actualización de estado</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:pedidos</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/675" target="_blank">#675</a></td><td>BDEL-001 – Gestión de repartidores del negocio</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:delivery</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/676" target="_blank">#676</a></td><td>BDEL-002 – Asignación de pedidos a repartidores</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">area:delivery</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/677" target="_blank">#677</a></td><td>BCONF-001 – Configuración de datos básicos del negocio</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:configuracion</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/678" target="_blank">#678</a></td><td>BCONF-002 – Configuración de horarios de atención y zonas de entrega</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:configuracion</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/679" target="_blank">#679</a></td><td>BCONF-003 – Configuración de medios de pago aceptados</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:configuracion</span> <span class="label">area:pagos</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/680" target="_blank">#680</a></td><td>BCONF-004 – Gestión de banners y mensajes de marketing del negocio</td><td><span class="label">app:business</span> <span class="label">from-intake</span> <span class="label">area:marketing</span> <span class="label">area:configuracion</span></td><td>17/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1174" target="_blank">#1174</a></td><td>Scrum Master: auditoría del tablero de historias y propuesta de mejoras (Project V2)</td><td><span class="label">enhancement</span> <span class="label">tipo:infra</span> <span class="label">area:infra</span></td><td>3/3/2026</td></tr>
+</table>
+
+<h3>9.3 Backlog DELIVERY (8 items abiertos)</h3>
+
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th><th>Creado</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/732" target="_blank">#732</a></td><td>DORD-002 – Listado de pedidos disponibles para tomar</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:asignacion</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/734" target="_blank">#734</a></td><td>DSTA-001 – Flujo básico de estados de entrega</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:estado</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/735" target="_blank">#735</a></td><td>DLOC-001 – Placeholder de ubicación y mapa en app de repartidores</td><td><span class="label">from-intake</span> <span class="label">app:delivery</span> <span class="label">area:ubicacion</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/736" target="_blank">#736</a></td><td>DORD-004 – Confirmación de entrega y resultado del pedido</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:estado</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/737" target="_blank">#737</a></td><td>DHIST-001 – Historial de pedidos del repartidor</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:historial</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/740" target="_blank">#740</a></td><td>DNOT-001 – Notificaciones de nuevos pedidos y cambios de estado</td><td><span class="label">from-intake</span> <span class="label">area:notificaciones</span> <span class="label">app:delivery</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/741" target="_blank">#741</a></td><td>DCMM-001 – Contacto con comercio o cliente desde la app delivery</td><td><span class="label">from-intake</span> <span class="label">area:pedidos</span> <span class="label">app:delivery</span> <span class="label">area:comunicacion</span></td><td>18/12/2025</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/742" target="_blank">#742</a></td><td>DSEC-001 – Integración básica con autenticación en dos pasos (2FA) para delivery</td><td><span class="label">from-intake</span> <span class="label">app:delivery</span></td><td>18/12/2025</td></tr>
+</table>
+
+<h3>9.4 Backlog Técnico (33 items abiertos)</h3>
+<p>33 items. Los más recientes:</p>
+<table>
+<tr><th>#</th><th>Título</th><th>Labels</th><th>Creado</th></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1171" target="_blank">#1171</a></td><td>bug: botones de aprobación de permisos en Telegram no responden nuevamente</td><td><span class="label">bug</span> <span class="label">tipo:infra</span> <span class="label">area:infra</span></td><td>3/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1170" target="_blank">#1170</a></td><td>hooks: validar que toda implementación de historia corra en un worktree aislado</td><td><span class="label">enhancement</span> <span class="label">tipo:infra</span> <span class="label">area:infra</span></td><td>3/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1169" target="_blank">#1169</a></td><td>hooks: actualizar mensaje Telegram cuando permiso se resuelve desde la terminal</td><td><span class="label">enhancement</span> <span class="label">tipo:infra</span> <span class="label">area:infra</span></td><td>3/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1127" target="_blank">#1127</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Personalización del negocio</td><td><span class="label">Backlog</span> <span class="label">area:configuracion</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1126" target="_blank">#1126</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Solicitar y revisar unión a negocio</td><td><span class="label">Backlog</span> <span class="label">area:onboarding</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1125" target="_blank">#1125</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Perfil y disponibilidad del repartidor</td><td><span class="label">Backlog</span> <span class="label">area:configuracion</span> <span class="label">area:perfil</span> <span class="label">app:delivery</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1124" target="_blank">#1124</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Detalle de pedido y flujo de estados (delivery)</td><td><span class="label">Backlog</span> <span class="label">area:delivery</span> <span class="label">app:delivery</span> <span class="label">area:estado</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1123" target="_blank">#1123</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Home y dashboard del repartidor</td><td><span class="label">Backlog</span> <span class="label">area:delivery</span> <span class="label">app:delivery</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1122" target="_blank">#1122</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Perfil y direcciones del cliente</td><td><span class="label">Backlog</span> <span class="label">app:client</span> <span class="label">area:perfil</span> <span class="label">area:direcciones</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026</td></tr>
+<tr><td><a href="https://github.com/intrale/platform/issues/1121" target="_blank">#1121</a></td><td>qa(compliance): Reporte PO+QA v2.0 — Carrito de compras y pedidos (cliente)</td><td><span class="label">Backlog</span> <span class="label">area:pedidos</span> <span class="label">app:client</span> <span class="label">area:carrito</span> <span class="label">area:testing</span> <span class="label">qa-compliance</span></td><td>1/3/2026</td></tr>
+</table>
+
+<!-- ============ LABELS ============ -->
+<h2>10. Análisis de Labels</h2>
+
+<h3>10.1 Labels más usados (top 20)</h3>
+<div class="bar-chart">
+<div class="bar-row"><span class="bar-label">area:testing</span><div class="bar" style="width:350px">30</div></div>
+<div class="bar-row"><span class="bar-label">from-intake</span><div class="bar" style="width:338px">29</div></div>
+<div class="bar-row"><span class="bar-label">enhancement</span><div class="bar" style="width:292px">25</div></div>
+<div class="bar-row"><span class="bar-label">app:business</span><div class="bar" style="width:245px">21</div></div>
+<div class="bar-row"><span class="bar-label">app:client</span><div class="bar" style="width:233px">20</div></div>
+<div class="bar-row"><span class="bar-label">area:pedidos</span><div class="bar" style="width:187px">16</div></div>
+<div class="bar-row"><span class="bar-label">Backlog</span><div class="bar" style="width:128px">11</div></div>
+<div class="bar-row"><span class="bar-label">qa-compliance</span><div class="bar" style="width:128px">11</div></div>
+<div class="bar-row"><span class="bar-label">app:delivery</span><div class="bar" style="width:128px">11</div></div>
+<div class="bar-row"><span class="bar-label">tipo:infra</span><div class="bar" style="width:82px">7</div></div>
+<div class="bar-row"><span class="bar-label">area:delivery</span><div class="bar" style="width:82px">7</div></div>
+<div class="bar-row"><span class="bar-label">area:infra</span><div class="bar" style="width:70px">6</div></div>
+<div class="bar-row"><span class="bar-label">ux</span><div class="bar" style="width:70px">6</div></div>
+<div class="bar-row"><span class="bar-label">area:configuracion</span><div class="bar" style="width:70px">6</div></div>
+<div class="bar-row"><span class="bar-label">area:productos</span><div class="bar" style="width:70px">6</div></div>
+<div class="bar-row"><span class="bar-label">stream:NEGOCIO</span><div class="bar" style="width:70px">6</div></div>
+<div class="bar-row"><span class="bar-label">area:perfil</span><div class="bar" style="width:58px">5</div></div>
+<div class="bar-row"><span class="bar-label">bug</span><div class="bar" style="width:47px">4</div></div>
+<div class="bar-row"><span class="bar-label">area:seguridad</span><div class="bar" style="width:47px">4</div></div>
+<div class="bar-row"><span class="bar-label">area:onboarding</span><div class="bar" style="width:47px">4</div></div>
+</div>
+
+<h3>10.2 Labels de área (area:*)</h3>
+<table>
+<tr><th>Label</th><th>Cantidad</th></tr>
+<tr><td>area:testing</td><td>30</td></tr>
+<tr><td>area:pedidos</td><td>16</td></tr>
+<tr><td>area:delivery</td><td>7</td></tr>
+<tr><td>area:infra</td><td>6</td></tr>
+<tr><td>area:configuracion</td><td>6</td></tr>
+<tr><td>area:productos</td><td>6</td></tr>
+<tr><td>area:perfil</td><td>5</td></tr>
+<tr><td>area:seguridad</td><td>4</td></tr>
+<tr><td>area:onboarding</td><td>4</td></tr>
+<tr><td>area:carrito</td><td>4</td></tr>
+<tr><td>area:estado</td><td>3</td></tr>
+<tr><td>area:direcciones</td><td>3</td></tr>
+<tr><td>area:dashboard</td><td>3</td></tr>
+<tr><td>area:notificaciones</td><td>2</td></tr>
+<tr><td>area:pagos</td><td>2</td></tr>
+<tr><td>area:checkout</td><td>2</td></tr>
+<tr><td>area:marketing</td><td>2</td></tr>
+<tr><td>area:comunicacion</td><td>1</td></tr>
+<tr><td>area:historial</td><td>1</td></tr>
+<tr><td>area:ubicacion</td><td>1</td></tr>
+<tr><td>area:asignacion</td><td>1</td></tr>
+</table>
+
+<h3>10.3 Labels de app (app:*)</h3>
+<table>
+<tr><th>Label</th><th>Cantidad</th></tr>
+<tr><td>app:business</td><td>21</td></tr>
+<tr><td>app:client</td><td>20</td></tr>
+<tr><td>app:delivery</td><td>11</td></tr>
+</table>
+
+<h3>10.4 Labels de tipo (tipo:*)</h3>
+<table>
+<tr><th>Label</th><th>Cantidad</th></tr>
+<tr><td>tipo:infra</td><td>7</td></tr>
+</table>
+
+<!-- ============ CUELLOS DE BOTELLA ============ -->
+<h2>11. Cuellos de Botella Detectados</h2>
+
+<div class="mermaid">
+pie title Distribución de items abiertos en Project V2
+  "Backlog Tecnico" : 33
+  "Backlog CLIENTE" : 9
+  "Backlog NEGOCIO" : 10
+  "Backlog DELIVERY" : 8
+</div>
+
+<ul>
+<li><span class="danger"><strong>Backlogs sobrecargados:</strong></span> 60 items acumulados en backlogs. Riesgo de perder visibilidad sobre prioridades.</li>
+<li><span class="warning"><strong>Cuello en refinamiento:</strong></span> No hay items en Todo ni Refined. Los backlogs no están fluyendo hacia el ciclo de desarrollo.</li>
+
+
+<li><span class="danger"><strong>Issues fuera del tablero:</strong></span> 115 issues abiertos no están en el Project V2. Se pierde trazabilidad.</li>
+<li><span class="danger"><strong>Alta proporción de issues estancados:</strong></span> 73% de issues sin actividad en &gt;14d.</li>
+<li><span class="warning"><strong>Muchos issues sin asignar:</strong></span> 141 de 182 (77%). Dificulta la rendición de cuentas.</li>
+<li><span class="warning"><strong>Desincronización:</strong></span> 16 issues cerrados no están en la columna Done.</li>
+</ul>
+
+<!-- ============ PROPUESTAS DE MEJORA ============ -->
+<h2>12. Propuestas de Mejora Priorizadas</h2>
+
+<h3>PRIORIDAD ALTA</h3>
+
+<div class="recommendation high">
+  <div class="priority high">P1 — Incorporar todos los issues abiertos al Project V2</div>
+  <p><strong>Problema:</strong> 115 issues abiertos no están en el tablero, lo que impide visualizar el alcance real del trabajo pendiente.</p>
+  <p><strong>Acción:</strong> Ejecutar un triaje masivo con <code>/priorizar</code> para agregar los issues faltantes al Project V2 con el status correcto. Automatizar con GitHub Action que añada issues nuevos al Project automáticamente.</p>
+  <p><strong>Impacto:</strong> Visibilidad completa del backlog y mejor planificación de sprints.</p>
+</div>
+
+<div class="recommendation high">
+  <div class="priority high">P2 — Etiquetar issues sin labels</div>
+  <p><strong>Problema:</strong> 93 issues sin labels dificultan el filtrado y la priorización.</p>
+  <p><strong>Acción:</strong> Aplicar labels de <code>area:*</code>, <code>app:*</code> y <code>tipo:*</code> a todos los issues sin etiquetar. Usar <code>/priorizar</code> para el triaje masivo.</p>
+  <p><strong>Impacto:</strong> Mejor categorización y capacidad de filtro en el board.</p>
+</div>
+
+<div class="recommendation high">
+  <div class="priority high">P3 — Mover issues del backlog al flujo activo</div>
+  <p><strong>Problema:</strong> 60 items acumulados en backlogs con 0 items en Todo/Refined. Los backlogs no están fluyendo al ciclo de desarrollo.</p>
+  <p><strong>Acción:</strong> En cada sprint planning, mover los items priorizados de los backlogs a "Todo". Refinar con <code>/po</code> y mover a "Refined" antes de iniciar desarrollo.</p>
+  <p><strong>Impacto:</strong> Activar el flujo de desarrollo con prioridades claras.</p>
+</div>
+
+<h3>PRIORIDAD MEDIA</h3>
+
+<div class="recommendation medium">
+  <div class="priority medium">P4 — Implementar WIP limits</div>
+  <p><strong>Problema:</strong> Sin límite de WIP, existe riesgo de context-switching excesivo cuando hay muchos items en "In Progress".</p>
+  <p><strong>Acción:</strong> Establecer WIP limit de 3 para "In Progress" y 5 para "Ready". Implementar validación via GitHub Action o hook en el proceso de triaje.</p>
+  <p><strong>Impacto:</strong> Mayor foco y throughput del equipo.</p>
+</div>
+
+<div class="recommendation medium">
+  <div class="priority medium">P5 — Automatizar movimiento de issues a Done</div>
+  <p><strong>Problema:</strong> 16 issues cerrados no están en Done, y 0 issues en Done siguen abiertos.</p>
+  <p><strong>Acción:</strong> El hook <code>post-issue-close.js</code> ya existe pero no cubre todos los casos. Agregar GitHub Action que sincronice: issue cerrado → columna Done, y que cierre issues en Done que sigan abiertos.</p>
+  <p><strong>Impacto:</strong> Board siempre sincronizado con el estado real.</p>
+</div>
+
+<div class="recommendation medium">
+  <div class="priority medium">P6 — Revisar y archivar issues estancados</div>
+  <p><strong>Problema:</strong> 132 issues sin actividad en más de 14 días (73% del total). Muchos son historias de backlog de funcionalidad (from-intake) que no se han refinado.</p>
+  <p><strong>Acción:</strong> Clasificar los issues estancados en 3 categorías: (a) cerrar si son obsoletos, (b) mantener en backlog si son válidos pero no prioritarios, (c) refinar y mover a Todo si son necesarios a corto plazo.</p>
+  <p><strong>Impacto:</strong> Backlog más limpio y menor ruido en la planificación.</p>
+</div>
+
+<div class="recommendation medium">
+  <div class="priority medium">P7 — Agregar columna "In Review"</div>
+  <p><strong>Problema:</strong> El flujo actual salta de "In Progress" a "Ready" sin distinguir el estado de code review/QA.</p>
+  <p><strong>Acción:</strong> Agregar columna "In Review" entre "In Progress" y "Ready". El agente <code>/delivery</code> puede mover automáticamente al crear PR. Cuando el PR se mergea → "Ready".</p>
+  <p><strong>Impacto:</strong> Mayor visibilidad del proceso de revisión y QA.</p>
+</div>
+
+<h3>PRIORIDAD BAJA</h3>
+
+<div class="recommendation">
+  <div class="priority low">P8 — Estandarizar uso de labels tipo:*</div>
+  <p><strong>Problema:</strong> Solo 1 labels de tipo en uso. Muchos issues usan "enhancement" genérico sin tipo: más específico.</p>
+  <p><strong>Acción:</strong> Definir labels de tipo estándar: <code>tipo:feature</code>, <code>tipo:bug</code>, <code>tipo:qa</code>, <code>tipo:docs</code>, <code>tipo:refactor</code> y aplicarlos consistentemente.</p>
+  <p><strong>Impacto:</strong> Mejor clasificación para métricas de calidad y velocidad.</p>
+</div>
+
+<div class="recommendation">
+  <div class="priority low">P9 — Implementar GitHub Action para auto-agregar issues al Project</div>
+  <p><strong>Problema:</strong> Los issues nuevos no se agregan automáticamente al Project V2.</p>
+  <p><strong>Acción:</strong> Crear workflow <code>.github/workflows/add-to-project.yml</code> que añada todo issue nuevo al Project con status según sus labels (ej: <code>from-intake</code> → backlog correspondiente).</p>
+  <p><strong>Impacto:</strong> Elimina la tarea manual de agregar issues al board.</p>
+</div>
+
+<div class="recommendation">
+  <div class="priority low">P10 — Asignar issues de backlog funcional</div>
+  <p><strong>Problema:</strong> 141 issues sin asignar, la mayoría son historias de backlog funcional importadas desde intake.</p>
+  <p><strong>Acción:</strong> Asignar un product owner responsable de cada backlog (CLIENTE, NEGOCIO, DELIVERY) y marcar los issues con el responsable.</p>
+  <p><strong>Impacto:</strong> Ownership claro de cada área funcional.</p>
+</div>
+
+<!-- ============ MÉTRICAS ============ -->
+<h2>13. Métricas del Board</h2>
+
+<table>
+<tr><th>Métrica</th><th>Valor</th><th>Estado</th></tr>
+<tr><td>Issues abiertos totales</td><td>182</td><td>—</td></tr>
+<tr><td>Items en Project V2</td><td>83</td><td>—</td></tr>
+<tr><td>Cobertura del Project</td><td>37%</td><td class="danger">BAJA</td></tr>
+<tr><td>Issues con labels</td><td>89 / 182 (49%)</td><td class="warning">MEJORAR</td></tr>
+<tr><td>Issues asignados</td><td>41 / 182 (23%)</td><td class="warning">MEJORAR</td></tr>
+<tr><td>Issues estancados (&gt;14d)</td><td>132 (73%)</td><td class="danger">CRITICO</td></tr>
+<tr><td>WIP (In Progress)</td><td>0</td><td class="ok">OK</td></tr>
+<tr><td>Blocked</td><td>0</td><td class="ok">OK</td></tr>
+<tr><td>Labels de área únicos</td><td>21</td><td>—</td></tr>
+<tr><td>Labels de app únicos</td><td>3</td><td>—</td></tr>
+</table>
+
+<!-- ============ RESUMEN FINAL ============ -->
+<h2>14. Conclusión</h2>
+
+<p>El tablero Project V2 de Intrale tiene una estructura de columnas sólida con 10 status que cubren el flujo completo desde backlog hasta entrega. Sin embargo, se identifican <strong>3 áreas críticas de mejora</strong>:</p>
+
+<ol>
+  <li><strong>Cobertura del Project:</strong> Solo el 37% de los issues abiertos están en el tablero. Los 115 issues faltantes necesitan ser triageados e incorporados.</li>
+  <li><strong>Flujo estancado:</strong> Los backlogs acumulan 60 items pero las columnas de flujo activo (Todo, Refined) están vacías. Se necesita un proceso de refinamiento periódico.</li>
+  <li><strong>Issues estancados:</strong> El 73% de issues no tiene actividad en &gt;14 días. Se recomienda una revisión masiva para cerrar obsoletos y priorizar los relevantes.</li>
+</ol>
+
+<p><strong>Próximos pasos recomendados:</strong></p>
+<ol>
+  <li>Ejecutar <code>/priorizar</code> para triaje masivo de issues sin labels y fuera del Project</li>
+  <li>Sprint planning: mover items priorizados de backlogs a "Todo"</li>
+  <li>Agregar columna "In Review" al board</li>
+  <li>Implementar GitHub Action para auto-agregar issues nuevos al Project</li>
+  <li>Establecer WIP limits y ciclo de revisión quincenal de issues estancados</li>
+</ol>
+
+<hr>
+<p style="color:#999; font-size:0.8rem; text-align:center;">
+  Generado automáticamente por Scrum Master Agent — 2026-03-03T09:35:44.301Z — Intrale Platform v2.0
+</p>
+
+</body>
+</html>
