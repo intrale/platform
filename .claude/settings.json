@@ -44,6 +44,26 @@
             "timeout": 1830000
           }
         ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/worktree-guard.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/worktree-guard.js",
+            "timeout": 5000
+          }
+        ]
       }
     ],
     "PostToolUse": [
