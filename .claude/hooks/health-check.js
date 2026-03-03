@@ -12,12 +12,31 @@ const HOOKS_DIR = __dirname;
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HOOKS_DIR, "..", "..");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 const STATE_FILE = path.join(HOOKS_DIR, "health-check-state.json");
+const HISTORY_FILE = path.join(HOOKS_DIR, "health-check-history.json");
 const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
 const COMMANDER_LOCK = path.join(HOOKS_DIR, "telegram-commander.lock");
+const GH_CLI = "/c/Workspaces/gh-cli/bin/gh.exe";
 
 // Cooldown adaptativo: reduce el intervalo ante problemas para confirmar recuperación más rápido
 const MIN_INTERVAL_MS = 2 * 60 * 1000;  // 2 min — modo alerta
 const MAX_INTERVAL_MS = 10 * 60 * 1000; // 10 min — modo normal
+
+// Umbrales de escalada
+const THRESHOLD_WARN = 3;   // 3-4 ocurrencias → advertencia de recurrencia
+const THRESHOLD_ISSUE = 5;  // >=5 ocurrencias → crear issue en GitHub
+
+// Checks que NO deben escalar a issue (ruido operativo)
+const NO_ESCALATE = new Set(["dead_worktrees"]);
+
+// Mapeo de check a problema ID y categoría
+const CHECK_PROBLEM_MAP = {
+    commander: { id: "commander_down", category: "crash", desc: "Telegram Commander caído" },
+    approvers: { id: "orphaned_approvers", category: "zombie", desc: "Permission-approver huérfanos acumulados" },
+    telegram: { id: "telegram_bot", category: "crash", desc: "Bot Telegram no responde" },
+    settings: { id: "settings_corrupt", category: "corrupt_config", desc: "Settings JSON inválidos o faltantes" },
+    hooks: { id: null, category: "missing_hook", desc: "Hook crítico ausente" },
+    worktrees: { id: "dead_worktrees", category: "dead_worktree", desc: "Worktrees sin contenido" }
+};
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] HealthCheck: " + msg + "\n"); } catch (e) {}
@@ -29,6 +48,191 @@ function readState() {
 
 function writeState(state) {
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8"); } catch (e) {}
+}
+
+// ─── Historial de problemas ─────────────────────────────────────────────────
+
+function readHistory() {
+    try {
+        const data = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf8"));
+        if (!Array.isArray(data.problems)) data.problems = [];
+        return data;
+    } catch (e) {
+        return { problems: [] };
+    }
+}
+
+function writeHistory(history) {
+    try { fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2), "utf8"); } catch (e) {}
+}
+
+function findProblem(history, id) {
+    return history.problems.find(p => p.id === id);
+}
+
+function recordProblem(history, id, category, detail, autoFixed) {
+    const now = new Date().toISOString();
+    let problem = findProblem(history, id);
+    if (problem) {
+        if (problem.resolved_at) {
+            problem.occurrences = 1;
+            problem.first_seen = now;
+            problem.resolved_at = null;
+            problem.github_issue = null;
+        } else {
+            problem.occurrences++;
+        }
+        problem.last_seen = now;
+        problem.auto_fixed = autoFixed;
+        problem.last_detail = detail;
+    } else {
+        problem = {
+            id: id,
+            category: category,
+            occurrences: 1,
+            first_seen: now,
+            last_seen: now,
+            resolved_at: null,
+            auto_fixed: autoFixed,
+            github_issue: null,
+            last_detail: detail
+        };
+        history.problems.push(problem);
+    }
+    return problem;
+}
+
+function markResolved(history, id) {
+    const problem = findProblem(history, id);
+    if (problem && !problem.resolved_at) {
+        problem.resolved_at = new Date().toISOString();
+        return problem;
+    }
+    return null;
+}
+
+// ─── Creación de issues en GitHub ───────────────────────────────────────────
+
+function createGitHubIssue(problem) {
+    try {
+        const title = "fix(hooks): " + problem.last_detail.substring(0, 80);
+        const body = [
+            "## Problema recurrente detectado por Health Check",
+            "",
+            "| Campo | Valor |",
+            "|-------|-------|",
+            "| **ID** | `" + problem.id + "` |",
+            "| **Categoría** | `" + problem.category + "` |",
+            "| **Ocurrencias** | " + problem.occurrences + " |",
+            "| **Primera vez** | " + problem.first_seen + " |",
+            "| **Última vez** | " + problem.last_seen + " |",
+            "| **Auto-reparado** | " + (problem.auto_fixed ? "Sí" : "No") + " |",
+            "",
+            "### Detalle técnico",
+            problem.last_detail,
+            "",
+            "### Comportamiento observado",
+            "El health check detectó este problema " + problem.occurrences + " veces desde " + problem.first_seen + ".",
+            problem.auto_fixed
+                ? "Se aplicaron auto-reparaciones pero el problema persiste, lo que indica un fallo estructural."
+                : "No se pudo auto-reparar — requiere intervención manual.",
+            "",
+            "### Comportamiento esperado",
+            "El check `" + problem.id + "` debería pasar sin errores de forma estable.",
+            "",
+            "---",
+            "_Issue creado automáticamente por `health-check.js` (umbral: >=" + THRESHOLD_ISSUE + " ocurrencias)._"
+        ].join("\n");
+
+        const result = execSync(
+            GH_CLI + ' issue create --repo intrale/platform'
+            + ' --title "' + title.replace(/"/g, '\\\\"') + '"'
+            + ' --body "' + body.replace(/"/g, '\\\\"').replace(/\n/g, '\\\\n') + '"'
+            + ' --label "bug,area:infra,tipo:infra"'
+            + ' --assignee leitolarreta',
+            { encoding: "utf8", timeout: 15000, windowsHide: true }
+        );
+
+        const match = result.trim().match(/\/issues\/(\d+)/);
+        if (match) {
+            const issueNumber = parseInt(match[1]);
+            log("Issue #" + issueNumber + " creado para problema recurrente: " + problem.id);
+            return issueNumber;
+        }
+    } catch (e) {
+        log("Error creando issue GitHub: " + e.message);
+    }
+    return null;
+}
+
+function commentOnIssue(issueNumber, message) {
+    try {
+        execSync(
+            GH_CLI + ' issue comment ' + issueNumber + ' --repo intrale/platform'
+            + ' --body "' + message.replace(/"/g, '\\\\"') + '"',
+            { encoding: "utf8", timeout: 10000, windowsHide: true }
+        );
+        log("Comentario agregado al issue #" + issueNumber);
+    } catch (e) {
+        log("Error comentando issue #" + issueNumber + ": " + e.message);
+    }
+}
+
+// ─── Procesamiento de problemas con historial ───────────────────────────────
+
+function processCheckResult(history, checkName, checkResult, detail) {
+    const mapping = CHECK_PROBLEM_MAP[checkName];
+    if (!mapping) return [];
+
+    const results = [];
+
+    if (!checkResult.ok) {
+        let problemIds;
+        if (checkName === "hooks" && checkResult.missing) {
+            problemIds = checkResult.missing.map(h => "missing_hook_" + h.replace(/\./g, "_"));
+        } else {
+            problemIds = [mapping.id];
+        }
+
+        for (const id of problemIds) {
+            const autoFixed = checkName === "commander" || checkName === "approvers";
+            const problem = recordProblem(history, id, mapping.category, detail, autoFixed);
+            const canEscalate = !NO_ESCALATE.has(id);
+
+            results.push({
+                id: id,
+                problem: problem,
+                isNew: problem.occurrences === 1,
+                isRecurrent: problem.occurrences >= THRESHOLD_WARN,
+                needsIssue: canEscalate && problem.occurrences >= THRESHOLD_ISSUE && !problem.github_issue,
+                canEscalate: canEscalate
+            });
+        }
+    } else {
+        let problemIds;
+        if (checkName === "hooks") {
+            problemIds = history.problems
+                .filter(p => p.category === "missing_hook" && !p.resolved_at)
+                .map(p => p.id);
+        } else if (mapping.id) {
+            problemIds = [mapping.id];
+        } else {
+            problemIds = [];
+        }
+
+        for (const id of problemIds) {
+            const resolved = markResolved(history, id);
+            if (resolved) {
+                results.push({
+                    id: id,
+                    problem: resolved,
+                    resolved: true
+                });
+            }
+        }
+    }
+
+    return results;
 }
 
 function isProcessAlive(pid) {
@@ -240,18 +444,40 @@ function sendAlert(text) {
     });
 }
 
+// ─── Formateo de mensaje con contexto de recurrencia ────────────────────────
+
+function formatIssueWithRecurrence(baseMsg, problemResult) {
+    if (!problemResult || !problemResult.problem) return baseMsg;
+
+    const p = problemResult.problem;
+    let suffix = "";
+
+    if (problemResult.isRecurrent) {
+        suffix = " 🔁 " + p.occurrences + "ª vez";
+        if (p.github_issue) {
+            suffix += " (#" + p.github_issue + ")";
+        }
+    }
+
+    if (problemResult.isRecurrent) {
+        return baseMsg.replace(/^🟡|^🔴/, "🔴") + suffix;
+    }
+    return baseMsg;
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────
 
 async function main() {
-    // Cooldown adaptativo: intervalo varía según último resultado
     const state = readState();
     const now = Date.now();
     const effectiveInterval = state.next_interval_ms || MAX_INTERVAL_MS;
     if (state.last_check && (now - state.last_check) < effectiveInterval) {
-        return; // Todavía no es momento de verificar
+        return;
     }
 
     log("Iniciando verificación periódica...");
+
+    const history = readHistory();
 
     const checks = {};
     checks.commander = checkCommander();
@@ -261,19 +487,66 @@ async function main() {
     checks.hooks = checkCriticalHooks();
     checks.worktrees = checkDeadWorktrees();
 
-    // Evaluar resultados
-    const issues = [];
-    if (!checks.commander.ok) issues.push("🔴 Commander: " + checks.commander.detail);
-    if (!checks.approvers.ok) issues.push("🟡 Approvers: " + checks.approvers.detail);
-    if (!checks.telegram.ok) issues.push("🔴 Telegram Bot: " + checks.telegram.detail);
-    if (!checks.settings.ok) issues.push("🔴 Settings: " + checks.settings.details.join(", "));
-    if (!checks.hooks.ok) issues.push("🔴 Hooks faltantes: " + checks.hooks.missing.join(", "));
-    if (!checks.worktrees.ok) issues.push("🟡 Worktrees muertos: " + checks.worktrees.dead.length);
+    const checkDetails = {
+        commander: checks.commander.detail,
+        approvers: checks.approvers.detail,
+        telegram: checks.telegram.detail,
+        settings: checks.settings.details.join(", "),
+        hooks: checks.hooks.missing.length > 0 ? "Faltantes: " + checks.hooks.missing.join(", ") : "Todos presentes",
+        worktrees: checks.worktrees.dead.length > 0 ? checks.worktrees.dead.length + " muertos" : "OK"
+    };
 
-    // Calcular intervalo adaptativo para el próximo check
+    const allResults = {};
+    const issuesCreated = [];
+    const problemsResolved = [];
+
+    for (const [checkName, checkResult] of Object.entries(checks)) {
+        const results = processCheckResult(history, checkName, checkResult, checkDetails[checkName]);
+        allResults[checkName] = results;
+
+        for (const r of results) {
+            if (r.needsIssue) {
+                const issueNum = createGitHubIssue(r.problem);
+                if (issueNum) {
+                    r.problem.github_issue = issueNum;
+                    issuesCreated.push({ id: r.id, issue: issueNum });
+                }
+            }
+
+            if (r.resolved) {
+                problemsResolved.push(r);
+                if (r.problem.github_issue) {
+                    commentOnIssue(
+                        r.problem.github_issue,
+                        "✅ **Auto-resuelto** — El health check confirma que `" + r.id
+                        + "` pasó correctamente en " + new Date().toISOString()
+                        + ".\n\nEl problema se resolvió tras " + r.problem.occurrences + " ocurrencia(s)."
+                    );
+                }
+            }
+        }
+    }
+
+    writeHistory(history);
+
+    const issues = [];
+    const rawIssues = [];
+
+    if (!checks.commander.ok) rawIssues.push({ msg: "🔴 Commander: " + checks.commander.detail, check: "commander" });
+    if (!checks.approvers.ok) rawIssues.push({ msg: "🟡 Approvers: " + checks.approvers.detail, check: "approvers" });
+    if (!checks.telegram.ok) rawIssues.push({ msg: "🔴 Telegram Bot: " + checks.telegram.detail, check: "telegram" });
+    if (!checks.settings.ok) rawIssues.push({ msg: "🔴 Settings: " + checks.settings.details.join(", "), check: "settings" });
+    if (!checks.hooks.ok) rawIssues.push({ msg: "🔴 Hooks faltantes: " + checks.hooks.missing.join(", "), check: "hooks" });
+    if (!checks.worktrees.ok) rawIssues.push({ msg: "🟡 Worktrees muertos: " + checks.worktrees.dead.length, check: "worktrees" });
+
+    for (const ri of rawIssues) {
+        const results = allResults[ri.check] || [];
+        const firstResult = results.find(r => !r.resolved);
+        issues.push(formatIssueWithRecurrence(ri.msg, firstResult));
+    }
+
     const nextInterval = issues.length > 0 ? MIN_INTERVAL_MS : MAX_INTERVAL_MS;
 
-    // Actualizar estado
     const newState = {
         last_check: now,
         last_check_iso: new Date(now).toISOString(),
@@ -291,15 +564,37 @@ async function main() {
     };
     writeState(newState);
 
-    if (issues.length > 0) {
-        // Enviar alerta a Telegram
+    if (issues.length > 0 || issuesCreated.length > 0 || problemsResolved.length > 0) {
         let msg = "🏥 <b>Health Check — Problemas detectados</b>\n\n";
         msg += issues.map(i => "• " + i).join("\n");
+
+        if (issuesCreated.length > 0) {
+            msg += "\n\n📋 <b>Issues creados en GitHub:</b>\n";
+            msg += issuesCreated.map(ic => "• #" + ic.issue + " (" + ic.id + ")").join("\n");
+        }
+
+        if (problemsResolved.length > 0) {
+            msg += "\n\n✅ <b>Problemas resueltos:</b>\n";
+            msg += problemsResolved.map(pr =>
+                "• " + pr.id + " (tras " + pr.problem.occurrences + " ocurrencia(s))"
+            ).join("\n");
+        }
+
         msg += "\n\n<i>Auto-reparaciones aplicadas donde fue posible.</i>";
         msg += "\n<i>⚡ Próximo check en " + Math.round(nextInterval / 60000) + " min (modo alerta)</i>";
 
         await sendAlert(msg);
-        log("ALERTA: " + issues.length + " problema(s) detectado(s) → notificado");
+        log("ALERTA: " + issues.length + " problema(s), " + issuesCreated.length + " issue(s) creado(s), " + problemsResolved.length + " resuelto(s)");
+    } else if (problemsResolved.length > 0) {
+        let msg = "🏥 <b>Health Check — Todo OK</b>\n\n";
+        msg += "✅ <b>Problemas resueltos:</b>\n";
+        msg += problemsResolved.map(pr =>
+            "• " + pr.id + " (tras " + pr.problem.occurrences + " ocurrencia(s))"
+        ).join("\n");
+        msg += "\n\n<i>⏱ Próximo check en " + Math.round(nextInterval / 60000) + " min</i>";
+
+        await sendAlert(msg);
+        log("RESOLUCIÓN: " + problemsResolved.length + " problema(s) resuelto(s)");
     } else {
         log("OK: todos los checks pasaron");
     }
