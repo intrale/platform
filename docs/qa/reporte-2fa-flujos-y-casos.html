@@ -62,7 +62,7 @@
 <!-- ========== PORTADA ========== -->
 <div class="cover">
   <h1>Reporte de Flujos y Casos de Prueba</h1>
-  <div class="subtitle">Funcionalidad: 2FA Setup y Verificacion</div>
+  <div class="subtitle">Funcionalidad: 2FA Setup y Verificacion TOTP</div>
   <div style="margin:20px 0;">
     <span class="tag tag-po">PO</span>
     <span class="tag tag-qa">QA</span>
@@ -70,14 +70,13 @@
   </div>
   <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
     Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
-    guiones de video y criterios de evidencia para las funcionalidades<br>
-    de autenticacion de dos factores (2FA) de la plataforma Intrale.
+    guiones de video y criterios de evidencia para la funcionalidad<br>
+    de Two-Factor Authentication (2FA) de la plataforma Intrale.
   </p>
   <div class="meta">
     <p><strong>Proyecto:</strong> Intrale Platform</p>
     <p><strong>Version:</strong> 2.0</p>
     <p><strong>Fecha:</strong> 2026-03-01</p>
-    <p><strong>Issue:</strong> #1114</p>
     <p><strong>Generado por:</strong> PO + QA Agents</p>
   </div>
 </div>
@@ -88,18 +87,18 @@
   <li><a href="#s1">Resumen Ejecutivo</a></li>
   <li><a href="#s2">Estandar de Evidencia en Video</a></li>
   <li><a href="#s3">Arquitectura del 2FA</a></li>
-  <li><a href="#s4">Flujo A — Setup 2FA</a></li>
-  <li><a href="#s5">Flujo B — Verificacion 2FA</a></li>
+  <li><a href="#s4">Flujo A — Setup 2FA (Configuracion inicial)</a></li>
+  <li><a href="#s5">Flujo B — Verificacion de Codigo TOTP</a></li>
   <li><a href="#s6">Flujo C — 2FA como Gate en ReviewBusiness</a></li>
-  <li><a href="#s7">Flujos Cross-App</a></li>
-  <li><a href="#s8">Catalogo de Validaciones</a></li>
+  <li><a href="#s7">Flujos Cross-App: Disponibilidad de 2FA</a></li>
+  <li><a href="#s8">Catalogo de Validaciones TOTP</a></li>
   <li><a href="#s9">Resumen y Cobertura</a></li>
   <li><a href="#s10">Gaps y Recomendaciones</a></li>
 </ol>
 
 <!-- ========== 1. RESUMEN ========== -->
 <h2 id="s1">1. Resumen Ejecutivo</h2>
-<p>La funcionalidad de <strong>2FA (Two-Factor Authentication)</strong> comprende <strong>3 flujos principales</strong> mas flujos cross-app. El sistema utiliza TOTP (Time-Based One-Time Password) con algoritmo HMAC-SHA1, 6 digitos y ventana de 30 segundos, compatible con apps como Google Authenticator, Authy y similares. Este reporte documenta <strong>37 casos de prueba</strong> con:</p>
+<p>La funcionalidad de <strong>Two-Factor Authentication (2FA)</strong> comprende <strong>3 flujos diferenciados</strong> que aseguran operaciones criticas de la plataforma mediante TOTP (Time-based One-Time Password, RFC 6238). Este reporte documenta <strong>42 casos de prueba</strong> con:</p>
 <ul>
   <li>Diagramas de flujo Mermaid por cada flujo y sub-flujo</li>
   <li>Guion de video paso a paso para cada caso de prueba</li>
@@ -109,11 +108,11 @@
 
 <table>
   <tr><th>#</th><th>Flujo</th><th>App</th><th>Auth</th><th>Estado inicial</th><th>Casos</th></tr>
-  <tr><td>A</td><td>Setup 2FA</td><td>Todas (post-login)</td><td>JWT</td><td>Autenticado, sin 2FA</td><td>12</td></tr>
-  <tr><td>B</td><td>Verificacion 2FA</td><td>Todas (post-login)</td><td>JWT</td><td>Autenticado, 2FA configurado</td><td>12</td></tr>
-  <tr><td>C</td><td>2FA como Gate en ReviewBusiness</td><td>Business</td><td>JWT+2FA</td><td>PlatformAdmin + 2FA activo</td><td>9</td></tr>
-  <tr><td>X</td><td>Cross-App</td><td>Multiples</td><td>Variable</td><td>Variable</td><td>4</td></tr>
-  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td></td><td>37</td></tr>
+  <tr><td>A</td><td>Setup 2FA (QR/Secreto)</td><td>Todas (post-login)</td><td>JWT</td><td>Sin 2FA configurado</td><td>14</td></tr>
+  <tr><td>B</td><td>Verificacion codigo TOTP</td><td>Todas (post-login)</td><td>JWT</td><td>2FA configurado</td><td>13</td></tr>
+  <tr><td>C</td><td>2FA como Gate en ReviewBusiness</td><td>Business/Desktop</td><td>JWT + 2FA</td><td>PlatformAdmin con 2FA</td><td>11</td></tr>
+  <tr><td>X</td><td>Cross-App (disponibilidad)</td><td>Multiples</td><td>JWT</td><td>Variable</td><td>4</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td></td><td>42</td></tr>
 </table>
 
 <!-- ========== 2. ESTANDAR DE VIDEO ========== -->
@@ -124,8 +123,8 @@
   <code>{FLUJO}-{ID}_{slug-descriptivo}.mp4</code><br>
   Ejemplos:<br>
   <code>2FA-A-001_setup-exitoso-deep-link.mp4</code><br>
-  <code>2FA-B-004_codigo-invalido.mp4</code><br>
-  <code>2FA-C-001_aprobar-negocio-con-2fa.mp4</code>
+  <code>2FA-B-003_codigo-incorrecto.mp4</code><br>
+  <code>2FA-C-001_approve-con-2fa-valido.mp4</code>
 </div>
 
 <h3>2.2 Estructura del video</h3>
@@ -141,8 +140,8 @@
 <h3>2.3 Overlay de pantalla (formato obligatorio)</h3>
 <div class="overlay-example">
   <span class="ov-id">2FA-A-001</span> | Setup exitoso con deep link<span class="ov-time">00:12</span><br>
-  <span class="ov-step">&#9654; Paso 3/5:</span> Se invoca setup de 2FA automaticamente<br>
-  <span class="ov-result">&#9673; Verificar: Deep link abre app autenticadora</span>
+  <span class="ov-step">Paso 3/5:</span> App autenticadora se abre con URI otpauth<br>
+  <span class="ov-result">Verificar: App autenticadora muestra cuenta "intrale:user@test.com"</span>
 </div>
 <p>El overlay debe ser visible pero no obstruir la interfaz. Posicion sugerida: franja semi-transparente en la parte inferior.</p>
 
@@ -160,7 +159,7 @@
   <ol>
     <li><strong>Pausa visual</strong> (2-3 seg): mostrar claramente el resultado en pantalla</li>
     <li><strong>Highlight/marca</strong>: flecha, recuadro o zoom al elemento que evidencia el resultado</li>
-    <li><strong>Overlay de verificacion</strong>: texto <code>&#10003; VERIFICADO: [descripcion del resultado]</code> o <code>&#10007; FALLO: [descripcion]</code></li>
+    <li><strong>Overlay de verificacion</strong>: texto <code>VERIFICADO: [descripcion del resultado]</code> o <code>FALLO: [descripcion]</code></li>
     <li><strong>Screenshot automatico</strong>: captura individual del momento de verificacion</li>
   </ol>
 </div>
@@ -168,14 +167,14 @@
 <h3>2.6 Ejemplo de guion de video completo</h3>
 <table>
   <tr><th>Tiempo</th><th>Overlay</th><th>Narracion</th><th>Accion en pantalla</th></tr>
-  <tr><td>00:00</td><td><code>2FA-B-001 | Verificacion exitosa con codigo valido</code></td><td>"Caso de prueba 2FA-B-001: Verificacion exitosa con codigo valido"</td><td>Pantalla negra con titulo</td></tr>
-  <tr><td>00:04</td><td><code>Precondicion: Autenticado, 2FA configurado, app autenticadora abierta</code></td><td>"Precondicion: estamos autenticados, 2FA configurado, tenemos la app autenticadora abierta"</td><td>Mostrar app y autenticador</td></tr>
-  <tr><td>00:08</td><td><code>&#9654; Paso 1/3: Navegar a Verificar 2FA</code></td><td>"Paso uno: navegamos a la seccion de Verificar 2FA desde el perfil"</td><td>Tap en "Verificar 2FA" en perfil</td></tr>
-  <tr><td>00:14</td><td><code>&#9654; Paso 2/3: Copiar codigo de la app autenticadora</code></td><td>"Paso dos: copiamos el codigo de 6 digitos de la app autenticadora"</td><td>Mostrar codigo en autenticador</td></tr>
-  <tr><td>00:20</td><td><code>&#9654; Paso 3/3: Ingresar codigo y tocar Verificar</code></td><td>"Paso tres: ingresamos el codigo y tocamos Verificar"</td><td>Ingresar codigo, tap en boton</td></tr>
-  <tr><td>00:24</td><td><code>&#9673; Verificando: Spinner aparece en boton</code></td><td>"Verificamos: el spinner aparece y el boton se deshabilita"</td><td>Spinner visible, pausa 2s</td></tr>
-  <tr><td>00:28</td><td><code>&#10003; VERIFICADO: Snackbar de exito visible</code></td><td>"Verificado: la snackbar muestra mensaje de exito"</td><td>Snackbar verde visible, screenshot</td></tr>
-  <tr><td>00:33</td><td><code>&#10003; RESULTADO: PASS</code></td><td>"Caso 2FA-B-001: resultado PASS"</td><td>Pantalla final verde</td></tr>
+  <tr><td>00:00</td><td><code>2FA-A-001 | Setup 2FA exitoso con deep link</code></td><td>"Caso de prueba 2FA-A-001: Setup 2FA exitoso con deep link"</td><td>Pantalla negra con titulo</td></tr>
+  <tr><td>00:04</td><td><code>Precondicion: Login exitoso, app autenticadora instalada</code></td><td>"Precondicion: usuario autenticado, app autenticadora instalada"</td><td>Mostrar app abierta en Client Profile</td></tr>
+  <tr><td>00:08</td><td><code>Paso 1/5: Navegar a Client Profile</code></td><td>"Paso uno: estamos en el perfil del usuario"</td><td>Client Profile visible</td></tr>
+  <tr><td>00:12</td><td><code>Paso 2/5: Tocar Setup Two Factor</code></td><td>"Paso dos: tocamos Setup Two Factor"</td><td>Tap en boton, navega a TwoFactorSetup</td></tr>
+  <tr><td>00:16</td><td><code>Paso 3/5: Backend genera secreto TOTP</code></td><td>"Paso tres: el backend genera el secreto y retorna la URI otpauth"</td><td>Loading visible</td></tr>
+  <tr><td>00:20</td><td><code>Paso 4/5: Deep link abre app autenticadora</code></td><td>"Paso cuatro: la app intenta abrir la autenticadora via deep link"</td><td>App autenticadora se abre</td></tr>
+  <tr><td>00:26</td><td><code>Verificando: Cuenta registrada en autenticadora</code></td><td>"Verificamos: la cuenta intrale:user@test.com aparece en la autenticadora"</td><td>Cuenta visible, pausa 2s</td></tr>
+  <tr><td>00:30</td><td><code>RESULTADO: PASS</code></td><td>"Caso 2FA-A-001: resultado PASS"</td><td>Pantalla final verde</td></tr>
 </table>
 
 <!-- ========== 3. ARQUITECTURA ========== -->
@@ -184,133 +183,149 @@
 <h3>3.1 Diagrama general de capas</h3>
 <pre class="mermaid">
 graph LR
-  UI["UI Screen&#10;(Compose)"] --> VM["ViewModel&#10;(Estado + Konform)"]
-  VM --> DO["Do[Action]&#10;(Logica negocio)"]
-  DO --> CL["Client[Service]&#10;(HTTP Client)"]
-  CL --> BE["Backend Ktor&#10;(/{biz}/{fn})"]
-  BE --> COG["Amazon Cognito&#10;(Identity/JWT)"]
-  BE --> DDB["DynamoDB&#10;(User.secret)"]
-  BE --> TOTP["TOTP Generator&#10;(HmacSHA1/Base32)"]
+  UI["UI Screen<br>(Compose)"] --> VM["ViewModel<br>(Estado + Konform)"]
+  VM --> DO["Do[Action]<br>(Logica negocio)"]
+  DO --> CL["Comm[Service]<br>(HTTP Client)"]
+  CL --> BE["Backend Ktor<br>(/{biz}/{fn})"]
+  BE --> COG["Amazon Cognito<br>(getUser → email)"]
+  BE --> DDB["DynamoDB<br>(tabla users → secret)"]
+  BE --> TOTP["TOTP Generator<br>(HmacSHA1, 6 digits, 30s)"]
 </pre>
 
 <h3>3.2 Mapa de navegacion 2FA</h3>
 <pre class="mermaid">
 graph TD
-  PROFILE["ClientProfileScreen&#10;SecurityActionsSection"] -->|"Configurar 2FA"| SETUP["/twoFactorSetup&#10;TwoFactorSetupScreen"]
-  PROFILE -->|"Verificar 2FA"| VERIFY["/twoFactorVerify&#10;TwoFactorVerifyScreen"]
-  DASH["DashboardScreen&#10;(Business Admin)"] --> REVIEW["/reviewBusiness&#10;ReviewBusinessScreen&#10;(requiere codigo 2FA)"]
-  SETUP -->|"Deep link exitoso"| AUTH_APP["App Autenticadora&#10;(externa)"]
-  SETUP -->|"Deep link fallo"| QR["Mostrar QR/Secreto&#10;+ Copiar + Compartir"]
+  DASH["Dashboard<br>(Autenticado)"] --> PROFILE["Client Profile<br>SecurityActionsSection"]
+  PROFILE -->|"Setup Two Factor"| SETUP["/twoFactorSetup<br>TwoFactorSetupScreen"]
+  PROFILE -->|"Verify Two Factor"| VERIFY["/twoFactorVerify<br>TwoFactorVerifyScreen"]
+  SETUP -->|"Deep link exitoso"| AUTH_APP["App Autenticadora<br>(Google Auth / Authy)"]
+  SETUP -->|"Deep link fallido"| QR_UI["UI con QR / Secreto<br>+ Copiar clave<br>+ Copiar enlace<br>+ Compartir"]
+  QR_UI -->|"Configurar manualmente"| AUTH_APP
+  AUTH_APP -->|"Genera codigo TOTP"| VERIFY
+  VERIFY -->|"Codigo valido"| SUCCESS["Snackbar: Exito<br>2FA Verificado"]
+  VERIFY -->|"Codigo invalido"| ERROR["Snackbar: Error<br>Codigo invalido"]
+  ERROR --> VERIFY
 
-  style PROFILE fill:#e3f2fd,stroke:#0d47a1
-  style SETUP fill:#e8f5e9,stroke:#2e7d32
-  style VERIFY fill:#e8f5e9,stroke:#2e7d32
-  style REVIEW fill:#fff8e1,stroke:#f57f17
-  style AUTH_APP fill:#f3e5f5,stroke:#6a1b9a
-  style QR fill:#fff3e0,stroke:#e65100
+  DASH -->|"ReviewBusiness<br>(PlatformAdmin)"| REVIEW["/reviewBusiness<br>ReviewBusinessScreen"]
+  REVIEW -->|"Requiere 2FA"| REVIEW_2FA{"Ingresa codigo<br>TOTP"}
+  REVIEW_2FA -->|"Valido"| DECISION["Approve / Reject<br>Negocio"]
+  REVIEW_2FA -->|"Invalido"| REVIEW_ERR["Error: 2FA invalido"]
+
+  style SETUP fill:#e3f2fd,stroke:#1565c0
+  style VERIFY fill:#e3f2fd,stroke:#1565c0
+  style SUCCESS fill:#e8f5e9,stroke:#2e7d32
+  style ERROR fill:#ffebee,stroke:#c62828
+  style REVIEW_ERR fill:#ffebee,stroke:#c62828
+  style DECISION fill:#e8f5e9,stroke:#2e7d32
+  style AUTH_APP fill:#fff8e1,stroke:#f57f17
 </pre>
 
 <h3>3.3 Endpoints del backend</h3>
 <table>
-  <tr><th>Endpoint</th><th>Metodo</th><th>Auth</th><th>Funcion</th><th>Request</th><th>Response</th></tr>
-  <tr><td><code>/{biz}/2fasetup</code></td><td>POST</td><td>JWT (SecuredFunction)</td><td>TwoFactorSetup</td><td>Sin body requerido</td><td><code>{ otpAuthUri: "otpauth://..." }</code></td></tr>
-  <tr><td><code>/{biz}/2faverify</code></td><td>POST</td><td>JWT (SecuredFunction)</td><td>TwoFactorVerify</td><td><code>{ code: "123456" }</code></td><td><code>Response(200)</code> o error</td></tr>
-  <tr><td><code>/{biz}/reviewBusiness</code></td><td>POST</td><td>JWT+2FA (PlatformAdmin)</td><td>ReviewBusinessRegistration</td><td><code>{ publicId, decision, twoFactorCode }</code></td><td><code>Response(200)</code> o error</td></tr>
+  <tr><th>Endpoint</th><th>Metodo</th><th>Auth</th><th>Request</th><th>Response</th><th>Funcion</th></tr>
+  <tr><td><code>/{biz}/2fasetup</code></td><td>POST</td><td>JWT</td><td>(sin body)</td><td><code>{ statusCode, otpAuthUri }</code></td><td>TwoFactorSetup</td></tr>
+  <tr><td><code>/{biz}/2faverify</code></td><td>POST</td><td>JWT</td><td><code>{ code: "123456" }</code></td><td><code>{ statusCode }</code></td><td>TwoFactorVerify</td></tr>
+  <tr><td><code>/{biz}/reviewBusiness</code></td><td>POST</td><td>JWT + 2FA</td><td><code>{ publicId, decision, twoFactorCode }</code></td><td><code>{ statusCode }</code></td><td>ReviewBusinessRegistration</td></tr>
 </table>
 
-<h3>3.4 Flujo TOTP (Time-Based One-Time Password)</h3>
+<h3>3.4 Flujo TOTP (RFC 6238)</h3>
 <pre class="mermaid">
 sequenceDiagram
   participant U as Usuario
-  participant APP as App Intrale
-  participant BE as Backend
-  participant COG as Cognito
-  participant DB as DynamoDB
+  participant A as App Intrale
+  participant B as Backend
+  participant C as Cognito
+  participant D as DynamoDB
+  participant T as TOTP Generator
 
-  Note over U,DB: Fase 1 - Setup
-  U->>APP: Navega a /twoFactorSetup
-  APP->>BE: POST /{biz}/2fasetup (JWT)
-  BE->>COG: getUser(accessToken)
-  COG-->>BE: email, username
-  BE->>BE: generateSecret() (SecureRandom + Base32)
-  BE->>DB: putItem(User{email, secret})
-  BE->>BE: buildOtpAuthUri(secret, email)
-  BE-->>APP: TwoFactorSetupResponse{otpAuthUri}
-  APP->>U: Deep link o QR/Secreto
+  Note over U,T: Fase 1 - Setup
+  U->>A: Toca "Setup Two Factor"
+  A->>B: POST /{biz}/2fasetup (JWT)
+  B->>C: getUser(accessToken)
+  C-->>B: email
+  B->>B: generateSecret() → Base32 (20 bytes)
+  B->>D: putItem(email, secret)
+  B->>B: buildOtpAuthUri(secret, email, "intrale")
+  B-->>A: { otpAuthUri: "otpauth://totp/intrale:email?secret=XXX&..." }
+  A->>U: Deep link → App Autenticadora (o UI con QR/secreto)
 
-  Note over U,DB: Fase 2 - Verify
-  U->>APP: Ingresa codigo de 6 digitos
-  APP->>BE: POST /{biz}/2faverify (JWT + {code})
-  BE->>COG: getUser(accessToken)
-  COG-->>BE: email
-  BE->>DB: getItem(User{email})
-  DB-->>BE: User{secret}
-  BE->>BE: TOTP = generate(secret, Instant.now())
-  alt code == TOTP
-    BE-->>APP: Response(200)
-    APP->>U: Snackbar exito
-  else code != TOTP
-    BE-->>APP: ExceptionResponse("Invalid Two Factor Code")
-    APP->>U: Snackbar error
-  end
+  Note over U,T: Fase 2 - Verificacion
+  U->>A: Ingresa codigo TOTP (6 digitos)
+  A->>B: POST /{biz}/2faverify { code: "123456" }
+  B->>C: getUser(accessToken)
+  C-->>B: email
+  B->>D: getItem(email) → secret
+  B->>T: generateOTP(secret, now())
+  T-->>B: expectedCode
+  B->>B: body.code == expectedCode ?
+  B-->>A: 200 OK o Error
+  A->>U: Snackbar exito o error
 </pre>
 
-<h3>3.5 Formato URI OTP</h3>
-<div class="note">
-  <code>otpauth://totp/{issuer}:{email}?secret={base32}&amp;issuer={issuer}&amp;algorithm=SHA1&amp;digits=6&amp;period=30</code><br>
-  <strong>Valores por defecto:</strong> issuer="intrale", algorithm=SHA1, digits=6, period=30s<br>
-  <strong>Ejemplo:</strong> <code>otpauth://totp/intrale:user@test.com?secret=JBSWY3DPEHPK3PXP&amp;issuer=intrale&amp;algorithm=SHA1&amp;digits=6&amp;period=30</code>
-</div>
-
 <!-- ========== 4. FLUJO A — SETUP 2FA ========== -->
-<h2 id="s4">4. Flujo A — Setup 2FA</h2>
+<h2 id="s4">4. Flujo A — Setup 2FA (Configuracion inicial)</h2>
 
 <h3>4.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
-<p>El usuario autenticado navega a la seccion de seguridad en su perfil y selecciona "Configurar 2FA". El sistema genera un secreto TOTP, lo persiste en DynamoDB vinculado al email, y construye una URI <code>otpauth://</code>. Primero intenta abrir la URI como deep link hacia una app autenticadora. Si el deep link falla, muestra la informacion del secreto con opciones para copiar, compartir y buscar un autenticador.</p>
+<p>Usuario autenticado navega a su perfil y activa 2FA. El backend genera un secreto TOTP aleatorio (Base32, 20 bytes), lo persiste en DynamoDB (tabla <code>users</code>), y retorna una URI <code>otpauth://</code>. La app intenta abrir una app autenticadora via deep link. Si falla, muestra UI con secreto enmascarado, opciones de copiar clave/enlace, buscar autenticador y compartir.</p>
 
 <div class="precond">
-  <strong>Precondiciones:</strong> Usuario autenticado (JWT valido) | Conexion a internet | Acceso a ClientProfileScreen
+  <strong>Precondiciones:</strong> Login exitoso (JWT valido) | App autenticadora instalada (recomendado) | Conexion a internet
 </div>
 
 <h3>4.2 Diagrama de flujo</h3>
 <pre class="mermaid">
 flowchart TD
-  START(("Inicio")) --> PROFILE["ClientProfileScreen&#10;SecurityActionsSection"]
-  PROFILE -->|"Toca 'Configurar 2FA'"| SETUP["TwoFactorSetupScreen&#10;LaunchedEffect: auto-invoca setup"]
-  SETUP --> HTTP["POST /{biz}/2fasetup&#10;(JWT en header)"]
-  HTTP --> BE_VAL{"Backend:&#10;JWT valido?"}
-  BE_VAL -->|"JWT ausente/invalido"| E401["HTTP 401&#10;Snackbar error"]
-  BE_VAL -->|"JWT valido"| COGNITO["Cognito: getUser&#10;obtener email"]
-  COGNITO -->|"Error Cognito"| E500["HTTP 500&#10;Snackbar error"]
-  COGNITO -->|"OK"| GEN["Generar secret&#10;SecureRandom + Base32"]
-  GEN --> PERSIST["DynamoDB:&#10;putItem User(email, secret)"]
-  PERSIST --> URI["buildOtpAuthUri&#10;(secret, email, intrale)"]
-  URI --> RESP["Response:&#10;TwoFactorSetupResponse"]
-  RESP --> VM["ViewModel:&#10;onOtpAuthUri(uri)&#10;parsea issuer:account + masked secret"]
-  VM --> DEEP{"Intentar&#10;deep link&#10;uriHandler.openUri"}
-  DEEP -->|"Exito"| AUTH["App autenticadora&#10;se abre con secret&#10;pre-cargado"]
-  DEEP -->|"Fallo (Exception)"| QR["showQr = true&#10;Muestra:&#10;- issuerAccount&#10;- secretMasked&#10;- Copiar clave&#10;- Copiar enlace&#10;- Buscar autenticador&#10;- Compartir"]
+  START(("Inicio")) --> PROFILE["Client Profile<br>SecurityActionsSection"]
+  PROFILE -->|"Toca 'Setup Two Factor'"| SCREEN["TwoFactorSetupScreen"]
+  SCREEN --> TOKEN{"Token en<br>storage?"}
+  TOKEN -->|"null"| ETOK["Error:<br>'Token no encontrado'"]
+  TOKEN -->|"Existe"| LOADING["Loading: true<br>Llama viewModel.setup()"]
+  LOADING --> HTTP["POST /{biz}/2fasetup<br>Authorization: JWT"]
+  HTTP --> BE_VAL{"Backend:<br>JWT valido?"}
+  BE_VAL -->|"Invalido/expirado"| E401["HTTP 401<br>Snackbar error"]
+  BE_VAL -->|"Valido"| COGNITO["Cognito: getUser(token)"]
+  COGNITO --> EMAIL{"Email<br>encontrado?"}
+  EMAIL -->|"No"| E500A["HTTP 500:<br>'Email not found'"]
+  EMAIL -->|"Si"| GEN["Genera secreto Base32<br>SecureRandom(20 bytes)"]
+  GEN --> PERSIST["DynamoDB: putItem<br>users(email, secret)"]
+  PERSIST --> URI["Construye otpAuthUri<br>otpauth://totp/intrale:email?<br>secret=XXX&issuer=intrale<br>&algorithm=SHA1&digits=6&period=30"]
+  URI --> OK200["HTTP 200<br>{ otpAuthUri }"]
+  OK200 --> DEEP{"Deep link<br>intent"}
+  DEEP -->|"App autenticadora<br>disponible"| AUTH["Abre app autenticadora<br>con URI otpauth"]
+  DEEP -->|"Falla (sin app)"| FALLBACK["showQr = true<br>Muestra UI alternativa"]
+  FALLBACK --> UI_ALT["issuer:account enmascarado<br>Botones: Copiar clave /<br>Copiar enlace / Buscar<br>autenticador / Compartir"]
 
-  E401 --> PROFILE
-  E500 --> PROFILE
+  ETOK --> SCREEN
+  E401 --> SCREEN
+  E500A --> SCREEN
 
+  style ETOK fill:#ffebee,stroke:#c62828
   style E401 fill:#ffebee,stroke:#c62828
-  style E500 fill:#ffebee,stroke:#c62828
+  style E500A fill:#ffebee,stroke:#c62828
+  style OK200 fill:#e8f5e9,stroke:#2e7d32
   style AUTH fill:#e8f5e9,stroke:#2e7d32
-  style QR fill:#fff8e1,stroke:#f57f17
-  style SETUP fill:#e3f2fd,stroke:#1565c0
+  style UI_ALT fill:#e3f2fd,stroke:#1565c0
+  style LOADING fill:#e3f2fd,stroke:#1565c0
 </pre>
 
-<h3>4.3 Campos y validaciones</h3>
+<h3>4.3 Componentes UI de TwoFactorSetupScreen</h3>
 <table>
-  <tr><th>Campo</th><th>Tipo</th><th>Validacion Frontend</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
-  <tr><td colspan="5"><em>El setup no tiene campos de entrada del usuario — se invoca automaticamente al entrar a la pantalla. La autenticacion se hace via JWT en header.</em></td></tr>
+  <tr><th>Componente</th><th>Condicion</th><th>Descripcion</th></tr>
+  <tr><td>Scaffold + Snackbar</td><td>Siempre</td><td>Contenedor principal con feedback de errores</td></tr>
+  <tr><td>Loading indicator</td><td><code>loading == true</code></td><td>Mientras se ejecuta POST /2fasetup</td></tr>
+  <tr><td>Text "QR pendiente"</td><td><code>showQr == true</code></td><td>Placeholder mientras no hay imagen QR</td></tr>
+  <tr><td>Text issuer:account</td><td><code>showQr == true</code></td><td>Formato "intrale:user@test.com"</td></tr>
+  <tr><td>Text secretMasked</td><td><code>showQr == true</code></td><td>Primeros 4 + "****" + ultimos 4 chars del secret</td></tr>
+  <tr><td>Button "Copiar clave"</td><td><code>showQr == true</code></td><td>Copia secreto TOTP al clipboard</td></tr>
+  <tr><td>Button "Copiar enlace"</td><td><code>showQr == true</code></td><td>Copia URI otpauth completa al clipboard</td></tr>
+  <tr><td>Button "Buscar autenticador"</td><td><code>showQr == true</code></td><td>Abre PlayStore/AppStore</td></tr>
+  <tr><td>Button "Compartir"</td><td><code>showQr == true</code></td><td>Comparte enlace de configuracion</td></tr>
 </table>
 
 <h3>4.4 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
 <table>
   <tr>
-    <th style="width:65px">ID</th>
+    <th style="width:60px">ID</th>
     <th style="width:45px">Tipo</th>
     <th style="width:40px">Prio</th>
     <th>Caso de prueba</th>
@@ -321,268 +336,297 @@ flowchart TD
     <td class="case-id">2FA-A-001</td>
     <td><span class="tag tag-smoke">Smoke</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Setup exitoso con deep link a app autenticadora</strong></td>
+    <td><strong>Setup exitoso con deep link</strong></td>
     <td class="video-script">
-      <strong>00:00</strong> "Caso 2FA-A-001: Setup exitoso con deep link"<br>
-      <strong>&#9654; P1</strong> "Abrimos la app, estamos autenticados en ClientProfile"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Configurar 2FA' en SecurityActionsSection"<br>
-      <strong>&#9654; P3</strong> "Se invoca setup automaticamente (LaunchedEffect)"<br>
-      <strong>&#9654; P4</strong> "El deep link abre la app autenticadora"<br>
-      <strong>&#9673; V1</strong> "Verificamos: app autenticadora se abrio con la cuenta pre-cargada"<br>
-      <strong>&#9673; V2</strong> "Verificamos: la cuenta muestra intrale:email@test.com"
+      <strong>00:00</strong> "Caso 2FA-A-001: Setup 2FA exitoso con deep link"<br>
+      <strong>P1</strong> "Login exitoso, navegamos al perfil de usuario"<br>
+      <strong>P2</strong> "Tocamos 'Setup Two Factor' en SecurityActionsSection"<br>
+      <strong>P3</strong> "Backend genera secreto TOTP y retorna URI otpauth"<br>
+      <strong>P4</strong> "Deep link abre app autenticadora automaticamente"<br>
+      <strong>V1</strong> "Verificamos: app autenticadora muestra cuenta intrale:email"<br>
+      <strong>V2</strong> "Verificamos: codigo TOTP de 6 digitos se genera cada 30 seg"
     </td>
     <td class="evidence-col">
-      &#10003; App autenticadora abierta (screenshot)<br>
-      &#10003; Cuenta intrale visible<br>
-      &#10003; Codigo TOTP generandose<br>
-      &#10003; Sin errores en snackbar
+      App autenticadora abierta<br>
+      Cuenta "intrale:email" visible<br>
+      Codigo 6 digitos generandose<br>
+      Sin errores ni snackbar
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-002</td>
     <td><span class="tag tag-smoke">Smoke</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Setup exitoso, deep link falla, muestra QR/secreto</strong></td>
+    <td><strong>Setup con fallback UI (sin app autenticadora)</strong></td>
     <td class="video-script">
-      <strong>00:00</strong> "Caso 2FA-A-002: Setup con fallback a QR"<br>
-      <strong>&#9654; P1</strong> "Estamos autenticados, sin app autenticadora instalada"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Configurar 2FA'"<br>
-      <strong>&#9654; P3</strong> "El deep link falla, se muestra seccion QR"<br>
-      <strong>&#9673; V1</strong> "Verificamos: se muestra issuer:account (intrale:email)"<br>
-      <strong>&#9673; V2</strong> "Verificamos: se muestra secreto enmascarado (XXXX****XXXX)"<br>
-      <strong>&#9673; V3</strong> "Verificamos: botones Copiar clave, Copiar enlace, Buscar autenticador, Compartir visibles"
+      <strong>00:00</strong> "Caso 2FA-A-002: Setup 2FA con UI de fallback"<br>
+      <strong>P1</strong> "Login exitoso, sin app autenticadora instalada"<br>
+      <strong>P2</strong> "Tocamos 'Setup Two Factor'"<br>
+      <strong>P3</strong> "Deep link falla, se muestra UI alternativa"<br>
+      <strong>V1</strong> "Verificamos: issuer:account visible"<br>
+      <strong>V2</strong> "Verificamos: secreto enmascarado (4+****+4)"<br>
+      <strong>V3</strong> "Verificamos: botones Copiar clave / Copiar enlace / Buscar / Compartir visibles"
     </td>
     <td class="evidence-col">
-      &#10003; Texto issuer:account visible<br>
-      &#10003; Secret enmascarado visible<br>
-      &#10003; 4 botones de accion visibles<br>
-      &#10003; Sin errores en snackbar
+      showQr == true<br>
+      issuer:account legible<br>
+      Secret enmascarado visible<br>
+      4 botones de accion visibles
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-003</td>
-    <td><span class="tag tag-regression">Regresion</span></td>
-    <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Copiar secreto al portapapeles</strong></td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Copiar clave secreta al clipboard</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Estamos en TwoFactorSetupScreen con QR visible"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Copiar clave'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: el secreto completo (no enmascarado) se copio al portapapeles"<br>
-      <strong>&#9673; V2</strong> "Verificamos: pegamos en un editor y es Base32 valido"
+      <strong>P1</strong> "Estamos en UI de fallback (showQr=true)"<br>
+      <strong>P2</strong> "Tocamos 'Copiar clave'"<br>
+      <strong>V1</strong> "Verificamos: secreto copiado al clipboard"<br>
+      <strong>V2</strong> "Verificamos: podemos pegar en app autenticadora"
     </td>
     <td class="evidence-col">
-      &#10003; Boton Copiar clave funcional<br>
-      &#10003; Clipboard contiene secreto Base32<br>
-      &#10003; Secreto es completo (no enmascarado)
+      Clipboard contiene secreto<br>
+      Se puede pegar en autenticadora
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-004</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Copiar enlace OTP al portapapeles</strong></td>
+    <td><strong>Copiar enlace otpauth al clipboard</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Estamos en TwoFactorSetupScreen con QR visible"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Copiar enlace'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: URI otpauth:// completa en portapapeles"<br>
-      <strong>&#9673; V2</strong> "Verificamos: contiene secret, issuer, algorithm, digits, period"
+      <strong>P1</strong> "Estamos en UI de fallback"<br>
+      <strong>P2</strong> "Tocamos 'Copiar enlace'"<br>
+      <strong>V1</strong> "Verificamos: URI otpauth completa en clipboard"
     </td>
     <td class="evidence-col">
-      &#10003; Clipboard contiene URI otpauth://<br>
-      &#10003; URI tiene parametros correctos
+      Clipboard contiene otpauth://...<br>
+      URI tiene formato correcto
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-005</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Boton "Buscar autenticador" abre Play Store</strong></td>
+    <td><strong>Buscar autenticador abre tienda</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Tocamos 'Buscar autenticador'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: se abre Play Store con busqueda 'authenticator'"<br>
-      <strong>&#9673; V2</strong> "Verificamos: si falla, snackbar muestra error"
+      <strong>P1</strong> "Tocamos 'Buscar autenticador'"<br>
+      <strong>V1</strong> "Verificamos: PlayStore (Android) o AppStore (iOS) se abre"<br>
+      <strong>V2</strong> "Verificamos: busqueda de app autenticadora"
     </td>
     <td class="evidence-col">
-      &#10003; Play Store abierto o snackbar de error<br>
-      &#10003; App no crashea
+      Tienda de apps abierta<br>
+      Busqueda relevante visible
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-006</td>
     <td><span class="tag tag-regression">Regresion</span></td>
-    <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Boton "Compartir" abre enlace OTP</strong></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Compartir enlace otpauth</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Tocamos 'Compartir'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: uriHandler intenta abrir la URI otpauth://"<br>
-      <strong>&#9673; V2</strong> "Verificamos: si falla, snackbar muestra error"
+      <strong>P1</strong> "Tocamos 'Compartir'"<br>
+      <strong>V1</strong> "Verificamos: sheet de compartir del SO se abre"<br>
+      <strong>V2</strong> "Verificamos: enlace otpauth incluido"
     </td>
     <td class="evidence-col">
-      &#10003; Intent de compartir visible o snackbar error<br>
-      &#10003; App estable
+      Share sheet visible<br>
+      Contenido incluye URI
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-007</td>
-    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Setup sin autenticacion (JWT ausente) — 401</strong></td>
+    <td><strong>Sin token (no autenticado)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Enviamos POST /{biz}/2fasetup sin header Authorization via curl"<br>
-      <strong>&#9673; V1</strong> "Verificamos: HTTP 4xx (SecuredFunction rechaza)"
+      <strong>P1</strong> "Navegamos a /twoFactorSetup sin login previo"<br>
+      <strong>V1</strong> "Verificamos: error 'Token no encontrado'"<br>
+      <strong>V2</strong> "Verificamos: NO se hace llamada HTTP al backend"
     </td>
     <td class="evidence-col">
-      &#10003; Response status 4xx<br>
-      &#10003; Mensaje de error de autenticacion
+      Error inmediato visible<br>
+      Sin request de red<br>
+      App estable
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-008</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Setup con token invalido — 401</strong></td>
+    <td><strong>Token JWT expirado</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Enviamos POST con Authorization: Bearer token-invalido-fake"<br>
-      <strong>&#9673; V1</strong> "Verificamos: HTTP 4xx, JWT invalido rechazado"
+      <strong>P1</strong> "Sesion expirada, intentamos setup"<br>
+      <strong>V1</strong> "Verificamos: HTTP 401 Unauthorized"<br>
+      <strong>V2</strong> "Verificamos: snackbar con error visible"
     </td>
     <td class="evidence-col">
-      &#10003; Response status 4xx<br>
-      &#10003; CognitoJwtValidator rechaza
+      Snackbar error 401<br>
+      Permanece en pantalla
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-009</td>
     <td><span class="tag tag-edge">Edge</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Setup re-ejecutado genera nuevo secreto (sobreescribe)</strong></td>
+    <td><strong>Setup repetido (re-setup)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Ejecutamos setup por primera vez — obtenemos secret A"<br>
-      <strong>&#9654; P2</strong> "Ejecutamos setup por segunda vez — obtenemos secret B"<br>
-      <strong>&#9673; V1</strong> "Verificamos: secret B != secret A"<br>
-      <strong>&#9673; V2</strong> "Verificamos: DynamoDB tiene secret B (sobreescribio)"
+      <strong>P1</strong> "Usuario ya tiene 2FA configurado"<br>
+      <strong>P2</strong> "Ejecuta setup nuevamente"<br>
+      <strong>V1</strong> "Verificamos: nuevo secreto generado (sobreescribe anterior)"<br>
+      <strong>V2</strong> "Verificamos: codigo anterior ya no funciona"
     </td>
     <td class="evidence-col">
-      &#10003; Dos URIs diferentes<br>
-      &#10003; Segundo secret reemplaza al primero<br>
-      &#10003; Solo el segundo TOTP funciona
+      Nuevo secreto generado<br>
+      Codigo anterior invalido<br>
+      DynamoDB actualizado
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-010</td>
     <td><span class="tag tag-edge">Edge</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Setup sin conexion a internet</strong></td>
+    <td><strong>Sin conexion a internet</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Desactivamos WiFi/datos (mostrar en settings)"<br>
-      <strong>&#9654; P2</strong> "Navegamos a Configurar 2FA"<br>
-      <strong>&#9673; V1</strong> "Verificamos: snackbar con error de red"<br>
-      <strong>&#9673; V2</strong> "Verificamos: no queda en estado inconsistente"
+      <strong>P1</strong> "Desactivamos WiFi/datos (mostrar en settings)"<br>
+      <strong>P2</strong> "Intentamos setup 2FA"<br>
+      <strong>V1</strong> "Verificamos: snackbar con error de red"<br>
+      <strong>V2</strong> "Verificamos: app no queda en estado inconsistente"
     </td>
     <td class="evidence-col">
-      &#10003; Settings mostrando WiFi OFF<br>
-      &#10003; Snackbar de error visible<br>
-      &#10003; App estable, puede reintentar
+      Settings mostrando WiFi OFF<br>
+      Snackbar error visible<br>
+      App estable, puede reintentar
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-011</td>
-    <td><span class="tag tag-regression">Regresion</span></td>
-    <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Formato URI OTP correcto</strong></td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>URI otpauth contiene datos correctos</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Ejecutamos setup y capturamos la URI de respuesta"<br>
-      <strong>&#9673; V1</strong> "Verificamos: URI contiene otpauth://totp/intrale:{email}"<br>
-      <strong>&#9673; V2</strong> "Verificamos: parametros secret, issuer=intrale, algorithm=SHA1, digits=6, period=30"
+      <strong>P1</strong> "Completamos setup, copiamos enlace"<br>
+      <strong>V1</strong> "Verificamos: URI contiene algorithm=SHA1"<br>
+      <strong>V2</strong> "Verificamos: digits=6, period=30"<br>
+      <strong>V3</strong> "Verificamos: issuer=intrale, email correcto"
     </td>
     <td class="evidence-col">
-      &#10003; URI matchea regex otpauth://totp/.*<br>
-      &#10003; Todos los parametros presentes<br>
-      &#10003; Secret es Base32 valido
+      URI otpauth parseada correctamente<br>
+      Parametros SHA1/6/30 presentes<br>
+      Issuer y email correctos
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-A-012</td>
-    <td><span class="tag tag-regression">Regresion</span></td>
-    <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Secret se persiste en DynamoDB</strong></td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Secreto enmascarado correcto</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Ejecutamos setup exitosamente"<br>
-      <strong>&#9673; V1</strong> "Verificamos: User en DynamoDB tiene campo secret no vacio"<br>
-      <strong>&#9673; V2</strong> "Verificamos: secret es Base32 de 32 caracteres"
+      <strong>P1</strong> "UI de fallback visible"<br>
+      <strong>V1</strong> "Verificamos: formato 4+****+4 del secreto"<br>
+      <strong>V2</strong> "Verificamos: coincide con primeros/ultimos 4 del real"
     </td>
     <td class="evidence-col">
-      &#10003; DynamoDB scan muestra secret<br>
-      &#10003; Secret es Base32 valido
+      Formato XXXX****XXXX visible<br>
+      No muestra secreto completo
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">2FA-A-013</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Backend: API directa sin Authorization header</strong></td>
+    <td class="video-script">
+      <strong>P1</strong> "POST /{biz}/2fasetup sin header Authorization"<br>
+      <strong>V1</strong> "Verificamos: HTTP 401 Unauthorized"
+    </td>
+    <td class="evidence-col">
+      Response status 401<br>
+      Mensaje de error correcto
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">2FA-A-014</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Navegacion desde Client Profile</strong></td>
+    <td class="video-script">
+      <strong>P1</strong> "En Client Profile, verificamos seccion Security"<br>
+      <strong>P2</strong> "Tocamos 'Setup Two Factor'"<br>
+      <strong>V1</strong> "Verificamos: navega a /twoFactorSetup"<br>
+      <strong>V2</strong> "Verificamos: back regresa a Client Profile"
+    </td>
+    <td class="evidence-col">
+      Navegacion correcta<br>
+      Back funciona<br>
+      Ruta /twoFactorSetup visible
     </td>
   </tr>
 </table>
 
-<!-- ========== 5. FLUJO B — VERIFICACION 2FA ========== -->
-<h2 id="s5">5. Flujo B — Verificacion 2FA</h2>
+<!-- ========== 5. FLUJO B — VERIFICACION ========== -->
+<h2 id="s5">5. Flujo B — Verificacion de Codigo TOTP</h2>
 
 <h3>5.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
-<p>El usuario autenticado navega a la seccion de seguridad y selecciona "Verificar 2FA". Ingresa el codigo de 6 digitos generado por su app autenticadora. El frontend valida minLength(6) con Konform, y el backend genera el TOTP esperado con el secreto almacenado y compara. Si coincide, confirma exito; si no, muestra error.</p>
+<p>Usuario con 2FA configurado ingresa el codigo TOTP de 6 digitos generado por su app autenticadora. El backend lee el secreto de DynamoDB, genera el codigo esperado usando <code>TimeBasedOneTimePasswordGenerator</code> (HmacSHA1, 6 digitos, ventana de 30 seg), y compara. Si coincide, retorna 200 OK.</p>
 
 <div class="precond">
-  <strong>Precondiciones:</strong> Usuario autenticado (JWT valido) | 2FA configurado (secret en DynamoDB) | App autenticadora con la cuenta registrada
+  <strong>Precondiciones:</strong> 2FA configurado (Flujo A completado) | App autenticadora con cuenta intrale | Codigo TOTP vigente (ventana 30 seg) | JWT valido
 </div>
 
 <h3>5.2 Diagrama de flujo</h3>
 <pre class="mermaid">
 flowchart TD
-  START(("Inicio")) --> PROFILE["ClientProfileScreen&#10;SecurityActionsSection"]
-  PROFILE -->|"Toca 'Verificar 2FA'"| VERIFY["TwoFactorVerifyScreen&#10;Campo: codigo de 6 digitos"]
-  VERIFY --> INPUT["Usuario ingresa codigo"]
-  INPUT --> BTN["Toca boton 'Verificar'"]
-  BTN --> VAL_FE{"Validacion&#10;Frontend&#10;(Konform)"}
-  VAL_FE -->|"Codigo vacio o&#10;&lt; 6 caracteres"| ERR_FE["Error inline:&#10;'Debe contener 6 digitos'"]
-  ERR_FE --> VERIFY
-  VAL_FE -->|"Valido (>= 6 chars)"| LOADING["Boton: spinner +&#10;deshabilitado"]
-  LOADING --> HTTP["POST /{biz}/2faverify&#10;{code} + JWT"]
-  HTTP --> BE_JWT{"Backend:&#10;JWT valido?"}
-  BE_JWT -->|"JWT invalido"| E401["HTTP 401&#10;Snackbar error"]
-  BE_JWT -->|"JWT valido"| BE_BODY{"Body&#10;presente?"}
-  BE_BODY -->|"Body vacio"| E400B["HTTP 400&#10;'Request body not found'"]
-  BE_BODY -->|"OK"| BE_VAL{"Konform:&#10;code minLength(6)?"}
-  BE_VAL -->|"Invalido"| E400V["HTTP 400&#10;Validation error"]
-  BE_VAL -->|"OK"| COG["Cognito: getUser&#10;obtener email"]
-  COG --> DB["DynamoDB:&#10;getItem User(email)"]
-  DB --> SEC{"User.secret&#10;existe?"}
-  SEC -->|"null/empty"| E_SEC["Error:&#10;'secret not found'"]
-  SEC -->|"OK"| TOTP["Generar TOTP:&#10;HMAC-SHA1(secret, now)"]
-  TOTP --> CMP{"code ==&#10;expected?"}
-  CMP -->|"SI"| OK200["HTTP 200 OK"]
-  CMP -->|"NO"| E_INV["Error:&#10;'Invalid Two Factor Code'"]
-  OK200 --> SNACK_OK["Snackbar: exito"]
-  E_INV --> SNACK_ERR["Snackbar: error"]
+  START(("Desde Perfil")) --> SCREEN["TwoFactorVerifyScreen<br>Campo: codigo (6 digitos)"]
+  SCREEN --> INPUT["Ingresa codigo TOTP"]
+  INPUT --> VAL{"Validacion<br>Frontend<br>(Konform)"}
+  VAL -->|"Codigo vacio"| ERR_REQ["Error inline:<br>'Debe contener 6 digitos'"]
+  VAL -->|"Codigo < 6 chars"| ERR_MIN["Error inline:<br>'Debe contener 6 digitos'"]
+  VAL -->|"Valido (6+ chars)"| SUBMIT["Boton habilitado<br>viewModel.isValid()"]
+  ERR_REQ --> SCREEN
+  ERR_MIN --> SCREEN
+  SUBMIT -->|"Toca 'Verificar'"| LOADING["Loading: true<br>Boton deshabilitado"]
+  LOADING --> HTTP["POST /{biz}/2faverify<br>{code: '123456'}<br>Authorization: JWT"]
+  HTTP --> JWT{"Backend:<br>JWT valido?"}
+  JWT -->|"Invalido"| E401["HTTP 401<br>Snackbar error"]
+  JWT -->|"Valido"| BE_VAL{"Backend:<br>code minLength(6)?"}
+  BE_VAL -->|"< 6 chars"| E400["HTTP 400<br>'Debe contener 6 digitos'"]
+  BE_VAL -->|"OK"| COGNITO["Cognito: getUser(token)<br>→ email"]
+  COGNITO --> SECRET{"DynamoDB:<br>users.secret<br>existe?"}
+  SECRET -->|"No"| E500A["HTTP 500:<br>'two factor secret not found'"]
+  SECRET -->|"Si"| TOTP["TOTP Generator:<br>SecretKeySpec(Base32.decode, HmacSHA1)<br>generateOTP(key, now())"]
+  TOTP --> COMPARE{"code ==<br>expected?"}
+  COMPARE -->|"No"| E500B["HTTP 500:<br>'Invalid Two Factor Code'"]
+  COMPARE -->|"Si"| OK200["HTTP 200 OK"]
+  OK200 --> SUCCESS["Snackbar: 'Verificacion exitosa'"]
 
-  E401 --> VERIFY
-  E400B --> VERIFY
-  E400V --> VERIFY
-  E_SEC --> VERIFY
-  SNACK_ERR --> VERIFY
+  E401 --> SCREEN
+  E400 --> SCREEN
+  E500A --> SCREEN
+  E500B --> SCREEN
 
-  style ERR_FE fill:#ffebee,stroke:#c62828
+  style ERR_REQ fill:#ffebee,stroke:#c62828
+  style ERR_MIN fill:#ffebee,stroke:#c62828
   style E401 fill:#ffebee,stroke:#c62828
-  style E400B fill:#ffebee,stroke:#c62828
-  style E400V fill:#ffebee,stroke:#c62828
-  style E_SEC fill:#ffebee,stroke:#c62828
-  style E_INV fill:#ffebee,stroke:#c62828
+  style E400 fill:#ffebee,stroke:#c62828
+  style E500A fill:#ffebee,stroke:#c62828
+  style E500B fill:#ffebee,stroke:#c62828
   style OK200 fill:#e8f5e9,stroke:#2e7d32
-  style SNACK_OK fill:#e8f5e9,stroke:#2e7d32
+  style SUCCESS fill:#e8f5e9,stroke:#2e7d32
   style LOADING fill:#e3f2fd,stroke:#1565c0
 </pre>
 
 <h3>5.3 Campos y validaciones</h3>
 <table>
-  <tr><th>Campo</th><th>Tipo</th><th>Validacion Frontend</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
-  <tr><td>code</td><td>TextField</td><td>required + <code>minLength(6)</code></td><td>required + <code>minLength(6)</code> + TOTP match</td><td>"Debe contener 6 digitos." (FE) / "Invalid Two Factor Code" (BE)</td></tr>
+  <tr><th>Campo</th><th>Tipo</th><th>Validacion Frontend (Konform)</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
+  <tr><td>code</td><td>TextField</td><td>required + minLength(6)</td><td>required + minLength(6) + TOTP match</td><td>"Debe contener 6 digitos."</td></tr>
 </table>
 
 <h3>5.4 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
 <table>
   <tr>
-    <th style="width:65px">ID</th>
+    <th style="width:60px">ID</th>
     <th style="width:45px">Tipo</th>
     <th style="width:40px">Prio</th>
     <th>Caso de prueba</th>
@@ -596,19 +640,18 @@ flowchart TD
     <td><strong>Verificacion exitosa con codigo valido</strong></td>
     <td class="video-script">
       <strong>00:00</strong> "Caso 2FA-B-001: Verificacion exitosa"<br>
-      <strong>&#9654; P1</strong> "Estamos autenticados, 2FA configurado, abrimos app autenticadora"<br>
-      <strong>&#9654; P2</strong> "Navegamos a 'Verificar 2FA' desde perfil"<br>
-      <strong>&#9654; P3</strong> "Copiamos el codigo de 6 digitos del autenticador"<br>
-      <strong>&#9654; P4</strong> "Pegamos/ingresamos el codigo en el campo"<br>
-      <strong>&#9654; P5</strong> "Tocamos 'Verificar'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: spinner en boton"<br>
-      <strong>&#9673; V2</strong> "Verificamos: snackbar de exito visible"
+      <strong>P1</strong> "2FA configurado, app autenticadora muestra codigo"<br>
+      <strong>P2</strong> "Navegamos a Verify Two Factor desde perfil"<br>
+      <strong>P3</strong> "Ingresamos codigo TOTP de 6 digitos actual"<br>
+      <strong>P4</strong> "Tocamos 'Verificar'"<br>
+      <strong>V1</strong> "Verificamos: spinner en boton durante carga"<br>
+      <strong>V2</strong> "Verificamos: snackbar 'Verificacion exitosa'"
     </td>
     <td class="evidence-col">
-      &#10003; Spinner visible en boton (screenshot)<br>
-      &#10003; Boton deshabilitado durante carga<br>
-      &#10003; Snackbar de exito visible<br>
-      &#10003; Sin errores
+      Codigo TOTP ingresado (6 digitos)<br>
+      Spinner visible en boton<br>
+      Snackbar exito visible<br>
+      Sin mensaje de error
     </td>
   </tr>
   <tr>
@@ -617,232 +660,245 @@ flowchart TD
     <td><span class="tag tag-high">Alta</span></td>
     <td><strong>Codigo vacio</strong></td>
     <td class="video-script">
-      <strong>00:00</strong> "Caso 2FA-B-002: Validacion con codigo vacio"<br>
-      <strong>&#9654; P1</strong> "Estamos en TwoFactorVerifyScreen"<br>
-      <strong>&#9654; P2</strong> "Dejamos el campo codigo vacio"<br>
-      <strong>&#9654; P3</strong> "Tocamos 'Verificar'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error inline 'Debe contener 6 digitos'"<br>
-      <strong>&#9673; V2</strong> "Verificamos: NO se hizo llamada HTTP"
+      <strong>P1</strong> "Campo codigo vacio"<br>
+      <strong>P2</strong> "Tocamos 'Verificar'"<br>
+      <strong>V1</strong> "Verificamos: error inline 'Debe contener 6 digitos'"<br>
+      <strong>V2</strong> "Verificamos: boton deshabilitado (isValid = false)"
     </td>
     <td class="evidence-col">
-      &#10003; Error inline visible bajo campo<br>
-      &#10003; Texto del error legible<br>
-      &#10003; Permanece en pantalla<br>
-      &#10003; Sin snackbar de red
+      Error inline visible<br>
+      Boton no responde<br>
+      Sin llamada HTTP
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-003</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Codigo menor a 6 caracteres</strong></td>
+    <td><strong>Codigo menor a 6 digitos</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Ingresamos '123' (3 digitos)"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Verificar'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error inline visible"
+      <strong>P1</strong> "Ingresamos '123' (3 digitos)"<br>
+      <strong>P2</strong> "Tocamos 'Verificar'"<br>
+      <strong>V1</strong> "Error: minLength(6) no satisfecho"
     </td>
     <td class="evidence-col">
-      &#10003; Error inline "Debe contener 6 digitos"<br>
-      &#10003; Sin llamada HTTP
+      Error inline visible<br>
+      "Debe contener 6 digitos"
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-004</td>
-    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Codigo invalido (no matchea TOTP)</strong></td>
+    <td><strong>Codigo incorrecto (6 digitos invalidos)</strong></td>
     <td class="video-script">
-      <strong>00:00</strong> "Caso 2FA-B-004: Codigo TOTP invalido"<br>
-      <strong>&#9654; P1</strong> "Ingresamos '000000' (codigo incorrecto)"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Verificar'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: snackbar con error 'Invalid Two Factor Code'"<br>
-      <strong>&#9673; V2</strong> "Verificamos: permanece en pantalla para reintentar"
+      <strong>P1</strong> "Ingresamos '000000' (valido formato, invalido TOTP)"<br>
+      <strong>P2</strong> "Tocamos 'Verificar'"<br>
+      <strong>V1</strong> "Verificamos: pasa validacion frontend"<br>
+      <strong>V2</strong> "Verificamos: snackbar 'Invalid Two Factor Code'"<br>
+      <strong>V3</strong> "Verificamos: permanece en pantalla"
     </td>
     <td class="evidence-col">
-      &#10003; Snackbar error visible<br>
-      &#10003; Mensaje "Invalid Two Factor Code"<br>
-      &#10003; Campo se puede editar de nuevo<br>
-      &#10003; App estable
+      Snackbar error visible<br>
+      Mensaje "Invalid Two Factor Code"<br>
+      Permanece en TwoFactorVerifyScreen
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-005</td>
-    <td><span class="tag tag-edge">Edge</span></td>
-    <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Codigo expirado (ventana TOTP de 30s pasada)</strong></td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Codigo expirado (ventana 30 seg)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Copiamos un codigo TOTP"<br>
-      <strong>&#9654; P2</strong> "Esperamos mas de 30 segundos"<br>
-      <strong>&#9654; P3</strong> "Ingresamos el codigo expirado"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error 'Invalid Two Factor Code'"
+      <strong>P1</strong> "Anotamos codigo TOTP actual"<br>
+      <strong>P2</strong> "Esperamos que expire (30 seg)"<br>
+      <strong>P3</strong> "Ingresamos codigo anterior"<br>
+      <strong>V1</strong> "Verificamos: error 'Invalid Two Factor Code'"
     </td>
     <td class="evidence-col">
-      &#10003; Timer del autenticador muestra nuevo periodo<br>
-      &#10003; Error al verificar codigo viejo
+      Codigo expirado ingresado<br>
+      Error de backend visible<br>
+      App estable
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-006</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Verify sin autenticacion (JWT ausente) — 401</strong></td>
+    <td><strong>Sin token (no autenticado)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Enviamos POST /{biz}/2faverify sin header Authorization via curl"<br>
-      <strong>&#9673; V1</strong> "Verificamos: HTTP 4xx (SecuredFunction rechaza)"
+      <strong>P1</strong> "Accedemos a /twoFactorVerify sin login"<br>
+      <strong>V1</strong> "Verificamos: error de autenticacion"
     </td>
     <td class="evidence-col">
-      &#10003; Response status 4xx<br>
-      &#10003; Mensaje de error de autenticacion
+      Error 401 o token not found<br>
+      Sin acceso al endpoint
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-007</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Verify con token invalido — 401</strong></td>
+    <td><strong>Token JWT expirado</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "POST con Authorization: Bearer token-invalido-fake"<br>
-      <strong>&#9673; V1</strong> "Verificamos: HTTP 4xx"
+      <strong>P1</strong> "Sesion expirada, intentamos verificar"<br>
+      <strong>V1</strong> "HTTP 401 Unauthorized"
     </td>
     <td class="evidence-col">
-      &#10003; Response status 4xx
+      Snackbar error 401<br>
+      Permanece en pantalla
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-008</td>
-    <td><span class="tag tag-regression">Regresion</span></td>
-    <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Verify sin body — 400</strong></td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Sin 2FA configurado (secret no existe)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "POST con JWT valido pero sin body"<br>
-      <strong>&#9673; V1</strong> "Verificamos: HTTP 400 'Request body not found'"
+      <strong>P1</strong> "Usuario sin setup previo intenta verificar"<br>
+      <strong>V1</strong> "Error: 'two factor secret not found for user'"<br>
+      <strong>V2</strong> "App no crashea"
     </td>
     <td class="evidence-col">
-      &#10003; Response status 400<br>
-      &#10003; Mensaje de error correcto
+      Error de backend visible<br>
+      Mensaje claro<br>
+      App estable
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-009</td>
-    <td><span class="tag tag-edge">Edge</span></td>
-    <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Verify sin secret configurado para el usuario</strong></td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Boton deshabilitado durante carga</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Usuario autenticado que nunca ejecuto setup (sin secret en DB)"<br>
-      <strong>&#9654; P2</strong> "Intenta verificar con codigo '123456'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error 'two factor secret not found for user'"
+      <strong>P1</strong> "Ingresamos codigo valido, tocamos Verificar"<br>
+      <strong>P2</strong> "Intentamos tocar de nuevo durante loading"<br>
+      <strong>V1</strong> "Boton no responde al segundo tap"
     </td>
     <td class="evidence-col">
-      &#10003; Error descriptivo<br>
-      &#10003; HTTP 500<br>
-      &#10003; App maneja error sin crash
+      Spinner visible en boton<br>
+      Segundo tap sin efecto<br>
+      No se duplica request
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-010</td>
     <td><span class="tag tag-edge">Edge</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Verify sin conexion a internet</strong></td>
+    <td><strong>Sin conexion a internet</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Desactivamos WiFi/datos"<br>
-      <strong>&#9654; P2</strong> "Ingresamos codigo e intentamos verificar"<br>
-      <strong>&#9673; V1</strong> "Verificamos: snackbar con error de red"
+      <strong>P1</strong> "Desactivamos WiFi/datos"<br>
+      <strong>P2</strong> "Intentamos verificar codigo"<br>
+      <strong>V1</strong> "Snackbar error de red"<br>
+      <strong>V2</strong> "App estable, puede reintentar"
     </td>
     <td class="evidence-col">
-      &#10003; Snackbar de error visible<br>
-      &#10003; App estable
+      WiFi OFF visible<br>
+      Error de red visible<br>
+      App no crashea
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-011</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Boton deshabilitado durante carga</strong></td>
+    <td><strong>Backend: body vacio (API directa)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Ingresamos codigo valido"<br>
-      <strong>&#9654; P2</strong> "Tocamos Verificar"<br>
-      <strong>&#9654; P3</strong> "Intentamos tocar de nuevo durante la carga"<br>
-      <strong>&#9673; V1</strong> "Verificamos: boton no responde al segundo tap"
+      <strong>P1</strong> "POST /{biz}/2faverify sin body via curl"<br>
+      <strong>V1</strong> "HTTP 400 'Request body not found'"
     </td>
     <td class="evidence-col">
-      &#10003; Spinner visible en boton<br>
-      &#10003; Segundo tap sin efecto<br>
-      &#10003; No se duplica request
+      Response status 400<br>
+      Mensaje de error correcto
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-B-012</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Snackbar de exito visible y legible</strong></td>
+    <td><strong>Navegacion desde Client Profile</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Verificamos con codigo valido exitosamente"<br>
-      <strong>&#9673; V1</strong> "Verificamos: snackbar muestra mensaje de exito"<br>
-      <strong>&#9673; V2</strong> "Verificamos: snackbar desaparece despues de timeout"
+      <strong>P1</strong> "En Client Profile, tocamos 'Verify Two Factor'"<br>
+      <strong>V1</strong> "Navega a /twoFactorVerify"<br>
+      <strong>V2</strong> "Back regresa a Client Profile"
     </td>
     <td class="evidence-col">
-      &#10003; Snackbar verde/exito visible<br>
-      &#10003; Texto legible<br>
-      &#10003; Desaparece tras timeout
+      Navegacion correcta<br>
+      Back funciona<br>
+      Ruta /twoFactorVerify visible
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">2FA-B-013</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-low">Baja</span></td>
+    <td><strong>Codigo con letras (no numerico)</strong></td>
+    <td class="video-script">
+      <strong>P1</strong> "Ingresamos 'abcdef'"<br>
+      <strong>V1</strong> "Pasa validacion frontend (minLength OK)"<br>
+      <strong>V2</strong> "Backend rechaza: TOTP no coincide"
+    </td>
+    <td class="evidence-col">
+      Pasa frontend (solo minLength)<br>
+      Backend error "Invalid Two Factor Code"
     </td>
   </tr>
 </table>
 
-<!-- ========== 6. FLUJO C — 2FA GATE EN REVIEWBUSINESS ========== -->
+<!-- ========== 6. FLUJO C — 2FA EN REVIEWBUSINESS ========== -->
 <h2 id="s6">6. Flujo C — 2FA como Gate en ReviewBusiness</h2>
 
 <h3>6.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
-<p>Cuando un PlatformAdmin revisa solicitudes de negocios pendientes, debe ingresar su codigo 2FA junto con la decision (aprobar/rechazar). El backend valida: (1) JWT valido, (2) perfil PlatformAdmin APPROVED, (3) codigo 2FA valido via TwoFactorVerify interno. Solo si las tres validaciones pasan, se ejecuta la operacion. Esto asegura que operaciones sensibles de negocio requieran doble autenticacion.</p>
+<p>PlatformAdmin revisa solicitudes de registro de negocios. Cada decision (aprobar/rechazar) requiere ingresar un codigo TOTP valido como segundo factor de autenticacion. El backend invoca internamente <code>twoFactorVerify.execute()</code> antes de procesar la decision. Sin 2FA valido, la operacion es rechazada.</p>
 
 <div class="precond">
-  <strong>Precondiciones:</strong> PlatformAdmin autenticado (JWT) | Perfil APPROVED | 2FA configurado (secret en DynamoDB) | Al menos un negocio en estado PENDING
+  <strong>Precondiciones:</strong> Login como PlatformAdmin | Perfil APPROVED | 2FA configurado | Al menos un negocio PENDING | App autenticadora con codigo vigente
 </div>
 
 <h3>6.2 Diagrama de flujo</h3>
 <pre class="mermaid">
 flowchart TD
-  START(("PlatformAdmin&#10;autenticado")) --> DASH["DashboardScreen&#10;Business App"]
-  DASH -->|"Navega a ReviewBusiness"| REVIEW["ReviewBusinessScreen&#10;Lista negocios PENDING&#10;+ Campo codigo 2FA"]
-  REVIEW --> LOAD["LaunchedEffect:&#10;loadPending()"]
-  LOAD --> LIST{"Hay negocios&#10;PENDING?"}
-  LIST -->|"No"| EMPTY["'No hay solicitudes pendientes'"]
-  LIST -->|"Si"| CARDS["Mostrar Cards:&#10;nombre + desc + email&#10;+ botones Aprobar/Rechazar"]
-  CARDS --> INPUT["Ingresa codigo 2FA&#10;en campo twoFactorCode"]
-  INPUT --> ACTION{"Toca Aprobar&#10;o Rechazar"}
-  ACTION --> HTTP["POST /{biz}/reviewBusiness&#10;{publicId, decision, twoFactorCode}&#10;+ JWT"]
-  HTTP --> JWT_VAL{"JWT&#10;valido?"}
-  JWT_VAL -->|"No"| E401["HTTP 401"]
-  JWT_VAL -->|"Si"| PROF_VAL{"Perfil&#10;PlatformAdmin&#10;APPROVED?"}
-  PROF_VAL -->|"No"| E401_P["HTTP 401&#10;UnauthorizedException"]
-  PROF_VAL -->|"Si"| TFA_VAL["TwoFactorVerify&#10;(interno)"]
-  TFA_VAL --> TFA_OK{"2FA&#10;valido?"}
-  TFA_OK -->|"No"| E_TFA["Error 2FA&#10;propagado"]
-  TFA_OK -->|"Si"| BIZ_VAL{"Business&#10;PENDING?"}
-  BIZ_VAL -->|"No encontrado"| E_NF["'Business not found'"]
-  BIZ_VAL -->|"No PENDING"| E_ST["'Business is in wrong state'"]
-  BIZ_VAL -->|"PENDING"| DECISION{"decision?"}
-  DECISION -->|"APPROVED"| DUP{"Duplicado&#10;APPROVED?"}
-  DUP -->|"Si"| E_DUP["'Nombre ya existe'"]
-  DUP -->|"No"| APPROVE["state = APPROVED&#10;+ SignUp Business Admin&#10;+ Asignar perfil"]
-  DECISION -->|"REJECTED"| REJECT["state = REJECTED"]
-  APPROVE --> OK["HTTP 200&#10;Snackbar 'Aprobado'&#10;Recargar lista"]
-  REJECT --> OK2["HTTP 200&#10;Snackbar 'Rechazado'&#10;Recargar lista"]
+  START(("Dashboard<br>PlatformAdmin")) --> SCREEN["ReviewBusinessScreen<br>Lista negocios PENDING<br>+ Campo twoFactorCode"]
+  SCREEN --> LIST["Carga lista<br>negocios pendientes"]
+  LIST --> INPUT["Ingresa codigo TOTP<br>en campo twoFactorCode"]
+  INPUT --> ACTION{"Accion?"}
+  ACTION -->|"Approve individual"| VAL_A{"Validacion:<br>twoFactorCode<br>required"}
+  ACTION -->|"Reject individual"| VAL_R{"Validacion:<br>twoFactorCode<br>required"}
+  ACTION -->|"Approve Selected"| VAL_AS{"Validacion +<br>itera seleccionados"}
+  ACTION -->|"Reject Selected"| VAL_RS{"Validacion +<br>itera seleccionados"}
+  VAL_A -->|"Vacio"| ERR_V["Error: campo requerido"]
+  VAL_R -->|"Vacio"| ERR_V
+  VAL_A -->|"Con codigo"| HTTP
+  VAL_R -->|"Con codigo"| HTTP_R
+  VAL_AS -->|"Con codigo"| HTTP_BATCH
+  VAL_RS -->|"Con codigo"| HTTP_BATCH_R
 
-  E401 --> REVIEW
-  E401_P --> REVIEW
-  E_TFA --> REVIEW
-  E_NF --> REVIEW
-  E_ST --> REVIEW
-  E_DUP --> REVIEW
+  HTTP["POST /{biz}/reviewBusiness<br>{publicId, 'approved', code}"]
+  HTTP_R["POST /{biz}/reviewBusiness<br>{publicId, 'rejected', code}"]
+  HTTP_BATCH["forEach: POST /{biz}/reviewBusiness<br>{publicId, 'approved', code}"]
+  HTTP_BATCH_R["forEach: POST /{biz}/reviewBusiness<br>{publicId, 'rejected', code}"]
 
+  HTTP --> AUTH{"Backend:<br>JWT + PlatformAdmin<br>APPROVED?"}
+  HTTP_R --> AUTH
+  HTTP_BATCH --> AUTH
+  HTTP_BATCH_R --> AUTH
+  AUTH -->|"No"| E401["HTTP 401"]
+  AUTH -->|"Si"| FA2{"2FA verify<br>interno"}
+  FA2 -->|"Codigo invalido"| E_2FA["Error: 2FA invalido"]
+  FA2 -->|"Codigo valido"| DEC{"Decision?"}
+  DEC -->|"approved"| APPROVE["Business APPROVED<br>+ Crea BusinessAdmin<br>en Cognito si no existe<br>+ Asigna perfil"]
+  DEC -->|"rejected"| REJECT["Business REJECTED"]
+  APPROVE --> RELOAD["Recarga lista pendientes"]
+  REJECT --> RELOAD
+
+  ERR_V --> SCREEN
+  E401 --> SCREEN
+  E_2FA --> SCREEN
+  RELOAD --> SCREEN
+
+  style ERR_V fill:#ffebee,stroke:#c62828
   style E401 fill:#ffebee,stroke:#c62828
-  style E401_P fill:#ffebee,stroke:#c62828
-  style E_TFA fill:#ffebee,stroke:#c62828
-  style E_NF fill:#ffebee,stroke:#c62828
-  style E_ST fill:#ffebee,stroke:#c62828
-  style E_DUP fill:#ffebee,stroke:#c62828
-  style OK fill:#e8f5e9,stroke:#2e7d32
-  style OK2 fill:#e8f5e9,stroke:#2e7d32
+  style E_2FA fill:#ffebee,stroke:#c62828
   style APPROVE fill:#e8f5e9,stroke:#2e7d32
   style REJECT fill:#fff8e1,stroke:#f57f17
 </pre>
@@ -850,15 +906,15 @@ flowchart TD
 <h3>6.3 Campos y validaciones</h3>
 <table>
   <tr><th>Campo</th><th>Tipo</th><th>Validacion Frontend</th><th>Validacion Backend</th><th>Mensaje error</th></tr>
-  <tr><td>twoFactorCode</td><td>TextField</td><td>required (ViewModel)</td><td>required + minLength(6) + TOTP match</td><td>"Invalid Two Factor Code" / validation error</td></tr>
-  <tr><td>publicId</td><td>Interno (card)</td><td>N/A (seleccion de lista)</td><td>required + minLength(7)</td><td>Validation error</td></tr>
-  <tr><td>decision</td><td>Interno (boton)</td><td>N/A (boton Aprobar/Rechazar)</td><td>required + pattern <code>^(approved|rejected)$</code></td><td>"Debe ser APPROVED o REJECTED"</td></tr>
+  <tr><td>twoFactorCode</td><td>TextField</td><td>required (no vacio)</td><td>TOTP verify (minLength 6 + match)</td><td>Error de 2FA del backend</td></tr>
+  <tr><td>publicId</td><td>Interno</td><td>Automatico (seleccion)</td><td>Debe existir en tabla business</td><td>—</td></tr>
+  <tr><td>decision</td><td>Interno</td><td>"approved" o "rejected"</td><td>Validado en logica</td><td>—</td></tr>
 </table>
 
 <h3>6.4 Casos de prueba con guion de video <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
 <table>
   <tr>
-    <th style="width:65px">ID</th>
+    <th style="width:60px">ID</th>
     <th style="width:45px">Tipo</th>
     <th style="width:40px">Prio</th>
     <th>Caso de prueba</th>
@@ -869,274 +925,319 @@ flowchart TD
     <td class="case-id">2FA-C-001</td>
     <td><span class="tag tag-smoke">Smoke</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Aprobar negocio con codigo 2FA valido</strong></td>
+    <td><strong>Aprobar negocio con 2FA valido</strong></td>
     <td class="video-script">
-      <strong>00:00</strong> "Caso 2FA-C-001: Aprobacion de negocio con 2FA"<br>
-      <strong>&#9654; P1</strong> "Autenticados como PlatformAdmin con 2FA configurado"<br>
-      <strong>&#9654; P2</strong> "Navegamos a ReviewBusiness, vemos negocios pendientes"<br>
-      <strong>&#9654; P3</strong> "Ingresamos codigo 2FA valido del autenticador"<br>
-      <strong>&#9654; P4</strong> "Tocamos 'Aprobar' en un negocio"<br>
-      <strong>&#9673; V1</strong> "Verificamos: snackbar 'Aprobado'"<br>
-      <strong>&#9673; V2</strong> "Verificamos: negocio desaparece de la lista (recarga)"<br>
-      <strong>&#9673; V3</strong> "Verificamos: negocio en estado APPROVED en DB"
+      <strong>00:00</strong> "Caso 2FA-C-001: Aprobacion con 2FA valido"<br>
+      <strong>P1</strong> "Login como PlatformAdmin, navegamos a ReviewBusiness"<br>
+      <strong>P2</strong> "Vemos lista de negocios PENDING"<br>
+      <strong>P3</strong> "Ingresamos codigo TOTP actual del autenticador"<br>
+      <strong>P4</strong> "Tocamos 'Approve' en un negocio"<br>
+      <strong>V1</strong> "Verificamos: negocio cambia a APPROVED"<br>
+      <strong>V2</strong> "Verificamos: BusinessAdmin creado en Cognito"<br>
+      <strong>V3</strong> "Verificamos: lista se recarga sin el negocio aprobado"
     </td>
     <td class="evidence-col">
-      &#10003; Snackbar "Aprobado" visible<br>
-      &#10003; Lista se recarga<br>
-      &#10003; Negocio no aparece mas como PENDING<br>
-      &#10003; Business Admin puede hacer login
+      Negocio desaparece de PENDING<br>
+      State APPROVED en backend<br>
+      BusinessAdmin creado<br>
+      Lista recargada
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-002</td>
     <td><span class="tag tag-smoke">Smoke</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Rechazar negocio con codigo 2FA valido</strong></td>
+    <td><strong>Rechazar negocio con 2FA valido</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "PlatformAdmin en ReviewBusiness con negocio PENDING"<br>
-      <strong>&#9654; P2</strong> "Ingresamos codigo 2FA valido"<br>
-      <strong>&#9654; P3</strong> "Tocamos 'Rechazar'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: snackbar 'Rechazado'"<br>
-      <strong>&#9673; V2</strong> "Verificamos: negocio desaparece de la lista"
+      <strong>P1</strong> "En ReviewBusiness con negocios PENDING"<br>
+      <strong>P2</strong> "Ingresamos codigo TOTP valido"<br>
+      <strong>P3</strong> "Tocamos 'Reject' en un negocio"<br>
+      <strong>V1</strong> "Verificamos: negocio pasa a REJECTED"<br>
+      <strong>V2</strong> "Verificamos: NO se crea usuario en Cognito"
     </td>
     <td class="evidence-col">
-      &#10003; Snackbar "Rechazado" visible<br>
-      &#10003; Lista se recarga<br>
-      &#10003; Estado REJECTED en DB
+      State REJECTED<br>
+      Sin usuario Cognito creado<br>
+      Lista recargada
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-003</td>
     <td><span class="tag tag-smoke">Smoke</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Aprobar sin codigo 2FA — error</strong></td>
+    <td><strong>Intento sin codigo 2FA (campo vacio)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Dejamos el campo 2FA vacio"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Aprobar'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error de validacion (campo requerido)"<br>
-      <strong>&#9673; V2</strong> "Verificamos: negocio sigue PENDING"
+      <strong>P1</strong> "Campo twoFactorCode vacio"<br>
+      <strong>P2</strong> "Tocamos 'Approve'"<br>
+      <strong>V1</strong> "Verificamos: validacion frontend rechaza (required)"<br>
+      <strong>V2</strong> "Verificamos: NO se envia request al backend"
     </td>
     <td class="evidence-col">
-      &#10003; Error visible (inline o snackbar)<br>
-      &#10003; Operacion no se ejecuto<br>
-      &#10003; Negocio sigue en lista
+      Error de validacion visible<br>
+      Sin request HTTP<br>
+      Negocio sigue PENDING
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-004</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Aprobar con codigo 2FA invalido</strong></td>
+    <td><strong>Codigo 2FA incorrecto</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Ingresamos '000000' como codigo 2FA"<br>
-      <strong>&#9654; P2</strong> "Tocamos 'Aprobar'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error 'Invalid Two Factor Code'"<br>
-      <strong>&#9673; V2</strong> "Verificamos: negocio sigue PENDING"
+      <strong>P1</strong> "Ingresamos codigo '000000' (invalido)"<br>
+      <strong>P2</strong> "Tocamos 'Approve'"<br>
+      <strong>V1</strong> "Verificamos: error de 2FA del backend"<br>
+      <strong>V2</strong> "Verificamos: negocio sigue PENDING"<br>
+      <strong>V3</strong> "Verificamos: NO se crea BusinessAdmin"
     </td>
     <td class="evidence-col">
-      &#10003; Error 2FA propagado al UI<br>
-      &#10003; Negocio no cambio de estado
+      Error 2FA visible en snackbar<br>
+      Negocio no cambio de estado<br>
+      Sin efectos secundarios
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-005</td>
     <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Aprobar sin perfil PlatformAdmin — 401</strong></td>
+    <td><strong>Aprobacion masiva (Approve Selected)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "API directa: POST reviewBusiness con JWT de usuario no PlatformAdmin"<br>
-      <strong>&#9673; V1</strong> "Verificamos: HTTP 401 UnauthorizedException"
+      <strong>P1</strong> "Seleccionamos multiples negocios con checkbox"<br>
+      <strong>P2</strong> "Ingresamos codigo TOTP valido"<br>
+      <strong>P3</strong> "Tocamos 'Approve Selected'"<br>
+      <strong>V1</strong> "Verificamos: cada negocio se aprueba con el mismo codigo"<br>
+      <strong>V2</strong> "Verificamos: todos pasan a APPROVED"
     </td>
     <td class="evidence-col">
-      &#10003; Response 401<br>
-      &#10003; Solo PlatformAdmin puede operar
+      Multiples negocios seleccionados<br>
+      Todos aprobados<br>
+      BusinessAdmin creados para cada uno
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-006</td>
-    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-regression">Regresion</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Aprobar negocio ya APPROVED — error duplicado</strong></td>
+    <td><strong>Rechazo masivo (Reject Selected)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "API directa: enviar decision APPROVED para publicId ya APPROVED"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error 'Business is in wrong state'"
+      <strong>P1</strong> "Seleccionamos negocios, codigo valido"<br>
+      <strong>P2</strong> "Tocamos 'Reject Selected'"<br>
+      <strong>V1</strong> "Todos pasan a REJECTED"
     </td>
     <td class="evidence-col">
-      &#10003; Error descriptivo<br>
-      &#10003; No se duplica el registro
+      Todos rechazados<br>
+      Sin usuarios Cognito creados
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-007</td>
     <td><span class="tag tag-edge">Edge</span></td>
-    <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Aprobar negocio inexistente — error</strong></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Aprobar negocio con nombre duplicado APPROVED</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "API directa: publicId que no existe"<br>
-      <strong>&#9673; V1</strong> "Verificamos: error 'Business not found'"
+      <strong>P1</strong> "Ya existe negocio APPROVED con mismo nombre"<br>
+      <strong>P2</strong> "Aprobamos segundo negocio"<br>
+      <strong>V1</strong> "Error: 'El nombre del negocio ya existe'"
     </td>
     <td class="evidence-col">
-      &#10003; Error descriptivo<br>
-      &#10003; Sin efecto secundario
+      Error de duplicado visible<br>
+      Negocio sigue PENDING
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-008</td>
-    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-edge">Edge</span></td>
     <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Aprobar multiples negocios seleccionados con 2FA valido</strong></td>
+    <td><strong>Admin del negocio ya existe en Cognito</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Seleccionamos 2+ negocios con checkbox"<br>
-      <strong>&#9654; P2</strong> "Ingresamos codigo 2FA valido"<br>
-      <strong>&#9654; P3</strong> "Tocamos 'Aprobar seleccionados'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: todos los negocios seleccionados se aprobaron"<br>
-      <strong>&#9673; V2</strong> "Verificamos: lista se recarga sin los aprobados"
+      <strong>P1</strong> "emailAdmin ya tiene cuenta Cognito"<br>
+      <strong>P2</strong> "Aprobamos negocio con 2FA valido"<br>
+      <strong>V1</strong> "Idempotente: no falla, perfil asignado"
     </td>
     <td class="evidence-col">
-      &#10003; Snackbar de exito<br>
-      &#10003; Lista actualizada<br>
-      &#10003; Cada negocio APPROVED en DB
+      Sin error (idempotente)<br>
+      Perfil BusinessAdmin creado<br>
+      Business APPROVED
     </td>
   </tr>
   <tr>
     <td class="case-id">2FA-C-009</td>
     <td><span class="tag tag-regression">Regresion</span></td>
-    <td><span class="tag tag-med">Media</span></td>
-    <td><strong>Rechazar multiples negocios seleccionados con 2FA valido</strong></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td><strong>Sin perfil PlatformAdmin</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Seleccionamos 2+ negocios con checkbox"<br>
-      <strong>&#9654; P2</strong> "Ingresamos codigo 2FA valido"<br>
-      <strong>&#9654; P3</strong> "Tocamos 'Rechazar seleccionados'"<br>
-      <strong>&#9673; V1</strong> "Verificamos: todos los negocios seleccionados se rechazaron"
+      <strong>P1</strong> "Login como usuario sin perfil PlatformAdmin"<br>
+      <strong>P2</strong> "Intentamos acceder a ReviewBusiness"<br>
+      <strong>V1</strong> "HTTP 401 Unauthorized"
     </td>
     <td class="evidence-col">
-      &#10003; Snackbar feedback<br>
-      &#10003; Lista actualizada<br>
-      &#10003; Cada negocio REJECTED en DB
+      Error 401 visible<br>
+      No accede a la funcionalidad
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">2FA-C-010</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Codigo 2FA expira durante batch</strong></td>
+    <td class="video-script">
+      <strong>P1</strong> "Seleccionamos muchos negocios"<br>
+      <strong>P2</strong> "Codigo TOTP esta por expirar"<br>
+      <strong>P3</strong> "Ejecutamos batch approve"<br>
+      <strong>V1</strong> "Verificamos: primeros aprueban, ultimos pueden fallar"
+    </td>
+    <td class="evidence-col">
+      Resultado parcial documentado<br>
+      Negocios que fallaron siguen PENDING
+    </td>
+  </tr>
+  <tr>
+    <td class="case-id">2FA-C-011</td>
+    <td><span class="tag tag-regression">Regresion</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td><strong>Lista se recarga automaticamente</strong></td>
+    <td class="video-script">
+      <strong>P1</strong> "Aprobamos o rechazamos un negocio"<br>
+      <strong>V1</strong> "Lista de pendientes se recarga"<br>
+      <strong>V2</strong> "Negocio procesado ya no aparece"
+    </td>
+    <td class="evidence-col">
+      Lista actualizada<br>
+      Sin el negocio procesado
     </td>
   </tr>
 </table>
 
-<!-- ========== 7. FLUJOS CROSS-APP ========== -->
-<h2 id="s7">7. Flujos Cross-App</h2>
+<!-- ========== 7. CROSS-APP ========== -->
+<h2 id="s7">7. Flujos Cross-App: Disponibilidad de 2FA</h2>
 
-<h3>7.1 Ciclo de vida completo del 2FA</h3>
+<h3>7.1 Diagrama: 2FA en el ecosistema Intrale</h3>
 <pre class="mermaid">
-graph LR
-  subgraph "1. Configuracion"
-    LOGIN["Login&#10;(cualquier app)"] --> PROFILE["Perfil / Seguridad"]
-    PROFILE --> SETUP["Setup 2FA&#10;/twoFactorSetup"]
-    SETUP --> AUTH["App Autenticadora&#10;registra cuenta"]
+flowchart LR
+  subgraph "Post-Login (cualquier flavor)"
+    PROFILE["Client Profile<br>SecurityActionsSection"]
+    SETUP["Setup 2FA<br>/twoFactorSetup"]
+    VERIFY["Verify 2FA<br>/twoFactorVerify"]
   end
-  subgraph "2. Verificacion"
-    AUTH --> VERIFY["Verificar 2FA&#10;/twoFactorVerify"]
-    VERIFY --> OK["Codigo validado"]
-  end
-  subgraph "3. Uso en operaciones"
-    OK --> REVIEW["ReviewBusiness&#10;(Business App)&#10;Aprobar/Rechazar + 2FA"]
+  subgraph "Operaciones protegidas"
+    REVIEW["ReviewBusiness<br>(Solo PlatformAdmin)"]
   end
 
-  style LOGIN fill:#e3f2fd
-  style SETUP fill:#e8f5e9
-  style AUTH fill:#f3e5f5
-  style VERIFY fill:#e8f5e9
-  style OK fill:#e8f5e9
+  PROFILE --> SETUP
+  PROFILE --> VERIFY
+  REVIEW -->|"Requiere 2FA"| VERIFY_INT["2FA Verify<br>(interno)"]
+
+  style SETUP fill:#e3f2fd
+  style VERIFY fill:#e3f2fd
   style REVIEW fill:#fff8e1
+  style VERIFY_INT fill:#e3f2fd
 </pre>
 
 <h3>7.2 Matriz de disponibilidad</h3>
 <table>
-  <tr><th>Pantalla / Funcion</th><th>CLIENT</th><th>DELIVERY</th><th>BUSINESS</th><th>Desktop</th></tr>
-  <tr><td>/twoFactorSetup</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
-  <tr><td>/twoFactorVerify</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
-  <tr><td>/reviewBusiness (usa 2FA)</td><td style="background:#ffebee">NO</td><td style="background:#ffebee">NO</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td></tr>
-  <tr><td>Deep link otpauth://</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#e8f5e9">SI</td><td style="background:#fff8e1">Parcial*</td></tr>
+  <tr><th>Pantalla</th><th>CLIENT</th><th>DELIVERY</th><th>BUSINESS</th><th>Desktop</th></tr>
+  <tr><td>/twoFactorSetup</td><td style="background:#e8f5e9">SI (post-login)</td><td style="background:#e8f5e9">SI (post-login)</td><td style="background:#e8f5e9">SI (post-login)</td><td style="background:#e8f5e9">SI (post-login)</td></tr>
+  <tr><td>/twoFactorVerify</td><td style="background:#e8f5e9">SI (post-login)</td><td style="background:#e8f5e9">SI (post-login)</td><td style="background:#e8f5e9">SI (post-login)</td><td style="background:#e8f5e9">SI (post-login)</td></tr>
+  <tr><td>/reviewBusiness (con 2FA)</td><td style="background:#ffebee">NO</td><td style="background:#ffebee">NO</td><td style="background:#e8f5e9">SI (PlatformAdmin)</td><td style="background:#e8f5e9">SI (PlatformAdmin)</td></tr>
 </table>
-<p style="font-size:9px;color:#666;">* Desktop: el deep link depende de que el SO tenga una app autenticadora registrada para URIs otpauth://. En la mayoria de entornos desktop esto no funciona, por lo que se muestra el fallback con secreto + botones.</p>
 
 <h3>7.3 Casos cross-app <span class="tag tag-qa">QA</span> <span class="tag tag-vid">VIDEO</span></h3>
 <table>
-  <tr><th style="width:65px">ID</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
+  <tr><th style="width:60px">ID</th><th style="width:40px">Prio</th><th>Caso</th><th>Guion de video</th><th class="evidence-col">Evidencia requerida</th></tr>
   <tr>
     <td class="case-id">2FA-X-001</td><td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Flujo completo Setup + Verify</strong></td>
+    <td><strong>Flujo completo: Setup + Verify + ReviewBusiness</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Autenticarse en cualquier app"<br>
-      <strong>&#9654; P2</strong> "Navegar a Configurar 2FA desde perfil"<br>
-      <strong>&#9654; P3</strong> "Registrar la cuenta en app autenticadora"<br>
-      <strong>&#9654; P4</strong> "Navegar a Verificar 2FA"<br>
-      <strong>&#9654; P5</strong> "Ingresar codigo del autenticador"<br>
-      <strong>&#9673; V1</strong> "Verificamos: setup genera URI correcta"<br>
-      <strong>&#9673; V2</strong> "Verificamos: verify con codigo valido es exitoso"
+      <strong>P1</strong> "[Business] Login como PlatformAdmin"<br>
+      <strong>P2</strong> "[Business] Setup 2FA desde perfil"<br>
+      <strong>P3</strong> "[Autenticadora] Configurar cuenta"<br>
+      <strong>P4</strong> "[Business] Verify 2FA con codigo"<br>
+      <strong>P5</strong> "[Business] ReviewBusiness: aprobar negocio con 2FA"<br>
+      <strong>V1</strong> "Flujo completo sin errores"
     </td>
-    <td class="evidence-col">&#10003; URI otpauth valida<br>&#10003; Autenticador registra cuenta<br>&#10003; Verificacion exitosa</td>
+    <td class="evidence-col">
+      Setup exitoso<br>
+      Verify exitoso<br>
+      Approve con 2FA exitoso<br>
+      Negocio APPROVED
+    </td>
   </tr>
   <tr>
     <td class="case-id">2FA-X-002</td><td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Setup + Verify + ReviewBusiness aprobacion completa</strong></td>
+    <td><strong>2FA disponible en todos los flavors post-login</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "[Business] PlatformAdmin configura 2FA"<br>
-      <strong>&#9654; P2</strong> "[Business] Registra cuenta en autenticador"<br>
-      <strong>&#9654; P3</strong> "[Business] Navega a ReviewBusiness"<br>
-      <strong>&#9654; P4</strong> "[Business] Ingresa codigo 2FA + aprueba negocio"<br>
-      <strong>&#9673; V1</strong> "Verificamos: negocio APPROVED"<br>
-      <strong>&#9673; V2</strong> "Verificamos: Business Admin puede hacer login"
+      <strong>P1</strong> "[Client] Login → Perfil → Setup 2FA visible"<br>
+      <strong>P2</strong> "[Delivery] Login → Perfil → Setup 2FA visible"<br>
+      <strong>P3</strong> "[Business] Login → Perfil → Setup 2FA visible"<br>
+      <strong>V1</strong> "Setup y Verify disponibles en los 3 flavors"
     </td>
-    <td class="evidence-col">&#10003; 2FA configurado y verificado<br>&#10003; Negocio aprobado<br>&#10003; Business Admin login exitoso</td>
+    <td class="evidence-col">
+      SecurityActionsSection visible en cada app<br>
+      Setup y Verify accesibles<br>
+      3 screenshots (uno por flavor)
+    </td>
   </tr>
   <tr>
     <td class="case-id">2FA-X-003</td><td><span class="tag tag-med">Media</span></td>
-    <td><strong>2FA disponible en todas las plataformas post-login</strong></td>
+    <td><strong>2FA compartido entre flavors (mismo secreto)</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "Verificar que /twoFactorSetup y /twoFactorVerify existen en Client, Delivery, Business"<br>
-      <strong>&#9673; V1</strong> "Verificamos: accesible en todos los flavors post-login"
+      <strong>P1</strong> "Setup 2FA en Client app"<br>
+      <strong>P2</strong> "Verify 2FA en Business app (mismo usuario)"<br>
+      <strong>V1</strong> "Mismo secreto funciona cross-app"
     </td>
-    <td class="evidence-col">&#10003; Pantalla visible en cada flavor<br>&#10003; Todos registrados en DIManager</td>
+    <td class="evidence-col">
+      Setup en Client<br>
+      Verify exitoso en Business<br>
+      Mismo codigo TOTP valido
+    </td>
   </tr>
   <tr>
-    <td class="case-id">2FA-X-004</td><td><span class="tag tag-high">Alta</span></td>
-    <td><strong>Onboarding completo con 2FA obligatorio</strong></td>
+    <td class="case-id">2FA-X-004</td><td><span class="tag tag-med">Media</span></td>
+    <td><strong>ReviewBusiness no accesible sin PlatformAdmin</strong></td>
     <td class="video-script">
-      <strong>&#9654; P1</strong> "[Business] PlatformAdmin signup + confirm + login"<br>
-      <strong>&#9654; P2</strong> "[Business] Configurar 2FA"<br>
-      <strong>&#9654; P3</strong> "Comerciante registra negocio"<br>
-      <strong>&#9654; P4</strong> "[Business] PlatformAdmin aprueba con 2FA"<br>
-      <strong>&#9654; P5</strong> "[Business] BusinessAdmin login exitoso"<br>
-      <strong>&#9673; V1</strong> "Verificamos: flujo end-to-end con 2FA funciona"
+      <strong>P1</strong> "Login como Client user con 2FA"<br>
+      <strong>V1</strong> "ReviewBusiness NO visible en menu"<br>
+      <strong>V2</strong> "API directa retorna 401"
     </td>
-    <td class="evidence-col">&#10003; PlatformAdmin con 2FA<br>&#10003; Aprobacion requirio 2FA<br>&#10003; BusinessAdmin operativo</td>
+    <td class="evidence-col">
+      Menu sin ReviewBusiness<br>
+      API retorna 401
+    </td>
   </tr>
 </table>
 
 <!-- ========== 8. VALIDACIONES ========== -->
-<h2 id="s8">8. Catalogo Consolidado de Validaciones</h2>
+<h2 id="s8">8. Catalogo de Validaciones TOTP</h2>
 
 <h3>8.1 Frontend (Konform)</h3>
 <table>
   <tr><th>Pantalla</th><th>Campo</th><th>Regla</th><th>Mensaje</th></tr>
-  <tr><td>TwoFactorSetup</td><td colspan="3"><em>Sin validaciones de entrada — el setup es automatico al entrar a la pantalla</em></td></tr>
-  <tr><td>TwoFactorVerify</td><td>code</td><td>required + <code>minLength(6)</code></td><td>"Debe contener 6 digitos."</td></tr>
-  <tr><td>ReviewBusiness</td><td>twoFactorCode</td><td>required</td><td>(validacion basica requerido)</td></tr>
+  <tr><td>TwoFactorVerifyScreen</td><td>code</td><td>required + minLength(6)</td><td>"Debe contener 6 digitos."</td></tr>
+  <tr><td>ReviewBusinessScreen</td><td>twoFactorCode</td><td>required</td><td>(validacion simple, no vacio)</td></tr>
 </table>
 
 <h3>8.2 Backend</h3>
 <table>
-  <tr><th>Endpoint</th><th>Validacion</th><th>HTTP Status</th><th>Mensaje</th></tr>
-  <tr><td>2fasetup</td><td>JWT valido (SecuredFunction)</td><td>401</td><td>JWT error</td></tr>
-  <tr><td>2fasetup</td><td>Cognito getUser exitoso</td><td>500</td><td>Cognito error</td></tr>
-  <tr><td>2fasetup</td><td>Email encontrado en atributos</td><td>500</td><td>"Email not found"</td></tr>
-  <tr><td>2faverify</td><td>JWT valido (SecuredFunction)</td><td>401</td><td>JWT error</td></tr>
-  <tr><td>2faverify</td><td>Body presente</td><td>400</td><td>"Request body not found"</td></tr>
-  <tr><td>2faverify</td><td>code minLength(6) (Konform)</td><td>400</td><td>"code must have at least 6 characters"</td></tr>
-  <tr><td>2faverify</td><td>User.secret existe</td><td>500</td><td>"two factor secret not found for user {email}"</td></tr>
-  <tr><td>2faverify</td><td>TOTP code match</td><td>500</td><td>"Invalid Two Factor Code"</td></tr>
-  <tr><td>reviewBusiness</td><td>JWT valido</td><td>401</td><td>JWT error</td></tr>
-  <tr><td>reviewBusiness</td><td>Perfil PlatformAdmin APPROVED</td><td>401</td><td>UnauthorizedException</td></tr>
-  <tr><td>reviewBusiness</td><td>publicId minLength(7)</td><td>400</td><td>Validation error</td></tr>
-  <tr><td>reviewBusiness</td><td>decision pattern <code>^(approved|rejected)$</code></td><td>400</td><td>"Debe ser APPROVED o REJECTED"</td></tr>
-  <tr><td>reviewBusiness</td><td>twoFactorCode minLength(6) + TOTP match</td><td>400/500</td><td>"Invalid Two Factor Code"</td></tr>
-  <tr><td>reviewBusiness</td><td>Business existe y PENDING</td><td>500</td><td>"Business not found" / "Business is in wrong state"</td></tr>
-  <tr><td>reviewBusiness</td><td>No duplicado APPROVED</td><td>500</td><td>"El nombre del negocio ya existe"</td></tr>
+  <tr><th>Endpoint</th><th>Validacion</th><th>HTTP Status</th><th>Detalle</th></tr>
+  <tr><td>2fasetup</td><td>JWT valido (SecuredFunction)</td><td>401</td><td>CognitoJwtValidator verifica firma RSA256, issuer, token_use=access, clientId</td></tr>
+  <tr><td>2fasetup</td><td>Email en Cognito</td><td>500</td><td>"Email not found" si atributo email no existe</td></tr>
+  <tr><td>2faverify</td><td>JWT valido</td><td>401</td><td>Misma validacion que 2fasetup</td></tr>
+  <tr><td>2faverify</td><td>code minLength(6)</td><td>400</td><td>Validacion Konform en backend</td></tr>
+  <tr><td>2faverify</td><td>Secret existe en DynamoDB</td><td>500</td><td>"two factor secret not found for user {email}"</td></tr>
+  <tr><td>2faverify</td><td>TOTP match (code == expected)</td><td>500</td><td>"Invalid Two Factor Code"</td></tr>
+  <tr><td>reviewBusiness</td><td>JWT + PlatformAdmin APPROVED</td><td>401</td><td>requireApprovedProfile(PROFILE_PLATFORM_ADMIN)</td></tr>
+  <tr><td>reviewBusiness</td><td>2FA valido (invoca 2faverify)</td><td>Error 2FA</td><td>twoFactorVerify.execute() debe retornar 200</td></tr>
+</table>
+
+<h3>8.3 Especificacion TOTP</h3>
+<table>
+  <tr><th>Parametro</th><th>Valor</th><th>Fuente</th></tr>
+  <tr><td>Algoritmo</td><td>HmacSHA1</td><td>RFC 6238 / buildOtpAuthUri</td></tr>
+  <tr><td>Digitos</td><td>6</td><td>buildOtpAuthUri: digits=6</td></tr>
+  <tr><td>Periodo</td><td>30 segundos</td><td>buildOtpAuthUri: period=30</td></tr>
+  <tr><td>Longitud secreto</td><td>20 bytes (Base32)</td><td>SecureRandom(20) + Base32 encode</td></tr>
+  <tr><td>Issuer</td><td>"intrale"</td><td>Constante en backend</td></tr>
+  <tr><td>URI formato</td><td>otpauth://totp/{issuer}:{email}?secret={s}&issuer={i}&algorithm=SHA1&digits=6&period=30</td><td>buildOtpAuthUri()</td></tr>
 </table>
 
 <!-- ========== 9. RESUMEN ========== -->
@@ -1145,39 +1246,38 @@ graph LR
 <h3>9.1 Distribucion por flujo</h3>
 <table>
   <tr><th>Flujo</th><th>Smoke</th><th>Regresion</th><th>Edge</th><th>Total</th></tr>
-  <tr><td>A — Setup 2FA</td><td>3</td><td>6</td><td>3</td><td>12</td></tr>
-  <tr><td>B — Verificacion 2FA</td><td>3</td><td>6</td><td>3</td><td>12</td></tr>
-  <tr><td>C — 2FA Gate ReviewBusiness</td><td>3</td><td>4</td><td>2</td><td>9</td></tr>
-  <tr><td>X — Cross-App</td><td>3</td><td>0</td><td>1</td><td>4</td></tr>
-  <tr style="font-weight:600;background:#e3f2fd"><td>TOTAL</td><td>12</td><td>16</td><td>9</td><td>37</td></tr>
+  <tr><td>A — Setup 2FA</td><td>3</td><td>6</td><td>5</td><td>14</td></tr>
+  <tr><td>B — Verificacion TOTP</td><td>2</td><td>6</td><td>5</td><td>13</td></tr>
+  <tr><td>C — 2FA en ReviewBusiness</td><td>3</td><td>4</td><td>4</td><td>11</td></tr>
+  <tr><td>X — Cross-App</td><td>2</td><td>0</td><td>2</td><td>4</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td>TOTAL</td><td>10</td><td>16</td><td>16</td><td>42</td></tr>
 </table>
 
 <h3>9.2 Tests existentes vs requeridos</h3>
 <table>
-  <tr><th>Capa</th><th>Existentes</th><th>Detalle</th><th>Estado</th></tr>
-  <tr><td>App ViewModel (TwoFactorSetupViewModelTest)</td><td>1 archivo</td><td>Tests de TwoFactorSetupViewModel</td><td style="color:#2e7d32">OK</td></tr>
-  <tr><td>Backend Unit (TwoFactorSetupTest + TwoFactorVerifyTest)</td><td>2 archivos</td><td>Generacion secret, URI, verificacion TOTP</td><td style="color:#2e7d32">OK</td></tr>
-  <tr><td>Backend Unit (Response + Request tests)</td><td>2 archivos</td><td>Serializacion TwoFactorSetupResponse y TwoFactorVerifyRequest</td><td style="color:#2e7d32">OK</td></tr>
-  <tr><td>Backend Integration</td><td>2 archivos</td><td>TwoFactorSetupIntegrationTest + TwoFactorVerifyIntegrationTest</td><td style="color:#2e7d32">OK</td></tr>
-  <tr><td>Backend E2E (E2ETwoFactorTest)</td><td>3 tests</td><td>Setup URI, verify valido, verify invalido</td><td style="color:#2e7d32">OK</td></tr>
-  <tr><td>QA E2E API (ApiTwoFactorE2ETest)</td><td>7 tests</td><td>Sin token, token invalido, sin body, codigo invalido</td><td style="color:#2e7d32">OK</td></tr>
-  <tr><td>Maestro UI (Android)</td><td>0</td><td>No existen Maestro flows para 2FA</td><td style="color:#c62828">FALTANTE</td></tr>
-  <tr><td>Videos con evidencia</td><td>0</td><td>No existen videos de evidencia</td><td style="color:#c62828">FALTANTE</td></tr>
+  <tr><th>Capa</th><th>Existentes</th><th>Estado</th></tr>
+  <tr><td>Backend Unit (TwoFactorSetup, TwoFactorVerify)</td><td>Tests unitarios</td><td style="color:#2e7d32">OK</td></tr>
+  <tr><td>Backend Integration (TwoFactorSetup, TwoFactorVerify)</td><td>Tests de integracion</td><td style="color:#2e7d32">OK</td></tr>
+  <tr><td>Backend E2E (E2ETwoFactorTest)</td><td>Tests E2E con Ktor client</td><td style="color:#2e7d32">OK</td></tr>
+  <tr><td>API E2E (ApiTwoFactorE2ETest)</td><td>7 casos (401, 400, codigo invalido)</td><td style="color:#2e7d32">OK</td></tr>
+  <tr><td>QA Script manual (qa-2fa-video.sh)</td><td>4 escenarios con adb + screenrecord</td><td style="color:#e65100">Parcial</td></tr>
+  <tr><td>Evidencia visual (qa/evidence/1092/)</td><td>Videos + screenshots</td><td style="color:#e65100">Parcial (issue #1092)</td></tr>
+  <tr><td>Maestro UI Flows</td><td>0</td><td style="color:#c62828">FALTANTE</td></tr>
+  <tr><td>Videos con overlay y narracion</td><td>0</td><td style="color:#c62828">FALTANTE</td></tr>
 </table>
 
-<h3>9.3 Cobertura de casos por tests existentes</h3>
+<h3>9.3 Evidencia existente (issue #1092)</h3>
 <table>
-  <tr><th>Caso ID</th><th>Cubierto por test existente</th><th>Tipo de test</th></tr>
-  <tr><td>2FA-A-007</td><td style="color:#2e7d32">SI</td><td>ApiTwoFactorE2ETest (2fasetup sin token)</td></tr>
-  <tr><td>2FA-A-008</td><td style="color:#2e7d32">SI</td><td>ApiTwoFactorE2ETest (2fasetup token invalido)</td></tr>
-  <tr><td>2FA-A-011</td><td style="color:#2e7d32">SI</td><td>E2ETwoFactorTest (setup genera URI)</td></tr>
-  <tr><td>2FA-A-012</td><td style="color:#2e7d32">SI</td><td>E2ETwoFactorTest (persiste secreto)</td></tr>
-  <tr><td>2FA-B-001</td><td style="color:#2e7d32">SI</td><td>E2ETwoFactorTest (verify con codigo valido)</td></tr>
-  <tr><td>2FA-B-004</td><td style="color:#2e7d32">SI</td><td>E2ETwoFactorTest (verify con codigo invalido) + ApiTwoFactorE2ETest</td></tr>
-  <tr><td>2FA-B-006</td><td style="color:#2e7d32">SI</td><td>ApiTwoFactorE2ETest (2faverify sin token)</td></tr>
-  <tr><td>2FA-B-007</td><td style="color:#2e7d32">SI</td><td>ApiTwoFactorE2ETest (2faverify token invalido)</td></tr>
-  <tr><td>2FA-B-008</td><td style="color:#2e7d32">SI</td><td>ApiTwoFactorE2ETest (2faverify sin body)</td></tr>
-  <tr><td>Otros 28 casos</td><td style="color:#c62828">NO</td><td>Requieren Maestro flows o tests manuales</td></tr>
+  <tr><th>Archivo</th><th>Descripcion</th><th>Cobertura</th></tr>
+  <tr><td>2fa-setup-navigation.mp4</td><td>Navegacion desde perfil al setup</td><td>2FA-A-014</td></tr>
+  <tr><td>2fa-setup-screen.png</td><td>Pantalla de setup</td><td>2FA-A-002</td></tr>
+  <tr><td>2fa-setup-details.mp4</td><td>Interaccion con detalles (QR/secret)</td><td>2FA-A-003, 2FA-A-004</td></tr>
+  <tr><td>2fa-setup-details.png</td><td>Screenshot detalles</td><td>2FA-A-002</td></tr>
+  <tr><td>2fa-verify-screen.mp4</td><td>Navegacion a verificar</td><td>2FA-B-012</td></tr>
+  <tr><td>2fa-verify-screen.png</td><td>Pantalla de verificacion</td><td>2FA-B-001</td></tr>
+  <tr><td>2fa-invalid-code.mp4</td><td>Video validacion codigo incorrecto</td><td>2FA-B-004</td></tr>
+  <tr><td>2fa-invalid-short-code.png</td><td>Codigo muy corto</td><td>2FA-B-003</td></tr>
+  <tr><td>2fa-invalid-wrong-code.png</td><td>Codigo incorrecto</td><td>2FA-B-004</td></tr>
 </table>
 
 <!-- ========== 10. GAPS ========== -->
@@ -1186,31 +1286,29 @@ graph LR
 <h3>10.1 Gaps criticos</h3>
 <table>
   <tr><th>Prio</th><th>Gap</th><th>Recomendacion</th></tr>
-  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin Maestro flows ni videos para 2FA</td><td>Crear flows YAML + scripts de grabacion anotada para los 37 casos</td></tr>
-  <tr><td><span class="tag tag-high">Alta</span></td><td>TwoFactorVerify retorna HTTP 500 para codigo invalido (deberia ser 400 o 401)</td><td>Cambiar a HTTP 400 Bad Request para codigos invalidos, reservar 500 para errores internos</td></tr>
-  <tr><td><span class="tag tag-high">Alta</span></td><td>Setup sobreescribe secret sin confirmacion — invalida configuraciones previas</td><td>Considerar agregar confirmacion o versionado de secrets</td></tr>
-  <tr><td><span class="tag tag-med">Media</span></td><td>No hay test de TwoFactorVerifyViewModel (solo Setup tiene test)</td><td>Agregar TwoFactorVerifyViewModelTest con tests de validacion y estados</td></tr>
-  <tr><td><span class="tag tag-med">Media</span></td><td>ReviewBusiness no tiene test de integracion con 2FA desde el frontend</td><td>Agregar test E2E que cubra el flujo completo UI → API con 2FA</td></tr>
-  <tr><td><span class="tag tag-med">Media</span></td><td>Error "two factor secret not found" retorna 500 — deberia ser 400/404</td><td>Diferenciar error de usuario (no configuro 2FA) vs error de sistema</td></tr>
-  <tr><td><span class="tag tag-med">Media</span></td><td>Deep link otpauth:// no funciona en Desktop (falta fallback visible)</td><td>El fallback QR ya existe, pero podria mostrarse un mensaje explicativo en Desktop</td></tr>
-  <tr><td><span class="tag tag-low">Baja</span></td><td>TwoFactorSetupScreen usa strings hardcoded ("QR pendiente", "Copiar clave", etc.)</td><td>Migrar a resString() segun convencion del proyecto</td></tr>
-  <tr><td><span class="tag tag-low">Baja</span></td><td>ReviewBusinessScreen: TODO pendiente "restringir acceso solo a administradores"</td><td>Implementar verificacion de perfil en el ViewModel antes de cargar datos</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin Maestro flows para 2FA (setup, verify, integration)</td><td>Crear flows YAML: 2fa-setup.yaml, 2fa-verify.yaml, 2fa-verify-validation.yaml</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Videos de evidencia sin overlay ni narracion estandar</td><td>Re-grabar con formato v2.0: overlays con ID de caso, narracion TTS, screenshots automaticos</td></tr>
+  <tr><td><span class="tag tag-high">Alta</span></td><td>Sin cobertura E2E del flujo completo Setup+Verify+ReviewBusiness</td><td>Crear test E2E integrado que cubra caso 2FA-X-001</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>TwoFactorVerify retorna 500 para codigo invalido (deberia ser 401 o 400)</td><td>Cambiar a HTTP 401 (credenciales invalidas) o 400 (bad request)</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Frontend no valida que codigo sea solo digitos (solo minLength 6)</td><td>Agregar regex <code>^\d{6}$</code> como en ConfirmSignUp</td></tr>
+  <tr><td><span class="tag tag-med">Media</span></td><td>Sin tolerancia de ventana TOTP (solo compara con now())</td><td>Considerar ventana de +/- 1 periodo (30 seg) para UX</td></tr>
+  <tr><td><span class="tag tag-low">Baja</span></td><td>Evidencia vieja dispersa entre issue #1092 y qa/evidence/</td><td>Consolidar en estructura estandar con nomenclatura v2.0</td></tr>
 </table>
 
 <h3>10.2 Proximos pasos</h3>
 <ol>
-  <li>Aprobar este reporte como plantilla estandar para 2FA</li>
-  <li>Crear Maestro flows para setup + verify con overlays de caso ID</li>
-  <li>Implementar script de grabacion con narracion (TTS o texto)</li>
-  <li>Corregir HTTP status codes (500 → 400 para errores de usuario)</li>
-  <li>Migrar strings hardcoded a resString()</li>
-  <li>Agregar TwoFactorVerifyViewModelTest</li>
-  <li>Implementar restriccion de acceso en ReviewBusinessScreen</li>
+  <li>Aprobar este reporte como documentacion oficial de 2FA</li>
+  <li>Crear Maestro flows para setup y verify con overlays de caso ID</li>
+  <li>Re-grabar videos con formato v2.0 (overlay + narracion + screenshots)</li>
+  <li>Implementar test E2E integrado Setup → Verify → ReviewBusiness</li>
+  <li>Evaluar mejora de HTTP status codes en TwoFactorVerify (500 → 401)</li>
+  <li>Agregar validacion regex <code>^\d{6}$</code> en TwoFactorVerifyScreen</li>
+  <li>Evaluar ventana de tolerancia TOTP para mejor UX</li>
 </ol>
 
 <hr>
 <p style="text-align:center;color:#999;font-size:8px;margin-top:20px;">
-  Generado por Intrale PO + QA Agents | v2.0 | 2026-03-01 | Issue #1114
+  Generado por Intrale PO + QA Agents | v2.0 | 2026-03-01
 </p>
 
 </body>
