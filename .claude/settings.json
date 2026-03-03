@@ -40,6 +40,11 @@
           },
           {
             "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/worktree-guard.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-gate.js",
             "timeout": 1830000
           }
