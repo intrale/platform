@@ -194,34 +194,10 @@ function Start-UnAgente {
     Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal (PID $($proc.Id))" -ForegroundColor Green
 }
 
-function Start-MonitorLive {
-    try {
-        $monitorProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -match 'dashboard\.js' }
-
-        if ($monitorProcs) {
-            Write-Host ">> Monitor ya activo (PID: $($monitorProcs.ProcessId)) - reutilizando." -ForegroundColor Yellow
-            return
-        }
-    }
-    catch {
-        # StrictMode puede fallar en Get-CimInstance si no hay procesos node - ignorar
-    }
-
-    $dashboardPath = Join-Path $MainRepo ".claude\dashboard.js"
-    if (-not (Test-Path $dashboardPath)) {
-        Write-Host ">> dashboard.js no encontrado en: $dashboardPath - omitiendo monitor." -ForegroundColor Yellow
-        return
-    }
-
-    $command = "Set-Location '$MainRepo'; " +
-               "Write-Host '  Monitor Live - Dashboard multi-sesion' -ForegroundColor Cyan; " +
-               "node '$dashboardPath'"
-    Start-Process powershell -ArgumentList "-Command", $command
-    Write-Host ">> Monitor live lanzado." -ForegroundColor Green
-}
-
 # --- Ejecutar ---
+# Nota: El dashboard terminal (dashboard.js) fue deprecado en #1180.
+# El dashboard web (dashboard-server.js en :3100) se auto-arranca via activity-logger.js.
+# Para snapshot on-demand: usar /monitor. Para web: http://localhost:3100
 if ($Numero -eq "all") {
     Write-Host ">> Lanzando TODOS los agentes del plan ($($Plan.agentes.Count))..." -ForegroundColor Magenta
     foreach ($agente in $Plan.agentes) {
@@ -229,7 +205,7 @@ if ($Numero -eq "all") {
     }
     Write-Host ""
     Write-Host ">> Todos los agentes lanzados." -ForegroundColor Green
-    Start-MonitorLive
+    Write-Host ">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)" -ForegroundColor Cyan
 
     # Lanzar Watch-Agentes en background para ciclo continuo
     $watchScript = Join-Path $PSScriptRoot 'Watch-Agentes.ps1'
@@ -274,5 +250,5 @@ else {
     }
 
     Start-UnAgente -Agente $agente
-    Start-MonitorLive
+    Write-Host ">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)" -ForegroundColor Cyan
 }

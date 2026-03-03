@@ -13,7 +13,7 @@ const https = require("https");
 let createCanvas = null;
 try { createCanvas = require("canvas").createCanvas; } catch (e) { /* canvas no disponible */ }
 
-// Paleta Catppuccin Mocha (misma que dashboard.js)
+// Paleta Catppuccin Mocha
 const IMG = {
     BG: "#1E1E2E",
     PANEL_BG: "#2A2A3E",

@@ -16,7 +16,6 @@ const https = require("https");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const DASHBOARD_SERVER = path.join(REPO_ROOT, "dashboard-server.js");
-const DASHBOARD_LEGACY = path.join(REPO_ROOT, "dashboard.js");
 const PID_FILE = path.join(REPO_ROOT, "tmp", "reporter.pid");
 const SERVER_PID_FILE = path.join(REPO_ROOT, "tmp", "dashboard-server.pid");
 const LOG_FILE = path.join(REPO_ROOT, "hooks", "hook-debug.log");
@@ -75,13 +74,12 @@ function ensureDashboardServer() {
     return;
   }
 
-  const script = fs.existsSync(DASHBOARD_SERVER) ? DASHBOARD_SERVER : DASHBOARD_LEGACY;
-  if (!fs.existsSync(script)) {
-    debugLog("No se encontro script de dashboard: " + script);
+  if (!fs.existsSync(DASHBOARD_SERVER)) {
+    debugLog("No se encontro dashboard-server.js: " + DASHBOARD_SERVER);
     return;
   }
 
-  const child = spawn(process.execPath, [script], {
+  const child = spawn(process.execPath, [DASHBOARD_SERVER], {
     detached: true,
     stdio: "ignore",
     windowsHide: true,
