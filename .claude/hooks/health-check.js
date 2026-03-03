@@ -1,5 +1,5 @@
 // health-check.js — Verificación periódica de infraestructura operativa
-// Hook PostToolUse: se ejecuta en cada tool use pero con cooldown interno (10 min)
+// Hook PostToolUse: se ejecuta en cada tool use pero con cooldown adaptativo (2-10 min)
 // Verifica: telegram-commander, approvers huérfanos, bot Telegram, settings, worktrees
 // Auto-repara lo que puede, notifica lo que no
 
@@ -15,8 +15,9 @@ const STATE_FILE = path.join(HOOKS_DIR, "health-check-state.json");
 const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
 const COMMANDER_LOCK = path.join(HOOKS_DIR, "telegram-commander.lock");
 
-// Cooldown: solo ejecutar cada 10 minutos
-const CHECK_INTERVAL_MS = 10 * 60 * 1000;
+// Cooldown adaptativo: reduce el intervalo ante problemas para confirmar recuperación más rápido
+const MIN_INTERVAL_MS = 2 * 60 * 1000;  // 2 min — modo alerta
+const MAX_INTERVAL_MS = 10 * 60 * 1000; // 10 min — modo normal
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] HealthCheck: " + msg + "\n"); } catch (e) {}
@@ -242,10 +243,11 @@ function sendAlert(text) {
 // ─── Main ──────────────────────────────────────────────────────────────────
 
 async function main() {
-    // Cooldown: no ejecutar si se verificó recientemente
+    // Cooldown adaptativo: intervalo varía según último resultado
     const state = readState();
     const now = Date.now();
-    if (state.last_check && (now - state.last_check) < CHECK_INTERVAL_MS) {
+    const effectiveInterval = state.next_interval_ms || MAX_INTERVAL_MS;
+    if (state.last_check && (now - state.last_check) < effectiveInterval) {
         return; // Todavía no es momento de verificar
     }
 
@@ -268,12 +270,16 @@ async function main() {
     if (!checks.hooks.ok) issues.push("🔴 Hooks faltantes: " + checks.hooks.missing.join(", "));
     if (!checks.worktrees.ok) issues.push("🟡 Worktrees muertos: " + checks.worktrees.dead.length);
 
+    // Calcular intervalo adaptativo para el próximo check
+    const nextInterval = issues.length > 0 ? MIN_INTERVAL_MS : MAX_INTERVAL_MS;
+
     // Actualizar estado
     const newState = {
         last_check: now,
         last_check_iso: new Date(now).toISOString(),
         all_ok: issues.length === 0,
         issues_found: issues.length,
+        next_interval_ms: nextInterval,
         checks: {
             commander: checks.commander.ok,
             approvers: checks.approvers.ok,
@@ -290,7 +296,7 @@ async function main() {
         let msg = "🏥 <b>Health Check — Problemas detectados</b>\n\n";
         msg += issues.map(i => "• " + i).join("\n");
         msg += "\n\n<i>Auto-reparaciones aplicadas donde fue posible.</i>";
-        msg += "\n<i>Próximo check en " + Math.round(CHECK_INTERVAL_MS / 60000) + " min.</i>";
+        msg += "\n<i>⚡ Próximo check en " + Math.round(nextInterval / 60000) + " min (modo alerta)</i>";
 
         await sendAlert(msg);
         log("ALERTA: " + issues.length + " problema(s) detectado(s) → notificado");
