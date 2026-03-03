@@ -148,9 +148,10 @@ Todas las respuestas de servicio deben incluir `statusCode` con valor numérico 
 
 Todo agente que implementa un issue DEBE:
 
-1. **Antes de codear**: crear las tareas con `TaskCreate` que mapeen los pasos del plan
-2. **Al empezar cada paso**: marcar la tarea como `in_progress` con `TaskUpdate`
-3. **Al terminar cada paso**: marcar la tarea como `completed` con `TaskUpdate`
+1. **Verificar worktree**: confirmar que se trabaja en una rama `agent/*`, `feature/*` o `bugfix/*` — nunca en `main` ni `develop` directamente. El hook `worktree-guard.js` envía alerta Telegram si se detecta escritura en rama protegida.
+2. **Antes de codear**: crear las tareas con `TaskCreate` que mapeen los pasos del plan
+3. **Al empezar cada paso**: marcar la tarea como `in_progress` con `TaskUpdate`
+4. **Al terminar cada paso**: marcar la tarea como `completed` con `TaskUpdate`
 
 Las tareas deben coincidir con los cambios reales del issue. El `/monitor` muestra el avance con checkboxes (`☐`/`☐►`/`☑`) en tiempo real.
 
