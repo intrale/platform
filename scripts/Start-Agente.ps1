@@ -81,6 +81,21 @@ function Test-SprintActivo {
 
 Test-SprintActivo -Plan $Plan
 
+# --- Pre-sprint ops check ---
+try {
+    $opsResult = & node "$MainRepo\.claude\hooks\ops-check.js" --sprint 2>$null
+    if ($opsResult -match '"critical"\s*:\s*true') {
+        Write-Host ">> OPS: Problemas criticos detectados. Ejecutar /ops --fix antes del sprint." -ForegroundColor Red
+    } elseif ($opsResult -match '"warnings"\s*:\s*\[' -and $opsResult -notmatch '"warnings"\s*:\s*\[\s*\]') {
+        Write-Host ">> OPS: Warnings detectados (no criticos). Ejecutar /ops para detalles." -ForegroundColor Yellow
+    } else {
+        Write-Host ">> OPS: Entorno saludable" -ForegroundColor Green
+    }
+} catch {
+    # Fail-open: si ops-check falla, no bloquear el sprint
+    Write-Host ">> OPS: Check no disponible (fail-open)" -ForegroundColor DarkGray
+}
+
 # Pre-registrar confianza del worktree en Claude Code para evitar dialogo interactivo de trust
 function PreRegister-Trust {
     param([string]$AbsPath)
