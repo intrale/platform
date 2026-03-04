@@ -106,7 +106,7 @@ Write-Host ''
 
 function Get-WorktreePath {
     param($Agente)
-    return '{0}\..\platform.codex-{1}-{2}' -f $MainRepo, $Agente.issue, $Agente.slug
+    return '{0}\..\platform.agent-{1}-{2}' -f $MainRepo, $Agente.issue, $Agente.slug
 }
 
 function Test-AgentDone {
