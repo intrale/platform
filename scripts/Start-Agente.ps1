@@ -143,7 +143,7 @@ function Start-UnAgente {
 
     # Pre-crear trust directory para que Claude no muestre el dialogo interactivo
     # Claude Code almacena confianza en ~/.claude/projects/<path-mangled>/
-    # Path mangling: C:/Workspaces/Intrale/platform.codex-123-slug → C--Workspaces-Intrale-platform.codex-123-slug
+    # Path mangling: C:/Workspaces/Intrale/platform.agent-123-slug → C--Workspaces-Intrale-platform.agent-123-slug
     $wtAbsPath = (Resolve-Path $wtDirResolved).Path -replace '\\', '/'
     $mangledPath = ($wtAbsPath -replace '^/', '' -replace '/', '-' -replace ':', '-')
     $trustDir = Join-Path $env:USERPROFILE ".claude\projects\$mangledPath"
