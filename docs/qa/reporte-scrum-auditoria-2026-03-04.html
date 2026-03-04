@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Auditoría Scrum — Board Project V2 — 2026-03-04</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f7fa; color: #1a202c; font-size: 14px; line-height: 1.6; }
+    .page { max-width: 1000px; margin: 0 auto; padding: 32px 24px; }
+    h1 { font-size: 26px; font-weight: 700; color: #1a202c; margin-bottom: 6px; }
+    .subtitle { color: #718096; font-size: 14px; margin-bottom: 32px; }
+    h2 { font-size: 18px; font-weight: 700; color: #2d3748; margin: 32px 0 12px; border-left: 4px solid #4a90d9; padding-left: 12px; }
+    h3 { font-size: 15px; font-weight: 600; color: #4a5568; margin: 20px 0 8px; }
+    p { margin-bottom: 10px; color: #4a5568; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+    .badge-red { background: #fed7d7; color: #c53030; }
+    .badge-yellow { background: #fefcbf; color: #975a16; }
+    .badge-green { background: #c6f6d5; color: #276749; }
+    .badge-blue { background: #bee3f8; color: #2c5282; }
+    .badge-gray { background: #e2e8f0; color: #4a5568; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 16px 0; }
+    .kpi-card { background: white; border-radius: 10px; padding: 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); text-align: center; border-top: 4px solid #4a90d9; }
+    .kpi-card.red { border-color: #fc8181; }
+    .kpi-card.yellow { border-color: #f6e05e; }
+    .kpi-card.green { border-color: #68d391; }
+    .kpi-card.blue { border-color: #63b3ed; }
+    .kpi-value { font-size: 36px; font-weight: 800; color: #1a202c; }
+    .kpi-label { font-size: 12px; color: #718096; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+    th { background: #edf2f7; text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 700; color: #4a5568; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 9px 14px; border-top: 1px solid #edf2f7; font-size: 13px; color: #2d3748; }
+    tr:hover td { background: #f7fafc; }
+    .status-bar { display: flex; gap: 0; border-radius: 8px; overflow: hidden; height: 32px; margin: 16px 0; }
+    .status-bar div { display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: white; }
+    .alert-box { padding: 14px 18px; border-radius: 8px; margin: 12px 0; border-left: 4px solid; }
+    .alert-critical { background: #fff5f5; border-color: #fc8181; }
+    .alert-warning { background: #fffbeb; border-color: #f6e05e; }
+    .alert-info { background: #ebf8ff; border-color: #63b3ed; }
+    .alert-success { background: #f0fff4; border-color: #68d391; }
+    .alert-box strong { display: block; margin-bottom: 4px; }
+    ul { margin: 8px 0 8px 20px; }
+    li { margin: 4px 0; color: #4a5568; }
+    .section-card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); margin: 12px 0; }
+    .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px; background: #edf2f7; color: #4a5568; margin: 2px; }
+    .priority { font-weight: 700; }
+    .p1 { color: #c53030; }
+    .p2 { color: #c05621; }
+    .p3 { color: #2b6cb0; }
+    .p4 { color: #276749; }
+    .tick { color: #38a169; font-weight: 700; }
+    .cross { color: #e53e3e; font-weight: 700; }
+    .warn { color: #d69e2e; font-weight: 700; }
+    footer { margin-top: 48px; text-align: center; color: #a0aec0; font-size: 12px; border-top: 1px solid #e2e8f0; padding-top: 16px; }
+    @media print { body { background: white; } .page { max-width: 100%; padding: 16px; } }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+    <div>
+      <h1>🔍 Auditoría Scrum — Board Project V2</h1>
+      <div class="subtitle">Intrale Platform · Proyecto #1 · 2026-03-04 · Ejecutado por Scrum Master (issue #1174)</div>
+    </div>
+    <div style="text-align:right;">
+      <span class="badge badge-yellow" style="font-size:16px; padding:6px 16px;">🟡 ATENCIÓN</span>
+      <div style="color:#718096; font-size:12px; margin-top:4px;">Salud general del board</div>
+    </div>
+  </div>
+
+  <!-- KPIs Resumen -->
+  <div class="kpi-grid">
+    <div class="kpi-card red">
+      <div class="kpi-value">111</div>
+      <div class="kpi-label">Issues huérfanos<br>(no en board)</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-value">32</div>
+      <div class="kpi-label">Correcciones<br>aplicadas hoy</div>
+    </div>
+    <div class="kpi-card yellow">
+      <div class="kpi-value">25</div>
+      <div class="kpi-label">Issues stale<br>(&gt;14 días)</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-value">92</div>
+      <div class="kpi-label">Items totales<br>en board</div>
+    </div>
+  </div>
+
+  <!-- Distribución del board ANTES -->
+  <h2>📊 Estado del Board (antes de correcciones)</h2>
+
+  <div class="section-card">
+    <h3>Distribución de columnas</h3>
+    <div class="status-bar">
+      <div style="width:55%; background:#4a5568;">Backlog Técnico (51)</div>
+      <div style="width:15%; background:#2b6cb0;">Backlog NEGOCIO (14)</div>
+      <div style="width:10%; background:#276749;">Backlog CLIENTE (9)</div>
+      <div style="width:10%; background:#6b46c1;">Backlog DELIVERY (9)</div>
+      <div style="width:10%; background:#e53e3e;">Sin status (9)</div>
+    </div>
+
+    <table>
+      <thead><tr><th>Columna</th><th>Items</th><th>%</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td>Backlog Técnico</td><td>51</td><td>55%</td><td><span class="badge badge-gray">Backlog</span></td></tr>
+        <tr><td>Backlog NEGOCIO</td><td>14</td><td>15%</td><td><span class="badge badge-gray">Backlog</span></td></tr>
+        <tr><td>Backlog CLIENTE</td><td>9</td><td>10%</td><td><span class="badge badge-gray">Backlog</span></td></tr>
+        <tr><td>Backlog DELIVERY</td><td>9</td><td>10%</td><td><span class="badge badge-gray">Backlog</span></td></tr>
+        <tr><td>Sin status (null)</td><td>9</td><td>10%</td><td><span class="badge badge-red">⚠ Problema</span></td></tr>
+        <tr><td><strong>Todo</strong></td><td>0</td><td>0%</td><td><span class="badge badge-red">⚠ Vacío</span></td></tr>
+        <tr><td><strong>In Progress</strong></td><td>0</td><td>0%</td><td><span class="badge badge-red">⚠ Vacío</span></td></tr>
+        <tr><td><strong>Refined</strong></td><td>0</td><td>0%</td><td><span class="badge badge-red">⚠ Vacío</span></td></tr>
+        <tr><td><strong>Ready</strong></td><td>0</td><td>0%</td><td><span class="badge badge-red">⚠ Vacío</span></td></tr>
+        <tr><td><strong>Blocked</strong></td><td>0</td><td>0%</td><td><span class="badge badge-yellow">Vacío</span></td></tr>
+        <tr><td><strong>Done</strong></td><td>0</td><td>0%</td><td><span class="badge badge-red">⚠ Vacío</span></td></tr>
+      </tbody>
+    </table>
+
+    <div class="alert-box alert-critical">
+      <strong>🔴 CRÍTICO: Las columnas de flujo activo están vacías</strong>
+      Todo, In Progress, Ready, Blocked y Done tienen 0 items. El board funciona únicamente como registro de backlog. El flujo de trabajo real (ramas, PRs, implementaciones) ocurre sin representación en el tablero.
+    </div>
+  </div>
+
+  <!-- Correcciones aplicadas -->
+  <h2>✅ Correcciones Aplicadas (2026-03-04)</h2>
+
+  <div class="section-card">
+    <div class="alert-box alert-success">
+      <strong>32 correcciones aplicadas automáticamente — todos con comentario de trazabilidad</strong>
+    </div>
+
+    <h3>Batch 1: Issues cerrados → Done (26 correcciones)</h3>
+    <table>
+      <thead><tr><th>#</th><th>Issue</th><th>Status anterior</th><th>Status nuevo</th></tr></thead>
+      <tbody>
+        <tr><td>#1188</td><td>feat(health-check): aprendizaje de fallos recurrentes</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1199</td><td>bug(hooks): aprobación de permisos no cumple el flujo</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1197</td><td>feat(scrum): enriquecer reporte PDF de sprint</td><td>sin status</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1195</td><td>feat(sprint): bloquear ejecución de agentes fuera de sprint</td><td>Backlog NEGOCIO</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1187</td><td>fix(hooks): manejar actividad concurrente en Telegram</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1182</td><td>feat(hooks): health check adaptativo</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1181</td><td>scrum: generar reporte automático al finalizar sprint</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1180</td><td>monitor: auditar y rediseñar el dashboard ASCII</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1170</td><td>hooks: validar que toda implementación corra en worktree</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1167</td><td>fix(hooks): migrar permisos de PermissionRequest</td><td>sin status</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1159</td><td>feat(hooks): Aprendizaje adaptativo de permisos</td><td>sin status</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1151</td><td>feat(qa): Distribución automática de videos QA</td><td>Backlog NEGOCIO</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1149</td><td>feat(qa): Paralelización de evidencia QA con múltiples AVDs</td><td>Backlog NEGOCIO</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1117</td><td>qa(compliance): Reporte PO+QA v2.0 — Gestión de productos</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1115</td><td>qa(compliance): Reporte PO+QA v2.0 — Registro negocios</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1114</td><td>qa(compliance): Reporte PO+QA v2.0 — 2FA Setup</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1113</td><td>qa(compliance): Reporte PO+QA v2.0 — Recuperación password</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1112</td><td>qa(compliance): Reporte PO+QA v2.0 — Login / SignIn</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1092</td><td>qa(video): Autenticación 2FA — flujo completo</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1091</td><td>qa(video): Recuperación y cambio de password</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1090</td><td>qa(video): Login y registro básico</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#1075</td><td>Cambiar frecuencia de informes del monitor a Telegram</td><td>Backlog NEGOCIO</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#984</td><td>qa(e2e): test validate — validación de token JWT</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#982</td><td>qa(e2e): test changePassword</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#981</td><td>qa(e2e): tests registros especializados</td><td>Backlog Tecnico</td><td><span class="badge badge-green">Done</span></td></tr>
+        <tr><td>#952</td><td>feat(backend): implementar endpoints delivery/*</td><td>Backlog DELIVERY</td><td><span class="badge badge-green">Done</span></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Batch 2: Issues abiertos sin status → Backlog Técnico (6 correcciones)</h3>
+    <table>
+      <thead><tr><th>#</th><th>Issue</th><th>Status anterior</th><th>Status nuevo</th></tr></thead>
+      <tbody>
+        <tr><td>#1148</td><td>[UX] Agregar indicador de fortaleza y coincidencia de contraseña</td><td>sin status</td><td><span class="badge badge-blue">Backlog Técnico</span></td></tr>
+        <tr><td>#1147</td><td>[UX] Reorganizar jerarquía de links secundarios</td><td>sin status</td><td><span class="badge badge-blue">Backlog Técnico</span></td></tr>
+        <tr><td>#1146</td><td>[UX] Agregar validación inline en PasswordRecoveryScreen</td><td>sin status</td><td><span class="badge badge-blue">Backlog Técnico</span></td></tr>
+        <tr><td>#1145</td><td>[UX] Separar cambio de contraseña temporal en pantalla dedicada</td><td>sin status</td><td><span class="badge badge-blue">Backlog Técnico</span></td></tr>
+        <tr><td>#1144</td><td>[UX] Mejorar flujo Password Recovery</td><td>sin status</td><td><span class="badge badge-blue">Backlog Técnico</span></td></tr>
+        <tr><td>#1143</td><td>[UX] Agregar feedback visual durante auto-login</td><td>sin status</td><td><span class="badge badge-blue">Backlog Técnico</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Problemas identificados -->
+  <h2>🔴 Problemas Identificados</h2>
+
+  <div class="section-card">
+    <h3><span class="priority p1">P1 — CRÍTICO</span> · Flujo activo sin representación en board</h3>
+    <div class="alert-box alert-critical">
+      Las columnas Todo, In Progress, Ready, Blocked y Done tienen <strong>0 items</strong>. Hay 41 ramas <code>agent/*</code> activas, 14 PRs abiertos y trabajo continuo de agentes — pero nada se refleja en el board. El tablero actúa como repositorio de backlog estático, no como herramienta de gestión del flujo activo.
+    </div>
+    <ul>
+      <li>41 ramas <code>agent/*</code> activas sin item "In Progress" en el board</li>
+      <li>14 PRs abiertos sin item "Ready" en el board</li>
+      <li>El hook <code>post-issue-close.js</code> mueve a Done, pero los otros estados (In Progress, Ready) no tienen automatización</li>
+    </ul>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p1">P1 — CRÍTICO</span> · 111 issues huérfanos (no en board)</h3>
+    <div class="alert-box alert-critical">
+      De 177 issues abiertos, solo 92 están en el board. <strong>111 issues (63%) no tienen representación en el board</strong>. Muchos son issues antiguos sin labels, pero también hay issues recientes importantes.
+    </div>
+    <table>
+      <thead><tr><th>Categoría</th><th>Cant.</th><th>Ejemplos</th></tr></thead>
+      <tbody>
+        <tr><td>Issues muy antiguos (&gt;140 días) sin labels</td><td>~65</td><td>#372-#403, #327-#334, #49-#72</td></tr>
+        <tr><td>Issues recientes relevantes (0-15 días)</td><td>~15</td><td>#1206, #1205, #601-#603, #597, #599</td></tr>
+        <tr><td>Issues sin labels del área de branding</td><td>~30</td><td>#372-#403 (H2.x.Sx series)</td></tr>
+        <tr><td>Issues INTAKE duplicados/procesados</td><td>5</td><td>#607, #613, #615, #681, #727</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p2">P2 — ALTO</span> · 25 issues stale (&gt;14 días sin actividad)</h3>
+    <table>
+      <thead><tr><th>Columna</th><th>Cant.</th><th>Días promedio</th><th>Issues representativos</th></tr></thead>
+      <tbody>
+        <tr><td>Backlog NEGOCIO</td><td>9</td><td>76 días</td><td>#672, #673, #674, #675, #676, #677, #678, #679, #680</td></tr>
+        <tr><td>Backlog CLIENTE</td><td>8</td><td>76 días</td><td>#717, #718, #720, #721, #722, #723, #724, #726</td></tr>
+        <tr><td>Backlog DELIVERY</td><td>8</td><td>75 días</td><td>#732, #734, #735, #736, #737, #740, #741, #742</td></tr>
+      </tbody>
+    </table>
+    <p>Estos 25 issues (todos sin asignado) llevan ~75 días sin actividad. Son features de las apps NEGOCIO, CLIENTE y DELIVERY que forman el roadmap futuro del producto.</p>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p2">P2 — ALTO</span> · 37 issues sin asignado en el board</h3>
+    <p>El 40% de los issues en el board no tienen asignado. En su mayoría son features de backlog producto (NEGOCIO, CLIENTE, DELIVERY) que aún no tienen dueño.</p>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p3">P3 — MEDIO</span> · 14 PRs abiertos sin merge (algunos muy antiguos)</h3>
+    <table>
+      <thead><tr><th>PR</th><th>Rama</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td>#1157</td><td>agent/984-qa-validate</td><td>Reciente</td></tr>
+        <tr><td>#1136, #1135</td><td>agent/1114, agent/1112</td><td>Reciente</td></tr>
+        <tr><td>#1089, #1088</td><td>agent/981, agent/980</td><td>Antiguo</td></tr>
+        <tr><td>#1062</td><td>agent/988</td><td>Antiguo</td></tr>
+        <tr><td>#1038 - #1031</td><td>codex/*</td><td><span class="badge badge-red">Muy antiguo (codex/ branch)</span></td></tr>
+      </tbody>
+    </table>
+    <p>Los PRs #1031–#1038 usan la nomenclatura antigua <code>codex/</code> (anterior a #1042). Deberían revisarse para merge o cierre.</p>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p3">P3 — MEDIO</span> · 91 issues abiertos sin labels (en todo el repo)</h3>
+    <p>91 issues abiertos no tienen ningún label asignado. La mayoría son issues antiguos (&gt;100 días) de áreas como branding, UI/UX, y pantallas que nunca fueron etiquetados. Requieren triage con <code>/priorizar</code>.</p>
+  </div>
+
+  <!-- Análisis de flujo -->
+  <h2>🔄 Análisis del Flujo</h2>
+
+  <div class="section-card">
+    <h3>Flujo actual vs. Flujo ideal</h3>
+    <table>
+      <thead><tr><th>Columna</th><th>Items actuales</th><th>Estado</th><th>Diagnóstico</th></tr></thead>
+      <tbody>
+        <tr><td>Backlog Técnico</td><td>51</td><td><span class="badge badge-yellow">Saturado</span></td><td>Cuello de botella principal — muchos items sin refinar ni priorizar</td></tr>
+        <tr><td>Backlog NEGOCIO</td><td>14</td><td><span class="badge badge-green">Normal</span></td><td>Features producto para el futuro</td></tr>
+        <tr><td>Backlog CLIENTE</td><td>9</td><td><span class="badge badge-green">Normal</span></td><td>Features app cliente para el futuro</td></tr>
+        <tr><td>Backlog DELIVERY</td><td>9</td><td><span class="badge badge-green">Normal</span></td><td>Features app repartidores para el futuro</td></tr>
+        <tr><td>Todo</td><td>0</td><td><span class="badge badge-red">Vacío</span></td><td>Nadie mueve items de backlog a "listo para trabajar"</td></tr>
+        <tr><td>Refined</td><td>0</td><td><span class="badge badge-red">Vacío</span></td><td>El proceso de refinamiento no se registra en el board</td></tr>
+        <tr><td>In Progress</td><td>0</td><td><span class="badge badge-red">Vacío</span></td><td>El trabajo activo no se registra en el board</td></tr>
+        <tr><td>Ready</td><td>0</td><td><span class="badge badge-red">Vacío</span></td><td>Los PRs no se registran como "Ready for review"</td></tr>
+        <tr><td>Blocked</td><td>0</td><td><span class="badge badge-yellow">Vacío</span></td><td>Los bloqueos no se registran (puede ser bueno)</td></tr>
+        <tr><td>Done</td><td>26 (post-corrección)</td><td><span class="badge badge-green">Correcto</span></td><td>Corregido hoy — 26 issues cerrados movidos a Done</td></tr>
+      </tbody>
+    </table>
+
+    <div class="alert-box alert-warning">
+      <strong>⚠ Diagnóstico: El board NO refleja el flujo real de trabajo</strong>
+      El equipo trabaja activamente (ramas agent/*, PRs, implementaciones) pero el board solo registra el backlog. Las columnas del flujo Scrum clásico (Todo → In Progress → Ready → Done) están sin uso. Esto genera opacidad sobre el estado real del trabajo en progreso.
+    </div>
+  </div>
+
+  <!-- Propuestas de mejora -->
+  <h2>💡 Propuestas de Mejora (Priorizadas)</h2>
+
+  <div class="section-card">
+    <h3><span class="priority p1">M1 — CRÍTICO</span> · Automatizar transiciones de estado via GitHub Actions</h3>
+    <div class="alert-box alert-info">
+      <strong>Problema:</strong> Las transiciones Todo→In Progress, In Progress→Ready, Ready→Done no ocurren automáticamente.<br>
+      <strong>Solución:</strong> Implementar GitHub Actions que detecten eventos y muevan issues en el board.
+    </div>
+    <table>
+      <thead><tr><th>Evento</th><th>Acción en board</th><th>Prioridad</th></tr></thead>
+      <tbody>
+        <tr><td>Creación de rama <code>agent/&lt;N&gt;-*</code></td><td>Issue #N → In Progress</td><td><span class="badge badge-red">Alta</span></td></tr>
+        <tr><td>Apertura de PR con "Closes #N"</td><td>Issue #N → Ready</td><td><span class="badge badge-red">Alta</span></td></tr>
+        <tr><td>Cierre de issue</td><td>Issue → Done</td><td><span class="badge badge-yellow">Media (ya existe parcial)</span></td></tr>
+        <tr><td>Reapertura de issue</td><td>Issue → In Progress o Backlog</td><td><span class="badge badge-gray">Baja</span></td></tr>
+      </tbody>
+    </table>
+    <p>Implementación sugerida: <code>.github/workflows/project-automation.yml</code></p>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p1">M2 — ALTO</span> · Limpieza masiva de backlog con /priorizar</h3>
+    <div class="alert-box alert-info">
+      <strong>Problema:</strong> 111 issues huérfanos + 91 sin labels + muchos con &gt;140 días sin actividad.<br>
+      <strong>Solución:</strong> Ejecutar <code>/priorizar</code> sobre los issues huérfanos para clasificar, etiquetar y cerrar los obsoletos.
+    </div>
+    <ul>
+      <li>Issues &gt;140 días sin labels y sin asignado: candidatos a cierre (series H1.x, H2.x, pantallas antiguas)</li>
+      <li>Issues recientes sin board (&lt;15 días): agregar al board en columna apropiada</li>
+      <li>Issue #1205 ya creado para limpiar backlog — ejecutar como próxima prioridad</li>
+    </ul>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p2">M3 — ALTO</span> · Resolver PRs antiguos con rama codex/*</h3>
+    <div class="alert-box alert-info">
+      <strong>Problema:</strong> PRs #1031–#1038 usan nomenclatura antigua <code>codex/</code> (8 PRs con semanas de antigüedad).<br>
+      <strong>Solución:</strong> Revisarlos individualmente — merge si están completos, cierre si están obsoletos.
+    </div>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p2">M4 — MEDIO</span> · GitHub Action: detectar issues sin status en board</h3>
+    <div class="alert-box alert-info">
+      <strong>Problema:</strong> Issues se agregan al board sin asignar status (9 encontrados hoy).<br>
+      <strong>Solución:</strong> Action semanal que detecte items sin status y los mueva a Backlog Técnico, o notifique via Telegram.
+    </div>
+    <p>Este issue #1174 ejecutó la corrección manual. La automatización evita que vuelva a ocurrir.</p>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p3">M5 — MEDIO</span> · Usar columna "Refined" para el flujo de refinamiento</h3>
+    <p>La columna "Refined" existe en el board pero nunca se usa. Propuesta: cuando un issue es refinado con <code>/refinar</code>, moverlo de Backlog → Refined. Luego el planner los mueve a Todo al planificar el sprint.</p>
+    <p>Esto crea un flujo más explícito: <strong>Backlog → Refined → Todo → In Progress → Ready → Done</strong></p>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p3">M6 — MEDIO</span> · WIP Limit enforcement</h3>
+    <p>El límite blando de 5 issues en In Progress está definido en <code>methodology.md</code> pero no se aplica. Con la automatización M1, al mover issues a In Progress, el Scrum Master recibirá alerta si se excede el límite.</p>
+    <p>Propuesta: agregar chequeo de WIP al hook <code>post-git-push.js</code> cuando se crea rama <code>agent/*</code>.</p>
+  </div>
+
+  <div class="section-card">
+    <h3><span class="priority p4">M7 — BAJO</span> · Labels de area para issues UX (#1143–#1148)</h3>
+    <p>Los 6 issues UX movidos hoy a Backlog Técnico solo tienen label <code>ux</code> y <code>enhancement</code> pero les falta <code>area:autenticacion</code> o similar. Sugerencia para <code>/priorizar</code>.</p>
+  </div>
+
+  <!-- Métricas finales -->
+  <h2>📈 Métricas del Board (post-corrección)</h2>
+
+  <div class="section-card">
+    <table>
+      <thead><tr><th>Métrica</th><th>Valor</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td>Total items en board</td><td>92</td><td><span class="badge badge-blue">Referencia</span></td></tr>
+        <tr><td>Issues cerrados → Done (corrección hoy)</td><td>26</td><td><span class="badge badge-green">✓ Corregido</span></td></tr>
+        <tr><td>Issues sin status → Backlog (corrección hoy)</td><td>6</td><td><span class="badge badge-green">✓ Corregido</span></td></tr>
+        <tr><td>Issues huérfanos (no en board)</td><td>111 / 177 (63%)</td><td><span class="badge badge-red">⚠ Crítico</span></td></tr>
+        <tr><td>Issues sin asignado en board</td><td>37 / 83 abiertos (45%)</td><td><span class="badge badge-yellow">⚠ Atención</span></td></tr>
+        <tr><td>Issues stale (&gt;14 días)</td><td>25</td><td><span class="badge badge-yellow">⚠ Atención</span></td></tr>
+        <tr><td>PRs abiertos sin merge</td><td>14</td><td><span class="badge badge-yellow">⚠ Atención</span></td></tr>
+        <tr><td>Ramas agent/* activas</td><td>41</td><td><span class="badge badge-blue">Info</span></td></tr>
+        <tr><td>WIP actual (In Progress)</td><td>0 en board / ~41 real</td><td><span class="badge badge-red">⚠ Sin reflejo</span></td></tr>
+        <tr><td>Throughput (issues implementados)</td><td>~10-15/semana (estimado)</td><td><span class="badge badge-green">Saludable</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Criterios de aceptación -->
+  <h2>✔ Criterios de Aceptación — issue #1174</h2>
+
+  <div class="section-card">
+    <table>
+      <thead><tr><th>Criterio</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td>Se auditaron todos los issues abiertos del Project V2</td><td><span class="tick">✓</span> 92 items analizados</td></tr>
+        <tr><td>Se identificaron y listaron issues sin labels o sin status</td><td><span class="tick">✓</span> 9 sin status (corregidos), 91 sin labels en repo</td></tr>
+        <tr><td>Se detectaron issues estancados (&gt;14 días sin actividad)</td><td><span class="tick">✓</span> 25 stale detectados</td></tr>
+        <tr><td>Se generó un reporte con diagnóstico y propuestas priorizadas</td><td><span class="tick">✓</span> Este documento</td></tr>
+        <tr><td>Las propuestas de mejora son concretas y accionables</td><td><span class="tick">✓</span> 7 mejoras con detalle técnico</td></tr>
+        <tr><td>El reporte está disponible en <code>docs/qa/</code></td><td><span class="tick">✓</span> <code>docs/qa/reporte-scrum-auditoria-2026-03-04.html</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Próximos pasos -->
+  <h2>🗂 Próximos Pasos Recomendados</h2>
+
+  <div class="section-card">
+    <ol style="margin-left:20px; line-height:2;">
+      <li><strong>Ejecutar /priorizar</strong> sobre los 111 issues huérfanos para limpiar backlog (issue #1205)</li>
+      <li><strong>Implementar GitHub Action</strong> <code>project-automation.yml</code> para automatizar transiciones (M1)</li>
+      <li><strong>Revisar PRs codex/*</strong> (#1031–#1038) — mergear o cerrar</li>
+      <li><strong>Agregar issues recientes al board</strong>: #1206, #1205, #601, #602, #603, #597, #599</li>
+      <li><strong>Ejecutar /scrum sync</strong> semanalmente para mantener el board sincronizado</li>
+      <li><strong>Ejecutar /scrum health</strong> en cada standup para métricas de WIP y throughput</li>
+    </ol>
+  </div>
+
+  <footer>
+    <p>Generado por Scrum Master · Intrale Platform · 2026-03-04 · issue #1174</p>
+    <p>Herramienta: skill /scrum (audit mode) · GitHub Project V2 #1 · org intrale</p>
+  </footer>
+
+</div>
+</body>
+</html>
