@@ -1,4 +1,6 @@
-// Hook Stop: notifica a Telegram (imagen card) y marca sesion como "done"
+// Hook Stop: notifica a Telegram (imagen card o mini-reporte) y marca sesion como "done"
+// Para ejecuciones individuales: enriquece con datos de sesión (issue, tareas, PR, duración)
+// Para ejecuciones de sprint: mantiene comportamiento simple (sprint-report.js cubre)
 // Pure Node.js — sin dependencia de bash
 const https = require("https");
 const querystring = require("querystring");
@@ -148,6 +150,57 @@ function escapeHtml(text) {
     return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * Detecta si la sesión actual es parte de un sprint (PID en sprint-pids.json).
+ */
+function isSprintSession(sessionId) {
+    try {
+        const pidsFile = path.join(REPO_ROOT, "scripts", "sprint-pids.json");
+        if (!fs.existsSync(pidsFile)) return false;
+        const pidsData = JSON.parse(fs.readFileSync(pidsFile, "utf8"));
+        // sprint-pids.json tiene: { "agente_1": PID, "agente_2": PID }
+        // Verificar si el PID actual coincide con alguno del sprint
+        const currentPid = process.ppid || process.pid;
+        for (const key of Object.keys(pidsData)) {
+            if (pidsData[key] === currentPid) return true;
+        }
+        // También verificar por sessionId en las sesiones del sprint
+        // Buscar en sessions/ alguna sesión que matchee las ramas del sprint plan
+        const planFile = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+        if (!fs.existsSync(planFile)) return false;
+        const plan = JSON.parse(fs.readFileSync(planFile, "utf8"));
+        const shortId = (sessionId || "").substring(0, 8);
+        const sessionFile = path.join(SESSIONS_DIR, shortId + ".json");
+        if (!fs.existsSync(sessionFile)) return false;
+        const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+        if (!session.branch) return false;
+        // Si la rama de la sesión matchea un agente del plan, es sprint
+        for (const ag of (plan.agentes || [])) {
+            if (session.branch.includes(String(ag.issue))) return true;
+        }
+        return false;
+    } catch(e) {
+        log("isSprintSession error: " + e.message);
+        return false;
+    }
+}
+
+/**
+ * Intenta construir un mini-reporte enriquecido para ejecuciones individuales.
+ */
+function buildMiniReport(sessionId) {
+    try {
+        const executionReport = require(path.join(REPO_ROOT, "scripts", "execution-report.js"));
+        const shortId = (sessionId || "").substring(0, 8);
+        const summary = executionReport.buildExecutionSummary(shortId, REPO_ROOT);
+        if (!summary || !summary.found) return null;
+        return executionReport.formatTelegramHtml(summary);
+    } catch(e) {
+        log("buildMiniReport error: " + e.message);
+        return null;
+    }
+}
+
 async function processInput() {
     log("INPUT: " + rawInput.substring(0, 300));
 
@@ -156,11 +209,49 @@ async function processInput() {
 
     if (data.stop_hook_active) return;
 
+    const sessionId = data.session_id || "";
+
     // Marcar sesion como terminada
-    markSessionDone(data.session_id || "");
+    markSessionDone(sessionId);
 
     // Rotacion: limpiar sessions "done" con mas de 2h de antiguedad
     cleanOldSessions();
+
+    // Detectar si es ejecución de sprint
+    const isSprint = isSprintSession(sessionId);
+
+    if (!isSprint) {
+        // Ejecución individual: intentar mini-reporte enriquecido
+        const miniReport = buildMiniReport(sessionId);
+        if (miniReport) {
+            log("Enviando mini-reporte enriquecido (individual)");
+            // Agregar último mensaje truncado al final
+            const raw = (data.last_assistant_message || "").trim();
+            const clean = stripMarkdown(raw);
+            const lastMsg = clean.length > 0 ? "\n\n💬 " + escapeHtml(truncateSmart(clean, 200)) : "";
+            const fullText = miniReport + lastMsg;
+
+            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                try {
+                    const r = await sendTelegram(fullText, attempt);
+                    if (r && r.result && r.result.message_id) {
+                        registerMessage(r.result.message_id, "stop");
+                    }
+                    return;
+                } catch(e) {
+                    if (attempt < MAX_RETRIES) {
+                        log("Mini-reporte reintentando en " + RETRY_DELAY_MS + "ms...");
+                        await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                    } else {
+                        log("Mini-reporte FALLO, fallback a texto simple");
+                    }
+                }
+            }
+            // Si falla el mini-reporte, caer al texto simple (abajo)
+        }
+    } else {
+        log("Ejecución de sprint detectada — omitiendo mini-reporte (sprint-report.js lo cubre)");
+    }
 
     const raw = (data.last_assistant_message || "").trim();
     const clean = stripMarkdown(raw);
