@@ -20,22 +20,48 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
 
 const PENDING_FILE = path.join(__dirname, "pending-questions.json");
 const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h — limpiar automáticamente
+const LOAD_RETRY_COUNT = 3;
+const LOAD_RETRY_DELAY_MS = 50;
 
 function loadQuestions() {
-    try {
-        return JSON.parse(fs.readFileSync(PENDING_FILE, "utf8"));
-    } catch (e) {
-        return { questions: [] };
+    for (let attempt = 0; attempt < LOAD_RETRY_COUNT; attempt++) {
+        try {
+            const raw = fs.readFileSync(PENDING_FILE, "utf8");
+            if (!raw || !raw.trim()) return { questions: [] };
+            return JSON.parse(raw);
+        } catch (e) {
+            // Si es JSON corrupto (race condition con escritura concurrente), reintentar
+            if (e instanceof SyntaxError && attempt < LOAD_RETRY_COUNT - 1) {
+                // Espera sincrónica breve antes de reintentar
+                const end = Date.now() + LOAD_RETRY_DELAY_MS;
+                while (Date.now() < end) { /* busy wait */ }
+                continue;
+            }
+            // ENOENT o último intento fallido — devolver vacío
+            return { questions: [] };
+        }
     }
+    return { questions: [] };
 }
 
 function saveQuestions(data) {
     try {
-        fs.writeFileSync(PENDING_FILE, JSON.stringify(data, null, 2), "utf8");
-    } catch (e) {}
+        // Escritura atómica: escribir a archivo temporal → rename
+        // Esto previene race conditions cuando 2 agentes leen/escriben simultáneamente
+        const tmpFile = PENDING_FILE + "." + crypto.randomBytes(4).toString("hex") + ".tmp";
+        fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf8");
+        fs.renameSync(tmpFile, PENDING_FILE);
+    } catch (e) {
+        // Fallback: si rename falla (ej: cross-device), intentar escritura directa
+        try {
+            fs.writeFileSync(PENDING_FILE, JSON.stringify(data, null, 2), "utf8");
+        } catch (e2) {}
+    }
 }
 
 /**
