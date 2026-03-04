@@ -61,6 +61,7 @@ const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\pl
 const MAIN_REPO_ROOT = resolveMainRepoRoot(REPO_ROOT) || REPO_ROOT;
 const LOG_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 const SESSION_STORE_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "tg-session-store.json");
+const COMMANDER_LOCK_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "telegram-commander.lock");
 
 function getSkillContext() {
     try {
@@ -114,6 +115,64 @@ function telegramPost(method, params, timeoutMs) {
 
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
+}
+
+// ─── Commander health check ─────────────────────────────────────────────────
+// Verifica que telegram-commander.js esté corriendo antes de enviar el primer mensaje.
+// Sin commander, los callbacks de botones se pierden.
+
+function isProcessAlive(pid) {
+    try { process.kill(pid, 0); return true; } catch (e) { return false; }
+}
+
+function isCommanderRunning() {
+    try {
+        const data = JSON.parse(fs.readFileSync(COMMANDER_LOCK_FILE, "utf8"));
+        if (!data.pid || typeof data.pid !== "number") return false;
+        return isProcessAlive(data.pid);
+    } catch (e) {
+        return false;
+    }
+}
+
+function launchCommander() {
+    const commanderPath = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "telegram-commander.js");
+    try {
+        const { spawn } = require("child_process");
+        const child = spawn("node", [commanderPath], {
+            cwd: MAIN_REPO_ROOT,
+            detached: true,
+            stdio: "ignore",
+            env: { ...process.env, CLAUDE_PROJECT_DIR: MAIN_REPO_ROOT }
+        });
+        child.unref();
+        log("Commander lanzado (PID " + child.pid + ")");
+        return child.pid;
+    } catch (e) {
+        log("Error lanzando commander: " + e.message);
+        return null;
+    }
+}
+
+async function ensureCommanderRunning() {
+    if (isCommanderRunning()) {
+        log("Commander verificado: corriendo");
+        return true;
+    }
+    log("Commander NO está corriendo — lanzando...");
+    const pid = launchCommander();
+    if (!pid) return false;
+
+    // Esperar hasta 5 segundos a que el commander adquiera su lock
+    for (let i = 0; i < 10; i++) {
+        await sleep(500);
+        if (isCommanderRunning()) {
+            log("Commander confirmado corriendo después de " + ((i + 1) * 500) + "ms");
+            return true;
+        }
+    }
+    log("Commander lanzado pero no confirmó en 5s — continuando de todos modos");
+    return false;
 }
 
 // ─── Formato de acción para el mensaje ────────────────────────────────────────
@@ -454,6 +513,10 @@ async function processInput() {
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
     const totalAttempts = RETRY_INTERVALS.length;
 
+    // Verificar que commander esté corriendo antes de enviar el primer mensaje
+    log("Verificando commander antes de enviar mensaje (requestId=" + requestId + ")");
+    await ensureCommanderRunning();
+
     const firstWaitMin = Math.round(RETRY_INTERVALS[0] / 60000);
     let msgText = "⚠️ <b>" + escHtml(agent) + " — Permiso requerido</b> <i>(Intento 1/" + totalAttempts + ")</i>\n";
     if (contextLine) {
@@ -462,6 +525,9 @@ async function processInput() {
     msgText += "\n" + action + "\n\n"
         + "⏳ Expira en " + firstWaitMin + ":00\n"
         + "📝 Usar botones o responder: <b>siempre</b> (para persistir)";
+
+    // Array para rastrear todos los messageIds enviados en este ciclo
+    const sentMessageIds = [];
 
     // 1. Enviar mensaje con botones inline + instrucción de texto libre
     let sentMsg;
@@ -477,7 +543,8 @@ async function processInput() {
                 ]]
             }
         }, 8000);
-        log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId);
+        log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId + " attempt=1/" + totalAttempts + " ts=" + new Date().toISOString());
+        sentMessageIds.push(sentMsg.message_id);
         registerMessage(sentMsg.message_id, "permission");
 
         // Registrar pregunta pendiente (con HTML original para que el commander lo use al editar)
@@ -517,16 +584,15 @@ async function processInput() {
         log("Iniciando polling " + label + " para " + requestId
             + " (PID=" + process.pid + ", espera=" + Math.round(waitMs/60000) + "min)");
 
-        const inlineKeyboard = attempt === 0
-            ? [[
-                { text: "✅ Permitir", callback_data: "allow:" + requestId },
-                { text: "❌ Rechazar", callback_data: "deny:" + requestId }
-            ]]
-            : [];
+        // Todos los intentos tienen botones inline activos
+        const inlineKeyboard = [[
+            { text: "✅ Permitir", callback_data: "allow:" + requestId },
+            { text: "❌ Rechazar", callback_data: "deny:" + requestId }
+        ]];
 
         const countdownOpts = {
             msgId: currentMsgId,
-            baseText: attempt === 0 ? msgText : msgText,
+            baseText: msgText,
             inlineKeyboard: inlineKeyboard
         };
 
@@ -554,11 +620,11 @@ async function processInput() {
             const latencyMs = Date.now() - startTime;
 
             if (result.answered_via === "console") {
-                log("Respondido en consola — saliendo sin stdout (" + latencyMs + "ms)");
+                log("Respondido en consola — requestId=" + requestId + " latency=" + latencyMs + "ms (" + label + ")");
                 process.exit(0);
             }
 
-            log("Decisión via Telegram: " + actionResult + " en " + latencyMs + "ms (" + label + ")");
+            log("Decisión via Telegram: action=" + actionResult + " requestId=" + requestId + " latency=" + latencyMs + "ms (" + label + ") via=" + (result.answered_via || "?"));
 
             const isAllow = (actionResult === "allow" || actionResult === "always");
             const response = {
@@ -580,13 +646,23 @@ async function processInput() {
 
         if (isLastAttempt) {
             // Sin más reintentos — expirar definitivamente
-            log("Todos los reintentos agotados (" + elapsedTotal + "s total). Expirando.");
+            log("Todos los reintentos agotados: requestId=" + requestId + " elapsedTotal=" + elapsedTotal + "s attempts=" + totalAttempts + " sentMsgs=" + sentMessageIds.length);
             resolveQuestion(requestId, "expired", null);
+            // Invalidar botones de TODOS los mensajes enviados
+            for (const oldMsgId of sentMessageIds) {
+                try {
+                    await telegramPost("editMessageReplyMarkup", {
+                        chat_id: CHAT_ID,
+                        message_id: oldMsgId,
+                        reply_markup: { inline_keyboard: [] }
+                    }, ANSWER_TIMEOUT);
+                } catch(e) { /* ok — puede fallar si ya fue editado */ }
+            }
             try {
                 await telegramPost("editMessageText", {
                     chat_id: CHAT_ID,
                     message_id: currentMsgId,
-                    text: msgText + "\n\n⏱ <i>Expirado (" + totalAttempts + " intentos) — respondiendo en consola</i>"
+                    text: msgText + "\n\n⏱ <i>Expirado (" + totalAttempts + " intentos, " + elapsedTotal + "s) — respondiendo en consola</i>"
                         + "\n📝 Responder <b>siempre</b> para guardar el permiso",
                     parse_mode: "HTML",
                     reply_markup: { inline_keyboard: [] }
@@ -601,7 +677,7 @@ async function processInput() {
         const escalation = RETRY_ESCALATION[nextAttempt] || RETRY_ESCALATION[RETRY_ESCALATION.length - 1];
         const nextWaitMin = Math.round(RETRY_INTERVALS[nextAttempt] / 60000);
 
-        log("Timeout " + label + " (" + elapsedTotal + "s). Enviando reintento " + (nextAttempt + 1) + "/" + totalAttempts);
+        log("Timeout " + label + ": requestId=" + requestId + " elapsedTotal=" + elapsedTotal + "s. Enviando reintento " + (nextAttempt + 1) + "/" + totalAttempts);
 
         // P-15: Registrar timeout de aprobación en ops-learnings
         if (opsLearnings) {
@@ -618,7 +694,18 @@ async function processInput() {
             } catch (e) {}
         }
 
-        // Editar mensaje anterior: quitar botones, marcar como expirado
+        // Invalidar botones de TODOS los mensajes anteriores (no solo el último)
+        for (const oldMsgId of sentMessageIds) {
+            try {
+                await telegramPost("editMessageReplyMarkup", {
+                    chat_id: CHAT_ID,
+                    message_id: oldMsgId,
+                    reply_markup: { inline_keyboard: [] }
+                }, ANSWER_TIMEOUT);
+            } catch(e) { /* ok — puede fallar si ya fue editado */ }
+        }
+
+        // Editar último mensaje: marcar como expirado
         try {
             await telegramPost("editMessageText", {
                 chat_id: CHAT_ID,
@@ -653,12 +740,13 @@ async function processInput() {
                 }
             }, 8000);
             currentMsgId = retryMsg.message_id;
+            sentMessageIds.push(retryMsg.message_id);
             registerMessage(retryMsg.message_id, "permission");
             // Actualizar message_id en pending question para que el commander lo encuentre
             updateQuestionField(requestId, { telegram_message_id: retryMsg.message_id });
             // Actualizar msgText para que el próximo edit/expire use el texto correcto
             msgText = retryText;
-            log("Reintento " + (nextAttempt + 1) + "/" + totalAttempts + " enviado: msg_id=" + retryMsg.message_id);
+            log("Reintento enviado: msg_id=" + retryMsg.message_id + " requestId=" + requestId + " attempt=" + (nextAttempt + 1) + "/" + totalAttempts + " ts=" + new Date().toISOString());
         } catch(e) {
             log("Error enviando reintento: " + e.message + " — continuando con polling");
         }
