@@ -142,15 +142,36 @@ function releaseLock() {
 
 // ─── Offset persistente ─────────────────────────────────────────────────────
 
+const OFFSET_STALE_GAP_MS = 60 * 1000; // 60 segundos — si el gap es mayor, descartar updates viejos
+
 function loadOffset() {
     try {
         const data = JSON.parse(fs.readFileSync(OFFSET_FILE, "utf8"));
-        return data.offset || 0;
-    } catch (e) { return 0; }
+        return { offset: data.offset || 0, timestamp: data.timestamp || null };
+    } catch (e) { return { offset: 0, timestamp: null }; }
 }
 
 function saveOffset(offset) {
-    try { fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset }), "utf8"); } catch (e) {}
+    try {
+        fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset, timestamp: new Date().toISOString() }), "utf8");
+    } catch (e) {}
+}
+
+/**
+ * Detecta si hay un gap temporal grande desde el último offset guardado.
+ * Si el gap > 60s, es probable que el commander se cayó y reinició,
+ * por lo que los updates intermedios ya fueron consumidos o son stale.
+ */
+function detectOffsetGap(savedTimestamp) {
+    if (!savedTimestamp) return false;
+    try {
+        const gap = Date.now() - new Date(savedTimestamp).getTime();
+        if (gap > OFFSET_STALE_GAP_MS) {
+            log("Offset gap detectado: " + Math.round(gap / 1000) + "s desde último save — updates intermedios pueden ser stale");
+            return true;
+        }
+    } catch (e) {}
+    return false;
 }
 
 // ─── Session store ──────────────────────────────────────────────────────────
@@ -1743,7 +1764,29 @@ async function launchHistoriaForProposal(proposal) {
 // ─── Polling loop ────────────────────────────────────────────────────────────
 
 async function pollingLoop() {
-    let offset = loadOffset();
+    const savedOffset = loadOffset();
+    let offset = savedOffset.offset;
+    const hasGap = detectOffsetGap(savedOffset.timestamp);
+
+    // Si hay gap temporal grande, descartar todos los updates pendientes con offset=-1
+    // para evitar procesar callbacks y mensajes stale de sesiones anteriores
+    if (hasGap) {
+        log("Gap >60s detectado — descartando updates viejos con getUpdates offset=-1");
+        try {
+            const stale = await telegramPost("getUpdates", {
+                offset: -1,
+                limit: 1,
+                timeout: 0,
+                allowed_updates: ["message", "callback_query"]
+            }, 5000);
+            if (stale && stale.length > 0) {
+                offset = stale[stale.length - 1].update_id + 1;
+                log("Offset actualizado post-gap: " + offset + " (descartados updates stale)");
+            }
+        } catch (e) {
+            log("Error descartando updates stale: " + e.message);
+        }
+    }
 
     // Avanzar offset para ignorar updates anteriores al arranque
     // Reintentar hasta 3 veces si hay conflicto 409 con otro poller
@@ -1919,10 +1962,14 @@ async function pollingLoop() {
                         const parts = cbData.split(":");
                         const permAction = parts[0]; // "allow", "always", "deny"
                         const cbRequestId = parts.slice(1).join(":");
-                        log("Callback de permiso: " + permAction + " para " + cbRequestId);
+                        const cbMsgId = cq.message && cq.message.message_id;
+                        log("Callback de permiso: action=" + permAction + " requestId=" + cbRequestId + " msgId=" + cbMsgId + " ts=" + new Date().toISOString());
 
                         const q = getQuestionById(cbRequestId);
                         const alreadyAnswered = q && (q.status === "answered" || q.status === "expired");
+                        if (alreadyAnswered) {
+                            log("Callback ignorado: pregunta ya resuelta status=" + q.status + " requestId=" + cbRequestId);
+                        }
 
                         if (alreadyAnswered) {
                             // Ya fue respondido — solo confirmar
@@ -1969,7 +2016,7 @@ async function pollingLoop() {
                                     log("Error editando mensaje permiso: " + (e2.message || ""));
                                 }
                             }
-                            log("Permiso procesado: " + permAction + " para " + cbRequestId);
+                            log("Permiso procesado: action=" + permAction + " requestId=" + cbRequestId + " msgId=" + cbMsgId + " ts=" + new Date().toISOString());
                         } else {
                             // Pregunta no encontrada
                             try {
