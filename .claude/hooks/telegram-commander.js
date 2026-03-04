@@ -61,6 +61,15 @@ try {
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 
+// ─── Multimedia API keys (opcionales) ────────────────────────────────────────
+const ANTHROPIC_API_KEY = _tgCfg.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null;
+const OPENAI_API_KEY = _tgCfg.openai_api_key || process.env.OPENAI_API_KEY || null;
+const VISION_MODEL = "claude-haiku-4-5-20251001";
+const TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+const TTS_MODEL = "gpt-4o-mini-tts";
+const TTS_VOICE = "nova";
+const AUDIO_MAX_DURATION_SEC = 300; // 5 minutos máximo
+
 let running = true;
 let skills = [];
 let sprintRunning = false;  // Evitar lanzar dos sprints simultáneos
@@ -317,6 +326,398 @@ async function sendLongMessage(text, parseMode) {
         lastMsg = await sendMessage(chunk, mode);
     }
     return lastMsg;
+}
+
+// ─── Multimedia: helpers para imágenes, audio/voz ────────────────────────────
+
+/**
+ * Descarga un archivo de Telegram dado su file_id.
+ * Retorna { buffer: Buffer, filePath: string } o null.
+ */
+async function telegramDownloadFile(fileId) {
+    // Paso 1: obtener file_path via getFile
+    const fileInfo = await telegramPost("getFile", { file_id: fileId }, 10000);
+    if (!fileInfo || !fileInfo.file_path) return null;
+
+    // Paso 2: descargar el archivo
+    return new Promise((resolve, reject) => {
+        const url = "https://api.telegram.org/file/bot" + BOT_TOKEN + "/" + fileInfo.file_path;
+        https.get(url, { timeout: 30000 }, (res) => {
+            if (res.statusCode !== 200) {
+                reject(new Error("Download failed: HTTP " + res.statusCode));
+                return;
+            }
+            const chunks = [];
+            res.on("data", (c) => chunks.push(c));
+            res.on("end", () => resolve({ buffer: Buffer.concat(chunks), filePath: fileInfo.file_path }));
+            res.on("error", reject);
+        }).on("error", reject);
+    });
+}
+
+/**
+ * Llama a la API de Anthropic Messages con contenido multimodal (imagen + texto).
+ * Retorna el texto de la respuesta.
+ */
+function callAnthropicVision(base64Image, mediaType, textPrompt) {
+    return new Promise((resolve, reject) => {
+        const body = JSON.stringify({
+            model: VISION_MODEL,
+            max_tokens: 2048,
+            messages: [{
+                role: "user",
+                content: [
+                    {
+                        type: "image",
+                        source: {
+                            type: "base64",
+                            media_type: mediaType,
+                            data: base64Image
+                        }
+                    },
+                    {
+                        type: "text",
+                        text: textPrompt || "Describí esta imagen en detalle. Si contiene texto, transcribilo."
+                    }
+                ]
+            }]
+        });
+
+        const req = https.request({
+            hostname: "api.anthropic.com",
+            path: "/v1/messages",
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "Content-Length": Buffer.byteLength(body)
+            },
+            timeout: 60000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.error) {
+                        reject(new Error("Anthropic API: " + (r.error.message || JSON.stringify(r.error))));
+                        return;
+                    }
+                    const text = (r.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+                    resolve(text || "(sin respuesta)");
+                } catch (e) { reject(new Error("Anthropic parse error: " + e.message)); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("Anthropic API timeout")); });
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
+ * Llama a OpenAI Audio Transcriptions para transcribir audio .ogg.
+ * Retorna el texto transcrito.
+ */
+function callOpenAITranscription(audioBuffer, filename) {
+    return new Promise((resolve, reject) => {
+        const boundary = "----FormBoundary" + Date.now().toString(36);
+        const parts = [];
+
+        // Campo: model
+        parts.push("--" + boundary + "\r\n"
+            + "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
+            + TRANSCRIPTION_MODEL + "\r\n");
+
+        // Campo: file
+        parts.push("--" + boundary + "\r\n"
+            + "Content-Disposition: form-data; name=\"file\"; filename=\"" + (filename || "audio.ogg") + "\"\r\n"
+            + "Content-Type: audio/ogg\r\n\r\n");
+
+        const header = Buffer.from(parts.join(""));
+        const footer = Buffer.from("\r\n--" + boundary + "--\r\n");
+        const body = Buffer.concat([header, audioBuffer, footer]);
+
+        const req = https.request({
+            hostname: "api.openai.com",
+            path: "/v1/audio/transcriptions",
+            method: "POST",
+            headers: {
+                "Content-Type": "multipart/form-data; boundary=" + boundary,
+                "Authorization": "Bearer " + OPENAI_API_KEY,
+                "Content-Length": body.length
+            },
+            timeout: 60000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.error) {
+                        reject(new Error("OpenAI Transcription: " + (r.error.message || JSON.stringify(r.error))));
+                        return;
+                    }
+                    resolve(r.text || "(sin transcripción)");
+                } catch (e) { reject(new Error("OpenAI parse error: " + e.message)); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("OpenAI Transcription timeout")); });
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
+ * Llama a OpenAI TTS para generar audio desde texto.
+ * Retorna Buffer con audio opus.
+ */
+function callOpenAITTS(text) {
+    return new Promise((resolve, reject) => {
+        // Truncar textos largos para TTS (max ~2000 chars)
+        const truncated = text.length > 2000
+            ? text.substring(0, 1950) + "... (respuesta truncada para audio)"
+            : text;
+
+        const body = JSON.stringify({
+            model: TTS_MODEL,
+            input: truncated,
+            voice: TTS_VOICE,
+            response_format: "opus"
+        });
+
+        const req = https.request({
+            hostname: "api.openai.com",
+            path: "/v1/audio/speech",
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + OPENAI_API_KEY,
+                "Content-Length": Buffer.byteLength(body)
+            },
+            timeout: 60000
+        }, (res) => {
+            if (res.statusCode !== 200) {
+                let d = "";
+                res.on("data", (c) => d += c);
+                res.on("end", () => reject(new Error("OpenAI TTS HTTP " + res.statusCode + ": " + d.substring(0, 200))));
+                return;
+            }
+            const chunks = [];
+            res.on("data", (c) => chunks.push(c));
+            res.on("end", () => resolve(Buffer.concat(chunks)));
+            res.on("error", reject);
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("OpenAI TTS timeout")); });
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
+ * Envía un voice message (audio opus) via Telegram sendVoice.
+ * audioBuffer: Buffer con el audio en formato opus/ogg.
+ */
+function sendVoiceMessage(audioBuffer) {
+    return new Promise((resolve, reject) => {
+        const boundary = "----FormBoundary" + Date.now().toString(36);
+        const parts = [];
+
+        // Campo: chat_id
+        parts.push("--" + boundary + "\r\n"
+            + "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
+            + CHAT_ID + "\r\n");
+
+        // Campo: voice
+        parts.push("--" + boundary + "\r\n"
+            + "Content-Disposition: form-data; name=\"voice\"; filename=\"response.ogg\"\r\n"
+            + "Content-Type: audio/ogg\r\n\r\n");
+
+        const header = Buffer.from(parts.join(""));
+        const footer = Buffer.from("\r\n--" + boundary + "--\r\n");
+        const body = Buffer.concat([header, audioBuffer, footer]);
+
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + BOT_TOKEN + "/sendVoice",
+            method: "POST",
+            headers: {
+                "Content-Type": "multipart/form-data; boundary=" + boundary,
+                "Content-Length": body.length
+            },
+            timeout: 30000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.ok) {
+                        if (r.result && r.result.message_id) {
+                            registerMessage(r.result.message_id, "command");
+                        }
+                        resolve(r.result);
+                    } else reject(new Error("sendVoice: " + JSON.stringify(r)));
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("sendVoice timeout")); });
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
+ * Procesa una imagen recibida por Telegram.
+ * Descarga, codifica en base64, envía a Anthropic Vision API.
+ */
+async function handlePhoto(msg) {
+    if (!ANTHROPIC_API_KEY) {
+        await sendMessage("📷 Imagen recibida pero <b>multimedia no configurado</b>.\n\nConfigurá <code>anthropic_api_key</code> en telegram-config.json o la variable de entorno <code>ANTHROPIC_API_KEY</code>.");
+        return;
+    }
+
+    // msg.photo es un array de PhotoSize, elegir la de mayor resolución (última)
+    const photos = msg.photo;
+    const bestPhoto = photos[photos.length - 1];
+    const caption = msg.caption || "";
+
+    await sendMessage("📷 Procesando imagen" + (caption ? " con caption: <code>" + escHtml(caption.substring(0, 80)) + "</code>" : "") + "...");
+
+    try {
+        // Descargar imagen
+        const file = await telegramDownloadFile(bestPhoto.file_id);
+        if (!file) throw new Error("No se pudo descargar la imagen");
+
+        // Detectar media type por extensión
+        const ext = (file.filePath || "").split(".").pop().toLowerCase();
+        const mediaTypes = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
+        const mediaType = mediaTypes[ext] || "image/jpeg";
+
+        // Codificar en base64
+        const base64 = file.buffer.toString("base64");
+        log("Imagen descargada: " + file.filePath + " (" + file.buffer.length + " bytes, " + mediaType + ")");
+
+        // Prompt: usar caption si existe, sino prompt default
+        const prompt = caption
+            ? caption
+            : "Describí esta imagen en detalle. Si contiene texto, transcribilo. Si es un screenshot de código o error, analizalo.";
+
+        // Llamar a Anthropic Vision API
+        const response = await callAnthropicVision(base64, mediaType, prompt);
+
+        // Enviar respuesta
+        await sendLongMessage("📷 <b>Análisis de imagen</b>\n\n" + escHtml(response));
+
+    } catch (e) {
+        log("Error procesando imagen: " + e.message);
+        await sendMessage("❌ Error procesando imagen: <code>" + escHtml(e.message) + "</code>");
+    }
+}
+
+/**
+ * Procesa un mensaje de voz o audio recibido por Telegram.
+ * Descarga .ogg, transcribe via OpenAI, envía texto a Claude, opcionalmente responde con TTS.
+ */
+async function handleVoiceOrAudio(msg) {
+    if (!OPENAI_API_KEY) {
+        await sendMessage("🎤 Audio recibido pero <b>multimedia no configurado</b>.\n\nConfigurá <code>openai_api_key</code> en telegram-config.json o la variable de entorno <code>OPENAI_API_KEY</code>.");
+        return;
+    }
+
+    const voice = msg.voice || msg.audio;
+    const isVoice = !!msg.voice; // true = voice message, false = audio file
+    const duration = voice.duration || 0;
+
+    // Verificar duración máxima
+    if (duration > AUDIO_MAX_DURATION_SEC) {
+        await sendMessage("🎤 Audio de <b>" + Math.round(duration / 60) + " min</b> excede el límite de 5 minutos. Enviá un mensaje más corto.");
+        return;
+    }
+
+    await sendMessage("🎤 Transcribiendo audio (" + duration + "s)...");
+
+    try {
+        // Descargar audio
+        const file = await telegramDownloadFile(voice.file_id);
+        if (!file) throw new Error("No se pudo descargar el audio");
+
+        log("Audio descargado: " + file.filePath + " (" + file.buffer.length + " bytes, " + duration + "s)");
+
+        // Transcribir con OpenAI
+        const filename = file.filePath.split("/").pop() || "audio.ogg";
+        const transcription = await callOpenAITranscription(file.buffer, filename);
+
+        log("Transcripción: " + transcription.substring(0, 200));
+
+        // Mostrar transcripción al usuario
+        await sendMessage("🎤 <b>Transcripción:</b>\n<i>" + escHtml(transcription.substring(0, 500)) + (transcription.length > 500 ? "…" : "") + "</i>");
+
+        // Enviar el texto transcrito a Claude como freetext
+        if (commandBusy) {
+            // Si hay un comando en ejecución, verificar permisos pendientes primero
+            const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
+            if (pendingPerms.length > 0) {
+                const q = pendingPerms[pendingPerms.length - 1];
+                const permAction = matchPermissionKeyword(transcription);
+                if (permAction) {
+                    await handleTextPermissionReply(q, permAction, CHAT_ID);
+                    return;
+                }
+            }
+            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). La transcripción está arriba para cuando termine.");
+            return;
+        }
+
+        // Ejecutar Claude con el texto transcrito
+        await sendMessage("💬 Enviando a Claude...");
+        const result = await executeClaudeQueued(transcription, [], { useSession: true, skill: null });
+        const claudeResponse = extractClaudeResponse(result);
+
+        await sendResult("🎤 Voz", result);
+
+        // TTS: si el mensaje original fue voice Y hay respuesta exitosa, generar audio
+        if (isVoice && result.code === 0 && claudeResponse && OPENAI_API_KEY) {
+            try {
+                log("Generando TTS para respuesta (" + claudeResponse.length + " chars)");
+                const audioBuffer = await callOpenAITTS(claudeResponse);
+                await sendVoiceMessage(audioBuffer);
+                log("TTS enviado: " + audioBuffer.length + " bytes");
+            } catch (ttsErr) {
+                log("Error generando TTS: " + ttsErr.message);
+                // No es crítico — la respuesta en texto ya se envió
+            }
+        }
+
+    } catch (e) {
+        log("Error procesando audio: " + e.message);
+        await sendMessage("❌ Error procesando audio: <code>" + escHtml(e.message) + "</code>");
+    }
+}
+
+/**
+ * Extrae el texto de respuesta de un resultado de Claude.
+ */
+function extractClaudeResponse(result) {
+    if (!result || result.code !== 0) return null;
+    try {
+        const json = JSON.parse(result.stdout);
+        return json.result || json.text || json.content || null;
+    } catch (e) {
+        return result.stdout || null;
+    }
+}
+
+/**
+ * Detecta si un documento adjunto es una imagen por su MIME type.
+ */
+function isDocumentImage(doc) {
+    if (!doc || !doc.mime_type) return false;
+    return doc.mime_type.startsWith("image/");
 }
 
 // ─── Dashboard screenshot + Telegram photo ──────────────────────────────────
@@ -598,6 +999,13 @@ async function handleHelp() {
     msg += "  /limpiar — Borrar mensajes con más de 4 horas\n";
     msg += "\n<b>Monitor periódico:</b>\n";
     msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min.\n";
+    msg += "\n<b>Multimedia:</b>\n";
+    msg += "  📷 Foto → Claude analiza (vision)\n";
+    msg += "  🎤 Audio/voz → transcripción + Claude responde";
+    if (OPENAI_API_KEY) msg += " + TTS";
+    msg += "\n";
+    if (!ANTHROPIC_API_KEY) msg += "  <i>⚠️ Imágenes: falta anthropic_api_key</i>\n";
+    if (!OPENAI_API_KEY) msg += "  <i>⚠️ Audio: falta openai_api_key</i>\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
     await sendLongMessage(msg);
 }
@@ -2110,6 +2518,44 @@ async function pollingLoop() {
                     const iter = processedMessageIds.values();
                     processedMessageIds.delete(iter.next().value);
                 }
+            }
+
+            // ─── Multimedia: detectar imágenes, audio/voz ANTES de requerir texto ───
+            if (msg.photo && msg.photo.length > 0) {
+                log("Foto recibida (id=" + msgId + ", sizes=" + msg.photo.length + ")");
+                try {
+                    await handlePhoto(msg);
+                } catch (e) {
+                    log("Error en handlePhoto: " + e.message);
+                    try { await sendMessage("❌ Error procesando foto: <code>" + escHtml(e.message) + "</code>"); } catch (e2) {}
+                }
+                continue;
+            }
+
+            if (msg.document && isDocumentImage(msg.document)) {
+                log("Documento-imagen recibido (id=" + msgId + ", mime=" + msg.document.mime_type + ")");
+                // Tratar documento-imagen como foto: construir estructura compatible
+                msg.photo = [{ file_id: msg.document.file_id, file_unique_id: msg.document.file_unique_id }];
+                try {
+                    await handlePhoto(msg);
+                } catch (e) {
+                    log("Error en handlePhoto (documento): " + e.message);
+                    try { await sendMessage("❌ Error procesando imagen: <code>" + escHtml(e.message) + "</code>"); } catch (e2) {}
+                }
+                continue;
+            }
+
+            if (msg.voice || msg.audio) {
+                const mediaType = msg.voice ? "voice" : "audio";
+                const duration = (msg.voice || msg.audio).duration || 0;
+                log("Audio recibido (id=" + msgId + ", type=" + mediaType + ", duration=" + duration + "s)");
+                try {
+                    await handleVoiceOrAudio(msg);
+                } catch (e) {
+                    log("Error en handleVoiceOrAudio: " + e.message);
+                    try { await sendMessage("❌ Error procesando audio: <code>" + escHtml(e.message) + "</code>"); } catch (e2) {}
+                }
+                continue;
             }
 
             const text = msg.text;
