@@ -465,6 +465,27 @@ El usuario decide si aceptar las mejoras. Si acepta, indicar qué líneas cambia
 
 ---
 
+## Reporte de sprint automático al finalizar
+
+Cuando en modo `sync` o al terminar una auditoría se detecta que **todos los issues del sprint están en Done** (verificable cruzando el snapshot del board del Paso 0.4 con los issues de `scripts/sprint-plan.json`):
+
+1. **Disparar generación del reporte PDF:**
+```bash
+node scripts/sprint-report.js scripts/sprint-plan.json 2>&1 || true
+```
+
+2. **Fail-open:** si el comando falla, logear el error pero NO interrumpir el flujo de cierre del sprint. El `|| true` garantiza esto.
+
+3. **Notificar al usuario:** después de ejecutar el reporte (exitoso o no), informar:
+   - Si fue exitoso: "📊 Reporte de sprint generado y enviado."
+   - Si falló: "⚠️ No se pudo generar el reporte de sprint. Ver logs en scripts/logs/sprint-report.log"
+
+4. **Detección:** al procesar el snapshot del board, contar los items del sprint que están en Done. Si `items_done === total_sprint_issues`, disparar el reporte.
+
+5. **Idempotencia:** verificar si ya existe el archivo `docs/qa/reporte-sprint-<fecha>.pdf` (o `.html`) antes de regenerar. Si ya existe, informar "Reporte ya generado previamente" y no volver a ejecutar.
+
+---
+
 ## Reglas críticas
 
 1. **SIEMPRE** comentar en el issue al cambiar estado: `🔄 Scrum Master: [acción]. [razón].`

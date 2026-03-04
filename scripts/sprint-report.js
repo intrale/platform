@@ -148,6 +148,92 @@ function formatDateAR(isoStr) {
     } catch (e) { return isoStr; }
 }
 
+// --- Data extraction for enriched sections ---
+
+/**
+ * Busca problemas/errores en activity-log.jsonl filtrando por sesiones del sprint.
+ * Retorna array de { time, description, resolution }
+ */
+function extractProblemsFromActivityLog(activityLogPath, sessionIds) {
+    const problems = [];
+    const ERROR_KEYWORDS = /\b(error|fail|failed|bloqueado|blocked|retry|retrying|fallo|crash|timeout|exception)\b/i;
+    const FIX_KEYWORDS = /\b(fix|fixed|resuelto|resolved|solucion|workaround|correg)\b/i;
+    try {
+        if (!fs.existsSync(activityLogPath)) return problems;
+        const lines = fs.readFileSync(activityLogPath, "utf8").split("\n").filter(Boolean);
+        for (const line of lines) {
+            try {
+                const entry = JSON.parse(line);
+                if (!sessionIds.has(entry.session)) continue;
+                const target = (entry.target || "").toLowerCase();
+                const detail = (entry.detail || "").toLowerCase();
+                const combined = target + " " + detail;
+                if (ERROR_KEYWORDS.test(combined)) {
+                    problems.push({
+                        time: formatDateAR(entry.ts),
+                        session: entry.session,
+                        tool: entry.tool || "N/A",
+                        description: entry.target || entry.detail || "Error detectado",
+                        isResolution: FIX_KEYWORDS.test(combined)
+                    });
+                }
+            } catch (e) { /* skip */ }
+        }
+    } catch (e) { log("Error extrayendo problemas del activity log: " + e.message); }
+    return problems;
+}
+
+/**
+ * Busca problemas/fixes en las descripciones de PRs del sprint.
+ * Retorna array de { pr, description }
+ */
+function extractProblemsFromPRs(sprintPRs) {
+    const problems = [];
+    const KEYWORDS = /\b(error|fix|bug|bloqueado|blocked|fallo|workaround|hotfix|retry|correg|resuelto|problema)\b/i;
+    for (const pr of sprintPRs) {
+        // Obtener body del PR via gh
+        const raw = execSafe(
+            `"${GH_PATH}" pr view ${pr.number} --json body --jq .body --repo intrale/platform`
+        );
+        if (raw && KEYWORDS.test(raw)) {
+            // Extraer líneas relevantes (máx 3)
+            const relevantLines = raw.split("\n")
+                .filter(l => KEYWORDS.test(l))
+                .slice(0, 3)
+                .map(l => l.trim())
+                .filter(Boolean);
+            if (relevantLines.length > 0) {
+                problems.push({
+                    prNumber: pr.number,
+                    prTitle: pr.title,
+                    lines: relevantLines
+                });
+            }
+        }
+    }
+    return problems;
+}
+
+/**
+ * Identifica issues del sprint que quedaron abiertos (deuda técnica).
+ * Retorna array de { issue, title, state, url }
+ */
+function extractTechnicalDebt(agentes, issueInfos) {
+    const debt = [];
+    for (const ag of agentes) {
+        const info = issueInfos[ag.issue] || {};
+        if (info.state !== "CLOSED") {
+            debt.push({
+                issue: ag.issue,
+                title: ag.titulo || info.title || `Issue #${ag.issue}`,
+                state: info.state || "UNKNOWN",
+                url: `https://github.com/intrale/platform/issues/${ag.issue}`
+            });
+        }
+    }
+    return debt;
+}
+
 // --- HTML Template ---
 const CSS = `
   @page { size: A4; margin: 20mm; }
@@ -186,10 +272,15 @@ const CSS = `
   .footer { margin-top: 40px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center; }
 `;
 
-function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin) {
+function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData) {
     const fecha = plan.fecha || new Date().toISOString().split("T")[0];
-    const tema = plan.tema || "Sprint";
+    const tema = plan.tema || "";
     const agentes = plan.agentes || [];
+
+    // Fallback descriptivo para el objetivo del sprint
+    const objetivo = tema
+        ? escapeHtml(tema)
+        : `Sprint del ${fecha} &mdash; ${agentes.length} issues planificados`;
 
     // Filtrar PRs relevantes al sprint
     const sprintBranches = new Set(agentes.map(a => `agent/${a.issue}-${a.slug}`));
@@ -212,7 +303,7 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
 <h1>Reporte de Sprint — ${fecha}</h1>
 <p><strong>Proyecto:</strong> Intrale Platform (<code>intrale/platform</code>)<br>
 <strong>Fecha:</strong> ${fecha}<br>
-<strong>Tema:</strong> ${escapeHtml(tema)}<br>
+<strong>Objetivo:</strong> ${objetivo}<br>
 <strong>Duración total:</strong> ${sprintDurationMin} min</p>
 
 <!-- MÉTRICAS -->
@@ -236,8 +327,99 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
   </div>
 </div>
 
+<!-- LOGROS DESTACADOS -->
+<h2>2. Logros destacados</h2>`;
+
+    // Issues cerrados con PR mergeado
+    const logros = agentes.filter(ag => {
+        const info = issueInfos[ag.issue] || {};
+        const pr = sprintPRs.find(p => p.headRefName === `agent/${ag.issue}-${ag.slug}`);
+        return info.state === "CLOSED" && pr && pr.state === "MERGED";
+    });
+
+    if (logros.length > 0) {
+        html += `<ul>`;
+        for (const ag of logros) {
+            const pr = sprintPRs.find(p => p.headRefName === `agent/${ag.issue}-${ag.slug}`);
+            html += `
+  <li><strong>#${ag.issue}</strong> — ${escapeHtml(ag.titulo || "")}
+    &rarr; PR <a href="${pr.url || ""}">#${pr.number}</a> mergeado</li>`;
+        }
+        html += `</ul>`;
+    } else {
+        html += `<p><em>No se completaron issues con PR mergeado en este sprint.</em></p>`;
+    }
+
+    // --- Problemas encontrados ---
+    html += `
+<!-- PROBLEMAS ENCONTRADOS -->
+<h2>3. Problemas encontrados y resoluciones</h2>`;
+
+    const activityProblems = problemsData.activityProblems || [];
+    const prProblems = problemsData.prProblems || [];
+    const hasProblems = activityProblems.length > 0 || prProblems.length > 0;
+
+    if (hasProblems) {
+        if (activityProblems.length > 0) {
+            html += `<h3>Desde actividad de agentes</h3><ul>`;
+            // Agrupar y limitar a 10
+            const shown = activityProblems.slice(0, 10);
+            for (const p of shown) {
+                const icon = p.isResolution ? "&#x2705;" : "&#x26A0;&#xFE0F;";
+                html += `<li>${icon} <code>${escapeHtml(p.tool)}</code> — ${escapeHtml(p.description.substring(0, 120))} <small>(${p.time})</small></li>`;
+            }
+            if (activityProblems.length > 10) {
+                html += `<li><em>... y ${activityProblems.length - 10} más</em></li>`;
+            }
+            html += `</ul>`;
+        }
+        if (prProblems.length > 0) {
+            html += `<h3>Desde Pull Requests</h3><ul>`;
+            for (const p of prProblems) {
+                html += `<li>PR <strong>#${p.prNumber}</strong> — ${escapeHtml(p.prTitle)}<ul>`;
+                for (const line of p.lines) {
+                    html += `<li><small>${escapeHtml(line.substring(0, 150))}</small></li>`;
+                }
+                html += `</ul></li>`;
+            }
+            html += `</ul>`;
+        }
+    } else {
+        html += `<p><em>No se detectaron problemas significativos durante este sprint.</em></p>`;
+    }
+
+    // --- Deuda técnica ---
+    html += `
+<!-- DEUDA TÉCNICA -->
+<h2>4. Deuda técnica y próximos pasos</h2>`;
+
+    const debt = debtData || [];
+    if (debt.length > 0) {
+        html += `<p>Los siguientes issues del sprint quedaron abiertos y deberían considerarse para el próximo sprint:</p>
+<table>
+  <thead>
+    <tr><th>#</th><th>Título</th><th>Estado</th></tr>
+  </thead>
+  <tbody>`;
+        for (const d of debt) {
+            html += `
+    <tr>
+      <td><a href="${d.url}">#${d.issue}</a></td>
+      <td>${escapeHtml(d.title)}</td>
+      <td><span class="badge badge-open">${d.state}</span></td>
+    </tr>`;
+        }
+        html += `
+  </tbody>
+</table>`;
+    } else {
+        html += `<p><em>Todos los issues del sprint fueron completados. No hay deuda técnica pendiente.</em></p>`;
+    }
+
+    html += `
+
 <!-- ISSUES -->
-<h2>2. Issues del Sprint</h2>
+<h2>5. Issues del Sprint</h2>
 <table>
   <thead>
     <tr><th>#</th><th>Issue</th><th>Título</th><th>Stream</th><th>Size</th><th>Estado</th><th>Duración</th></tr>
@@ -273,7 +455,7 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
 </table>
 
 <!-- DETALLE POR AGENTE -->
-<h2>3. Detalle por Agente</h2>`;
+<h2>6. Detalle por Agente</h2>`;
 
     for (const ag of agentes) {
         const summary = agentSummaries[ag.issue] || {};
@@ -309,7 +491,7 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
     // --- Timeline desde activity-log ---
     html += `
 <!-- TIMELINE -->
-<h2>4. Línea de Tiempo</h2>
+<h2>7. Línea de Tiempo</h2>
 <div class="timeline">`;
 
     // Reconstruir timeline desde activity-log
@@ -328,7 +510,7 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
 </div>
 
 <!-- WORKTREES -->
-<h2>5. Estado de Worktrees</h2>
+<h2>8. Estado de Worktrees</h2>
 <table>
   <thead>
     <tr><th>Ruta</th><th>Rama</th></tr>
@@ -349,7 +531,7 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
 </table>
 
 <!-- PRs -->
-<h2>6. Pull Requests del Sprint</h2>`;
+<h2>9. Pull Requests del Sprint</h2>`;
 
     if (sprintPRs.length > 0) {
         html += `
@@ -381,7 +563,7 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
     if (sprintCIRuns.length > 0) {
         html += `
 <!-- CI -->
-<h2>7. Estado de CI</h2>
+<h2>10. Estado de CI</h2>
 <table>
   <thead>
     <tr><th>Rama</th><th>Estado</th><th>Conclusión</th><th>Actualizado</th></tr>
@@ -556,11 +738,40 @@ async function main() {
         return minStart < Infinity && maxEnd > 0 ? Math.round((maxEnd - minStart) / 60000) : 0;
     })();
 
+    // Recopilar datos para secciones enriquecidas
+    const sprintBranches = new Set(plan.agentes.map(a => `agent/${a.issue}-${a.slug}`));
+    const sprintPRs = prs.filter(pr => sprintBranches.has(pr.headRefName));
+
+    // Session IDs del sprint para filtrar activity log
+    const sprintSessionIds = new Set();
+    const sessionsDir2 = path.join(REPO_ROOT, ".claude", "sessions");
+    if (fs.existsSync(sessionsDir2)) {
+        const files = fs.readdirSync(sessionsDir2).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+            try {
+                const sess = JSON.parse(fs.readFileSync(path.join(sessionsDir2, file), "utf8"));
+                for (const ag of plan.agentes) {
+                    if (sess.branch && sess.branch.includes(String(ag.issue))) {
+                        sprintSessionIds.add(file.replace(".json", ""));
+                    }
+                }
+            } catch (e) { /* skip */ }
+        }
+    }
+
+    const activityLogPath = path.join(REPO_ROOT, ".claude", "activity-log.jsonl");
+    const activityProblems = extractProblemsFromActivityLog(activityLogPath, sprintSessionIds);
+    const prProblems = extractProblemsFromPRs(sprintPRs);
+    const problemsData = { activityProblems, prProblems };
+    const debtData = extractTechnicalDebt(plan.agentes, issueInfos);
+
+    log(`Datos enriquecidos: ${activityProblems.length} problemas en activity, ${prProblems.length} en PRs, ${debtData.length} deuda técnica`);
+
     // Generar HTML
     const fecha = plan.fecha || new Date().toISOString().split("T")[0];
     const htmlFileName = `reporte-sprint-${fecha}.html`;
     const htmlPath = path.join(QA_DIR, htmlFileName);
-    const html = buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin);
+    const html = buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData);
 
     ensureDir(QA_DIR);
     fs.writeFileSync(htmlPath, html, "utf8");
