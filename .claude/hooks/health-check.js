@@ -38,6 +38,10 @@ const CHECK_PROBLEM_MAP = {
     worktrees: { id: "dead_worktrees", category: "dead_worktree", desc: "Worktrees sin contenido" }
 };
 
+// P-15: Ops learnings
+let opsLearnings;
+try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
+
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] HealthCheck: " + msg + "\n"); } catch (e) {}
 }
@@ -198,6 +202,22 @@ function processCheckResult(history, checkName, checkResult, detail) {
             const autoFixed = checkName === "commander" || checkName === "approvers";
             const problem = recordProblem(history, id, mapping.category, detail, autoFixed);
             const canEscalate = !NO_ESCALATE.has(id);
+
+            // P-15: Registrar en ops-learnings para bitácora operativa
+            if (opsLearnings) {
+                try {
+                    opsLearnings.recordLearning({
+                        source: "health-check",
+                        category: mapping.category,
+                        severity: problem.occurrences >= THRESHOLD_ISSUE ? "critical" : problem.occurrences >= THRESHOLD_WARN ? "high" : "low",
+                        symptom: id + ": " + (detail || mapping.desc),
+                        root_cause: autoFixed ? "Auto-reparado" : "",
+                        resolution: autoFixed ? "Auto-fix aplicado por health-check" : "",
+                        affected: ["health-check.js"],
+                        auto_detected: true
+                    });
+                } catch (e) { log("ops-learnings error: " + e.message); }
+            }
 
             results.push({
                 id: id,
@@ -465,6 +485,47 @@ function formatIssueWithRecurrence(baseMsg, problemResult) {
     return baseMsg;
 }
 
+// ─── P-07: Per-component backoff state ──────────────────────────────────────
+
+const COMPONENT_STATE_FILE = path.join(HOOKS_DIR, "health-check-components.json");
+const TELEGRAM_GETME_CACHE_TTL = 30 * 60 * 1000; // 30 min cache for getMe
+let _getMeCache = null;
+let _getMeCacheTs = 0;
+
+function loadComponentState() {
+    try { return JSON.parse(fs.readFileSync(COMPONENT_STATE_FILE, "utf8")); } catch (e) { return {}; }
+}
+
+function saveComponentState(cs) {
+    try { fs.writeFileSync(COMPONENT_STATE_FILE, JSON.stringify(cs, null, 2), "utf8"); } catch (e) {}
+}
+
+function shouldRunCheck(componentState, checkName, now) {
+    const cs = componentState[checkName];
+    if (!cs) return true;
+    const interval = cs.currentInterval || MIN_INTERVAL_MS;
+    return (now - (cs.lastRun || 0)) >= interval;
+}
+
+function updateComponentAfterCheck(componentState, checkName, passed, now) {
+    if (!componentState[checkName]) {
+        componentState[checkName] = { consecutivePasses: 0, currentInterval: MIN_INTERVAL_MS, lastRun: now };
+    }
+    const cs = componentState[checkName];
+    cs.lastRun = now;
+    if (passed) {
+        cs.consecutivePasses = (cs.consecutivePasses || 0) + 1;
+        // P-07: Si pasa 3x consecutivas, duplicar intervalo (hasta MAX)
+        if (cs.consecutivePasses >= 3) {
+            cs.currentInterval = Math.min((cs.currentInterval || MIN_INTERVAL_MS) * 2, MAX_INTERVAL_MS);
+        }
+    } else {
+        // Fallo: resetear solo ESTE check a MIN
+        cs.consecutivePasses = 0;
+        cs.currentInterval = MIN_INTERVAL_MS;
+    }
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -478,14 +539,54 @@ async function main() {
     log("Iniciando verificación periódica...");
 
     const history = readHistory();
+    const componentState = loadComponentState();
 
+    // P-07: Solo ejecutar checks cuyo intervalo individual haya vencido
     const checks = {};
-    checks.commander = checkCommander();
-    checks.approvers = checkOrphanedApprovers();
-    checks.telegram = await checkTelegramBot();
-    checks.settings = checkSettings();
-    checks.hooks = checkCriticalHooks();
-    checks.worktrees = checkDeadWorktrees();
+    if (shouldRunCheck(componentState, "commander", now)) {
+        checks.commander = checkCommander();
+    } else {
+        checks.commander = { ok: true, detail: "skipped (backoff)" };
+    }
+    if (shouldRunCheck(componentState, "approvers", now)) {
+        checks.approvers = checkOrphanedApprovers();
+    } else {
+        checks.approvers = { ok: true, detail: "skipped (backoff)" };
+    }
+    if (shouldRunCheck(componentState, "telegram", now)) {
+        // P-07: Cache getMe por 30 min
+        if (_getMeCache && (now - _getMeCacheTs) < TELEGRAM_GETME_CACHE_TTL) {
+            checks.telegram = _getMeCache;
+        } else {
+            checks.telegram = await checkTelegramBot();
+            if (checks.telegram.ok) { _getMeCache = checks.telegram; _getMeCacheTs = now; }
+        }
+    } else {
+        checks.telegram = { ok: true, detail: "skipped (backoff)" };
+    }
+    if (shouldRunCheck(componentState, "settings", now)) {
+        checks.settings = checkSettings();
+    } else {
+        checks.settings = { ok: true, details: ["skipped (backoff)"] };
+    }
+    if (shouldRunCheck(componentState, "hooks", now)) {
+        checks.hooks = checkCriticalHooks();
+    } else {
+        checks.hooks = { ok: true, missing: [] };
+    }
+    if (shouldRunCheck(componentState, "worktrees", now)) {
+        checks.worktrees = checkDeadWorktrees();
+    } else {
+        checks.worktrees = { ok: true, dead: [] };
+    }
+
+    // P-07: Actualizar estado por componente
+    for (const [name, result] of Object.entries(checks)) {
+        if (result.detail !== "skipped (backoff)" && !(result.details && result.details[0] === "skipped (backoff)")) {
+            updateComponentAfterCheck(componentState, name, result.ok, now);
+        }
+    }
+    saveComponentState(componentState);
 
     const checkDetails = {
         commander: checks.commander.detail,

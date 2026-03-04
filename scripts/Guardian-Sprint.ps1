@@ -30,6 +30,8 @@ param(
     [int]$CooldownMinutes = 10
 )
 
+Write-Warning "DEPRECADO: Guardian-Sprint.ps1 esta siendo reemplazado por agent-monitor.js integrado en Commander. Usar Commander para monitoreo automatico."
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
 

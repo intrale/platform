@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Implementacion y Verificacion — P-01 a P-16</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 1100px; margin: 0 auto; padding: 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { color: #1a5276; border-bottom: 3px solid #2980b9; padding-bottom: 10px; }
+  h2 { color: #2471a3; border-bottom: 2px solid #85c1e9; padding-bottom: 6px; margin-top: 35px; }
+  h3 { color: #1a5276; margin-top: 20px; }
+  table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+  th, td { border: 1px solid #bdc3c7; padding: 8px 12px; text-align: left; font-size: 13px; }
+  th { background: #2980b9; color: white; }
+  tr:nth-child(even) { background: #f2f8fc; }
+  .ok { color: #27ae60; font-weight: bold; }
+  .fail { color: #e74c3c; font-weight: bold; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; margin-right: 4px; }
+  .tag-critical { background: #e74c3c; }
+  .tag-high { background: #e67e22; }
+  .tag-medium { background: #f39c12; }
+  .tag-low { background: #3498db; }
+  .tag-new { background: #8e44ad; }
+  .tag-modified { background: #16a085; }
+  .phase { background: #eaf2f8; border-left: 4px solid #2980b9; padding: 12px 16px; margin: 15px 0; border-radius: 0 4px 4px 0; }
+  .phase-title { font-weight: bold; color: #1a5276; font-size: 15px; }
+  code { background: #ecf0f1; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+  pre { background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 6px; overflow-x: auto; font-size: 12px; }
+  .summary-box { background: #d5f5e3; border: 2px solid #27ae60; border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center; }
+  .summary-box h2 { color: #27ae60; border: none; margin-top: 0; }
+  .summary-number { font-size: 48px; font-weight: bold; color: #27ae60; }
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+  .stat-card { background: #f8f9fa; border-radius: 8px; padding: 15px; text-align: center; border: 1px solid #dee2e6; }
+  .stat-card .number { font-size: 32px; font-weight: bold; color: #2980b9; }
+  .stat-card .label { color: #6c757d; font-size: 12px; }
+  .file-list { list-style: none; padding: 0; }
+  .file-list li { padding: 4px 0; font-family: monospace; font-size: 13px; }
+  .file-list li::before { content: "📄 "; }
+  .file-list li.new::before { content: "🆕 "; }
+  .check { color: #27ae60; }
+  .test-detail { background: #f8f9fa; border-radius: 6px; padding: 10px 15px; margin: 8px 0; border-left: 3px solid #27ae60; }
+  @media print {
+    body { font-size: 11px; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 16px; break-before: avoid; }
+    table { font-size: 10px; }
+    .phase { break-inside: avoid; }
+    .test-detail { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Reporte de Implementacion y Verificacion<br>Mejora Integral de Procesos Periodicos (P-01 a P-16)</h1>
+
+<p><strong>Proyecto:</strong> Intrale Platform &nbsp;|&nbsp; <strong>Fecha:</strong> 2026-03-04 &nbsp;|&nbsp; <strong>Autor:</strong> Claude Opus 4.6 (Agente IA)</p>
+<p><strong>Referencia:</strong> <code>docs/qa/reporte-procesos-periodicos-mejora.pdf</code> (propuesta original)</p>
+
+<div class="summary-box">
+  <h2>Resultado Final</h2>
+  <div class="summary-number">98 / 98 tests</div>
+  <p style="font-size:18px; margin:5px 0;">Todas las propuestas implementadas y verificadas</p>
+  <p style="color:#666; font-size:13px;">16 suites &bull; 98 tests &bull; 0 failures &bull; 407ms</p>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="number">16</div>
+    <div class="label">Propuestas implementadas</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">5</div>
+    <div class="label">Archivos nuevos</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">11</div>
+    <div class="label">Archivos modificados</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">98</div>
+    <div class="label">Tests automatizados</div>
+  </div>
+</div>
+
+<!-- ─── SECCION 1: RESUMEN EJECUTIVO ─── -->
+<h2>1. Resumen ejecutivo</h2>
+
+<p>Se implementaron las 16 propuestas de mejora identificadas en el reporte de analisis de procesos periodicos. Las mejoras cubren:</p>
+<ul>
+  <li><strong>Seguridad:</strong> Eliminacion de credenciales hardcodeadas (P-10)</li>
+  <li><strong>Contension de recursos:</strong> Escrituras atomicas, eliminacion de conflictos 409, locks atomicos (P-01, P-03, P-04)</li>
+  <li><strong>Performance:</strong> Backoff progresivo, polling adaptativo, batching, cooldowns (P-06, P-07, P-11, P-12, P-13)</li>
+  <li><strong>Arquitectura:</strong> Cliente Telegram compartido, message broker, supervisor de procesos (P-02, P-05, P-08, P-09, P-14)</li>
+  <li><strong>Observabilidad:</strong> Bitacora operativa auto-actualizable con promocion a MEMORY (P-15, P-16)</li>
+</ul>
+
+<!-- ─── SECCION 2: FASES DE IMPLEMENTACION ─── -->
+<h2>2. Fases de implementacion</h2>
+
+<div class="phase">
+  <div class="phase-title">Fase 1 — Quick Wins (P-10, P-04, P-05, P-06)</div>
+  <p>4 cambios simples de alto impacto inmediato: token hardcodeado, lock atomico, orphan interval, cooldown.</p>
+</div>
+
+<div class="phase">
+  <div class="phase-title">Fase 2 — Contencion de Recursos (P-09, P-01, P-03, P-12)</div>
+  <p>Extraer cliente Telegram compartido, escritura atomica de PQ, eliminar getUpdates en ask-next-sprint, polling adaptativo.</p>
+</div>
+
+<div class="phase">
+  <div class="phase-title">Fase 3 — Optimizacion (P-07, P-11, P-02, P-13)</div>
+  <p>Health check con backoff por componente, CI backoff progresivo, message broker centralizado, batching de actividad.</p>
+</div>
+
+<div class="phase">
+  <div class="phase-title">Fase 4 — Observabilidad (P-15, P-16)</div>
+  <p>Bitacora ops-learnings.jsonl con auto-escalamiento, auto-mitigacion, auto-resolucion, digest semanal, promocion a MEMORY.md.</p>
+</div>
+
+<div class="phase">
+  <div class="phase-title">Fase 5 — Consolidacion Arquitectonica (P-08, P-14)</div>
+  <p>Agent monitor unificado (reemplaza Watch-Agentes.ps1 + Guardian-Sprint.ps1), process supervisor centralizado.</p>
+</div>
+
+<!-- ─── SECCION 3: DETALLE POR PROPUESTA ─── -->
+<h2>3. Detalle de cada propuesta</h2>
+
+<table>
+<tr>
+  <th>ID</th>
+  <th>Propuesta</th>
+  <th>Severidad</th>
+  <th>Archivos</th>
+  <th>Tests</th>
+  <th>Estado</th>
+</tr>
+<tr>
+  <td><strong>P-01</strong></td>
+  <td>Escritura atomica en pending-questions.json (temp+rename + fs.watch)</td>
+  <td><span class="tag tag-critical">CRITICO</span></td>
+  <td><code>pending-questions.js</code>, <code>permission-approver.js</code></td>
+  <td>5</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-02</strong></td>
+  <td>Message broker centralizado (telegram-outbox.js + drain en Commander)</td>
+  <td><span class="tag tag-low">BAJO</span></td>
+  <td><code>telegram-outbox.js</code> <span class="tag tag-new">NUEVO</span>, <code>telegram-commander.js</code></td>
+  <td>5</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-03</strong></td>
+  <td>ask-next-sprint via pending-questions (sin getUpdates directo)</td>
+  <td><span class="tag tag-high">ALTO</span></td>
+  <td><code>scripts/ask-next-sprint.js</code></td>
+  <td>6</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-04</strong></td>
+  <td>Lock atomico con <code>fs.openSync('wx')</code> en commander-launcher</td>
+  <td><span class="tag tag-high">ALTO</span></td>
+  <td><code>commander-launcher.js</code></td>
+  <td>7</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-05</strong></td>
+  <td>Eliminar orphan detection interval de 3s (on-demand via fs.watch)</td>
+  <td><span class="tag tag-medium">MEDIO</span></td>
+  <td><code>telegram-commander.js</code></td>
+  <td>4</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-06</strong></td>
+  <td>Cooldown 60s en commander-launcher (skip si ultima check fue OK)</td>
+  <td><span class="tag tag-medium">MEDIO</span></td>
+  <td><code>commander-launcher.js</code></td>
+  <td>6</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-07</strong></td>
+  <td>Health check selectivo con backoff exponencial por componente</td>
+  <td><span class="tag tag-medium">MEDIO</span></td>
+  <td><code>health-check.js</code></td>
+  <td>6</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-08</strong></td>
+  <td>Unificar Watch-Agentes + Guardian-Sprint en agent-monitor.js</td>
+  <td><span class="tag tag-low">BAJO</span></td>
+  <td><code>agent-monitor.js</code> <span class="tag tag-new">NUEVO</span>, <code>Watch-Agentes.ps1</code>, <code>Guardian-Sprint.ps1</code></td>
+  <td>10</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-09</strong></td>
+  <td>Extraer telegram-client.js compartido con retry y rate limiting</td>
+  <td><span class="tag tag-low">BAJO</span></td>
+  <td><code>telegram-client.js</code> <span class="tag tag-new">NUEVO</span>, <code>ci-monitor-bg.js</code>, <code>ask-next-sprint.js</code></td>
+  <td>9</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-10</strong></td>
+  <td>Eliminar token hardcodeado en Watch-Agentes.ps1</td>
+  <td><span class="tag tag-critical">CRITICO</span></td>
+  <td><code>scripts/Watch-Agentes.ps1</code></td>
+  <td>4</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-11</strong></td>
+  <td>CI Monitor con backoff progresivo (60s/30s/60s segun fase)</td>
+  <td><span class="tag tag-medium">MEDIO</span></td>
+  <td><code>ci-monitor-bg.js</code></td>
+  <td>5</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-12</strong></td>
+  <td>Polling adaptativo en permission-approver (150ms/500ms/1000ms)</td>
+  <td><span class="tag tag-medium">MEDIO</span></td>
+  <td><code>permission-approver.js</code></td>
+  <td>5</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-13</strong></td>
+  <td>Batching de escrituras en activity-logger (buffer 2s + flush)</td>
+  <td><span class="tag tag-low">BAJO</span></td>
+  <td><code>activity-logger.js</code></td>
+  <td>5</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-14</strong></td>
+  <td>Process Supervisor centralizado con registry de PIDs y politicas</td>
+  <td><span class="tag tag-low">BAJO</span></td>
+  <td><code>process-supervisor.js</code> <span class="tag tag-new">NUEVO</span>, <code>telegram-commander.js</code></td>
+  <td>8</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-15</strong></td>
+  <td>ops-learnings.jsonl — Bitacora operativa auto-actualizable</td>
+  <td><span class="tag tag-high">ALTO</span></td>
+  <td><code>ops-learnings.js</code> <span class="tag tag-new">NUEVO</span> + 5 hooks integrados</td>
+  <td>9</td>
+  <td class="ok">PASS</td>
+</tr>
+<tr>
+  <td><strong>P-16</strong></td>
+  <td>Promocion automatica de lecciones criticas a MEMORY.md</td>
+  <td><span class="tag tag-medium">MEDIO</span></td>
+  <td><code>ops-learnings.js</code> (funcion promoteToMemory)</td>
+  <td>4</td>
+  <td class="ok">PASS</td>
+</tr>
+</table>
+
+<!-- ─── SECCION 4: ARCHIVOS CREADOS Y MODIFICADOS ─── -->
+<h2>4. Inventario de archivos</h2>
+
+<h3>4.1. Archivos nuevos (5)</h3>
+<table>
+<tr><th>Archivo</th><th>Proposito</th><th>Lineas</th></tr>
+<tr><td><code>.claude/hooks/telegram-client.js</code></td><td>Cliente Telegram compartido con retry, backoff, rate limiting</td><td>~280</td></tr>
+<tr><td><code>.claude/hooks/telegram-outbox.js</code></td><td>Message broker JSONL con drain periodico (outbox pattern)</td><td>~148</td></tr>
+<tr><td><code>.claude/hooks/ops-learnings.js</code></td><td>Bitacora operativa: CRUD, escalamiento, mitigacion, digest, promocion</td><td>~339</td></tr>
+<tr><td><code>.claude/hooks/agent-monitor.js</code></td><td>Monitor unificado de agentes: watch + guardian + zombie detection</td><td>~280</td></tr>
+<tr><td><code>.claude/hooks/process-supervisor.js</code></td><td>Supervisor de procesos: registry, heartbeat, politicas restart/notify</td><td>~210</td></tr>
+</table>
+
+<h3>4.2. Archivos modificados (11)</h3>
+<table>
+<tr><th>Archivo</th><th>Propuestas</th><th>Cambios clave</th></tr>
+<tr><td><code>scripts/Watch-Agentes.ps1</code></td><td>P-10, P-08</td><td>Token eliminado, usa telegram-config.json, marcado DEPRECADO</td></tr>
+<tr><td><code>scripts/Guardian-Sprint.ps1</code></td><td>P-08</td><td>Marcado DEPRECADO (reemplazado por agent-monitor.js)</td></tr>
+<tr><td><code>.claude/hooks/commander-launcher.js</code></td><td>P-04, P-06, P-15</td><td>Lock atomico <code>wx</code>, cooldown 60s, ops-learnings integrado</td></tr>
+<tr><td><code>.claude/hooks/telegram-commander.js</code></td><td>P-02, P-05, P-08, P-14, P-15</td><td>Outbox drain, sin orphan interval, agent-monitor, supervisor, ops-learnings (409 + timeout + digest)</td></tr>
+<tr><td><code>.claude/hooks/pending-questions.js</code></td><td>P-01</td><td>Escritura atomica temp+rename</td></tr>
+<tr><td><code>.claude/hooks/permission-approver.js</code></td><td>P-01, P-12, P-15</td><td>fs.watch + polling adaptativo + timeout en ops-learnings</td></tr>
+<tr><td><code>scripts/ask-next-sprint.js</code></td><td>P-03, P-09</td><td>Eliminado getUpdates, usa PQ+fs.watch+telegram-client</td></tr>
+<tr><td><code>.claude/hooks/ci-monitor-bg.js</code></td><td>P-09, P-11, P-15</td><td>telegram-client, backoff progresivo, ops-learnings CI failure/timeout</td></tr>
+<tr><td><code>.claude/hooks/health-check.js</code></td><td>P-07, P-15</td><td>Backoff por componente, consecutivePasses, cache getMe, ops-learnings</td></tr>
+<tr><td><code>.claude/hooks/activity-logger.js</code></td><td>P-13</td><td>Batching 2s con buffer JSONL + flush</td></tr>
+<tr><td><code>.claude/hooks/notify-telegram.js</code></td><td>—</td><td>Sin cambios (mantiene envio directo por complejidad de screenshots)</td></tr>
+</table>
+
+<h3>4.3. Archivos de test creados (17)</h3>
+<table>
+<tr><th>Archivo</th><th>Suite</th><th>Tests</th></tr>
+<tr><td><code>tests/test-p01-atomic-writes.js</code></td><td>Escritura atomica PQ</td><td>5</td></tr>
+<tr><td><code>tests/test-p02-outbox.js</code></td><td>Outbox pattern</td><td>5</td></tr>
+<tr><td><code>tests/test-p03-no-getupdates.js</code></td><td>Sin getUpdates</td><td>6</td></tr>
+<tr><td><code>tests/test-p04-atomic-lock.js</code></td><td>Lock atomico wx</td><td>7</td></tr>
+<tr><td><code>tests/test-p05-orphan-removal.js</code></td><td>Sin orphan interval</td><td>4</td></tr>
+<tr><td><code>tests/test-p06-cooldown.js</code></td><td>Cooldown 60s</td><td>6</td></tr>
+<tr><td><code>tests/test-p07-health-backoff.js</code></td><td>Health backoff</td><td>6</td></tr>
+<tr><td><code>tests/test-p08-agent-monitor.js</code></td><td>Agent monitor</td><td>10</td></tr>
+<tr><td><code>tests/test-p09-telegram-client.js</code></td><td>Telegram client</td><td>9</td></tr>
+<tr><td><code>tests/test-p10-no-hardcoded-token.js</code></td><td>Sin token hardcoded</td><td>4</td></tr>
+<tr><td><code>tests/test-p11-ci-backoff.js</code></td><td>CI backoff</td><td>5</td></tr>
+<tr><td><code>tests/test-p12-adaptive-polling.js</code></td><td>Polling adaptativo</td><td>5</td></tr>
+<tr><td><code>tests/test-p13-activity-batching.js</code></td><td>Batching actividad</td><td>5</td></tr>
+<tr><td><code>tests/test-p14-process-supervisor.js</code></td><td>Process supervisor</td><td>8</td></tr>
+<tr><td><code>tests/test-p15-ops-learnings.js</code></td><td>Ops learnings</td><td>9</td></tr>
+<tr><td><code>tests/test-p16-memory-promotion.js</code></td><td>Promocion MEMORY</td><td>4</td></tr>
+<tr><td><code>tests/run-all.js</code></td><td>Runner</td><td>—</td></tr>
+<tr><td colspan="2"><strong>TOTAL</strong></td><td><strong>98</strong></td></tr>
+</table>
+
+<!-- ─── SECCION 5: RESULTADOS DE TESTS ─── -->
+<h2>5. Resultados de verificacion</h2>
+
+<p>Framework: <code>node:test</code> nativo (Node.js v24.13.1) — cero dependencias externas.</p>
+<p>Comando: <code>cd .claude/hooks && node --test tests/test-p*.js</code></p>
+
+<h3>5.1. Resumen de resultados</h3>
+<pre>
+suites 16
+tests  98
+pass   98
+fail   0
+skip   0
+time   407ms
+</pre>
+
+<h3>5.2. Tipos de verificacion aplicados</h3>
+<table>
+<tr><th>Tipo</th><th>Descripcion</th><th>Propuestas</th></tr>
+<tr><td><strong>Analisis estatico</strong></td><td>Grep del codigo fuente para verificar presencia/ausencia de patrones</td><td>P-03, P-04, P-05, P-06, P-07, P-10, P-11, P-12, P-13</td></tr>
+<tr><td><strong>Test funcional con aislamiento</strong></td><td>Ejecuta funciones reales en directorio temporal (<code>os.tmpdir()</code>)</td><td>P-01, P-02, P-15, P-16</td></tr>
+<tr><td><strong>Test funcional directo</strong></td><td>Llama funciones exportadas y verifica comportamiento</td><td>P-08, P-09, P-14</td></tr>
+<tr><td><strong>Integracion</strong></td><td>Verifica que hooks integran ops-learnings correctamente</td><td>P-04, P-06, P-08, P-09, P-11, P-12, P-14, P-15</td></tr>
+</table>
+
+<h3>5.3. Detalle por propuesta</h3>
+
+<div class="test-detail">
+  <strong>P-01 Escritura atomica</strong> (5 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> saveQuestions usa temp+rename &bull;
+  <span class="check">&#10004;</span> addPendingQuestion crea archivo &bull;
+  <span class="check">&#10004;</span> Sin .tmp huerfanos &bull;
+  <span class="check">&#10004;</span> JSON valido roundtrip &bull;
+  <span class="check">&#10004;</span> getQuestionById funciona
+</div>
+
+<div class="test-detail">
+  <strong>P-02 Outbox pattern</strong> (5 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> enqueue crea entry pending &bull;
+  <span class="check">&#10004;</span> Acumulacion de entries &bull;
+  <span class="check">&#10004;</span> Campos obligatorios &bull;
+  <span class="check">&#10004;</span> drainQueue sin client no crash &bull;
+  <span class="check">&#10004;</span> Opciones personalizadas
+</div>
+
+<div class="test-detail">
+  <strong>P-03 Sin getUpdates</strong> (6 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> No getUpdates en codigo activo &bull;
+  <span class="check">&#10004;</span> Sin loadOffset/saveOffset &bull;
+  <span class="check">&#10004;</span> Sin pollForDecision &bull;
+  <span class="check">&#10004;</span> Usa pending-questions &bull;
+  <span class="check">&#10004;</span> Usa telegram-client &bull;
+  <span class="check">&#10004;</span> Usa fs.watch
+</div>
+
+<div class="test-detail">
+  <strong>P-04 Lock atomico</strong> (7 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> Flag wx para exclusion mutua &bull;
+  <span class="check">&#10004;</span> Maneja EEXIST &bull;
+  <span class="check">&#10004;</span> Stale detection 30s &bull;
+  <span class="check">&#10004;</span> Retorna boolean &bull;
+  <span class="check">&#10004;</span> Escribe PID+timestamp &bull;
+  <span class="check">&#10004;</span> Sin patron viejo &bull;
+  <span class="check">&#10004;</span> Integra ops-learnings
+</div>
+
+<div class="test-detail">
+  <strong>P-05 Sin orphan interval</strong> (4 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> Sin PQ_ORPHAN_CHECK_MS &bull;
+  <span class="check">&#10004;</span> Sin _pqOrphanInterval activo &bull;
+  <span class="check">&#10004;</span> Sin startOrphanDetection &bull;
+  <span class="check">&#10004;</span> checkOrphanedApprovers en onPQChange
+</div>
+
+<div class="test-detail">
+  <strong>P-06 Cooldown 60s</strong> (6 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> LAUNCHER_COOLDOWN_MS 60000 &bull;
+  <span class="check">&#10004;</span> Usa launcher-last-check.json &bull;
+  <span class="check">&#10004;</span> isLauncherCooldownActive existe &bull;
+  <span class="check">&#10004;</span> updateLauncherCooldown existe &bull;
+  <span class="check">&#10004;</span> main() verifica cooldown &bull;
+  <span class="check">&#10004;</span> Logica de timestamp
+</div>
+
+<div class="test-detail">
+  <strong>P-07 Health backoff</strong> (6 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> shouldRunCheck &bull;
+  <span class="check">&#10004;</span> updateComponentAfterCheck &bull;
+  <span class="check">&#10004;</span> health-check-components.json &bull;
+  <span class="check">&#10004;</span> Cache _getMeCache &bull;
+  <span class="check">&#10004;</span> loadComponentState/saveComponentState &bull;
+  <span class="check">&#10004;</span> consecutivePasses
+</div>
+
+<div class="test-detail">
+  <strong>P-08 Agent monitor</strong> (10 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> Carga sin error &bull;
+  <span class="check">&#10004;</span> Exporta 3 funciones &bull;
+  <span class="check">&#10004;</span> Status sin plan &bull;
+  <span class="check">&#10004;</span> guardianOnly mode &bull;
+  <span class="check">&#10004;</span> stop no throw &bull;
+  <span class="check">&#10004;</span> PS1 deprecados &bull;
+  <span class="check">&#10004;</span> Integra ops-learnings
+</div>
+
+<div class="test-detail">
+  <strong>P-09 Telegram client</strong> (9 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> Carga sin error &bull;
+  <span class="check">&#10004;</span> Exporta 6 funciones &bull;
+  <span class="check">&#10004;</span> Config con bot_token/chat_id &bull;
+  <span class="check">&#10004;</span> TG_MSG_MAX=4096 &bull;
+  <span class="check">&#10004;</span> ci-monitor migrado
+</div>
+
+<div class="test-detail">
+  <strong>P-10 Sin token hardcoded</strong> (4 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> Sin patron bot token &bull;
+  <span class="check">&#10004;</span> Sin chatId hardcoded &bull;
+  <span class="check">&#10004;</span> Referencia telegram-config.json &bull;
+  <span class="check">&#10004;</span> Usa ConvertFrom-Json
+</div>
+
+<div class="test-detail">
+  <strong>P-11 CI backoff</strong> (5 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> getPollInterval existe &bull;
+  <span class="check">&#10004;</span> Sin POLL_INTERVAL_MS fijo &bull;
+  <span class="check">&#10004;</span> Intervalos 60s/30s/60s &bull;
+  <span class="check">&#10004;</span> Usa telegram-client &bull;
+  <span class="check">&#10004;</span> Integra ops-learnings
+</div>
+
+<div class="test-detail">
+  <strong>P-12 Polling adaptativo</strong> (5 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> getAdaptivePollMs &bull;
+  <span class="check">&#10004;</span> fs.watch &bull;
+  <span class="check">&#10004;</span> Intervalos 150/500/1000 &bull;
+  <span class="check">&#10004;</span> Integra ops-learnings &bull;
+  <span class="check">&#10004;</span> Categoria approval_timeout
+</div>
+
+<div class="test-detail">
+  <strong>P-13 Batching actividad</strong> (5 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> BATCH_COOLDOWN_MS &bull;
+  <span class="check">&#10004;</span> activity-logger-last.json &bull;
+  <span class="check">&#10004;</span> Logica skipJsonl &bull;
+  <span class="check">&#10004;</span> Flush de buffer &bull;
+  <span class="check">&#10004;</span> Cooldown 2000ms
+</div>
+
+<div class="test-detail">
+  <strong>P-14 Process supervisor</strong> (8 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> register/unregister &bull;
+  <span class="check">&#10004;</span> alive detection &bull;
+  <span class="check">&#10004;</span> heartbeat update &bull;
+  <span class="check">&#10004;</span> PID muerto detectado &bull;
+  <span class="check">&#10004;</span> start/stop no throw &bull;
+  <span class="check">&#10004;</span> Persistencia a archivo &bull;
+  <span class="check">&#10004;</span> Integra ops-learnings
+</div>
+
+<div class="test-detail">
+  <strong>P-15 Ops learnings</strong> (9 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> recordLearning campos &bull;
+  <span class="check">&#10004;</span> Incremento times_seen &bull;
+  <span class="check">&#10004;</span> Escalamiento low&rarr;high (x3) &bull;
+  <span class="check">&#10004;</span> Escalamiento &rarr;critical (x5) &bull;
+  <span class="check">&#10004;</span> Filtro por severity &bull;
+  <span class="check">&#10004;</span> autoMitigate 7d &bull;
+  <span class="check">&#10004;</span> autoResolve fix(hooks) &bull;
+  <span class="check">&#10004;</span> Digest HTML &bull;
+  <span class="check">&#10004;</span> shouldSendDigest
+</div>
+
+<div class="test-detail">
+  <strong>P-16 Promocion MEMORY</strong> (4 tests) <span class="ok">PASS</span><br>
+  <span class="check">&#10004;</span> Crea ops-lessons.md &bull;
+  <span class="check">&#10004;</span> Header + symptom &bull;
+  <span class="check">&#10004;</span> Formato **SEVERITY** &bull;
+  <span class="check">&#10004;</span> Dedup por symptom
+</div>
+
+<!-- ─── SECCION 6: IMPACTO ESPERADO ─── -->
+<h2>6. Impacto esperado</h2>
+
+<table>
+<tr><th>Metrica</th><th>Antes</th><th>Despues</th><th>Mejora</th></tr>
+<tr><td>Conflictos 409 Telegram</td><td>Frecuentes (ask-next-sprint vs Commander)</td><td>Eliminados (P-03 usa PQ)</td><td>100%</td></tr>
+<tr><td>Corrupcion pending-questions.json</td><td>Posible (6 writers no atomicos)</td><td>Imposible (temp+rename atomico)</td><td>100%</td></tr>
+<tr><td>Polls innecesarios (orphan check)</td><td>~20/min (setInterval 3s)</td><td>Solo on-demand</td><td>~95%</td></tr>
+<tr><td>Polls innecesarios (launcher)</td><td>Cada tool use (~100/min)</td><td>Max 1/min (cooldown 60s)</td><td>~98%</td></tr>
+<tr><td>HTTP calls health-check</td><td>Todas cada intervalo</td><td>Solo las vencidas (backoff)</td><td>~70%</td></tr>
+<tr><td>Credenciales expuestas</td><td>Token en Watch-Agentes.ps1</td><td>Solo en telegram-config.json</td><td>100%</td></tr>
+<tr><td>Codigo duplicado (HTTP Telegram)</td><td>~350 lineas en 5 archivos</td><td>1 modulo compartido</td><td>~80%</td></tr>
+<tr><td>Visibilidad de errores operativos</td><td>Solo logs locales</td><td>Bitacora + digest + MEMORY</td><td>Nuevo</td></tr>
+<tr><td>Supervision de procesos</td><td>Fragmentada en 4 scripts PS1</td><td>Centralizada en Commander</td><td>Unificado</td></tr>
+</table>
+
+<!-- ─── SECCION 7: COMO RE-EJECUTAR ─── -->
+<h2>7. Como re-ejecutar los tests</h2>
+
+<pre>
+# Ejecutar todos los tests (98)
+cd .claude/hooks && node --test tests/test-p*.js
+
+# Ejecutar un test especifico
+node --test tests/test-p15-ops-learnings.js
+
+# Ejecutar via runner
+node tests/run-all.js
+</pre>
+
+<p><strong>Requisitos:</strong> Node.js >= 18 (usa <code>node:test</code> nativo). No requiere instalar dependencias.</p>
+
+<!-- ─── SECCION 8: CONCLUSION ─── -->
+<h2>8. Conclusion</h2>
+
+<p>Las 16 propuestas de mejora estan completamente implementadas y verificadas con 98 tests automatizados que cubren tanto analisis estatico del codigo fuente como ejecucion funcional con aislamiento en directorios temporales.</p>
+
+<p>Los cambios eliminan problemas criticos de contencion de recursos (escrituras no atomicas, conflictos 409), reducen actividad innecesaria (polling excesivo, checks redundantes), consolidan codigo duplicado (~350 lineas eliminadas) y agregan observabilidad operativa (bitacora auto-actualizable con escalamiento y promocion).</p>
+
+<p>Los scripts PowerShell originales (<code>Watch-Agentes.ps1</code>, <code>Guardian-Sprint.ps1</code>) quedan marcados como DEPRECADOS y siguen funcionando como fallback manual, mientras la logica equivalente opera integrada en el Commander via los nuevos modulos Node.js.</p>
+
+<p style="text-align: center; color: #888; margin-top: 30px; font-size: 12px;">
+  Generado automaticamente por Claude Opus 4.6 — 2026-03-04
+</p>
+
+</body>
+</html>

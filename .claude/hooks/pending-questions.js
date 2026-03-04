@@ -32,10 +32,16 @@ function loadQuestions() {
     }
 }
 
+// P-01: Escritura atómica — temp file + rename (atómico en mismo filesystem NTFS)
 function saveQuestions(data) {
     try {
-        fs.writeFileSync(PENDING_FILE, JSON.stringify(data, null, 2), "utf8");
-    } catch (e) {}
+        const tmp = PENDING_FILE + ".tmp." + process.pid;
+        fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+        fs.renameSync(tmp, PENDING_FILE);
+    } catch (e) {
+        // Fallback: escritura directa si rename falla (cross-device edge case)
+        try { fs.writeFileSync(PENDING_FILE, JSON.stringify(data, null, 2), "utf8"); } catch (e2) {}
+    }
 }
 
 /**
