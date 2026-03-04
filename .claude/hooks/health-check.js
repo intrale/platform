@@ -199,7 +199,7 @@ function processCheckResult(history, checkName, checkResult, detail) {
         }
 
         for (const id of problemIds) {
-            const autoFixed = checkName === "commander" || checkName === "approvers";
+            const autoFixed = checkName === "commander" || checkName === "approvers" || checkName === "worktrees";
             const problem = recordProblem(history, id, mapping.category, detail, autoFixed);
             const canEscalate = !NO_ESCALATE.has(id);
 
@@ -411,7 +411,7 @@ function checkCriticalHooks() {
 // ─── Check 6: Worktrees muertos ───────────────────────────────────────────
 
 function checkDeadWorktrees() {
-    const result = { ok: true, dead: [] };
+    const result = { ok: true, dead: [], cleaned: [] };
     try {
         const parentDir = path.resolve(REPO_ROOT, "..");
         const entries = fs.readdirSync(parentDir);
@@ -422,14 +422,28 @@ function checkDeadWorktrees() {
                 try {
                     const stat = fs.statSync(fullPath);
                     if (stat.isDirectory()) {
-                        // Verificar si tiene contenido real (más de solo . y ..)
                         const contents = fs.readdirSync(fullPath);
                         if (contents.length <= 1) {
-                            result.dead.push(entry);
+                            // Auto-repair: intentar eliminar directorio vacío/residual
+                            try {
+                                if (contents.length === 1) {
+                                    fs.rmSync(path.join(fullPath, contents[0]), { recursive: true, force: true });
+                                }
+                                fs.rmdirSync(fullPath);
+                                result.cleaned.push(entry);
+                                log("Worktree muerto limpiado: " + entry);
+                            } catch (cleanErr) {
+                                result.dead.push(entry);
+                                log("No se pudo limpiar worktree: " + entry + " — " + cleanErr.message);
+                            }
                         }
                     }
                 } catch (e) {}
             }
+        }
+        // Si se limpió algo, podar referencias huérfanas de git
+        if (result.cleaned.length > 0) {
+            try { execSync("git worktree prune", { cwd: REPO_ROOT, timeout: 5000 }); } catch (e) {}
         }
         if (result.dead.length > 0) result.ok = false;
     } catch (e) {}
@@ -594,7 +608,11 @@ async function main() {
         telegram: checks.telegram.detail,
         settings: checks.settings.details.join(", "),
         hooks: checks.hooks.missing.length > 0 ? "Faltantes: " + checks.hooks.missing.join(", ") : "Todos presentes",
-        worktrees: checks.worktrees.dead.length > 0 ? checks.worktrees.dead.length + " muertos" : "OK"
+        worktrees: checks.worktrees.dead.length > 0
+            ? checks.worktrees.dead.length + " muertos" + (checks.worktrees.cleaned.length > 0 ? " (" + checks.worktrees.cleaned.length + " limpiados)" : "")
+            : checks.worktrees.cleaned.length > 0
+                ? checks.worktrees.cleaned.length + " limpiados ✅"
+                : "OK"
     };
 
     const allResults = {};
