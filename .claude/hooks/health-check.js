@@ -564,7 +564,7 @@ async function main() {
     };
     writeState(newState);
 
-    if (issues.length > 0 || issuesCreated.length > 0 || problemsResolved.length > 0) {
+    if (issues.length > 0 || issuesCreated.length > 0) {
         let msg = "🏥 <b>Health Check — Problemas detectados</b>\n\n";
         msg += issues.map(i => "• " + i).join("\n");
 
