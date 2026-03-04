@@ -31,6 +31,8 @@ param(
     [switch]$NoAutoProponer
 )
 
+Write-Warning "DEPRECADO: Watch-Agentes.ps1 esta siendo reemplazado por agent-monitor.js integrado en Commander. Usar Commander para monitoreo automatico."
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -51,12 +53,13 @@ function Write-Log {
 function Send-TelegramMessage {
     param([string]$Text)
     try {
-        $botToken = '8403197784:AAG07242gOCKwZ-G-DI8eLC6R1HwfhG6Exk'
-        $chatId   = '6529617704'
-        $uri = "https://api.telegram.org/bot$botToken/sendMessage"
+        $cfgPath = Join-Path (Join-Path (Join-Path $MainRepo ".claude") "hooks") "telegram-config.json"
+        $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+        $uri = "https://api.telegram.org/bot$($cfg.bot_token)/sendMessage"
         Invoke-RestMethod -Uri $uri -Method Post -Body @{
-            chat_id = $chatId
-            text    = $Text
+            chat_id    = $cfg.chat_id
+            text       = $Text
+            parse_mode = "HTML"
         } -ErrorAction SilentlyContinue | Out-Null
     }
     catch {

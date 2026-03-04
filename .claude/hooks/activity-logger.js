@@ -118,22 +118,56 @@ function handleInput() {
         const sessionId = data.session_id || "";
         const logTool = (toolName === "TaskCreate" || toolName === "TaskUpdate") ? "Task" : toolName;
         const entry = JSON.stringify({ ts, session: sessionId.substring(0, 8), tool: logTool, target: target.substring(0, 120) });
-        fs.appendFileSync(LOG_FILE, entry + "\n", "utf8");
 
-        // Actualizar archivo de sesion
+        // P-13: Batching — si última escritura fue hace <2s, solo actualizar sesión (skip JSONL append)
+        const BATCH_COOLDOWN_MS = 2000;
+        const BATCH_STATE_FILE = path.join(path.dirname(LOG_FILE), "hooks", "activity-logger-last.json");
+        let skipJsonl = false;
+        try {
+            if (fs.existsSync(BATCH_STATE_FILE)) {
+                const batchState = JSON.parse(fs.readFileSync(BATCH_STATE_FILE, "utf8"));
+                if (batchState.ts && (Date.now() - batchState.ts) < BATCH_COOLDOWN_MS) {
+                    // Acumular en buffer file
+                    const bufferFile = BATCH_STATE_FILE.replace(".json", "-buffer.jsonl");
+                    fs.appendFileSync(bufferFile, entry + "\n", "utf8");
+                    skipJsonl = true;
+                }
+            }
+        } catch (e) {}
+
+        if (!skipJsonl) {
+            // Flush buffer si existe
+            const bufferFile = BATCH_STATE_FILE.replace(".json", "-buffer.jsonl");
+            try {
+                if (fs.existsSync(bufferFile)) {
+                    const buffered = fs.readFileSync(bufferFile, "utf8");
+                    if (buffered.trim()) {
+                        fs.appendFileSync(LOG_FILE, buffered, "utf8");
+                    }
+                    fs.unlinkSync(bufferFile);
+                }
+            } catch (e) {}
+
+            fs.appendFileSync(LOG_FILE, entry + "\n", "utf8");
+
+            // Rotacion del JSONL
+            try {
+                const content = fs.readFileSync(LOG_FILE, "utf8").trim();
+                const lines = content.split("\n");
+                if (lines.length > MAX_LINES) {
+                    const keep = Math.floor(MAX_LINES / 2);
+                    fs.writeFileSync(LOG_FILE, lines.slice(-keep).join("\n") + "\n", "utf8");
+                }
+            } catch(e) {}
+        }
+
+        // Actualizar timestamp de batch
+        try { fs.writeFileSync(BATCH_STATE_FILE, JSON.stringify({ ts: Date.now() }), "utf8"); } catch (e) {}
+
+        // Actualizar archivo de sesion (siempre — liviano)
         if (sessionId) {
             updateSession(sessionId, ts, toolName, target, ti);
         }
-
-        // Rotacion del JSONL
-        try {
-            const content = fs.readFileSync(LOG_FILE, "utf8").trim();
-            const lines = content.split("\n");
-            if (lines.length > MAX_LINES) {
-                const keep = Math.floor(MAX_LINES / 2);
-                fs.writeFileSync(LOG_FILE, lines.slice(-keep).join("\n") + "\n", "utf8");
-            }
-        } catch(e) {}
 
         // Auto-iniciar reporter PNG si no esta corriendo
         ensureReporterRunning();

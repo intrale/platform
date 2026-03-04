@@ -27,6 +27,17 @@ const { getPendingQuestions, getExpiredQuestions, retryQuestion, resolveQuestion
 const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot } = require("./permission-utils");
 const { registerMessage, getStats: getRegistryStats } = require("./telegram-message-registry");
 const { cleanup: cleanupMessages } = require("./telegram-cleanup");
+let outboxModule;
+try { outboxModule = require("./telegram-outbox"); } catch (e) { outboxModule = null; }
+// P-15: Ops learnings
+let opsLearnings;
+try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
+// P-08: Agent monitor
+let agentMonitor;
+try { agentMonitor = require("./agent-monitor"); } catch (e) { agentMonitor = null; }
+// P-14: Process supervisor
+let processSupervisor;
+try { processSupervisor = require("./process-supervisor"); } catch (e) { processSupervisor = null; }
 const PENDING_QUESTIONS_FILE = path.join(HOOKS_DIR, "pending-questions.json");
 
 const POLL_TIMEOUT_SEC = 30;
@@ -58,6 +69,7 @@ let monitorBusy = false;           // Flag para evitar apilar ejecuciones de mon
 let sprintMonitorIntervalMs = SPRINT_MONITOR_INTERVAL_MS; // Intervalo configurable
 let sprintStartTime = null;        // Timestamp de inicio del sprint
 let cleanupInterval = null;        // ID del setInterval de limpieza de mensajes
+let outboxDrainInterval = null;    // P-02: ID del setInterval de drain de outbox
 let commandBusy = false;           // Flag para evitar ejecutar dos comandos simultáneos
 let commandBusyLabel = "";         // Descripción del comando en ejecución
 const PROCESSED_IDS_MAX = 200;     // Máx message_ids en set de deduplicación
@@ -1469,6 +1481,20 @@ function executeClaude(prompt, extraArgs, options) {
 
         const timer = setTimeout(() => {
             log("Timeout ejecutando claude — matando proceso (PID " + proc.pid + ")");
+            // P-15: Registrar exec timeout en ops-learnings
+            if (opsLearnings) {
+                try {
+                    opsLearnings.recordLearning({
+                        source: "telegram-commander",
+                        category: "exec_timeout",
+                        severity: "high",
+                        symptom: "Exec timeout: claude process excedió límite",
+                        root_cause: "PID " + proc.pid + " no terminó en EXEC_TIMEOUT_MS",
+                        affected: ["telegram-commander.js"],
+                        auto_detected: true
+                    });
+                } catch (e2) {}
+            }
             // En Windows, SIGTERM no mata procesos con shell:true.
             // Usar taskkill /T (tree kill) para matar el árbol completo.
             try {
@@ -1853,6 +1879,20 @@ async function pollingLoop() {
             const is409 = errStr.includes("409") || errStr.includes("Conflict");
             if (is409) {
                 conflictStreak++;
+                // P-15: Registrar conflicto 409 en ops-learnings
+                if (opsLearnings) {
+                    try {
+                        opsLearnings.recordLearning({
+                            source: "telegram-commander",
+                            category: "telegram_conflict",
+                            severity: conflictStreak >= POLL_CONFLICT_MAX ? "critical" : "low",
+                            symptom: "409 Conflict en getUpdates (streak: " + conflictStreak + ")",
+                            root_cause: "Otro poller activo compitiendo por getUpdates",
+                            affected: ["telegram-commander.js"],
+                            auto_detected: true
+                        });
+                    } catch (e2) {}
+                }
                 if (conflictStreak <= POLL_CONFLICT_MAX) {
                     log("Conflicto 409 (" + conflictStreak + "/" + POLL_CONFLICT_MAX + ") — reintentando en " + POLL_CONFLICT_RETRY_MS + "ms");
                     await sleep(POLL_CONFLICT_RETRY_MS);
@@ -2225,6 +2265,9 @@ async function onPendingQuestionsChange() {
         }
     }
     _pqLastSnapshot = newSnap;
+
+    // P-05: Orphan check on-demand (reemplaza setInterval de 3s)
+    checkOrphanedApprovers().catch(e => log("Orphan check (on-demand) error: " + e.message));
 }
 
 function startPendingQuestionsWatch() {
@@ -2252,16 +2295,9 @@ function stopPendingQuestionsWatch() {
         _pqWatcher = null;
         log("PQ Watch detenido");
     }
-    if (_pqOrphanInterval) {
-        clearInterval(_pqOrphanInterval);
-        _pqOrphanInterval = null;
-    }
 }
 
-// ─── Orphan approver detection (approver killed by Claude → sync Telegram) ──
-
-let _pqOrphanInterval = null;
-const PQ_ORPHAN_CHECK_MS = 3000; // Cada 3 segundos
+// ─── Orphan approver detection (on-demand via PQ watch, P-05) ──────────────
 
 async function checkOrphanedApprovers() {
     try {
@@ -2302,12 +2338,7 @@ async function checkOrphanedApprovers() {
     }
 }
 
-function startOrphanDetection() {
-    _pqOrphanInterval = setInterval(() => {
-        checkOrphanedApprovers().catch(e => log("Orphan check error: " + e.message));
-    }, PQ_ORPHAN_CHECK_MS);
-    log("Orphan approver detection iniciado (cada " + (PQ_ORPHAN_CHECK_MS / 1000) + "s)");
-}
+// P-05: startOrphanDetection eliminado — orphan check ahora es on-demand via PQ watch
 
 async function cleanStaleQuestionsOnStartup() {
     const data = loadQuestions();
@@ -2349,6 +2380,10 @@ async function shutdown(signal) {
     stopSprintMonitor();
     stopPendingQuestionsWatch();
     if (cleanupInterval) { clearInterval(cleanupInterval); cleanupInterval = null; }
+    if (outboxDrainInterval) { clearInterval(outboxDrainInterval); outboxDrainInterval = null; }
+    // P-08, P-14: Detener agent monitor y supervisor
+    if (agentMonitor) { try { agentMonitor.stopAgentMonitor(); } catch (e) {} }
+    if (processSupervisor) { try { processSupervisor.stopSupervision(); } catch (e) {} }
 
     try {
         await sendMessage("🔴 <b>Commander offline</b> (" + signal + ")");
@@ -2430,9 +2465,48 @@ async function main() {
         }
     }, CLEANUP_INTERVAL_MS);
 
-    // Iniciar watcher de pending-questions.json (sync consola ↔ Telegram)
+    // Iniciar watcher de pending-questions.json (sync consola ↔ Telegram + orphan check on-demand)
     startPendingQuestionsWatch();
-    // Nota: orphan detection desactivado — post-console-response.js (Stop hook) se encarga
+
+    // P-02: Iniciar drain periódico del outbox de mensajes
+    if (outboxModule) {
+        outboxDrainInterval = outboxModule.startDrainLoop();
+        log("Outbox drain iniciado (cada " + outboxModule.DRAIN_INTERVAL_MS + "ms)");
+    }
+
+    // P-15: Ops learnings — auto-mitigar, archivar y enviar digest semanal en startup
+    if (opsLearnings) {
+        try {
+            const mitigated = opsLearnings.autoMitigate();
+            const archived = opsLearnings.archiveOld();
+            if (mitigated > 0 || archived > 0) {
+                log("Ops learnings: " + mitigated + " mitigados, " + archived + " archivados");
+            }
+            if (opsLearnings.shouldSendDigest()) {
+                const digest = opsLearnings.getDigest();
+                if (digest) {
+                    await sendMessage(digest, { silent: true });
+                    opsLearnings.markDigestSent();
+                    log("Ops learnings digest semanal enviado");
+                }
+            }
+        } catch (e) {
+            log("Error en ops-learnings startup: " + e.message);
+        }
+    }
+
+    // P-14: Iniciar supervisor de procesos
+    if (processSupervisor) {
+        processSupervisor.startSupervision();
+        processSupervisor.register(process.pid, "commander", { policy: "ignore" });
+        log("Process supervisor iniciado");
+    }
+
+    // P-08: Iniciar guardian de agentes (modo guardian-only, sin watch específico)
+    if (agentMonitor) {
+        agentMonitor.startAgentMonitor(null, { guardianOnly: true });
+        log("Agent monitor (guardian) iniciado");
+    }
 
     // Polling principal
     await pollingLoop();

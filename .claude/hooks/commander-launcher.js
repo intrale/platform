@@ -14,8 +14,14 @@ const CONFLICT_COOLDOWN_FILE = path.join(HOOKS_DIR, "telegram-commander.conflict
 const COMMANDER_SCRIPT = path.join(HOOKS_DIR, "telegram-commander.js");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 
+// P-15: Ops learnings
+let opsLearnings;
+try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
+
 const LAUNCHING_STALE_MS = 30000; // 30s — si el flag de launching tiene más de esto, es stale
 const CONFLICT_COOLDOWN_MS = 45000; // 45s — esperar después de un 409 (> POLL_TIMEOUT_SEC=30s)
+const LAUNCHER_COOLDOWN_MS = 60000; // 60s — skip verificación si última check fue OK hace <60s
+const LAUNCHER_COOLDOWN_FILE = path.join(HOOKS_DIR, "launcher-last-check.json");
 
 function log(msg) {
     const line = "[" + new Date().toISOString() + "] Launcher: " + msg;
@@ -62,11 +68,11 @@ function checkLockfile() {
 
 /**
  * Verifica si otro launcher ya está en proceso de arrancar el commander.
- * Usa un archivo flag con timestamp para detectar concurrencia.
+ * Usa fs.openSync con flag 'wx' (exclusive create) para mutex atómico en filesystem.
  * Retorna true si es seguro lanzar, false si otro launcher ya está en eso.
  */
 function acquireLaunchingFlag() {
-    // Verificar si ya existe el flag
+    // Verificar si ya existe el flag (stale check)
     if (fs.existsSync(LAUNCHING_FILE)) {
         try {
             const data = JSON.parse(fs.readFileSync(LAUNCHING_FILE, "utf8"));
@@ -77,26 +83,23 @@ function acquireLaunchingFlag() {
             }
             // Flag stale — limpiarlo y continuar
             log("Launching flag stale (" + Math.round(age / 1000) + "s). Reemplazando.");
+            try { fs.unlinkSync(LAUNCHING_FILE); } catch (e2) {}
         } catch (e) {
-            // Flag corrupto — continuar
+            // Flag corrupto — limpiar y continuar
+            try { fs.unlinkSync(LAUNCHING_FILE); } catch (e2) {}
         }
     }
 
-    // Escribir nuestro flag atómicamente (wx = exclusive create falla si existe)
-    // Como no podemos garantizar atomicidad con writeFileSync, usamos timestamp
+    // Atomic exclusive create — falla si otro proceso creó el archivo primero
     try {
-        fs.writeFileSync(LAUNCHING_FILE, JSON.stringify({ ts: Date.now(), pid: process.pid }), "utf8");
+        const fd = fs.openSync(LAUNCHING_FILE, "wx");
+        fs.writeSync(fd, JSON.stringify({ ts: Date.now(), pid: process.pid }));
+        fs.closeSync(fd);
     } catch (e) {
-        return false;
-    }
-
-    // Re-leer para verificar que somos nosotros (poor man's lock)
-    try {
-        const data = JSON.parse(fs.readFileSync(LAUNCHING_FILE, "utf8"));
-        if (data.pid !== process.pid) {
-            return false; // Otro proceso ganó
-        }
-    } catch (e) {
+        // EEXIST = otro proceso ganó la carrera — no lanzar
+        if (e.code === "EEXIST") return false;
+        // Otro error inesperado — no lanzar por seguridad
+        log("acquireLaunchingFlag error: " + e.message);
         return false;
     }
 
@@ -147,11 +150,27 @@ function isConflictCooldownActive() {
     return false;
 }
 
+function isLauncherCooldownActive() {
+    try {
+        if (!fs.existsSync(LAUNCHER_COOLDOWN_FILE)) return false;
+        const data = JSON.parse(fs.readFileSync(LAUNCHER_COOLDOWN_FILE, "utf8"));
+        return (Date.now() - (data.ts || 0)) < LAUNCHER_COOLDOWN_MS;
+    } catch (e) { return false; }
+}
+
+function updateLauncherCooldown() {
+    try { fs.writeFileSync(LAUNCHER_COOLDOWN_FILE, JSON.stringify({ ts: Date.now() }), "utf8"); } catch (e) {}
+}
+
 function main() {
+    // P-06: Skip si última verificación exitosa fue hace <60s
+    if (isLauncherCooldownActive()) return;
+
     const status = checkLockfile();
 
     if (status.running) {
-        // Commander ya corriendo — nada que hacer
+        // Commander ya corriendo — actualizar cooldown y salir
+        updateLauncherCooldown();
         return;
     }
 
@@ -177,6 +196,22 @@ function main() {
 
     // No está corriendo — lanzarlo
     log("Commander no activo (" + status.reason + "). Lanzando...");
+
+    // P-15: Registrar relanzamiento en ops-learnings
+    if (opsLearnings) {
+        try {
+            opsLearnings.recordLearning({
+                source: "commander-launcher",
+                category: "relaunch",
+                severity: "low",
+                symptom: "Commander relanzado: " + status.reason,
+                root_cause: status.reason,
+                affected: ["commander-launcher.js", "telegram-commander.js"],
+                auto_detected: true
+            });
+        } catch (e) {}
+    }
+
     launchCommander();
 }
 

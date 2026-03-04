@@ -49,9 +49,10 @@ function loadQuestions() {
     return { questions: [] };
 }
 
+// P-01: Escritura atómica — temp file + rename (atómico en mismo filesystem NTFS)
 function saveQuestions(data) {
     try {
-        // Escritura atómica: escribir a archivo temporal → rename
+        // P-01: Escritura atómica: escribir a archivo temporal → rename
         // Esto previene race conditions cuando 2 agentes leen/escriben simultáneamente
         const tmpFile = PENDING_FILE + "." + crypto.randomBytes(4).toString("hex") + ".tmp";
         fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf8");

@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Propuesta de Mejora Integral — Procesos Periodicos</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<style>
+  body { font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.6; color: #1a1a1a; max-width: 900px; margin: 0 auto; padding: 20px; }
+  h1 { color: #1e3a5f; border-bottom: 3px solid #1e3a5f; padding-bottom: 8px; font-size: 1.6em; }
+  h2 { color: #2c5f8a; margin-top: 30px; border-bottom: 1px solid #ddd; padding-bottom: 4px; font-size: 1.3em; }
+  h3 { color: #3a7ab5; margin-top: 20px; font-size: 1.1em; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.88em; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+  th { background: #1e3a5f; color: white; font-weight: 600; }
+  tr:nth-child(even) { background: #f5f8fb; }
+  .severity-critical { background: #fdd; color: #a00; font-weight: bold; }
+  .severity-high { background: #ffecd2; color: #8a5000; font-weight: bold; }
+  .severity-medium { background: #fff3cd; color: #664d00; }
+  .severity-low { background: #d4edda; color: #155724; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; font-weight: 600; margin: 1px 2px; }
+  .tag-perf { background: #e3f2fd; color: #1565c0; }
+  .tag-contention { background: #fce4ec; color: #c62828; }
+  .tag-waste { background: #fff3e0; color: #e65100; }
+  .tag-new { background: #e8f5e9; color: #2e7d32; }
+  .tag-arch { background: #f3e5f5; color: #6a1b9a; }
+  code { background: #f4f4f4; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+  .mermaid { margin: 16px 0; }
+  .recommendation { background: #f0f7ff; border-left: 4px solid #2196f3; padding: 10px 14px; margin: 10px 0; }
+  .warning { background: #fff8e1; border-left: 4px solid #ff9800; padding: 10px 14px; margin: 10px 0; }
+  .critical { background: #ffebee; border-left: 4px solid #f44336; padding: 10px 14px; margin: 10px 0; }
+  .new-proposal { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 10px 14px; margin: 10px 0; }
+  .section-summary { background: #f5f5f5; padding: 12px; border-radius: 8px; margin: 10px 0; }
+  ul { margin: 4px 0; }
+  li { margin: 3px 0; }
+  @media print { .mermaid svg { max-width: 100% !important; } body { font-size: 11pt; } }
+</style>
+</head>
+<body>
+
+<h1>Propuesta de Mejora Integral — Procesos Periodicos y Daemons</h1>
+<p><strong>Proyecto:</strong> Intrale Platform &nbsp;|&nbsp; <strong>Fecha:</strong> 2026-03-04 &nbsp;|&nbsp; <strong>Autor:</strong> Claude Opus 4.6</p>
+
+<div class="section-summary">
+<strong>Resumen ejecutivo:</strong> Se analizaron 13 procesos periodicos (hooks, daemons, scripts PS1) que sostienen la automatizacion del ciclo de desarrollo. Se identificaron <strong>7 problemas criticos</strong> de contenci&oacute;n de recursos, <strong>5 oportunidades de consolidacion</strong>, <strong>3 procesos con actividad innecesaria</strong>, y se propone <strong>1 nuevo componente</strong>. La implementacion de estas mejoras reducir&iacute;a el consumo de CPU en ~40%, eliminar&iacute;a race conditions conocidas, y simplificar&iacute;a la operacion.
+</div>
+
+<!-- ================================================================== -->
+<h2>1. Inventario actual de procesos periodicos</h2>
+
+<table>
+<tr><th>#</th><th>Proceso</th><th>Tipo</th><th>Intervalo</th><th>Trigger</th><th>Recurso compartido</th></tr>
+<tr><td>1</td><td><code>telegram-commander.js</code></td><td>Daemon</td><td>30s long-poll + 3 setInterval</td><td>Auto-start (launcher)</td><td>Telegram API, pending-questions.json, lockfile</td></tr>
+<tr><td>2</td><td><code>ci-monitor-bg.js</code></td><td>Background</td><td>30s polling (max 20 min)</td><td>git push</td><td>GitHub API, Telegram API</td></tr>
+<tr><td>3</td><td><code>health-check.js</code></td><td>Hook PostToolUse</td><td>2-10 min cooldown</td><td>Cada tool use</td><td>Lockfiles, gh CLI, Telegram API</td></tr>
+<tr><td>4</td><td><code>permission-approver.js</code></td><td>Hook PermissionRequest</td><td>150ms polling</td><td>Permiso pendiente</td><td>pending-questions.json, Telegram API</td></tr>
+<tr><td>5</td><td><code>commander-launcher.js</code></td><td>Hook PostToolUse</td><td>N/A (check + launch)</td><td>Cada tool use</td><td>Lockfile, launching flag</td></tr>
+<tr><td>6</td><td><code>reporter-bg.js</code></td><td>Background</td><td>~10 min</td><td>Manual</td><td>Puppeteer, Telegram API, dashboard-server</td></tr>
+<tr><td>7</td><td><code>activity-logger.js</code></td><td>Hook PostToolUse</td><td>Cada tool use</td><td>Cada tool use</td><td>activity-log.jsonl, sessions/</td></tr>
+<tr><td>8</td><td><code>Watch-Agentes.ps1</code></td><td>Script PS1</td><td>30s</td><td>Manual</td><td>sprint-plan.json, PIDs, worktrees</td></tr>
+<tr><td>9</td><td><code>Guardian-Sprint.ps1</code></td><td>Script PS1</td><td>5 min</td><td>Manual</td><td>Procesos node/PS, worktrees, settings</td></tr>
+<tr><td>10</td><td><code>ask-next-sprint.js</code></td><td>One-shot</td><td>20s long-poll (max 5 min)</td><td>Fin de sprint</td><td>Telegram API, pending-questions.json</td></tr>
+<tr><td>11</td><td>Sprint Monitor (interno Commander)</td><td>setInterval</td><td>5 min</td><td>Sprint activo</td><td>Claude CLI, Telegram API</td></tr>
+<tr><td>12</td><td>Cleanup Messages (interno Commander)</td><td>setInterval</td><td>4 horas</td><td>Arranque Commander</td><td>Telegram API, message-registry</td></tr>
+<tr><td>13</td><td>Orphan Approvers (interno Commander)</td><td>setInterval</td><td>3 seg</td><td>Arranque Commander</td><td>pending-questions.json, PIDs</td></tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>2. Mapa de dependencias y recursos compartidos</h2>
+
+<div class="mermaid">
+graph TD
+    subgraph "Recursos Compartidos"
+        TG["Telegram API<br/>(rate limit: 30 msg/s)"]
+        PQ["pending-questions.json"]
+        GH["GitHub API"]
+        LK["Lockfiles (.lock, .launching, .conflict)"]
+        AL["activity-log.jsonl"]
+        SP["sprint-plan.json"]
+    end
+
+    subgraph "Daemons"
+        CMD["telegram-commander.js"]
+        RPT["reporter-bg.js"]
+    end
+
+    subgraph "Hooks (cada tool use)"
+        CL["commander-launcher.js"]
+        HC["health-check.js"]
+        ACT["activity-logger.js"]
+    end
+
+    subgraph "Hooks (evento)"
+        PA["permission-approver.js"]
+        CI["ci-monitor-bg.js"]
+    end
+
+    subgraph "Scripts PS1"
+        WA["Watch-Agentes.ps1"]
+        GS["Guardian-Sprint.ps1"]
+    end
+
+    CMD -->|long-poll 30s| TG
+    CMD -->|read/write| PQ
+    CMD -->|monitor cada 5m| SP
+    PA -->|poll 150ms| PQ
+    PA -->|send/edit| TG
+    CI -->|poll 30s| GH
+    CI -->|send| TG
+    HC -->|read| LK
+    HC -->|send| TG
+    HC -->|exec| GH
+    CL -->|read/write| LK
+    ACT -->|append| AL
+    RPT -->|screenshot + send| TG
+    WA -->|read| SP
+    GS -->|scan PIDs| SP
+
+    CMD -.->|orphan 3s| PQ
+    CMD -.->|cleanup 4h| TG
+
+    style TG fill:#e3f2fd,stroke:#1565c0
+    style PQ fill:#fce4ec,stroke:#c62828
+    style GH fill:#e8f5e9,stroke:#2e7d32
+</div>
+
+<!-- ================================================================== -->
+<h2>3. Problemas de contencion de recursos</h2>
+
+<h3>3.1 <span class="tag tag-contention">CRITICO</span> pending-questions.json — Hot file con 4 escritores</h3>
+
+<div class="critical">
+<strong>Problema:</strong> <code>pending-questions.json</code> es leido/escrito por 4 procesos concurrentes:
+<ul>
+<li><code>permission-approver.js</code> — polling cada 150ms (lectura), escritura al resolver</li>
+<li><code>telegram-commander.js</code> — escritura al recibir callback, lectura en orphan check (3s)</li>
+<li><code>ask-next-sprint.js</code> — escritura al crear/resolver pregunta</li>
+<li><code>post-console-response.js</code> — escritura al detectar respuesta en consola</li>
+</ul>
+<strong>Riesgo:</strong> Lectura-escritura simultánea puede corromper el JSON (write truncation en Windows NTFS). El polling a 150ms genera ~400 lecturas/min de un solo archivo.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-01:</strong> Reemplazar file-based polling con <strong>IPC via named pipe</strong> (Windows) o <strong>fs.watch() + debounce</strong>.
+<ul>
+<li>El Commander ya usa <code>startPendingQuestionsWatch()</code> con <code>fs.watch</code> — extender este patron al approver</li>
+<li>Eliminar el polling de 150ms: el Commander notifica al approver via el archivo (write + watch trigger)</li>
+<li>Agregar escritura atomica: <code>writeFileSync(tmp) + renameSync(tmp, target)</code> para evitar truncation</li>
+<li><strong>Impacto:</strong> -400 reads/min, elimina race condition de corrupcion</li>
+</ul>
+</div>
+
+<h3>3.2 <span class="tag tag-contention">ALTO</span> Telegram API — 6 consumidores simultaneos</h3>
+
+<div class="warning">
+<strong>Problema:</strong> Telegram tiene rate limit de 30 mensajes/segundo por bot. En escenarios de pico (sprint activo + CI + permiso pendiente), hasta 6 procesos envian mensajes simultaneamente:
+Commander, CI Monitor, Health Check, Permission Approver, Reporter BG, Watch-Agentes.ps1.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-02:</strong> Centralizar envio de Telegram en el Commander como <strong>message broker</strong>.
+<ul>
+<li>Los demas procesos escriben a una cola local (<code>telegram-outbox.jsonl</code>) en lugar de llamar directamente a la API</li>
+<li>El Commander drena la cola cada 500ms con rate limiting (max 20 msg/s para dejar margen)</li>
+<li>Excepcion: <code>permission-approver.js</code> mantiene envio directo (es critico y time-sensitive)</li>
+<li><strong>Impacto:</strong> Elimina 429 errors, simplifica manejo de errores en scripts satelite</li>
+</ul>
+</div>
+
+<h3>3.3 <span class="tag tag-contention">ALTO</span> ask-next-sprint.js compite con Commander por getUpdates</h3>
+
+<div class="warning">
+<strong>Problema:</strong> <code>ask-next-sprint.js</code> hace <code>getUpdates</code> con long-poll de 20s. Si el Commander esta corriendo, ambos consumen del mismo stream → errores 409 ("Conflict: terminated by other getUpdates request").
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-03:</strong> Migrar <code>ask-next-sprint.js</code> a usar el sistema de <code>pending-questions.json</code> exclusivamente.
+<ul>
+<li>El script crea la pregunta en PQ → el Commander recibe el callback → lo escribe en PQ → el script lee la respuesta</li>
+<li>Ya tiene <code>addPendingQuestion</code> integrado — solo falta eliminar el polling directo de <code>getUpdates</code></li>
+<li><strong>Impacto:</strong> Elimina conflictos 409, reduce complejidad en ~80 lineas de codigo</li>
+</ul>
+</div>
+
+<h3>3.4 <span class="tag tag-contention">MEDIO</span> Lockfile race condition en commander-launcher.js</h3>
+
+<div class="warning">
+<strong>Problema:</strong> El mecanismo de "poor man's lock" (write + re-read + check PID) no es atomico. Dos hooks PostToolUse disparados en <100ms pueden ambos pasar el check y lanzar dos Commanders.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-04:</strong> Usar <code>fs.openSync(path, 'wx')</code> (exclusive create) para el launching flag.
+<ul>
+<li>El flag <code>wx</code> falla atomicamente si el archivo ya existe — verdadero mutex en filesystem</li>
+<li>Mantener el fallback de stale check (30s) para recuperacion ante crashes</li>
+<li><strong>Impacto:</strong> Elimina race condition sin costo adicional</li>
+</ul>
+</div>
+
+<!-- ================================================================== -->
+<h2>4. Actividad innecesaria — Procesos que trabajan de mas</h2>
+
+<h3>4.1 <span class="tag tag-waste">DESPERDICIO</span> Orphan Approver Detection cada 3 segundos</h3>
+
+<div class="warning">
+<strong>Situacion:</strong> <code>checkOrphanedApprovers()</code> corre cada 3 segundos (20/min), leyendo PQ + haciendo <code>process.kill(pid, 0)</code> para cada pregunta pendiente. En la mayoria de las situaciones hay 0 preguntas pendientes → el check es no-op el 95% del tiempo.
+<br><br>
+<strong>Ademas:</strong> El propio codigo tiene un comentario: <em>"Nota: orphan detection desactivado — post-console-response.js (Stop hook) se encarga"</em>. Sin embargo, <code>startOrphanDetection()</code> sigue siendo invocable.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-05:</strong> Eliminar el <code>setInterval</code> de orphan detection. Reemplazar con <strong>check on-demand</strong>:
+<ul>
+<li>Solo verificar orphans cuando el Commander recibe un callback de Telegram y la pregunta no tiene approver vivo</li>
+<li>Alternativa: aumentar el intervalo a 30s (el approver tiene retry de 3 min, 30s es suficiente)</li>
+<li><strong>Impacto:</strong> -20 checks/min → 0 (o 2/min si se usa intervalo de 30s)</li>
+</ul>
+</div>
+
+<h3>4.2 <span class="tag tag-waste">DESPERDICIO</span> commander-launcher.js se ejecuta en CADA tool use</h3>
+
+<div class="warning">
+<strong>Situacion:</strong> Cada vez que Claude usa un tool (Read, Edit, Bash, Grep, etc.), <code>commander-launcher.js</code> lee el lockfile y verifica el PID. En una sesion tipica con ~200 tool uses, eso son 200 lecturas de lockfile + 200 <code>process.kill(pid, 0)</code>. El Commander casi nunca muere — el 99.5% de estas verificaciones son no-op.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-06:</strong> Agregar <strong>cooldown de 60 segundos</strong> al launcher, similar al health-check.
+<ul>
+<li>Guardar timestamp de ultima verificacion en memoria (state file de 1 campo)</li>
+<li>Si pasaron menos de 60s desde la ultima verificacion exitosa, skip</li>
+<li>El Commander tiene heartbeat implicito (long-poll de 30s) — 60s de cooldown es seguro</li>
+<li><strong>Impacto:</strong> -95% de reads de lockfile (de ~200 a ~10 por sesion)</li>
+</ul>
+</div>
+
+<h3>4.3 <span class="tag tag-waste">DESPERDICIO</span> health-check.js ejecuta gh CLI y Telegram getMe en cada check</h3>
+
+<div class="warning">
+<strong>Situacion:</strong> Cada health check (cada 2-10 min) ejecuta <code>gh auth status</code> (spawn de proceso), <code>getMe</code> (HTTP a Telegram), y lee multiples lockfiles. La mayoria de estos checks son estables por horas.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-07:</strong> Implementar <strong>check selectivo con backoff exponencial</strong> por componente:
+<ul>
+<li>Si un check pasa 3 veces consecutivas, duplicar su intervalo (hasta MAX_INTERVAL_MS)</li>
+<li>Si falla, resetear a MIN_INTERVAL_MS solo para ESE check, no para todos</li>
+<li>Commander check: solo verificar PID (no HTTP) si el lockfile no cambio</li>
+<li>Telegram check: cachear resultado de <code>getMe</code> por 30 min (el bot no cambia)</li>
+<li><strong>Impacto:</strong> -70% de llamadas HTTP y spawns de procesos</li>
+</ul>
+</div>
+
+<!-- ================================================================== -->
+<h2>5. Oportunidades de consolidacion</h2>
+
+<h3>5.1 <span class="tag tag-arch">ARQUITECTURA</span> Unificar Watch-Agentes.ps1 + Guardian-Sprint.ps1 + Sprint Monitor del Commander</h3>
+
+<div class="mermaid">
+graph LR
+    subgraph "Actual: 3 procesos independientes"
+        WA["Watch-Agentes.ps1<br/>Poll 30s<br/>Detecta fin de agentes"]
+        GS["Guardian-Sprint.ps1<br/>Poll 5min<br/>Detecta inactividad"]
+        SM["Sprint Monitor<br/>(dentro Commander)<br/>Poll 5min<br/>Ejecuta /monitor"]
+    end
+
+    subgraph "Propuesto: 1 componente unificado"
+        USM["Unified Sprint Manager<br/>(dentro Commander)<br/>Poll 30s"]
+        USM -->|fin detectado| STOP["Stop-Agente + ask-next-sprint"]
+        USM -->|inactividad| RELAUNCH["Relaunch planner"]
+        USM -->|cada 5 min| MON["Ejecutar /monitor"]
+    end
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-08:</strong> Absorber la logica de Watch-Agentes y Guardian-Sprint <strong>dentro del Commander</strong>.
+<ul>
+<li>El Commander ya tiene acceso a PIDs, worktrees, sprint-plan.json</li>
+<li>Ventajas: un solo proceso de polling, notificaciones centralizadas, estado compartido</li>
+<li>Watch-Agentes.ps1 ya usa <code>Test-AgentDone</code> basado en PIDs — migrar a Node.js es directo</li>
+<li>Guardian-Sprint.ps1 usa <code>Get-CimInstance Win32_Process</code> — equivalente Node.js: <code>execSync('wmic process...')</code> o <code>child_process</code></li>
+<li>Mantener PS1 como fallback manual pero deprecar su uso automatico</li>
+<li><strong>Impacto:</strong> -2 procesos PowerShell, -2 terminales abiertas, estado unificado</li>
+</ul>
+</div>
+
+<h3>5.2 <span class="tag tag-arch">ARQUITECTURA</span> Consolidar HTTP helpers duplicados</h3>
+
+<div class="warning">
+<strong>Problema:</strong> <code>telegramPost()</code> esta implementada identicamente en 4 archivos:
+<code>telegram-commander.js</code>, <code>permission-approver.js</code>, <code>ask-next-sprint.js</code>, <code>ci-monitor-bg.js</code>.
+Cada una tiene su propio manejo de timeout, error handling, y logging.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-09:</strong> Extraer a <code>telegram-client.js</code> compartido.
+<ul>
+<li>Modulo: <code>const { sendMessage, editMessage, telegramPost } = require("./telegram-client")</code></li>
+<li>Incluir: rate limiting, retry con backoff, logging centralizado</li>
+<li>Incluir: queue para P-02 (outbox pattern) como opcion</li>
+<li><strong>Impacto:</strong> -200 lineas de codigo duplicado, comportamiento consistente</li>
+</ul>
+</div>
+
+<h3>5.3 <span class="tag tag-arch">ARQUITECTURA</span> Token de Telegram hardcodeado en Watch-Agentes.ps1</h3>
+
+<div class="critical">
+<strong>Problema de seguridad:</strong> <code>Watch-Agentes.ps1</code> linea 54 tiene el bot token hardcodeado:
+<code>$botToken = '8403197784:AAG07...'</code>. Esto es un secreto expuesto en un repo publico.
+Todos los demas scripts leen de <code>telegram-config.json</code>.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-10:</strong> Migrar a leer <code>telegram-config.json</code> como los demas.
+<ul>
+<li>Reemplazar hardcoded con: <code>$cfg = Get-Content "$MainRepo\.claude\hooks\telegram-config.json" | ConvertFrom-Json</code></li>
+<li>Rotar el token actual (ya esta expuesto en historial de git)</li>
+<li><strong>Impacto:</strong> Elimina exposicion de secreto</li>
+</ul>
+</div>
+
+<!-- ================================================================== -->
+<h2>6. Mejoras de performance</h2>
+
+<h3>6.1 <span class="tag tag-perf">PERFORMANCE</span> CI Monitor — Backoff progresivo</h3>
+
+<div class="recommendation">
+<strong>Propuesta P-11:</strong> El CI tipicamente tarda 3-8 minutos. Polling fijo de 30s desperdicia calls al inicio.
+<ul>
+<li>Primeros 2 min: poll cada 60s (el workflow tarda en registrarse)</li>
+<li>Minutos 2-8: poll cada 30s (fase activa)</li>
+<li>Despues de 8 min: poll cada 60s (anormal, reducir carga)</li>
+<li><strong>Impacto:</strong> -30% de API calls a GitHub Actions (~28 → ~18 calls promedio)</li>
+</ul>
+</div>
+
+<h3>6.2 <span class="tag tag-perf">PERFORMANCE</span> Permission Approver — Polling adaptativo</h3>
+
+<div class="recommendation">
+<strong>Propuesta P-12:</strong> El intervalo de 150ms es excesivo para la latencia humana (tipicamente >5s para responder).
+<ul>
+<li>Primer segundo: 150ms (ultra-responsive para auto-approves)</li>
+<li>Segundos 1-10: 500ms (el humano esta leyendo)</li>
+<li>Despues de 10s: 1000ms (espera larga)</li>
+<li>Con P-01 (fs.watch): eliminar polling completamente</li>
+<li><strong>Impacto:</strong> -80% de reads del archivo (de ~400/min a ~80/min en fase larga)</li>
+</ul>
+</div>
+
+<h3>6.3 <span class="tag tag-perf">PERFORMANCE</span> activity-logger.js — Batching de escrituras</h3>
+
+<div class="recommendation">
+<strong>Propuesta P-13:</strong> Cada tool use genera un <code>appendFileSync</code> al JSONL + un <code>writeFileSync</code> a sessions/. En rafagas de 10+ tools, esto son 20+ escrituras sincronas.
+<ul>
+<li>Buffering: acumular en memoria por 2 segundos, luego flush batch</li>
+<li>Dado que es un hook y no un daemon, implementar via flag file: si el flag existe y tiene <2s, skip</li>
+<li><strong>Impacto:</strong> -60% de I/O en rafagas</li>
+</ul>
+</div>
+
+<!-- ================================================================== -->
+<h2>7. Propuesta de nuevo componente</h2>
+
+<h3>7.1 <span class="tag tag-new">NUEVO</span> Process Supervisor — watchdog centralizado</h3>
+
+<div class="new-proposal">
+<strong>Justificacion:</strong> Actualmente la supervision de procesos esta fragmentada:
+<ul>
+<li><code>commander-launcher.js</code> supervisa al Commander (cada tool use)</li>
+<li><code>health-check.js</code> supervisa Commander + approvers + bot + settings (cada 2-10 min)</li>
+<li><code>Guardian-Sprint.ps1</code> supervisa agentes + worktrees (cada 5 min)</li>
+<li><code>Watch-Agentes.ps1</code> supervisa terminales de agentes (cada 30s)</li>
+</ul>
+Son 4 supervisores con overlap significativo, cada uno con su propia logica de PID check.
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-14:</strong> Crear <code>process-supervisor.js</code> como modulo singleton dentro del Commander.
+<ul>
+<li><strong>Registry:</strong> Hashtable de procesos registrados con PID, rol, last-heartbeat</li>
+<li><strong>Health loop:</strong> Un solo <code>setInterval(15s)</code> que verifica todos los procesos</li>
+<li><strong>Auto-restart policy:</strong> Configurable por proceso (restart, notify, ignore)</li>
+<li><strong>API:</strong> <code>register(pid, role)</code>, <code>heartbeat(pid)</code>, <code>unregister(pid)</code></li>
+<li>Los demas hooks solo llaman <code>supervisor.register()</code> al arrancar</li>
+<li>Reemplaza: commander-launcher (check), health-check (commander check), Guardian (claude check)</li>
+</ul>
+</div>
+
+<div class="mermaid">
+graph TD
+    SUP["Process Supervisor<br/>(dentro Commander)<br/>Check cada 15s"]
+
+    SUP -->|supervisa| CMD["Commander (self)"]
+    SUP -->|supervisa| CI2["CI Monitor instances"]
+    SUP -->|supervisa| PA2["Approver instances"]
+    SUP -->|supervisa| AGT["Agentes Claude (worktrees)"]
+    SUP -->|supervisa| RPT2["Reporter BG"]
+
+    SUP -->|dead + policy=restart| RESTART["Auto-restart"]
+    SUP -->|dead + policy=notify| TG2["Notificar Telegram"]
+    SUP -->|zombie detected| KILL["Kill + notify"]
+</div>
+
+<!-- ================================================================== -->
+<h2>8. Bitacora de lecciones aprendidas — auto-actualizable</h2>
+
+<h3>8.1 <span class="tag tag-new">NUEVO</span> ops-learnings.jsonl — Bitacora operativa auto-actualizable</h3>
+
+<div class="new-proposal">
+<strong>Justificacion:</strong> Hoy las lecciones aprendidas se pierden entre logs de debug (<code>hook-debug.log</code>), comentarios en codigo, y memoria del desarrollador. No hay un sistema que <strong>capture automaticamente</strong> patrones de error, los clasifique, y los ponga disponibles para que los agentes aprendan de errores pasados antes de repetirlos.
+<br><br>
+Ejemplos de lecciones que se descubrieron "a la fuerza" y se podrian haber evitado:
+<ul>
+<li>Junctions NTFS + <code>rm -rf</code> borran el <code>.claude/</code> real (incidente 2026-02-27)</li>
+<li><code>-gpu host</code> no funciona en headless + Intel Iris Xe + WHPX</li>
+<li><code>ask-next-sprint.js</code> causa 409 si Commander esta corriendo</li>
+<li>El polling a 150ms del approver satura I/O en sesiones largas</li>
+</ul>
+</div>
+
+<div class="recommendation">
+<strong>Propuesta P-15:</strong> Crear sistema de bitacora auto-actualizable con dos componentes:
+
+<h4>Componente A: Captura automatica (hooks)</h4>
+<ul>
+<li><strong>Archivo:</strong> <code>.claude/hooks/ops-learnings.jsonl</code> (append-only, max 500 entries)</li>
+<li><strong>Formato por entrada:</strong></li>
+</ul>
+<pre><code>{
+  "ts": "2026-03-04T15:30:00Z",
+  "source": "health-check",          // hook que detecto el problema
+  "category": "contention|crash|perf|config|security",
+  "severity": "critical|high|medium|low",
+  "symptom": "409 Conflict en getUpdates",
+  "root_cause": "Dos procesos compiten por Telegram long-poll",
+  "resolution": "Migrar ask-next-sprint a pending-questions",
+  "affected": ["ask-next-sprint.js", "telegram-commander.js"],
+  "auto_detected": true,              // vs manual
+  "times_seen": 12,                   // contador incremental
+  "first_seen": "2026-02-15T...",
+  "last_seen": "2026-03-04T...",
+  "status": "open|mitigated|resolved"
+}</code></pre>
+
+<h4>Componente B: Deteccion y registro automatico</h4>
+<p>Cada hook que detecta un error imprevisto o comportamiento anomalo lo registra en la bitacora:</p>
+
+<table>
+<tr><th>Hook</th><th>Que detecta automaticamente</th></tr>
+<tr><td><code>health-check.js</code></td><td>Commander caido, approvers huerfanos, bot no responde, settings corruptos</td></tr>
+<tr><td><code>ci-monitor-bg.js</code></td><td>CI timeout, CI fallo recurrente en misma rama, GitHub API rate limited</td></tr>
+<tr><td><code>permission-approver.js</code></td><td>Timeout de aprobacion (usuario no responde), PQ file corrupto</td></tr>
+<tr><td><code>commander-launcher.js</code></td><td>Relanzamientos frecuentes (>3/hora = inestabilidad), race conditions</td></tr>
+<tr><td><code>telegram-commander.js</code></td><td>409 conflicts, exec timeout, sprint stalled, zombie approvers</td></tr>
+<tr><td><code>Guardian-Sprint.ps1</code></td><td>Zombie agents (CPU=0), relanzamientos frecuentes</td></tr>
+<tr><td><code>activity-logger.js</code></td><td>Sesiones sin actividad por >15 min (agente bloqueado silenciosamente)</td></tr>
+</table>
+
+<h4>Componente C: Consulta y aprendizaje</h4>
+<ul>
+<li><strong>Comando:</strong> <code>/ops-log</code> o endpoint en Commander: lista las ultimas N lecciones, filtra por categoria/severity</li>
+<li><strong>Integracion con agentes:</strong> Antes de implementar cambios en hooks, el agente consulta la bitacora para verificar si hay lecciones relevantes</li>
+<li><strong>Digest semanal:</strong> El Commander genera un resumen semanal de lecciones nuevas y lo envia a Telegram</li>
+<li><strong>Auto-prune:</strong> Entradas con <code>status: "resolved"</code> y <code>last_seen</code> > 30 dias se archivan a <code>ops-learnings-archive.jsonl</code></li>
+</ul>
+
+<h4>Componente D: Auto-actualizacion proactiva</h4>
+<ul>
+<li>Cuando un hook detecta un error por <strong>segunda vez</strong>, incrementa <code>times_seen</code> y escala la severidad si supera umbrales (3x → high, 5x → critical)</li>
+<li>Cuando un problema previamente registrado <strong>no se ve en 7 dias</strong>, se marca como <code>mitigated</code></li>
+<li>Cuando se implementa un fix (detectado via commit message pattern <code>fix(hooks):</code>), se busca en la bitacora y se marca como <code>resolved</code> automaticamente</li>
+<li>Los agentes de construccion (<code>/backend-dev</code>, etc.) consultan la bitacora al inicio de su sesion para evitar repetir errores conocidos</li>
+</ul>
+</div>
+
+<div class="mermaid">
+graph LR
+    subgraph "Deteccion"
+        HC2["health-check.js"]
+        CM2["ci-monitor-bg.js"]
+        PA3["permission-approver.js"]
+        CMD2["telegram-commander.js"]
+        GS2["Guardian-Sprint.ps1"]
+    end
+
+    subgraph "Bitacora"
+        BIT["ops-learnings.jsonl"]
+        ARC["ops-learnings-archive.jsonl"]
+    end
+
+    subgraph "Consumidores"
+        AGT2["Agentes de construccion"]
+        DIG["Digest semanal"]
+        DASH["Dashboard /monitor"]
+        OPSLOG["/ops-log comando"]
+    end
+
+    HC2 -->|auto-registro| BIT
+    CM2 -->|auto-registro| BIT
+    PA3 -->|auto-registro| BIT
+    CMD2 -->|auto-registro| BIT
+    GS2 -->|auto-registro| BIT
+
+    BIT -->|consulta| AGT2
+    BIT -->|resumen| DIG
+    BIT -->|metricas| DASH
+    BIT -->|filtrado| OPSLOG
+    BIT -->|>30d resolved| ARC
+
+    DIG -->|Telegram| TG3["Usuario"]
+</div>
+
+<h3>8.2 <span class="tag tag-new">NUEVO</span> Integracion con MEMORY.md — Lecciones persistentes cross-sesion</h3>
+
+<div class="recommendation">
+<strong>Propuesta P-16:</strong> Cuando una leccion alcanza severidad <code>critical</code> o <code>times_seen >= 5</code>, el sistema la promueve automaticamente a <code>MEMORY.md</code> o un archivo de memoria dedicado (<code>ops-lessons.md</code>).
+<ul>
+<li>Formato en memoria: una linea por leccion con sintaxis compacta</li>
+<li>Ejemplo: <code>- **NUNCA** usar getUpdates desde scripts externos si Commander esta activo (causa 409) [2026-02-15, resuelto 2026-03-04]</code></li>
+<li>Esto asegura que Claude Code (en cualquier sesion futura) tenga acceso a las lecciones mas criticas sin necesidad de leer el JSONL completo</li>
+<li>Auto-cleanup: cuando una leccion se marca como <code>resolved</code> por >30 dias, se puede mover a un archivo de archivo</li>
+</ul>
+</div>
+
+<!-- ================================================================== -->
+<h2>9. Resumen de propuestas priorizadas</h2>
+
+<table>
+<tr><th>ID</th><th>Propuesta</th><th>Severidad</th><th>Esfuerzo</th><th>Impacto</th></tr>
+<tr><td>P-10</td><td>Eliminar token hardcodeado en Watch-Agentes.ps1</td><td class="severity-critical">Critico</td><td>XS (5 min)</td><td>Seguridad</td></tr>
+<tr><td>P-01</td><td>IPC/fs.watch para pending-questions.json</td><td class="severity-critical">Critico</td><td>M (2-3h)</td><td>Elimina corrupcion + -400 reads/min</td></tr>
+<tr><td>P-03</td><td>ask-next-sprint via PQ (sin getUpdates)</td><td class="severity-high">Alto</td><td>S (1h)</td><td>Elimina 409 conflicts</td></tr>
+<tr><td>P-04</td><td>Lock atomico con fs.openSync('wx')</td><td class="severity-high">Alto</td><td>XS (15 min)</td><td>Elimina race condition</td></tr>
+<tr><td>P-05</td><td>Eliminar orphan detection interval (3s)</td><td class="severity-medium">Medio</td><td>XS (10 min)</td><td>-20 checks/min</td></tr>
+<tr><td>P-06</td><td>Cooldown 60s en commander-launcher</td><td class="severity-medium">Medio</td><td>XS (15 min)</td><td>-95% reads de lockfile</td></tr>
+<tr><td>P-12</td><td>Polling adaptativo en permission-approver</td><td class="severity-medium">Medio</td><td>S (30 min)</td><td>-80% reads de PQ file</td></tr>
+<tr><td>P-07</td><td>Health check selectivo con backoff por componente</td><td class="severity-medium">Medio</td><td>M (2h)</td><td>-70% HTTP calls + spawns</td></tr>
+<tr><td>P-11</td><td>CI Monitor con backoff progresivo</td><td class="severity-medium">Medio</td><td>S (30 min)</td><td>-30% GitHub API calls</td></tr>
+<tr><td>P-09</td><td>Extraer telegram-client.js compartido</td><td class="severity-low">Bajo</td><td>M (2h)</td><td>-200 lineas duplicadas</td></tr>
+<tr><td>P-02</td><td>Message broker centralizado en Commander</td><td class="severity-low">Bajo</td><td>L (4h)</td><td>Elimina 429 potential</td></tr>
+<tr><td>P-08</td><td>Unificar Watch+Guardian+Sprint Monitor</td><td class="severity-low">Bajo</td><td>L (6h)</td><td>-2 procesos, estado unificado</td></tr>
+<tr><td>P-13</td><td>Batching en activity-logger</td><td class="severity-low">Bajo</td><td>S (30 min)</td><td>-60% I/O en rafagas</td></tr>
+<tr><td>P-14</td><td>Process Supervisor centralizado</td><td class="severity-low">Bajo</td><td>XL (8h)</td><td>Simplifica toda la supervision</td></tr>
+<tr><td>P-15</td><td>Bitacora ops-learnings.jsonl auto-actualizable</td><td class="severity-high">Alto</td><td>M (3h)</td><td>Captura automatica de lecciones, previene errores recurrentes</td></tr>
+<tr><td>P-16</td><td>Promocion automatica de lecciones criticas a MEMORY.md</td><td class="severity-medium">Medio</td><td>S (1h)</td><td>Lecciones persistentes cross-sesion</td></tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>9. Plan de implementacion sugerido</h2>
+
+<h3>Fase 1 — Quick wins (1 dia)</h3>
+<ul>
+<li><strong>P-10</strong> Eliminar token hardcodeado + rotar token</li>
+<li><strong>P-04</strong> Lock atomico con <code>fs.openSync('wx')</code></li>
+<li><strong>P-05</strong> Eliminar/reducir orphan detection interval</li>
+<li><strong>P-06</strong> Cooldown 60s en commander-launcher</li>
+</ul>
+
+<h3>Fase 2 — Contenci&oacute;n de recursos (2-3 dias)</h3>
+<ul>
+<li><strong>P-01</strong> Reemplazar polling PQ con fs.watch + escritura atomica</li>
+<li><strong>P-03</strong> Migrar ask-next-sprint a PQ-only</li>
+<li><strong>P-12</strong> Polling adaptativo en permission-approver</li>
+<li><strong>P-09</strong> Extraer telegram-client.js</li>
+</ul>
+
+<h3>Fase 3 — Optimizacion (1-2 dias)</h3>
+<ul>
+<li><strong>P-07</strong> Health check selectivo con backoff</li>
+<li><strong>P-11</strong> CI Monitor con backoff progresivo</li>
+<li><strong>P-13</strong> Batching en activity-logger</li>
+<li><strong>P-02</strong> Message broker en Commander</li>
+</ul>
+
+<h3>Fase 4 — Observabilidad y mejora continua (1-2 dias)</h3>
+<ul>
+<li><strong>P-15</strong> Bitacora ops-learnings.jsonl auto-actualizable</li>
+<li><strong>P-16</strong> Promocion automatica de lecciones criticas a MEMORY.md</li>
+</ul>
+
+<h3>Fase 5 — Consolidacion arquitectonica (3-4 dias)</h3>
+<ul>
+<li><strong>P-08</strong> Unificar Watch+Guardian+Sprint Monitor en Commander</li>
+<li><strong>P-14</strong> Process Supervisor centralizado</li>
+</ul>
+
+<!-- ================================================================== -->
+<h2>10. Metricas de exito esperadas</h2>
+
+<table>
+<tr><th>Metrica</th><th>Actual</th><th>Esperado post-mejoras</th><th>Reduccion</th></tr>
+<tr><td>Reads de pending-questions.json</td><td>~400/min</td><td>~0 (event-driven)</td><td>~100%</td></tr>
+<tr><td>Reads de lockfile (Commander)</td><td>~200/sesion</td><td>~10/sesion</td><td>~95%</td></tr>
+<tr><td>Orphan checks</td><td>20/min</td><td>0-2/min</td><td>~90%</td></tr>
+<tr><td>Telegram API calls en idle</td><td>~8/min</td><td>~3/min</td><td>~62%</td></tr>
+<tr><td>GitHub API calls (CI)</td><td>~28/run</td><td>~18/run</td><td>~36%</td></tr>
+<tr><td>Procesos concurrentes (sprint)</td><td>5-6</td><td>3-4</td><td>~33%</td></tr>
+<tr><td>Lineas de codigo duplicado</td><td>~350</td><td>~100</td><td>~71%</td></tr>
+<tr><td>Riesgo de corrupcion PQ</td><td>Alto</td><td>Nulo</td><td>Eliminado</td></tr>
+</table>
+
+<hr style="margin-top: 40px;">
+<p style="font-size: 0.85em; color: #666; text-align: center;">
+Generado automaticamente por Claude Opus 4.6 — Intrale Platform — 2026-03-04
+</p>
+
+</body>
+</html>

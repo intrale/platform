@@ -21,6 +21,9 @@ const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, 
 const { addPendingQuestion, resolveQuestion, getQuestionById, updateQuestionField } = require("./pending-questions");
 const { readSessionContext } = require("./context-reader");
 const { registerMessage } = require("./telegram-message-registry");
+// P-15: Ops learnings
+let opsLearnings;
+try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
@@ -295,14 +298,23 @@ function persistAlways(toolName, toolInput) {
 }
 
 // ─── Polling de pending-questions.json ────────────────────────────────────────
-// Lee el archivo cada POLL_INTERVAL_MS para detectar cuando el commander
-// procesó el callback del botón y escribió la decisión.
+// P-01: Usa fs.watch + fallback polling adaptativo (P-12)
+// P-12: Intervalos adaptativos: 150ms (0-1s), 500ms (1-10s), 1000ms (>10s)
 
 // Archivo PID para que otros hooks puedan detectar/matar este approver
 const APPROVER_PID_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "approver-active.pid");
+const PQ_FILE = path.join(MAIN_REPO_ROOT, ".claude", "hooks", "pending-questions.json");
+
+// P-12: Polling adaptativo según tiempo transcurrido
+function getAdaptivePollMs(elapsedMs) {
+    if (elapsedMs < 1000) return 150;    // 0-1s: ultra-responsive (auto-approves)
+    if (elapsedMs < 10000) return 500;   // 1-10s: lectura humana
+    return 1000;                          // >10s: espera larga
+}
 
 /**
  * Polling de pending-questions.json por un período específico.
+ * P-01: Usa fs.watch para notificación inmediata + fallback polling adaptativo (P-12).
  * @param {string} requestId - ID de la pregunta
  * @param {number} durationMs - Duración máxima de este polling en ms
  * @param {string} attemptLabel - Etiqueta para logs (ej: "intento 1/4")
@@ -314,63 +326,84 @@ async function pollQuestionStatus(requestId, durationMs, attemptLabel, countdown
     const label = attemptLabel || "";
     let logCounter = 0;
     let countdownCounter = 0;
-    const COUNTDOWN_INTERVAL = Math.round(30000 / POLL_INTERVAL_MS); // cada 30s
 
-    while (Date.now() - pollStart < durationMs) {
-        try {
-            const q = getQuestionById(requestId);
-            if (!q) {
-                log("Pregunta " + requestId + " desapareció de pending-questions.json");
-                return null;
-            }
-            // Detectar cancelación externa
-            if (q.status === "cancelled") {
-                log("Pregunta " + requestId + " fue cancelada externamente");
-                return q;
-            }
-            if (q.status !== "pending") {
-                log("Pregunta " + requestId + " cambió a: " + q.status
-                    + " via=" + (q.answered_via || "?")
-                    + " action=" + (q.action_result || "?"));
-                return q;
-            }
-        } catch(e) {
-            log("Error leyendo pregunta " + requestId + ": " + e.message);
-        }
+    // P-01: fs.watch para detección inmediata de cambios
+    let fileChanged = true; // empezar con true para check inicial
+    let watcher = null;
+    try {
+        watcher = fs.watch(PQ_FILE, { persistent: false }, () => { fileChanged = true; });
+        watcher.on("error", () => { watcher = null; }); // fallback a polling puro
+    } catch (e) {
+        log("fs.watch no disponible, usando polling puro: " + e.message);
+    }
 
-        // Actualizar countdown cada 30s
-        countdownCounter++;
-        if (countdownOptions && countdownOptions.msgId && countdownCounter % COUNTDOWN_INTERVAL === 0) {
-            const elapsedMs = Date.now() - pollStart;
-            const remaining = Math.max(0, Math.round((durationMs - elapsedMs) / 1000));
-            if (remaining > 0) {
-                const minRemaining = Math.floor(remaining / 60);
-                const secRemaining = remaining % 60;
-                const countdownStr = minRemaining + ":" + (secRemaining < 10 ? "0" : "") + secRemaining;
-                const updatedText = countdownOptions.baseText.replace(/⏳ Expira en \d+:\d+/, "⏳ Expira en " + countdownStr);
+    try {
+        while (Date.now() - pollStart < durationMs) {
+            // Solo leer archivo si cambió (fs.watch) o polling fallback
+            if (fileChanged) {
+                fileChanged = false;
                 try {
-                    await telegramPost("editMessageText", {
-                        chat_id: CHAT_ID,
-                        message_id: countdownOptions.msgId,
-                        text: updatedText,
-                        parse_mode: "HTML",
-                        reply_markup: { inline_keyboard: countdownOptions.inlineKeyboard || [] }
-                    }, ANSWER_TIMEOUT);
+                    const q = getQuestionById(requestId);
+                    if (!q) {
+                        log("Pregunta " + requestId + " desapareció de pending-questions.json");
+                        return null;
+                    }
+                    if (q.status === "cancelled") {
+                        log("Pregunta " + requestId + " fue cancelada externamente");
+                        return q;
+                    }
+                    if (q.status !== "pending") {
+                        log("Pregunta " + requestId + " cambió a: " + q.status
+                            + " via=" + (q.answered_via || "?")
+                            + " action=" + (q.action_result || "?"));
+                        return q;
+                    }
                 } catch(e) {
-                    // Rate limit o error — loguear pero continuar (countdown es cosmético)
-                    log("Error actualizando countdown: " + e.message);
+                    log("Error leyendo pregunta " + requestId + ": " + e.message);
                 }
             }
-        }
 
-        // Log de diagnóstico cada 30s
-        logCounter++;
-        if (logCounter % 60 === 0) {
-            const elapsed = Math.round((Date.now() - pollStart) / 1000);
-            const remaining = Math.round((durationMs - (Date.now() - pollStart)) / 1000);
-            log("Polling " + label + " " + requestId + ": " + elapsed + "s elapsed, " + remaining + "s left, pid=" + process.pid);
+            // Actualizar countdown cada 30s
+            const elapsedMs = Date.now() - pollStart;
+            countdownCounter++;
+            const currentPollMs = getAdaptivePollMs(elapsedMs);
+            const countdownInterval = Math.round(30000 / currentPollMs);
+            if (countdownOptions && countdownOptions.msgId && countdownCounter % countdownInterval === 0) {
+                const remaining = Math.max(0, Math.round((durationMs - elapsedMs) / 1000));
+                if (remaining > 0) {
+                    const minRemaining = Math.floor(remaining / 60);
+                    const secRemaining = remaining % 60;
+                    const countdownStr = minRemaining + ":" + (secRemaining < 10 ? "0" : "") + secRemaining;
+                    const updatedText = countdownOptions.baseText.replace(/⏳ Expira en \d+:\d+/, "⏳ Expira en " + countdownStr);
+                    try {
+                        await telegramPost("editMessageText", {
+                            chat_id: CHAT_ID,
+                            message_id: countdownOptions.msgId,
+                            text: updatedText,
+                            parse_mode: "HTML",
+                            reply_markup: { inline_keyboard: countdownOptions.inlineKeyboard || [] }
+                        }, ANSWER_TIMEOUT);
+                    } catch(e) {
+                        log("Error actualizando countdown: " + e.message);
+                    }
+                }
+            }
+
+            // Log de diagnóstico cada 30s
+            logCounter++;
+            if (logCounter % Math.round(30000 / currentPollMs) === 0) {
+                const elapsed = Math.round(elapsedMs / 1000);
+                const remaining = Math.round((durationMs - elapsedMs) / 1000);
+                log("Polling " + label + " " + requestId + ": " + elapsed + "s elapsed, " + remaining + "s left, poll=" + currentPollMs + "ms, pid=" + process.pid);
+            }
+
+            // P-12: Adaptive sleep — más corto al inicio, más largo después
+            await sleep(currentPollMs);
+            // Safety net: marcar fileChanged periódicamente para re-check (por si fs.watch pierde eventos)
+            if (!watcher) fileChanged = true;
         }
-        await sleep(POLL_INTERVAL_MS);
+    } finally {
+        if (watcher) { try { watcher.close(); } catch (e) {} }
     }
     return null; // timeout de este intento
 }
@@ -645,6 +678,21 @@ async function processInput() {
         const nextWaitMin = Math.round(RETRY_INTERVALS[nextAttempt] / 60000);
 
         log("Timeout " + label + ": requestId=" + requestId + " elapsedTotal=" + elapsedTotal + "s. Enviando reintento " + (nextAttempt + 1) + "/" + totalAttempts);
+
+        // P-15: Registrar timeout de aprobación en ops-learnings
+        if (opsLearnings) {
+            try {
+                opsLearnings.recordLearning({
+                    source: "permission-approver",
+                    category: "approval_timeout",
+                    severity: nextAttempt >= totalAttempts - 1 ? "high" : "low",
+                    symptom: "Timeout de aprobación: sin respuesta en " + elapsedTotal + "s",
+                    root_cause: "Usuario no respondió a permiso pendiente (intento " + (nextAttempt + 1) + "/" + totalAttempts + ")",
+                    affected: ["permission-approver.js"],
+                    auto_detected: true
+                });
+            } catch (e) {}
+        }
 
         // Invalidar botones de TODOS los mensajes anteriores (no solo el último)
         for (const oldMsgId of sentMessageIds) {

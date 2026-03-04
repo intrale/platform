@@ -1,156 +1,72 @@
 // ask-next-sprint.js — Confirmacion via Telegram para siguiente sprint
-// Envia mensaje con botones inline (Si/No) y espera respuesta via polling.
+// P-03: Usa pending-questions.json + fs.watch (NO getUpdates directo)
+// El Commander procesa callbacks de Telegram y escribe en PQ — este script solo observa PQ.
 // Salida stdout: { "confirmed": true/false }
-// Sigue patron de permission-approver.js
 //
 // Uso: node ask-next-sprint.js
 //   stdout → {"confirmed":true}   si el usuario acepta
 //   stdout → {"confirmed":false}  si el usuario rechaza o timeout
 
-const https = require("https");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "..", ".claude", "hooks", "telegram-config.json"), "utf8"));
-const BOT_TOKEN = _tgCfg.bot_token;
-const CHAT_ID = _tgCfg.chat_id;
-const POLL_TIMEOUT_SEC = 20;   // Telegram long-poll: esperar hasta 20s por update
-const MAX_POLL_CYCLES = 15;    // 15 ciclos × 20s = ~5 minutos antes de timeout
-const ANSWER_TIMEOUT = 5000;   // Timeout para answerCallbackQuery y editMessage
-
-const { addPendingQuestion, resolveQuestion } = require(path.join(__dirname, "..", ".claude", "hooks", "pending-questions"));
 const REPO_ROOT = "C:\\Workspaces\\Intrale\\platform";
-const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
-const OFFSET_FILE = path.join(REPO_ROOT, ".claude", "hooks", "tg-approver-offset.json");
+const HOOKS_DIR = path.join(REPO_ROOT, ".claude", "hooks");
+const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
+const PQ_FILE = path.join(HOOKS_DIR, "pending-questions.json");
+const TOTAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos antes de timeout
+const POLL_INTERVAL_MS = 1000;           // Fallback polling cada 1s (fs.watch es primary)
+
+// P-09: Usar telegram-client.js compartido
+let tgClient;
+try { tgClient = require(path.join(HOOKS_DIR, "telegram-client")); } catch (e) { tgClient = null; }
+
+const { addPendingQuestion, resolveQuestion, getQuestionById } = require(path.join(HOOKS_DIR, "pending-questions"));
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] NextSprint: " + msg + "\n"); } catch(e) {}
 }
 
-// --- Helpers HTTP (misma API que permission-approver.js) ---
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function telegramPost(method, params, timeoutMs) {
-    return new Promise((resolve, reject) => {
-        const postData = JSON.stringify(params);
-        const req = https.request({
-            hostname: "api.telegram.org",
-            path: "/bot" + BOT_TOKEN + "/" + method,
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Content-Length": Buffer.byteLength(postData)
-            },
-            timeout: timeoutMs || 8000
-        }, (res) => {
-            let d = "";
-            res.on("data", (c) => d += c);
-            res.on("end", () => {
+// --- Esperar respuesta via pending-questions.json (fs.watch + fallback polling) ---
+
+async function waitForAnswer(requestId, durationMs) {
+    const start = Date.now();
+    let fileChanged = true; // check inmediato al inicio
+    let watcher = null;
+
+    try {
+        watcher = fs.watch(PQ_FILE, { persistent: false }, () => { fileChanged = true; });
+        watcher.on("error", () => { watcher = null; });
+    } catch (e) {
+        log("fs.watch no disponible: " + e.message);
+    }
+
+    try {
+        while (Date.now() - start < durationMs) {
+            if (fileChanged) {
+                fileChanged = false;
                 try {
-                    const r = JSON.parse(d);
-                    if (r.ok) resolve(r.result);
-                    else reject(new Error(JSON.stringify(r)));
-                } catch(e) { reject(e); }
-            });
-        });
-        req.on("timeout", () => { req.destroy(); reject(new Error("timeout " + method)); });
-        req.on("error", (e) => reject(e));
-        req.write(postData);
-        req.end();
-    });
-}
-
-// --- Offset persistente (compartido con permission-approver.js) ---
-
-function loadOffset() {
-    try {
-        const data = JSON.parse(fs.readFileSync(OFFSET_FILE, "utf8"));
-        return data.offset || 0;
-    } catch(e) { return 0; }
-}
-
-function saveOffset(offset) {
-    try { fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset }), "utf8"); } catch(e) {}
-}
-
-async function getCurrentOffset() {
-    const saved = loadOffset();
-    try {
-        const updates = await telegramPost("getUpdates", {
-            limit: 1,
-            timeout: 0,
-            allowed_updates: ["callback_query"]
-        }, 5000);
-        if (updates && updates.length > 0) {
-            const fresh = updates[updates.length - 1].update_id + 1;
-            return Math.max(saved, fresh);
+                    const q = getQuestionById(requestId);
+                    if (!q) { log("Pregunta desapareció"); return null; }
+                    if (q.status === "cancelled") return q;
+                    if (q.status !== "pending") {
+                        log("Pregunta " + requestId + " cambió a: " + q.status + " action=" + (q.action_result || "?"));
+                        return q;
+                    }
+                } catch (e) {
+                    log("Error leyendo PQ: " + e.message);
+                }
+            }
+            await sleep(POLL_INTERVAL_MS);
+            // Si no hay watcher, forzar re-check
+            if (!watcher) fileChanged = true;
         }
-        return saved;
-    } catch(e) {
-        log("getCurrentOffset error: " + e.message);
-        return saved;
+    } finally {
+        if (watcher) { try { watcher.close(); } catch (e) {} }
     }
-}
-
-// --- Polling para nuestra solicitud ---
-
-async function pollForDecision(requestId, msgId, offset) {
-    let currentOffset = offset;
-
-    for (let cycle = 0; cycle < MAX_POLL_CYCLES; cycle++) {
-        log("Poll ciclo " + (cycle + 1) + "/" + MAX_POLL_CYCLES + " offset=" + currentOffset);
-
-        let updates;
-        try {
-            updates = await telegramPost("getUpdates", {
-                offset: currentOffset,
-                timeout: POLL_TIMEOUT_SEC,
-                allowed_updates: ["callback_query"]
-            }, (POLL_TIMEOUT_SEC + 5) * 1000);
-        } catch(e) {
-            log("getUpdates error ciclo " + cycle + ": " + e.message);
-            continue;
-        }
-
-        if (!updates || !Array.isArray(updates)) continue;
-
-        for (const update of updates) {
-            if (update.update_id >= currentOffset) {
-                currentOffset = update.update_id + 1;
-            }
-
-            const cq = update.callback_query;
-            if (!cq || !cq.data) continue;
-
-            // Seguridad: solo aceptar del chat correcto
-            if (String(cq.message && cq.message.chat && cq.message.chat.id) !== String(CHAT_ID)) {
-                log("Callback de chat desconocido: " + JSON.stringify(cq.message && cq.message.chat));
-                continue;
-            }
-
-            // Verificar que el callback es para NUESTRO mensaje
-            if (cq.message && cq.message.message_id !== msgId) {
-                log("Callback de otro mensaje: " + cq.message.message_id + " (esperaba " + msgId + ")");
-                continue;
-            }
-
-            // Extraer accion y requestId del callback_data
-            const parts = cq.data.split(":");
-            if (parts.length < 2) continue;
-            const action = parts[0];
-            const cbRequestId = parts.slice(1).join(":");
-
-            if (cbRequestId !== requestId) {
-                log("Callback de otra solicitud: " + cbRequestId + " (esperaba " + requestId + ")");
-                continue;
-            }
-
-            log("Decision recibida: " + action + " en ciclo " + cycle);
-            saveOffset(currentOffset);
-            return { action, callbackQueryId: cq.id, messageId: cq.message.message_id };
-        }
-    }
-
     return null; // timeout
 }
 
@@ -164,7 +80,7 @@ async function main() {
     // Leer info del plan para contexto en el mensaje
     let planInfo = "";
     try {
-        const planPath = path.join(path.dirname(process.argv[1] || __filename), "sprint-plan.json");
+        const planPath = path.join(__dirname, "sprint-plan.json");
         if (fs.existsSync(planPath)) {
             const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
             const count = plan.agentes ? plan.agentes.length : "?";
@@ -177,22 +93,12 @@ async function main() {
         + planInfo + "\n\n"
         + "\u00BFPlanificar el siguiente sprint y proponer nuevas historias ahora?";
 
-    // 1. Obtener offset actual ANTES de enviar el mensaje
-    let offset;
-    try {
-        offset = await getCurrentOffset();
-        log("Offset inicial: " + offset);
-    } catch(e) {
-        log("Error obteniendo offset: " + e.message);
-        process.stdout.write(JSON.stringify({ confirmed: false, error: "offset" }) + "\n");
-        process.exit(0);
-    }
-
-    // 2. Enviar mensaje con inline buttons
+    // 1. Enviar mensaje con inline buttons via telegram-client.js
     let sentMsg;
     try {
-        sentMsg = await telegramPost("sendMessage", {
-            chat_id: CHAT_ID,
+        if (!tgClient) throw new Error("telegram-client.js no disponible");
+        sentMsg = await tgClient.telegramPost("sendMessage", {
+            chat_id: tgClient.getChatId(),
             text: msgText,
             parse_mode: "HTML",
             reply_markup: {
@@ -203,75 +109,59 @@ async function main() {
             }
         }, 8000);
         log("Mensaje enviado msg_id=" + sentMsg.message_id + " requestId=" + requestId);
-
-        // Registrar pregunta pendiente
-        addPendingQuestion({
-            id: requestId,
-            type: "sprint",
-            message: "¿Planificar siguiente sprint?",
-            telegram_message_id: sentMsg.message_id,
-            options: [
-                { label: "Si, planificar", action: "yes" },
-                { label: "No, terminar", action: "no" }
-            ],
-            action_data: { command: "/planner sprint" }
-        });
     } catch(e) {
         log("Error enviando mensaje: " + e.message);
         process.stdout.write(JSON.stringify({ confirmed: false, error: "send" }) + "\n");
         process.exit(0);
     }
 
-    const msgId = sentMsg.message_id;
+    // 2. Registrar pregunta pendiente — el Commander procesará el callback
+    addPendingQuestion({
+        id: requestId,
+        type: "sprint",
+        message: "¿Planificar siguiente sprint?",
+        telegram_message_id: sentMsg.message_id,
+        options: [
+            { label: "Si, planificar", action: "yes" },
+            { label: "No, terminar", action: "no" }
+        ],
+        action_data: { command: "/planner sprint" }
+    });
 
-    // 3. Polling esperando la decision del usuario
-    const decision = await pollForDecision(requestId, msgId, offset);
+    // 3. Esperar respuesta via PQ (fs.watch + fallback polling) — NO getUpdates
+    const answer = await waitForAnswer(requestId, TOTAL_TIMEOUT_MS);
     const latencyMs = Date.now() - startTime;
 
-    if (!decision) {
-        // Timeout: editar mensaje y salir
+    if (!answer || answer.status === "pending") {
+        // Timeout
         log("Timeout sin respuesta. Latencia: " + latencyMs + "ms");
         resolveQuestion(requestId, "expired");
-        saveOffset(offset);
         try {
-            await telegramPost("editMessageText", {
-                chat_id: CHAT_ID,
-                message_id: msgId,
-                text: msgText + "\n\n\u23F1 <i>Sin respuesta \u2014 ciclo finalizado</i>",
-                parse_mode: "HTML"
-            }, ANSWER_TIMEOUT);
+            await tgClient.editMessage(sentMsg.message_id,
+                msgText + "\n\n\u23F1 <i>Sin respuesta \u2014 ciclo finalizado</i>",
+                { replyMarkup: { inline_keyboard: [] } });
         } catch(e) { log("Error editando mensaje timeout: " + e.message); }
         process.stdout.write(JSON.stringify({ confirmed: false, timeout: true }) + "\n");
         process.exit(0);
     }
 
-    // 4. Responder al callback (quitar spinner del boton en Telegram)
-    const isYes = decision.action === "yes";
+    // 4. Interpretar respuesta
+    const isYes = answer.action_result === "yes" || answer.action_result === "allow";
     const confirmText = isYes
         ? "\uD83D\uDE80 Planificando sprint + generando propuestas..."
         : "\u23F9 Ciclo finalizado";
-    try {
-        await telegramPost("answerCallbackQuery", {
-            callback_query_id: decision.callbackQueryId,
-            text: confirmText,
-            show_alert: false
-        }, ANSWER_TIMEOUT);
-    } catch(e) { log("Error en answerCallbackQuery: " + e.message); }
-
-    // 5. Editar mensaje: quitar botones, mostrar decision tomada
     const emoji = isYes ? "\uD83D\uDE80" : "\u23F9";
+
+    // 5. Editar mensaje: quitar botones, mostrar decision
     try {
-        await telegramPost("editMessageText", {
-            chat_id: CHAT_ID,
-            message_id: msgId,
-            text: msgText + "\n\n" + emoji + " <b>" + confirmText + "</b>"
+        await tgClient.editMessage(sentMsg.message_id,
+            msgText + "\n\n" + emoji + " <b>" + confirmText + "</b>"
                 + " <i>(" + latencyMs + "ms)</i>",
-            parse_mode: "HTML"
-        }, ANSWER_TIMEOUT);
-    } catch(e) { log("Error editando mensaje con decision: " + e.message); }
+            { replyMarkup: { inline_keyboard: [] } });
+    } catch(e) { log("Error editando mensaje: " + e.message); }
 
     log("Resultado: " + (isYes ? "confirmed" : "rejected") + " en " + latencyMs + "ms");
-    resolveQuestion(requestId, "answered");
+    if (answer.status !== "answered") resolveQuestion(requestId, "answered");
     process.stdout.write(JSON.stringify({ confirmed: isYes }) + "\n");
     process.exit(0);
 }

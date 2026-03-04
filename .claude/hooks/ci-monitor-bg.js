@@ -17,21 +17,21 @@ try {
     registerMessage = () => {}; // Fallback si el registry no existe
 }
 
+// P-09: Usar telegram-client.js compartido
+let tgClient;
+try { tgClient = require("./telegram-client"); } catch (e) { tgClient = null; }
+
+// P-15: Ops learnings
+let opsLearnings;
+try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
+
 const SHA = process.argv[2];
 const BRANCH = process.argv[3];
 const PROJECT_DIR = process.argv[4] || process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 
 const LOG_FILE = path.join(PROJECT_DIR, ".claude", "hooks", "hook-debug.log");
-const POLL_INTERVAL_MS = 30000;  // 30 segundos
 const MAX_POLLS = 40;            // ~20 minutos maximo
 const GH_REPO = "intrale/platform";
-
-let tgConfig;
-try {
-    tgConfig = JSON.parse(fs.readFileSync(path.join(PROJECT_DIR, ".claude", "hooks", "telegram-config.json"), "utf8"));
-} catch(e) {
-    tgConfig = { bot_token: "", chat_id: "" };
-}
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] CI-Monitor: " + msg + "\n"); } catch(e) {}
@@ -80,37 +80,26 @@ function ghApiGet(apiPath, token) {
     });
 }
 
-function sendTelegram(text) {
-    if (!tgConfig.bot_token || !tgConfig.chat_id) return Promise.resolve(null);
-    return new Promise((resolve, reject) => {
-        const postData = JSON.stringify({ chat_id: tgConfig.chat_id, text: text, parse_mode: "HTML" });
-        const req = https.request({
-            hostname: "api.telegram.org",
-            path: "/bot" + tgConfig.bot_token + "/sendMessage",
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) },
-            timeout: 8000
-        }, (res) => {
-            let d = "";
-            res.on("data", (c) => d += c);
-            res.on("end", () => {
-                try {
-                    const r = JSON.parse(d);
-                    if (r.ok && r.result && r.result.message_id) {
-                        registerMessage(r.result.message_id, "ci");
-                    }
-                    resolve(r);
-                } catch (e) { resolve(null); }
-            });
-        });
-        req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
-        req.on("error", (e) => reject(e));
-        req.write(postData);
-        req.end();
-    });
+// P-09: Envío via telegram-client.js con fallback inline
+async function sendTelegram(text) {
+    try {
+        if (tgClient) {
+            const result = await tgClient.sendMessage(text);
+            if (result && result.message_id) registerMessage(result.message_id, "ci");
+            return result;
+        }
+    } catch (e) { log("sendTelegram via client error: " + e.message); }
+    return null;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// P-11: Backoff progresivo según tiempo transcurrido
+function getPollInterval(elapsedMs) {
+    if (elapsedMs < 120000) return 60000;   // 0-2min: 60s (workflow registrándose)
+    if (elapsedMs < 480000) return 30000;   // 2-8min: 30s (fase activa)
+    return 60000;                            // >8min: 60s (anormal, reducir carga)
+}
 
 async function main() {
     if (!SHA || !BRANCH) {
@@ -129,7 +118,12 @@ async function main() {
     // Esperar un poco para que GitHub registre el workflow run
     await sleep(10000);
 
+    const startMs = Date.now();
+
     for (let poll = 0; poll < MAX_POLLS; poll++) {
+        const elapsedMs = Date.now() - startMs;
+        const interval = getPollInterval(elapsedMs);
+
         try {
             // Buscar workflow runs para este SHA
             const data = await ghApiGet(
@@ -139,12 +133,12 @@ async function main() {
 
             const runs = data.workflow_runs || [];
             if (runs.length === 0) {
-                log("Poll " + (poll + 1) + ": sin runs para " + SHA.substring(0, 7));
+                log("Poll " + (poll + 1) + ": sin runs para " + SHA.substring(0, 7) + " (interval=" + (interval/1000) + "s)");
                 if (poll > 5) {
                     log("Sin runs despues de " + (poll + 1) + " intentos, abortando");
                     break;
                 }
-                await sleep(POLL_INTERVAL_MS);
+                await sleep(interval);
                 continue;
             }
 
@@ -152,7 +146,7 @@ async function main() {
             const status = run.status;
             const conclusion = run.conclusion;
 
-            log("Poll " + (poll + 1) + ": status=" + status + " conclusion=" + (conclusion || "pending"));
+            log("Poll " + (poll + 1) + ": status=" + status + " conclusion=" + (conclusion || "pending") + " (interval=" + (interval/1000) + "s)");
 
             if (status === "completed") {
                 const emoji = conclusion === "success" ? "\u2705" : "\u274C";
@@ -165,19 +159,47 @@ async function main() {
                     + (url ? '<a href="' + url + '">Ver en GitHub</a>' : "");
 
                 log("CI completado: " + conclusion + " — notificando");
+                // P-15: Registrar CI fallido en ops-learnings
+                if (conclusion !== "success" && opsLearnings) {
+                    try {
+                        opsLearnings.recordLearning({
+                            source: "ci-monitor",
+                            category: "ci_failure",
+                            severity: "high",
+                            symptom: "CI fallido: " + conclusion + " en " + BRANCH,
+                            root_cause: "Workflow conclusion: " + conclusion,
+                            affected: ["ci-monitor-bg.js"],
+                            auto_detected: true
+                        });
+                    } catch (e) {}
+                }
                 await sendTelegram(msg);
                 process.exit(0);
             }
 
             // Aun corriendo, esperar
-            await sleep(POLL_INTERVAL_MS);
+            await sleep(interval);
         } catch(e) {
             log("Error en poll " + (poll + 1) + ": " + e.message);
-            await sleep(POLL_INTERVAL_MS);
+            await sleep(interval);
         }
     }
 
     log("Timeout: CI no completo despues de " + MAX_POLLS + " polls");
+    // P-15: Registrar timeout en ops-learnings
+    if (opsLearnings) {
+        try {
+            opsLearnings.recordLearning({
+                source: "ci-monitor",
+                category: "ci_timeout",
+                severity: "high",
+                symptom: "CI timeout: workflow no completó en tiempo esperado",
+                root_cause: "Workflow para " + BRANCH + " (" + SHA.substring(0, 7) + ") excedió " + MAX_POLLS + " polls",
+                affected: ["ci-monitor-bg.js"],
+                auto_detected: true
+            });
+        } catch (e) {}
+    }
     await sendTelegram("\u23F1 <b>CI timeout</b>\n\nEl workflow para <code>" + SHA.substring(0, 7) + "</code> en <code>" + BRANCH + "</code> no completo en el tiempo esperado.");
     process.exit(0);
 }
