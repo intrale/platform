@@ -82,7 +82,18 @@
       "Skill(ux)",
       "Skill(scrum)",
       "Bash(python3:*)",
-      "Bash(read line:*)"
+      "Bash(read line:*)",
+      "Bash(mount:*)",
+      "Bash(curl:*)",
+      "Bash(env:*)",
+      "Bash(java:*)",
+      "Bash(pip3:*)",
+      "Bash(stat:*)",
+      "WebFetch(domain:www.explaintopic.com)",
+      "WebFetch(domain:learn.microsoft.com)",
+      "WebFetch(domain:powershell.one)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:poweradm.com)"
     ],
     "deny": [
       "Bash(git push --force*)",
