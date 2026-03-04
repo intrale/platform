@@ -124,6 +124,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/health-check.js",
             "timeout": 15000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/agent-progress.js",
+            "timeout": 5000
           }
         ]
       }
