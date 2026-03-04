@@ -241,6 +241,19 @@ async function handleAllDone(elapsedMin) {
 // ─── Guardian (detección de inactividad + zombies) ───────────────────────────
 
 function guardianCheck() {
+    // Detección dinámica de sprint: si no estamos en watch y existe sprint-plan.json, activar watch
+    if (!_pollInterval && fs.existsSync(PLAN_FILE)) {
+        const freshPlan = loadPlan();
+        if (freshPlan && freshPlan.agentes && freshPlan.agentes.length > 0) {
+            _plan = freshPlan;
+            _startTime = Date.now();
+            _pollInterval = setInterval(checkAgents, POLL_INTERVAL_MS);
+            log("Watch activado dinámicamente: " + _plan.agentes.length + " agente(s) detectado(s) en sprint-plan.json");
+            notify("👁️ <b>Monitor activado</b>\nDetectado sprint con " + _plan.agentes.length + " agente(s). Monitoreando...");
+            return; // Salir de guardian esta iteración, próxima vez se ejecutará checkAgents
+        }
+    }
+
     // Detección de zombies
     const currCpuSnapshot = getClaudeAgentPids();
     if (Object.keys(_prevCpuSnapshot).length > 0 && Object.keys(currCpuSnapshot).length > 0) {

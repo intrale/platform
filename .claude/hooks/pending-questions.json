@@ -179,6 +179,108 @@
       "answered_at": "2026-03-03T22:50:41.419Z",
       "answered_via": "telegram",
       "action_result": "allow"
+    },
+    {
+      "id": "21a327a2b760be9c",
+      "type": "permission",
+      "timestamp": "2026-03-04T15:26:26.913Z",
+      "message": "📝 <b>Editar</b> <code>.claude/hooks/telegram-commander.js</code>\n<pre>- // P-08: Iniciar guardian de agentes (modo guardian-only, sin watch específico)\n    if (agentMonitor) {\n        agentMon…\n+ // P-08: Iniciar agent monitor (watch + guardian automático)\n    // Si hay sprint activo → watch mode + generación autom…</pre>",
+      "original_html": "🔐 <b>Claude Code — PERMISO REQUERIDO</b>\n\n📝 <b>Editar</b> <code>.claude/hooks/telegram-commander.js</code>\n<pre>- // P-08: Iniciar guardian de agentes (modo guardian-only, sin watch específico)\n    if (agentMonitor) {\n        agentMon…\n+ // P-08: Iniciar agent monitor (watch + guardian automático)\n    // Si hay sprint activo → watch mode + generación autom…</pre>\n\n⏳ Expira en 15 min\n📝 Usar botones o responder: <b>siempre</b> (para persistir)",
+      "telegram_message_id": 7132,
+      "options": [
+        {
+          "label": "Permitir",
+          "action": "allow"
+        },
+        {
+          "label": "Rechazar",
+          "action": "deny"
+        }
+      ],
+      "action_data": {
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "C:\\Workspaces\\Intrale\\platform\\.claude\\hooks\\telegram-commander.js",
+          "old_string": "    // P-08: Iniciar guardian de agentes (modo guardian-only, sin watch específico)\n    if (agentMonitor) {\n        agentMonitor.startAgentMonitor(null, { guardianOnly: true });\n        log(\"Agent monitor (guardian) iniciado\");\n    }",
+          "new_string": "    // P-08: Iniciar agent monitor (watch + guardian automático)\n    // Si hay sprint activo → watch mode + generación automática de reporte\n    // Si no → guardian only (detección de zombies e inactividad)\n    if (agentMonitor) {\n        const amStatus = agentMonitor.startAgentMonitor(null, {\n            onAllDone: async () => {\n                log(\"Sprint finalizado — reporte generado automáticamente por agent-monitor.js\");\n            }\n        });\n        log(\"Agent monitor iniciado\" + (amStatus.watching ? \" (watch + guardian)\" : \" (guardian only)\"));\n    }",
+          "replace_all": false
+        },
+        "agent": "Claude Code"
+      },
+      "skill_context": null,
+      "approver_pid": 18480,
+      "status": "answered",
+      "answered_at": "2026-03-04T15:28:57.332Z",
+      "answered_via": "telegram",
+      "action_result": "always"
+    },
+    {
+      "id": "beed6d3d8e5af92e",
+      "type": "permission",
+      "timestamp": "2026-03-04T15:29:12.614Z",
+      "message": "📝 <b>Editar</b> <code>.claude/hooks/agent-monitor.js</code>\n<pre>- // ─── Guardian (detección de inactividad + zombies) ───────────────────────────\n\nfunction guardianCheck() {\n    // Dete…\n+ // ─── Guardian (detección de inactividad + zombies) ───────────────────────────\n\nfunction guardianCheck() {\n    // Dete…</pre>",
+      "original_html": "🔐 <b>Claude Code — PERMISO REQUERIDO</b>\n\n📝 <b>Editar</b> <code>.claude/hooks/agent-monitor.js</code>\n<pre>- // ─── Guardian (detección de inactividad + zombies) ───────────────────────────\n\nfunction guardianCheck() {\n    // Dete…\n+ // ─── Guardian (detección de inactividad + zombies) ───────────────────────────\n\nfunction guardianCheck() {\n    // Dete…</pre>\n\n⏳ Expira en 15 min\n📝 Usar botones o responder: <b>siempre</b> (para persistir)",
+      "telegram_message_id": 7135,
+      "options": [
+        {
+          "label": "Permitir",
+          "action": "allow"
+        },
+        {
+          "label": "Rechazar",
+          "action": "deny"
+        }
+      ],
+      "action_data": {
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "C:\\Workspaces\\Intrale\\platform\\.claude\\hooks\\agent-monitor.js",
+          "old_string": "// ─── Guardian (detección de inactividad + zombies) ───────────────────────────\n\nfunction guardianCheck() {\n    // Detección de zombies",
+          "new_string": "// ─── Guardian (detección de inactividad + zombies) ───────────────────────────\n\nfunction guardianCheck() {\n    // Detección dinámica de sprint: si no estamos en watch y existe sprint-plan.json, activar watch\n    if (!_pollInterval && fs.existsSync(PLAN_FILE)) {\n        const freshPlan = loadPlan();\n        if (freshPlan && freshPlan.agentes && freshPlan.agentes.length > 0) {\n            _plan = freshPlan;\n            _startTime = Date.now();\n            _pollInterval = setInterval(checkAgents, POLL_INTERVAL_MS);\n            log(\"Watch activado dinámicamente: \" + _plan.agentes.length + \" agente(s) detectado(s) en sprint-plan.json\");\n            notify(\"👁️ <b>Monitor activado</b>\\nDetectado sprint con \" + _plan.agentes.length + \" agente(s). Monitoreando...\");\n            return; // Salir de guardian esta iteración, próxima vez se ejecutará checkAgents\n        }\n    }\n\n    // Detección de zombies",
+          "replace_all": false
+        },
+        "agent": "Claude Code"
+      },
+      "skill_context": null,
+      "approver_pid": 20252,
+      "status": "answered",
+      "answered_at": "2026-03-04T15:29:23.586Z",
+      "answered_via": "telegram",
+      "action_result": "always"
+    },
+    {
+      "id": "b6ed6f35d3b1b825",
+      "type": "permission",
+      "timestamp": "2026-03-04T15:29:38.380Z",
+      "message": "📝 <b>Editar</b> <code>scripts/Start-Agente.ps1</code>\n<pre>- Write-Host \"\"\n    Write-Host \"&gt;&gt; Todos los agentes lanzados.\" -ForegroundColor Green\n    Write-Host \"&gt;&gt; Dashboard web au…\n+ Write-Host \"\"\n    Write-Host \"&gt;&gt; Todos los agentes lanzados.\" -ForegroundColor Green\n    Write-Host \"&gt;&gt; Dashboard web au…</pre>",
+      "original_html": "🔐 <b>Claude Code — PERMISO REQUERIDO</b>\n\n📝 <b>Editar</b> <code>scripts/Start-Agente.ps1</code>\n<pre>- Write-Host \"\"\n    Write-Host \"&gt;&gt; Todos los agentes lanzados.\" -ForegroundColor Green\n    Write-Host \"&gt;&gt; Dashboard web au…\n+ Write-Host \"\"\n    Write-Host \"&gt;&gt; Todos los agentes lanzados.\" -ForegroundColor Green\n    Write-Host \"&gt;&gt; Dashboard web au…</pre>\n\n⏳ Expira en 15 min\n📝 Usar botones o responder: <b>siempre</b> (para persistir)",
+      "telegram_message_id": 7138,
+      "options": [
+        {
+          "label": "Permitir",
+          "action": "allow"
+        },
+        {
+          "label": "Rechazar",
+          "action": "deny"
+        }
+      ],
+      "action_data": {
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "C:\\Workspaces\\Intrale\\platform\\scripts\\Start-Agente.ps1",
+          "old_string": "    Write-Host \"\"\n    Write-Host \">> Todos los agentes lanzados.\" -ForegroundColor Green\n    Write-Host \">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)\" -ForegroundColor Cyan\n\n    # Lanzar Watch-Agentes en background para ciclo continuo\n    $watchScript = Join-Path $PSScriptRoot 'Watch-Agentes.ps1'\n    if (Test-Path $watchScript) {\n        $watchArgs = @('-NonInteractive', '-File', $watchScript)\n        if ($SkipMerge) { $watchArgs += '-SkipMerge' }\n        Start-Process powershell -ArgumentList $watchArgs\n        Write-Host \">> Watch-Agentes lanzado en background (ciclo continuo).\" -ForegroundColor Magenta\n    }\n    else {\n        Write-Host \">> Watch-Agentes.ps1 no encontrado, omitiendo watcher.\" -ForegroundColor Yellow\n    }\n\n    # Lanzar Guardian-Sprint automaticamente (siempre con 'all')\n    $guardianScript = Join-Path $PSScriptRoot 'Guardian-Sprint.ps1'\n    if (Test-Path $guardianScript) {\n        # Verificar si ya hay un guardian corriendo\n        $guardianRunning = $null\n        try {\n            $guardianRunning = Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" -ErrorAction SilentlyContinue |\n                Where-Object { $_.CommandLine -match 'Guardian-Sprint' }\n        } catch {}\n        if ($guardianRunning) {\n            Write-Host \">> Guardian-Sprint ya esta corriendo (PID: $($guardianRunning.ProcessId)). Reutilizando.\" -ForegroundColor Yellow\n        }\n        else {\n            Start-Process powershell -ArgumentList '-NonInteractive', '-File', $guardianScript\n            Write-Host \">> Guardian-Sprint lanzado en background (keepalive autonomo).\" -ForegroundColor Green\n        }\n    }\n    else {\n        Write-Host \">> Guardian-Sprint.ps1 no encontrado, omitiendo guardian.\" -ForegroundColor Yellow\n    }",
+          "new_string": "    Write-Host \"\"\n    Write-Host \">> Todos los agentes lanzados.\" -ForegroundColor Green\n    Write-Host \">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)\" -ForegroundColor Cyan\n    Write-Host \">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado).\" -ForegroundColor Cyan\n    Write-Host \">> Reporte post-sprint se generará automáticamente cuando terminen.\" -ForegroundColor Cyan",
+          "replace_all": false
+        },
+        "agent": "Claude Code"
+      },
+      "skill_context": null,
+      "approver_pid": 20180,
+      "status": "answered",
+      "answered_at": "2026-03-04T15:29:52.369Z",
+      "answered_via": "telegram",
+      "action_result": "always"
     }
   ]
 }

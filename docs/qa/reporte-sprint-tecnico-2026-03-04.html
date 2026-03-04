@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Sprint Técnico — 2026-03-04</title>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; }
+  th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 600; margin: 0 2px; }
+  .tag-ok { background: #e8f5e9; color: #2e7d32; }
+  .tag-info { background: #e3f2fd; color: #0d47a1; }
+  .tag-warn { background: #fff8e1; color: #f57f17; }
+  .metric-box { display: inline-block; text-align: center; padding: 12px 20px; margin: 6px 8px; border-radius: 6px; }
+  .metric-box .number { font-size: 28px; font-weight: 700; }
+  .metric-box .label { font-size: 10px; color: #555; }
+  .mb-green { background: #e8f5e9; border: 1px solid #a5d6a7; }
+  .mb-green .number { color: #2e7d32; }
+  .mb-blue { background: #e3f2fd; border: 1px solid #90caf9; }
+  .mb-blue .number { color: #0d47a1; }
+  .mb-orange { background: #fff3e0; border: 1px solid #ffcc80; }
+  .mb-orange .number { color: #e65100; }
+  .section { margin: 10px 0; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Reporte de Sprint Técnico</h1>
+  <div class="subtitle">Auditoría del board y limpieza de backlog</div>
+  <div class="meta">
+    Fecha: 2026-03-04<br>
+    Sprint: fechaInicio 2026-03-04 / fechaFin 2026-03-07<br>
+    Agentes: 2<br>
+    Proyecto: Intrale Platform<br>
+    Generado por: Claudito (Claude Sonnet 4.6)
+  </div>
+</div>
+
+<h1>Resumen ejecutivo</h1>
+<p>Sprint técnico enfocado en higiene del proyecto: auditoría del tablero GitHub Project V2 y limpieza masiva del backlog de issues. Ambos agentes completaron exitosamente su trabajo.</p>
+
+<div style="text-align: center; margin: 15px 0;">
+  <div class="metric-box mb-green"><div class="number">2/2</div><div class="label">Issues completados</div></div>
+  <div class="metric-box mb-blue"><div class="number">97</div><div class="label">Issues cerrados (limpieza)</div></div>
+  <div class="metric-box mb-orange"><div class="number">80</div><div class="label">Issues abiertos restantes</div></div>
+  <div class="metric-box mb-green"><div class="number">1</div><div class="label">PR mergeado</div></div>
+</div>
+
+<h2>Agente 1 — #1174: Auditoría del Board Project V2</h2>
+
+<table>
+  <tr><th>Campo</th><th>Detalle</th></tr>
+  <tr><td>Issue</td><td>#1174 — Scrum Master: auditoría del tablero de historias y propuesta de mejoras</td></tr>
+  <tr><td>PR</td><td>#1207 — docs(scrum): auditoría del board Project V2 — diagnóstico y correcciones</td></tr>
+  <tr><td>Estado</td><td><span class="tag tag-ok">MERGED</span></td></tr>
+  <tr><td>Cambios</td><td>+406 líneas (documentación)</td></tr>
+</table>
+
+<h3>Hallazgos principales</h3>
+<ul>
+  <li><strong>92 items analizados</strong> en el board, 177 issues abiertos en el repo</li>
+  <li><strong>111 issues huérfanos</strong> (63% del backlog sin representación en el board)</li>
+  <li><strong>Flujo desincronizado</strong>: 41 ramas agent/* activas, 14 PRs abiertos, pero 0 items en columnas de trabajo activo (Todo, In Progress, Ready)</li>
+  <li><strong>Correcciones automáticas</strong>: 26 issues cerrados movidos a Done, 6 sin status movidos a Backlog Técnico</li>
+</ul>
+
+<h3>Entregables</h3>
+<ul>
+  <li>Reporte HTML + PDF con diagnóstico completo</li>
+  <li>7 propuestas priorizadas de mejora del board</li>
+</ul>
+
+<h2>Agente 2 — #1205: Limpieza masiva de backlog</h2>
+
+<table>
+  <tr><th>Campo</th><th>Detalle</th></tr>
+  <tr><td>Issue</td><td>#1205 — chore: limpieza masiva de backlog — cerrar issues obsoletos, duplicados y sin actividad</td></tr>
+  <tr><td>PR</td><td>N/A (solo cierre de issues, sin cambios de código)</td></tr>
+  <tr><td>Estado</td><td><span class="tag tag-ok">COMPLETADO</span></td></tr>
+  <tr><td>Impacto</td><td>177 issues abiertos &rarr; 80 issues abiertos</td></tr>
+</table>
+
+<h3>Desglose de cierres (97 issues)</h3>
+<table>
+  <tr><th>Categoría</th><th>Cerrados</th><th>Razón</th></tr>
+  <tr><td>Strings/Base64 (#456-#498)</td><td>8</td><td>completed — resueltos por #483</td></tr>
+  <tr><td>Branding H2.x (#327-#403)</td><td>45</td><td>not planned — sin épica activa</td></tr>
+  <tr><td>Pantallas duplicadas (#49-#67)</td><td>13</td><td>not planned — supersedidas por from-intake</td></tr>
+  <tr><td>CI/Build antiguos</td><td>4</td><td>not planned — obsoletos</td></tr>
+  <tr><td>Docs duplicados (#417-#433)</td><td>4</td><td>not planned — duplicados</td></tr>
+  <tr><td>Genéricos sin contexto</td><td>5</td><td>not planned — sin labels/actividad</td></tr>
+  <tr><td>Otros obsoletos</td><td>18</td><td>not planned / completed</td></tr>
+</table>
+
+<h3>Issues preservados (80)</h3>
+<ul>
+  <li>from-intake: 24 (backlog validado de producto)</li>
+  <li>qa-compliance: 11</li>
+  <li>area:testing: 19</li>
+  <li>enhancement+ux: 6</li>
+  <li>infra/enhancement activos: 20</li>
+</ul>
+
+<h2>Limpieza adicional (sesión principal)</h2>
+<p>Durante la planificación del sprint, se cerraron 6 issues adicionales tras validar con el Product Owner que ya no aplicaban:</p>
+<table>
+  <tr><th>#</th><th>Título</th><th>Razón</th></tr>
+  <tr><td>#1180</td><td>monitor: auditar y rediseñar el dashboard ASCII persistente</td><td>Resuelto por #1183 (dashboard deprecado)</td></tr>
+  <tr><td>#483</td><td>Migrar resto de pantallas a nueva API de strings</td><td>Ya no aplica</td></tr>
+  <tr><td>#473</td><td>Bloquear usos de APIs viejas de strings con KSP</td><td>Ya no aplica</td></tr>
+  <tr><td>#462</td><td>Actualizar navigation-compose a versión estable</td><td>Ya no aplica</td></tr>
+  <tr><td>#1139</td><td>Sistema de reintentos con escalada de urgencia (permisos)</td><td>Resuelto por #1200</td></tr>
+  <tr><td>#1138</td><td>Sistema de reintentos (duplicado)</td><td>Duplicado de #1139</td></tr>
+</table>
+
+<h2>Issues nuevos creados</h2>
+<table>
+  <tr><th>#</th><th>Título</th><th>Estado</th></tr>
+  <tr><td>#1205</td><td>chore: limpieza masiva de backlog</td><td><span class="tag tag-ok">CERRADO</span></td></tr>
+  <tr><td>#1206</td><td>feat(agents): mostrar progreso consolidado en terminal de cada agente</td><td><span class="tag tag-info">ABIERTO</span> (backlog)</td></tr>
+</table>
+
+<h2>Problemas detectados</h2>
+<ul>
+  <li><strong>Reporte post-sprint no se generó automáticamente</strong> — El ciclo Watch-Agentes &rarr; Stop-Agente no dispara generación de reporte. Pendiente de investigación.</li>
+  <li><strong>Permisos Bash en terminal</strong> — Algunos compound commands con <code>cd && comando 2>/dev/null</code> disparan security check nativo de Claude Code en vez de ir a Telegram. Mitigación: usar paths absolutos (regla guardada en memoria).</li>
+</ul>
+
+<h2>Métricas del sprint</h2>
+<table>
+  <tr><th>Métrica</th><th>Valor</th></tr>
+  <tr><td>Duración real</td><td>~30 minutos (ambos agentes)</td></tr>
+  <tr><td>Issues planificados</td><td>2</td></tr>
+  <tr><td>Issues completados</td><td>2 (100%)</td></tr>
+  <tr><td>PRs creados</td><td>1</td></tr>
+  <tr><td>PRs mergeados</td><td>1</td></tr>
+  <tr><td>Issues cerrados (limpieza)</td><td>97 + 6 = 103</td></tr>
+  <tr><td>Backlog reducido</td><td>177 &rarr; 80 (55% reducción)</td></tr>
+</table>
+
+<h2>Deuda técnica pendiente</h2>
+<ul>
+  <li>#1206 — Progreso consolidado en terminal de agentes</li>
+  <li>Automatizar generación de reporte post-sprint (investigación en curso)</li>
+  <li>Board Project V2 necesita las 7 mejoras propuestas por la auditoría</li>
+</ul>
+
+</body>
+</html>

@@ -2502,10 +2502,16 @@ async function main() {
         log("Process supervisor iniciado");
     }
 
-    // P-08: Iniciar guardian de agentes (modo guardian-only, sin watch específico)
+    // P-08: Iniciar agent monitor (watch + guardian automático)
+    // Si hay sprint activo → watch mode + generación automática de reporte
+    // Si no → guardian only (detección de zombies e inactividad)
     if (agentMonitor) {
-        agentMonitor.startAgentMonitor(null, { guardianOnly: true });
-        log("Agent monitor (guardian) iniciado");
+        const amStatus = agentMonitor.startAgentMonitor(null, {
+            onAllDone: async () => {
+                log("Sprint finalizado — reporte generado automáticamente por agent-monitor.js");
+            }
+        });
+        log("Agent monitor iniciado" + (amStatus.watching ? " (watch + guardian)" : " (guardian only)"));
     }
 
     // Polling principal

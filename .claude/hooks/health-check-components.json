@@ -1,0 +1,32 @@
+{
+  "commander": {
+    "consecutivePasses": 20,
+    "currentInterval": 600000,
+    "lastRun": 1772638137767
+  },
+  "approvers": {
+    "consecutivePasses": 20,
+    "currentInterval": 600000,
+    "lastRun": 1772638137767
+  },
+  "telegram": {
+    "consecutivePasses": 20,
+    "currentInterval": 600000,
+    "lastRun": 1772638137767
+  },
+  "settings": {
+    "consecutivePasses": 20,
+    "currentInterval": 600000,
+    "lastRun": 1772638137767
+  },
+  "hooks": {
+    "consecutivePasses": 42,
+    "currentInterval": 600000,
+    "lastRun": 1772638203204
+  },
+  "worktrees": {
+    "consecutivePasses": 20,
+    "currentInterval": 600000,
+    "lastRun": 1772638203204
+  }
+}
