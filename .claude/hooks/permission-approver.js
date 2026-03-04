@@ -282,8 +282,8 @@ async function pollQuestionStatus(requestId, durationMs, attemptLabel, countdown
         // Actualizar countdown cada 30s
         countdownCounter++;
         if (countdownOptions && countdownOptions.msgId && countdownCounter % COUNTDOWN_INTERVAL === 0) {
-            const elapsed = Math.round((Date.now() - pollStart) / 1000);
-            const remaining = Math.round((durationMs - elapsed) / 1000);
+            const elapsedMs = Date.now() - pollStart;
+            const remaining = Math.max(0, Math.round((durationMs - elapsedMs) / 1000));
             if (remaining > 0) {
                 const minRemaining = Math.floor(remaining / 60);
                 const secRemaining = remaining % 60;
@@ -421,12 +421,13 @@ async function processInput() {
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
     const totalAttempts = RETRY_INTERVALS.length;
 
+    const firstWaitMin = Math.round(RETRY_INTERVALS[0] / 60000);
     let msgText = "⚠️ <b>" + escHtml(agent) + " — Permiso requerido</b> <i>(Intento 1/" + totalAttempts + ")</i>\n";
     if (contextLine) {
         msgText += contextLine + "\n";
     }
     msgText += "\n" + action + "\n\n"
-        + "⏳ Expira en 3:00\n"
+        + "⏳ Expira en " + firstWaitMin + ":00\n"
         + "📝 Usar botones o responder: <b>siempre</b> (para persistir)";
 
     // 1. Enviar mensaje con botones inline + instrucción de texto libre
