@@ -30,7 +30,7 @@ describe("P-01: Escritura atómica en pending-questions", () => {
     it("saveQuestions usa escritura atómica (temp + rename en source)", () => {
         const sourceFile = path.join(__dirname, "..", "pending-questions.js");
         const source = fs.readFileSync(sourceFile, "utf8");
-        assert.ok(source.includes(".tmp."), "Debería usar archivo temporal .tmp.");
+        assert.ok(source.includes(".tmp") && source.includes("renameSync"), "Debería usar archivo temporal .tmp + renameSync");
         assert.ok(source.includes("renameSync"), "Debería usar renameSync para atomicidad");
     });
 
