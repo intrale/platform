@@ -226,6 +226,25 @@ catch {
 
 Write-Host ''
 
+# --- Generar reporte de sprint ---
+$sprintReportScript = Join-Path $PSScriptRoot 'sprint-report.js'
+if (Test-Path $sprintReportScript) {
+    Write-Log 'Generando reporte de sprint...' 'Cyan'
+    try {
+        & node $sprintReportScript $PlanFile
+        Write-Log 'Reporte de sprint generado.' 'Green'
+    }
+    catch {
+        Write-Log ('Error generando reporte: {0}' -f $_.Exception.Message) 'Yellow'
+        # Fail-open: continuar igualmente
+    }
+}
+else {
+    Write-Log 'sprint-report.js no encontrado, omitiendo reporte.' 'Yellow'
+}
+
+Write-Host ''
+
 # --- Preguntar si planificar el siguiente sprint ---
 $confirmed = $false
 
