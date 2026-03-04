@@ -236,39 +236,8 @@ if ($Numero -eq "all") {
     Write-Host ""
     Write-Host ">> Todos los agentes lanzados." -ForegroundColor Green
     Write-Host ">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)" -ForegroundColor Cyan
-
-    # Lanzar Watch-Agentes en background para ciclo continuo
-    $watchScript = Join-Path $PSScriptRoot 'Watch-Agentes.ps1'
-    if (Test-Path $watchScript) {
-        $watchArgs = @('-NonInteractive', '-File', $watchScript)
-        if ($SkipMerge) { $watchArgs += '-SkipMerge' }
-        Start-Process powershell -ArgumentList $watchArgs
-        Write-Host ">> Watch-Agentes lanzado en background (ciclo continuo)." -ForegroundColor Magenta
-    }
-    else {
-        Write-Host ">> Watch-Agentes.ps1 no encontrado, omitiendo watcher." -ForegroundColor Yellow
-    }
-
-    # Lanzar Guardian-Sprint automaticamente (siempre con 'all')
-    $guardianScript = Join-Path $PSScriptRoot 'Guardian-Sprint.ps1'
-    if (Test-Path $guardianScript) {
-        # Verificar si ya hay un guardian corriendo
-        $guardianRunning = $null
-        try {
-            $guardianRunning = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-                Where-Object { $_.CommandLine -match 'Guardian-Sprint' }
-        } catch {}
-        if ($guardianRunning) {
-            Write-Host ">> Guardian-Sprint ya esta corriendo (PID: $($guardianRunning.ProcessId)). Reutilizando." -ForegroundColor Yellow
-        }
-        else {
-            Start-Process powershell -ArgumentList '-NonInteractive', '-File', $guardianScript
-            Write-Host ">> Guardian-Sprint lanzado en background (keepalive autonomo)." -ForegroundColor Green
-        }
-    }
-    else {
-        Write-Host ">> Guardian-Sprint.ps1 no encontrado, omitiendo guardian." -ForegroundColor Yellow
-    }
+    Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
+    Write-Host ">> Reporte post-sprint se generará automáticamente cuando terminen." -ForegroundColor Cyan
 }
 else {
     $num = [int]$Numero
