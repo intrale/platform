@@ -51,6 +51,36 @@ if (-not (Test-Path $MainRepo)) {
 # --- Leer plan ---
 $Plan = Get-Content $PlanFile -Raw | ConvertFrom-Json
 
+# --- Validar sprint activo ---
+function Test-SprintActivo {
+    param([Parameter(Mandatory)] $Plan)
+
+    if (-not $Plan.fechaFin) {
+        Write-Error ("El plan no tiene campo 'fechaFin'. El sprint no es valido.`n" +
+                     "Ejecuta /planner sprint para planificar un nuevo sprint antes de lanzar agentes.")
+        exit 1
+    }
+
+    try {
+        $fechaFin = [DateTime]::ParseExact($Plan.fechaFin, 'yyyy-MM-dd', $null)
+    }
+    catch {
+        Write-Error ("No se pudo parsear fechaFin '{0}'. Formato esperado: yyyy-MM-dd.`n" +
+                     "Ejecuta /planner sprint para generar un plan valido." -f $Plan.fechaFin)
+        exit 1
+    }
+
+    if ((Get-Date).Date -gt $fechaFin.Date) {
+        Write-Error ("El sprint del plan actual ha expirado (fechaFin: {0}).`n" +
+                     "Ejecuta /planner sprint para planificar un nuevo sprint antes de lanzar agentes." -f $Plan.fechaFin)
+        exit 1
+    }
+
+    Write-Host ">> Sprint activo (fechaFin: $($Plan.fechaFin))" -ForegroundColor Green
+}
+
+Test-SprintActivo -Plan $Plan
+
 # Pre-registrar confianza del worktree en Claude Code para evitar dialogo interactivo de trust
 function PreRegister-Trust {
     param([string]$AbsPath)

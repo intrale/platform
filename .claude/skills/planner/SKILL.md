@@ -217,6 +217,8 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 ```json
 {
   "fecha": "2026-02-20",
+  "fechaInicio": "2026-02-20",
+  "fechaFin": "2026-02-26",
   "agentes": [
     {
       "numero": 1,
@@ -232,6 +234,9 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 ```
 
 Reglas del JSON:
+- `fecha`: fecha de creacion del plan (backward compat, mismo valor que `fechaInicio`)
+- `fechaInicio`: fecha de inicio del sprint (ISO 8601, ej: `"2026-03-03"`) — siempre la fecha actual al momento de planificar
+- `fechaFin`: fecha de fin del sprint (ISO 8601, ej: `"2026-03-07"`) — `fechaInicio` + duracion del sprint (default: 5 dias habiles / 1 semana, excluyendo fines de semana). Si el sprint se planifica un lunes, `fechaFin` es el viernes de esa semana. **OBLIGATORIO** — `Start-Agente.ps1` y `Watch-Agentes.ps1` bloquean la ejecucion si `fechaFin` no existe o ya paso
 - `numero`: secuencial empezando en 1
 - `issue`: numero del issue de GitHub
 - `slug`: identificador corto sin espacios ni caracteres especiales (usado para branch y worktree)
