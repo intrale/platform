@@ -1,7 +1,7 @@
 ---
 description: Planner — Planificación estratégica del proyecto — Gantt, dependencias, priorización y nuevas historias
 user-invocable: true
-argument-hint: "[planificar | sprint [N] | proponer | estado]"
+argument-hint: "[planificar | sprint [N] [foco] | proponer | estado | <foco> [N]]"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
 ---
@@ -17,9 +17,33 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 | Argumento | Modo |
 |-----------|------|
 | `planificar` | Plan completo: Gantt, dependencias, streams paralelos |
-| `sprint [N]` | Qué hacer en los próximos días — top N accionables (default: 5) |
+| `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 5) |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
+| `<foco> [N]` | **Atajo** — equivale a `sprint N <foco>` (ver tabla de focos abajo) |
 | sin argumento | Digest rápido: qué bloquea, qué está listo, qué sigue |
+
+### Atajos de foco temático
+
+Cualquier foco puede usarse **directamente como argumento** sin escribir `sprint`:
+
+| Atajo | Alias | Equivale a | Prioriza |
+|-------|-------|------------|----------|
+| `tecnico` | `tech`, `infra` | `sprint 5 tecnico` | `area:infra`, `tipo:infra`, `refactor`, CI/CD, build |
+| `qa` | `testing`, `tests` | `sprint 5 qa` | `bug`, issues con tests pendientes, QA, cobertura |
+| `bugs` | `fix` | `sprint 5 bugs` | Solo issues con label `bug` |
+| `features` | `feat` | `sprint 5 features` | Features nuevas (sin label `bug`/`refactor`/`tipo:infra`) |
+| `deuda` | `debt` | `sprint 5 deuda` | `refactor`, tech debt, cleanup, migrations |
+| `backend` | `back` | `sprint 5 backend` | Stream A (`:backend`, `:users`) |
+| `app` | `front` | `sprint 5 app` | Streams B/C/D (`:app`, UI, pantallas) |
+| `cross` | — | `sprint 5 cross` | Stream E (strings, DI, router, buildSrc) |
+| `rapido` | `quick`, `wins` | `sprint 5 rapido` | Solo issues tamaño S/M para wins rápidos |
+
+**Ejemplos de uso:**
+- `/planner tecnico` → sprint de 5 issues técnicos/infra
+- `/planner qa 3` → sprint de 3 issues de QA/bugs
+- `/planner feat 8` → sprint de 8 features
+- `/planner sprint 4 backend` → sprint de 4 issues de backend
+- `/planner bugs` → sprint de 5 bugs
 
 ---
 
@@ -175,14 +199,32 @@ gantt
 
 ---
 
-## Modo: `sprint`
+## Modo: `sprint` (y atajos de foco)
+
+### Parsing de argumentos
+
+El modo sprint acepta múltiples formas de invocación:
+
+```
+/planner sprint              → sprint genérico, 5 issues
+/planner sprint 8            → sprint genérico, 8 issues
+/planner sprint 4 backend    → sprint con foco backend, 4 issues
+/planner tecnico             → atajo: sprint con foco técnico, 5 issues
+/planner qa 3                → atajo: sprint con foco QA, 3 issues
+/planner bugs                → atajo: sprint solo bugs, 5 issues
+```
+
+**Reglas de parsing:**
+1. Si el argumento es un foco conocido (ver tabla de atajos): activar modo `sprint` con ese foco
+2. Si viene un número junto al foco: usarlo como N
+3. Si no hay número: default **5**
+4. Los alias son intercambiables (`tech` = `tecnico` = `infra`)
 
 ### Límite de issues
 
-El modo sprint acepta un número opcional **N** como parte del argumento (ej: `/planner sprint 8`).
-Si no se especifica, el default es **5**. Este límite controla cuántos issues se incluyen en el
-`sprint-plan.json` y en el reporte textual. La recolección y el scoring se hacen sobre todos los
-issues del repo; el recorte a N ocurre al final tras el ranking.
+El límite N controla cuántos issues se incluyen en el `sprint-plan.json` y en el reporte textual.
+La recolección y el scoring se hacen sobre todos los issues del repo; el recorte a N ocurre al
+final tras el ranking (con bonus de foco si aplica).
 
 Seleccionar las **top N tareas accionables** para los próximos días:
 
@@ -208,6 +250,32 @@ Formato de salida (máximo N issues, default 5):
 
 (máximo N issues en total — si hay más candidatos, priorizar por score)
 ```
+
+### Modificador de scoring por foco temático
+
+Cuando se especifica un foco (ya sea via atajo o `sprint N foco`), **se aplica un bonus de +30 pts**
+a los issues que coincidan con el foco, además del scoring normal de `planning-criteria.md`.
+
+| Foco | Bonus +30 si el issue... |
+|------|--------------------------|
+| `tecnico`/`tech`/`infra` | Tiene label `area:infra`, `tipo:infra`, `refactor`, o afecta CI/build/gradle |
+| `qa`/`testing`/`tests` | Tiene label `bug`, menciona "test" en título/body, o tiene tests pendientes |
+| `bugs`/`fix` | Tiene label `bug` (EXCLUSIVO: **descarta** issues sin label `bug`) |
+| `features`/`feat` | NO tiene label `bug`, `refactor` ni `tipo:infra` |
+| `deuda`/`debt` | Tiene label `refactor`, `strings`, o menciona "deuda técnica"/"tech debt"/"cleanup"/"migración" |
+| `backend`/`back` | Afecta módulos `:backend` o `:users` (Stream A) |
+| `app`/`front` | Afecta módulo `:app` o tiene label `app:*` (Streams B/C/D) |
+| `cross` | Afecta strings, buildSrc, DI, router (Stream E) |
+| `rapido`/`quick`/`wins` | Estimado como S o M (EXCLUSIVO: **descarta** L y XL) |
+
+**Focos exclusivos** (`bugs`, `rapido`): filtran issues que no coinciden en vez de solo dar bonus.
+**Focos con bonus**: priorizan issues del foco pero NO excluyen otros si faltan candidatos.
+
+Los 🔴 BLOQUEANTES siempre van primero, independientemente del foco.
+
+El campo `tema` del `sprint-plan.json` debe reflejar el foco elegido:
+- Sin foco: `"tema": "Sprint general — mix de prioridades"`
+- Con foco: `"tema": "Sprint QA — prioridad en bugs y testing"`, `"tema": "Sprint técnico — infra y refactors"`, etc.
 
 ### Generar plan JSON para Start-Agente
 

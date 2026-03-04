@@ -7,7 +7,7 @@
 //   permissionDecision: "deny"  → bloquear tool
 //   Sin output                  → flujo normal de Claude Code (dialogo local)
 //
-// Solo maneja Bash — otros tools salen sin output (no interferir)
+// Maneja TODAS las herramientas que disparan PreToolUse (Bash, Edit, Write, etc.)
 //
 // IMPORTANTE: Este hook NO usa getUpdates de Telegram. El telegram-commander.js
 // es el unico consumidor de getUpdates, evitando conflictos de offset/409.
@@ -112,16 +112,73 @@ function getSkillContext() {
 
 // ─── Formato de accion para el mensaje ────────────────────────────────────────
 
-function formatBashAction(toolInput) {
-    const cmd = (toolInput.command || "").trim();
-    const desc = (toolInput.description || "").trim();
-    const display = cmd.length > 250 ? cmd.substring(0, 250) + "\u2026" : cmd;
-    let result = "";
-    if (desc) {
-        result += "\u{1F527} <b>" + escHtml(abbreviate(desc, 80)) + "</b>\n";
+function shortenPath(filePath) {
+    if (!filePath) return "";
+    const normalized = filePath.replace(/\\/g, "/");
+    const markers = ["/platform/", "/Intrale/"];
+    for (const m of markers) {
+        const idx = normalized.indexOf(m);
+        if (idx >= 0) return normalized.substring(idx + m.length);
     }
-    result += "<code>$ " + escHtml(display) + "</code>";
-    return result;
+    const parts = normalized.split("/");
+    return parts.length > 3 ? "\u2026/" + parts.slice(-3).join("/") : normalized;
+}
+
+function formatAction(toolName, toolInput) {
+    switch (toolName) {
+        case "Bash": {
+            const cmd = (toolInput.command || "").trim();
+            const desc = (toolInput.description || "").trim();
+            const display = cmd.length > 250 ? cmd.substring(0, 250) + "\u2026" : cmd;
+            let result = "";
+            if (desc) {
+                result += "\u{1F527} <b>" + escHtml(abbreviate(desc, 80)) + "</b>\n";
+            }
+            result += "<code>$ " + escHtml(display) + "</code>";
+            return result;
+        }
+        case "Edit": {
+            const shortPath = shortenPath(toolInput.file_path);
+            let result = "\u{1F4DD} <b>Editar</b> <code>" + escHtml(shortPath) + "</code>";
+            const oldStr = (toolInput.old_string || "").trim();
+            const newStr = (toolInput.new_string || "").trim();
+            if (oldStr || newStr) {
+                result += "\n<pre>";
+                if (oldStr) result += "- " + escHtml(abbreviate(oldStr, 120)) + "\n";
+                if (newStr) result += "+ " + escHtml(abbreviate(newStr, 120));
+                result += "</pre>";
+            }
+            return result;
+        }
+        case "Write": {
+            const shortPath = shortenPath(toolInput.file_path);
+            const content = (toolInput.content || "").trim();
+            let result = "\u{1F4C4} <b>Escribir</b> <code>" + escHtml(shortPath) + "</code>";
+            if (content) {
+                const preview = content.split("\n").slice(0, 3).join("\n");
+                result += "\n<pre>" + escHtml(abbreviate(preview, 150)) + "</pre>";
+            }
+            return result;
+        }
+        case "Task":
+            return "\u{1F916} <b>Subagente</b> [" + escHtml(toolInput.subagent_type || "?") + "] " + escHtml(abbreviate(toolInput.description || "", 80));
+        case "TaskUpdate":
+        case "Update":
+            return "\u{1F4CB} <b>TaskUpdate</b> #" + escHtml(toolInput.taskId || "?") + " \u2192 " + escHtml(toolInput.status || toolInput.subject || JSON.stringify(toolInput).substring(0, 80));
+        case "TaskCreate":
+        case "Create":
+            return "\u{1F4CB} <b>TaskCreate</b> " + escHtml(abbreviate(toolInput.subject || "", 80));
+        case "Skill":
+            return "\u26A1 <b>Skill</b> /" + escHtml(toolInput.skill || "") + (toolInput.args ? " " + escHtml(abbreviate(toolInput.args, 60)) : "");
+        case "WebFetch":
+            return "\u{1F310} <b>Fetch</b> " + escHtml(abbreviate(toolInput.url || "", 100));
+        case "WebSearch":
+            return "\u{1F50D} <b>Buscar</b> " + escHtml(abbreviate(toolInput.query || "", 80));
+        case "NotebookEdit":
+            return "\u{1F4D3} <b>NotebookEdit</b> " + escHtml(abbreviate(toolInput.notebook_path || "", 80));
+        default:
+            return "\u{1F6E0} <b>" + escHtml(toolName) + "</b> " + escHtml(abbreviate(JSON.stringify(toolInput), 120));
+    }
 }
 
 function formatContext(sessionId, repoRoot) {
@@ -146,38 +203,40 @@ function formatContext(sessionId, repoRoot) {
 
 // ─── Auto-approve: fast-path para comandos ya cubiertos ─────────────────────
 
-function isCommandCoveredByRules(toolInput) {
-    const pattern = generatePattern("Bash", toolInput);
+function isToolCoveredByRules(toolName, toolInput) {
+    const pattern = generatePattern(toolName, toolInput);
     if (!pattern) return false;
 
-    const cmd = (toolInput.command || "").trim();
-    const separators = /;|&&/;
+    // Para Bash con comandos compuestos (;, &&, |), verificar cada sub-comando
+    if (toolName === "Bash" && toolInput.command) {
+        const cmd = (toolInput.command || "").trim();
+        const separators = /;|&&/;
 
-    // Para comandos compuestos, verificar cada sub-comando
-    if (separators.test(cmd)) {
-        const subCmds = cmd.split(separators).map(s => s.trim()).filter(Boolean);
-        const settingsPaths = getSettingsPaths(REPO_ROOT);
-        for (const sp of settingsPaths) {
-            try {
-                const s = JSON.parse(fs.readFileSync(sp, "utf8"));
-                const allow = (s.permissions && s.permissions.allow) || [];
-                const deny = (s.permissions && s.permissions.deny) || [];
-                const allCovered = subCmds.every(sub => {
-                    const subPattern = generateBashPattern(sub);
-                    return subPattern && isAlreadyCovered(subPattern, allow);
-                });
-                const denyMatch = deny.some(d => {
-                    const dm = d.match(/^Bash\((.+?):\*\)$/);
-                    if (!dm) return false;
-                    return subCmds.some(sub => sub.startsWith(dm[1]));
-                });
-                if (allCovered && !denyMatch) return true;
-            } catch(e) {}
+        if (separators.test(cmd)) {
+            const subCmds = cmd.split(separators).map(s => s.trim()).filter(Boolean);
+            const settingsPaths = getSettingsPaths(REPO_ROOT);
+            for (const sp of settingsPaths) {
+                try {
+                    const s = JSON.parse(fs.readFileSync(sp, "utf8"));
+                    const allow = (s.permissions && s.permissions.allow) || [];
+                    const deny = (s.permissions && s.permissions.deny) || [];
+                    const allCovered = subCmds.every(sub => {
+                        const subPattern = generateBashPattern(sub);
+                        return subPattern && isAlreadyCovered(subPattern, allow);
+                    });
+                    const denyMatch = deny.some(d => {
+                        const dm = d.match(/^Bash\((.+?):\*\)$/);
+                        if (!dm) return false;
+                        return subCmds.some(sub => sub.startsWith(dm[1]));
+                    });
+                    if (allCovered && !denyMatch) return true;
+                } catch(e) {}
+            }
+            return false;
         }
-        return false;
     }
 
-    // Caso simple: un solo comando
+    // Caso simple: un solo comando o tool no-Bash
     const settingsPaths = getSettingsPaths(REPO_ROOT);
     for (const sp of settingsPaths) {
         try {
@@ -252,9 +311,9 @@ function exitSilent() {
 
 // ─── Smart suggestion (tras 3ra aprobacion del mismo patron) ──────────────────
 
-async function maybeSuggestPersistence(toolInput) {
+async function maybeSuggestPersistence(toolName, toolInput) {
     try {
-        const pattern = generatePattern("Bash", toolInput);
+        const pattern = generatePattern(toolName, toolInput);
         if (!pattern || isPatternPersisted(pattern)) return;
 
         const { count, shouldSuggest } = incrementApproval(pattern);
@@ -284,8 +343,8 @@ async function maybeSuggestPersistence(toolInput) {
 
 // ─── Persist "always" ─────────────────────────────────────────────────────────
 
-function persistAlways(toolInput) {
-    const pattern = generatePattern("Bash", toolInput);
+function persistAlways(toolName, toolInput) {
+    const pattern = generatePattern(toolName, toolInput);
     log("persistAlways: pattern=" + (pattern || "NULL"));
     if (!pattern) return;
     const settingsPaths = getSettingsPaths(REPO_ROOT);
@@ -343,8 +402,9 @@ async function processInput() {
     const toolName = data.tool_name || data.toolName || "";
     const toolInput = data.tool_input || data.toolInput || {};
 
-    // Solo manejar Bash — otros tools salen sin output
-    if (toolName !== "Bash") {
+    // Tools que nunca necesitan aprobacion remota (read-only, internas)
+    const SKIP_TOOLS = ["Read", "Glob", "Grep", "TodoRead", "TaskList", "TaskGet"];
+    if (SKIP_TOOLS.includes(toolName)) {
         exitSilent();
         return;
     }
@@ -352,17 +412,17 @@ async function processInput() {
     const agent = process.env.CLAUDE_AGENT_NAME || "Claude Code";
     const requestId = crypto.randomBytes(8).toString("hex");
 
-    log("REPO_ROOT=" + REPO_ROOT + " MAIN=" + MAIN_REPO_ROOT + " tool=Bash");
+    log("REPO_ROOT=" + REPO_ROOT + " MAIN=" + MAIN_REPO_ROOT + " tool=" + toolName);
 
     // Fast-path: auto-allow si esta cubierto por reglas existentes
-    if (isCommandCoveredByRules(toolInput)) {
-        log("COVERED: comando ya cubierto por settings rules — saliendo sin output");
+    if (isToolCoveredByRules(toolName, toolInput)) {
+        log("COVERED: " + toolName + " ya cubierto por settings rules — saliendo sin output");
         exitSilent(); // Claude Code lo aprobara via su propia logica
         return;
     }
 
     // ─── Necesita permiso → Enviar a Telegram ────────────────────────────────
-    const action = formatBashAction(toolInput);
+    const action = formatAction(toolName, toolInput);
     const sessionId = data.session_id || "";
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
     const waitMin = Math.round(RETRY_INTERVALS[0] / 60000);
@@ -399,7 +459,7 @@ async function processInput() {
                 { label: "Permitir", action: "allow" },
                 { label: "Rechazar", action: "deny" }
             ],
-            action_data: { tool_name: "Bash", tool_input: toolInput, agent: agent },
+            action_data: { tool_name: toolName, tool_input: toolInput, agent: agent },
             skill_context: getSkillContext(),
             approver_pid: process.pid
         });
@@ -445,10 +505,10 @@ async function processInput() {
 
             if (isAllow) {
                 // Track approval + smart suggestion (no bloquea la respuesta)
-                maybeSuggestPersistence(toolInput).catch(e => log("Suggestion error: " + e.message));
+                maybeSuggestPersistence(toolName, toolInput).catch(e => log("Suggestion error: " + e.message));
 
                 if (actionResult === "always") {
-                    persistAlways(toolInput);
+                    persistAlways(toolName, toolInput);
                 }
 
                 outputAllow("Aprobado via Telegram por el usuario (" + latencyMs + "ms)");
