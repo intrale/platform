@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
-# qa-android.sh — Build APK + múltiples emuladores en paralelo + Maestro Shards + video recording
+# qa-android.sh — Build APK + emuladores configurables + Maestro Shards + video recording
 # Uso: bash qa/scripts/qa-android.sh
-# 100% autonomo: arranca 3 emuladores en paralelo, compila, instala, corre tests Maestro con shards.
+# 100% autonomo: arranca N emuladores (default 1 para performance) en paralelo, compila, instala, corre tests Maestro con shards.
 #
-# Optimizaciones de rendimiento:
-# - Múltiples AVDs en paralelo: virtualAndroid (5554), virtualAndroid2 (5556), virtualAndroid3 (5558)
-# - Reutiliza emuladores ya corriendo (detecta por AVD name, 0s boot)
+# Modo LIVIANO (default):
+# - 1 shard (QA_SHARDS=1) = 1 emulador, 1536MB RAM, 2 cores, CPU affinity cores 4-7
+# - Resultado: máquina sigue respondiendo normalmente
+#
+# Modo PARALELO (legacy, QA_SHARDS=3):
+# - 3 shards = 3 emuladores, 2048MB RAM cada uno, sin affinity
+# - Usa más recursos pero paraleliza tests 3x
+#
+# Env vars (todos opcionales, con defaults seguros):
+# - QA_SHARDS=1 (default, modo liviano) | 3 (modo paralelo legacy)
+# - QA_AVD_CORES=2 (default) — cores máximos por AVD
+# - QA_AVD_MEMORY=1536 (default liviano) | 2048 (legacy)
+# - QA_NO_AFFINITY=1 — desabilitar CPU affinity (debug)
+#
+# Optimizaciones:
+# - CPU affinity: emulador limitado a cores 4-7, agentes en cores 0-3
 # - Snapshot 'qa-ready': boot en ~40s vs ~130s cold boot
-# - Maestro --shards 3: distribuye flows automáticamente entre 3 emuladores
 # - GPU auto (mejor modo para el host, swiftshader_indirect en headless)
-# - Memoria limitada a 2048MB por AVD
 # - Audio, camaras, GPS y sensores deshabilitados
 set -euo pipefail
 
@@ -20,13 +31,34 @@ MAESTRO_DIR="${PROJECT_ROOT}/.maestro/flows"
 ANDROID_SDK="${HOME}/AppData/Local/Android/Sdk"
 EMULATOR_BIN="${ANDROID_SDK}/emulator/emulator"
 
-# Configuración de múltiples AVDs y puertos
+# ──────────────────────────────────────────────────────────────────────
+# MODO LIVIANO vs PARALELO — configuración optimizada
+# ──────────────────────────────────────────────────────────────────────
+QA_SHARDS=${QA_SHARDS:-1}           # 1 (liviano) o 3 (legacy paralelo)
+QA_AVD_CORES=${QA_AVD_CORES:-2}     # Cores máximos por AVD
+QA_NO_AFFINITY=${QA_NO_AFFINITY:-0} # 0=usar affinity (default), 1=desabilitar
+
+# Calcular memoria según modo
+if [ "$QA_SHARDS" = "3" ]; then
+    QA_AVD_MEMORY=${QA_AVD_MEMORY:-2048}  # Legacy: 2048MB si 3 shards
+else
+    QA_AVD_MEMORY=${QA_AVD_MEMORY:-1536}  # Default liviano: 1536MB
+fi
+
+# Configuración de múltiples AVDs y puertos (soporta 1 a 3 shards)
 declare -A AVD_PORTS=(
   ["virtualAndroid"]="5554"
   ["virtualAndroid2"]="5556"
   ["virtualAndroid3"]="5558"
 )
-declare -a AVD_NAMES=("virtualAndroid" "virtualAndroid2" "virtualAndroid3")
+declare -a AVD_NAMES=()
+for i in $(seq 1 "$QA_SHARDS"); do
+  if [ "$i" = "1" ]; then
+    AVD_NAMES+=("virtualAndroid")
+  else
+    AVD_NAMES+=("virtualAndroid$i")
+  fi
+done
 
 # Track de emuladores iniciados por este script
 declare -a STARTED_EMULATORS=()
@@ -39,6 +71,13 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 export PATH="${HOME}/.maestro/bin:${ANDROID_SDK}/platform-tools:${PATH}"
 
 echo "=== QA Android — Maestro E2E con Video ==="
+echo "  Modo: $([ "$QA_SHARDS" = "1" ] && echo "LIVIANO (1 shard)" || echo "PARALELO ($QA_SHARDS shards)")"
+echo "  Configuración: ${QA_AVD_CORES} cores, ${QA_AVD_MEMORY}MB RAM por AVD"
+if [ "$QA_NO_AFFINITY" = "0" ]; then
+    echo "  CPU affinity: ON (cores 4-7 para emulador, 0-3 para agentes)"
+else
+    echo "  CPU affinity: OFF (debug mode)"
+fi
 echo "  JAVA_HOME=$JAVA_HOME"
 
 # ── 1. Verificar adb ────────────────────────────────────────
@@ -74,7 +113,7 @@ start_avd() {
     done
 
     # Si no está corriendo, arrancarlo
-    echo "    Arrancando $avd_name en puerto $port..."
+    echo "    Arrancando $avd_name en puerto $port (${QA_AVD_CORES} cores, ${QA_AVD_MEMORY}MB RAM)..."
 
     if [ ! -f "$EMULATOR_BIN" ]; then
         echo "ERROR: Emulador no encontrado en: $EMULATOR_BIN"
@@ -88,25 +127,42 @@ start_avd() {
         SNAPSHOT_FLAGS=""
     fi
 
-    # Arrancar emulador en puerto específico
-    "$EMULATOR_BIN" -avd "$avd_name" \
-        -port "$port" \
+    # CPU Affinity: arrancar emulador en cores dedicados 4-7 (bitmask 0xF0 = 240)
+    # Esto previene que el emulador compita con los agentes Claude en cores 0-3
+    local EMULATOR_CMD="\"$EMULATOR_BIN\" -avd \"$avd_name\" \
+        -port \"$port\" \
         -no-audio \
         -no-boot-anim \
         -no-window \
         -gpu auto \
-        -memory 2048 \
+        -cores $QA_AVD_CORES \
+        -memory $QA_AVD_MEMORY \
         $SNAPSHOT_FLAGS \
-        2>/dev/null &
+        2>/dev/null"
+
+    # Arrancar con CPU affinity (Windows) si no está deshabilitado
+    if [ "$QA_NO_AFFINITY" = "0" ]; then
+        # cmd.exe /C start /affinity F0 — limita a cores 4-7 (hex F0 = bin 11110000)
+        cmd.exe /C "start /affinity F0 /B cmd.exe /C $EMULATOR_CMD" &
+    else
+        # Modo debug: sin CPU affinity
+        eval "$EMULATOR_CMD" &
+    fi
 
     local emulator_pid=$!
     STARTED_EMULATORS+=("$emulator_pid")
-    echo "    PID $emulator_pid (puerto $port)"
+
+    # Log de configuración
+    local affinity_msg=""
+    if [ "$QA_NO_AFFINITY" = "0" ]; then
+        affinity_msg=" [affinity cores 4-7]"
+    fi
+    echo "    PID $emulator_pid (puerto $port)$affinity_msg"
 }
 
 # ── 2b. Arrancar múltiples AVDs en paralelo ──────────────────
 echo ""
-echo "[2/9] Arrancando 3 AVDs en paralelo..."
+echo "[2/9] Arrancando $QA_SHARDS AVD(s) en paralelo..."
 adb start-server 2>/dev/null || true
 
 for avd_name in "${AVD_NAMES[@]}"; do
@@ -184,7 +240,7 @@ if [ -z "$APK_PATH" ]; then
 fi
 
 echo ""
-echo "[5/9] Instalando APK en 3 AVDs en paralelo: $(basename "$APK_PATH")"
+echo "[5/9] Instalando APK en $QA_SHARDS AVD(s) en paralelo: $(basename "$APK_PATH")"
 
 # Instalar en paralelo en cada AVD
 for avd_name in "${AVD_NAMES[@]}"; do
@@ -199,9 +255,9 @@ echo "  ✓ APK instalado en todos los AVDs"
 # ── 6. Crear directorio de recordings ───────────────────────
 mkdir -p "$RECORDINGS_DIR"
 
-# ── 7. Ejecutar Maestro con --shards 3 (distribución paralela) ────
+# ── 7. Ejecutar Maestro con shards (distribución paralela si QA_SHARDS > 1) ────
 echo ""
-echo "[6/9] Ejecutando tests Maestro con --shards 3 (distribución paralela)..."
+echo "[6/9] Ejecutando tests Maestro con --shards $QA_SHARDS..."
 
 # Función para cleanup en caso de error
 cleanup() {
@@ -225,7 +281,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Iniciar screenrecord en cada emulador en paralelo antes de ejecutar Maestro
-echo "  Iniciando grabación de video en 3 emuladores en paralelo..."
+echo "  Iniciando grabación de video en $QA_SHARDS emulador(es)..."
 for avd_name in "${AVD_NAMES[@]}"; do
     port=${AVD_PORTS[$avd_name]}
     serial="emulator-${port}"
@@ -236,12 +292,16 @@ for avd_name in "${AVD_NAMES[@]}"; do
         > "$RECORDINGS_DIR/screenrecord-${port}.log" 2>&1 &
 done
 
-# Ejecutar Maestro con --shards 3 (distribuye flows automáticamente)
-echo "  Distribuiendo flows entre 3 shards (emuladores)..."
+# Ejecutar Maestro con shards (distribuye flows automáticamente si hay múltiples)
+if [ "$QA_SHARDS" -gt 1 ]; then
+    echo "  Distribuiendo flows entre $QA_SHARDS shards (emuladores en paralelo)..."
+else
+    echo "  Ejecutando flows en modo secuencial (1 emulador)..."
+fi
 MAESTRO_EXIT=0
 
 if maestro test "$MAESTRO_DIR" \
-    --shards 3 \
+    --shards "$QA_SHARDS" \
     --format junit \
     --output "$RECORDINGS_DIR/maestro-results.xml" \
     2>&1 | tee "$RECORDINGS_DIR/maestro-output.log"; then
@@ -264,7 +324,7 @@ done
 sleep 2
 
 # Extraer videos de todos los emuladores
-echo "[7/9] Extrayendo videos de los 3 emuladores..."
+echo "[7/9] Extrayendo videos de los $QA_SHARDS emulador(es)..."
 for avd_name in "${AVD_NAMES[@]}"; do
     port=${AVD_PORTS[$avd_name]}
     serial="emulator-${port}"
@@ -307,9 +367,13 @@ ls -lh "$RECORDINGS_DIR"/maestro-results.xml 2>/dev/null | awk '{print "    " $9
 
 echo ""
 if [ $MAESTRO_EXIT -eq 0 ]; then
-    echo "=== QA Android PARALELO: APROBADO (3 AVDs en paralelo) ==="
+    if [ "$QA_SHARDS" -gt 1 ]; then
+        echo "=== QA Android: APROBADO ($QA_SHARDS AVDs en paralelo) ==="
+    else
+        echo "=== QA Android (modo liviano): APROBADO (1 AVD, $QA_AVD_MEMORY MB RAM, $QA_AVD_CORES cores) ==="
+    fi
 else
-    echo "=== QA Android PARALELO: RECHAZADO (ver logs para detalles) ==="
+    echo "=== QA Android: RECHAZADO (ver logs para detalles) ==="
 fi
 
 # ── 10. Compartir videos con stakeholders (best-effort, no bloquea resultado QA) ──
