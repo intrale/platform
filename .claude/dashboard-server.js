@@ -1135,6 +1135,17 @@ function handleRequest(req, res) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end("Screenshot error: " + err.message + "\nInstall puppeteer: npm install puppeteer");
     });
+  } else if (pathname === "/screenshots") {
+    // Dos screenshots partidos para enviar como álbum en Telegram
+    const width = parseInt(url.searchParams.get("w")) || 600;
+    const height = parseInt(url.searchParams.get("h")) || 800;
+    takeScreenshot(width, height, { split: true }).then(parts => {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ top: parts[0].toString("base64"), bottom: parts[1].toString("base64") }));
+    }).catch(err => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Screenshots error: " + err.message);
+    });
   } else if (pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", uptime: process.uptime(), port: PORT }));
@@ -1147,7 +1158,8 @@ function handleRequest(req, res) {
 // --- Screenshot via Puppeteer ---
 let puppeteerBrowser = null;
 
-async function takeScreenshot(width, height) {
+async function takeScreenshot(width, height, options) {
+  const opts = options || {};
   let puppeteer;
   try { puppeteer = require("puppeteer"); } catch {
     // Fallback: Puppeteer instalado en docs/qa/
@@ -1169,7 +1181,17 @@ async function takeScreenshot(width, height) {
     await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "domcontentloaded", timeout: 15000 });
     // Esperar 1s para que CSS/JS inicialicen
     await new Promise(r => setTimeout(r, 1000));
-    const buf = await page.screenshot({ type: "png", fullPage: false });
+
+    if (opts.split) {
+      // Modo split: devuelve array de 2 buffers [top, bottom]
+      const fullHeight = await page.evaluate(() => document.body.scrollHeight);
+      const splitPoint = Math.min(height, Math.ceil(fullHeight / 2));
+      const topBuf = await page.screenshot({ type: "png", clip: { x: 0, y: 0, width, height: splitPoint } });
+      const bottomBuf = await page.screenshot({ type: "png", clip: { x: 0, y: splitPoint, width, height: Math.max(100, fullHeight - splitPoint) } });
+      return [topBuf, bottomBuf];
+    }
+
+    const buf = await page.screenshot({ type: "png", fullPage: true });
     return buf;
   } finally {
     await page.close();
@@ -1292,6 +1314,53 @@ function sendTelegramPhoto(photoBuffer, caption, silent) {
   });
 }
 
+function sendTelegramMediaGroup(photos, caption, silent) {
+  if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) return Promise.resolve(null);
+  const https = require("https");
+  return new Promise((resolve, reject) => {
+    const boundary = "----FormBoundary" + Date.now().toString(36);
+    const media = photos.map((_, i) => ({
+      type: "photo",
+      media: "attach://photo" + i,
+      ...(i === 0 && caption ? { caption, parse_mode: "HTML" } : {})
+    }));
+    let parts = [];
+    parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + TG_CONFIG.chat_id + "\r\n"));
+    parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"media\"\r\n\r\n" + JSON.stringify(media) + "\r\n"));
+    if (silent) {
+      parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"disable_notification\"\r\n\r\n" + "true" + "\r\n"));
+    }
+    photos.forEach((buf, i) => {
+      parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo" + i + "\"; filename=\"photo" + i + ".png\"\r\nContent-Type: image/png\r\n\r\n"));
+      parts.push(buf);
+      parts.push(Buffer.from("\r\n"));
+    });
+    parts.push(Buffer.from("--" + boundary + "--\r\n"));
+    const payload = Buffer.concat(parts);
+    const req = https.request({
+      hostname: "api.telegram.org",
+      path: "/bot" + TG_CONFIG.bot_token + "/sendMediaGroup",
+      method: "POST",
+      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+      timeout: 20000
+    }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) { console.log("[heartbeat] Álbum OK"); resolve(r); }
+          else { console.log("[heartbeat] Álbum error: " + d.substring(0, 200)); reject(new Error(d)); }
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 async function sendHeartbeat() {
   try {
     console.log("[heartbeat] Generando heartbeat...");
@@ -1300,7 +1369,19 @@ async function sendHeartbeat() {
     const caption = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n" +
       new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
 
-    // Intentar screenshot del dashboard
+    // Intentar álbum de 2 fotos (top + bottom)
+    try {
+      const parts = await takeScreenshot(600, 800, { split: true });
+      if (Array.isArray(parts) && parts[0].length > 1000 && parts[1].length > 1000) {
+        await sendTelegramMediaGroup(parts, caption, true);
+        console.log("[heartbeat] Álbum enviado OK");
+        return;
+      }
+    } catch (e) {
+      console.log("[heartbeat] Álbum no disponible: " + e.message + " — fallback a single");
+    }
+
+    // Fallback: single screenshot
     try {
       const screenshot = await takeScreenshot(600, 800);
       if (screenshot && screenshot.length > 1000) {

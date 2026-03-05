@@ -773,15 +773,92 @@ function sendTelegramPhoto(photoBuffer, caption, silent) {
     });
 }
 
+function fetchDashboardScreenshots(width, height) {
+    return new Promise((resolve) => {
+        const req = http.get("http://localhost:" + DASHBOARD_PORT + "/screenshots?w=" + width + "&h=" + height, { timeout: 25000 }, (res) => {
+            if (res.statusCode !== 200) { resolve(null); return; }
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const json = JSON.parse(d);
+                    resolve({
+                        top: Buffer.from(json.top, "base64"),
+                        bottom: Buffer.from(json.bottom, "base64")
+                    });
+                } catch { resolve(null); }
+            });
+        });
+        req.on("error", () => resolve(null));
+        req.on("timeout", () => { req.destroy(); resolve(null); });
+    });
+}
+
+function sendTelegramMediaGroup(photos, caption) {
+    return new Promise((resolve, reject) => {
+        const boundary = "----FormBoundary" + Date.now().toString(36);
+        const media = photos.map((_, i) => ({
+            type: "photo",
+            media: "attach://photo" + i,
+            ...(i === 0 && caption ? { caption, parse_mode: "HTML" } : {})
+        }));
+
+        let parts = [];
+        parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + CHAT_ID + "\r\n"));
+        parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"media\"\r\n\r\n" + JSON.stringify(media) + "\r\n"));
+        photos.forEach((buf, i) => {
+            parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo" + i + "\"; filename=\"photo" + i + ".png\"\r\nContent-Type: image/png\r\n\r\n"));
+            parts.push(buf);
+            parts.push(Buffer.from("\r\n"));
+        });
+        parts.push(Buffer.from("--" + boundary + "--\r\n"));
+        const payload = Buffer.concat(parts);
+
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + BOT_TOKEN + "/sendMediaGroup",
+            method: "POST",
+            headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+            timeout: 20000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.ok) {
+                        r.result.forEach(m => registerMessage(m.message_id, "command"));
+                        resolve(r);
+                    } else { reject(new Error(d)); }
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+        req.on("error", reject);
+        req.write(payload);
+        req.end();
+    });
+}
+
 async function handleMonitorDashboard() {
     log("Handling /monitor via dashboard screenshot");
     try {
+        // Intentar álbum de 2 fotos (top + bottom)
+        const parts = await fetchDashboardScreenshots(600, 800);
+        if (parts && parts.top.length > 1000 && parts.bottom.length > 1000) {
+            const caption = "\ud83d\udcca <b>Intrale Monitor</b>\n" +
+                new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+            await sendTelegramMediaGroup([parts.top, parts.bottom], caption);
+            log("/monitor screenshots álbum enviado OK");
+            return true;
+        }
+        // Fallback: single screenshot
         const screenshot = await fetchDashboardScreenshot(600, 800);
         if (screenshot && screenshot.length > 1000) {
             const caption = "\ud83d\udcca <b>Intrale Monitor</b>\n" +
                 new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
             await sendTelegramPhoto(screenshot, caption, false);
-            log("/monitor screenshot enviado OK");
+            log("/monitor screenshot single enviado OK");
             return true;
         }
     } catch (e) {

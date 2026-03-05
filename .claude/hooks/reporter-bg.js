@@ -148,6 +148,76 @@ function sendTelegramPhoto(photoBuffer, caption, silent) {
   });
 }
 
+// Obtener screenshots partidos del dashboard web (para álbum)
+function fetchScreenshots(width, height) {
+  return new Promise((resolve) => {
+    const req = http.get("http://localhost:" + DASHBOARD_PORT + "/screenshots?w=" + width + "&h=" + height, { timeout: 25000 }, (res) => {
+      if (res.statusCode !== 200) { resolve(null); return; }
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(d);
+          resolve({ top: Buffer.from(json.top, "base64"), bottom: Buffer.from(json.bottom, "base64") });
+        } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
+// Enviar álbum de fotos a Telegram (heartbeat silencioso)
+function sendTelegramMediaGroup(photos, caption, silent) {
+  const cfg = readTgConfig();
+  if (!cfg.bot_token || !cfg.chat_id) { debugLog("Telegram no configurado"); return Promise.resolve(null); }
+
+  return new Promise((resolve, reject) => {
+    const boundary = "----FormBoundary" + Date.now().toString(36);
+    const media = photos.map((_, i) => ({
+      type: "photo",
+      media: "attach://photo" + i,
+      ...(i === 0 && caption ? { caption, parse_mode: "HTML" } : {})
+    }));
+
+    let parts = [];
+    parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + cfg.chat_id + "\r\n"));
+    parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"media\"\r\n\r\n" + JSON.stringify(media) + "\r\n"));
+    if (silent) {
+      parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"disable_notification\"\r\n\r\n" + "true" + "\r\n"));
+    }
+    photos.forEach((buf, i) => {
+      parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo" + i + "\"; filename=\"photo" + i + ".png\"\r\nContent-Type: image/png\r\n\r\n"));
+      parts.push(buf);
+      parts.push(Buffer.from("\r\n"));
+    });
+    parts.push(Buffer.from("--" + boundary + "--\r\n"));
+    const payload = Buffer.concat(parts);
+
+    const req = https.request({
+      hostname: "api.telegram.org",
+      path: "/bot" + cfg.bot_token + "/sendMediaGroup",
+      method: "POST",
+      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+      timeout: 20000
+    }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) { debugLog("Heartbeat álbum OK"); resolve(r); }
+          else { debugLog("Heartbeat álbum error: " + d); reject(new Error(d)); }
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 // Enviar texto a Telegram (fallback)
 function sendTelegramText(text, silent) {
   const cfg = readTgConfig();
@@ -184,9 +254,22 @@ async function sendPeriodicReport() {
   // Esperar un momento para que arranque
   await new Promise(r => setTimeout(r, 2000));
 
+  const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + new Date().toLocaleString("es-AR");
+
+  // Intentar álbum de 2 fotos primero
+  try {
+    const parts = await fetchScreenshots(600, 800);
+    if (parts && parts.top.length > 1000 && parts.bottom.length > 1000) {
+      await sendTelegramMediaGroup([parts.top, parts.bottom], caption, true);
+      return;
+    }
+  } catch (e) {
+    debugLog("Error con álbum screenshots: " + e.message);
+  }
+
+  // Fallback: single screenshot
   const screenshot = await fetchScreenshot(375, 640);
   if (screenshot && screenshot.length > 1000) {
-    const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + new Date().toLocaleString("es-AR");
     try {
       await sendTelegramPhoto(screenshot, caption, true);
     } catch(e) {
