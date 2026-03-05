@@ -127,10 +127,10 @@ start_avd() {
         SNAPSHOT_FLAGS=""
     fi
 
-    # CPU Affinity: arrancar emulador en cores dedicados 4-7 (bitmask 0xF0 = 240)
-    # Esto previene que el emulador compita con los agentes Claude en cores 0-3
-    local EMULATOR_CMD="\"$EMULATOR_BIN\" -avd \"$avd_name\" \
-        -port \"$port\" \
+    # Arrancar emulador normalmente (sin wrapper de cmd.exe que falla en MSYS2)
+    # Aplicaremos CPU affinity post-boot con PowerShell
+    "$EMULATOR_BIN" -avd "$avd_name" \
+        -port "$port" \
         -no-audio \
         -no-boot-anim \
         -no-window \
@@ -138,26 +138,11 @@ start_avd() {
         -cores $QA_AVD_CORES \
         -memory $QA_AVD_MEMORY \
         $SNAPSHOT_FLAGS \
-        2>/dev/null"
-
-    # Arrancar con CPU affinity (Windows) si no está deshabilitado
-    if [ "$QA_NO_AFFINITY" = "0" ]; then
-        # cmd.exe /C start /affinity F0 — limita a cores 4-7 (hex F0 = bin 11110000)
-        cmd.exe /C "start /affinity F0 /B cmd.exe /C $EMULATOR_CMD" &
-    else
-        # Modo debug: sin CPU affinity
-        eval "$EMULATOR_CMD" &
-    fi
+        2>/dev/null &
 
     local emulator_pid=$!
     STARTED_EMULATORS+=("$emulator_pid")
-
-    # Log de configuración
-    local affinity_msg=""
-    if [ "$QA_NO_AFFINITY" = "0" ]; then
-        affinity_msg=" [affinity cores 4-7]"
-    fi
-    echo "    PID $emulator_pid (puerto $port)$affinity_msg"
+    echo "    PID $emulator_pid (puerto $port) — affinity se aplicará post-boot"
 }
 
 # ── 2b. Arrancar múltiples AVDs en paralelo ──────────────────
@@ -215,9 +200,27 @@ done
 
 echo "  ✓ Todos los AVDs listos"
 
+# ── 2.7. Aplicar CPU affinity post-boot si está habilitado ─────
+if [ "$QA_NO_AFFINITY" = "0" ]; then
+    echo ""
+    echo "[2.7/9] Aplicando CPU affinity (cores 4-7)..."
+    powershell.exe -Command "
+      \$procs = Get-Process -Name 'emulator' -ErrorAction SilentlyContinue
+      if (\$procs) {
+        \$procs | ForEach-Object {
+          \$_.ProcessorAffinity = [System.IntPtr]::new(0xF0)
+          \$_.PriorityClass = 'BelowNormal'
+          Write-Host ('[✓] PID {0}: Affinity=0xF0 (cores 4-7), Priority=BelowNormal' -f \$_.Id)
+        }
+      } else {
+        Write-Host '[!] No emulator processes found'
+      }
+    " 2>&1 || true
+fi
+
 # ── 3. Verificar Maestro ────────────────────────────────────
 echo ""
-echo "[3/9] Verificando Maestro..."
+echo "[3/9] Verificando Maestro instalado..."
 if ! command -v maestro &>/dev/null; then
     echo "ERROR: Maestro no instalado."
     echo "  Instalar: curl -Ls 'https://get.maestro.mobile.dev' | bash"
