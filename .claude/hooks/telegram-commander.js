@@ -67,7 +67,7 @@ const OPENAI_API_KEY = _tgCfg.openai_api_key || process.env.OPENAI_API_KEY || nu
 const VISION_MODEL = "claude-haiku-4-5-20251001";
 const TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 const TTS_MODEL = "gpt-4o-mini-tts";
-const TTS_VOICE = "nova";
+const TTS_VOICE = "ash"; // voz masculina cálida y expresiva
 const AUDIO_MAX_DURATION_SEC = 300; // 5 minutos máximo
 
 let running = true;
@@ -485,6 +485,7 @@ function callOpenAITTS(text) {
             model: TTS_MODEL,
             input: truncated,
             voice: TTS_VOICE,
+            instructions: "Hablás como un porteño de Buenos Aires, con tonada rioplatense auténtica. Usás 'vos' en vez de 'tú', decís 'dale', 'che', 'mirá', 'boludo' cuando viene al caso. El ritmo es el de una charla entre amigos en un bar — pausas naturales, énfasis expresivo, te reís si algo es gracioso. Sos inteligente pero cero formal, como un ingeniero argentino joven explicándole algo a un amigo. Nunca sonás como locutor ni como robot — sonás como un pibe real.",
             response_format: "opus"
         });
 
@@ -639,23 +640,17 @@ async function handleVoiceOrAudio(msg) {
         return;
     }
 
-    await sendMessage("🎤 Transcribiendo audio (" + duration + "s)...");
-
     try {
-        // Descargar audio
+        // Descargar y transcribir en silencio (sin mensajes intermedios)
         const file = await telegramDownloadFile(voice.file_id);
         if (!file) throw new Error("No se pudo descargar el audio");
 
         log("Audio descargado: " + file.filePath + " (" + file.buffer.length + " bytes, " + duration + "s)");
 
-        // Transcribir con OpenAI
-        const filename = file.filePath.split("/").pop() || "audio.ogg";
+        const filename = (file.filePath.split("/").pop() || "audio.ogg").replace(/\.oga$/, ".ogg");
         const transcription = await callOpenAITranscription(file.buffer, filename);
 
         log("Transcripción: " + transcription.substring(0, 200));
-
-        // Mostrar transcripción al usuario
-        await sendMessage("🎤 <b>Transcripción:</b>\n<i>" + escHtml(transcription.substring(0, 500)) + (transcription.length > 500 ? "…" : "") + "</i>");
 
         // Enviar el texto transcrito a Claude como freetext
         if (commandBusy) {
@@ -669,12 +664,12 @@ async function handleVoiceOrAudio(msg) {
                     return;
                 }
             }
-            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). La transcripción está arriba para cuando termine.");
+            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>).\n🎤 <i>" + escHtml(transcription.substring(0, 200)) + "</i>");
             return;
         }
 
-        // Ejecutar Claude con el texto transcrito
-        await sendMessage("💬 Enviando a Claude...");
+        // Mostrar transcripción y ejecutar Claude
+        await sendMessage("🎤 <i>" + escHtml(transcription.substring(0, 300)) + (transcription.length > 300 ? "…" : "") + "</i>");
         const result = await executeClaudeQueued(transcription, [], { useSession: true, skill: null });
         const claudeResponse = extractClaudeResponse(result);
 
@@ -2523,12 +2518,11 @@ async function pollingLoop() {
             // ─── Multimedia: detectar imágenes, audio/voz ANTES de requerir texto ───
             if (msg.photo && msg.photo.length > 0) {
                 log("Foto recibida (id=" + msgId + ", sizes=" + msg.photo.length + ")");
-                try {
-                    await handlePhoto(msg);
-                } catch (e) {
+                // Fire-and-forget: no bloquear el polling loop
+                handlePhoto(msg).catch(e => {
                     log("Error en handlePhoto: " + e.message);
-                    try { await sendMessage("❌ Error procesando foto: <code>" + escHtml(e.message) + "</code>"); } catch (e2) {}
-                }
+                    sendMessage("❌ Error procesando foto: <code>" + escHtml(e.message) + "</code>").catch(() => {});
+                });
                 continue;
             }
 
@@ -2536,12 +2530,11 @@ async function pollingLoop() {
                 log("Documento-imagen recibido (id=" + msgId + ", mime=" + msg.document.mime_type + ")");
                 // Tratar documento-imagen como foto: construir estructura compatible
                 msg.photo = [{ file_id: msg.document.file_id, file_unique_id: msg.document.file_unique_id }];
-                try {
-                    await handlePhoto(msg);
-                } catch (e) {
+                // Fire-and-forget: no bloquear el polling loop
+                handlePhoto(msg).catch(e => {
                     log("Error en handlePhoto (documento): " + e.message);
-                    try { await sendMessage("❌ Error procesando imagen: <code>" + escHtml(e.message) + "</code>"); } catch (e2) {}
-                }
+                    sendMessage("❌ Error procesando imagen: <code>" + escHtml(e.message) + "</code>").catch(() => {});
+                });
                 continue;
             }
 
@@ -2549,12 +2542,11 @@ async function pollingLoop() {
                 const mediaType = msg.voice ? "voice" : "audio";
                 const duration = (msg.voice || msg.audio).duration || 0;
                 log("Audio recibido (id=" + msgId + ", type=" + mediaType + ", duration=" + duration + "s)");
-                try {
-                    await handleVoiceOrAudio(msg);
-                } catch (e) {
+                // Fire-and-forget: no bloquear el polling loop para que siga procesando callbacks/permisos
+                handleVoiceOrAudio(msg).catch(e => {
                     log("Error en handleVoiceOrAudio: " + e.message);
-                    try { await sendMessage("❌ Error procesando audio: <code>" + escHtml(e.message) + "</code>"); } catch (e2) {}
-                }
+                    sendMessage("❌ Error procesando audio: <code>" + escHtml(e.message) + "</code>").catch(() => {});
+                });
                 continue;
             }
 
@@ -2585,7 +2577,11 @@ async function pollingLoop() {
                         await handleSessionClear();
                         break;
                     case "skill":
-                        await handleSkill(cmd.skill, cmd.args);
+                        // Fire-and-forget: no bloquear el polling loop
+                        handleSkill(cmd.skill, cmd.args).catch(e => {
+                            log("Error en handleSkill: " + e.message);
+                            sendMessage("❌ Error: <code>" + escHtml(e.message) + "</code>").catch(() => {});
+                        });
                         break;
                     case "freetext": {
                         // Detectar permisos pendientes PRIMERO
@@ -2634,11 +2630,19 @@ async function pollingLoop() {
                             }
                         }
                         // No es keyword de permiso o no hay preguntas pendientes → freetext normal
-                        await handleFreetext(cmd.text);
+                        // Fire-and-forget: no bloquear el polling loop
+                        handleFreetext(cmd.text).catch(e => {
+                            log("Error en handleFreetext: " + e.message);
+                            sendMessage("❌ Error: <code>" + escHtml(e.message) + "</code>").catch(() => {});
+                        });
                         break;
                     }
                     case "sprint":
-                        await handleSprint(cmd.agentNumber);
+                        // Fire-and-forget: no bloquear el polling loop
+                        handleSprint(cmd.agentNumber).catch(e => {
+                            log("Error en handleSprint: " + e.message);
+                            sendMessage("❌ Error sprint: <code>" + escHtml(e.message) + "</code>").catch(() => {});
+                        });
                         break;
                     case "sprint_interval":
                         await handleSprintInterval(cmd.minutes);

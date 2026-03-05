@@ -93,7 +93,20 @@
       "WebFetch(domain:learn.microsoft.com)",
       "WebFetch(domain:powershell.one)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:poweradm.com)"
+      "WebFetch(domain:poweradm.com)",
+      "Bash(printenv:*)",
+      "Bash(BRANCH=*)",
+      "Bash(QA_REPORT=\"qa/evidence/1206/qa-report.json\":*)",
+      "Bash(BOT_TOKEN=*)",
+      "Bash(git worktree:*)",
+      "Bash(git fetch:*)",
+      "Skill(ops)",
+      "Skill(simplify)",
+      "ToolSearch",
+      "Bash(WMIC:*)",
+      "Bash(hostname:*)",
+      "Bash(id:*)",
+      "Bash(type:*)"
     ],
     "deny": [
       "Bash(git push --force*)",
