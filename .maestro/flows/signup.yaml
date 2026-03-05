@@ -22,5 +22,5 @@ appId: com.intrale.app.client
     label: "Pantalla de signup visible"
 
 - tapOn:
-    id: "field_Email"
+    id: "field_Correo electrónico"
 - inputText: "qa-maestro-test@intrale.com"

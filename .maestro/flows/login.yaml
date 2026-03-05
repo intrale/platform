@@ -20,11 +20,11 @@ appId: com.intrale.app.client
 
 # Interactuar con campos de login
 - tapOn:
-    id: "field_Username"
+    id: "field_Usuario"
 - inputText: "admin@intrale.com"
 
 - tapOn:
-    id: "field_Password"
+    id: "field_Contraseña"
 - inputText: "Admin1234!"
 
 - tapOn:

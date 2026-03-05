@@ -24,7 +24,7 @@ appId: com.intrale.app.client
 
 # Navegar a signup desde login
 - tapOn:
-    text: "Registrarse"
+    text: "Registrarme"
     optional: true
 
 - waitForAnimationToEnd
