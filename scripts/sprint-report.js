@@ -10,7 +10,7 @@ const { buildExecutionSummary, escapeHtml, durationMinutes } = require("./execut
 
 // --- Config ---
 const REPO_ROOT = path.resolve(__dirname, "..");
-const GH_PATH = "/c/Workspaces/gh-cli/bin/gh.exe";
+const GH_PATH = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
 const LOG_DIR = path.join(__dirname, "logs");
 const LOG_FILE = path.join(LOG_DIR, "sprint-report.log");
 const QA_DIR = path.join(REPO_ROOT, "docs", "qa");
