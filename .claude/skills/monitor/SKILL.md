@@ -25,6 +25,7 @@ Recolecta datos de TODAS estas fuentes en paralelo:
 5. **CI**: Ejecuta `export PATH="/c/Workspaces/gh-cli/bin:$PATH" && export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p') && gh run list --limit 1 --json status,conclusion,headBranch,event,createdAt --jq '.[0] | "\(.status) \(.conclusion // "—") \(.headBranch)"'`
 6. **Sprint plan**: Lee `scripts/sprint-plan.json` con `Read` (puede no existir — si no existe, omitir sub-vista Sprint)
 7. **Metricas config**: Lee `.claude/hooks/telegram-config.json` y extrae `claude_metrics` para calcular costos
+8. **Metricas de agentes**: Lee `.claude/hooks/agent-metrics.json` con `Read` (puede no existir — omitir panel si no existe)
 
 Luego, para cada sesion de tipo `"parent"`, determina su estado de liveness usando `last_activity_ts` del JSON:
 
@@ -64,6 +65,12 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │ Sesión: 234 acciones · 1h 23m · ~$0.70                            │
 │ Semanal: ========-- 78% (est. $39.00 / $50.00)                    │
 │ Velocidad: 42 acc/h                                                │
+├─ MÉTRICAS DE AGENTES ──────────────────────────────────────────┤
+│ Agente           │ Sesión   │ Calls │ Archivos │ Tareas │  Dur. │
+│──────────────────┼──────────┼───────┼──────────┼────────┼───────│
+│ ● QA             │ b08b96a2 │    50 │        7 │    4/4 │  92m  │
+│   AndroidDev     │ a3f1c209 │    38 │       12 │    3/5 │  67m  │
+│ (Histórico: 3 sesiones — última: hace 2h)                       │
 ├─ ACTIVIDAD RECIENTE ────────────────────────────────────────────┤
 │ 14:32:00  b08b96a2  Edit      activity-logger.js                   │
 │ 14:31:45  b08b96a2  Bash      git status                          │
@@ -150,6 +157,31 @@ Muestra la secuencia de agentes/skills invocados durante la sesion actual como u
   - Formula: `costo_estimado / weekly_budget_usd * 100`
   - Si `weekly_budget_usd` no esta configurado, mostrar solo "Presupuesto: N/A"
 - **Velocidad**: `velocity[0]` (acciones de la ultima hora) + "/h"
+
+**Reglas del panel MÉTRICAS DE AGENTES:**
+
+Muestra una tabla con las ultimas sesiones (activas primero, luego historicas de `.claude/hooks/agent-metrics.json`):
+
+```
+├─ MÉTRICAS DE AGENTES ──────────────────────────────────────────┤
+│ Agente           │ Sesión   │ Calls │ Archivos │ Tareas │  Dur. │
+│──────────────────┼──────────┼───────┼──────────┼────────┼───────│
+│ ● QA             │ b08b96a2 │    50 │        7 │    4/4 │  92m  │
+│ ● AndroidDev     │ a3f1c209 │    38 │       12 │    3/5 │  67m  │
+│   Guru           │ 7e2d4b81 │    22 │        0 │    0/0 │  18m  │
+│ (Histórico: 3 sesiones — última: hace 2h)                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- Mostrar maximo 5 sesiones (activas primero si coinciden con sesiones vivas en `.claude/sessions/`)
+- Columna "Tareas": formato `completadas/creadas` — usar `tasks_completed` y `tasks_created` del JSON de sesion (activas) o de `agent-metrics.json` (historicas)
+- Columna "Calls": `total_tool_calls` o suma de `tool_counts` valores
+- Columna "Arch.": `modified_files.length` (activas) o `modified_files_count` (historicas)
+- Columna "Dur.": duracion en minutos — `now - started_ts` para activas, `duration_min` para historicas
+- `●` antes del nombre indica sesion activa
+- Pie de tabla: `(Historico: N sesiones — ultima: hace Xh)` con datos de `agent-metrics.json`
+- Si `agent-metrics.json` no existe o no tiene sesiones, y no hay sesiones activas con `tool_counts`, omitir el panel completamente
+- Si una sesion historica no tiene algun campo, mostrar `—`
 
 **Reglas del panel ACTIVIDAD RECIENTE:**
 
@@ -254,6 +286,7 @@ Muestra:
 │   EJECUCIÓN    Sprint + historias + ad-hoc          │
 │   FLUJO        Grafo ASCII de agentes invocados     │
 │   MÉTRICAS     Acciones, costo, presupuesto         │
+│   MÉT.AGENTES  Calls, archivos, tareas por sesión  │
 │   TAREAS       Progreso con sub-pasos               │
 │   REPO         Branch, commit, CI                   │
 │   ALERTAS      Bloqueos y advertencias              │
@@ -264,9 +297,10 @@ Muestra:
 │   Screenshots periodicos a Telegram                 │
 │                                                     │
 │ Datos: .claude/sessions/*.json                      │
+│        .claude/hooks/agent-metrics.json             │
 │ Log:   .claude/activity-log.jsonl                   │
 │ Hook:  activity-logger.js (PostToolUse)             │
-│        stop-notify.js (Stop → marca "done")         │
+│        stop-notify.js (Stop → flush + marca "done") │
 └─────────────────────────────────────────────────────┘
 ```
 
