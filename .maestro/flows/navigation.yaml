@@ -1,7 +1,8 @@
 appId: com.intrale.app.client
 ---
 # Flujo: Navegacion bienvenida -> login -> signup -> login
-- launchApp
+- launchApp:
+    clearState: true
 
 # Saltar onboarding (4 paginas, aparece en primer uso)
 - extendedWaitUntil:
