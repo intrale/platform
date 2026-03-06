@@ -267,6 +267,14 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
         if (toolName === "Skill") {
             const skillName = "/" + (toolInput.skill || "");
             if (skillName !== "/" && !session.skills_invoked.includes(skillName)) {
+                // Registrar transición entre agentes
+                if (!session.agent_transitions) session.agent_transitions = [];
+                const prevAgent = session.skills_invoked.length > 0
+                    ? (AGENT_MAP[session.skills_invoked[session.skills_invoked.length - 1]] || session.skills_invoked[session.skills_invoked.length - 1])
+                    : (session.agent_name || "Claude");
+                const nextAgent = AGENT_MAP[skillName] || skillName;
+                session.agent_transitions.push({ from: prevAgent, to: nextAgent, ts });
+
                 session.skills_invoked.push(skillName);
             }
             if (AGENT_MAP[skillName] && !session.agent_name) {
