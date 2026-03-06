@@ -353,9 +353,11 @@ async function main() {
         const filename = path.basename(fullPath);
         const sizeStr = formatSize(stats.size);
 
+        const hasNarration = filename.includes("-narrated");
+        const audioTag = hasNarration ? " \uD83D\uDD0A Con narracion" : " \uD83D\uDD07 Sin audio";
         const caption =
             verdictIcon + " *QA Evidence* \u2014 Issue #" + data.issue + "\n" +
-            "\uD83C\uDFAC `" + filename + "` (" + sizeStr + ")\n" +
+            "\uD83C\uDFAC `" + filename + "` (" + sizeStr + ")" + audioTag + "\n" +
             "\uD83D\uDCCA Tests: " + data.passed + "/" + data.total + " pasaron\n" +
             "\uD83D\uDD52 " + timestamp;
 
