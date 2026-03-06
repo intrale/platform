@@ -1,26 +1,37 @@
 appId: com.intrale.app.client
 ---
 # Flujo: Signup basico
-- launchApp
-- waitForAnimationToEnd
+- launchApp:
+    clearState: true
 
-# Saltar onboarding
+# Saltar onboarding (4 paginas, aparece en primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 15000
 - tapOn:
     text: "Saltar"
-    optional: true
 
-- waitForAnimationToEnd
-
-# Navegar a registro desde home
+# Esperar pantalla de bienvenida y navegar a registro
+- extendedWaitUntil:
+    visible:
+      text: "Registrarme"
+    timeout: 10000
 - tapOn:
     text: "Registrarme"
 
-- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "signup_screen"
+    timeout: 10000
 
-- assertVisible:
-    id: "signup_screen"
-    label: "Pantalla de signup visible"
+# Tomar screenshot de la pantalla de signup
+- takeScreenshot: signup-empty
 
+# Ingresar email de prueba
 - tapOn:
-    id: "field_Email"
+    id: "field_Correo electrónico"
 - inputText: "qa-maestro-test@intrale.com"
+
+# Tomar screenshot con email ingresado
+- takeScreenshot: signup-filled

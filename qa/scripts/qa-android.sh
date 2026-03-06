@@ -335,9 +335,15 @@ for avd_name in "${AVD_NAMES[@]}"; do
     VIDEO_LOCAL="${RECORDINGS_DIR}/maestro-shard-${port}.mp4"
 
     if adb -s "$serial" shell "ls $VIDEO_DEVICE" &>/dev/null; then
-        adb -s "$serial" pull "$VIDEO_DEVICE" "$VIDEO_LOCAL" 2>/dev/null
-        adb -s "$serial" shell "rm $VIDEO_DEVICE" 2>/dev/null || true
-        echo "  ✓ Video shard $port: $VIDEO_LOCAL"
+        # Usar exec-out cat en vez de pull para evitar MSYS2 path mangling (/sdcard/ → C:/Program Files/Git/sdcard/)
+        adb -s "$serial" exec-out "cat $VIDEO_DEVICE" > "$VIDEO_LOCAL" 2>/dev/null
+        if [ -s "$VIDEO_LOCAL" ]; then
+            adb -s "$serial" shell "rm $VIDEO_DEVICE" 2>/dev/null || true
+            echo "  ✓ Video shard $port: $(du -h "$VIDEO_LOCAL" | cut -f1)"
+        else
+            rm -f "$VIDEO_LOCAL"
+            echo "  ⚠ Video shard $port: extraccion falló"
+        fi
     else
         echo "  ⚠ Video no generado para shard $port"
     fi

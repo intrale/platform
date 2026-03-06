@@ -1,43 +1,68 @@
 appId: com.intrale.app.client
 ---
-# Flujo: Navegacion home -> login -> signup -> login
-- launchApp
-- waitForAnimationToEnd
+# Flujo: Navegacion bienvenida -> login -> signup -> login
+- launchApp:
+    clearState: true
 
-# Saltar onboarding si aparece
+# Saltar onboarding (4 paginas, aparece en primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 15000
 - tapOn:
     text: "Saltar"
-    optional: true
 
-- waitForAnimationToEnd
-
-# Navegar al login desde home
+# Esperar pantalla de bienvenida y navegar al login
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 10000
 - tapOn:
     text: "Ya tengo cuenta"
-    optional: true
 
-- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
 
 - assertVisible:
     id: "login_screen"
     label: "Login screen visible"
 
-# Navegar a signup desde login
-- tapOn:
-    text: "Registrarse"
-    optional: true
+# Tomar screenshot del login
+- takeScreenshot: nav-login
 
-- waitForAnimationToEnd
+# Navegar a signup desde login (link "Registrarme")
+- scrollUntilVisible:
+    element:
+      text: "Registrarme"
+    direction: DOWN
+- tapOn:
+    text: "Registrarme"
+
+- extendedWaitUntil:
+    visible:
+      id: "signup_screen"
+    timeout: 10000
 
 - assertVisible:
     id: "signup_screen"
     label: "Signup screen visible"
 
+# Tomar screenshot del signup
+- takeScreenshot: nav-signup
+
 # Volver atras (back navigation)
 - pressKey: back
 
-- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
 
 - assertVisible:
     id: "login_screen"
     label: "De vuelta en login screen"
+
+# Tomar screenshot final
+- takeScreenshot: nav-back-to-login
