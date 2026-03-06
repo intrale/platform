@@ -1,0 +1,14 @@
+{
+  "flow": "navigation",
+  "language": "es",
+  "segments": [
+    { "at_step": 1, "text": "Abrimos la aplicacion para probar la navegacion entre pantallas.", "delay_ms": 0 },
+    { "at_step": 3, "text": "Saltamos el onboarding.", "delay_ms": 500 },
+    { "at_step": 5, "text": "Tocamos Ya tengo cuenta para ir al login.", "delay_ms": 500 },
+    { "at_step": 8, "text": "La pantalla de login es visible. Verificamos que se cargo correctamente.", "delay_ms": 0 },
+    { "at_step": 11, "text": "Navegamos desde login hacia la pantalla de registro tocando el enlace Registrarme.", "delay_ms": 500 },
+    { "at_step": 14, "text": "La pantalla de registro es visible. La navegacion hacia adelante funciona correctamente.", "delay_ms": 0 },
+    { "at_step": 17, "text": "Presionamos el boton atras para volver al login.", "delay_ms": 500 },
+    { "at_step": 20, "text": "Volvimos a la pantalla de login. La navegacion hacia atras funciona correctamente.", "delay_ms": 0 }
+  ]
+}

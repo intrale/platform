@@ -1,0 +1,15 @@
+{
+  "flow": "login",
+  "language": "es",
+  "segments": [
+    { "at_step": 1, "text": "Abrimos la aplicacion Intrale por primera vez. Aparece el onboarding de bienvenida.", "delay_ms": 0 },
+    { "at_step": 3, "text": "Saltamos el onboarding para ir directo a la pantalla de bienvenida.", "delay_ms": 500 },
+    { "at_step": 5, "text": "Tocamos Ya tengo cuenta para navegar a la pantalla de login.", "delay_ms": 500 },
+    { "at_step": 8, "text": "Estamos en la pantalla de login. Los campos de usuario y contrasena estan vacios.", "delay_ms": 0 },
+    { "at_step": 10, "text": "Ingresamos el correo electronico del usuario de prueba en el campo de usuario.", "delay_ms": 0 },
+    { "at_step": 12, "text": "Ingresamos la contrasena del usuario de prueba.", "delay_ms": 0 },
+    { "at_step": 14, "text": "Los campos estan completos. Enviamos el formulario de login.", "delay_ms": 500 },
+    { "at_step": 16, "text": "El sistema procesa la autenticacion. Esperamos la respuesta del servidor.", "delay_ms": 1000 },
+    { "at_step": 17, "text": "Login completado. Se muestra el resultado de la autenticacion.", "delay_ms": 0 }
+  ]
+}

@@ -349,6 +349,26 @@ for avd_name in "${AVD_NAMES[@]}"; do
     fi
 done
 
+# ── 7.5. Generar narracion de audio TTS para videos ─────────
+echo ""
+echo "[7.5/9] Generando narracion de audio para videos..."
+if command -v node &>/dev/null && command -v python &>/dev/null; then
+    for avd_name in "${AVD_NAMES[@]}"; do
+        port=${AVD_PORTS[$avd_name]}
+        VIDEO_LOCAL="${RECORDINGS_DIR}/maestro-shard-${port}.mp4"
+        if [ -f "$VIDEO_LOCAL" ]; then
+            echo "  Procesando shard $port..."
+            node "$SCRIPT_DIR/qa-narration.js" \
+                --video "$VIDEO_LOCAL" \
+                --flows-dir "$MAESTRO_DIR" \
+                --output "${RECORDINGS_DIR}/maestro-shard-${port}-narrated.mp4" \
+                2>&1 | tail -5 || echo "  Narracion fallida para shard $port (continuando sin audio)"
+        fi
+    done
+else
+    echo "  Saltando narracion: node o python no disponibles"
+fi
+
 # ── 8. Reporte final ────────────────────────────────────────
 echo ""
 echo "[8/9] Reporte JUnit XML:"
@@ -387,7 +407,19 @@ fi
 
 # ── 10. Compartir videos con stakeholders (best-effort, no bloquea resultado QA) ──
 if command -v node &>/dev/null && [ -f "$SCRIPT_DIR/qa-video-share.js" ]; then
-    VIDEOS_LIST=$(find "$RECORDINGS_DIR" -name "maestro-shard-*.mp4" -type f 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    # Preferir videos narrados (-narrated.mp4) si existen, fallback a video mudo
+    VIDEOS_LIST=""
+    for vf in "$RECORDINGS_DIR"/maestro-shard-*.mp4; do
+        [ -f "$vf" ] || continue
+        # Saltar si es un archivo -narrated (se agrega via su video base)
+        case "$vf" in *-narrated.mp4) continue;; esac
+        narrated="${vf%.mp4}-narrated.mp4"
+        if [ -f "$narrated" ]; then
+            VIDEOS_LIST="${VIDEOS_LIST:+$VIDEOS_LIST,}$narrated"
+        else
+            VIDEOS_LIST="${VIDEOS_LIST:+$VIDEOS_LIST,}$vf"
+        fi
+    done
     if [ -n "$VIDEOS_LIST" ]; then
         VERDICT=$([ $MAESTRO_EXIT -eq 0 ] && echo "APROBADO" || echo "RECHAZADO")
         echo ""

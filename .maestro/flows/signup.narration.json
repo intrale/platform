@@ -1,0 +1,12 @@
+{
+  "flow": "signup",
+  "language": "es",
+  "segments": [
+    { "at_step": 1, "text": "Abrimos la aplicacion Intrale. Aparece el onboarding de bienvenida.", "delay_ms": 0 },
+    { "at_step": 3, "text": "Saltamos el onboarding.", "delay_ms": 500 },
+    { "at_step": 5, "text": "Tocamos Registrarme para navegar a la pantalla de registro.", "delay_ms": 500 },
+    { "at_step": 8, "text": "Estamos en la pantalla de registro. El formulario esta vacio.", "delay_ms": 0 },
+    { "at_step": 10, "text": "Ingresamos un correo electronico de prueba para el registro.", "delay_ms": 0 },
+    { "at_step": 12, "text": "El correo fue ingresado correctamente. Se muestra el formulario con el email completado.", "delay_ms": 0 }
+  ]
+}
