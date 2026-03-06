@@ -25,8 +25,12 @@ const MAX_INTERVAL_MS = 10 * 60 * 1000; // 10 min — modo normal
 const THRESHOLD_WARN = 3;   // 3-4 ocurrencias → advertencia de recurrencia
 const THRESHOLD_ISSUE = 5;  // >=5 ocurrencias → crear issue en GitHub
 
-// Checks que NO deben escalar a issue (ruido operativo)
-const NO_ESCALATE = new Set(["dead_worktrees"]);
+// Checks que NO deben escalar a issue INICIALMENTE — dead_worktrees escala dinámicamente tras THRESHOLD_ISSUE ciclos
+// (dead_worktrees removido: ahora escala si el auto-fix falla persistentemente)
+const NO_ESCALATE = new Set([]);
+
+// Deduplicación de alertas: no re-notificar por Telegram si el problema no cambió de estado
+const NOTIFICATION_COOLDOWN_MS = 60 * 60 * 1000; // 60 minutos
 
 // Mapeo de check a problema ID y categoría
 const CHECK_PROBLEM_MAP = {
@@ -99,7 +103,8 @@ function recordProblem(history, id, category, detail, autoFixed) {
             resolved_at: null,
             auto_fixed: autoFixed,
             github_issue: null,
-            last_detail: detail
+            last_detail: detail,
+            last_notified_at: null
         };
         history.problems.push(problem);
     }
@@ -408,45 +413,148 @@ function checkCriticalHooks() {
     return result;
 }
 
-// ─── Check 6: Worktrees muertos ───────────────────────────────────────────
+// ─── Check 6: Worktrees muertos — detección git + filesystem, reparación por capas ──
 
-function checkDeadWorktrees() {
-    const result = { ok: true, dead: [], cleaned: [] };
+function parseGitWorktreeList(cwd) {
     try {
-        const parentDir = path.resolve(REPO_ROOT, "..");
-        const entries = fs.readdirSync(parentDir);
-        const repoName = path.basename(REPO_ROOT);
-        for (const entry of entries) {
-            if (entry.startsWith(repoName + ".agent-")) {
-                const fullPath = path.join(parentDir, entry);
-                try {
-                    const stat = fs.statSync(fullPath);
-                    if (stat.isDirectory()) {
-                        const contents = fs.readdirSync(fullPath);
-                        if (contents.length <= 1) {
-                            // Auto-repair: intentar eliminar directorio vacío/residual
-                            try {
-                                if (contents.length === 1) {
-                                    fs.rmSync(path.join(fullPath, contents[0]), { recursive: true, force: true });
-                                }
-                                fs.rmdirSync(fullPath);
-                                result.cleaned.push(entry);
-                                log("Worktree muerto limpiado: " + entry);
-                            } catch (cleanErr) {
-                                result.dead.push(entry);
-                                log("No se pudo limpiar worktree: " + entry + " — " + cleanErr.message);
-                            }
-                        }
-                    }
-                } catch (e) {}
+        const output = execSync("git worktree list --porcelain", {
+            cwd: cwd, encoding: "utf8", timeout: 10000, windowsHide: true
+        });
+        const worktrees = [];
+        let current = {};
+        for (const line of output.split("\n")) {
+            if (line.startsWith("worktree ")) {
+                if (current.path) worktrees.push(current);
+                current = { path: line.substring(9).trim() };
+            } else if (line.startsWith("branch ")) {
+                current.branch = line.substring(7).trim();
+            } else if (line.trim() === "bare") {
+                current.bare = true;
+            } else if (line.trim() === "") {
+                if (current.path) worktrees.push(current);
+                current = {};
             }
         }
-        // Si se limpió algo, podar referencias huérfanas de git
-        if (result.cleaned.length > 0) {
-            try { execSync("git worktree prune", { cwd: REPO_ROOT, timeout: 5000 }); } catch (e) {}
+        if (current.path) worktrees.push(current);
+        return worktrees;
+    } catch (e) {
+        log("Error parseando git worktree list: " + e.message);
+        return [];
+    }
+}
+
+function tryRepairWorktree(wtPath, entry) {
+    // Estrategia de reparación por capas (NUNCA rm -rf — protección junctions NTFS)
+
+    // Capa 1: git worktree remove --force
+    try {
+        execSync('git worktree remove "' + wtPath + '" --force', {
+            cwd: REPO_ROOT, encoding: "utf8", timeout: 15000, windowsHide: true
+        });
+        log("Worktree reparado (capa 1 — git worktree remove --force): " + entry);
+        return { success: true, strategy: "git worktree remove --force" };
+    } catch (e) {
+        log("Capa 1 falló para " + entry + ": " + e.message);
+    }
+
+    // Capa 2: desmontar junction NTFS .claude/ y reintentar
+    const claudeJunction = path.join(wtPath, ".claude");
+    try {
+        if (fs.existsSync(claudeJunction)) {
+            execSync('cmd /c rmdir "' + claudeJunction.replace(/\//g, "\\") + '"', {
+                timeout: 5000, windowsHide: true
+            });
+            log("Junction .claude/ desmontada para: " + entry);
         }
+        // Reintentar git worktree remove tras desmontar junction
+        execSync('git worktree remove "' + wtPath + '" --force', {
+            cwd: REPO_ROOT, encoding: "utf8", timeout: 15000, windowsHide: true
+        });
+        log("Worktree reparado (capa 2 — rmdir junction + git remove): " + entry);
+        return { success: true, strategy: "rmdir junction + git worktree remove" };
+    } catch (e) {
+        log("Capa 2 falló para " + entry + ": " + e.message);
+    }
+
+    // Capa 3: git worktree prune (para limpiar referencia huérfana)
+    try {
+        execSync("git worktree prune", { cwd: REPO_ROOT, timeout: 5000, windowsHide: true });
+        // Verificar si git ya no lo conoce
+        const remaining = parseGitWorktreeList(REPO_ROOT);
+        const stillExists = remaining.some(w => w.path === wtPath || w.path === wtPath.replace(/\\/g, "/"));
+        if (!stillExists) {
+            log("Worktree reparado (capa 3 — git worktree prune): " + entry);
+            return { success: true, strategy: "git worktree prune" };
+        }
+    } catch (e) {
+        log("Capa 3 falló para " + entry + ": " + e.message);
+    }
+
+    return { success: false, strategy: "todas las capas fallaron" };
+}
+
+function checkDeadWorktrees() {
+    const result = { ok: true, dead: [], cleaned: [], strategies: {} };
+    try {
+        // Fuente de verdad: git worktree list --porcelain
+        const gitWorktrees = parseGitWorktreeList(REPO_ROOT);
+        const repoName = path.basename(REPO_ROOT);
+        const mainWorktreePath = REPO_ROOT.replace(/\\/g, "/");
+
+        // 1. Worktrees "fantasma": registrados en git pero sin directorio
+        for (const wt of gitWorktrees) {
+            const wtNorm = (wt.path || "").replace(/\\/g, "/");
+            if (wtNorm === mainWorktreePath || wt.bare) continue;
+            if (!fs.existsSync(wt.path)) {
+                // Directorio inexistente — git worktree prune es suficiente
+                try {
+                    execSync("git worktree prune", { cwd: REPO_ROOT, timeout: 5000, windowsHide: true });
+                    const entry = path.basename(wt.path);
+                    result.cleaned.push(entry);
+                    result.strategies[entry] = "git worktree prune (fantasma)";
+                    log("Worktree fantasma podado: " + entry);
+                } catch (e) {
+                    const entry = path.basename(wt.path);
+                    result.dead.push(entry);
+                    log("No se pudo podar worktree fantasma: " + entry);
+                }
+            }
+        }
+
+        // 2. Worktrees en filesystem vacíos o casi vacíos (detección original mejorada)
+        const parentDir = path.resolve(REPO_ROOT, "..");
+        const entries = fs.readdirSync(parentDir);
+        for (const entry of entries) {
+            if (!entry.startsWith(repoName + ".agent-")) continue;
+            const fullPath = path.join(parentDir, entry);
+            try {
+                const stat = fs.statSync(fullPath);
+                if (!stat.isDirectory()) continue;
+                const contents = fs.readdirSync(fullPath);
+                if (contents.length > 1) continue; // Tiene contenido, probablemente activo
+
+                // Directorio vacío o con solo 1 archivo residual — intentar reparar
+                const repair = tryRepairWorktree(fullPath, entry);
+                if (repair.success) {
+                    result.cleaned.push(entry);
+                    result.strategies[entry] = repair.strategy;
+                } else {
+                    if (!result.dead.includes(entry)) {
+                        result.dead.push(entry);
+                    }
+                }
+            } catch (e) {}
+        }
+
+        // 3. Prune final si se limpió algo
+        if (result.cleaned.length > 0) {
+            try { execSync("git worktree prune", { cwd: REPO_ROOT, timeout: 5000, windowsHide: true }); } catch (e) {}
+        }
+
         if (result.dead.length > 0) result.ok = false;
-    } catch (e) {}
+    } catch (e) {
+        log("Error en checkDeadWorktrees: " + e.message);
+    }
     return result;
 }
 
@@ -479,6 +587,18 @@ function sendAlert(text) {
 }
 
 // ─── Formateo de mensaje con contexto de recurrencia ────────────────────────
+
+function shouldNotifyProblem(problem) {
+    // Deduplicación: si el problema tiene >5 ocurrencias, no fue auto-reparado,
+    // y ya se notificó hace menos de NOTIFICATION_COOLDOWN_MS → suprimir
+    if (problem.occurrences > 5 && !problem.auto_fixed && problem.last_notified_at) {
+        const lastNotified = new Date(problem.last_notified_at).getTime();
+        if ((Date.now() - lastNotified) < NOTIFICATION_COOLDOWN_MS) {
+            return false;
+        }
+    }
+    return true;
+}
 
 function formatIssueWithRecurrence(baseMsg, problemResult) {
     if (!problemResult || !problemResult.problem) return baseMsg;
@@ -609,9 +729,13 @@ async function main() {
         settings: checks.settings.details.join(", "),
         hooks: checks.hooks.missing.length > 0 ? "Faltantes: " + checks.hooks.missing.join(", ") : "Todos presentes",
         worktrees: checks.worktrees.dead.length > 0
-            ? checks.worktrees.dead.length + " muertos" + (checks.worktrees.cleaned.length > 0 ? " (" + checks.worktrees.cleaned.length + " limpiados)" : "")
+            ? checks.worktrees.dead.length + " muertos [" + checks.worktrees.dead.join(", ") + "]"
+                + (checks.worktrees.cleaned.length > 0 ? " (" + checks.worktrees.cleaned.length + " limpiados)" : "")
             : checks.worktrees.cleaned.length > 0
                 ? checks.worktrees.cleaned.length + " limpiados ✅"
+                    + (Object.keys(checks.worktrees.strategies || {}).length > 0
+                        ? " (" + Object.values(checks.worktrees.strategies).join(", ") + ")"
+                        : "")
                 : "OK"
     };
 
@@ -661,7 +785,16 @@ async function main() {
     for (const ri of rawIssues) {
         const results = allResults[ri.check] || [];
         const firstResult = results.find(r => !r.resolved);
+        // Deduplicación: suprimir notificación si el problema es persistente y ya se notificó recientemente
+        if (firstResult && firstResult.problem && !shouldNotifyProblem(firstResult.problem)) {
+            log("Suprimiendo alerta duplicada para " + firstResult.id + " (cooldown activo)");
+            continue;
+        }
         issues.push(formatIssueWithRecurrence(ri.msg, firstResult));
+        // Marcar last_notified_at para deduplicación futura
+        if (firstResult && firstResult.problem) {
+            firstResult.problem.last_notified_at = new Date().toISOString();
+        }
     }
 
     const nextInterval = issues.length > 0 ? MIN_INTERVAL_MS : MAX_INTERVAL_MS;

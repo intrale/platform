@@ -263,13 +263,406 @@ function persistPattern(pattern, settingsPaths, logFn) {
     return persisted;
 }
 
+// ─── Parser robusto de comandos compuestos ──────────────────────────────────
+
+/**
+ * Divide un comando compuesto en sus comandos atómicos, respetando:
+ * - Comillas simples y dobles (con escape)
+ * - Subshells: $(...), <(...), >(...), (( ))
+ * - Redirecciones: 2>&1, >/dev/null, >>file
+ * - Pipes | vs OR ||
+ * - Separadores ; y &&
+ * - Bloques multilinea: if/fi, for/done, while/done
+ */
+function splitCompoundCommand(cmd) {
+    if (!cmd || typeof cmd !== "string") return [];
+    const trimmed = cmd.trim();
+    if (!trimmed) return [];
+
+    const commands = [];
+    let current = "";
+    let quote = null;   // null | '"' | "'"
+    let depth = 0;      // parenthesis depth
+    let i = 0;
+
+    while (i < trimmed.length) {
+        const c = trimmed[i];
+
+        // ── Dentro de comillas ──
+        if (quote) {
+            current += c;
+            if (c === quote && (i === 0 || trimmed[i - 1] !== "\\")) {
+                quote = null;
+            }
+            i++;
+            continue;
+        }
+
+        // ── Abrir comilla ──
+        if (c === '"' || c === "'") {
+            quote = c;
+            current += c;
+            i++;
+            continue;
+        }
+
+        // ── Subshells y agrupaciones ──
+        if (c === "(") {
+            depth++;
+            current += c;
+            i++;
+            continue;
+        }
+        if (c === ")") {
+            depth = Math.max(0, depth - 1);
+            current += c;
+            i++;
+            continue;
+        }
+
+        // ── Dentro de subshell: no separar ──
+        if (depth > 0) {
+            current += c;
+            i++;
+            continue;
+        }
+
+        // ── Redirecciones: 2>&1, >&2, >file, >>file, <file, 2>/dev/null ──
+        // Tratar como parte del comando actual, no como separador
+        if (c === ">" || c === "<") {
+            // Absorber la redirección completa
+            current += c;
+            i++;
+            // >> (append)
+            if (i < trimmed.length && trimmed[i] === ">") {
+                current += trimmed[i];
+                i++;
+            }
+            // &1, &2 (fd redirect)
+            if (i < trimmed.length && trimmed[i] === "&") {
+                current += trimmed[i];
+                i++;
+                if (i < trimmed.length && /\d/.test(trimmed[i])) {
+                    current += trimmed[i];
+                    i++;
+                }
+            }
+            // Skip spaces and absorb target filename
+            while (i < trimmed.length && trimmed[i] === " ") {
+                current += trimmed[i];
+                i++;
+            }
+            // Absorb the target (until space or separator)
+            while (i < trimmed.length && !/[;&|<>]/.test(trimmed[i]) && trimmed[i] !== " ") {
+                current += trimmed[i];
+                i++;
+            }
+            continue;
+        }
+
+        // ── fd number antes de redirección: 2>, 1> ──
+        if (/\d/.test(c) && i + 1 < trimmed.length && (trimmed[i + 1] === ">" || (trimmed[i + 1] === ">" && trimmed[i + 2] === "&"))) {
+            current += c;
+            i++;
+            continue;
+        }
+
+        // ── && (AND) ──
+        if (c === "&" && i + 1 < trimmed.length && trimmed[i + 1] === "&") {
+            const cmd_trimmed = current.trim();
+            if (cmd_trimmed) commands.push(cmd_trimmed);
+            current = "";
+            i += 2;
+            continue;
+        }
+
+        // ── & (background) — tratar como parte del comando ──
+        if (c === "&" && (i + 1 >= trimmed.length || trimmed[i + 1] !== "&")) {
+            current += c;
+            i++;
+            continue;
+        }
+
+        // ── || (OR) ──
+        if (c === "|" && i + 1 < trimmed.length && trimmed[i + 1] === "|") {
+            const cmd_trimmed = current.trim();
+            if (cmd_trimmed) commands.push(cmd_trimmed);
+            current = "";
+            i += 2;
+            continue;
+        }
+
+        // ── | (pipe) ──
+        if (c === "|") {
+            const cmd_trimmed = current.trim();
+            if (cmd_trimmed) commands.push(cmd_trimmed);
+            current = "";
+            i++;
+            continue;
+        }
+
+        // ── ; (secuencia) ──
+        if (c === ";") {
+            const cmd_trimmed = current.trim();
+            if (cmd_trimmed) commands.push(cmd_trimmed);
+            current = "";
+            i++;
+            continue;
+        }
+
+        current += c;
+        i++;
+    }
+
+    const last = current.trim();
+    if (last) commands.push(last);
+
+    return commands;
+}
+
+// ─── Directorios seguros ────────────────────────────────────────────────────
+
+const DEFAULT_SAFE_DIRECTORIES = [
+    ".claude/",
+    "qa/",
+    "docs/"
+];
+
+/**
+ * Carga safe_directories desde telegram-config.json o usa defaults.
+ */
+function loadSafeDirectories() {
+    try {
+        const cfgPath = path.join(__dirname, "telegram-config.json");
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (Array.isArray(cfg.safe_directories) && cfg.safe_directories.length > 0) {
+            return cfg.safe_directories;
+        }
+    } catch (e) {}
+    return DEFAULT_SAFE_DIRECTORIES;
+}
+
+/**
+ * Determina si un path de archivo está en un directorio seguro.
+ * Los paths se normalizan y se comparan relativos al repo root.
+ * @param {string} filePath - Path absoluto o relativo del archivo
+ * @param {string} [repoRoot] - Root del repo (default: CLAUDE_PROJECT_DIR o cwd)
+ * @returns {boolean}
+ */
+function isSafeDirectory(filePath, repoRoot) {
+    if (!filePath) return false;
+    const root = (repoRoot || process.env.CLAUDE_PROJECT_DIR || process.cwd()).replace(/\\/g, "/");
+    const normalized = filePath.replace(/\\/g, "/");
+
+    // Obtener path relativo al repo
+    let relative = normalized;
+    if (normalized.startsWith(root)) {
+        relative = normalized.substring(root.length);
+    }
+    // Quitar leading slash
+    relative = relative.replace(/^\/+/, "");
+
+    const safeDirs = loadSafeDirectories();
+    return safeDirs.some(dir => {
+        const normalizedDir = dir.replace(/\\/g, "/").replace(/^\/+/, "");
+        return relative.startsWith(normalizedDir);
+    });
+}
+
+// ─── Detección de comandos destructivos ─────────────────────────────────────
+
+const DESTRUCTIVE_PATTERNS = [
+    /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)/,   // rm -r, rm -rf, rm -fr
+    /\brm\s+-[a-zA-Z]*f/,                                   // rm -f (force)
+    /\bgit\s+push\s+--force/,
+    /\bgit\s+push\s+-f\b/,
+    /\bgit\s+reset\s+--hard/,
+    /\bgit\s+clean\s+-f/,
+    /\bDROP\s+(TABLE|DATABASE|INDEX)/i,
+    /\bDELETE\s+FROM\b/i,
+    /\bTRUNCATE\s/i,
+    /\bmkfs\b/,
+    /\bdd\s+if=/,
+    /\bformat\s+[a-zA-Z]:/i,
+];
+
+/**
+ * Determina si una acción es reversible (recuperable con git checkout o borrando).
+ * @param {string} toolName - Nombre del tool (Edit, Write, Bash, etc.)
+ * @param {object} toolInput - Input del tool
+ * @param {string} [repoRoot] - Root del repo
+ * @returns {boolean}
+ */
+function isReversibleAction(toolName, toolInput, repoRoot) {
+    if (!toolName) return false;
+
+    // Edit/Write sobre directorio seguro → reversible
+    if (toolName === "Edit" || toolName === "Write") {
+        const fp = toolInput && (toolInput.file_path || toolInput.filePath || "");
+        return isSafeDirectory(fp, repoRoot);
+    }
+
+    // Bash: verificar que NO sea destructivo
+    if (toolName === "Bash") {
+        const cmd = (toolInput && toolInput.command) || "";
+        if (!cmd) return false;
+        // Si contiene algún patrón destructivo → NO reversible
+        const atoms = splitCompoundCommand(cmd);
+        return !atoms.some(atom => DESTRUCTIVE_PATTERNS.some(pat => pat.test(atom)));
+    }
+
+    // WebFetch, WebSearch, Skill, etc. → generalmente reversible (lectura)
+    if (["WebFetch", "WebSearch", "Skill", "NotebookEdit"].includes(toolName)) {
+        return true;
+    }
+
+    return false;
+}
+
+// ─── Clasificación de severidad ─────────────────────────────────────────────
+
+/**
+ * Enum de severidad:
+ *   AUTO_ALLOW — acción reversible en directorio seguro → auto-aprobar sin Telegram
+ *   LOW        — acción nueva pero recuperable → timeout reducido
+ *   MEDIUM     — impacto externo pero reversible → flujo normal
+ *   HIGH       — destructiva o irreversible → retry + fallback obligatorio
+ */
+const Severity = {
+    AUTO_ALLOW: "AUTO_ALLOW",
+    LOW: "LOW",
+    MEDIUM: "MEDIUM",
+    HIGH: "HIGH"
+};
+
+/**
+ * Carga auto_allow_tools desde telegram-config.json o usa defaults.
+ */
+function loadAutoAllowTools() {
+    try {
+        const cfgPath = path.join(__dirname, "telegram-config.json");
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (Array.isArray(cfg.auto_allow_tools) && cfg.auto_allow_tools.length > 0) {
+            return cfg.auto_allow_tools;
+        }
+    } catch (e) {}
+    return [
+        "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop",
+        "ToolSearch", "EnterWorktree", "EnterPlanMode", "ExitPlanMode"
+    ];
+}
+
+/**
+ * Carga severity_timeouts desde telegram-config.json o usa defaults.
+ * @returns {{ low: number, medium: number, high: number }} tiempos en minutos
+ */
+function loadSeverityTimeouts() {
+    try {
+        const cfgPath = path.join(__dirname, "telegram-config.json");
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (cfg.severity_timeouts && typeof cfg.severity_timeouts === "object") {
+            return {
+                low: cfg.severity_timeouts.low || 2,
+                medium: cfg.severity_timeouts.medium || 15,
+                high: cfg.severity_timeouts.high || 30
+            };
+        }
+    } catch (e) {}
+    return { low: 2, medium: 15, high: 30 };
+}
+
+/**
+ * Clasifica la severidad de una acción.
+ * @param {string} toolName
+ * @param {object} toolInput
+ * @param {string} [repoRoot]
+ * @returns {string} Severity level
+ */
+function classifySeverity(toolName, toolInput, repoRoot) {
+    // 1. Tools que siempre se auto-aprueban
+    const autoAllowTools = loadAutoAllowTools();
+    if (autoAllowTools.includes(toolName)) {
+        return Severity.AUTO_ALLOW;
+    }
+
+    // 2. Edit/Write sobre directorio seguro → AUTO_ALLOW
+    if (toolName === "Edit" || toolName === "Write") {
+        const fp = toolInput && (toolInput.file_path || toolInput.filePath || "");
+        if (isSafeDirectory(fp, repoRoot)) {
+            return Severity.AUTO_ALLOW;
+        }
+        // Edit/Write fuera de safe dir → LOW (recuperable con git)
+        return Severity.LOW;
+    }
+
+    // 3. Bash: analizar contenido
+    if (toolName === "Bash") {
+        const cmd = (toolInput && toolInput.command) || "";
+        const atoms = splitCompoundCommand(cmd);
+
+        // Si contiene patrones destructivos → HIGH
+        const hasDestructive = atoms.some(atom =>
+            DESTRUCTIVE_PATTERNS.some(pat => pat.test(atom))
+        );
+        if (hasDestructive) return Severity.HIGH;
+
+        // Comandos con efecto externo → MEDIUM
+        const externalPatterns = [
+            /\bgit\s+push\b/,
+            /\bcurl\s.*-X\s*(POST|PUT|DELETE|PATCH)/i,
+            /\bnpm\s+publish\b/,
+            /\bdocker\s+push\b/,
+        ];
+        const hasExternal = atoms.some(atom =>
+            externalPatterns.some(pat => pat.test(atom))
+        );
+        if (hasExternal) return Severity.MEDIUM;
+
+        // Bash en directorio seguro (todos los paths son safe) → AUTO_ALLOW
+        // Solo para comandos simples que operan sobre archivos
+        return Severity.LOW;
+    }
+
+    // 4. WebFetch, WebSearch → LOW
+    if (toolName === "WebFetch" || toolName === "WebSearch") {
+        return Severity.LOW;
+    }
+
+    // 5. Skill → LOW
+    if (toolName === "Skill") {
+        return Severity.LOW;
+    }
+
+    // 6. NotebookEdit → LOW
+    if (toolName === "NotebookEdit") {
+        return Severity.LOW;
+    }
+
+    // 7. Task/Agent → MEDIUM (subagente puede hacer cosas)
+    if (toolName === "Task" || toolName === "Agent") {
+        return Severity.MEDIUM;
+    }
+
+    // Default → MEDIUM
+    return Severity.MEDIUM;
+}
+
 module.exports = {
     resolveMainRepoRoot,
     getSettingsPaths,
     extractFirstCommand,
+    splitCompoundCommand,
     generateBashPattern,
     generatePattern,
     isAlreadyCovered,
     collidesWithDeny,
-    persistPattern
+    persistPattern,
+    isSafeDirectory,
+    isReversibleAction,
+    classifySeverity,
+    loadSafeDirectories,
+    loadAutoAllowTools,
+    loadSeverityTimeouts,
+    Severity,
+    DESTRUCTIVE_PATTERNS
 };

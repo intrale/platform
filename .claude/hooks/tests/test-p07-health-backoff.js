@@ -33,8 +33,8 @@ describe("P-07: Health check backoff por componente", () => {
         assert.ok(source.includes("consecutivePasses"), "Debería trackear consecutivePasses");
     });
 
-    it("checkDeadWorktrees auto-repara con rmdirSync", () => {
-        assert.ok(source.includes("rmdirSync"), "Debería usar rmdirSync para auto-limpiar worktrees vacíos");
+    it("checkDeadWorktrees auto-repara con estrategia por capas", () => {
+        assert.ok(source.includes("tryRepairWorktree"), "Debería usar tryRepairWorktree para auto-limpiar worktrees (P-18 upgrade)");
         assert.ok(source.includes("result.cleaned"), "Debería trackear worktrees limpiados en result.cleaned");
     });
 
