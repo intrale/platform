@@ -16,7 +16,7 @@ const https = require("https");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern } = require("./permission-utils");
+const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern, splitCompoundCommand, classifySeverity, Severity } = require("./permission-utils");
 
 const { addPendingQuestion, resolveQuestion, getQuestionById, updateQuestionField } = require("./pending-questions");
 const { readSessionContext } = require("./context-reader");
@@ -432,13 +432,12 @@ function isCommandCoveredByRules(toolName, toolInput) {
     const pattern = generatePattern(toolName, toolInput);
     if (!pattern) return false;
 
-    // Para Bash con comandos compuestos (;, &&, |), verificar cada sub-comando
+    // Para Bash con comandos compuestos, usar splitCompoundCommand robusto
     if (toolName === "Bash" && toolInput.command) {
         const cmd = toolInput.command.trim();
-        const separators = /;|&&/;
-        if (separators.test(cmd)) {
-            // Extraer todos los sub-comandos y verificar cada uno
-            const subCmds = cmd.split(separators).map(s => s.trim()).filter(Boolean);
+        const subCmds = splitCompoundCommand(cmd);
+
+        if (subCmds.length > 1) {
             const settingsPaths = getSettingsPaths(REPO_ROOT);
             for (const sp of settingsPaths) {
                 try {
@@ -449,7 +448,6 @@ function isCommandCoveredByRules(toolName, toolInput) {
                         const subPattern = generateBashPattern(sub);
                         return subPattern && isAlreadyCovered(subPattern, allow);
                     });
-                    // Verificar que el patrón principal no colisione con deny
                     const denyMatch = deny.some(d => {
                         const dm = d.match(/^Bash\((.+?):\*\)$/);
                         if (!dm) return false;
@@ -490,6 +488,22 @@ async function processInput() {
     const requestId = crypto.randomBytes(8).toString("hex");
 
     log("REPO_ROOT=" + REPO_ROOT + " MAIN=" + MAIN_REPO_ROOT + " tool=" + toolName);
+
+    // Fast-path: auto-aprobar si la severidad es AUTO_ALLOW (directorio seguro / tool interno)
+    const severity = classifySeverity(toolName, toolInput, REPO_ROOT);
+    log("SEVERITY: " + toolName + " → " + severity);
+    if (severity === Severity.AUTO_ALLOW) {
+        log("AUTO_ALLOW (PermissionRequest): " + toolName + " auto-aprobado");
+        const response = {
+            hookSpecificOutput: {
+                hookEventName: "PermissionRequest",
+                decision: { behavior: "allow" }
+            }
+        };
+        process.stdout.write(JSON.stringify(response) + "\n", () => process.exit(0));
+        setTimeout(() => process.exit(0), 500);
+        return;
+    }
 
     // Fast-path: auto-aprobar si ya está cubierto por reglas existentes
     if (isCommandCoveredByRules(toolName, toolInput)) {

@@ -4,5 +4,19 @@
   "permission_timeout_min": 60,
   "task_report_interval_min": 10,
   "retry_intervals_min": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
-  "gate_retry_intervals_min": [15, 8, 5, 2]
+  "gate_retry_intervals_min": [15, 8, 5, 2],
+  "safe_directories": [
+    ".claude/",
+    "qa/",
+    "docs/"
+  ],
+  "auto_allow_tools": [
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop",
+    "ToolSearch", "EnterWorktree", "EnterPlanMode", "ExitPlanMode"
+  ],
+  "severity_timeouts": {
+    "low": 2,
+    "medium": 15,
+    "high": 30
+  }
 }
