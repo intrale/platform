@@ -14,8 +14,7 @@ const GH_PATH = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
 const LOG_DIR = path.join(__dirname, "logs");
 const LOG_FILE = path.join(LOG_DIR, "sprint-report.log");
 const QA_DIR = path.join(REPO_ROOT, "docs", "qa");
-const GENERATE_PDF = path.join(QA_DIR, "generate-pdf.js");
-const TG_CONFIG_PATH = path.join(REPO_ROOT, ".claude", "hooks", "telegram-config.json");
+const REPORT_TO_PDF_TELEGRAM = path.join(__dirname, "report-to-pdf-telegram.js");
 
 // --- Logging ---
 function ensureDir(dir) {
@@ -37,44 +36,22 @@ function execSafe(cmd, opts = {}) {
     }
 }
 
-// --- Telegram ---
-function loadTelegramConfig() {
-    try {
-        return JSON.parse(fs.readFileSync(TG_CONFIG_PATH, "utf8"));
-    } catch (e) {
-        log("No se pudo leer telegram-config.json: " + e.message);
-        return null;
+// --- PDF + Telegram via script unificado ---
+function sendReportViaTelegram(htmlPath, caption) {
+    if (!fs.existsSync(REPORT_TO_PDF_TELEGRAM)) {
+        log("report-to-pdf-telegram.js no encontrado en: " + REPORT_TO_PDF_TELEGRAM);
+        return false;
     }
-}
-
-function sendTelegramDocument(botToken, chatId, filePath, caption) {
-    // Usar curl para enviar documento (multipart/form-data no es trivial con https nativo)
-    const cmd = `curl -s -X POST "https://api.telegram.org/bot${botToken}/sendDocument" ` +
-        `-F "chat_id=${chatId}" ` +
-        `-F "document=@${filePath.replace(/\\/g, "/")}" ` +
-        `-F "caption=${caption.replace(/"/g, '\\"')}"`;
-    const result = execSafe(cmd);
-    if (result) {
-        try {
-            const parsed = JSON.parse(result);
-            if (parsed.ok) {
-                log("Documento enviado a Telegram OK");
-                return true;
-            }
-            log("Telegram API error: " + result);
-        } catch (e) {
-            log("Error parseando respuesta Telegram: " + result);
-        }
+    const result = execSafe(
+        `node "${REPORT_TO_PDF_TELEGRAM}" "${htmlPath}" "${caption.replace(/"/g, '\\"')}"`,
+        { timeout: 120000 }
+    );
+    if (result !== null) {
+        log("report-to-pdf-telegram.js ejecutado OK:\n" + result);
+        return true;
     }
+    log("report-to-pdf-telegram.js falló");
     return false;
-}
-
-function sendTelegramMessage(botToken, chatId, text) {
-    const cmd = `curl -s -X POST "https://api.telegram.org/bot${botToken}/sendMessage" ` +
-        `-d "chat_id=${chatId}" ` +
-        `-d "parse_mode=HTML" ` +
-        `--data-urlencode "text=${text}"`;
-    return execSafe(cmd);
 }
 
 // --- Snapshot de sesiones ---
@@ -777,36 +754,12 @@ async function main() {
     fs.writeFileSync(htmlPath, html, "utf8");
     log(`HTML generado: ${htmlPath}`);
 
-    // Generar PDF con generate-pdf.js
-    let pdfPath = htmlPath.replace(/\.html$/, ".pdf");
-    if (fs.existsSync(GENERATE_PDF)) {
-        const pdfResult = execSafe(`node "${GENERATE_PDF}" "${htmlFileName}"`, { cwd: QA_DIR, timeout: 60000 });
-        if (pdfResult !== null && fs.existsSync(pdfPath)) {
-            log(`PDF generado: ${pdfPath}`);
-        } else {
-            log("PDF no se pudo generar, se enviará mensaje de texto");
-            pdfPath = null;
-        }
-    } else {
-        log("generate-pdf.js no encontrado, omitiendo PDF");
-        pdfPath = null;
-    }
-
-    // Enviar a Telegram
-    const tgConfig = loadTelegramConfig();
-    if (tgConfig) {
-        const mergedCount = prs.filter(p =>
-            plan.agentes.some(a => p.headRefName === `agent/${a.issue}-${a.slug}`) && p.state === "MERGED"
-        ).length;
-        const caption = `📊 Reporte Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`;
-
-        if (pdfPath && fs.existsSync(pdfPath)) {
-            sendTelegramDocument(tgConfig.bot_token, tgConfig.chat_id, pdfPath, caption);
-        } else {
-            // Fallback: enviar mensaje con resumen
-            sendTelegramMessage(tgConfig.bot_token, tgConfig.chat_id, caption + "\n(PDF no disponible, ver HTML en docs/qa/)");
-        }
-    }
+    // Generar PDF y enviar a Telegram via script unificado
+    const mergedCount = prs.filter(p =>
+        plan.agentes.some(a => p.headRefName === `agent/${a.issue}-${a.slug}`) && p.state === "MERGED"
+    ).length;
+    const caption = `Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`;
+    sendReportViaTelegram(htmlPath, caption);
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     log(`=== sprint-report.js completado en ${elapsed}s ===`);

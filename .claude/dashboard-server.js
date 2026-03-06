@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Dashboard Monitor Web v2 — Servidor HTTP + SSE + Screenshot + API
+// Dashboard Monitor Web v3 — Servidor HTTP + SSE + Screenshot + API
+// Rediseño #1225: Ejecución unificada, grafo de flujo, feed chat, métricas Claude
 // Uso: node .claude/dashboard-server.js [--port 3100]
 // Endpoints:
 //   GET /           → HTML dashboard con datos embebidos
@@ -22,6 +23,7 @@ const LOG_FILE = path.join(CLAUDE_DIR, "activity-log.jsonl");
 const PID_FILE = path.join(CLAUDE_DIR, "tmp", "dashboard-server.pid");
 const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
 const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
+const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 
 // Logging a archivo (detached processes no tienen stdio)
 const _origLog = console.log;
@@ -38,6 +40,7 @@ const IDLE_THRESHOLD_MS = 15 * 60 * 1000;
 const AUTO_STOP_MS = 30 * 60 * 1000;
 const RECENT_ACTIVITY_COUNT = 20;
 const MAX_CI_ENTRIES = 5;
+const FEED_LIMIT = 15;
 const PENDING_QUESTIONS_FILE = path.join(CLAUDE_DIR, "hooks", "pending-questions.json");
 const APPROVAL_HISTORY_FILE = path.join(CLAUDE_DIR, "hooks", "approval-history.json");
 
@@ -104,12 +107,10 @@ function collectData() {
         const s = readJson(path.join(SESSIONS_DIR, f));
         if (!s) continue;
         const status = getSessionStatus(s);
-        // Skip stale sessions older than 1 hour
         if (status === "stale") {
           const elapsed = now - new Date(s.last_activity_ts).getTime();
           if (elapsed > 60 * 60 * 1000) continue;
         }
-        // Skip done sessions older than 30 min
         if (status === "done") {
           const elapsed = now - new Date(s.last_activity_ts).getTime();
           if (elapsed > 30 * 60 * 1000) continue;
@@ -127,10 +128,7 @@ function collectData() {
       if (content) {
         const lines = content.split("\n").slice(-RECENT_ACTIVITY_COUNT * 2);
         for (const line of lines) {
-          try {
-            const entry = JSON.parse(line);
-            activities.push(entry);
-          } catch {}
+          try { activities.push(JSON.parse(line)); } catch {}
         }
       }
     }
@@ -150,7 +148,7 @@ function collectData() {
     });
   } catch {}
 
-  // CI status via gh (cached aggressively)
+  // CI status via gh
   let ciRuns = [];
   try {
     const ghPath = "/c/Workspaces/gh-cli/bin/gh.exe";
@@ -160,7 +158,11 @@ function collectData() {
     }
   } catch {}
 
-  // Pending questions (blocking data)
+  // Sprint plan
+  let sprintPlan = null;
+  try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+
+  // Pending questions
   let pendingQuestions = [];
   try {
     const pq = readJson(PENDING_QUESTIONS_FILE);
@@ -169,7 +171,7 @@ function collectData() {
     }
   } catch {}
 
-  // Map approver_pid to session/agent for blocking relationships
+  // Blocking relations
   const pidToSession = {};
   for (const s of sessions) {
     if (s.pid) pidToSession[s.pid] = s;
@@ -203,10 +205,7 @@ function collectData() {
   const completedTasks = allTasks.filter(t => t.status === "completed");
   const inProgressTasks = allTasks.filter(t => t.status === "in_progress");
   const pendingTasks = allTasks.filter(t => t.status === "pending");
-
   const totalActions = sessions.reduce((sum, s) => sum + (s.action_count || 0), 0);
-
-  // Velocity (actions per hour for last 6 hours)
   const velocity = computeVelocity(activities);
 
   // Alerts
@@ -233,6 +232,62 @@ function collectData() {
     ? (ciRuns[0].conclusion === "success" ? "ok" : ciRuns[0].conclusion === "failure" ? "fail" : "running")
     : "unknown";
 
+  // Classify sessions into execution categories
+  const sprintIssues = sprintPlan && Array.isArray(sprintPlan.agentes)
+    ? sprintPlan.agentes.map(a => String(a.issue))
+    : [];
+  const sprintSessions = [];
+  const standaloneSessions = [];
+  const adhocSessions = [];
+  for (const s of sessions) {
+    if (s._status === "stale") continue;
+    const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+    const issueNum = issueMatch ? issueMatch[1] : null;
+    if (issueNum && sprintIssues.includes(issueNum)) {
+      sprintSessions.push(s);
+    } else if (issueNum) {
+      standaloneSessions.push(s);
+    } else {
+      adhocSessions.push(s);
+    }
+  }
+
+  // Aggregate agent transitions from all sessions for flow graph
+  const agentTransitions = [];
+  const agentNodes = new Set();
+  for (const s of sessions) {
+    if (Array.isArray(s.agent_transitions)) {
+      for (const t of s.agent_transitions) {
+        agentTransitions.push({ ...t, _session: s.id });
+        agentNodes.add(t.from);
+        agentNodes.add(t.to);
+      }
+    }
+    // Also add agents from skills_invoked
+    if (Array.isArray(s.skills_invoked)) {
+      for (const sk of s.skills_invoked) {
+        const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
+        agentNodes.add(mapped);
+      }
+    }
+    // Add session agent itself
+    if (s.agent_name) agentNodes.add(s.agent_name);
+  }
+
+  // Claude metrics
+  const tgConfig = readJson(TG_CONFIG_FILE) || {};
+  const metricsConfig = tgConfig.claude_metrics || { cost_per_action_usd: 0.003, weekly_budget_usd: 50 };
+  const totalActiveTime = sessions.reduce((sum, s) => {
+    if (!s.started_ts || !s.last_activity_ts) return sum;
+    return sum + (new Date(s.last_activity_ts).getTime() - new Date(s.started_ts).getTime());
+  }, 0);
+  const estimatedCost = totalActions * metricsConfig.cost_per_action_usd;
+  const weeklyBudget = metricsConfig.weekly_budget_usd;
+  const weeklyUsagePct = weeklyBudget > 0 ? Math.min(100, Math.round((estimatedCost / weeklyBudget) * 100)) : 0;
+
+  // Group activities for feed (collapse consecutive same-agent same-tool)
+  const groupedActivities = groupActivities(activities.slice(-RECENT_ACTIVITY_COUNT * 2).reverse(), FEED_LIMIT);
+
   const data = {
     timestamp: new Date().toISOString(),
     sessions,
@@ -247,12 +302,27 @@ function collectData() {
     ciRuns,
     alerts,
     activities: activities.slice(-RECENT_ACTIVITY_COUNT).reverse(),
+    groupedActivities,
     velocity,
     branch,
     lastCommits,
     allTasks,
     pendingQuestions,
     blockingRelations,
+    sprintPlan,
+    sprintSessions,
+    standaloneSessions,
+    adhocSessions,
+    agentTransitions,
+    agentNodes: Array.from(agentNodes),
+    metrics: {
+      totalActions,
+      totalActiveTimeMs: totalActiveTime,
+      estimatedCostUsd: estimatedCost,
+      weeklyBudgetUsd: weeklyBudget,
+      weeklyUsagePct,
+      costPerAction: metricsConfig.cost_per_action_usd,
+    },
   };
 
   cachedData = data;
@@ -261,15 +331,46 @@ function collectData() {
   return data;
 }
 
+// Agent map for dashboard (matches activity-logger.js)
+const AGENT_MAP_DASHBOARD = {
+  "/guru": "Guru", "/planner": "Planner", "/doc": "Doc",
+  "/delivery": "DeliveryManager", "/tester": "Tester", "/monitor": "Monitor",
+  "/auth": "Auth", "/refinar": "Doc", "/priorizar": "Doc",
+  "/historia": "Doc", "/builder": "Builder", "/review": "Review",
+  "/qa": "QA", "/po": "PO", "/ux": "UX Specialist",
+  "/scrum": "Scrum Master", "/ops": "Ops",
+  "/backend-dev": "BackendDev", "/android-dev": "AndroidDev",
+  "/ios-dev": "iOSDev", "/web-dev": "WebDev", "/desktop-dev": "DesktopDev",
+  "/branch": "Branch",
+};
+
+function groupActivities(activities, limit) {
+  if (activities.length === 0) return [];
+  const groups = [];
+  let current = null;
+  for (const a of activities) {
+    if (current && current.session === a.session && current.tool === a.tool &&
+        groups.length < limit * 2) {
+      current.count++;
+      current.targets.push(a.target || "");
+      current.lastTs = a.ts;
+    } else {
+      if (current) groups.push(current);
+      current = { ...a, count: 1, targets: [a.target || ""], lastTs: a.ts, firstTs: a.ts };
+    }
+  }
+  if (current) groups.push(current);
+  return groups.slice(0, limit);
+}
+
 function computeVelocity(activities) {
   const now = Date.now();
-  const buckets = Array(6).fill(0); // 6 hours, newest first
+  const buckets = Array(6).fill(0);
   for (const a of activities) {
     const ts = new Date(a.ts).getTime();
     const hoursAgo = (now - ts) / (3600 * 1000);
     if (hoursAgo >= 0 && hoursAgo < 6) {
-      const bucket = Math.floor(hoursAgo);
-      buckets[bucket]++;
+      buckets[Math.floor(hoursAgo)]++;
     }
   }
   return buckets;
@@ -279,8 +380,7 @@ function computeVelocity(activities) {
 function renderHTML(data, theme) {
   const isDark = theme !== "light";
   const sprintProgress = data.totalTasks > 0
-    ? Math.round((data.completedTasks / data.totalTasks) * 100)
-    : 0;
+    ? Math.round((data.completedTasks / data.totalTasks) * 100) : 0;
   const completedDeg = Math.round((data.completedTasks / Math.max(data.totalTasks, 1)) * 360);
   const inProgressDeg = Math.round((data.inProgressTasks / Math.max(data.totalTasks, 1)) * 360);
 
@@ -292,46 +392,19 @@ function renderHTML(data, theme) {
     return `${x},${y}`;
   }).join(" ");
 
-  // Agent icons (character emojis)
+  // Agent icons
   const AGENT_ICONS = {
-    "Guru": "&#129497;", // mago
-    "Doc": "&#128214;", "Doc (historia)": "&#128214;",
+    "Guru": "&#129497;", "Doc": "&#128214;", "Doc (historia)": "&#128214;",
     "Doc (refinar)": "&#128214;", "Doc (priorizar)": "&#128214;",
-    "Planner": "&#128218;", // libro abierto
-    "DeliveryManager": "&#127939;", // corredor
-    "Tester": "&#128373;&#65039;", // detective
-    "Monitor": "&#128065;&#65039;", // ojo
-    "Builder": "&#127959;&#65039;", // construccion
-    "Review": "&#128270;", // lupa
-    "QA": "&#128373;&#65039;", // detective
-    "Auth": "&#128274;", // candado
-    "UX Specialist": "&#127912;", // arte
-    "Scrum Master": "&#128203;", // clipboard
-    "PO": "&#128188;", // maletin
-    "BackendDev": "&#9881;&#65039;", // gear
-    "AndroidDev": "&#128241;", // phone
-    "iOSDev": "&#127823;", // apple
-    "WebDev": "&#127760;", // globe
-    "DesktopDev": "&#128187;", // laptop
-    "Ops": "&#128295;", // wrench
-  };
-
-  // Personalidades de agentes (para tooltips/feed)
-  const AGENT_PERSONALITIES = {
-    "Guru": "Siempre encuentra la pista",
-    "DeliveryManager": "Entrega en tiempo y forma",
-    "Tester": "Cuestiona todo",
-    "Builder": "Forja c\u00f3digo s\u00f3lido",
-    "Planner": "Organiza el caos",
-    "Monitor": "Nunca duerme",
-    "Doc": "Documenta el camino",
-    "Review": "Ojo cr\u00edtico",
-    "QA": "Nada pasa sin prueba",
-    "Auth": "Guardi\u00e1n de accesos",
-    "PO": "La voz del usuario",
-    "UX Specialist": "Dise\u00f1a experiencias",
-    "Scrum Master": "Facilita el flujo",
-    "Ops": "Mantiene todo andando",
+    "Planner": "&#128218;", "DeliveryManager": "&#127939;",
+    "Tester": "&#128373;&#65039;", "Monitor": "&#128065;&#65039;",
+    "Builder": "&#127959;&#65039;", "Review": "&#128270;",
+    "QA": "&#128373;&#65039;", "Auth": "&#128274;",
+    "UX Specialist": "&#127912;", "Scrum Master": "&#128203;",
+    "PO": "&#128188;", "BackendDev": "&#9881;&#65039;",
+    "AndroidDev": "&#128241;", "iOSDev": "&#127823;",
+    "WebDev": "&#127760;", "DesktopDev": "&#128187;",
+    "Ops": "&#128295;", "Branch": "&#127796;", "Claude": "&#129302;",
   };
 
   const AGENT_GRADIENTS = {
@@ -352,9 +425,10 @@ function renderHTML(data, theme) {
     "BackendDev": "linear-gradient(135deg, #ef4444, #f87171)",
     "AndroidDev": "linear-gradient(135deg, #22c55e, #4ade80)",
     "WebDev": "linear-gradient(135deg, #3b82f6, #60a5fa)",
+    "Branch": "linear-gradient(135deg, #65a30d, #84cc16)",
+    "Claude": "linear-gradient(135deg, #555872, #6C7086)",
   };
 
-  // Agent color (solid, for SVG bars)
   const AGENT_COLORS = {
     "Guru": "#818cf8", "Doc": "#a78bfa", "Planner": "#fbbf24",
     "DeliveryManager": "#34d399", "Tester": "#d946ef", "QA": "#d946ef",
@@ -362,21 +436,106 @@ function renderHTML(data, theme) {
     "Auth": "#94a3b8", "PO": "#38bdf8", "UX Specialist": "#f472b6",
     "Scrum Master": "#2dd4bf", "Ops": "#a8a29e",
     "BackendDev": "#f87171", "AndroidDev": "#4ade80", "WebDev": "#60a5fa",
+    "Branch": "#84cc16", "Claude": "#6C7086",
   };
 
   const STATUS_COLORS = { active: "#34d399", idle: "#fbbf24", done: "#6C7086", stale: "#555872" };
   const STATUS_LABELS = { active: "Activo", idle: "Idle", done: "Terminado", stale: "Stale" };
 
-  // Check which agents are blocked
   const blockedPids = new Set(data.blockingRelations.map(b => b.blockedSessionId));
-  const blockedAgentNames = new Set(data.blockingRelations.map(b => b.blockedAgent));
 
-  // Render sessions HTML (agent cards)
+  // --- EJECUCIÓN PANEL ---
+  let ejecutionHtml = "";
+
+  // Sprint sub-view
+  if (data.sprintPlan && Array.isArray(data.sprintPlan.agentes) && data.sprintPlan.agentes.length > 0) {
+    const spDate = data.sprintPlan.fecha || "";
+    const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
+    const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
+    const sprintPct = sprintTasksTotal > 0 ? Math.round((sprintTasksDone / sprintTasksTotal) * 100) : 0;
+
+    ejecutionHtml += `<div class="exec-subview">
+      <div class="exec-subview-header">
+        <span class="exec-label">&#128640; Sprint${spDate ? ' (' + escHtml(spDate) + ')' : ''}</span>
+        <span class="exec-progress-badge">${sprintPct}%</span>
+      </div>
+      <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>
+      <div class="exec-table">`;
+    for (const ag of data.sprintPlan.agentes) {
+      const matchSession = data.sprintSessions.find(s => {
+        const issueMatch = (s.branch || "").match(/(\d+)/);
+        return issueMatch && issueMatch[1] === String(ag.issue);
+      });
+      const agStatus = matchSession ? matchSession._status : "pending";
+      const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : "&#9675;";
+      const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
+      ejecutionHtml += `<div class="exec-row">
+        <span class="exec-issue">#${escHtml(String(ag.issue))}</span>
+        <span class="exec-slug">${escHtml(ag.slug || "")}</span>
+        <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
+        <span class="exec-status" style="color:${statusColor}">${statusIcon}</span>
+      </div>`;
+    }
+    ejecutionHtml += `</div></div>`;
+  }
+
+  // Standalone issues sub-view
+  if (data.standaloneSessions.length > 0) {
+    ejecutionHtml += `<div class="exec-subview">
+      <div class="exec-subview-header">
+        <span class="exec-label">&#128204; Historias en curso</span>
+        <span class="chip chip-blue">${data.standaloneSessions.length}</span>
+      </div>`;
+    for (const s of data.standaloneSessions) {
+      const icon = AGENT_ICONS[s.agent_name] || "&#129302;";
+      const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
+      const statusColor = STATUS_COLORS[s._status] || "#555872";
+      const tasks = s.current_tasks || [];
+      const done = tasks.filter(t => t.status === "completed").length;
+      const pct = tasks.length > 0 ? Math.round((done / tasks.length) * 100) : 0;
+      ejecutionHtml += `<div class="exec-card">
+        <div class="exec-card-avatar" style="background:${gradient};">${icon}</div>
+        <div class="exec-card-info">
+          <div class="exec-card-name">${escHtml(s.agent_name || "Ad-hoc")} <span style="color:var(--text-muted);font-weight:400;">${escHtml(s.branch || "")}</span></div>
+          <div class="exec-bar" style="margin-top:4px;"><div class="exec-bar-fill" style="width:${pct}%;background:${statusColor};"></div></div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${done}/${tasks.length} tareas · ${s.action_count || 0} acc · ${formatDuration(s.started_ts)}</div>
+        </div>
+        <span class="exec-card-pct" style="color:${statusColor}">${pct}%</span>
+      </div>`;
+    }
+    ejecutionHtml += `</div>`;
+  }
+
+  // Ad-hoc sessions sub-view
+  if (data.adhocSessions.length > 0) {
+    ejecutionHtml += `<div class="exec-subview">
+      <div class="exec-subview-header">
+        <span class="exec-label">&#9889; Prompts ad-hoc</span>
+        <span class="chip chip-yellow">${data.adhocSessions.length}</span>
+      </div>`;
+    for (const s of data.adhocSessions) {
+      if (s._status === "stale") continue;
+      const statusColor = STATUS_COLORS[s._status] || "#555872";
+      ejecutionHtml += `<div class="exec-adhoc-row">
+        <span class="dot" style="background:${statusColor};"></span>
+        <span class="exec-adhoc-id">${escHtml(s.id)}</span>
+        <span class="exec-adhoc-action">${escHtml(s.last_tool || "")}${s.last_target ? ": " + escHtml((s.last_target || "").substring(0, 40)) : ""}</span>
+        <span class="exec-adhoc-meta">${s.action_count || 0} acc · ${formatDuration(s.started_ts)}</span>
+      </div>`;
+    }
+    ejecutionHtml += `</div>`;
+  }
+
+  if (!ejecutionHtml) {
+    ejecutionHtml = '<div class="empty-state">Sin ejecuciones activas</div>';
+  }
+
+  // --- AGENT CARDS ---
   let agentsHtml = "";
   const visibleSessions = data.sessions.filter(s => s._status !== "stale");
   for (const s of visibleSessions) {
     const icon = AGENT_ICONS[s.agent_name] || "&#129302;";
-    const gradient = AGENT_GRADIENTS[s.agent_name] || "linear-gradient(135deg, #555872, #6C7086)";
+    const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
     const statusColor = STATUS_COLORS[s._status] || "#555872";
     const statusLabel = STATUS_LABELS[s._status] || s._status;
     const name = escHtml(s.agent_name || "Ad-hoc (" + s.id + ")");
@@ -385,10 +544,9 @@ function renderHTML(data, theme) {
     const idleInfo = s._status === "idle" ? " " + formatAge(s.last_activity_ts) : "";
     const lastAction = s.last_tool ? (escHtml(s.last_tool) + ": " + escHtml((s.last_target || "").substring(0, 50))) : "--";
     const isBlocked = blockedPids.has(s.id);
-    const personality = AGENT_PERSONALITIES[s.agent_name] || "";
 
     agentsHtml += `
-      <div class="agent-card ${isBlocked ? 'agent-blocked' : ''}" title="${escHtml(personality)}">
+      <div class="agent-card ${isBlocked ? 'agent-blocked' : ''}">
         <div class="agent-avatar" style="background:${gradient};">${icon}</div>
         <div class="agent-info">
           <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -407,136 +565,209 @@ function renderHTML(data, theme) {
     agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
   }
 
-  // --- Timeline SVG bars (Fase 2) ---
-  let timelineBarsHtml = "";
-  if (visibleSessions.length > 0) {
-    const barHeight = 36;
-    const barGap = 8;
-    const svgH = visibleSessions.length * (barHeight + barGap) + 10;
-    const labelW = 130;
-    const barW = 400;
-    let bars = "";
-    for (let i = 0; i < visibleSessions.length; i++) {
-      const s = visibleSessions[i];
-      const y = 5 + i * (barHeight + barGap);
-      const agentIcon = AGENT_ICONS[s.agent_name] || "&#129302;";
-      const agentColor = AGENT_COLORS[s.agent_name] || "#6C7086";
-      const agentName = escHtml(s.agent_name || "Ad-hoc");
-      const isBlocked = blockedPids.has(s.id);
+  // --- FLOW GRAPH SVG (circular layout) ---
+  let flowGraphHtml = "";
+  const nodes = data.agentNodes.length > 0 ? data.agentNodes : [];
+  if (nodes.length > 0) {
+    const cx = 200, cy = 180, radius = 140;
+    const nodeR = 28;
+    const svgW = 400, svgH = 360;
+    const angleStep = (2 * Math.PI) / Math.max(nodes.length, 1);
 
-      // Calculate progress from tasks
-      const sessionTasks = (s.current_tasks || []);
-      const totalT = sessionTasks.length;
-      const doneT = sessionTasks.filter(t => t.status === "completed").length;
-      const progressPct = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
-      const barFillW = Math.round(barW * progressPct / 100);
+    // Compute positions
+    const positions = {};
+    nodes.forEach((n, i) => {
+      positions[n] = {
+        x: cx + radius * Math.cos(angleStep * i - Math.PI / 2),
+        y: cy + radius * Math.sin(angleStep * i - Math.PI / 2),
+      };
+    });
 
-      // Sub-steps for expandable detail
-      const hasSteps = sessionTasks.some(t => t.steps && t.steps.length > 0);
-
-      bars += `
-        <g class="timeline-agent-row" data-session="${escHtml(s.id)}" style="cursor:${hasSteps ? 'pointer' : 'default'};">
-          <text x="30" y="${y + 23}" font-size="12" fill="var(--text)" font-weight="600">${agentName}</text>
-          <text x="4" y="${y + 24}" font-size="14">${agentIcon}</text>
-          <rect x="${labelW}" y="${y + 4}" width="${barW}" height="${barHeight - 8}" rx="4" fill="var(--surface3)" />
-          <rect x="${labelW}" y="${y + 4}" width="${barFillW}" height="${barHeight - 8}" rx="4" fill="${agentColor}" opacity="0.85">
-            ${isBlocked ? '<animate attributeName="opacity" values="0.85;0.3;0.85" dur="1.5s" repeatCount="indefinite"/>' : ''}
-          </rect>
-          ${isBlocked ? '<rect x="' + labelW + '" y="' + (y + 4) + '" width="' + barW + '" height="' + (barHeight - 8) + '" rx="4" fill="none" stroke="var(--red)" stroke-width="2"><animate attributeName="stroke-opacity" values="1;0.2;1" dur="1.5s" repeatCount="indefinite"/></rect>' : ''}
-          <text x="${labelW + barW + 8}" y="${y + 23}" font-size="11" fill="var(--text-dim)" font-weight="700">${progressPct}%</text>
-          ${isBlocked ? '<text x="' + (labelW + barW + 40) + '" y="' + (y + 23) + '" font-size="11" fill="var(--red)">&#128721; Bloqueado</text>' : ''}
-        </g>`;
-    }
-    timelineBarsHtml = `
-      <svg class="timeline-svg" viewBox="0 0 600 ${svgH}" preserveAspectRatio="xMinYMin meet" style="width:100%;height:${svgH}px;">
-        ${bars}
-      </svg>`;
-  } else {
-    timelineBarsHtml = '<div class="empty-state">Sin agentes para el timeline</div>';
-  }
-
-  // --- Sub-steps expandable HTML ---
-  let substepsHtml = "";
-  for (const s of visibleSessions) {
-    const sessionTasks = s.current_tasks || [];
-    const tasksWithSteps = sessionTasks.filter(t => t.steps && t.steps.length > 0);
-    if (tasksWithSteps.length > 0) {
-      substepsHtml += `<div class="substeps-detail" id="substeps-${escHtml(s.id)}" style="display:none;">`;
-      substepsHtml += `<div class="substeps-title">${AGENT_ICONS[s.agent_name] || "&#129302;"} ${escHtml(s.agent_name || "Ad-hoc")} — Sub-pasos</div>`;
-      for (const t of tasksWithSteps) {
-        substepsHtml += `<div class="substeps-task">${escHtml(t.subject)}</div>`;
-        for (let si = 0; si < t.steps.length; si++) {
-          const step = t.steps[si];
-          const isCompleted = t.completed_steps && t.completed_steps.includes(step);
-          const isCurrent = (t.current_step || 0) === si + 1 && !isCompleted;
-          const stepIcon = isCompleted ? "&#10003;" : isCurrent ? "&#9654;" : "&#9675;";
-          const stepClass = isCompleted ? "step-done" : isCurrent ? "step-active" : "step-pending";
-          substepsHtml += `<div class="substep ${stepClass}">${stepIcon} ${escHtml(step)}</div>`;
+    // Determine active agents
+    const activeAgents = new Set();
+    const doneAgents = new Set();
+    for (const s of visibleSessions) {
+      if (s.agent_name) {
+        if (s._status === "active") activeAgents.add(s.agent_name);
+        if (s._status === "done") doneAgents.add(s.agent_name);
+      }
+      if (Array.isArray(s.skills_invoked)) {
+        for (const sk of s.skills_invoked) {
+          const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
+          // Mark as done if not currently active
+          if (!activeAgents.has(mapped)) doneAgents.add(mapped);
         }
       }
-      substepsHtml += `</div>`;
     }
+
+    // Arrow defs
+    let graphSvg = `<defs>
+      <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="var(--text-muted)" opacity="0.6"/>
+      </marker>
+      <filter id="glow"><feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+        <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>`;
+
+    // Draw edges (transitions)
+    const drawnEdges = new Set();
+    for (const t of data.agentTransitions) {
+      const from = positions[t.from];
+      const to = positions[t.to];
+      if (!from || !to) continue;
+      const edgeKey = t.from + "->" + t.to;
+      if (drawnEdges.has(edgeKey)) continue;
+      drawnEdges.add(edgeKey);
+      // Shorten arrow to stop at node boundary
+      const dx = to.x - from.x, dy = to.y - from.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 1) continue;
+      const ux = dx / dist, uy = dy / dist;
+      const x1 = from.x + ux * (nodeR + 4), y1 = from.y + uy * (nodeR + 4);
+      const x2 = to.x - ux * (nodeR + 8), y2 = to.y - uy * (nodeR + 8);
+      graphSvg += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--text-muted)" stroke-width="1.5" stroke-opacity="0.5" marker-end="url(#arrowhead)"/>`;
+    }
+
+    // Draw nodes
+    for (const name of nodes) {
+      const pos = positions[name];
+      if (!pos) continue;
+      const color = AGENT_COLORS[name] || "#6C7086";
+      const icon = AGENT_ICONS[name] || "&#129302;";
+      const isActive = activeAgents.has(name);
+      const isDone = doneAgents.has(name);
+      const opacity = (!isActive && !isDone) ? "0.4" : "1";
+      const filterAttr = isActive ? 'filter="url(#glow)"' : '';
+
+      graphSvg += `<g class="flow-node" data-agent="${escHtml(name)}" style="cursor:pointer;opacity:${opacity};" ${filterAttr}>`;
+      graphSvg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${nodeR}" fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="2"`;
+      if (isActive) {
+        graphSvg += `><animate attributeName="stroke-opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/>`;
+        graphSvg += `</circle>`;
+      } else {
+        graphSvg += `/>`;
+      }
+      // Check mark for done
+      if (isDone && !isActive) {
+        graphSvg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="18" fill="${color}">&#10003;</text>`;
+      } else {
+        graphSvg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16">${icon}</text>`;
+      }
+      // Label below
+      const shortName = name.length > 12 ? name.substring(0, 10) + "…" : name;
+      graphSvg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + nodeR + 14).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)" font-weight="600">${escHtml(shortName)}</text>`;
+      graphSvg += `</g>`;
+    }
+
+    flowGraphHtml = `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-height:${svgH}px;">${graphSvg}</svg>`;
+  } else {
+    flowGraphHtml = '<div class="empty-state">Sin flujo de agentes registrado</div>';
   }
 
-  // --- Activity Feed (Fase 1) ---
-  let activityFeedHtml = "";
-  for (const a of data.activities) {
-    const time = a.ts ? new Date(a.ts).toLocaleTimeString("es-AR", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "??:??";
-    // Match session to agent name
-    let agentName = a.session || "?";
+  // --- ACTIVITY FEED (chat-style with grouping) ---
+  let feedHtml = "";
+  // Blocking events first
+  for (const b of data.blockingRelations) {
+    const waitTime = formatAge(b.waitingSince);
+    feedHtml += `<div class="feed-item feed-blocked">
+      <div class="feed-time">&#128721;</div>
+      <div class="feed-icon" style="filter:grayscale(1) brightness(1.5);">&#9888;&#65039;</div>
+      <div class="feed-body">
+        <span class="feed-agent">${escHtml(b.blockedAgent)}</span>
+        <span class="feed-reason">${escHtml(b.reason)} (${waitTime})</span>
+      </div>
+    </div>`;
+  }
+  for (const g of data.groupedActivities) {
+    const time = g.ts ? new Date(g.ts).toLocaleTimeString("es-AR", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "??:??";
+    let agentName = g.session || "?";
     let agentIcon = "&#129302;";
     for (const s of data.sessions) {
-      if (s.id === a.session) {
+      if (s.id === g.session) {
         agentName = s.agent_name || "Ad-hoc (" + s.id + ")";
         agentIcon = AGENT_ICONS[s.agent_name] || "&#129302;";
         break;
       }
     }
-    const toolLabel = escHtml(a.tool || "");
-    const target = escHtml((a.target || "").substring(0, 80));
-    activityFeedHtml += `
-      <div class="feed-item">
-        <div class="feed-time">${time}</div>
-        <div class="feed-icon">${agentIcon}</div>
-        <div class="feed-body">
-          <span class="feed-agent">${escHtml(agentName)}</span>
-          <span class="feed-tool">${toolLabel}</span>
-          <span class="feed-target">${target}</span>
-        </div>
-      </div>`;
-  }
-
-  // Blocking events in feed (highlighted)
-  let blockingFeedHtml = "";
-  for (const b of data.blockingRelations) {
-    const waitTime = formatAge(b.waitingSince);
-    blockingFeedHtml += `
-      <div class="feed-item feed-blocked">
-        <div class="feed-time">&#128721;</div>
-        <div class="feed-icon" style="filter:grayscale(1) brightness(1.5);">&#9888;&#65039;</div>
-        <div class="feed-body">
-          <span class="feed-agent">${escHtml(b.blockedAgent)}</span>
-          <span class="feed-reason">${escHtml(b.reason)} (${waitTime})</span>
-        </div>
-      </div>`;
-  }
-
-  // Blocking relations section
-  let relationsHtml = "";
-  if (data.blockingRelations.length > 0) {
-    relationsHtml = '<div class="relations-section"><div class="relations-title">&#128279; Relaciones activas</div>';
-    for (const b of data.blockingRelations) {
-      relationsHtml += `<div class="relation-item">
-        <span class="relation-blocked">&#128721; ${escHtml(b.blockedAgent)}</span>
-        <span class="relation-arrow">&larr;</span>
-        <span class="relation-reason">${escHtml(b.reason)}</span>
-        <span class="relation-time">${formatAge(b.waitingSince)}</span>
-      </div>`;
+    const toolLabel = escHtml(g.tool || "");
+    let targetText;
+    if (g.count > 1) {
+      // Grouped: show summary
+      const uniqueTargets = [...new Set(g.targets.filter(Boolean).map(t => {
+        const parts = t.replace(/\\/g, "/").split("/");
+        return parts[parts.length - 1] || t;
+      }))];
+      if (g.tool === "Edit" || g.tool === "Write") {
+        targetText = g.count + " archivos";
+        if (uniqueTargets.length <= 3) targetText += " (" + uniqueTargets.join(", ").substring(0, 60) + ")";
+      } else {
+        targetText = g.count + " acciones";
+      }
+    } else {
+      const t = (g.target || "").substring(0, 80);
+      const parts = t.replace(/\\/g, "/").split("/");
+      targetText = parts[parts.length - 1] || t;
     }
-    relationsHtml += '</div>';
+    const relTime = formatAge(g.ts);
+    feedHtml += `<div class="feed-item">
+      <div class="feed-time" title="${escHtml(time)}">${relTime}</div>
+      <div class="feed-icon">${agentIcon}</div>
+      <div class="feed-body">
+        <span class="feed-agent">${escHtml(agentName)}</span>
+        <span class="feed-tool">${toolLabel}${g.count > 1 ? ' x' + g.count : ''}</span>
+        <span class="feed-target">${escHtml(targetText)}</span>
+      </div>
+    </div>`;
+  }
+  if (!feedHtml) {
+    feedHtml = '<div class="empty-state">Sin actividad reciente</div>';
   }
 
-  // Render tasks HTML
+  // --- METRICS PANEL ---
+  const activeTimeFormatted = formatDuration(new Date(Date.now() - data.metrics.totalActiveTimeMs).toISOString());
+  const metricsHtml = `
+    <div class="metrics-grid">
+      <div class="metric-item">
+        <div class="metric-value" style="color:var(--orange)">${data.metrics.totalActions}</div>
+        <div class="metric-label">Acciones</div>
+      </div>
+      <div class="metric-item">
+        <div class="metric-value" style="color:var(--blue)">${activeTimeFormatted}</div>
+        <div class="metric-label">Tiempo activo</div>
+      </div>
+      <div class="metric-item">
+        <div class="metric-value" style="color:var(--green)">$${data.metrics.estimatedCostUsd.toFixed(2)}</div>
+        <div class="metric-label">Costo est.</div>
+      </div>
+      <div class="metric-item">
+        <div class="metric-value" style="color:var(--purple)">${data.velocity[0] || 0}/h</div>
+        <div class="metric-label">Velocidad</div>
+      </div>
+    </div>
+    <div class="metric-weekly">
+      <div class="metric-weekly-header">
+        <span>Presupuesto semanal</span>
+        <span>$${data.metrics.estimatedCostUsd.toFixed(2)} / $${data.metrics.weeklyBudgetUsd.toFixed(2)}</span>
+      </div>
+      <div class="metric-gauge">
+        <div class="metric-gauge-fill" style="width:${data.metrics.weeklyUsagePct}%;background:${data.metrics.weeklyUsagePct > 80 ? 'var(--red)' : data.metrics.weeklyUsagePct > 50 ? 'var(--yellow)' : 'var(--green)'};"></div>
+      </div>
+      <div style="text-align:right;font-size:10px;color:var(--text-muted);margin-top:2px;">${data.metrics.weeklyUsagePct}% utilizado</div>
+    </div>
+    <div style="margin-top:12px;">
+      <div class="panel-title" style="margin-bottom:6px;">Acciones / hora</div>
+      <svg class="sparkline-svg" viewBox="0 0 100 50" preserveAspectRatio="none">
+        <polyline points="${velPoints}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="${velPoints}" fill="url(#velGrad)" stroke="none"/>
+        <defs><linearGradient id="velGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--blue)" stop-opacity="0.3"/><stop offset="100%" stop-color="var(--blue)" stop-opacity="0"/></linearGradient></defs>
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:4px;">
+        <span>-5h</span><span>-4h</span><span>-3h</span><span>-2h</span><span>-1h</span><span>Ahora</span>
+      </div>
+    </div>`;
+
+  // --- TASKS ---
   let tasksHtml = "";
   for (const t of data.allTasks) {
     const isDone = t.status === "completed";
@@ -544,74 +775,47 @@ function renderHTML(data, theme) {
     const checkClass = isDone ? "task-check-done" : isActive ? "task-check-active" : "task-check-pending";
     const checkIcon = isDone ? "&#10003;" : isActive ? "&#9654;" : "";
     const nameClass = isDone ? "task-name-done" : "";
-    const subText = t.steps ? (isDone ? t.steps.length + "/" + t.steps.length + " sub-pasos completados" : (t.current_step || 0) + "/" + t.steps.length + " sub-pasos") : "";
+    const subText = t.steps ? (isDone ? t.steps.length + "/" + t.steps.length + " sub-pasos" : (t.current_step || 0) + "/" + t.steps.length + " sub-pasos") : "";
     const progressWidth = t.progress || 0;
-
-    tasksHtml += `
-      <div class="task-item">
-        <div class="task-check ${checkClass}">${checkIcon}</div>
-        <div class="task-content">
-          <div class="task-name ${nameClass}">${escHtml(t.subject)}</div>
-          ${subText ? '<div class="task-sub">' + escHtml(subText) + '</div>' : ""}
-          ${isActive && t.steps ? '<div class="task-bar"><div class="task-bar-fill" style="width:' + progressWidth + '%;background:var(--blue);"></div></div>' : ""}
-        </div>
-        <div class="task-owner">${escHtml(t._agent || "")}</div>
-      </div>`;
+    tasksHtml += `<div class="task-item">
+      <div class="task-check ${checkClass}">${checkIcon}</div>
+      <div class="task-content">
+        <div class="task-name ${nameClass}">${escHtml(t.subject)}</div>
+        ${subText ? '<div class="task-sub">' + escHtml(subText) + '</div>' : ""}
+        ${isActive && t.steps ? '<div class="task-bar"><div class="task-bar-fill" style="width:' + progressWidth + '%;background:var(--blue);"></div></div>' : ""}
+      </div>
+      <div class="task-owner">${escHtml(t._agent || "")}</div>
+    </div>`;
   }
   if (data.allTasks.length === 0) {
     tasksHtml = '<div class="empty-state">Sin tareas</div>';
   }
 
-  // Render CI HTML
+  // --- CI ---
   let ciHtml = "";
   for (const r of data.ciRuns.slice(0, MAX_CI_ENTRIES)) {
     const isOk = r.conclusion === "success";
     const isFail = r.conclusion === "failure";
-    const isRunning = r.status === "in_progress" || r.status === "queued";
     const iconClass = isOk ? "ci-ok" : isFail ? "ci-fail" : "ci-run";
     const icon = isOk ? "&#10003;" : isFail ? "&#10007;" : "&#9203;";
     const iconColor = isOk ? "var(--green)" : isFail ? "var(--red)" : "var(--yellow)";
-    ciHtml += `
-      <div class="ci-row">
-        <div class="ci-icon ${iconClass}" style="color:${iconColor}">${icon}</div>
-        <div class="ci-text"><strong>${escHtml(r.headBranch)}</strong> &middot; ${escHtml((r.displayTitle || "").substring(0, 50))}</div>
-        <div class="ci-time">${formatAge(r.createdAt)}</div>
-      </div>`;
+    ciHtml += `<div class="ci-row">
+      <div class="ci-icon ${iconClass}" style="color:${iconColor}">${icon}</div>
+      <div class="ci-text"><strong>${escHtml(r.headBranch)}</strong> &middot; ${escHtml((r.displayTitle || "").substring(0, 50))}</div>
+      <div class="ci-time">${formatAge(r.createdAt)}</div>
+    </div>`;
   }
   if (data.ciRuns.length === 0) {
     ciHtml = '<div class="empty-state">Sin datos CI</div>';
   }
 
-  // Render activity timeline HTML
-  let timelineHtml = "";
-  for (let i = 0; i < data.activities.length; i++) {
-    const a = data.activities[i];
-    const isNow = i === 0;
-    const time = a.ts ? new Date(a.ts).toLocaleTimeString("es-AR", { hour12: false }) : "??:??";
-    timelineHtml += `
-      <div class="tl-item ${isNow ? 'tl-now' : ''}">
-        <div class="tl-time">${time}</div>
-        <div class="tl-desc"><strong>${escHtml(a.session || "?")}</strong> &middot; ${escHtml(a.tool || "")} &middot; ${escHtml((a.target || "").substring(0, 50))}</div>
-      </div>`;
-  }
-  if (data.activities.length === 0) {
-    timelineHtml = '<div class="empty-state" style="padding-left:20px;">Sin actividad reciente</div>';
-  }
-
-  // Alerts HTML
+  // --- ALERTS ---
   let alertsHtml = "";
-  if (data.alerts.length > 0) {
-    for (const a of data.alerts) {
-      const color = a.type === "critical" ? "var(--red)" : a.type === "warning" ? "var(--yellow)" : "var(--blue)";
-      const icon = a.type === "critical" ? "&#128680;" : a.type === "warning" ? "&#9888;&#65039;" : "&#8505;&#65039;";
-      alertsHtml += `<div class="alert-item" style="border-left-color:${color};">${icon} ${escHtml(a.message)}</div>`;
-    }
+  for (const a of data.alerts) {
+    const color = a.type === "critical" ? "var(--red)" : a.type === "warning" ? "var(--yellow)" : "var(--blue)";
+    const icon = a.type === "critical" ? "&#128680;" : a.type === "warning" ? "&#9888;&#65039;" : "&#8505;&#65039;";
+    alertsHtml += `<div class="alert-item" style="border-left-color:${color};">${icon} ${escHtml(a.message)}</div>`;
   }
-
-  // Burndown data (tasks over time - simplified)
-  const burndownTotal = data.totalTasks;
-  const burndownDone = data.completedTasks;
-  const burndownRemaining = burndownTotal - burndownDone;
 
   return `<!DOCTYPE html>
 <html lang="es" data-theme="${isDark ? 'dark' : 'light'}">
@@ -648,7 +852,7 @@ function renderHTML(data, theme) {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.6; }
 
-    /* Header bar */
+    /* Header */
     .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
     .header-left { display: flex; align-items: center; gap: 12px; }
     .header-title { font-size: 14px; font-weight: 700; color: var(--white); }
@@ -657,7 +861,6 @@ function renderHTML(data, theme) {
     .theme-toggle { background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
     .theme-toggle:hover { border-color: var(--blue); color: var(--blue); }
 
-    /* Main layout */
     .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
 
     /* KPI row */
@@ -673,9 +876,45 @@ function renderHTML(data, theme) {
     .kl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 500; margin-top: 4px; }
     .kt { font-size: 10px; margin-top: 2px; font-weight: 600; }
 
-    /* Two-column layout */
-    .grid-2col { display: grid; grid-template-columns: 1fr 300px; gap: 14px; margin-bottom: 16px; }
+    /* Layout */
+    .grid-2col { display: grid; grid-template-columns: 1fr 340px; gap: 14px; margin-bottom: 16px; }
     .grid-2equal { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+    .grid-flow { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+
+    /* Panel base */
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; }
+    .panel-title { font-size: 12px; font-weight: 700; color: var(--white); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .chip { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; }
+    .chip-green { background: var(--green-dim); color: var(--green); }
+    .chip-blue { background: var(--blue-dim); color: var(--blue); }
+    .chip-red { background: var(--red-dim); color: var(--red); }
+    .chip-yellow { background: var(--yellow-dim); color: var(--yellow); }
+    .chip-purple { background: var(--purple-dim); color: var(--purple); }
+
+    /* Execution panel */
+    .exec-subview { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .exec-subview:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+    .exec-subview-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .exec-label { font-size: 12px; font-weight: 700; color: var(--white); }
+    .exec-progress-badge { font-size: 13px; font-weight: 800; color: var(--green); }
+    .exec-bar { height: 6px; background: var(--surface3); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+    .exec-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+    .exec-table { display: flex; flex-direction: column; gap: 4px; }
+    .exec-row { display: flex; align-items: center; gap: 10px; padding: 4px 8px; border-radius: var(--radius-xs); font-size: 11px; }
+    .exec-row:hover { background: var(--surface2); }
+    .exec-issue { font-weight: 700; color: var(--blue); min-width: 48px; }
+    .exec-slug { color: var(--text-dim); flex: 1; }
+    .exec-size { min-width: 24px; text-align: center; }
+    .exec-status { font-size: 12px; }
+    .exec-card { display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--surface2); border-radius: var(--radius-xs); margin-bottom: 6px; }
+    .exec-card-avatar { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+    .exec-card-info { flex: 1; min-width: 0; }
+    .exec-card-name { font-size: 12px; font-weight: 600; color: var(--white); }
+    .exec-card-pct { font-size: 16px; font-weight: 800; }
+    .exec-adhoc-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px; }
+    .exec-adhoc-id { font-weight: 600; color: var(--text-dim); min-width: 64px; font-family: monospace; }
+    .exec-adhoc-action { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .exec-adhoc-meta { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
 
     /* Agent cards */
     .agent-card { display: flex; gap: 12px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; transition: border-color 0.2s; }
@@ -688,24 +927,34 @@ function renderHTML(data, theme) {
     .agent-action { font-size: 11px; color: var(--text-dim); margin-top: 4px; display: flex; align-items: center; gap: 6px; }
     .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 
-    /* Progress ring */
-    .progress-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 20px; text-align: center; }
-    .progress-ring { width: 110px; height: 110px; border-radius: 50%; margin: 0 auto 16px; position: relative; }
-    .progress-ring-inner { position: absolute; inset: 14px; background: var(--surface); border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-direction: column; }
-    .progress-pct { font-size: 24px; font-weight: 800; color: var(--white); }
-    .progress-label { font-size: 8px; color: var(--text-muted); text-transform: uppercase; }
-    .legend-item { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 11px; color: var(--text-dim); text-align: left; padding: 0 8px; }
-    .legend-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+    /* Flow graph */
+    .flow-graph-svg { overflow: visible; }
+    .flow-node:hover circle { stroke-width: 3; filter: brightness(1.3); }
 
-    /* Tasks panel */
-    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; }
-    .panel-title { font-size: 12px; font-weight: 700; color: var(--white); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-    .chip { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; }
-    .chip-green { background: var(--green-dim); color: var(--green); }
-    .chip-blue { background: var(--blue-dim); color: var(--blue); }
-    .chip-red { background: var(--red-dim); color: var(--red); }
-    .chip-yellow { background: var(--yellow-dim); color: var(--yellow); }
+    /* Feed */
+    .feed-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; max-height: 400px; overflow-y: auto; }
+    .feed-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: var(--radius-xs); margin-bottom: 2px; transition: background 0.15s; }
+    .feed-item:hover { background: var(--surface2); }
+    .feed-blocked { background: var(--red-dim) !important; border-left: 3px solid var(--red); }
+    .feed-time { font-size: 10px; color: var(--text-muted); font-weight: 600; min-width: 40px; flex-shrink: 0; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+    .feed-icon { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
+    .feed-body { font-size: 11px; color: var(--text-dim); flex: 1; min-width: 0; }
+    .feed-agent { font-weight: 700; color: var(--white); margin-right: 4px; }
+    .feed-tool { background: var(--blue-dim); color: var(--blue); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600; margin-right: 4px; }
+    .feed-target { color: var(--text-dim); word-break: break-all; }
+    .feed-reason { color: var(--red); font-weight: 600; }
 
+    /* Metrics */
+    .metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+    .metric-item { text-align: center; padding: 8px; background: var(--surface2); border-radius: var(--radius-xs); }
+    .metric-value { font-size: 18px; font-weight: 800; line-height: 1.3; }
+    .metric-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-weekly { margin-top: 8px; }
+    .metric-weekly-header { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-bottom: 4px; }
+    .metric-gauge { height: 8px; background: var(--surface3); border-radius: 4px; overflow: hidden; }
+    .metric-gauge-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+
+    /* Tasks */
     .task-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
     .task-item:last-child { border-bottom: none; }
     .task-check { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; margin-top: 2px; }
@@ -722,7 +971,7 @@ function renderHTML(data, theme) {
     .tasks-progress-bar { height: 4px; background: var(--surface3); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
     .tasks-progress-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
 
-    /* CI panel */
+    /* CI */
     .ci-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
     .ci-row:last-child { border-bottom: none; }
     .ci-icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; }
@@ -733,99 +982,37 @@ function renderHTML(data, theme) {
     .ci-text strong { color: var(--text); font-weight: 600; }
     .ci-time { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
 
-    /* Activity timeline */
-    .timeline { position: relative; padding-left: 20px; }
-    .timeline::before { content: ''; position: absolute; left: 6px; top: 8px; bottom: 8px; width: 2px; background: var(--border); }
-    .tl-item { position: relative; padding: 6px 0 6px 16px; }
-    .tl-item::before { content: ''; position: absolute; left: -18px; top: 12px; width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--border); background: var(--bg); }
-    .tl-item.tl-now::before { border-color: var(--green); background: var(--green); box-shadow: 0 0 8px rgba(52,211,153,0.4); }
-    .tl-time { font-size: 10px; color: var(--text-muted); font-weight: 600; }
-    .tl-desc { font-size: 11px; color: var(--text-dim); }
-    .tl-desc strong { color: var(--text); }
-
     /* Alerts */
     .alerts-panel { margin-bottom: 16px; }
     .alert-item { padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid; border-radius: var(--radius-xs); margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
 
-    /* Velocity sparkline */
-    .sparkline-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; }
+    /* Sparkline */
     .sparkline-svg { width: 100%; height: 50px; }
 
-    /* Burndown */
-    .burndown-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface3); margin-top: 8px; }
-    .burndown-done { background: var(--green); transition: width 0.5s; }
-    .burndown-progress { background: var(--blue); transition: width 0.5s; }
+    /* Blocked states */
+    .agent-blocked { border-color: var(--red) !important; border-left: 3px solid var(--red); animation: pulse-blocked 2s infinite; }
+    .agent-status-blocked { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.4); font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; white-space: nowrap; animation: pulse-red 1.5s infinite; }
 
     /* Empty state */
     .empty-state { font-size: 12px; color: var(--text-muted); font-style: italic; padding: 12px 0; text-align: center; }
 
-    /* Agent blocked state */
-    .agent-blocked { border-color: var(--red) !important; border-left: 3px solid var(--red); animation: pulse-blocked 2s infinite; }
-    .agent-status-blocked { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.4); font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; white-space: nowrap; animation: pulse-red 1.5s infinite; }
-    @keyframes pulse-blocked { 0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); } 50% { box-shadow: 0 0 12px 2px rgba(248,113,113,0.15); } }
-    @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-
-    /* Timeline SVG bars */
-    .timeline-svg { overflow: visible; }
-    .timeline-agent-row:hover rect { filter: brightness(1.2); }
-    .timeline-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; overflow-x: auto; }
-
-    /* Sub-steps expandable */
-    .substeps-detail { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 12px; margin-top: 8px; }
-    .substeps-title { font-size: 12px; font-weight: 700; color: var(--white); margin-bottom: 8px; }
-    .substeps-task { font-size: 11px; font-weight: 600; color: var(--text-dim); margin: 6px 0 4px 0; }
-    .substep { font-size: 11px; color: var(--text-dim); padding: 2px 0 2px 16px; }
-    .step-done { color: var(--green); }
-    .step-active { color: var(--blue); font-weight: 600; }
-    .step-pending { color: var(--text-muted); }
-
-    /* Activity Feed (chat-style) */
-    .feed-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; max-height: 400px; overflow-y: auto; }
-    .feed-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: var(--radius-xs); margin-bottom: 2px; transition: background 0.15s; }
-    .feed-item:hover { background: var(--surface2); }
-    .feed-blocked { background: var(--red-dim) !important; border-left: 3px solid var(--red); border-radius: var(--radius-xs); }
-    .feed-time { font-size: 10px; color: var(--text-muted); font-weight: 600; min-width: 60px; flex-shrink: 0; font-family: 'SF Mono', 'Cascadia Code', monospace; }
-    .feed-icon { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
-    .feed-body { font-size: 11px; color: var(--text-dim); flex: 1; min-width: 0; }
-    .feed-agent { font-weight: 700; color: var(--white); margin-right: 4px; }
-    .feed-tool { background: var(--blue-dim); color: var(--blue); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600; margin-right: 4px; }
-    .feed-target { color: var(--text-dim); word-break: break-all; }
-    .feed-reason { color: var(--red); font-weight: 600; }
-
-    /* Blocking relations */
-    .relations-section { background: var(--red-dim); border: 1px solid rgba(248,113,113,0.3); border-radius: var(--radius-xs); padding: 12px; margin-top: 10px; }
-    .relations-title { font-size: 11px; font-weight: 700; color: var(--red); margin-bottom: 8px; }
-    .relation-item { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 4px 0; }
-    .relation-blocked { color: var(--red); font-weight: 600; }
-    .relation-arrow { color: var(--text-muted); }
-    .relation-reason { color: var(--text-dim); }
-    .relation-time { color: var(--text-muted); font-size: 10px; margin-left: auto; }
-
-    /* Sprint global bar */
-    .sprint-global-bar { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 16px; }
-    .sprint-bar-track { flex: 1; height: 10px; background: var(--surface3); border-radius: 5px; overflow: hidden; }
-    .sprint-bar-fill { height: 100%; border-radius: 5px; background: var(--gradient-green); transition: width 0.5s; }
-    .sprint-bar-label { font-size: 13px; font-weight: 800; color: var(--white); min-width: 48px; text-align: right; }
-    .sprint-bar-detail { font-size: 10px; color: var(--text-dim); min-width: 100px; }
-
     /* Responsive */
     @media (max-width: 768px) {
       .kpi-row { grid-template-columns: repeat(3, 1fr); }
-      .grid-2col { grid-template-columns: 1fr; }
-      .grid-2equal { grid-template-columns: 1fr; }
+      .grid-2col, .grid-2equal, .grid-flow { grid-template-columns: 1fr; }
       .kv { font-size: 22px; }
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
     }
     @media (max-width: 480px) {
       .kpi-row { grid-template-columns: repeat(2, 1fr); }
       .container { padding: 8px; }
-      .agent-card { padding: 8px; }
       .feed-panel { max-height: 300px; }
-      .feed-time { min-width: 48px; font-size: 9px; }
-      .timeline-panel { overflow-x: scroll; }
     }
 
     /* Animations */
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes pulse-blocked { 0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); } 50% { box-shadow: 0 0 12px 2px rgba(248,113,113,0.15); } }
+    @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
@@ -834,7 +1021,6 @@ function renderHTML(data, theme) {
   </style>
 </head>
 <body>
-  <!-- Header -->
   <div class="header">
     <div class="header-left">
       <div class="header-dot"></div>
@@ -881,157 +1067,99 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
-    <!-- Sprint Global Progress Bar -->
-    <div class="sprint-global-bar">
-      <span style="font-size:11px;font-weight:700;color:var(--text-dim);">Sprint</span>
-      <div class="sprint-bar-track">
-        <div class="sprint-bar-fill" style="width:${sprintProgress}%;"></div>
-      </div>
-      <div class="sprint-bar-label">${sprintProgress}%</div>
-      <div class="sprint-bar-detail">${data.completedTasks}/${data.totalTasks} tareas</div>
-    </div>
-
-    <!-- Agents + Progress Ring -->
+    <!-- Ejecución + Agents -->
     <div class="grid-2col">
+      <div class="panel">
+        <div class="panel-title">Ejecuci&oacute;n <span class="chip chip-green">${sprintProgress}% completado</span></div>
+        <div class="tasks-progress-bar">
+          <div class="tasks-progress-fill" style="width:${sprintProgress}%; background: var(--gradient-green);"></div>
+        </div>
+        ${ejecutionHtml}
+      </div>
       <div>
         <div style="font-size:12px;font-weight:700;color:var(--white);margin-bottom:10px;">Agentes</div>
         ${agentsHtml}
       </div>
-      <div>
-        <div style="font-size:12px;font-weight:700;color:var(--white);margin-bottom:10px;">Progreso del sprint</div>
-        <div class="progress-panel">
-          <div class="progress-ring" style="background: conic-gradient(var(--green) 0deg ${completedDeg}deg, var(--blue) ${completedDeg}deg ${completedDeg + inProgressDeg}deg, var(--surface3) ${completedDeg + inProgressDeg}deg 360deg);">
-            <div class="progress-ring-inner">
-              <div class="progress-pct">${sprintProgress}%</div>
-              <div class="progress-label">completado</div>
-            </div>
-          </div>
-          <div class="legend-item"><div class="legend-dot" style="background:var(--green);"></div> ${data.completedTasks} completadas</div>
-          <div class="legend-item"><div class="legend-dot" style="background:var(--blue);"></div> ${data.inProgressTasks} en progreso</div>
-          <div class="legend-item"><div class="legend-dot" style="background:var(--surface3);border:1px solid var(--border);"></div> ${data.pendingTasks} pendientes</div>
-        </div>
+    </div>
 
-        <!-- Velocity Sparkline -->
-        <div class="sparkline-panel" style="margin-top:12px;">
-          <div class="panel-title">Acciones / hora <span class="chip chip-blue">${data.velocity[0] || 0} ahora</span></div>
-          <svg class="sparkline-svg" viewBox="0 0 100 50" preserveAspectRatio="none">
-            <polyline points="${velPoints}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <polyline points="${velPoints}" fill="url(#velGrad)" stroke="none"/>
-            <defs><linearGradient id="velGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--blue)" stop-opacity="0.3"/><stop offset="100%" stop-color="var(--blue)" stop-opacity="0"/></linearGradient></defs>
-          </svg>
-          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:4px;">
-            <span>-5h</span><span>-4h</span><span>-3h</span><span>-2h</span><span>-1h</span><span>Ahora</span>
-          </div>
-        </div>
+    <!-- Flow Graph + Feed -->
+    <div class="grid-flow">
+      <div class="panel">
+        <div class="panel-title">Flujo de agentes <span class="chip chip-blue">${data.agentNodes.length} nodos</span></div>
+        ${flowGraphHtml}
+      </div>
+      <div class="feed-panel" id="activity-feed">
+        <div class="panel-title">Actividad en vivo <span class="chip ${data.blockingRelations.length > 0 ? 'chip-red' : 'chip-green'}">${data.blockingRelations.length > 0 ? data.blockingRelations.length + ' bloq.' : 'Sin bloqueos'}</span></div>
+        ${feedHtml}
       </div>
     </div>
 
-    <!-- Timeline with SVG progress bars (Fase 2) -->
-    <div class="timeline-panel" style="margin-bottom:16px;">
-      <div class="panel-title">Timeline de agentes <span class="chip chip-blue">${visibleSessions.length} activos</span></div>
-      ${timelineBarsHtml}
-      <div id="substeps-container">${substepsHtml}</div>
-    </div>
-
-    <!-- Activity Feed (Fase 1) -->
-    <div class="feed-panel" style="margin-bottom:16px;" id="activity-feed">
-      <div class="panel-title">Interacciones en vivo <span class="chip ${data.blockingRelations.length > 0 ? 'chip-red' : 'chip-green'}">${data.blockingRelations.length > 0 ? data.blockingRelations.length + ' bloqueado(s)' : 'Sin bloqueos'}</span></div>
-      ${blockingFeedHtml}
-      ${activityFeedHtml}
-      ${activityFeedHtml.length === 0 && blockingFeedHtml.length === 0 ? '<div class="empty-state">Sin actividad reciente</div>' : ''}
-      ${relationsHtml}
-    </div>
-
-    <!-- Tasks Panel -->
-    <div class="panel" style="margin-bottom:16px;">
-      <div class="panel-title">
-        Tareas del sprint
-        <span class="chip chip-green">${data.completedTasks}/${data.totalTasks} completadas</span>
-      </div>
-      <div class="tasks-progress-bar">
-        <div class="tasks-progress-fill" style="width:${sprintProgress}%; background: var(--gradient-green);"></div>
-      </div>
-      ${tasksHtml}
-    </div>
-
-    <!-- CI + Activity -->
+    <!-- Métricas Claude + Tasks -->
     <div class="grid-2equal">
       <div class="panel">
-        <div class="panel-title">CI / CD</div>
-        ${ciHtml}
+        <div class="panel-title">M&eacute;tricas Claude <span class="chip chip-purple">$${data.metrics.estimatedCostUsd.toFixed(2)}</span></div>
+        ${metricsHtml}
       </div>
       <div class="panel">
-        <div class="panel-title">Actividad reciente</div>
-        <div class="timeline">
-          ${timelineHtml}
+        <div class="panel-title">Tareas <span class="chip chip-green">${data.completedTasks}/${data.totalTasks}</span></div>
+        <div class="tasks-progress-bar">
+          <div class="tasks-progress-fill" style="width:${sprintProgress}%; background: var(--gradient-green);"></div>
         </div>
+        ${tasksHtml}
       </div>
     </div>
 
-    <!-- Burndown -->
+    <!-- CI -->
     <div class="panel" style="margin-bottom:16px;">
-      <div class="panel-title">Sprint Burndown <span class="chip chip-green">${data.completedTasks} de ${data.totalTasks}</span></div>
-      <div class="burndown-bar">
-        <div class="burndown-done" style="width:${data.totalTasks > 0 ? Math.round(data.completedTasks / data.totalTasks * 100) : 0}%;"></div>
-        <div class="burndown-progress" style="width:${data.totalTasks > 0 ? Math.round(data.inProgressTasks / data.totalTasks * 100) : 0}%;"></div>
-      </div>
-      <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:10px;color:var(--text-muted);">
-        <span>&#9632; Completadas: ${data.completedTasks}</span>
-        <span>&#9632; En progreso: ${data.inProgressTasks}</span>
-        <span>&#9632; Pendientes: ${data.pendingTasks}</span>
-      </div>
+      <div class="panel-title">CI / CD</div>
+      ${ciHtml}
     </div>
 
   </div>
 
   <script>
-    // Theme toggle
     function toggleTheme() {
-      const html = document.documentElement;
-      const current = html.getAttribute('data-theme');
+      var html = document.documentElement;
+      var current = html.getAttribute('data-theme');
       html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
       localStorage.setItem('theme', html.getAttribute('data-theme'));
     }
-    // Restore theme
-    const saved = localStorage.getItem('theme');
+    var saved = localStorage.getItem('theme');
     if (saved) document.documentElement.setAttribute('data-theme', saved);
 
-    // Expandable sub-steps on timeline click
-    document.querySelectorAll('.timeline-agent-row').forEach(function(row) {
-      row.addEventListener('click', function() {
-        var sid = this.getAttribute('data-session');
-        var detail = document.getElementById('substeps-' + sid);
-        if (detail) {
-          detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
-        }
-      });
-    });
-
-    // Auto-scroll activity feed to top (latest events)
+    // Auto-scroll feed
     var feed = document.getElementById('activity-feed');
     if (feed) { feed.scrollTop = 0; }
 
-    // SSE auto-refresh (deshabilitado con ?nosse=1 para screenshot)
-    if (location.search.includes('nosse=1')) { return; }
-    let lastUpdate = Date.now();
-    const evtSource = new EventSource('/events');
-    evtSource.onmessage = function(event) {
-      lastUpdate = Date.now();
-      // Full page refresh on data update (simple and reliable)
-      const data = JSON.parse(event.data);
-      if (data.reload) {
-        location.reload();
-      }
-    };
-    evtSource.onerror = function() {
-      document.getElementById('update-time').textContent = 'Desconectado...';
-    };
+    // Flow graph tooltips
+    document.querySelectorAll('.flow-node').forEach(function(node) {
+      node.addEventListener('mouseenter', function(e) {
+        var agent = this.getAttribute('data-agent');
+        this.style.transform = 'scale(1.1)';
+        this.style.transformOrigin = 'center';
+      });
+      node.addEventListener('mouseleave', function() {
+        this.style.transform = '';
+      });
+    });
 
-    // Update timer
-    setInterval(() => {
-      const secs = Math.floor((Date.now() - lastUpdate) / 1000);
-      document.getElementById('update-time').textContent = 'Actualizado hace ' + secs + 's';
-    }, 1000);
+    // SSE auto-refresh
+    if (!location.search.includes('nosse=1')) {
+      var lastUpdate = Date.now();
+      var evtSource = new EventSource('/events');
+      evtSource.onmessage = function(event) {
+        lastUpdate = Date.now();
+        var data = JSON.parse(event.data);
+        if (data.reload) location.reload();
+      };
+      evtSource.onerror = function() {
+        document.getElementById('update-time').textContent = 'Desconectado...';
+      };
+      setInterval(function() {
+        var secs = Math.floor((Date.now() - lastUpdate) / 1000);
+        document.getElementById('update-time').textContent = 'Actualizado hace ' + secs + 's';
+      }, 1000);
+    }
   </script>
 </body>
 </html>`;
@@ -1046,17 +1174,14 @@ function handleRequest(req, res) {
 
   lastActivityTs = Date.now();
 
-  // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   if (pathname === "/" || pathname === "/index.html") {
-    // Serve HTML dashboard
     const theme = url.searchParams.get("theme") || "dark";
     const data = collectData();
     const html = renderHTML(data, theme);
     const body = Buffer.from(html, "utf8");
 
-    // Gzip if accepted
     const acceptEncoding = req.headers["accept-encoding"] || "";
     if (acceptEncoding.includes("gzip")) {
       zlib.gzip(body, (err, compressed) => {
@@ -1073,23 +1198,16 @@ function handleRequest(req, res) {
       res.end(body);
     }
   } else if (pathname === "/events") {
-    // SSE stream
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       "Connection": "keep-alive",
     });
     res.write("data: {\"connected\":true}\n\n");
-
     const client = { res, alive: true };
     sseClients.add(client);
-
-    req.on("close", () => {
-      client.alive = false;
-      sseClients.delete(client);
-    });
+    req.on("close", () => { client.alive = false; sseClients.delete(client); });
   } else if (pathname === "/api/status") {
-    // JSON API for /monitor
     const data = collectData();
     const json = JSON.stringify({
       timestamp: data.timestamp,
@@ -1115,28 +1233,31 @@ function handleRequest(req, res) {
         duration: formatDuration(s.started_ts),
         tasks: (s.current_tasks || []).map(t => ({
           id: t.id, subject: t.subject, status: t.status, progress: t.progress || 0
-        }))
+        })),
+        agentTransitions: s.agent_transitions || [],
       })),
       activities: data.activities,
+      groupedActivities: data.groupedActivities,
       blockingRelations: data.blockingRelations,
       pendingQuestionsCount: data.pendingQuestions.length,
+      sprintPlan: data.sprintPlan,
+      metrics: data.metrics,
+      agentNodes: data.agentNodes,
+      agentTransitions: data.agentTransitions,
     });
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
     res.end(json);
   } else if (pathname === "/screenshot") {
-    // Puppeteer screenshot
     const width = parseInt(url.searchParams.get("w")) || 375;
     const height = parseInt(url.searchParams.get("h")) || 640;
     takeScreenshot(width, height).then(buf => {
       res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
       res.end(buf);
     }).catch(err => {
-      // Fallback: generate a simple text-based response
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end("Screenshot error: " + err.message + "\nInstall puppeteer: npm install puppeteer");
     });
   } else if (pathname === "/screenshots") {
-    // Dos screenshots partidos para enviar como álbum en Telegram
     const width = parseInt(url.searchParams.get("w")) || 600;
     const height = parseInt(url.searchParams.get("h")) || 800;
     takeScreenshot(width, height, { split: true }).then(parts => {
@@ -1162,7 +1283,6 @@ async function takeScreenshot(width, height, options) {
   const opts = options || {};
   let puppeteer;
   try { puppeteer = require("puppeteer"); } catch {
-    // Fallback: Puppeteer instalado en docs/qa/
     try { puppeteer = require(path.join(REPO_ROOT, "docs", "qa", "node_modules", "puppeteer")); }
     catch { throw new Error("puppeteer not installed — run: cd docs/qa && npm install"); }
   }
@@ -1177,13 +1297,10 @@ async function takeScreenshot(width, height, options) {
   const page = await puppeteerBrowser.newPage();
   try {
     await page.setViewport({ width, height });
-    // Usar domcontentloaded (no networkidle0) porque SSE mantiene conexión abierta permanente
     await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "domcontentloaded", timeout: 15000 });
-    // Esperar 1s para que CSS/JS inicialicen
     await new Promise(r => setTimeout(r, 1000));
 
     if (opts.split) {
-      // Modo split: devuelve array de 2 buffers [top, bottom]
       const fullHeight = await page.evaluate(() => document.body.scrollHeight);
       const splitPoint = Math.min(height, Math.ceil(fullHeight / 2));
       const topBuf = await page.screenshot({ type: "png", clip: { x: 0, y: 0, width, height: splitPoint } });
@@ -1191,8 +1308,7 @@ async function takeScreenshot(width, height, options) {
       return [topBuf, bottomBuf];
     }
 
-    const buf = await page.screenshot({ type: "png", fullPage: true });
-    return buf;
+    return await page.screenshot({ type: "png", fullPage: true });
   } finally {
     await page.close();
   }
@@ -1209,7 +1325,7 @@ function broadcastSSE() {
   }
 }
 
-// --- Auto-stop check ---
+// --- Auto-stop ---
 function checkAutoStop() {
   const data = collectData();
   if (data.activeSessions === 0 && data.idleSessions === 0) {
@@ -1222,7 +1338,7 @@ function checkAutoStop() {
   }
 }
 
-// --- PID file management ---
+// --- PID file ---
 function writePid() {
   const dir = path.dirname(PID_FILE);
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
@@ -1234,7 +1350,7 @@ function cleanup() {
   if (puppeteerBrowser) { try { puppeteerBrowser.close(); } catch {} }
 }
 
-// --- Telegram Heartbeat Reporter (integrado en el server) ---
+// --- Telegram Heartbeat ---
 const TG_CONFIG = (() => {
   try { return JSON.parse(fs.readFileSync(TG_CONFIG_FILE, "utf8")); }
   catch { return { bot_token: "", chat_id: "", task_report_interval_min: 10 }; }
@@ -1242,10 +1358,7 @@ const TG_CONFIG = (() => {
 const REPORT_INTERVAL_MIN = parseInt(TG_CONFIG.task_report_interval_min, 10) || 10;
 
 function sendTelegramText(text, silent) {
-  if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) {
-    console.log("[heartbeat] Sin config Telegram, ignorando");
-    return;
-  }
+  if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) return;
   const https = require("https");
   const params = JSON.stringify({
     chat_id: TG_CONFIG.chat_id, text, parse_mode: "HTML",
@@ -1369,7 +1482,6 @@ async function sendHeartbeat() {
     const caption = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n" +
       new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
 
-    // Intentar álbum de 2 fotos (top + bottom)
     try {
       const parts = await takeScreenshot(600, 800, { split: true });
       if (Array.isArray(parts) && parts[0].length > 1000 && parts[1].length > 1000) {
@@ -1381,7 +1493,6 @@ async function sendHeartbeat() {
       console.log("[heartbeat] Álbum no disponible: " + e.message + " — fallback a single");
     }
 
-    // Fallback: single screenshot
     try {
       const screenshot = await takeScreenshot(600, 800);
       if (screenshot && screenshot.length > 1000) {
@@ -1393,12 +1504,12 @@ async function sendHeartbeat() {
       console.log("[heartbeat] Screenshot no disponible: " + e.message + " — fallback a texto");
     }
 
-    // Fallback: texto resumido
     const text = caption + "\n\n" +
       "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
       "\u25cf Tareas: <b>" + data.completedTasks + "/" + data.totalTasks + "</b> completadas\n" +
       "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
       "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
+      "\u25cf Costo est: <b>$" + data.metrics.estimatedCostUsd.toFixed(2) + "</b> (" + data.metrics.weeklyUsagePct + "% semanal)\n" +
       (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "");
     sendTelegramText(text, true);
   } catch (e) {
@@ -1413,16 +1524,11 @@ server.listen(PORT, () => {
   console.log("[dashboard-server] Escuchando en http://localhost:" + PORT);
   writePid();
 
-  // SSE broadcast every 5s
   setInterval(broadcastSSE, SSE_INTERVAL_MS);
-
-  // Auto-stop check every 5 min
   setInterval(checkAutoStop, 5 * 60 * 1000);
 
-  // Telegram heartbeat every N min
   if (TG_CONFIG.bot_token && REPORT_INTERVAL_MIN > 0) {
     console.log("[dashboard-server] Heartbeat Telegram cada " + REPORT_INTERVAL_MIN + " min");
-    // Primer heartbeat inmediato (con delay de 5s para que collectData tenga datos)
     setTimeout(sendHeartbeat, 5000);
     setInterval(sendHeartbeat, REPORT_INTERVAL_MIN * 60 * 1000);
   } else {
@@ -1439,7 +1545,6 @@ server.on("error", (err) => {
   process.exit(1);
 });
 
-// Graceful shutdown
 process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 process.on("SIGINT", () => { cleanup(); process.exit(0); });
 process.on("exit", cleanup);
