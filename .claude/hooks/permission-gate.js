@@ -419,8 +419,8 @@ async function processInput() {
 
     // Fast-path: auto-allow si esta cubierto por reglas existentes
     if (isToolCoveredByRules(toolName, toolInput)) {
-        log("COVERED: " + toolName + " ya cubierto por settings rules — saliendo sin output");
-        exitSilent(); // Claude Code lo aprobara via su propia logica
+        log("COVERED: " + toolName + " ya cubierto por settings rules — aprobando activamente");
+        outputAllow("auto: cubierto por settings rules");
         return;
     }
 
