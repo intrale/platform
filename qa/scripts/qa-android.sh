@@ -335,7 +335,8 @@ for avd_name in "${AVD_NAMES[@]}"; do
     VIDEO_LOCAL="${RECORDINGS_DIR}/maestro-shard-${port}.mp4"
 
     if adb -s "$serial" shell "ls $VIDEO_DEVICE" &>/dev/null; then
-        adb -s "$serial" pull "$VIDEO_DEVICE" "$VIDEO_LOCAL" 2>/dev/null
+        # MSYS_NO_PATHCONV evita que MSYS2 convierta /sdcard/ a C:/Program Files/Git/sdcard/
+        MSYS_NO_PATHCONV=1 adb -s "$serial" pull "$VIDEO_DEVICE" "$VIDEO_LOCAL" 2>/dev/null
         adb -s "$serial" shell "rm $VIDEO_DEVICE" 2>/dev/null || true
         echo "  ✓ Video shard $port: $VIDEO_LOCAL"
     else
