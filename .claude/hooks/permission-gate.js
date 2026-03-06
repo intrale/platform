@@ -17,7 +17,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const { generatePattern, generateBashPattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered } = require("./permission-utils");
+const { generatePattern, generateBashPattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, splitCompoundCommand, classifySeverity, loadSeverityTimeouts, Severity } = require("./permission-utils");
 const { addPendingQuestion, resolveQuestion, getQuestionById, updateQuestionField } = require("./pending-questions");
 const { incrementApproval, isPatternPersisted } = require("./approval-history");
 const { readSessionContext } = require("./context-reader");
@@ -207,13 +207,12 @@ function isToolCoveredByRules(toolName, toolInput) {
     const pattern = generatePattern(toolName, toolInput);
     if (!pattern) return false;
 
-    // Para Bash con comandos compuestos (;, &&, |), verificar cada sub-comando
+    // Para Bash con comandos compuestos, usar splitCompoundCommand robusto
     if (toolName === "Bash" && toolInput.command) {
         const cmd = (toolInput.command || "").trim();
-        const separators = /;|&&/;
+        const subCmds = splitCompoundCommand(cmd);
 
-        if (separators.test(cmd)) {
-            const subCmds = cmd.split(separators).map(s => s.trim()).filter(Boolean);
+        if (subCmds.length > 1) {
             const settingsPaths = getSettingsPaths(REPO_ROOT);
             for (const sp of settingsPaths) {
                 try {
@@ -402,8 +401,12 @@ async function processInput() {
     const toolName = data.tool_name || data.toolName || "";
     const toolInput = data.tool_input || data.toolInput || {};
 
-    // Tools que nunca necesitan aprobacion remota (read-only, internas)
-    const SKIP_TOOLS = ["Read", "Glob", "Grep", "TodoRead", "TaskList", "TaskGet"];
+    // Tools que nunca necesitan aprobacion remota (read-only, internas, task management)
+    const SKIP_TOOLS = [
+        "Read", "Glob", "Grep", "TodoRead",
+        "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop",
+        "ToolSearch", "EnterWorktree", "EnterPlanMode", "ExitPlanMode"
+    ];
     if (SKIP_TOOLS.includes(toolName)) {
         exitSilent();
         return;
@@ -421,13 +424,39 @@ async function processInput() {
         return;
     }
 
+    // ─── Clasificación por severidad ─────────────────────────────────────────
+    const severity = classifySeverity(toolName, toolInput, REPO_ROOT);
+    log("SEVERITY: " + toolName + " → " + severity);
+
+    // AUTO_ALLOW: acción reversible en directorio seguro → aprobar sin Telegram
+    if (severity === Severity.AUTO_ALLOW) {
+        log("AUTO_ALLOW: " + toolName + " auto-aprobado (directorio seguro / tool interno)");
+        outputAllow("auto: " + toolName + " en directorio seguro");
+        return;
+    }
+
+    // Ajustar retry intervals según severidad
+    const severityTimeouts = loadSeverityTimeouts();
+    let effectiveRetryIntervals;
+    if (severity === Severity.LOW) {
+        // LOW: un solo intento con timeout reducido, sin retry
+        effectiveRetryIntervals = [severityTimeouts.low * 60 * 1000];
+    } else if (severity === Severity.HIGH) {
+        // HIGH: usar los retry intervals configurados (flujo completo)
+        effectiveRetryIntervals = RETRY_INTERVALS;
+    } else {
+        // MEDIUM: flujo estándar
+        effectiveRetryIntervals = RETRY_INTERVALS;
+    }
+
     // ─── Necesita permiso → Enviar a Telegram ────────────────────────────────
     const action = formatAction(toolName, toolInput);
     const sessionId = data.session_id || "";
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
-    const waitMin = Math.round(RETRY_INTERVALS[0] / 60000);
+    const waitMin = Math.round(effectiveRetryIntervals[0] / 60000);
 
-    let msgText = "\u{1F510} <b>" + escHtml(agent) + " \u2014 PERMISO REQUERIDO</b>\n";
+    const severityLabel = severity === Severity.HIGH ? "\u{1F6A8} HIGH" : severity === Severity.MEDIUM ? "\u26A0\uFE0F MEDIUM" : "\u{1F7E1} LOW";
+    let msgText = "\u{1F510} <b>" + escHtml(agent) + " \u2014 PERMISO REQUERIDO</b>  [" + severityLabel + "]\n";
     if (contextLine) msgText += contextLine + "\n";
     msgText += "\n" + action + "\n\n"
         + "\u23F3 Expira en " + waitMin + " min"
@@ -484,10 +513,10 @@ async function processInput() {
     process.on("exit", cleanupPidFile);
 
     // ─── Retry loop con urgencia escalada ────────────────────────────────────
-    const totalAttempts = RETRY_INTERVALS.length;
+    const totalAttempts = effectiveRetryIntervals.length;
 
     for (let attempt = 0; attempt < totalAttempts; attempt++) {
-        const waitMs = RETRY_INTERVALS[attempt];
+        const waitMs = effectiveRetryIntervals[attempt];
         const label = "intento " + (attempt + 1) + "/" + totalAttempts;
         log("Polling " + label + " para " + requestId
             + " (PID=" + process.pid + ", espera=" + Math.round(waitMs / 60000) + "min)");
@@ -541,7 +570,7 @@ async function processInput() {
         // ── Enviar reintento con urgencia escalada ──
         const nextAttempt = attempt + 1;
         const escalation = RETRY_ESCALATION[nextAttempt] || RETRY_ESCALATION[RETRY_ESCALATION.length - 1];
-        const nextWaitMin = Math.round(RETRY_INTERVALS[nextAttempt] / 60000);
+        const nextWaitMin = Math.round(effectiveRetryIntervals[nextAttempt] / 60000);
 
         log("Timeout " + label + " (" + elapsedTotal + "s). Enviando reintento " + (nextAttempt + 1) + "/" + totalAttempts);
 
