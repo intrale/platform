@@ -274,16 +274,30 @@ function collectData() {
     if (s.agent_name) agentNodes.add(s.agent_name);
   }
 
-  // Claude metrics
-  const tgConfig = readJson(TG_CONFIG_FILE) || {};
-  const metricsConfig = tgConfig.claude_metrics || { cost_per_action_usd: 0.003, weekly_budget_usd: 50 };
+  // Active time
   const totalActiveTime = sessions.reduce((sum, s) => {
     if (!s.started_ts || !s.last_activity_ts) return sum;
     return sum + (new Date(s.last_activity_ts).getTime() - new Date(s.started_ts).getTime());
   }, 0);
-  const estimatedCost = totalActions * metricsConfig.cost_per_action_usd;
-  const weeklyBudget = metricsConfig.weekly_budget_usd;
-  const weeklyUsagePct = weeklyBudget > 0 ? Math.min(100, Math.round((estimatedCost / weeklyBudget) * 100)) : 0;
+
+  // Skill/agent usage stats (from ALL session files, not just recent)
+  const skillUsage = {};
+  try {
+    const allFiles = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+    for (const f of allFiles) {
+      const s = readJson(path.join(SESSIONS_DIR, f));
+      if (!s || !s.skills_invoked) continue;
+      for (const sk of s.skills_invoked) {
+        const name = sk.replace(/^\//, "");
+        if (!skillUsage[name]) skillUsage[name] = { count: 0, lastUsed: null };
+        skillUsage[name].count++;
+        const ts = s.last_activity_ts || s.started_ts;
+        if (ts && (!skillUsage[name].lastUsed || ts > skillUsage[name].lastUsed)) {
+          skillUsage[name].lastUsed = ts;
+        }
+      }
+    }
+  } catch {}
 
   // Group activities for feed (collapse consecutive same-agent same-tool)
   const groupedActivities = groupActivities(activities.slice(-RECENT_ACTIVITY_COUNT * 2).reverse(), FEED_LIMIT);
@@ -315,13 +329,10 @@ function collectData() {
     adhocSessions,
     agentTransitions,
     agentNodes: Array.from(agentNodes),
+    skillUsage,
     metrics: {
       totalActions,
       totalActiveTimeMs: totalActiveTime,
-      estimatedCostUsd: estimatedCost,
-      weeklyBudgetUsd: weeklyBudget,
-      weeklyUsagePct,
-      costPerAction: metricsConfig.cost_per_action_usd,
     },
   };
 
@@ -374,6 +385,210 @@ function computeVelocity(activities) {
     }
   }
   return buckets;
+}
+
+// --- Mock Data for Testing ---
+function mockEjecucionData() {
+  const now = new Date().toISOString();
+  const ago = (mins) => new Date(Date.now() - mins * 60000).toISOString();
+
+  const mockSessions = [
+    // Sprint agent - active, progressing
+    { id: "mock-sprint-1", agent_name: "BackendDev", branch: "agent/1300-api-pedidos", pid: 1001,
+      _status: "active", started_ts: ago(45), last_activity_ts: ago(1), action_count: 87,
+      last_tool: "Edit", last_target: "backend/src/main/kotlin/Pedidos.kt",
+      current_tasks: [
+        { subject: "Crear endpoint POST /pedidos", status: "completed" },
+        { subject: "Validar request con Konform", status: "completed" },
+        { subject: "Integrar DynamoDB", status: "in_progress" },
+        { subject: "Tests unitarios", status: "pending" },
+      ],
+      skills_invoked: ["/backend-dev", "/tester", "/guru"],
+      agent_transitions: [{ from: "BackendDev", to: "Tester" }, { from: "BackendDev", to: "Guru" }, { from: "Tester", to: "BackendDev" }] },
+    // Sprint agent - idle, waiting
+    { id: "mock-sprint-2", agent_name: "AndroidDev", branch: "agent/1301-catalogo-ui", pid: 1002,
+      _status: "idle", started_ts: ago(30), last_activity_ts: ago(8), action_count: 42,
+      last_tool: "Bash", last_target: "gradlew :app:composeApp:installDebug",
+      current_tasks: [
+        { subject: "Pantalla CatalogoScreen", status: "completed" },
+        { subject: "ViewModel con paginacion", status: "in_progress" },
+        { subject: "Integracion Coil imagenes", status: "pending" },
+      ],
+      skills_invoked: ["/android-dev", "/builder", "/ux"],
+      agent_transitions: [{ from: "AndroidDev", to: "Builder" }, { from: "AndroidDev", to: "UX Specialist" }] },
+    // Sprint agent - done
+    { id: "mock-sprint-3", agent_name: "Doc", branch: "agent/1302-docs-api", pid: 1003,
+      _status: "done", started_ts: ago(60), last_activity_ts: ago(15), action_count: 23,
+      last_tool: "Write", last_target: "docs/api-reference.md", status: "done",
+      current_tasks: [
+        { subject: "Documentar endpoints auth", status: "completed" },
+        { subject: "Documentar endpoints pedidos", status: "completed" },
+      ],
+      skills_invoked: ["/doc", "/delivery"],
+      agent_transitions: [{ from: "Doc", to: "DeliveryManager" }] },
+    // Standalone issue - active
+    { id: "mock-standalone-1", agent_name: "QA", branch: "agent/1310-qa-login", pid: 2001,
+      _status: "active", started_ts: ago(20), last_activity_ts: ago(2), action_count: 35,
+      last_tool: "Bash", last_target: "maestro test qa/flows/login.yaml",
+      current_tasks: [
+        { subject: "Flow login happy path", status: "completed" },
+        { subject: "Flow login error cases", status: "in_progress" },
+        { subject: "Generar evidencia video", status: "pending" },
+      ],
+      skills_invoked: ["/qa", "/android-dev"],
+      agent_transitions: [{ from: "QA", to: "AndroidDev" }] },
+    // Standalone issue - blocked
+    { id: "mock-standalone-2", agent_name: "Planner", branch: "agent/1311-sprint-next", pid: 2002,
+      _status: "active", started_ts: ago(10), last_activity_ts: ago(3), action_count: 12,
+      last_tool: "Bash", last_target: "gh issue list --repo intrale/platform",
+      current_tasks: [
+        { subject: "Recolectar issues abiertos", status: "completed" },
+        { subject: "Scoring y priorizacion", status: "in_progress" },
+      ],
+      skills_invoked: ["/planner", "/scrum", "/historia"],
+      agent_transitions: [{ from: "Planner", to: "Scrum Master" }, { from: "Planner", to: "Doc" }] },
+    // Ad-hoc session - active
+    { id: "mock-adhoc-1", agent_name: "Claude", branch: "main", pid: 3001,
+      _status: "active", started_ts: ago(5), last_activity_ts: ago(0), action_count: 8,
+      last_tool: "Read", last_target: "CLAUDE.md",
+      current_tasks: [], skills_invoked: [], agent_transitions: [] },
+    // Ad-hoc session - idle
+    { id: "mock-adhoc-2", agent_name: "Claude", branch: "main", pid: 3002,
+      _status: "idle", started_ts: ago(25), last_activity_ts: ago(12), action_count: 15,
+      last_tool: "Grep", last_target: "TODO",
+      current_tasks: [], skills_invoked: [], agent_transitions: [] },
+  ];
+
+  const mockSprintPlan = {
+    fecha: new Date().toISOString().split("T")[0],
+    fechaInicio: new Date().toISOString().split("T")[0],
+    fechaFin: new Date(Date.now() + 5 * 86400000).toISOString().split("T")[0],
+    tema: "Sprint demo — todos los estados de ejecucion",
+    agentes: [
+      { numero: 1, issue: 1300, slug: "api-pedidos", titulo: "API REST de pedidos", stream: "A", size: "M" },
+      { numero: 2, issue: 1301, slug: "catalogo-ui", titulo: "Pantalla catalogo con paginacion", stream: "B", size: "M" },
+      { numero: 3, issue: 1302, slug: "docs-api", titulo: "Documentar API reference", stream: "E", size: "S" },
+      { numero: 4, issue: 1303, slug: "refactor-di", titulo: "Refactor modulos Kodein", stream: "E", size: "L" },
+    ],
+  };
+
+  const mockBlockingRelations = [
+    {
+      blockedAgent: "Planner",
+      blockedSessionId: "mock-standalone-2",
+      reason: "Esperando permiso",
+      message: "Aprobar: gh issue create --title 'Nueva historia' --repo intrale/platform",
+      waitingSince: ago(3),
+      waitingMs: 3 * 60000,
+    },
+  ];
+
+  // Classify
+  const sprintIssues = mockSprintPlan.agentes.map(a => String(a.issue));
+  const sprintSessions = [], standaloneSessions = [], adhocSessions = [];
+  for (const s of mockSessions) {
+    const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+    const issueNum = issueMatch ? issueMatch[1] : null;
+    if (issueNum && sprintIssues.includes(issueNum)) sprintSessions.push(s);
+    else if (issueNum) standaloneSessions.push(s);
+    else adhocSessions.push(s);
+  }
+
+  const allTasks = [];
+  for (const s of mockSessions) {
+    if (Array.isArray(s.current_tasks)) {
+      for (const t of s.current_tasks) allTasks.push({ ...t, _session: s.id, _agent: s.agent_name });
+    }
+  }
+
+  return {
+    timestamp: now,
+    sessions: mockSessions,
+    activeSessions: mockSessions.filter(s => s._status === "active").length,
+    idleSessions: mockSessions.filter(s => s._status === "idle").length,
+    totalTasks: allTasks.length,
+    completedTasks: allTasks.filter(t => t.status === "completed").length,
+    inProgressTasks: allTasks.filter(t => t.status === "in_progress").length,
+    pendingTasks: allTasks.filter(t => t.status === "pending").length,
+    totalActions: mockSessions.reduce((sum, s) => sum + (s.action_count || 0), 0),
+    ciStatus: "ok",
+    ciRuns: [{ status: "completed", conclusion: "success", headBranch: "main", displayTitle: "Build & Test", createdAt: ago(30) }],
+    alerts: [
+      { type: "info", message: "AndroidDev idle hace 8 min" },
+    ],
+    activities: [],
+    groupedActivities: [
+      { agent: "BackendDev", tool: "Edit", targets: ["Pedidos.kt", "PedidosRoute.kt", "PedidosService.kt"], count: 5, ts: ago(1), session: "mock-sprint-1" },
+      { agent: "QA", tool: "Bash", targets: ["maestro test login.yaml"], count: 2, ts: ago(2), session: "mock-standalone-1" },
+      { agent: "Planner", tool: "Bash", targets: ["gh issue list"], count: 1, ts: ago(3), session: "mock-standalone-2" },
+      { agent: "AndroidDev", tool: "Read", targets: ["CatalogoScreen.kt", "CatalogoViewModel.kt"], count: 3, ts: ago(5), session: "mock-sprint-2" },
+      { agent: "Doc", tool: "Write", targets: ["docs/api-reference.md"], count: 2, ts: ago(15), session: "mock-sprint-3" },
+    ],
+    velocity: [12, 18, 25, 30, 22, 15],
+    branch: "main",
+    lastCommits: [
+      { hash: "abc1234", message: "feat: API pedidos endpoint", age: "1 hour ago", author: "Claude" },
+      { hash: "def5678", message: "fix: catalogo scroll", age: "2 hours ago", author: "Claude" },
+    ],
+    allTasks,
+    pendingQuestions: [
+      { type: "permission", status: "pending", approver_pid: 2002, message: "Aprobar: gh issue create", timestamp: ago(3) },
+    ],
+    blockingRelations: mockBlockingRelations,
+    sprintPlan: mockSprintPlan,
+    sprintSessions,
+    standaloneSessions,
+    adhocSessions,
+    agentTransitions: [
+      // BackendDev invocó Tester para correr tests
+      { from: "BackendDev", to: "Tester", _session: "mock-sprint-1" },
+      // BackendDev invocó Guru para investigar DynamoDB
+      { from: "BackendDev", to: "Guru", _session: "mock-sprint-1" },
+      // AndroidDev invocó Builder para compilar
+      { from: "AndroidDev", to: "Builder", _session: "mock-sprint-2" },
+      // AndroidDev invocó UX Specialist para revisar layout
+      { from: "AndroidDev", to: "UX Specialist", _session: "mock-sprint-2" },
+      // Doc invocó DeliveryManager para commit+PR
+      { from: "Doc", to: "DeliveryManager", _session: "mock-sprint-3" },
+      // QA invocó AndroidDev para diagnosticar un flow roto
+      { from: "QA", to: "AndroidDev", _session: "mock-standalone-1" },
+      // Planner invocó Scrum Master para auditar el board
+      { from: "Planner", to: "Scrum Master", _session: "mock-standalone-2" },
+      // Planner invocó Doc para crear historia
+      { from: "Planner", to: "Doc", _session: "mock-standalone-2" },
+      // Claude (ad-hoc) invocó Guru
+      { from: "Claude", to: "Guru", _session: "mock-adhoc-1" },
+      // Claude invocó Ops para health check
+      { from: "Claude", to: "Ops", _session: "mock-adhoc-1" },
+      // Ciclo: Tester encontró fallo, volvió a BackendDev
+      { from: "Tester", to: "BackendDev", _session: "mock-sprint-1" },
+    ],
+    agentNodes: ["BackendDev", "AndroidDev", "Doc", "QA", "Planner", "Claude",
+                 "Tester", "Guru", "Builder", "UX Specialist", "DeliveryManager",
+                 "Scrum Master", "Ops"],
+    skillUsage: {
+      delivery:     { count: 18, lastUsed: ago(15) },
+      "backend-dev":{ count: 12, lastUsed: ago(1) },
+      "android-dev":{ count: 10, lastUsed: ago(8) },
+      guru:         { count: 9,  lastUsed: ago(2) },
+      tester:       { count: 8,  lastUsed: ago(5) },
+      branch:       { count: 7,  lastUsed: ago(20) },
+      builder:      { count: 6,  lastUsed: ago(10) },
+      doc:          { count: 5,  lastUsed: ago(60) },
+      planner:      { count: 4,  lastUsed: ago(30) },
+      qa:           { count: 3,  lastUsed: ago(45) },
+      review:       { count: 3,  lastUsed: ago(120) },
+      scrum:        { count: 2,  lastUsed: ago(90) },
+      historia:     { count: 2,  lastUsed: ago(40) },
+      monitor:      { count: 1,  lastUsed: ago(60) },
+      ops:          { count: 1,  lastUsed: ago(180) },
+      ux:           { count: 1,  lastUsed: ago(200) },
+    },
+    metrics: {
+      totalActions: 222,
+      totalActiveTimeMs: 45 * 60000,
+    },
+  };
 }
 
 // --- HTML Template ---
@@ -469,11 +684,31 @@ function renderHTML(data, theme) {
       const agStatus = matchSession ? matchSession._status : "pending";
       const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : "&#9675;";
       const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
-      ejecutionHtml += `<div class="exec-row">
-        <span class="exec-issue">#${escHtml(String(ag.issue))}</span>
-        <span class="exec-slug">${escHtml(ag.slug || "")}</span>
-        <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
-        <span class="exec-status" style="color:${statusColor}">${statusIcon}</span>
+      const isBlocked = matchSession && blockedPids.has(matchSession.id);
+      const tasks = matchSession ? (matchSession.current_tasks || []) : [];
+      const tasksDone = tasks.filter(t => t.status === "completed").length;
+      const tasksInProgress = tasks.filter(t => t.status === "in_progress").length;
+      const tasksPct = tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0;
+      const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || "&#9675;";
+      const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+      const statusText = isBlocked ? "&#128721; Bloqueado"
+        : agStatus === "pending" ? "Pendiente"
+        : `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`;
+      const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+      const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+
+      ejecutionHtml += `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
+        <div style="display:flex;align-items:center;gap:8px;width:100%;">
+          <span class="exec-issue" style="min-width:52px;">#${escHtml(String(ag.issue))}</span>
+          <span class="exec-slug" style="flex:1;">${escHtml(ag.slug || "")}</span>
+          <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
+          <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;width:100%;">
+          <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${barColor};"></div></div>
+          <span style="font-size:11px;color:${statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);">${statusText}${actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}</div>
       </div>`;
     }
     ejecutionHtml += `</div></div>`;
@@ -724,47 +959,54 @@ function renderHTML(data, theme) {
     feedHtml = '<div class="empty-state">Sin actividad reciente</div>';
   }
 
-  // --- METRICS PANEL ---
-  const activeTimeFormatted = formatDuration(new Date(Date.now() - data.metrics.totalActiveTimeMs).toISOString());
+  // --- AGENT USAGE PANEL ---
+  const skillEntries = Object.entries(data.skillUsage || {})
+    .map(([name, info]) => ({ name, count: info.count || 0, lastUsed: info.lastUsed }))
+    .sort((a, b) => b.count - a.count);
+  const maxSkillCount = skillEntries.length > 0 ? skillEntries[0].count : 1;
+  const totalSkillInvocations = skillEntries.reduce((s, e) => s + e.count, 0);
+  const uniqueAgentsUsed = skillEntries.length;
+
+  // Color palette for agent bars
+  const agentColors = ["var(--blue)", "var(--green)", "var(--orange)", "var(--purple)", "var(--red)", "var(--yellow)"];
+
+  let agentBarsHtml = "";
+  for (let i = 0; i < skillEntries.length; i++) {
+    const e = skillEntries[i];
+    const pct = Math.round((e.count / maxSkillCount) * 100);
+    const color = agentColors[i % agentColors.length];
+    const lastUsedText = e.lastUsed ? formatAge(e.lastUsed) : "—";
+    agentBarsHtml += `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+        <span style="font-size:11px;min-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">/${escHtml(e.name)}</span>
+        <div style="flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:${color};border-radius:4px;transition:width 0.3s;"></div>
+        </div>
+        <span style="font-size:11px;font-weight:600;min-width:24px;text-align:right;">${e.count}</span>
+        <span style="font-size:9px;color:var(--text-muted);min-width:40px;text-align:right;">${lastUsedText}</span>
+      </div>`;
+  }
+  if (!agentBarsHtml) {
+    agentBarsHtml = '<div class="empty-state">Sin datos de uso</div>';
+  }
+
   const metricsHtml = `
     <div class="metrics-grid">
       <div class="metric-item">
-        <div class="metric-value" style="color:var(--orange)">${data.metrics.totalActions}</div>
-        <div class="metric-label">Acciones</div>
+        <div class="metric-value" style="color:var(--blue)">${uniqueAgentsUsed}</div>
+        <div class="metric-label">Agentes</div>
       </div>
       <div class="metric-item">
-        <div class="metric-value" style="color:var(--blue)">${activeTimeFormatted}</div>
-        <div class="metric-label">Tiempo activo</div>
+        <div class="metric-value" style="color:var(--orange)">${totalSkillInvocations}</div>
+        <div class="metric-label">Invocaciones</div>
       </div>
       <div class="metric-item">
-        <div class="metric-value" style="color:var(--green)">$${data.metrics.estimatedCostUsd.toFixed(2)}</div>
-        <div class="metric-label">Costo est.</div>
+        <div class="metric-value" style="color:var(--green)">${data.activeSessions}</div>
+        <div class="metric-label">Sesiones</div>
       </div>
-      <div class="metric-item">
-        <div class="metric-value" style="color:var(--purple)">${data.velocity[0] || 0}/h</div>
-        <div class="metric-label">Velocidad</div>
-      </div>
-    </div>
-    <div class="metric-weekly">
-      <div class="metric-weekly-header">
-        <span>Presupuesto semanal</span>
-        <span>$${data.metrics.estimatedCostUsd.toFixed(2)} / $${data.metrics.weeklyBudgetUsd.toFixed(2)}</span>
-      </div>
-      <div class="metric-gauge">
-        <div class="metric-gauge-fill" style="width:${data.metrics.weeklyUsagePct}%;background:${data.metrics.weeklyUsagePct > 80 ? 'var(--red)' : data.metrics.weeklyUsagePct > 50 ? 'var(--yellow)' : 'var(--green)'};"></div>
-      </div>
-      <div style="text-align:right;font-size:10px;color:var(--text-muted);margin-top:2px;">${data.metrics.weeklyUsagePct}% utilizado</div>
     </div>
     <div style="margin-top:12px;">
-      <div class="panel-title" style="margin-bottom:6px;">Acciones / hora</div>
-      <svg class="sparkline-svg" viewBox="0 0 100 50" preserveAspectRatio="none">
-        <polyline points="${velPoints}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <polyline points="${velPoints}" fill="url(#velGrad)" stroke="none"/>
-        <defs><linearGradient id="velGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--blue)" stop-opacity="0.3"/><stop offset="100%" stop-color="var(--blue)" stop-opacity="0"/></linearGradient></defs>
-      </svg>
-      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:4px;">
-        <span>-5h</span><span>-4h</span><span>-3h</span><span>-2h</span><span>-1h</span><span>Ahora</span>
-      </div>
+      ${agentBarsHtml}
     </div>`;
 
   // --- TASKS ---
@@ -1097,7 +1339,7 @@ function renderHTML(data, theme) {
     <!-- Métricas Claude + Tasks -->
     <div class="grid-2equal">
       <div class="panel">
-        <div class="panel-title">M&eacute;tricas Claude <span class="chip chip-purple">$${data.metrics.estimatedCostUsd.toFixed(2)}</span></div>
+        <div class="panel-title">Uso de agentes <span class="chip chip-purple">${totalSkillInvocations} inv.</span></div>
         ${metricsHtml}
       </div>
       <div class="panel">
@@ -1178,8 +1420,17 @@ function handleRequest(req, res) {
 
   if (pathname === "/" || pathname === "/index.html") {
     const theme = url.searchParams.get("theme") || "dark";
-    const data = collectData();
-    const html = renderHTML(data, theme);
+    const mockMode = url.searchParams.get("mock");
+    const data = mockMode === "ejecucion" ? mockEjecucionData() : collectData();
+    let html;
+    try {
+      html = renderHTML(data, theme);
+    } catch (renderErr) {
+      console.log("[dashboard-server] renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
+      return;
+    }
     const body = Buffer.from(html, "utf8");
 
     const acceptEncoding = req.headers["accept-encoding"] || "";
