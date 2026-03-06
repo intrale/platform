@@ -24,6 +24,7 @@ const PID_FILE = path.join(CLAUDE_DIR, "tmp", "dashboard-server.pid");
 const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
 const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+const AGENT_METRICS_FILE = path.join(CLAUDE_DIR, "hooks", "agent-metrics.json");
 
 // Logging a archivo (detached processes no tienen stdio)
 const _origLog = console.log;
@@ -161,6 +162,10 @@ function collectData() {
   // Sprint plan
   let sprintPlan = null;
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+
+  // Agent metrics history (#1226)
+  let agentMetrics = null;
+  try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
 
   // Pending questions
   let pendingQuestions = [];
@@ -330,6 +335,7 @@ function collectData() {
     agentTransitions,
     agentNodes: Array.from(agentNodes),
     skillUsage,
+    agentMetrics,
     metrics: {
       totalActions,
       totalActiveTimeMs: totalActiveTime,
@@ -1051,6 +1057,77 @@ function renderHTML(data, theme) {
     ciHtml = '<div class="empty-state">Sin datos CI</div>';
   }
 
+  // --- AGENT METRICS TABLE (#1226) ---
+  let agentMetricsHtml = "";
+  const metricsEntries = [];
+  const activeSessionIds = new Set(data.sessions.map(s => s.id));
+  for (const s of data.sessions) {
+    if (s.type === "sub") continue;
+    const st = getSessionStatus(s);
+    if (st === "stale") continue;
+    const startMs = new Date(s.started_ts).getTime();
+    const durMin = Math.round((Date.now() - startMs) / 60000);
+    const tc = s.tool_counts || {};
+    const totalCalls = Object.values(tc).reduce((a, b) => a + b, 0);
+    metricsEntries.push({
+      agent: s.agent_name || "Claude",
+      session: s.id,
+      calls: totalCalls || s.action_count || 0,
+      files: Array.isArray(s.modified_files) ? s.modified_files.length : 0,
+      tasksCreated: s.tasks_created || 0,
+      tasksCompleted: s.tasks_completed || 0,
+      durMin,
+      active: true,
+    });
+  }
+  if (data.agentMetrics && Array.isArray(data.agentMetrics.sessions)) {
+    for (const ms of data.agentMetrics.sessions.slice(-10).reverse()) {
+      if (activeSessionIds.has(ms.id)) continue;
+      metricsEntries.push({
+        agent: ms.agent_name || "Claude",
+        session: ms.id,
+        calls: ms.total_tool_calls || 0,
+        files: ms.modified_files_count || 0,
+        tasksCreated: ms.tasks_created || 0,
+        tasksCompleted: ms.tasks_completed || 0,
+        durMin: ms.duration_min || 0,
+        active: false,
+      });
+    }
+  }
+  const metricsToShow = metricsEntries.slice(0, 8);
+  if (metricsToShow.length > 0) {
+    agentMetricsHtml = '<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+    agentMetricsHtml += '<tr style="color:var(--text-muted);border-bottom:1px solid var(--border);">'
+      + '<th style="text-align:left;padding:4px;">Agente</th>'
+      + '<th style="text-align:left;padding:4px;">Sesi&oacute;n</th>'
+      + '<th style="text-align:right;padding:4px;">Calls</th>'
+      + '<th style="text-align:right;padding:4px;">Arch.</th>'
+      + '<th style="text-align:right;padding:4px;">Tareas</th>'
+      + '<th style="text-align:right;padding:4px;">Dur.</th></tr>';
+    for (const m of metricsToShow) {
+      const indicator = m.active ? '<span style="color:var(--green);">&#9679;</span> ' : '';
+      const tasksStr = m.tasksCompleted + "/" + m.tasksCreated;
+      const durStr = m.durMin < 60 ? m.durMin + "m" : Math.floor(m.durMin / 60) + "h " + (m.durMin % 60) + "m";
+      agentMetricsHtml += '<tr style="border-bottom:1px solid var(--border);">'
+        + '<td style="padding:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">' + indicator + escHtml(m.agent) + '</td>'
+        + '<td style="padding:4px;font-family:monospace;font-size:10px;">' + escHtml(m.session) + '</td>'
+        + '<td style="text-align:right;padding:4px;font-weight:600;">' + m.calls + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + m.files + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + tasksStr + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + durStr + '</td></tr>';
+    }
+    agentMetricsHtml += '</table>';
+    const totalHistoric = data.agentMetrics && Array.isArray(data.agentMetrics.sessions) ? data.agentMetrics.sessions.length : 0;
+    if (totalHistoric > 0) {
+      const lastTs = data.agentMetrics.updated_ts;
+      agentMetricsHtml += '<div style="font-size:10px;color:var(--text-muted);margin-top:6px;">'
+        + 'Hist&oacute;rico: ' + totalHistoric + ' sesiones &mdash; &uacute;ltima: ' + formatAge(lastTs) + '</div>';
+    }
+  } else {
+    agentMetricsHtml = '<div class="empty-state">Sin m&eacute;tricas de agentes</div>';
+  }
+
   // --- ALERTS ---
   let alertsHtml = "";
   for (const a of data.alerts) {
@@ -1351,6 +1428,12 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
+    <!-- Agent Metrics (#1226) -->
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="panel-title">M&eacute;tricas de agentes <span class="chip chip-purple">${metricsToShow.length} ses.</span></div>
+      ${agentMetricsHtml}
+    </div>
+
     <!-- CI -->
     <div class="panel" style="margin-bottom:16px;">
       <div class="panel-title">CI / CD</div>
@@ -1493,6 +1576,7 @@ function handleRequest(req, res) {
       pendingQuestionsCount: data.pendingQuestions.length,
       sprintPlan: data.sprintPlan,
       metrics: data.metrics,
+      agentMetrics: data.agentMetrics,
       agentNodes: data.agentNodes,
       agentTransitions: data.agentTransitions,
     });

@@ -263,6 +263,26 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
         session.last_tool = toolName;
         session.last_target = target.substring(0, 120);
 
+        // Métricas cuantitativas (#1226)
+        if (!session.tool_counts) session.tool_counts = {};
+        const tcKey = (toolName === "TaskCreate" || toolName === "TaskUpdate") ? "Task" : toolName;
+        session.tool_counts[tcKey] = (session.tool_counts[tcKey] || 0) + 1;
+
+        if ((toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit") && toolInput.file_path) {
+            if (!session.modified_files) session.modified_files = [];
+            const normalized = toolInput.file_path.replace(/\\/g, "/").toLowerCase();
+            if (!session.modified_files.includes(normalized)) {
+                session.modified_files.push(normalized);
+            }
+        }
+
+        if (toolName === "TaskCreate") {
+            session.tasks_created = (session.tasks_created || 0) + 1;
+        }
+        if (toolName === "TaskUpdate" && toolInput.status === "completed") {
+            session.tasks_completed = (session.tasks_completed || 0) + 1;
+        }
+
         // Detectar skill invocado y mapear a agente
         if (toolName === "Skill") {
             const skillName = "/" + (toolInput.skill || "");
