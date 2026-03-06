@@ -18,5 +18,9 @@
     "low": 2,
     "medium": 15,
     "high": 30
+  },
+  "claude_metrics": {
+    "cost_per_action_usd": 0.003,
+    "weekly_budget_usd": 50
   }
 }
