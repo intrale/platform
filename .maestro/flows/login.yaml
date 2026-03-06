@@ -2,23 +2,24 @@ appId: com.intrale.app.client
 ---
 # Flujo: Login con credenciales
 - launchApp
-- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 15000
 
-# Saltar onboarding (aparece en primer uso)
-- tapOn:
-    text: "Saltar"
-    optional: true
-
-- waitForAnimationToEnd
-
-# Navegar al login desde home
+# Navegar al login desde la pantalla de bienvenida
 - tapOn:
     text: "Ya tengo cuenta"
-    optional: true
 
-- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
 
-# Interactuar con campos de login
+# Tomar screenshot de la pantalla de login vacia
+- takeScreenshot: login-empty
+
+# Ingresar credenciales
 - tapOn:
     id: "field_Usuario"
 - inputText: "admin@intrale.com"
@@ -27,5 +28,14 @@ appId: com.intrale.app.client
     id: "field_Contraseña"
 - inputText: "Admin1234!"
 
+# Tomar screenshot con campos llenos
+- takeScreenshot: login-filled
+
+# Enviar formulario
 - tapOn:
     id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Tomar screenshot del resultado (home o error segun backend)
+- takeScreenshot: login-submitted
