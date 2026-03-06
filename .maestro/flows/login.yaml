@@ -2,12 +2,20 @@ appId: com.intrale.app.client
 ---
 # Flujo: Login con credenciales
 - launchApp
+
+# Saltar onboarding (4 paginas, aparece en primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 15000
+- tapOn:
+    text: "Saltar"
+
+# Esperar pantalla de bienvenida y navegar al login
 - extendedWaitUntil:
     visible:
       text: "Ya tengo cuenta"
-    timeout: 15000
-
-# Navegar al login desde la pantalla de bienvenida
+    timeout: 10000
 - tapOn:
     text: "Ya tengo cuenta"
 

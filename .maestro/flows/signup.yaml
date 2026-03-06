@@ -2,12 +2,20 @@ appId: com.intrale.app.client
 ---
 # Flujo: Signup basico
 - launchApp
+
+# Saltar onboarding (4 paginas, aparece en primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 15000
+- tapOn:
+    text: "Saltar"
+
+# Esperar pantalla de bienvenida y navegar a registro
 - extendedWaitUntil:
     visible:
       text: "Registrarme"
-    timeout: 15000
-
-# Navegar a registro desde la pantalla de bienvenida
+    timeout: 10000
 - tapOn:
     text: "Registrarme"
 
