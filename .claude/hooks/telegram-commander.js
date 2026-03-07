@@ -2406,8 +2406,8 @@ async function pollingLoop() {
                 const cbChatId = cq.message && cq.message.chat && cq.message.chat.id;
                 if (String(cbChatId) === String(CHAT_ID)) {
                     const cbData = cq.data;
-                    // Solo manejar callbacks de propuestas — los de permisos (allow:/always:/deny:)
-                    // los maneja permission-approver.js
+                    // Callbacks de propuestas (create_proposal:, discard_proposal:, etc.)
+                    // Los callbacks de permisos (allow:/always:/deny:) los maneja este mismo commander más abajo.
                     if (cbData.startsWith("create_proposal:") || cbData.startsWith("discard_proposal:") || cbData === "create_all_proposals") {
                         log("Callback de propuesta recibido: " + cbData);
                         try {
@@ -2538,7 +2538,13 @@ async function pollingLoop() {
                             }
                             log("Permiso procesado: action=" + permAction + " requestId=" + cbRequestId + " msgId=" + cbMsgId + " ts=" + new Date().toISOString());
                         } else {
-                            // Pregunta no encontrada
+                            // Pregunta no encontrada — loggear contenido del archivo para diagnóstico
+                            const fileSnapshot = (() => {
+                                try {
+                                    return JSON.stringify(loadQuestions()).substring(0, 500);
+                                } catch (e) { return "error: " + e.message; }
+                            })();
+                            log("Pregunta no encontrada: requestId=" + cbRequestId + " estado_q=" + (q ? q.status : "null") + " archivo=" + fileSnapshot);
                             try {
                                 await telegramPost("answerCallbackQuery", {
                                     callback_query_id: cq.id,
