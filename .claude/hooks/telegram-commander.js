@@ -2548,6 +2548,54 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
+                    // Callbacks de smart-suggestion: persistir patrón de permiso
+                    else if (cbData.startsWith("persist:") || cbData.startsWith("dismiss:")) {
+                        const action = cbData.startsWith("persist:") ? "persist" : "dismiss";
+                        const encodedPattern = cbData.substring(action.length + 1);
+                        log("Callback smart-suggestion: action=" + action + " pattern(b64)=" + encodedPattern);
+                        try {
+                            if (action === "persist") {
+                                const pattern = Buffer.from(encodedPattern, "base64url").toString("utf8");
+                                const settingsPaths = getSettingsPaths(resolveMainRepoRoot());
+                                persistPattern(pattern, settingsPaths, log);
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Guardado: " + pattern,
+                                    show_alert: false
+                                }, 5000);
+                                try {
+                                    await telegramPost("editMessageText", {
+                                        chat_id: CHAT_ID,
+                                        message_id: cq.message && cq.message.message_id,
+                                        text: "✅ <b>Regla guardada</b>\n<code>" + pattern.replace(/</g, "&lt;") + "</code>\n<i>Próximas ejecuciones se aprobarán automáticamente.</i>",
+                                        parse_mode: "HTML"
+                                    }, 5000);
+                                } catch (e) { /* ok */ }
+                            } else {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Descartado",
+                                    show_alert: false
+                                }, 5000);
+                                try {
+                                    await telegramPost("editMessageReplyMarkup", {
+                                        chat_id: CHAT_ID,
+                                        message_id: cq.message && cq.message.message_id,
+                                        reply_markup: { inline_keyboard: [] }
+                                    }, 5000);
+                                } catch (e) { /* ok */ }
+                            }
+                        } catch (e) {
+                            log("Error en smart-suggestion callback: " + e.message);
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Error: " + e.message.substring(0, 100),
+                                    show_alert: true
+                                }, 5000);
+                            } catch (e2) {}
+                        }
+                    }
                     // Callbacks de preguntas pendientes (pq_*)
                     else if (cbData.startsWith("pq_")) {
                         log("Callback de pregunta pendiente: " + cbData);

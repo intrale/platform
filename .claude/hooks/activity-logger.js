@@ -44,6 +44,17 @@ const AGENT_MAP = {
     "/qa": "QA",
 };
 
+// Mapeo de issue number a "Agente N" desde sprint-plan.json
+function getSprintAgentName(issueNum) {
+    try {
+        const planPath = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+        const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
+        if (!Array.isArray(plan.agentes)) return null;
+        const entry = plan.agentes.find(a => a.issue === issueNum);
+        return entry ? "Agente " + entry.numero : null;
+    } catch(e) { return null; }
+}
+
 // Leer solo los primeros 4KB de stdin
 const MAX_READ = 4096;
 let input = "";
@@ -306,10 +317,12 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
         if (!session.agent_name && session.action_count > 2 && session.branch) {
             const branchMatch = session.branch.match(/^agent\/(\d+)/);
             if (branchMatch) {
-                session.agent_name = "Ad-hoc (#" + branchMatch[1] + ")";
+                const issueNum = parseInt(branchMatch[1], 10);
+                const sprintName = getSprintAgentName(issueNum);
+                session.agent_name = sprintName || ("Agente (#" + issueNum + ")");
             } else if (session.branch !== "main" && session.branch !== "develop" && session.branch !== "unknown") {
                 const slug = session.branch.replace(/^[^/]+\//, "").substring(0, 20);
-                session.agent_name = "Ad-hoc (" + slug + ")";
+                session.agent_name = "Agente (" + slug + ")";
             }
         }
 

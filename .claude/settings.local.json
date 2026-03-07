@@ -109,7 +109,8 @@
       "Bash(id:*)",
       "Bash(type:*)",
       "Bash(QA_REPORT=\"qa/evidence/980/qa-report.json\":*)",
-      "Bash(\\:*)"
+      "Bash(\\:*)",
+      "Bash(start:*)"
     ],
     "deny": [
       "Bash(git push --force*)",
