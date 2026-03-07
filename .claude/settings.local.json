@@ -85,6 +85,7 @@
       "Bash(read line:*)",
       "Bash(mount:*)",
       "Bash(curl:*)",
+      "Bash(\\:*)",
       "Bash(env:*)",
       "Bash(java:*)",
       "Bash(pip3:*)",
@@ -106,7 +107,8 @@
       "Bash(WMIC:*)",
       "Bash(hostname:*)",
       "Bash(id:*)",
-      "Bash(type:*)"
+      "Bash(type:*)",
+      "Bash(start:*)"
     ],
     "deny": [
       "Bash(git push --force*)",
