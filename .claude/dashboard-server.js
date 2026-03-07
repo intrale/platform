@@ -181,10 +181,6 @@ function collectData() {
   let agentMetrics = null;
   try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
 
-  // Agent metrics history (#1226)
-  let agentMetrics = null;
-  try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
-
   // Pending questions
   let pendingQuestions = [];
   try {
@@ -204,7 +200,7 @@ function collectData() {
     if (q.approver_pid && pidToSession[q.approver_pid]) {
       const blockedSession = pidToSession[q.approver_pid];
       blockingRelations.push({
-        blockedAgent: blockedSession.agent_name || "Ad-hoc (" + blockedSession.id + ")",
+        blockedAgent: blockedSession.agent_name || "Agente (" + blockedSession.id + ")",
         blockedSessionId: blockedSession.id,
         reason: q.type === "permission" ? "Esperando permiso" : "Pregunta pendiente",
         message: (q.message || "").substring(0, 120),
@@ -221,7 +217,7 @@ function collectData() {
   for (const s of sessions) {
     if (Array.isArray(s.current_tasks)) {
       for (const t of s.current_tasks) {
-        allTasks.push({ ...t, _session: s.id, _agent: s.agent_name || "Ad-hoc" });
+        allTasks.push({ ...t, _session: s.id, _agent: s.agent_name || "Agente" });
       }
     }
   }
@@ -772,7 +768,7 @@ function renderHTML(data, theme) {
       ejecutionHtml += `<div class="exec-card">
         <div class="exec-card-avatar" style="background:${gradient};">${icon}</div>
         <div class="exec-card-info">
-          <div class="exec-card-name">${escHtml(s.agent_name || "Ad-hoc")} <span style="color:var(--text-muted);font-weight:400;">${escHtml(s.branch || "")}</span></div>
+          <div class="exec-card-name">${escHtml(s.agent_name || "Agente")} <span style="color:var(--text-muted);font-weight:400;">${escHtml(s.branch || "")}</span></div>
           <div class="exec-bar" style="margin-top:4px;"><div class="exec-bar-fill" style="width:${pct}%;background:${statusColor};"></div></div>
           <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${done}/${tasks.length} tareas · ${s.action_count || 0} acc · ${formatDuration(s.started_ts)}</div>
         </div>
@@ -814,7 +810,7 @@ function renderHTML(data, theme) {
     const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
     const statusColor = STATUS_COLORS[s._status] || "#555872";
     const statusLabel = STATUS_LABELS[s._status] || s._status;
-    const name = escHtml(s.agent_name || "Ad-hoc (" + s.id + ")");
+    const name = escHtml(s.agent_name || "Agente (" + s.id + ")");
     const branchDisplay = escHtml(s.branch || "unknown");
     const duration = formatDuration(s.started_ts);
     const idleInfo = s._status === "idle" ? " " + formatAge(s.last_activity_ts) : "";
@@ -961,7 +957,7 @@ function renderHTML(data, theme) {
     let agentIcon = "&#129302;";
     for (const s of data.sessions) {
       if (s.id === g.session) {
-        agentName = s.agent_name || "Ad-hoc (" + s.id + ")";
+        agentName = s.agent_name || "Agente (" + s.id + ")";
         agentIcon = AGENT_ICONS[s.agent_name] || "&#129302;";
         break;
       }
@@ -1593,7 +1589,7 @@ function handleRequest(req, res) {
       velocity: data.velocity,
       sessions: data.sessions.map(s => ({
         id: s.id,
-        agent: s.agent_name || "Ad-hoc",
+        agent: s.agent_name || "Agente",
         branch: s.branch,
         status: s._status,
         actions: s.action_count,

@@ -1,0 +1,59 @@
+{
+  "updated_ts": "2026-03-07T11:53:10Z",
+  "sessions": [
+    {
+      "id": "6a83bd73",
+      "agent_name": "Ad-hoc (#1226)",
+      "branch": "agent/1226-agent-metrics",
+      "started_ts": "2026-03-06T19:52:13Z",
+      "ended_ts": "2026-03-07T01:55:17Z",
+      "duration_min": 363,
+      "tool_counts": {
+        "Bash": 50,
+        "Write": 4,
+        "Edit": 2
+      },
+      "total_tool_calls": 56,
+      "modified_files_count": 5,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": []
+    },
+    {
+      "id": "e6a3c222",
+      "agent_name": "Ad-hoc (#1226)",
+      "branch": "agent/1226-agent-metrics",
+      "started_ts": "2026-03-07T01:57:23Z",
+      "ended_ts": "2026-03-07T03:09:34Z",
+      "duration_min": 72,
+      "tool_counts": {
+        "ToolSearch": 3,
+        "Bash": 18,
+        "Write": 1
+      },
+      "total_tool_calls": 22,
+      "modified_files_count": 1,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": []
+    },
+    {
+      "id": "16580361",
+      "agent_name": "Ad-hoc (#1226)",
+      "branch": "agent/1226-agent-metrics",
+      "started_ts": "2026-03-07T03:14:49Z",
+      "ended_ts": "2026-03-07T11:53:10Z",
+      "duration_min": 518,
+      "tool_counts": {
+        "ToolSearch": 4,
+        "Bash": 29,
+        "Edit": 5
+      },
+      "total_tool_calls": 38,
+      "modified_files_count": 3,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": []
+    }
+  ]
+}
