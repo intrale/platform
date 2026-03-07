@@ -267,11 +267,12 @@ function isProcessAlive(pid) {
 // ─── Check 1: telegram-commander vivo ──────────────────────────────────────
 
 function checkCommander() {
-    const result = { ok: true, detail: "" };
+    const result = { ok: true, detail: "", pendingPermissions: [] };
     try {
         if (!fs.existsSync(COMMANDER_LOCK)) {
             result.ok = false;
             result.detail = "No hay lockfile — commander no activo";
+            result.pendingPermissions = _getPendingPermissions();
             return result;
         }
         const data = JSON.parse(fs.readFileSync(COMMANDER_LOCK, "utf8"));
@@ -281,14 +282,32 @@ function checkCommander() {
             // Auto-fix: limpiar lockfile para que commander-launcher.js lo relance
             try { fs.unlinkSync(COMMANDER_LOCK); } catch (e) {}
             result.detail += " (lockfile limpiado, se relanzará automáticamente)";
+            result.pendingPermissions = _getPendingPermissions();
             return result;
         }
         result.detail = "PID " + data.pid + " activo";
     } catch (e) {
         result.ok = false;
         result.detail = "Error leyendo lockfile: " + e.message;
+        result.pendingPermissions = _getPendingPermissions();
     }
     return result;
+}
+
+/**
+ * Lee las preguntas de tipo "permission" con status "pending" de pending-questions.json.
+ * Retorna array vacío si no hay archivo o hay error.
+ */
+function _getPendingPermissions() {
+    try {
+        const pqFile = path.join(HOOKS_DIR, "pending-questions.json");
+        if (!fs.existsSync(pqFile)) return [];
+        const data = JSON.parse(fs.readFileSync(pqFile, "utf8"));
+        if (!data || !Array.isArray(data.questions)) return [];
+        return data.questions.filter(q => q.type === "permission" && q.status === "pending");
+    } catch (e) {
+        return [];
+    }
 }
 
 // ─── Check 2: permission-approver huérfanos ────────────────────────────────
@@ -819,6 +838,21 @@ async function main() {
     if (issues.length > 0 || issuesCreated.length > 0) {
         let msg = "🏥 <b>Health Check — Problemas detectados</b>\n\n";
         msg += issues.map(i => "• " + i).join("\n");
+
+        // Si el commander estaba caído y hay permisos pendientes, incluirlos en el mensaje
+        const pendingPerms = checks.commander && checks.commander.pendingPermissions;
+        if (!checks.commander.ok && pendingPerms && pendingPerms.length > 0) {
+            msg += "\n\n🔐 <b>Permisos bloqueados sin commander:</b>\n";
+            pendingPerms.forEach(q => {
+                const ageMin = Math.round((Date.now() - new Date(q.timestamp).getTime()) / 60000);
+                // Escapar HTML para evitar que Telegram rechace el mensaje (parse_mode HTML)
+                const rawMsg = (q.message || "Permiso solicitado").substring(0, 120);
+                const shortMsg = rawMsg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                msg += "• [" + ageMin + " min] " + shortMsg + "\n";
+            });
+            msg += "\n<i>El commander se relanzará automáticamente. Los permisos pendientes serán procesados al reconectarse.</i>";
+            log("Commander caído con " + pendingPerms.length + " permiso(s) pendiente(s)");
+        }
 
         if (issuesCreated.length > 0) {
             msg += "\n\n📋 <b>Issues creados en GitHub:</b>\n";
