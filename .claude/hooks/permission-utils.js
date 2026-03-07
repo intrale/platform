@@ -647,6 +647,13 @@ function classifySeverity(toolName, toolInput, repoRoot) {
     return Severity.MEDIUM;
 }
 
+/**
+ * Severidades que califican para auto-aprobación cuando el último reintento expira
+ * sin rechazo explícito del usuario. HIGH y CRITICAL siguen requiriendo respuesta.
+ * Centraliza la decisión para facilitar configuración futura.
+ */
+const AUTO_APPROVE_ON_TIMEOUT = [Severity.LOW, Severity.MEDIUM];
+
 module.exports = {
     resolveMainRepoRoot,
     getSettingsPaths,
@@ -664,5 +671,6 @@ module.exports = {
     loadAutoAllowTools,
     loadSeverityTimeouts,
     Severity,
-    DESTRUCTIVE_PATTERNS
+    DESTRUCTIVE_PATTERNS,
+    AUTO_APPROVE_ON_TIMEOUT
 };

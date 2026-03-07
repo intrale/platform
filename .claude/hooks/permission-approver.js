@@ -16,7 +16,7 @@ const https = require("https");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern, splitCompoundCommand, classifySeverity, Severity } = require("./permission-utils");
+const { generatePattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, extractFirstCommand, generateBashPattern, splitCompoundCommand, classifySeverity, Severity, AUTO_APPROVE_ON_TIMEOUT } = require("./permission-utils");
 
 const { addPendingQuestion, resolveQuestion, getQuestionById, updateQuestionField } = require("./pending-questions");
 const { readSessionContext } = require("./context-reader");
@@ -695,17 +695,40 @@ async function processInput() {
                     }, ANSWER_TIMEOUT);
                 } catch(e) { /* ok — puede fallar si ya fue editado */ }
             }
-            try {
-                await telegramPost("editMessageText", {
-                    chat_id: CHAT_ID,
-                    message_id: currentMsgId,
-                    text: msgText + "\n\n⏱ <i>Expirado (" + totalAttempts + " intentos, " + elapsedTotal + "s) — respondiendo en consola</i>"
-                        + "\n📝 Responder <b>siempre</b> para guardar el permiso",
-                    parse_mode: "HTML",
-                    reply_markup: { inline_keyboard: [] }
-                }, ANSWER_TIMEOUT);
-            } catch(e) { log("Error editando mensaje final: " + e.message); }
-            process.exit(0); // fallback al prompt local
+            if (AUTO_APPROVE_ON_TIMEOUT.includes(severity)) {
+                // Auto-aprobación por timeout completo sin rechazo explícito (Low/Medium)
+                log("AUTO_APPROVE_TIMEOUT: severity=" + severity + " tool=" + toolName + " attempts=" + totalAttempts);
+                try {
+                    await telegramPost("editMessageText", {
+                        chat_id: CHAT_ID,
+                        message_id: currentMsgId,
+                        text: msgText + "\n\n✅ <i>Auto-aprobado (reintentos agotados — sin rechazo)</i>",
+                        parse_mode: "HTML",
+                        reply_markup: { inline_keyboard: [] }
+                    }, ANSWER_TIMEOUT);
+                } catch(e) { log("Error editando mensaje de auto-aprobación: " + e.message); }
+                const response = {
+                    hookSpecificOutput: {
+                        hookEventName: "PermissionRequest",
+                        decision: { behavior: "allow" }
+                    }
+                };
+                process.stdout.write(JSON.stringify(response) + "\n", () => process.exit(0));
+                setTimeout(() => process.exit(0), 2000);
+            } else {
+                // HIGH/CRITICAL: fallback al prompt local (comportamiento original)
+                try {
+                    await telegramPost("editMessageText", {
+                        chat_id: CHAT_ID,
+                        message_id: currentMsgId,
+                        text: msgText + "\n\n⏱ <i>Expirado (" + totalAttempts + " intentos, " + elapsedTotal + "s) — respondiendo en consola</i>"
+                            + "\n📝 Responder <b>siempre</b> para guardar el permiso",
+                        parse_mode: "HTML",
+                        reply_markup: { inline_keyboard: [] }
+                    }, ANSWER_TIMEOUT);
+                } catch(e) { log("Error editando mensaje final: " + e.message); }
+                process.exit(0); // fallback al prompt local
+            }
             return;
         }
 
