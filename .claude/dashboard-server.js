@@ -99,6 +99,15 @@ function collectData() {
   const now = Date.now();
   if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS) return cachedData;
 
+  // Sprint plan (leído antes para decidir qué sesiones retener)
+  let sprintPlan = null;
+  try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+  const sprintIssueSet = new Set(
+    sprintPlan && Array.isArray(sprintPlan.agentes)
+      ? sprintPlan.agentes.map(a => String(a.issue))
+      : []
+  );
+
   // Sessions
   const sessions = [];
   try {
@@ -108,14 +117,21 @@ function collectData() {
         const s = readJson(path.join(SESSIONS_DIR, f));
         if (!s) continue;
         const status = getSessionStatus(s);
-        if (status === "stale") {
-          const elapsed = now - new Date(s.last_activity_ts).getTime();
-          if (elapsed > 60 * 60 * 1000) continue;
+        // Sesiones del sprint activo nunca se descartan por edad
+        const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+        const isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
+        if (!isSprintSession) {
+          if (status === "stale") {
+            const elapsed = now - new Date(s.last_activity_ts).getTime();
+            if (elapsed > 60 * 60 * 1000) continue;
+          }
+          if (status === "done") {
+            const elapsed = now - new Date(s.last_activity_ts).getTime();
+            if (elapsed > 30 * 60 * 1000) continue;
+          }
         }
-        if (status === "done") {
-          const elapsed = now - new Date(s.last_activity_ts).getTime();
-          if (elapsed > 30 * 60 * 1000) continue;
-        }
+        // Sesiones stale del sprint: mostrar como "done" solo si status explícito,
+        // si no, mantener como "stale" (visible pero sin marcar completado)
         sessions.push({ ...s, _status: status });
       }
     }
@@ -159,9 +175,7 @@ function collectData() {
     }
   } catch {}
 
-  // Sprint plan
-  let sprintPlan = null;
-  try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+  // Sprint plan (ya leído arriba)
 
   // Agent metrics history (#1226)
   let agentMetrics = null;
@@ -238,17 +252,16 @@ function collectData() {
     : "unknown";
 
   // Classify sessions into execution categories
-  const sprintIssues = sprintPlan && Array.isArray(sprintPlan.agentes)
-    ? sprintPlan.agentes.map(a => String(a.issue))
-    : [];
   const sprintSessions = [];
   const standaloneSessions = [];
   const adhocSessions = [];
   for (const s of sessions) {
-    if (s._status === "stale") continue;
     const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
     const issueNum = issueMatch ? issueMatch[1] : null;
-    if (issueNum && sprintIssues.includes(issueNum)) {
+    const isSprintSession = issueNum && sprintIssueSet.has(issueNum);
+    // Stale sessions se descartan excepto las del sprint
+    if (s._status === "stale" && !isSprintSession) continue;
+    if (isSprintSession) {
       sprintSessions.push(s);
     } else if (issueNum) {
       standaloneSessions.push(s);
@@ -671,9 +684,24 @@ function renderHTML(data, theme) {
   // Sprint sub-view
   if (data.sprintPlan && Array.isArray(data.sprintPlan.agentes) && data.sprintPlan.agentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
+    // Progreso del sprint: usar tareas si existen, si no, contar agentes done/total
+    const agentesTotal = data.sprintPlan.agentes.length;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
     const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
-    const sprintPct = sprintTasksTotal > 0 ? Math.round((sprintTasksDone / sprintTasksTotal) * 100) : 0;
+    let sprintPct;
+    if (sprintTasksTotal > 0) {
+      sprintPct = Math.round((sprintTasksDone / sprintTasksTotal) * 100);
+    } else {
+      // Sin tareas registradas: inferir progreso solo por sesiones explícitamente done
+      const agentesDone = data.sprintPlan.agentes.filter(ag => {
+        const match = data.sprintSessions.find(s => {
+          const m = (s.branch || "").match(/(\d+)/);
+          return m && m[1] === String(ag.issue);
+        });
+        return match && match._status === "done";
+      }).length;
+      sprintPct = agentesTotal > 0 ? Math.round((agentesDone / agentesTotal) * 100) : 0;
+    }
 
     ejecutionHtml += `<div class="exec-subview">
       <div class="exec-subview-header">
@@ -688,7 +716,7 @@ function renderHTML(data, theme) {
         return issueMatch && issueMatch[1] === String(ag.issue);
       });
       const agStatus = matchSession ? matchSession._status : "pending";
-      const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : "&#9675;";
+      const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
       const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
       const isBlocked = matchSession && blockedPids.has(matchSession.id);
       const tasks = matchSession ? (matchSession.current_tasks || []) : [];
@@ -696,11 +724,14 @@ function renderHTML(data, theme) {
       const tasksInProgress = tasks.filter(t => t.status === "in_progress").length;
       const tasksPct = tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0;
       const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || "&#9675;";
+      const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
       const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
       const statusText = isBlocked ? "&#128721; Bloqueado"
         : agStatus === "pending" ? "Pendiente"
-        : `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`;
-      const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+        : agStatus === "done" && tasks.length === 0 ? "Completado"
+        : agStatus === "stale" ? "Finalizado · " + actionCount + " acciones"
+        : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
+        : `${actionCount} acciones`;
       const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
 
       ejecutionHtml += `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
