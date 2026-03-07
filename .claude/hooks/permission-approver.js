@@ -635,6 +635,29 @@ async function processInput() {
 
             if (result.answered_via === "console") {
                 log("Respondido en consola — requestId=" + requestId + " latency=" + latencyMs + "ms (" + label + ")");
+                // Editar mensaje Telegram para reflejar el resultado y remover botones
+                if (currentMsgId) {
+                    const consoleAction = result.action_result;
+                    let consoleResultLine;
+                    if (consoleAction === "allow" || consoleAction === "always") {
+                        consoleResultLine = "\n\n✅ <i>Aprobado desde consola</i>";
+                    } else if (consoleAction === "deny") {
+                        consoleResultLine = "\n\n❌ <i>Rechazado desde consola</i>";
+                    } else {
+                        consoleResultLine = "\n\n⌨️ <i>Respondido desde consola</i>";
+                    }
+                    try {
+                        await telegramPost("editMessageText", {
+                            chat_id: CHAT_ID,
+                            message_id: currentMsgId,
+                            text: msgText + consoleResultLine,
+                            parse_mode: "HTML",
+                            reply_markup: { inline_keyboard: [] }
+                        }, ANSWER_TIMEOUT);
+                        // Marcar como sincronizado para que post-console-response.js no lo vuelva a editar
+                        updateQuestionField(requestId, { telegram_synced: true });
+                    } catch(e) { log("Error editando mensaje (console resolve): " + e.message); }
+                }
                 process.exit(0);
             }
 

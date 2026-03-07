@@ -2815,7 +2815,7 @@ function takePqSnapshot() {
         const data = JSON.parse(fs.readFileSync(PENDING_QUESTIONS_FILE, "utf8"));
         const snap = {};
         for (const q of (data.questions || [])) {
-            snap[q.id] = { status: q.status, answered_via: q.answered_via || null, msgId: q.telegram_message_id };
+            snap[q.id] = { status: q.status, answered_via: q.answered_via || null, msgId: q.telegram_message_id, telegram_synced: q.telegram_synced || false };
         }
         return snap;
     } catch (e) { return {}; }
@@ -2826,8 +2826,8 @@ async function onPendingQuestionsChange() {
     for (const id of Object.keys(newSnap)) {
         const cur = newSnap[id];
         const prev = _pqLastSnapshot[id];
-        // Detectar transición a answered_via:"console"
-        if (cur.answered_via === "console" && (!prev || prev.answered_via !== "console") && cur.msgId) {
+        // Detectar transición a answered_via:"console" (saltar si ya fue sincronizado por el approver)
+        if (cur.answered_via === "console" && (!prev || prev.answered_via !== "console") && cur.msgId && !cur.telegram_synced) {
             log("PQ Watch: pregunta " + id + " respondida en consola — editando mensaje " + cur.msgId);
             try {
                 await telegramPost("editMessageText", {
