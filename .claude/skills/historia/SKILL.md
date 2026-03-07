@@ -3,7 +3,7 @@ description: Historia — Generar nuevas historias de usuario como issues de Git
 user-invocable: true
 argument-hint: "<descripcion en lenguaje natural>"
 allowed-tools: Bash, Read, Grep, Glob
-model: claude-sonnet-4-6
+model: claude-haiku-4-5-20251001
 ---
 
 # /historia — Historia

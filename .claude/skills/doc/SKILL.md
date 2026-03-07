@@ -3,7 +3,7 @@ description: Doc — Gestión unificada de backlog — nueva historia, refinamie
 user-invocable: true
 argument-hint: "[nueva <desc> | refinar <N...> | triaje | estado]"
 allowed-tools: Bash, Read, Grep, Glob
-model: claude-sonnet-4-6
+model: claude-haiku-4-5-20251001
 ---
 
 # /doc — Doc

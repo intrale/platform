@@ -3,7 +3,7 @@ description: Priorizar — Triaje masivo de issues sin labels — categorizar, e
 user-invocable: true
 argument-hint: "[rango opcional, ej: 400-500]"
 allowed-tools: Bash, Read, Grep, Glob
-model: claude-sonnet-4-6
+model: claude-haiku-4-5-20251001
 ---
 
 # /priorizar — Priorizar

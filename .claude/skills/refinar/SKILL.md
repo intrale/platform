@@ -3,7 +3,7 @@ description: Refinar — Refinar issues existentes de GitHub con estructura esta
 user-invocable: true
 argument-hint: "<numero-de-issue> [mas numeros...]"
 allowed-tools: Bash, Read, Grep, Glob
-model: claude-sonnet-4-6
+model: claude-haiku-4-5-20251001
 ---
 
 # /refinar — Refinar
