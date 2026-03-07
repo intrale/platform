@@ -16,7 +16,22 @@ const { execSync } = require("child_process");
 const zlib = require("zlib");
 
 // --- Config ---
-const REPO_ROOT = path.resolve(__dirname, "..");
+// Resolver REPO_ROOT al repo principal (no al worktree) — igual que activity-logger.js
+function resolveMainRepoRoot() {
+  const candidate = path.resolve(__dirname, "..");
+  try {
+    const gitCommon = execSync("git rev-parse --git-common-dir", {
+      cwd: candidate, timeout: 3000, windowsHide: true,
+    }).toString().trim().replace(/\\/g, "/");
+    // Si retorna ".git" → estamos en el repo principal
+    if (gitCommon === ".git") return candidate;
+    // Si retorna ruta absoluta (ej: /c/Workspaces/Intrale/platform/.git/worktrees/...)
+    const gitIdx = gitCommon.indexOf("/.git");
+    if (gitIdx !== -1) return gitCommon.substring(0, gitIdx);
+    return path.resolve(gitCommon, "..");
+  } catch (e) { return candidate; }
+}
+const REPO_ROOT = resolveMainRepoRoot();
 const CLAUDE_DIR = path.join(REPO_ROOT, ".claude");
 const SESSIONS_DIR = path.join(CLAUDE_DIR, "sessions");
 const LOG_FILE = path.join(CLAUDE_DIR, "activity-log.jsonl");
@@ -109,6 +124,10 @@ function collectData() {
   );
 
   // Sessions
+  // Umbral zombie: sesiones con status "active" pero sin actividad por >30min se omiten
+  // (alineado con SKILL.md). Sesiones del sprint nunca se descartan por edad.
+  const ZOMBIE_THRESHOLD_MS = 30 * 60 * 1000;
+  const DONE_SHOW_MS = 15 * 60 * 1000;
   const sessions = [];
   try {
     if (fs.existsSync(SESSIONS_DIR)) {
@@ -116,22 +135,19 @@ function collectData() {
       for (const f of files) {
         const s = readJson(path.join(SESSIONS_DIR, f));
         if (!s) continue;
+        // Solo sesiones parent (ignorar sub-agentes)
+        if (s.type && s.type !== "parent") continue;
         const status = getSessionStatus(s);
-        // Sesiones del sprint activo nunca se descartan por edad
+        const elapsed = now - new Date(s.last_activity_ts).getTime();
         const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
         const isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
         if (!isSprintSession) {
-          if (status === "stale") {
-            const elapsed = now - new Date(s.last_activity_ts).getTime();
-            if (elapsed > 60 * 60 * 1000) continue;
-          }
-          if (status === "done") {
-            const elapsed = now - new Date(s.last_activity_ts).getTime();
-            if (elapsed > 30 * 60 * 1000) continue;
-          }
+          // Zombie: status active pero sin actividad >30min → omitir
+          if (s.status !== "done" && elapsed > ZOMBIE_THRESHOLD_MS) continue;
+          // Sesiones done: mostrar solo por 15min
+          if (s.status === "done" && elapsed > DONE_SHOW_MS) continue;
         }
-        // Sesiones stale del sprint: mostrar como "done" solo si status explícito,
-        // si no, mantener como "stale" (visible pero sin marcar completado)
+        // Sprint sessions: nunca se descartan por edad (agentes pueden compilar largos)
         sessions.push({ ...s, _status: status });
       }
     }
@@ -252,6 +268,8 @@ function collectData() {
     : "unknown";
 
   // Classify sessions into execution categories
+  // Todas las sesiones en `sessions` ya pasaron el filtro zombie (30min).
+  // No descartar stale aquí: ○ (stale 15-30min) debe ser visible en EJECUCIÓN.
   const sprintSessions = [];
   const standaloneSessions = [];
   const adhocSessions = [];
@@ -259,8 +277,6 @@ function collectData() {
     const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
     const issueNum = issueMatch ? issueMatch[1] : null;
     const isSprintSession = issueNum && sprintIssueSet.has(issueNum);
-    // Stale sessions se descartan excepto las del sprint
-    if (s._status === "stale" && !isSprintSession) continue;
     if (isSprintSession) {
       sprintSessions.push(s);
     } else if (issueNum) {
@@ -692,15 +708,22 @@ function renderHTML(data, theme) {
     if (sprintTasksTotal > 0) {
       sprintPct = Math.round((sprintTasksDone / sprintTasksTotal) * 100);
     } else {
-      // Sin tareas registradas: inferir progreso solo por sesiones explícitamente done
-      const agentesDone = data.sprintPlan.agentes.filter(ag => {
+      // Sin tareas registradas: heurística por action_count ponderado por size
+      const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+      let totalPctSum = 0;
+      for (const ag of data.sprintPlan.agentes) {
         const match = data.sprintSessions.find(s => {
           const m = (s.branch || "").match(/(\d+)/);
           return m && m[1] === String(ag.issue);
         });
-        return match && match._status === "done";
-      }).length;
-      sprintPct = agentesTotal > 0 ? Math.round((agentesDone / agentesTotal) * 100) : 0;
+        if (match && (match._status === "done" || match._status === "stale")) {
+          totalPctSum += 100;
+        } else if (match && match.action_count > 0) {
+          const expected = sizeExpected[ag.size] || 60;
+          totalPctSum += Math.min(90, Math.round((match.action_count / expected) * 100));
+        }
+      }
+      sprintPct = agentesTotal > 0 ? Math.round(totalPctSum / agentesTotal) : 0;
     }
 
     ejecutionHtml += `<div class="exec-subview">
@@ -722,16 +745,28 @@ function renderHTML(data, theme) {
       const tasks = matchSession ? (matchSession.current_tasks || []) : [];
       const tasksDone = tasks.filter(t => t.status === "completed").length;
       const tasksInProgress = tasks.filter(t => t.status === "in_progress").length;
-      const tasksPct = tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0;
       const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || "&#9675;";
       const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+      // Progreso: si hay tareas registradas, usar tareas; si no, heurística por action_count + size
+      let tasksPct;
+      if (tasks.length > 0) {
+        tasksPct = Math.round((tasksDone / tasks.length) * 100);
+      } else if (agStatus === "done" || agStatus === "stale") {
+        tasksPct = 100;
+      } else if (actionCount > 0) {
+        const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+        const expected = sizeExpected[ag.size] || 60;
+        tasksPct = Math.min(90, Math.round((actionCount / expected) * 100));
+      } else {
+        tasksPct = 0;
+      }
       const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
       const statusText = isBlocked ? "&#128721; Bloqueado"
         : agStatus === "pending" ? "Pendiente"
         : agStatus === "done" && tasks.length === 0 ? "Completado"
         : agStatus === "stale" ? "Finalizado · " + actionCount + " acciones"
         : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
-        : `${actionCount} acciones`;
+        : `${actionCount} acciones · ${tasksPct}%`;
       const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
 
       ejecutionHtml += `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
