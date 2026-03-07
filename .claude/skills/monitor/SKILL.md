@@ -55,7 +55,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │  #1  #821  notificaciones     S  ●                                 │
 │  #2  #845  refactor-login     M  ◐                                 │
 │ Historias en curso                                                 │
-│  📌 Ad-hoc (#1225) agent/1225-monitor… 80% 12 acc                 │
+│  📌 Agente 1 (#1225) agent/1225-monitor… 80% 12 acc               │
 │ Prompts ad-hoc                                                     │
 │  ⚡ a1b2c3d4  Edit: SKILL.md  5 acc · 3min                        │
 ├─ FLUJO ───────────────────────────────────────────────────────────┤
@@ -95,7 +95,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 **Reglas del panel SESIONES:**
 
 - Solo mostrar sesiones con `type: "parent"` (ignorar `type: "sub"`)
-- Columna "Agente": usar `agent_name` del JSON. Si es `null` y la branch tiene formato `agent/<N>-<slug>`, mostrar `Ad-hoc (#N)`. Si es `null` y branch es otra, mostrar `Claude 🤖`
+- Columna "Agente": usar `agent_name` del JSON. Si es `null` y la branch tiene formato `agent/<N>-<slug>`, consultar `scripts/sprint-plan.json` para mostrar `Agente N` (o `Agente (#N)` si no está en el plan). Si es `null` y branch es otra, mostrar `Claude`
 - Columna "Accs": valor de `action_count`
 - Columna "Dur.": duracion calculada desde `started_ts` hasta `last_activity_ts`
 - Columna "Ultima accion": `last_tool: last_target` truncado (ej: `Edit: LoginVM…`)

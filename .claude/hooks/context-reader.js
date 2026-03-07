@@ -33,8 +33,19 @@ function readSessionContext(sessionId, repoRoot) {
             // Branch del worktree donde corre el agente
             if (session.branch) result.branch = session.branch;
 
-            // Nombre del agente
-            if (session.agent_name) result.agentName = session.agent_name;
+            // Nombre del agente (directo o fallback desde sprint-plan)
+            if (session.agent_name) {
+                result.agentName = session.agent_name;
+            } else if (session.branch) {
+                const m = session.branch.match(/^agent\/(\d+)/);
+                if (m) {
+                    try {
+                        const plan = JSON.parse(fs.readFileSync(path.join(repoRoot, "scripts", "sprint-plan.json"), "utf8"));
+                        const entry = (plan.agentes || []).find(a => a.issue === parseInt(m[1], 10));
+                        if (entry) result.agentName = "Agente " + entry.numero;
+                    } catch(e2) { /* sin sprint plan */ }
+                }
+            }
 
             // Skills invocados
             if (Array.isArray(session.skills_invoked)) result.skillsInvoked = session.skills_invoked;
