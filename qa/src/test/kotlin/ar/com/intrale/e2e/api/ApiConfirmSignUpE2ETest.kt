@@ -33,8 +33,8 @@ class ApiConfirmSignUpE2ETest : QATestBase() {
 
     @Test
     @Order(2)
-    @DisplayName("POST /intrale/confirmSignUp con código inválido responde error")
-    fun `confirmSignUp con codigo invalido responde error`() {
+    @DisplayName("POST /intrale/confirmSignUp con usuario ya confirmado responde 200 (idempotente)")
+    fun `confirmSignUp con usuario ya confirmado responde 200`() {
         val response = apiContext.post(
             "/intrale/confirmSignUp",
             RequestOptions.create()
@@ -46,10 +46,10 @@ class ApiConfirmSignUpE2ETest : QATestBase() {
         )
 
         val body = response.text()
-        logger.info("ConfirmSignUp código inválido: status=${response.status()}, body=$body")
+        logger.info("ConfirmSignUp usuario ya confirmado: status=${response.status()}, body=$body")
         assertTrue(
-            response.status() in 400..599,
-            "ConfirmSignUp con código inválido debe responder error (4xx/5xx). Actual: ${response.status()}"
+            response.status() == 200,
+            "ConfirmSignUp con usuario ya confirmado debe responder 200. Actual: ${response.status()}"
         )
     }
 
