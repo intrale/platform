@@ -73,6 +73,66 @@ process.stdin.on("end", () => { if (!done) { done = true; processInput(); } });
 process.stdin.on("error", () => { if (!done) { done = true; processInput(); } });
 setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} processInput(); } }, 3000);
 
+const AGENT_METRICS_FILE = path.join(REPO_ROOT, ".claude", "hooks", "agent-metrics.json");
+const MAX_METRIC_SESSIONS = 50;
+
+function flushMetrics(sessionId) {
+    try {
+        if (!sessionId) return;
+        const shortId = sessionId.substring(0, 8);
+        const sessionFile = path.join(SESSIONS_DIR, shortId + ".json");
+        if (!fs.existsSync(sessionFile)) return;
+
+        const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+
+        const endedTs = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        const startMs = new Date(session.started_ts || endedTs).getTime();
+        const endMs = new Date(endedTs).getTime();
+        const durationMin = Math.round((endMs - startMs) / 60000);
+
+        const toolCounts = session.tool_counts || {};
+        const totalToolCalls = Object.values(toolCounts).reduce((a, b) => a + b, 0);
+
+        const entry = {
+            id: shortId,
+            agent_name: session.agent_name || null,
+            branch: session.branch || null,
+            started_ts: session.started_ts || endedTs,
+            ended_ts: endedTs,
+            duration_min: durationMin,
+            tool_counts: toolCounts,
+            total_tool_calls: totalToolCalls,
+            modified_files_count: Array.isArray(session.modified_files) ? session.modified_files.length : 0,
+            tasks_created: session.tasks_created || 0,
+            tasks_completed: session.tasks_completed || 0,
+            skills_invoked: session.skills_invoked || [],
+        };
+
+        let metrics = { updated_ts: endedTs, sessions: [] };
+        try {
+            if (fs.existsSync(AGENT_METRICS_FILE)) {
+                const existing = JSON.parse(fs.readFileSync(AGENT_METRICS_FILE, "utf8"));
+                if (existing && Array.isArray(existing.sessions)) {
+                    metrics = existing;
+                }
+            }
+        } catch(e) {}
+
+        // Evitar duplicados por session id
+        metrics.sessions = metrics.sessions.filter(s => s.id !== shortId);
+        metrics.sessions.push(entry);
+
+        // Rotación FIFO: mantener máximo N sesiones
+        if (metrics.sessions.length > MAX_METRIC_SESSIONS) {
+            metrics.sessions = metrics.sessions.slice(-MAX_METRIC_SESSIONS);
+        }
+
+        metrics.updated_ts = endedTs;
+        fs.writeFileSync(AGENT_METRICS_FILE, JSON.stringify(metrics, null, 2) + "\n", "utf8");
+        log("Metricas flushed para sesion " + shortId);
+    } catch(e) { log("Error en flushMetrics: " + e.message); }
+}
+
 function markSessionDone(sessionId) {
     try {
         if (!sessionId) return;
@@ -210,6 +270,9 @@ async function processInput() {
     if (data.stop_hook_active) return;
 
     const sessionId = data.session_id || "";
+
+    // Persistir métricas antes de marcar como done (#1226)
+    flushMetrics(sessionId);
 
     // Marcar sesion como terminada
     markSessionDone(sessionId);

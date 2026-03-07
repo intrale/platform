@@ -24,6 +24,7 @@ const PID_FILE = path.join(CLAUDE_DIR, "tmp", "dashboard-server.pid");
 const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
 const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+const AGENT_METRICS_FILE = path.join(CLAUDE_DIR, "hooks", "agent-metrics.json");
 
 // Logging a archivo (detached processes no tienen stdio)
 const _origLog = console.log;
@@ -98,6 +99,15 @@ function collectData() {
   const now = Date.now();
   if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS) return cachedData;
 
+  // Sprint plan (leído antes para decidir qué sesiones retener)
+  let sprintPlan = null;
+  try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+  const sprintIssueSet = new Set(
+    sprintPlan && Array.isArray(sprintPlan.agentes)
+      ? sprintPlan.agentes.map(a => String(a.issue))
+      : []
+  );
+
   // Sessions
   const sessions = [];
   try {
@@ -107,14 +117,21 @@ function collectData() {
         const s = readJson(path.join(SESSIONS_DIR, f));
         if (!s) continue;
         const status = getSessionStatus(s);
-        if (status === "stale") {
-          const elapsed = now - new Date(s.last_activity_ts).getTime();
-          if (elapsed > 60 * 60 * 1000) continue;
+        // Sesiones del sprint activo nunca se descartan por edad
+        const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+        const isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
+        if (!isSprintSession) {
+          if (status === "stale") {
+            const elapsed = now - new Date(s.last_activity_ts).getTime();
+            if (elapsed > 60 * 60 * 1000) continue;
+          }
+          if (status === "done") {
+            const elapsed = now - new Date(s.last_activity_ts).getTime();
+            if (elapsed > 30 * 60 * 1000) continue;
+          }
         }
-        if (status === "done") {
-          const elapsed = now - new Date(s.last_activity_ts).getTime();
-          if (elapsed > 30 * 60 * 1000) continue;
-        }
+        // Sesiones stale del sprint: mostrar como "done" solo si status explícito,
+        // si no, mantener como "stale" (visible pero sin marcar completado)
         sessions.push({ ...s, _status: status });
       }
     }
@@ -158,9 +175,15 @@ function collectData() {
     }
   } catch {}
 
-  // Sprint plan
-  let sprintPlan = null;
-  try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+  // Sprint plan (ya leído arriba)
+
+  // Agent metrics history (#1226)
+  let agentMetrics = null;
+  try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
+
+  // Agent metrics history (#1226)
+  let agentMetrics = null;
+  try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
 
   // Pending questions
   let pendingQuestions = [];
@@ -233,17 +256,16 @@ function collectData() {
     : "unknown";
 
   // Classify sessions into execution categories
-  const sprintIssues = sprintPlan && Array.isArray(sprintPlan.agentes)
-    ? sprintPlan.agentes.map(a => String(a.issue))
-    : [];
   const sprintSessions = [];
   const standaloneSessions = [];
   const adhocSessions = [];
   for (const s of sessions) {
-    if (s._status === "stale") continue;
     const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
     const issueNum = issueMatch ? issueMatch[1] : null;
-    if (issueNum && sprintIssues.includes(issueNum)) {
+    const isSprintSession = issueNum && sprintIssueSet.has(issueNum);
+    // Stale sessions se descartan excepto las del sprint
+    if (s._status === "stale" && !isSprintSession) continue;
+    if (isSprintSession) {
       sprintSessions.push(s);
     } else if (issueNum) {
       standaloneSessions.push(s);
@@ -330,6 +352,7 @@ function collectData() {
     agentTransitions,
     agentNodes: Array.from(agentNodes),
     skillUsage,
+    agentMetrics,
     metrics: {
       totalActions,
       totalActiveTimeMs: totalActiveTime,
@@ -665,9 +688,24 @@ function renderHTML(data, theme) {
   // Sprint sub-view
   if (data.sprintPlan && Array.isArray(data.sprintPlan.agentes) && data.sprintPlan.agentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
+    // Progreso del sprint: usar tareas si existen, si no, contar agentes done/total
+    const agentesTotal = data.sprintPlan.agentes.length;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
     const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
-    const sprintPct = sprintTasksTotal > 0 ? Math.round((sprintTasksDone / sprintTasksTotal) * 100) : 0;
+    let sprintPct;
+    if (sprintTasksTotal > 0) {
+      sprintPct = Math.round((sprintTasksDone / sprintTasksTotal) * 100);
+    } else {
+      // Sin tareas registradas: inferir progreso solo por sesiones explícitamente done
+      const agentesDone = data.sprintPlan.agentes.filter(ag => {
+        const match = data.sprintSessions.find(s => {
+          const m = (s.branch || "").match(/(\d+)/);
+          return m && m[1] === String(ag.issue);
+        });
+        return match && match._status === "done";
+      }).length;
+      sprintPct = agentesTotal > 0 ? Math.round((agentesDone / agentesTotal) * 100) : 0;
+    }
 
     ejecutionHtml += `<div class="exec-subview">
       <div class="exec-subview-header">
@@ -682,7 +720,7 @@ function renderHTML(data, theme) {
         return issueMatch && issueMatch[1] === String(ag.issue);
       });
       const agStatus = matchSession ? matchSession._status : "pending";
-      const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : "&#9675;";
+      const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
       const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
       const isBlocked = matchSession && blockedPids.has(matchSession.id);
       const tasks = matchSession ? (matchSession.current_tasks || []) : [];
@@ -690,11 +728,14 @@ function renderHTML(data, theme) {
       const tasksInProgress = tasks.filter(t => t.status === "in_progress").length;
       const tasksPct = tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0;
       const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || "&#9675;";
+      const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
       const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
       const statusText = isBlocked ? "&#128721; Bloqueado"
         : agStatus === "pending" ? "Pendiente"
-        : `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`;
-      const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+        : agStatus === "done" && tasks.length === 0 ? "Completado"
+        : agStatus === "stale" ? "Finalizado · " + actionCount + " acciones"
+        : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
+        : `${actionCount} acciones`;
       const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
 
       ejecutionHtml += `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
@@ -1051,6 +1092,77 @@ function renderHTML(data, theme) {
     ciHtml = '<div class="empty-state">Sin datos CI</div>';
   }
 
+  // --- AGENT METRICS TABLE (#1226) ---
+  let agentMetricsHtml = "";
+  const metricsEntries = [];
+  const activeSessionIds = new Set(data.sessions.map(s => s.id));
+  for (const s of data.sessions) {
+    if (s.type === "sub") continue;
+    const st = getSessionStatus(s);
+    if (st === "stale") continue;
+    const startMs = new Date(s.started_ts).getTime();
+    const durMin = Math.round((Date.now() - startMs) / 60000);
+    const tc = s.tool_counts || {};
+    const totalCalls = Object.values(tc).reduce((a, b) => a + b, 0);
+    metricsEntries.push({
+      agent: s.agent_name || "Claude",
+      session: s.id,
+      calls: totalCalls || s.action_count || 0,
+      files: Array.isArray(s.modified_files) ? s.modified_files.length : 0,
+      tasksCreated: s.tasks_created || 0,
+      tasksCompleted: s.tasks_completed || 0,
+      durMin,
+      active: true,
+    });
+  }
+  if (data.agentMetrics && Array.isArray(data.agentMetrics.sessions)) {
+    for (const ms of data.agentMetrics.sessions.slice(-10).reverse()) {
+      if (activeSessionIds.has(ms.id)) continue;
+      metricsEntries.push({
+        agent: ms.agent_name || "Claude",
+        session: ms.id,
+        calls: ms.total_tool_calls || 0,
+        files: ms.modified_files_count || 0,
+        tasksCreated: ms.tasks_created || 0,
+        tasksCompleted: ms.tasks_completed || 0,
+        durMin: ms.duration_min || 0,
+        active: false,
+      });
+    }
+  }
+  const metricsToShow = metricsEntries.slice(0, 8);
+  if (metricsToShow.length > 0) {
+    agentMetricsHtml = '<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+    agentMetricsHtml += '<tr style="color:var(--text-muted);border-bottom:1px solid var(--border);">'
+      + '<th style="text-align:left;padding:4px;">Agente</th>'
+      + '<th style="text-align:left;padding:4px;">Sesi&oacute;n</th>'
+      + '<th style="text-align:right;padding:4px;">Calls</th>'
+      + '<th style="text-align:right;padding:4px;">Arch.</th>'
+      + '<th style="text-align:right;padding:4px;">Tareas</th>'
+      + '<th style="text-align:right;padding:4px;">Dur.</th></tr>';
+    for (const m of metricsToShow) {
+      const indicator = m.active ? '<span style="color:var(--green);">&#9679;</span> ' : '';
+      const tasksStr = m.tasksCompleted + "/" + m.tasksCreated;
+      const durStr = m.durMin < 60 ? m.durMin + "m" : Math.floor(m.durMin / 60) + "h " + (m.durMin % 60) + "m";
+      agentMetricsHtml += '<tr style="border-bottom:1px solid var(--border);">'
+        + '<td style="padding:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">' + indicator + escHtml(m.agent) + '</td>'
+        + '<td style="padding:4px;font-family:monospace;font-size:10px;">' + escHtml(m.session) + '</td>'
+        + '<td style="text-align:right;padding:4px;font-weight:600;">' + m.calls + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + m.files + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + tasksStr + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + durStr + '</td></tr>';
+    }
+    agentMetricsHtml += '</table>';
+    const totalHistoric = data.agentMetrics && Array.isArray(data.agentMetrics.sessions) ? data.agentMetrics.sessions.length : 0;
+    if (totalHistoric > 0) {
+      const lastTs = data.agentMetrics.updated_ts;
+      agentMetricsHtml += '<div style="font-size:10px;color:var(--text-muted);margin-top:6px;">'
+        + 'Hist&oacute;rico: ' + totalHistoric + ' sesiones &mdash; &uacute;ltima: ' + formatAge(lastTs) + '</div>';
+    }
+  } else {
+    agentMetricsHtml = '<div class="empty-state">Sin m&eacute;tricas de agentes</div>';
+  }
+
   // --- ALERTS ---
   let alertsHtml = "";
   for (const a of data.alerts) {
@@ -1351,6 +1463,12 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
+    <!-- Agent Metrics (#1226) -->
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="panel-title">M&eacute;tricas de agentes <span class="chip chip-purple">${metricsToShow.length} ses.</span></div>
+      ${agentMetricsHtml}
+    </div>
+
     <!-- CI -->
     <div class="panel" style="margin-bottom:16px;">
       <div class="panel-title">CI / CD</div>
@@ -1493,6 +1611,7 @@ function handleRequest(req, res) {
       pendingQuestionsCount: data.pendingQuestions.length,
       sprintPlan: data.sprintPlan,
       metrics: data.metrics,
+      agentMetrics: data.agentMetrics,
       agentNodes: data.agentNodes,
       agentTransitions: data.agentTransitions,
     });
