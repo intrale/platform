@@ -177,7 +177,7 @@ function handleInput() {
 
         // Actualizar archivo de sesion (siempre — liviano)
         if (sessionId) {
-            updateSession(sessionId, ts, toolName, target, ti);
+            updateSession(sessionId, ts, toolName, target, ti, data.usage || null);
         }
 
         // Auto-iniciar reporter PNG si no esta corriendo
@@ -234,7 +234,7 @@ function ensureDashboardServerRunning() {
     } catch(e) { /* no bloquear hook */ }
 }
 
-function updateSession(sessionId, ts, toolName, target, toolInput) {
+function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
     try {
         if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
@@ -400,6 +400,12 @@ function updateSession(sessionId, ts, toolName, target, toolInput) {
         // Detectar sub-agentes (Task tool)
         if (toolName === "Task") {
             session.sub_count = (session.sub_count || 0) + 1;
+        }
+
+        // Tracking de tokens por sesión (si la API de Claude Code los expone en PostToolUse)
+        if (usage && typeof usage === "object") {
+            session.tokens_input = (session.tokens_input || 0) + (Number(usage.input_tokens) || 0);
+            session.tokens_output = (session.tokens_output || 0) + (Number(usage.output_tokens) || 0);
         }
 
         fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");

@@ -59,7 +59,8 @@ function sendTelegram(text, attempt) {
     });
 }
 
-const MAX_READ = 4096;
+// Aumentado para capturar usage.input_tokens/output_tokens que puede venir después de last_assistant_message largo
+const MAX_READ = 65536;
 let rawInput = "";
 let done = false;
 
@@ -93,6 +94,13 @@ function flushMetrics(sessionId) {
         const toolCounts = session.tool_counts || {};
         const totalToolCalls = Object.values(toolCounts).reduce((a, b) => a + b, 0);
 
+        // Tokens acumulados por activity-logger (PostToolUse) o Stop event
+        const tokensInput = session.tokens_input || null;
+        const tokensOutput = session.tokens_output || null;
+        const tokensTotal = (tokensInput !== null || tokensOutput !== null)
+            ? (tokensInput || 0) + (tokensOutput || 0)
+            : null;
+
         const entry = {
             id: shortId,
             agent_name: session.agent_name || null,
@@ -106,6 +114,9 @@ function flushMetrics(sessionId) {
             tasks_created: session.tasks_created || 0,
             tasks_completed: session.tasks_completed || 0,
             skills_invoked: session.skills_invoked || [],
+            tokens_input: tokensInput,
+            tokens_output: tokensOutput,
+            tokens_total: tokensTotal,
         };
 
         let metrics = { updated_ts: endedTs, sessions: [] };
@@ -270,6 +281,25 @@ async function processInput() {
     if (data.stop_hook_active) return;
 
     const sessionId = data.session_id || "";
+
+    // Capturar tokens del evento Stop si la API los expone (#1244)
+    if (data.usage && sessionId) {
+        try {
+            const shortId = sessionId.substring(0, 8);
+            const sessionFile = path.join(SESSIONS_DIR, shortId + ".json");
+            if (fs.existsSync(sessionFile)) {
+                const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+                if (data.usage.input_tokens) {
+                    session.tokens_input = (session.tokens_input || 0) + (Number(data.usage.input_tokens) || 0);
+                }
+                if (data.usage.output_tokens) {
+                    session.tokens_output = (session.tokens_output || 0) + (Number(data.usage.output_tokens) || 0);
+                }
+                fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");
+                log("Tokens capturados del Stop event: in=" + data.usage.input_tokens + " out=" + data.usage.output_tokens);
+            }
+        } catch(e) { log("Error capturando tokens del Stop event: " + e.message); }
+    }
 
     // Persistir métricas antes de marcar como done (#1226)
     flushMetrics(sessionId);
