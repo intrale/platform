@@ -181,6 +181,10 @@ function collectData() {
   let agentMetrics = null;
   try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
 
+  // Agent metrics history (#1226)
+  let agentMetrics = null;
+  try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
+
   // Pending questions
   let pendingQuestions = [];
   try {
