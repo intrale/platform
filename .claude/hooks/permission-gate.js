@@ -17,7 +17,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const { generatePattern, generateBashPattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, splitCompoundCommand, classifySeverity, loadSeverityTimeouts, Severity } = require("./permission-utils");
+const { generatePattern, generateBashPattern, getSettingsPaths, persistPattern, resolveMainRepoRoot, isAlreadyCovered, splitCompoundCommand, classifySeverity, loadSeverityTimeouts, Severity, AUTO_APPROVE_ON_TIMEOUT } = require("./permission-utils");
 const { addPendingQuestion, resolveQuestion, getQuestionById, updateQuestionField } = require("./pending-questions");
 const { incrementApproval, isPatternPersisted } = require("./approval-history");
 const { readSessionContext } = require("./context-reader");
@@ -552,18 +552,34 @@ async function processInput() {
         const elapsedTotal = Math.round((Date.now() - startTime) / 1000);
 
         if (isLastAttempt) {
-            log("Todos los reintentos agotados (" + elapsedTotal + "s total). Fallback a consola.");
             resolveQuestion(requestId, "expired", null);
-            try {
-                await telegramPost("editMessageText", {
-                    chat_id: CHAT_ID,
-                    message_id: currentMsgId,
-                    text: msgText + "\n\n\u23F1 <i>Expirado (" + totalAttempts + " intentos) \u2014 respondiendo en consola</i>",
-                    parse_mode: "HTML",
-                    reply_markup: { inline_keyboard: [] }
-                }, ANSWER_TIMEOUT);
-            } catch(e) { log("Error editando mensaje final: " + e.message); }
-            exitSilent(); // fallback a dialogo local
+            if (AUTO_APPROVE_ON_TIMEOUT.includes(severity)) {
+                // Auto-aprobación por timeout completo sin rechazo explícito (Low/Medium)
+                log("AUTO_APPROVE_TIMEOUT: severity=" + severity + " tool=" + toolName + " attempts=" + totalAttempts);
+                try {
+                    await telegramPost("editMessageText", {
+                        chat_id: CHAT_ID,
+                        message_id: currentMsgId,
+                        text: msgText + "\n\n\u2705 <i>Auto-aprobado (todos los reintentos expirados sin rechazo)</i>",
+                        parse_mode: "HTML",
+                        reply_markup: { inline_keyboard: [] }
+                    }, ANSWER_TIMEOUT);
+                } catch(e) { log("Error editando mensaje de auto-aprobación: " + e.message); }
+                outputAllow("auto: timeout completo sin rechazo explícito — Low/Medium");
+            } else {
+                // HIGH/CRITICAL: fallback a diálogo local (comportamiento original)
+                log("Todos los reintentos agotados (" + elapsedTotal + "s total). Fallback a consola.");
+                try {
+                    await telegramPost("editMessageText", {
+                        chat_id: CHAT_ID,
+                        message_id: currentMsgId,
+                        text: msgText + "\n\n\u23F1 <i>Expirado (" + totalAttempts + " intentos) \u2014 respondiendo en consola</i>",
+                        parse_mode: "HTML",
+                        reply_markup: { inline_keyboard: [] }
+                    }, ANSWER_TIMEOUT);
+                } catch(e) { log("Error editando mensaje final: " + e.message); }
+                exitSilent(); // fallback a dialogo local
+            }
             return;
         }
 
