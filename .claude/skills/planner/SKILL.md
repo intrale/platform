@@ -293,7 +293,7 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
       "issue": 821,
       "slug": "notificaciones",
       "titulo": "Mejorar notificaciones Telegram",
-      "prompt": "Implementar issue #821. Leer el issue con: gh issue view 821 --repo intrale/platform. Completar los cambios pendientes descritos en el body del issue. Usar /delivery para commit+PR al terminar. Closes #821",
+      "prompt": "Implementar issue #821. Leer el issue completo con: gh issue view 821 --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #821. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Usar /delivery para commit+PR al terminar. Closes #821",
       "stream": "E",
       "size": "S"
     }
@@ -309,10 +309,27 @@ Reglas del JSON:
 - `issue`: numero del issue de GitHub
 - `slug`: identificador corto sin espacios ni caracteres especiales (usado para branch y worktree)
 - `titulo`: titulo humano del issue
-- `prompt`: instruccion completa para Claude — incluir `gh issue view` + que hacer + `/delivery` al final
+- `prompt`: instruccion completa para Claude — incluir `gh issue view` + pipeline de agentes + que hacer + gates pre-delivery + `/delivery` al final
 - `stream`: A/B/C/D/E segun clasificacion de streams
 - `size`: S/M/L/XL segun estimacion de esfuerzo
 - El archivo NO se commitea (esta en .gitignore)
+
+### Template de prompt enriquecido con pipeline de agentes (USAR SIEMPRE)
+
+El campo `prompt` de cada agente DEBE incluir las siguientes instrucciones de pipeline. Adaptar `#NNN` al numero de issue real:
+
+```
+Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #NNN. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Usar /delivery para commit+PR al terminar. Closes #NNN
+```
+
+**Secciones obligatorias del prompt:**
+1. `Leer el issue completo con: gh issue view NNN --repo intrale/platform` — siempre primero
+2. `Al iniciar: invocar /po para revisar criterios de aceptación del issue #NNN` — FASE 1 siempre
+3. `Si el issue toca archivos ui/: invocar /ux` — FASE 1 condicional
+4. `Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru` — FASE 1 condicional
+5. `Antes de /delivery: invocar /tester` — FASE 3 obligatorio (gate)
+6. `Antes de /delivery: invocar /security` — FASE 3 obligatorio (gate)
+7. `Usar /delivery para commit+PR al terminar. Closes #NNN` — siempre al final
 
 ### Lanzar agentes automaticamente
 

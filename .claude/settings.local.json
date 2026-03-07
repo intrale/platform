@@ -102,11 +102,14 @@
       "Bash(git fetch:*)",
       "Skill(ops)",
       "Skill(simplify)",
+      "Skill(security)",
       "ToolSearch",
       "Bash(WMIC:*)",
       "Bash(hostname:*)",
       "Bash(id:*)",
-      "Bash(type:*)"
+      "Bash(type:*)",
+      "Bash(QA_REPORT=\"qa/evidence/980/qa-report.json\":*)",
+      "Bash(\\:*)"
     ],
     "deny": [
       "Bash(git push --force*)",
