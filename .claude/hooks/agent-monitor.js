@@ -24,6 +24,10 @@ const FAILSAFE_MS = 4 * 60 * 60 * 1000; // 4 horas
 const STALE_MS = 15 * 60 * 1000;        // 15 min sin rama/worktree → stale
 const FAILED_TOTAL_MS = 45 * 60 * 1000; // 45 min total sin actividad → failed
 
+// Inmunidad durante espera legítima de CI/merge/build
+const WAITING_IMMUNITY_MS = 25 * 60 * 1000; // 25 min de gracia para espera legítima
+const WAITING_NOTIFY_MS = 20 * 60 * 1000;   // Notificar por Telegram si espera > 20 min
+
 let _pollInterval = null;
 let _guardianInterval = null;
 let _running = false;
@@ -140,6 +144,34 @@ function hasAgentStarted(agente) {
     return false;
 }
 
+// Leer el estado de espera legítima del agente desde sus session files
+function getAgentWaitingState(agente) {
+    const wtDir = getWorktreePath(agente);
+    if (!fs.existsSync(wtDir)) return null;
+    const sessionsDir = path.join(wtDir, ".claude", "sessions");
+    if (!fs.existsSync(sessionsDir)) return null;
+    try {
+        const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith(".json"));
+        let mostRecent = null;
+        let mostRecentMtime = 0;
+        for (const f of files) {
+            try {
+                const filePath = path.join(sessionsDir, f);
+                const s = JSON.parse(fs.readFileSync(filePath, "utf8"));
+                const mtime = fs.statSync(filePath).mtimeMs;
+                if (mtime > mostRecentMtime) {
+                    mostRecentMtime = mtime;
+                    mostRecent = s;
+                }
+            } catch (e) {}
+        }
+        if (mostRecent && mostRecent.waiting_state) {
+            return mostRecent.waiting_state;
+        }
+    } catch (e) {}
+    return null;
+}
+
 function getOrInitAgentState(agente) {
     const key = String(agente.numero);
     if (!_agentStates[key]) {
@@ -178,7 +210,88 @@ async function checkTimeouts() {
         // Si el agente ya terminó → completed
         if (isAgentDone(agente)) {
             state.status = "completed";
+            // Limpiar estado de espera si había uno
+            if (state.waiting_state) {
+                state.waiting_state = null;
+                state.waitingNotified = false;
+            }
             continue;
+        }
+
+        // Verificar estado de espera legítima
+        const waitingState = getAgentWaitingState(agente);
+
+        // Si el CI falló, notificar como "bloqueado por CI" (no como tildado)
+        if (waitingState && waitingState.status === "failure") {
+            if (state.status !== "blocked_ci") {
+                state.status = "blocked_ci";
+                state.waiting_state = waitingState;
+                log("Agente " + agente.numero + " BLOQUEADO por CI fallido");
+                await notify(
+                    "❌ <b>CI fallido — Agente #" + agente.numero + " (issue #" + agente.issue + ") bloqueado</b>\n" +
+                    (waitingState.detail || "CI falló") + "\n" +
+                    (waitingState.run_url ? '<a href="' + waitingState.run_url + '">Ver en GitHub</a>' : ""),
+                    false
+                );
+                updateSprintPlanStatus();
+            }
+            continue;
+        }
+
+        // Si el agente está en espera legítima activa, aplicar inmunidad de timeout
+        if (waitingState && (waitingState.status === "in_progress" || waitingState.status === "starting")) {
+            const waitingMs = waitingState.started_at
+                ? now - new Date(waitingState.started_at).getTime()
+                : 0;
+
+            // Guardar estado de espera en estado del agente para el monitor
+            state.waiting_state = waitingState;
+
+            // Volver a active si estaba stale
+            if (state.status === "stale" || state.status === "blocked_ci") {
+                state.status = "active";
+                state.staleAt = null;
+                updateSprintPlanStatus();
+            }
+
+            // Si lleva más de WAITING_NOTIFY_MS esperando, notificar pero NO cancelar
+            if (waitingMs > WAITING_NOTIFY_MS && !state.waitingNotified) {
+                state.waitingNotified = true;
+                const reasonLabels = { ci: "CI en GitHub Actions", merge: "merge del PR", build: "Build Gradle", merge_pending: "checks del PR", delivery: "ciclo delivery" };
+                const reasonLabel = reasonLabels[waitingState.reason] || waitingState.reason;
+                log("Agente " + agente.numero + " esperando " + reasonLabel + " por " + Math.round(waitingMs / 60000) + "min (inmune a timeout)");
+                await notify(
+                    "⏳ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") esperando " + reasonLabel + "</b>\n" +
+                    (waitingState.detail || "") + "\n" +
+                    "Tiempo de espera: " + Math.round(waitingMs / 60000) + " min\n" +
+                    (waitingState.run_url ? '<a href="' + waitingState.run_url + '">Ver en GitHub</a>\n' : "") +
+                    "<i>El agente no está tildado — espera legítima.</i>",
+                    true
+                );
+            }
+
+            // Si la espera excede WAITING_IMMUNITY_MS (25min), es anormal — notificar sin cancelar
+            if (waitingMs > WAITING_IMMUNITY_MS && !state.waitingLongNotified) {
+                state.waitingLongNotified = true;
+                log("Agente " + agente.numero + " lleva " + Math.round(waitingMs / 60000) + "min esperando — posiblemente bloqueado");
+                await notify(
+                    "⚠️ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") esperando por más de " + Math.round(WAITING_IMMUNITY_MS / 60000) + " min</b>\n" +
+                    (waitingState.detail || "") + "\n" +
+                    "Posible bloqueo. Revisar manualmente si es necesario.\n" +
+                    (waitingState.run_url ? '<a href="' + waitingState.run_url + '">Ver en GitHub</a>' : ""),
+                    false
+                );
+            }
+
+            // NO aplicar stale/failed durante espera legítima
+            continue;
+        }
+
+        // Si había espera y ya terminó (waiting_state null o success), resetear contadores
+        if (!waitingState && state.waiting_state) {
+            state.waiting_state = null;
+            state.waitingNotified = false;
+            state.waitingLongNotified = false;
         }
 
         const started = hasAgentStarted(agente);
@@ -206,7 +319,7 @@ async function checkTimeouts() {
                 state.staleAt = now;
                 log("Agente " + agente.numero + " (issue #" + agente.issue + ") STALE tras 15min sin actividad");
                 await notify(
-                    "⏳ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") sin actividad</b>\n" +
+                    "💤 <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") sin actividad</b>\n" +
                     "Sin rama ni worktree tras 15min. Marcado como stale.",
                     true
                 );
@@ -214,7 +327,7 @@ async function checkTimeouts() {
             }
         } else {
             // El agente tiene actividad — si estaba stale, volver a active
-            if (state.status === "stale") {
+            if (state.status === "stale" || state.status === "blocked_ci") {
                 state.status = "active";
                 state.staleAt = null;
                 log("Agente " + agente.numero + " activo (rama/worktree detectado, saliendo de stale)");
@@ -547,7 +660,8 @@ function getAgentStatus() {
             issue: a.issue,
             slug: a.slug,
             done: isAgentDone(a),
-            status: state.status
+            status: state.status,
+            waiting_state: state.waiting_state || null
         };
     });
 
@@ -569,4 +683,4 @@ function getAgentStatus() {
     };
 }
 
-module.exports = { startAgentMonitor, stopAgentMonitor, getAgentStatus, STALE_MS, FAILED_TOTAL_MS };
+module.exports = { startAgentMonitor, stopAgentMonitor, getAgentStatus, STALE_MS, FAILED_TOTAL_MS, WAITING_IMMUNITY_MS };

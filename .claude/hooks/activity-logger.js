@@ -234,6 +234,48 @@ function ensureDashboardServerRunning() {
     } catch(e) { /* no bloquear hook */ }
 }
 
+// Detectar si un tool use indica inicio de una espera legítima
+// Retorna { reason, detail, started_at } o null
+function detectWaitingState(toolName, toolInput, ts) {
+    if (toolName !== "Bash" && toolName !== "Skill") return null;
+
+    if (toolName === "Bash") {
+        const cmd = (toolInput.command || "").trim();
+
+        // Esperando CI: git push
+        if (/^git push(\s|$)/.test(cmd) || /\bgit push\b/.test(cmd)) {
+            return { reason: "ci", detail: "Esperando GitHub Actions...", started_at: ts, status: "starting" };
+        }
+
+        // Esperando merge: gh pr merge
+        if (/gh\s+pr\s+merge/.test(cmd)) {
+            return { reason: "merge", detail: "Esperando merge del PR...", started_at: ts, status: "in_progress" };
+        }
+
+        // PR creado, esperando checks
+        if (/gh\s+pr\s+create/.test(cmd)) {
+            return { reason: "merge_pending", detail: "PR creado, esperando revisión/checks...", started_at: ts, status: "in_progress" };
+        }
+
+        // Build Gradle en curso
+        if (/gradlew\b/.test(cmd) && !/^#/.test(cmd)) {
+            const taskMatch = cmd.match(/gradlew\s+([^\s]+)/);
+            const task = taskMatch ? taskMatch[1] : "build";
+            return { reason: "build", detail: "Build Gradle: " + task, started_at: ts, status: "in_progress" };
+        }
+    }
+
+    if (toolName === "Skill") {
+        const skill = toolInput.skill || "";
+        // /delivery invoca git push + pr create → inicia ciclo CI
+        if (skill === "delivery") {
+            return { reason: "ci", detail: "Ejecutando /delivery (commit+push+PR)...", started_at: ts, status: "starting" };
+        }
+    }
+
+    return null;
+}
+
 function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
     try {
         if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -394,6 +436,18 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
                 session.current_task = toolInput.activeForm;
             } else if (toolInput.status === "completed") {
                 session.current_task = null;
+            }
+        }
+
+        // Detectar y registrar estado de espera legítima
+        const waitingState = detectWaitingState(toolName, toolInput, ts);
+        if (waitingState) {
+            session.waiting_state = waitingState;
+        } else if (session.waiting_state) {
+            // Si hay actividad real (no Bash trivial) después de espera → limpiar
+            const clearOnTools = ["Edit", "Write", "NotebookEdit", "TaskCreate"];
+            if (clearOnTools.includes(toolName)) {
+                session.waiting_state = null;
             }
         }
 

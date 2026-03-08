@@ -28,6 +28,8 @@ try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = nu
 const SHA = process.argv[2];
 const BRANCH = process.argv[3];
 const PROJECT_DIR = process.argv[4] || process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
+// Arg 5 opcional: session file path para actualizar waiting_state
+const SESSION_FILE = process.argv[5] || null;
 
 const LOG_FILE = path.join(PROJECT_DIR, ".claude", "hooks", "hook-debug.log");
 const MAX_POLLS = 40;            // ~20 minutos maximo
@@ -94,6 +96,59 @@ async function sendTelegram(text) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Actualizar waiting_state en el session file del agente
+function updateSessionWaitingState(patch) {
+    // Intentar desde SESSION_FILE (arg directo) o buscar en sessions/ del worktree
+    const candidates = [];
+    if (SESSION_FILE) candidates.push(SESSION_FILE);
+
+    // Buscar en el worktree que coincide con la rama
+    try {
+        const branchSlug = BRANCH.replace(/\//g, "-");
+        const parentDir = path.resolve(PROJECT_DIR, "..");
+        const dirEntries = fs.readdirSync(parentDir);
+        for (const d of dirEntries) {
+            if (d.includes(branchSlug) || d.startsWith("platform.agent-")) {
+                const sessDir = path.join(parentDir, d, ".claude", "sessions");
+                if (fs.existsSync(sessDir)) {
+                    const files = fs.readdirSync(sessDir).filter(f => f.endsWith(".json"));
+                    for (const f of files) {
+                        candidates.push(path.join(sessDir, f));
+                    }
+                }
+            }
+        }
+    } catch (e) { /* no bloquear */ }
+
+    // También buscar en el repo principal
+    try {
+        const mainSessDir = path.join(PROJECT_DIR, ".claude", "sessions");
+        if (fs.existsSync(mainSessDir)) {
+            const files = fs.readdirSync(mainSessDir).filter(f => f.endsWith(".json"));
+            for (const f of files) {
+                candidates.push(path.join(mainSessDir, f));
+            }
+        }
+    } catch (e) {}
+
+    // Actualizar sesiones cuya rama coincide con BRANCH
+    let updated = 0;
+    for (const filePath of candidates) {
+        try {
+            const session = JSON.parse(fs.readFileSync(filePath, "utf8"));
+            if ((session.branch || "") !== BRANCH) continue;
+            if (!session.waiting_state) session.waiting_state = {};
+            Object.assign(session.waiting_state, patch);
+            fs.writeFileSync(filePath, JSON.stringify(session, null, 2) + "\n", "utf8");
+            updated++;
+        } catch (e) {}
+    }
+
+    if (updated > 0) {
+        log("waiting_state actualizado en " + updated + " session(s): " + JSON.stringify(patch));
+    }
+}
+
 // P-11: Backoff progresivo según tiempo transcurrido
 function getPollInterval(elapsedMs) {
     if (elapsedMs < 120000) return 60000;   // 0-2min: 60s (workflow registrándose)
@@ -119,6 +174,7 @@ async function main() {
     await sleep(10000);
 
     const startMs = Date.now();
+    let lastRunId = null;
 
     for (let poll = 0; poll < MAX_POLLS; poll++) {
         const elapsedMs = Date.now() - startMs;
@@ -136,6 +192,8 @@ async function main() {
                 log("Poll " + (poll + 1) + ": sin runs para " + SHA.substring(0, 7) + " (interval=" + (interval/1000) + "s)");
                 if (poll > 5) {
                     log("Sin runs despues de " + (poll + 1) + " intentos, abortando");
+                    // Limpiar waiting_state si no hay runs
+                    updateSessionWaitingState({ status: "no_runs", detail: "Sin workflow runs en GitHub Actions" });
                     break;
                 }
                 await sleep(interval);
@@ -145,18 +203,46 @@ async function main() {
             const run = runs[0];
             const status = run.status;
             const conclusion = run.conclusion;
+            const runUrl = run.html_url || "";
+            const runId = run.id;
+            const runName = run.name || "CI";
 
             log("Poll " + (poll + 1) + ": status=" + status + " conclusion=" + (conclusion || "pending") + " (interval=" + (interval/1000) + "s)");
+
+            // Actualizar session con estado de CI en progreso
+            if (status !== "completed") {
+                const detail = runName + " (" + status + ")";
+                updateSessionWaitingState({
+                    reason: "ci",
+                    detail: "GitHub Actions: " + detail,
+                    status: "in_progress",
+                    run_id: runId,
+                    run_url: runUrl,
+                    run_name: runName
+                });
+                lastRunId = runId;
+            }
 
             if (status === "completed") {
                 const emoji = conclusion === "success" ? "\u2705" : "\u274C";
                 const label = conclusion === "success" ? "exitoso" : "fallido (" + conclusion + ")";
-                const url = run.html_url || "";
+                const url = runUrl;
 
                 const msg = emoji + " <b>CI " + label + "</b>\n\n"
                     + "Branch: <code>" + BRANCH + "</code>\n"
                     + "Commit: <code>" + SHA.substring(0, 7) + "</code>\n"
                     + (url ? '<a href="' + url + '">Ver en GitHub</a>' : "");
+
+                // Actualizar session con resultado final
+                updateSessionWaitingState({
+                    reason: "ci",
+                    detail: "GitHub Actions: " + runName + " (" + (conclusion || "completed") + ")",
+                    status: conclusion === "success" ? "success" : "failure",
+                    run_id: runId,
+                    run_url: runUrl,
+                    run_name: runName,
+                    finished_at: new Date().toISOString()
+                });
 
                 log("CI completado: " + conclusion + " — notificando");
                 // P-15: Registrar CI fallido en ops-learnings
@@ -186,6 +272,7 @@ async function main() {
     }
 
     log("Timeout: CI no completo despues de " + MAX_POLLS + " polls");
+    updateSessionWaitingState({ status: "timeout", detail: "CI timeout: workflow no completó en tiempo esperado", finished_at: new Date().toISOString() });
     // P-15: Registrar timeout en ops-learnings
     if (opsLearnings) {
         try {
