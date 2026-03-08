@@ -253,6 +253,7 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
     const fecha = plan.fecha || new Date().toISOString().split("T")[0];
     const tema = plan.tema || "";
     const agentes = plan.agentes || [];
+    const sprintId = plan.sprint_id || null;
 
     // Fallback descriptivo para el objetivo del sprint
     const objetivo = tema
@@ -272,14 +273,14 @@ function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, spr
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Reporte Sprint — ${fecha} — Intrale Platform</title>
+<title>${sprintId ? escapeHtml(sprintId) + " — " : ""}Reporte Sprint — ${escapeHtml(fecha)} — Intrale Platform</title>
 <style>${CSS}</style>
 </head>
 <body>
 
-<h1>Reporte de Sprint — ${fecha}</h1>
+<h1>${sprintId ? escapeHtml(sprintId) + " — " : ""}Reporte de Sprint — ${escapeHtml(fecha)}</h1>
 <p><strong>Proyecto:</strong> Intrale Platform (<code>intrale/platform</code>)<br>
-<strong>Fecha:</strong> ${fecha}<br>
+${sprintId ? `<strong>Sprint ID:</strong> ${escapeHtml(sprintId)}<br>\n` : ""}<strong>Fecha:</strong> ${fecha}<br>
 <strong>Objetivo:</strong> ${objetivo}<br>
 <strong>Duración total:</strong> ${sprintDurationMin} min</p>
 
@@ -758,7 +759,8 @@ async function main() {
     const mergedCount = prs.filter(p =>
         plan.agentes.some(a => p.headRefName === `agent/${a.issue}-${a.slug}`) && p.state === "MERGED"
     ).length;
-    const caption = `Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`;
+    const sprintIdLabel = plan.sprint_id ? plan.sprint_id + " — " : "";
+    const caption = `📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`;
     sendReportViaTelegram(htmlPath, caption);
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);

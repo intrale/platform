@@ -360,7 +360,8 @@ async function handleAllDone(elapsedMin) {
     const failedAgents = Object.values(_agentStates).filter(s => s.status === "failed").length;
     const failedInfo = failedAgents > 0 ? "\n⚠️ Agentes fallidos: " + failedAgents : "";
 
-    await notify("🏁 <b>Sprint finalizado</b>\n\nAgentes completados: " + completedAgents + failedInfo + "\nTiempo total: " + elapsedMin + " min.\nEjecutando cleanup...");
+    const sprintLabel = (_plan && _plan.sprint_id) ? " " + _plan.sprint_id : "";
+    await notify("🏁 <b>Sprint finalizado</b>" + sprintLabel + "\n\nAgentes completados: " + completedAgents + failedInfo + "\nTiempo total: " + elapsedMin + " min.\nEjecutando cleanup...");
 
     // Ejecutar Stop-Agente.ps1 all
     const stopScript = path.join(REPO_ROOT, "scripts", "Stop-Agente.ps1");

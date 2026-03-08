@@ -280,10 +280,31 @@ El campo `tema` del `sprint-plan.json` debe reflejar el foco elegido:
 ### Generar plan JSON para Start-Agente
 
 Al finalizar el sprint, **siempre** escribir `scripts/sprint-plan.json` con el plan estructurado
-para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
+para que `Start-Agente.ps1` pueda lanzar agentes automaticamente.
+
+#### Auto-asignación de sprint_id (OBLIGATORIO)
+
+Antes de escribir `sprint-plan.json`, asignar el próximo `sprint_id`:
+
+```bash
+# Leer y actualizar el contador de sprints
+node -e "
+const fs = require('fs');
+const counterPath = 'scripts/sprint-counter.json';
+let counter = { last_id: 0 };
+try { counter = JSON.parse(fs.readFileSync(counterPath, 'utf8')); } catch(e) {}
+counter.last_id += 1;
+fs.writeFileSync(counterPath, JSON.stringify(counter, null, 2) + '\n');
+const id = 'SPR-' + String(counter.last_id).padStart(3, '0');
+console.log(id);
+"
+```
+
+El valor retornado (ej: `SPR-007`) se usa como campo `sprint_id` en el JSON. Si `scripts/sprint-counter.json` no existe, se crea automáticamente con `{"last_id": 1}` y el primer sprint recibe `SPR-001`.
 
 ```json
 {
+  "sprint_id": "SPR-007",
   "fecha": "2026-02-20",
   "fechaInicio": "2026-02-20",
   "fechaFin": "2026-02-26",
@@ -302,6 +323,7 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 ```
 
 Reglas del JSON:
+- `sprint_id`: ID único del sprint en formato `SPR-NNN` (3 dígitos con padding) — asignado automáticamente desde `scripts/sprint-counter.json`
 - `fecha`: fecha de creacion del plan (backward compat, mismo valor que `fechaInicio`)
 - `fechaInicio`: fecha de inicio del sprint (ISO 8601, ej: `"2026-03-03"`) — siempre la fecha actual al momento de planificar
 - `fechaFin`: fecha de fin del sprint (ISO 8601, ej: `"2026-03-07"`) — `fechaInicio` + duracion del sprint (default: 5 dias habiles / 1 semana, excluyendo fines de semana). Si el sprint se planifica un lunes, `fechaFin` es el viernes de esa semana. **OBLIGATORIO** — `Start-Agente.ps1` y `Watch-Agentes.ps1` bloquean la ejecucion si `fechaFin` no existe o ya paso
