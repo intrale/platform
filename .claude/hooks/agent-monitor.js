@@ -13,20 +13,23 @@ const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HOOKS_DIR, ".."
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 const PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const PIDS_FILE = path.join(REPO_ROOT, "scripts", "sprint-pids.json");
+const METRICS_FILE = path.join(HOOKS_DIR, "agent-metrics.json");
+const PARTICIPATION_FILE = path.join(HOOKS_DIR, "agent-participation.json");
+
+// Lista canónica de todos los agentes que deben participar proactivamente en el pipeline
+const ALL_PIPELINE_AGENTS = [
+    "/ops", "/po", "/ux", "/guru",
+    "/backend-dev", "/android-dev", "/ios-dev", "/web-dev", "/desktop-dev",
+    "/tester", "/builder", "/security", "/qa", "/review",
+    "/delivery", "/scrum", "/cleanup",
+    "/planner", "/refinar", "/priorizar", "/historia"
+];
 
 // Intervalos configurables
 const POLL_INTERVAL_MS = 30000;      // 30s — verificar agentes
 const GUARDIAN_INTERVAL_MS = 300000; // 5 min — verificar inactividad
 const COOLDOWN_MS = 600000;         // 10 min — entre relanzamientos
 const FAILSAFE_MS = 4 * 60 * 60 * 1000; // 4 horas
-
-// Timeouts de agentes (configurables)
-const STALE_MS = 15 * 60 * 1000;        // 15 min sin rama/worktree → stale
-const FAILED_TOTAL_MS = 45 * 60 * 1000; // 45 min total sin actividad → failed
-
-// Inmunidad durante espera legítima de CI/merge/build
-const WAITING_IMMUNITY_MS = 25 * 60 * 1000; // 25 min de gracia para espera legítima
-const WAITING_NOTIFY_MS = 20 * 60 * 1000;   // Notificar por Telegram si espera > 20 min
 
 let _pollInterval = null;
 let _guardianInterval = null;
@@ -36,8 +39,6 @@ let _startTime = null;
 let _lastLaunchTime = 0;
 let _prevCpuSnapshot = {};
 let _onAllDone = null; // callback cuando todos los agentes terminan
-let _agentStates = {}; // { "N": { status, staleAt, failedAt, notifiedFailed } }
-let _checkingAgents = false; // guard contra re-entradas
 
 let tgClient;
 try { tgClient = require("./telegram-client"); } catch (e) { tgClient = null; }
@@ -101,240 +102,6 @@ function isAgentDone(agente) {
     }
 
     return false;
-}
-
-// ─── Detección de actividad por agente ───────────────────────────────────────
-
-function agentBranchExists(agente) {
-    try {
-        const branchRef = "agent/" + agente.issue + "-" + agente.slug;
-        const localOut = execSync('git branch --list "' + branchRef + '"', {
-            cwd: REPO_ROOT, encoding: "utf8", timeout: 5000, windowsHide: true
-        });
-        if (localOut.trim().length > 0) return true;
-        const remoteOut = execSync('git ls-remote --heads origin "' + branchRef + '"', {
-            cwd: REPO_ROOT, encoding: "utf8", timeout: 8000, windowsHide: true
-        });
-        return remoteOut.trim().length > 0;
-    } catch (e) { return false; }
-}
-
-function getLastAgentActivity(agente) {
-    const wtDir = getWorktreePath(agente);
-    if (!fs.existsSync(wtDir)) return null;
-    const sessionsDir = path.join(wtDir, ".claude", "sessions");
-    if (!fs.existsSync(sessionsDir)) return null;
-    let lastMs = null;
-    try {
-        const files = fs.readdirSync(sessionsDir);
-        for (const f of files) {
-            try {
-                const s = fs.statSync(path.join(sessionsDir, f));
-                if (!lastMs || s.mtimeMs > lastMs) lastMs = s.mtimeMs;
-            } catch (e) {}
-        }
-    } catch (e) {}
-    return lastMs;
-}
-
-function hasAgentStarted(agente) {
-    if (agentBranchExists(agente)) return true;
-    if (fs.existsSync(getWorktreePath(agente))) return true;
-    if (getLastAgentActivity(agente) !== null) return true;
-    return false;
-}
-
-// Leer el estado de espera legítima del agente desde sus session files
-function getAgentWaitingState(agente) {
-    const wtDir = getWorktreePath(agente);
-    if (!fs.existsSync(wtDir)) return null;
-    const sessionsDir = path.join(wtDir, ".claude", "sessions");
-    if (!fs.existsSync(sessionsDir)) return null;
-    try {
-        const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith(".json"));
-        let mostRecent = null;
-        let mostRecentMtime = 0;
-        for (const f of files) {
-            try {
-                const filePath = path.join(sessionsDir, f);
-                const s = JSON.parse(fs.readFileSync(filePath, "utf8"));
-                const mtime = fs.statSync(filePath).mtimeMs;
-                if (mtime > mostRecentMtime) {
-                    mostRecentMtime = mtime;
-                    mostRecent = s;
-                }
-            } catch (e) {}
-        }
-        if (mostRecent && mostRecent.waiting_state) {
-            return mostRecent.waiting_state;
-        }
-    } catch (e) {}
-    return null;
-}
-
-function getOrInitAgentState(agente) {
-    const key = String(agente.numero);
-    if (!_agentStates[key]) {
-        _agentStates[key] = { status: agente.status || "active", staleAt: null, failedAt: null, notifiedFailed: false };
-    }
-    return _agentStates[key];
-}
-
-function updateSprintPlanStatus() {
-    try {
-        if (!fs.existsSync(PLAN_FILE)) return;
-        const plan = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
-        if (!Array.isArray(plan.agentes)) return;
-        for (const agente of plan.agentes) {
-            const state = _agentStates[String(agente.numero)];
-            if (state) agente.status = state.status;
-            else if (!agente.status) agente.status = "active";
-        }
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2), "utf8");
-    } catch (e) {
-        log("Error actualizando sprint-plan.json: " + e.message);
-    }
-}
-
-async function checkTimeouts() {
-    if (!_plan || !_plan.agentes) return;
-    const now = Date.now();
-    const elapsedFromStart = now - _startTime;
-
-    for (const agente of _plan.agentes) {
-        const state = getOrInitAgentState(agente);
-
-        // Estados terminales: no reevaluar
-        if (state.status === "failed" || state.status === "completed") continue;
-
-        // Si el agente ya terminó → completed
-        if (isAgentDone(agente)) {
-            state.status = "completed";
-            // Limpiar estado de espera si había uno
-            if (state.waiting_state) {
-                state.waiting_state = null;
-                state.waitingNotified = false;
-            }
-            continue;
-        }
-
-        // Verificar estado de espera legítima
-        const waitingState = getAgentWaitingState(agente);
-
-        // Si el CI falló, notificar como "bloqueado por CI" (no como tildado)
-        if (waitingState && waitingState.status === "failure") {
-            if (state.status !== "blocked_ci") {
-                state.status = "blocked_ci";
-                state.waiting_state = waitingState;
-                log("Agente " + agente.numero + " BLOQUEADO por CI fallido");
-                await notify(
-                    "❌ <b>CI fallido — Agente #" + agente.numero + " (issue #" + agente.issue + ") bloqueado</b>\n" +
-                    (waitingState.detail || "CI falló") + "\n" +
-                    (waitingState.run_url ? '<a href="' + waitingState.run_url + '">Ver en GitHub</a>' : ""),
-                    false
-                );
-                updateSprintPlanStatus();
-            }
-            continue;
-        }
-
-        // Si el agente está en espera legítima activa, aplicar inmunidad de timeout
-        if (waitingState && (waitingState.status === "in_progress" || waitingState.status === "starting")) {
-            const waitingMs = waitingState.started_at
-                ? now - new Date(waitingState.started_at).getTime()
-                : 0;
-
-            // Guardar estado de espera en estado del agente para el monitor
-            state.waiting_state = waitingState;
-
-            // Volver a active si estaba stale
-            if (state.status === "stale" || state.status === "blocked_ci") {
-                state.status = "active";
-                state.staleAt = null;
-                updateSprintPlanStatus();
-            }
-
-            // Si lleva más de WAITING_NOTIFY_MS esperando, notificar pero NO cancelar
-            if (waitingMs > WAITING_NOTIFY_MS && !state.waitingNotified) {
-                state.waitingNotified = true;
-                const reasonLabels = { ci: "CI en GitHub Actions", merge: "merge del PR", build: "Build Gradle", merge_pending: "checks del PR", delivery: "ciclo delivery" };
-                const reasonLabel = reasonLabels[waitingState.reason] || waitingState.reason;
-                log("Agente " + agente.numero + " esperando " + reasonLabel + " por " + Math.round(waitingMs / 60000) + "min (inmune a timeout)");
-                await notify(
-                    "⏳ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") esperando " + reasonLabel + "</b>\n" +
-                    (waitingState.detail || "") + "\n" +
-                    "Tiempo de espera: " + Math.round(waitingMs / 60000) + " min\n" +
-                    (waitingState.run_url ? '<a href="' + waitingState.run_url + '">Ver en GitHub</a>\n' : "") +
-                    "<i>El agente no está tildado — espera legítima.</i>",
-                    true
-                );
-            }
-
-            // Si la espera excede WAITING_IMMUNITY_MS (25min), es anormal — notificar sin cancelar
-            if (waitingMs > WAITING_IMMUNITY_MS && !state.waitingLongNotified) {
-                state.waitingLongNotified = true;
-                log("Agente " + agente.numero + " lleva " + Math.round(waitingMs / 60000) + "min esperando — posiblemente bloqueado");
-                await notify(
-                    "⚠️ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") esperando por más de " + Math.round(WAITING_IMMUNITY_MS / 60000) + " min</b>\n" +
-                    (waitingState.detail || "") + "\n" +
-                    "Posible bloqueo. Revisar manualmente si es necesario.\n" +
-                    (waitingState.run_url ? '<a href="' + waitingState.run_url + '">Ver en GitHub</a>' : ""),
-                    false
-                );
-            }
-
-            // NO aplicar stale/failed durante espera legítima
-            continue;
-        }
-
-        // Si había espera y ya terminó (waiting_state null o success), resetear contadores
-        if (!waitingState && state.waiting_state) {
-            state.waiting_state = null;
-            state.waitingNotified = false;
-            state.waitingLongNotified = false;
-        }
-
-        const started = hasAgentStarted(agente);
-
-        if (!started) {
-            if (elapsedFromStart >= FAILED_TOTAL_MS) {
-                // 45 min totales sin actividad → failed
-                if (state.status !== "failed") {
-                    state.status = "failed";
-                    state.failedAt = now;
-                    log("Agente " + agente.numero + " (issue #" + agente.issue + ") FAILED tras 45min sin actividad");
-                    if (!state.notifiedFailed) {
-                        state.notifiedFailed = true;
-                        await notify(
-                            "⚠️ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") sin actividad por 45min — marcado como fallido</b>\n" +
-                            "Sin rama ni worktree detectados. El sprint continuará sin este agente.",
-                            false
-                        );
-                        updateSprintPlanStatus();
-                    }
-                }
-            } else if (elapsedFromStart >= STALE_MS && state.status === "active") {
-                // 15 min sin rama/worktree → stale
-                state.status = "stale";
-                state.staleAt = now;
-                log("Agente " + agente.numero + " (issue #" + agente.issue + ") STALE tras 15min sin actividad");
-                await notify(
-                    "💤 <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") sin actividad</b>\n" +
-                    "Sin rama ni worktree tras 15min. Marcado como stale.",
-                    true
-                );
-                updateSprintPlanStatus();
-            }
-        } else {
-            // El agente tiene actividad — si estaba stale, volver a active
-            if (state.status === "stale" || state.status === "blocked_ci") {
-                state.status = "active";
-                state.staleAt = null;
-                log("Agente " + agente.numero + " activo (rama/worktree detectado, saliendo de stale)");
-                updateSprintPlanStatus();
-            }
-        }
-    }
 }
 
 // ─── Detección de Claude y zombies ───────────────────────────────────────────
@@ -414,46 +181,26 @@ function hasAgentWorktrees() {
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
 
 function checkAgents() {
-    if (_checkingAgents) return; // Prevenir re-entradas
-    _checkingAgents = true;
-    _checkAgentsImpl()
-        .catch(e => log("checkAgents error: " + e.message))
-        .finally(() => { _checkingAgents = false; });
-}
-
-async function _checkAgentsImpl() {
     if (!_plan || !_plan.agentes || _plan.agentes.length === 0) return;
 
-    // Verificar timeouts (stale/failed) primero
-    await checkTimeouts();
-
     const agentes = _plan.agentes;
-    let terminalCount = 0;
+    let doneCount = 0;
     const statusParts = [];
 
     for (const a of agentes) {
-        const state = getOrInitAgentState(a);
-        const done = isAgentDone(a);
-
-        if (done && state.status !== "failed") {
-            state.status = "completed";
-            terminalCount++;
+        if (isAgentDone(a)) {
+            doneCount++;
             statusParts.push(a.numero + ":OK");
-        } else if (state.status === "failed") {
-            terminalCount++;
-            statusParts.push(a.numero + ":FAIL");
-        } else if (state.status === "stale") {
-            statusParts.push(a.numero + ":STALE");
         } else {
             statusParts.push(a.numero + ":...");
         }
     }
 
     const elapsedMin = Math.round((Date.now() - _startTime) / 60000);
-    log(terminalCount + "/" + agentes.length + " terminales [" + statusParts.join("  ") + "] (" + elapsedMin + " min)");
+    log(doneCount + "/" + agentes.length + " finalizados [" + statusParts.join("  ") + "] (" + elapsedMin + " min)");
 
-    if (terminalCount >= agentes.length) {
-        log("Todos los agentes en estado terminal (completed o failed)!");
+    if (doneCount >= agentes.length) {
+        log("Todos los agentes finalizaron!");
         handleAllDone(elapsedMin);
         return;
     }
@@ -468,13 +215,7 @@ async function _checkAgentsImpl() {
 async function handleAllDone(elapsedMin) {
     stopAgentMonitor();
 
-    // Calcular resumen de estados
-    const completedAgents = Object.values(_agentStates).filter(s => s.status === "completed").length;
-    const failedAgents = Object.values(_agentStates).filter(s => s.status === "failed").length;
-    const failedInfo = failedAgents > 0 ? "\n⚠️ Agentes fallidos: " + failedAgents : "";
-
-    const sprintLabel = (_plan && _plan.sprint_id) ? " " + _plan.sprint_id : "";
-    await notify("🏁 <b>Sprint finalizado</b>" + sprintLabel + "\n\nAgentes completados: " + completedAgents + failedInfo + "\nTiempo total: " + elapsedMin + " min.\nEjecutando cleanup...");
+    await notify("🏁 <b>Agentes finalizados</b>\n\nTodos los agentes terminaron (" + elapsedMin + " min).\nEjecutando cleanup...");
 
     // Ejecutar Stop-Agente.ps1 all
     const stopScript = path.join(REPO_ROOT, "scripts", "Stop-Agente.ps1");
@@ -501,6 +242,21 @@ async function handleAllDone(elapsedMin) {
             log("Error generando reporte: " + e.message);
         }
     }
+
+    // Registrar participación de agentes del sprint y alertar sobre inactivos
+    try {
+        const participation = recordSprintParticipation();
+        if (participation) {
+            const semaforo = participation.coveragePct >= 80 ? "🟢" : participation.coveragePct >= 50 ? "🟡" : "🔴";
+            await notify(
+                "📊 <b>Cobertura de agentes del sprint</b>\n\n" +
+                semaforo + " " + participation.agentsList.length + "/" + ALL_PIPELINE_AGENTS.length +
+                " agentes (" + participation.coveragePct + "%)\n" +
+                "Participaron: " + participation.agentsList.join(", ")
+            );
+            await alertInactiveAgents();
+        }
+    } catch (e) { log("Error en métricas de participación: " + e.message); }
 
     // Callback externo
     if (_onAllDone) {
@@ -608,6 +364,96 @@ function guardianCheck() {
     }
 }
 
+// ─── Métricas de participación de agentes ────────────────────────────────────
+
+function loadParticipation() {
+    try {
+        if (!fs.existsSync(PARTICIPATION_FILE)) return { sprints: [] };
+        return JSON.parse(fs.readFileSync(PARTICIPATION_FILE, "utf8"));
+    } catch (e) { return { sprints: [] }; }
+}
+
+function saveParticipation(data) {
+    try { fs.writeFileSync(PARTICIPATION_FILE, JSON.stringify(data, null, 2)); } catch (e) { log("Error saving participation: " + e.message); }
+}
+
+/**
+ * Registra la participación de agentes del sprint actual en agent-participation.json.
+ * Lee agent-metrics.json para ver qué skills fueron invocados en sesiones del sprint.
+ * @returns {{ agentsList: string[], coveragePct: number } | null}
+ */
+function recordSprintParticipation() {
+    if (!_plan) return null;
+
+    const sprintId = _plan.fechaInicio || _plan.fecha || new Date().toISOString().split("T")[0];
+
+    // Recopilar skills invocados de todas las sesiones registradas en agent-metrics.json
+    const agentsParticipated = new Set();
+    try {
+        if (fs.existsSync(METRICS_FILE)) {
+            const metricsData = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8"));
+            for (const sess of (metricsData.sessions || [])) {
+                for (const skill of (sess.skills_invoked || [])) {
+                    if (ALL_PIPELINE_AGENTS.includes(skill)) {
+                        agentsParticipated.add(skill);
+                    }
+                }
+            }
+        }
+    } catch (e) { log("Error leyendo agent-metrics.json: " + e.message); }
+
+    const agentsList = Array.from(agentsParticipated);
+    const coveragePct = Math.round((agentsList.length / ALL_PIPELINE_AGENTS.length) * 100);
+
+    const participation = loadParticipation();
+    const existing = participation.sprints.findIndex(s => s.sprint_id === sprintId);
+    const record = {
+        sprint_id: sprintId,
+        fecha_inicio: _plan.fechaInicio || _plan.fecha,
+        fecha_fin: _plan.fechaFin,
+        recorded_at: new Date().toISOString(),
+        agents_participated: agentsList,
+        agents_total: ALL_PIPELINE_AGENTS.length,
+        coverage_pct: coveragePct
+    };
+
+    if (existing >= 0) {
+        participation.sprints[existing] = record;
+    } else {
+        participation.sprints.push(record);
+    }
+    // Mantener solo los últimos 10 sprints
+    if (participation.sprints.length > 10) {
+        participation.sprints = participation.sprints.slice(-10);
+    }
+
+    saveParticipation(participation);
+    log("Participación registrada: " + agentsList.length + "/" + ALL_PIPELINE_AGENTS.length + " agentes (" + coveragePct + "%)");
+    return { agentsList, coveragePct };
+}
+
+/**
+ * Alerta via Telegram si algún agente lleva 2+ sprints sin participar.
+ */
+async function alertInactiveAgents() {
+    const participation = loadParticipation();
+    if (!participation.sprints || participation.sprints.length < 2) return;
+
+    const lastTwo = participation.sprints.slice(-2);
+    const inactiveAgents = ALL_PIPELINE_AGENTS.filter(agent =>
+        !lastTwo.some(s => s.agents_participated && s.agents_participated.includes(agent))
+    );
+
+    if (inactiveAgents.length > 0) {
+        const msg = "⚠️ <b>Agentes inactivos (2+ sprints)</b>\n\n" +
+            inactiveAgents.map(a => "• " + a).join("\n") +
+            "\n\nEstos agentes no participaron en los últimos 2 sprints. " +
+            "Revisar condiciones de activación en el template del Planner.";
+        await notify(msg);
+        log("Alertados " + inactiveAgents.length + " agentes inactivos: " + inactiveAgents.join(", "));
+    }
+}
+
 // ─── API pública ─────────────────────────────────────────────────────────────
 
 /**
@@ -622,7 +468,6 @@ function startAgentMonitor(plan, opts) {
     _running = true;
     _onAllDone = opts.onAllDone || null;
     _prevCpuSnapshot = {};
-    _agentStates = {}; // Resetear estados por agente
 
     if (_plan && _plan.agentes && _plan.agentes.length > 0 && !opts.guardianOnly) {
         // Watch mode: monitorear agentes específicos del sprint
@@ -653,34 +498,29 @@ function stopAgentMonitor() {
 function getAgentStatus() {
     if (!_plan || !_plan.agentes) return { active: false, agents: [] };
 
-    const agents = _plan.agentes.map(a => {
-        const state = _agentStates[String(a.numero)] || { status: a.status || "active" };
-        return {
-            numero: a.numero,
-            issue: a.issue,
-            slug: a.slug,
-            done: isAgentDone(a),
-            status: state.status,
-            waiting_state: state.waiting_state || null
-        };
-    });
+    const agents = _plan.agentes.map(a => ({
+        numero: a.numero,
+        issue: a.issue,
+        slug: a.slug,
+        done: isAgentDone(a)
+    }));
 
     const elapsed = _startTime ? Math.round((Date.now() - _startTime) / 60000) : 0;
-    const completedCount = agents.filter(a => a.done && a.status !== "failed").length;
-    const failedCount = agents.filter(a => a.status === "failed").length;
-    const terminalCount = completedCount + failedCount;
+    const doneCount = agents.filter(a => a.done).length;
 
     return {
         active: _running,
         elapsed_min: elapsed,
         total: agents.length,
-        done: completedCount,
-        failed: failedCount,
-        terminal: terminalCount,
+        done: doneCount,
         agents: agents,
         guardian: !!_guardianInterval,
         watching: !!_pollInterval
     };
 }
 
-module.exports = { startAgentMonitor, stopAgentMonitor, getAgentStatus, STALE_MS, FAILED_TOTAL_MS, WAITING_IMMUNITY_MS };
+module.exports = {
+    startAgentMonitor, stopAgentMonitor, getAgentStatus,
+    recordSprintParticipation, alertInactiveAgents,
+    ALL_PIPELINE_AGENTS
+};

@@ -280,31 +280,10 @@ El campo `tema` del `sprint-plan.json` debe reflejar el foco elegido:
 ### Generar plan JSON para Start-Agente
 
 Al finalizar el sprint, **siempre** escribir `scripts/sprint-plan.json` con el plan estructurado
-para que `Start-Agente.ps1` pueda lanzar agentes automaticamente.
-
-#### Auto-asignación de sprint_id (OBLIGATORIO)
-
-Antes de escribir `sprint-plan.json`, asignar el próximo `sprint_id`:
-
-```bash
-# Leer y actualizar el contador de sprints
-node -e "
-const fs = require('fs');
-const counterPath = 'scripts/sprint-counter.json';
-let counter = { last_id: 0 };
-try { counter = JSON.parse(fs.readFileSync(counterPath, 'utf8')); } catch(e) {}
-counter.last_id += 1;
-fs.writeFileSync(counterPath, JSON.stringify(counter, null, 2) + '\n');
-const id = 'SPR-' + String(counter.last_id).padStart(3, '0');
-console.log(id);
-"
-```
-
-El valor retornado (ej: `SPR-007`) se usa como campo `sprint_id` en el JSON. Si `scripts/sprint-counter.json` no existe, se crea automáticamente con `{"last_id": 1}` y el primer sprint recibe `SPR-001`.
+para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 
 ```json
 {
-  "sprint_id": "SPR-007",
   "fecha": "2026-02-20",
   "fechaInicio": "2026-02-20",
   "fechaFin": "2026-02-26",
@@ -314,7 +293,7 @@ El valor retornado (ej: `SPR-007`) se usa como campo `sprint_id` en el JSON. Si 
       "issue": 821,
       "slug": "notificaciones",
       "titulo": "Mejorar notificaciones Telegram",
-      "prompt": "Implementar issue #821. Leer el issue completo con: gh issue view 821 --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #821. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: si el issue toca archivos ui/ o modifica pantallas visibles, invocar /qa para tests E2E con video de evidencia. Si el issue tiene labels tipo:infra o docs y no afecta UI, omitir /qa indicando explícitamente: \"QA E2E omitido: [razón]\". Usar /delivery para commit+PR al terminar. Closes #821",
+      "prompt": "Implementar issue #821. Leer el issue completo con: gh issue view 821 --repo intrale/platform. Al iniciar: invocar /ops para verificar estado del entorno. Invocar /po para revisar criterios de aceptación del issue #821. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Implementación especializada según keywords del issue — Si el issue menciona backend, API, Lambda, Ktor, DynamoDB, Cognito, o toca archivos en backend/ o users/: invocar /backend-dev. Si el issue menciona Android, androidMain, flavor, APK: invocar /android-dev. Si el issue menciona iOS, iosMain, Swift: invocar /ios-dev. Si el issue menciona Web, Wasm, wasmJsMain, browser: invocar /web-dev. Si el issue menciona Desktop, desktopMain, JVM: invocar /desktop-dev. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /builder para validar que el build no está roto. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: invocar /review para validar el diff. Si el issue toca archivos ui/ y NO tiene label tipo:infra: invocar /qa para tests E2E de la UI afectada. QA E2E omitido si label tipo:infra. Usar /delivery para commit+PR al terminar. Closes #821. Si este es el último issue del sprint (verificar leyendo scripts/sprint-plan.json): invocar /scrum para métricas y /cleanup para limpiar worktrees.",
       "stream": "E",
       "size": "S"
     }
@@ -323,7 +302,6 @@ El valor retornado (ej: `SPR-007`) se usa como campo `sprint_id` en el JSON. Si 
 ```
 
 Reglas del JSON:
-- `sprint_id`: ID único del sprint en formato `SPR-NNN` (3 dígitos con padding) — asignado automáticamente desde `scripts/sprint-counter.json`
 - `fecha`: fecha de creacion del plan (backward compat, mismo valor que `fechaInicio`)
 - `fechaInicio`: fecha de inicio del sprint (ISO 8601, ej: `"2026-03-03"`) — siempre la fecha actual al momento de planificar
 - `fechaFin`: fecha de fin del sprint (ISO 8601, ej: `"2026-03-07"`) — `fechaInicio` + duracion del sprint (default: 5 dias habiles / 1 semana, excluyendo fines de semana). Si el sprint se planifica un lunes, `fechaFin` es el viernes de esa semana. **OBLIGATORIO** — `Start-Agente.ps1` y `Watch-Agentes.ps1` bloquean la ejecucion si `fechaFin` no existe o ya paso
@@ -338,45 +316,50 @@ Reglas del JSON:
 
 ### Template de prompt enriquecido con pipeline de agentes (USAR SIEMPRE)
 
-El campo `prompt` de cada agente DEBE incluir las siguientes instrucciones de pipeline. Adaptar `#NNN` al numero de issue real:
+El campo `prompt` de cada agente DEBE incluir las siguientes instrucciones de pipeline. Adaptar `#NNN` al numero de issue real.
+
+El template implementa **6 fases** que cubren el ciclo completo con participación de TODOS los agentes especializados:
 
 ```
-Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #NNN. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: si el issue toca archivos ui/ o modifica pantallas visibles, invocar /qa para tests E2E con video de evidencia. Si el issue tiene labels tipo:infra o docs y no afecta UI, omitir /qa indicando explícitamente: "QA E2E omitido: [razón]". Si /qa falla, NO proceder con /delivery — reportar el fallo y detenerse. Usar /delivery para commit+PR al terminar. Closes #NNN
+Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo intrale/platform. Al iniciar: invocar /ops para verificar estado del entorno. Invocar /po para revisar criterios de aceptación del issue #NNN. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Implementación especializada según keywords del issue — Si el issue menciona backend, API, Lambda, Ktor, DynamoDB, Cognito, o toca archivos en backend/ o users/: invocar /backend-dev. Si el issue menciona Android, androidMain, flavor, APK, Compose Android: invocar /android-dev. Si el issue menciona iOS, iosMain, Swift, ComposeUIViewController: invocar /ios-dev. Si el issue menciona Web, Wasm, wasmJsMain, browser, PWA: invocar /web-dev. Si el issue menciona Desktop, desktopMain, JVM Desktop, Swing, Window: invocar /desktop-dev. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /builder para validar que el build no está roto. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: invocar /review para validar el diff. Si el issue toca archivos ui/ y NO tiene label tipo:infra: invocar /qa para tests E2E de la UI afectada. QA E2E omitido si label tipo:infra — afecta hooks y pipeline de agentes, no UI de la app. Usar /delivery para commit+PR al terminar. Closes #NNN. Si este es el último issue del sprint (verificar leyendo scripts/sprint-plan.json y comparando con issues en estado Done en el Project V2): invocar /scrum para generar métricas del sprint. Invocar /cleanup para limpiar worktrees, logs y procesos.
 ```
+
+**Fases del pipeline (guía para construir el prompt):**
+
+| Fase | Agentes | Condición |
+|------|---------|-----------|
+| **FASE 0 — Entorno** | `/ops` | Siempre — verificar Java, Node, disco, hooks |
+| **FASE 1 — Análisis** | `/po` | Siempre |
+| | `/ux` | Condicional — si el issue toca `ui/` |
+| | `/guru` | Condicional — si menciona libs/patrones nuevos |
+| **FASE 2 — Implementación** | `/backend-dev` | Si toca `backend/`, `users/`, o keywords: backend, API, Lambda, Ktor, DynamoDB, Cognito |
+| | `/android-dev` | Si toca `androidMain/` o flavors, keywords: Android, APK |
+| | `/ios-dev` | Si toca `iosMain/`, keywords: iOS, Swift |
+| | `/web-dev` | Si toca `wasmJsMain/`, keywords: Web, Wasm, browser, PWA |
+| | `/desktop-dev` | Si toca `desktopMain/`, keywords: Desktop, JVM Desktop, Swing |
+| **FASE 3 — Verificación** | `/tester` | Siempre (gate) |
+| | `/builder` | Siempre (gate) |
+| | `/security` | Siempre (gate) |
+| | `/qa` | Si toca `ui/` y NO tiene label `tipo:infra` |
+| **FASE 4 — Review** | `/review` | Siempre (gate pre-merge) |
+| **FASE 5 — Entrega** | `/delivery` | Siempre + `Closes #NNN` |
+| **FASE 6 — Cierre** | `/scrum` | Solo si es el último issue del sprint |
+| | `/cleanup` | Solo si es el último issue del sprint |
 
 **Secciones obligatorias del prompt:**
 1. `Leer el issue completo con: gh issue view NNN --repo intrale/platform` — siempre primero
-2. `Al iniciar: invocar /po para revisar criterios de aceptación del issue #NNN` — FASE 1 siempre
-3. `Si el issue toca archivos ui/: invocar /ux` — FASE 1 condicional
-4. `Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru` — FASE 1 condicional
-5. `Antes de /delivery: invocar /tester` — FASE 3 obligatorio (gate)
-6. `Antes de /delivery: invocar /security` — FASE 3 obligatorio (gate)
-7. `Antes de /delivery: invocar /qa si el issue toca UI` — FASE 3 condicional (gate — si falla, detener)
-8. `Usar /delivery para commit+PR al terminar. Closes #NNN` — siempre al final
-
-### Criterios para omitir `/qa` (QA E2E)
-
-El paso `/qa` puede omitirse **solo** cuando el issue cumple **todos** los criterios de omisión:
-
-| Criterio | Descripción |
-|----------|-------------|
-| Label `tipo:infra` | El issue es infraestructura pura (hooks, scripts, CI/CD, build) **y** no modifica ninguna pantalla ni componente visual |
-| Label `docs` | El issue es exclusivamente documentación (archivos `.md`, comentarios, docstrings) — cero cambios de código funcional |
-| Refactor interno sin cambio visual | El issue refactoriza código interno (ej: renombrar variables, extraer funciones) sin ningún efecto visible para el usuario |
-
-**Cuando se omite `/qa`, el prompt del agente DEBE incluir:**
-```
-QA E2E omitido: [razón específica, ej: "issue tipo:infra sin cambio de UI", "solo documentación", "refactor interno sin cambio visual"]
-```
-
-**Cuando NO se puede omitir `/qa` (siempre requerido):**
-- Issues que tocan cualquier archivo en `ui/` (pantallas, componentes, ViewModels)
-- Issues que modifican strings visibles para el usuario
-- Issues que agregan o modifican flujos de navegación
-- Issues con labels `app:client`, `app:business`, `app:delivery`
-- Issues que cambian respuestas de API que la UI consume
-
-**Consecuencia de fallo en `/qa`:** Si `/qa` falla, el agente NO debe proceder con `/delivery`. Debe reportar el fallo via `/qa` y detenerse. El issue queda pendiente hasta que los tests E2E pasen.
+2. `invocar /ops para verificar estado del entorno` — FASE 0 siempre
+3. `invocar /po para revisar criterios de aceptación del issue #NNN` — FASE 1 siempre
+4. `Si el issue toca archivos ui/: invocar /ux` — FASE 1 condicional
+5. `Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru` — FASE 1 condicional
+6. Agentes especializados según keywords/paths — FASE 2 condicional (incluir siempre la detección, el agente decide si aplica)
+7. `invocar /tester` — FASE 3 obligatorio (gate)
+8. `invocar /builder` — FASE 3 obligatorio (gate)
+9. `invocar /security` — FASE 3 obligatorio (gate)
+10. `invocar /review` — FASE 4 obligatorio (gate pre-merge)
+11. `Si el issue toca archivos ui/ y NO tiene label tipo:infra: invocar /qa` — FASE 3 condicional
+12. `Usar /delivery para commit+PR al terminar. Closes #NNN` — siempre al final
+13. FASE 6 (si último issue del sprint): `invocar /scrum` y `invocar /cleanup`
 
 ### Lanzar agentes automaticamente
 
