@@ -318,6 +318,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.login_password_icon_content_description to "Password icon",
     MessageKey.login_password_placeholder to "Your password",
     MessageKey.login_subtitle to "Sign in with your corporate email to continue.",
+    MessageKey.login_checking_session to "Verifying session...",
     MessageKey.login_title to "Sign in to your account",
     MessageKey.login_delivery_subtitle to "Authenticate your delivery account to start.",
     MessageKey.login_delivery_title to "Sign in as delivery driver",

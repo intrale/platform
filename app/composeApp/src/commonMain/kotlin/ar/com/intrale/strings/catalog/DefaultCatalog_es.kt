@@ -318,6 +318,7 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.login_password_icon_content_description to "Ícono de contraseña",
     MessageKey.login_password_placeholder to "Tu contraseña",
     MessageKey.login_subtitle to "Ingresá con tu correo corporativo para continuar.",
+    MessageKey.login_checking_session to "Verificando sesi\u00f3n...",
     MessageKey.login_title to "Ingresá a tu cuenta",
     MessageKey.login_delivery_subtitle to "Autenticá tu cuenta de repartidor para comenzar.",
     MessageKey.login_delivery_title to "Ingresá como repartidor",

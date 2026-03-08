@@ -116,6 +116,42 @@ class LoginViewModelTest {
     }
 
     @Test
+    fun `isCheckingSession inicia en false`() {
+        val vm = createVm()
+        assertFalse(vm.isCheckingSession)
+    }
+
+    @Test
+    fun `previousLogin con sesion valida mantiene isCheckingSession en true`() = runTest {
+        val vm = createVm(checkPrevious = FakeCheckPreviousLogin(true))
+
+        vm.previousLogin()
+
+        assertTrue(vm.isCheckingSession)
+    }
+
+    @Test
+    fun `previousLogin sin sesion pone isCheckingSession en false`() = runTest {
+        val vm = createVm(checkPrevious = FakeCheckPreviousLogin(false))
+
+        vm.previousLogin()
+
+        assertFalse(vm.isCheckingSession)
+    }
+
+    @Test
+    fun `previousLogin con error pone isCheckingSession en false`() = runTest {
+        val vm = createVm(checkPrevious = object : ToDoCheckPreviousLogin {
+            override suspend fun execute(): Boolean = throw RuntimeException("Error de sesion")
+        })
+
+        val result = vm.previousLogin()
+
+        assertFalse(result)
+        assertFalse(vm.isCheckingSession)
+    }
+
+    @Test
     fun `onUserChange actualiza estado`() {
         val vm = createVm()
         vm.onUserChange("nuevo@correo.com")

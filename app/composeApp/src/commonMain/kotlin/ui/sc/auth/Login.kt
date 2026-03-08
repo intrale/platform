@@ -3,11 +3,13 @@ package ui.sc.auth
 import ar.com.intrale.appconfig.AppRuntimeConfig
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -80,6 +82,7 @@ class Login : Screen(LOGIN_PATH) {
         val focusManager = LocalFocusManager.current
         val scrollState = rememberScrollState()
 
+        val checkingSessionText = Txt(MessageKey.login_checking_session)
         val loginText = Txt(MessageKey.login_button)
         val errorCredentials = Txt(MessageKey.login_error_credentials)
         val changePasswordMessage = Txt(MessageKey.login_change_password_required)
@@ -191,6 +194,26 @@ class Login : Screen(LOGIN_PATH) {
             if (viewModel.previousLogin()) {
                 triggerLogin()
             }
+        }
+
+        if (viewModel.isCheckingSession) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        text = checkingSessionText,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            return@screenImplementation
         }
 
         val submitLogin: () -> Unit = {
