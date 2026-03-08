@@ -31,6 +31,8 @@ class LoginViewModel(
     var state by mutableStateOf(LoginUIState())
         private set
     var loading by mutableStateOf(false)
+    var isCheckingSession by mutableStateOf(false)
+        private set
     var changePasswordRequired by mutableStateOf(false)
         private set
     private var loginValidation: Validation<LoginUIState> = buildValidation()
@@ -89,8 +91,13 @@ class LoginViewModel(
 
     suspend fun previousLogin(): Boolean {
         logger.debug { "Verificando inicio de sesión previo" }
-        val result = toDoCheckPreviousLogin.execute()
+        isCheckingSession = true
+        val result = runCatching { toDoCheckPreviousLogin.execute() }.getOrElse {
+            logger.error { "Error al verificar sesión previa: ${it.message}" }
+            false
+        }
         logger.debug { "Resultado verificación: $result" }
+        if (!result) isCheckingSession = false
         return result
     }
 

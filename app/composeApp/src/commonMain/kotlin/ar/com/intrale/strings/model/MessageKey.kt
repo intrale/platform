@@ -305,6 +305,7 @@ enum class MessageKey {
     form_error_passwords_mismatch,
     family_name,
     login_button,
+    login_checking_session,
     login_change_password_description,
     login_change_password_required,
     login_change_password_title,
