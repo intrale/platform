@@ -18,28 +18,15 @@ Segun el argumento recibido (`$ARGUMENTS`), ejecuta una de las siguientes accion
 
 Recolecta datos de TODAS estas fuentes en paralelo:
 
-0. **REPO_ROOT** (OBLIGATORIO — hacer PRIMERO, antes de cualquier lectura):
-   Ejecuta via Bash para resolver el repo principal (no el worktree):
-   ```bash
-   git rev-parse --git-common-dir
-   ```
-   - Si retorna `.git` → REPO_ROOT es el directorio actual del proyecto
-   - Si retorna ruta absoluta con `/.git/` → REPO_ROOT es la parte antes de `/.git/`
-   Usa REPO_ROOT como prefijo para TODAS las rutas de `.claude/` y `scripts/`.
-   Esto asegura que el monitor lea las sesiones del repo principal aunque se ejecute desde un worktree.
-
-1. **Sesiones**: Usando REPO_ROOT resuelto, lista todos los archivos con Bash:
-   ```bash
-   ls {REPO_ROOT}/.claude/sessions/*.json 2>/dev/null
-   ```
-   Luego `Read` cada archivo con su path absoluto. Solo procesar sesiones con `type: "parent"`.
-2. **Actividad reciente**: Lee las ultimas 5 lineas de `{REPO_ROOT}/.claude/activity-log.jsonl` con `Read`
+1. **Sesiones**: Lee TODOS los archivos `.claude/sessions/*.json` con `Glob` y luego `Read` cada uno
+2. **Actividad reciente**: Lee las ultimas 5 lineas de `.claude/activity-log.jsonl` con `Read`
 3. **Tareas**: Usa `TaskList` para obtener todas las tareas
 4. **Git info**: Ejecuta en un solo Bash: `git branch --show-current && git log --oneline -1`
 5. **CI**: Ejecuta `export PATH="/c/Workspaces/gh-cli/bin:$PATH" && export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p') && gh run list --limit 1 --json status,conclusion,headBranch,event,createdAt --jq '.[0] | "\(.status) \(.conclusion // "—") \(.headBranch)"'`
-6. **Sprint plan**: Lee `{REPO_ROOT}/scripts/sprint-plan.json` con `Read` (puede no existir — si no existe, omitir sub-vista Sprint)
-7. **Metricas config**: Lee `{REPO_ROOT}/.claude/hooks/telegram-config.json` y extrae `claude_metrics` para calcular costos
-8. **Metricas de agentes**: Lee `{REPO_ROOT}/.claude/hooks/agent-metrics.json` con `Read` (puede no existir — omitir panel si no existe)
+6. **Sprint plan**: Lee `scripts/sprint-plan.json` con `Read` (puede no existir — si no existe, omitir sub-vista Sprint)
+7. **Metricas config**: Lee `.claude/hooks/telegram-config.json` y extrae `claude_metrics` para calcular costos
+8. **Metricas de agentes**: Lee `.claude/hooks/agent-metrics.json` con `Read` (puede no existir — omitir panel si no existe)
+9. **Participacion de agentes**: Lee `.claude/hooks/agent-participation.json` con `Read` (puede no existir — omitir panel COBERTURA si no existe)
 
 Luego, para cada sesion de tipo `"parent"`, determina su estado de liveness usando `last_activity_ts` del JSON:
 
@@ -53,7 +40,7 @@ Calcula la diferencia entre `last_activity_ts` y el momento actual:
 - **`status: "active"`** con `last_activity_ts > 30 min` → omitir (zombie sin hook Stop)
 - **`status: "active"`** con `pid` y proceso muerto → omitir (zombie detectado por PID)
 
-Para identificar la sesion actual (la que ejecuta `/monitor`): lee `{REPO_ROOT}/.claude/session-state.json` y usa `current_session` como ID de la sesion propia. Agrega `▶` al lado del icono de estado de esa sesion.
+Para identificar la sesion actual (la que ejecuta `/monitor`): lee `.claude/session-state.json` y usa `current_session` como ID de la sesion propia. Agrega `▶` al lado del icono de estado de esa sesion.
 
 Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 
@@ -65,7 +52,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │   └─ ⚙ Compilando APK cliente con testTagsAsResourceId...         │
 │ 67eb3124 │ Claude 🤖      │  3 │ 5m   │ Bash: git diff…  │ ○    │
 ├─ EJECUCIÓN ───────────────────────────────────────────────────────┤
-│ Sprint SPR-007 — 2026-03-06  [████████░░ 75%]                     │
+│ Sprint (2026-03-06)        [████████░░ 75%]                       │
 │  #1  #821  notificaciones     S  ●                                 │
 │  #2  #845  refactor-login     M  ◐                                 │
 │ Historias en curso                                                 │
@@ -85,6 +72,11 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │ ● QA             │ b08b96a2 │    50 │        7 │    4/4 │  92m  │
 │   AndroidDev     │ a3f1c209 │    38 │       12 │    3/5 │  67m  │
 │ (Histórico: 3 sesiones — última: hace 2h)                       │
+├─ COBERTURA DE AGENTES ──────────────────────────────────────────┤
+│ Sprint 2026-03-03:  ████████░░  8/21 (38%) 🔴                    │
+│  Presentes: /po /tester /security /delivery /ux /guru …          │
+│  Ausentes:  /backend-dev /android-dev /ios-dev /web-dev …        │
+│ Sprint 2026-02-24:  ██████████ 18/21 (86%) 🟢                    │
 ├─ ACTIVIDAD RECIENTE ────────────────────────────────────────────┤
 │ 14:32:00  b08b96a2  Edit      activity-logger.js                   │
 │ 14:31:45  b08b96a2  Bash      git status                          │
@@ -124,7 +116,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 Este panel unifica lo que antes eran "Sprint" y "Progreso del Sprint" en tres sub-vistas:
 
 1. **Sprint activo** (si `scripts/sprint-plan.json` existe):
-   - Titulo: `Sprint SPR-NNN — fecha` si `sprint_id` está disponible, o `Sprint (fecha)` como fallback — con barra de progreso global
+   - Titulo: `Sprint (fecha)` con barra de progreso global
    - Cada fila: `#numero  #issue  slug  size  estado_icono`
    - El estado se determina cruzando issues del plan con sesiones activas (● activo, ◐ idle, ○ sin sesion, ✓ completado)
 
@@ -197,6 +189,28 @@ Muestra una tabla con las ultimas sesiones (activas primero, luego historicas de
 - Si `agent-metrics.json` no existe o no tiene sesiones, y no hay sesiones activas con `tool_counts`, omitir el panel completamente
 - Si una sesion historica no tiene algun campo, mostrar `—`
 
+**Reglas del panel COBERTURA DE AGENTES:**
+
+Muestra para cada sprint (últimos 2-3) qué agentes participaron vs. estuvieron ausentes:
+
+```
+├─ COBERTURA DE AGENTES ──────────────────────────────────────────┤
+│ Sprint 2026-03-03:  ████████░░  8/21 (38%) 🔴                    │
+│  Presentes: /po /tester /security /delivery /ux /guru …          │
+│  Ausentes:  /backend-dev /android-dev /ios-dev /web-dev …        │
+│ Sprint 2026-02-24:  ██████████ 18/21 (86%) 🟢                    │
+│  Presentes: todos excepto /cleanup /priorizar /refinar            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- Fuente: `.claude/hooks/agent-participation.json` (generado por `agent-monitor.js` al finalizar cada sprint)
+- Mostrar máximo los últimos 3 sprints (más reciente primero)
+- Barra de progreso ASCII de 10 chars: `█` llenos + `░` vacíos según `coverage_pct`
+- Semáforo de cobertura: 🟢 ≥80% | 🟡 50-79% | 🔴 <50%
+- `Presentes`: listar `agents_participated[]` (abreviar con `…` si son más de 6)
+- `Ausentes`: listar los agentes de `ALL_PIPELINE_AGENTS` que NO están en `agents_participated[]`
+- Si `agent-participation.json` no existe o `sprints[]` está vacío: omitir el panel completamente
+
 **Reglas del panel ACTIVIDAD RECIENTE:**
 
 - Leer las ultimas 5 entradas de `.claude/activity-log.jsonl`
@@ -268,7 +282,7 @@ Reglas para los sub-pasos:
 
 ### "sessions" -- Solo panel SESIONES + ACTIVIDAD RECIENTE
 
-Ejecuta los pasos 0, 1 y 2 (resolver REPO_ROOT, sesiones y actividad). Muestra SOLO los paneles SESIONES y ACTIVIDAD RECIENTE con el mismo formato box-drawing.
+Ejecuta los pasos 1 y 2 (sesiones y actividad). Muestra SOLO los paneles SESIONES y ACTIVIDAD RECIENTE con el mismo formato box-drawing.
 
 ### "tasks" -- Solo tareas
 
@@ -301,6 +315,7 @@ Muestra:
 │   FLUJO        Grafo ASCII de agentes invocados     │
 │   MÉTRICAS     Acciones, costo, presupuesto         │
 │   MÉT.AGENTES  Calls, archivos, tareas por sesión  │
+│   COBERTURA    % de agentes activos por sprint      │
 │   TAREAS       Progreso con sub-pasos               │
 │   REPO         Branch, commit, CI                   │
 │   ALERTAS      Bloqueos y advertencias              │
