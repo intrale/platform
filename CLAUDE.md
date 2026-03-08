@@ -146,6 +146,8 @@ Todas las respuestas de servicio deben incluir `statusCode` con valor numérico 
 
 ## Protocolo de tareas (obligatorio en toda implementación)
 
+**Concurrencia de agentes:** máximo **3 agentes simultáneos** por sprint. El hook `agent-concurrency-check.js` (Stop event) valida el límite automáticamente y lanza el siguiente agente de la cola cuando se libera un slot.
+
 Todo agente que implementa un issue DEBE:
 
 1. **Verificar worktree**: confirmar que se trabaja en una rama `agent/*`, `feature/*` o `bugfix/*` — nunca en `main` ni `develop` directamente. El hook `worktree-guard.js` alerta vía Telegram si detecta escritura de código en rama protegida.

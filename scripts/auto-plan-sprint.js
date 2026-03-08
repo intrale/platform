@@ -31,7 +31,7 @@ const GH_PATH = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
 const DRY_RUN = process.argv.includes("--dry-run");
 const MAX_IDX = process.argv.indexOf("--max");
 const MAX_ISSUES = MAX_IDX !== -1 ? parseInt(process.argv[MAX_IDX + 1], 10) || 5 : 5;
-const MAX_AGENTS = 2; // Máx agentes simultáneos
+const MAX_AGENTS = 3; // Máx agentes simultáneos (#1277: subido de 2 a 3)
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -325,6 +325,21 @@ function selectIssues(allIssues) {
     return selected;
 }
 
+// ─── Generar prompt estándar por issue (#1277) ───────────────────────────────
+
+function generateDefaultPrompt(issue, slug) {
+    return (
+        `Implementar issue #${issue}. ` +
+        `Leer el issue completo con: gh issue view ${issue} --repo intrale/platform. ` +
+        `Al iniciar: invocar /po para revisar criterios de aceptación del issue #${issue}. ` +
+        `Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. ` +
+        `Completar los cambios descritos en el body del issue. ` +
+        `Antes de /delivery: invocar /tester para verificar que los tests pasan. ` +
+        `Antes de /delivery: invocar /security para validar seguridad del diff. ` +
+        `Usar /delivery para commit+PR al terminar. Closes #${issue}`
+    );
+}
+
 // ─── Generar sprint-plan.json ─────────────────────────────────────────────────
 
 function generateSprintPlan(selectedIssues) {
@@ -336,7 +351,7 @@ function generateSprintPlan(selectedIssues) {
     fechaFin.setDate(fechaFin.getDate() + 7);
     const fechaFinStr = fechaFin.toISOString().split("T")[0];
 
-    // Construir agentes (máx 2 simultáneos, tandas)
+    // Construir agentes (máx MAX_AGENTS simultáneos)
     const agentes = selectedIssues.slice(0, MAX_AGENTS).map((issue, i) => ({
         numero: i + 1,
         issue: issue.number,
@@ -344,7 +359,8 @@ function generateSprintPlan(selectedIssues) {
         stream: detectStream(issue),
         score: issue.score || 0,
         labels: issue.labels,
-        dependencies: extractDependencies(issue)
+        dependencies: extractDependencies(issue),
+        prompt: generateDefaultPrompt(issue.number, generateSlug(issue.title))
     }));
 
     const plan = {
@@ -355,16 +371,18 @@ function generateSprintPlan(selectedIssues) {
         priorization: "Técnico → QA → Negocio",
         max_issues: MAX_ISSUES,
         max_agents: MAX_AGENTS,
+        concurrency_limit: MAX_AGENTS, // límite de agentes simultáneos (#1277)
         total_selected: selectedIssues.length,
         agentes,
-        // Issues en cola (los que no entran en los primeros 2 agentes simultáneos)
+        // Issues en cola (se lanzan automáticamente por agent-concurrency-check.js al liberar slots)
         cola: selectedIssues.slice(MAX_AGENTS).map((issue, i) => ({
             numero: MAX_AGENTS + i + 1,
             issue: issue.number,
             slug: generateSlug(issue.title),
             stream: detectStream(issue),
             score: issue.score || 0,
-            labels: issue.labels
+            labels: issue.labels,
+            prompt: generateDefaultPrompt(issue.number, generateSlug(issue.title))
         }))
     };
 
