@@ -1,4 +1,6 @@
-// Hook PostToolUse[Bash]: detecta gh issue close y mueve el issue a "Done" en Project V2
+// Hook PostToolUse[Bash]: detecta gh issue close y aplica gate de QA
+// Gate de calidad: verifica labels qa:passed/qa:skipped antes de mover a Done
+// Si el issue no tiene label de QA → mueve a "QA Pending" y notifica por Telegram
 // Pure Node.js — sin dependencias externas
 const { execSync } = require("child_process");
 const https = require("https");
@@ -7,14 +9,27 @@ const fs = require("fs");
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
 const LOG_FILE = path.join(PROJECT_DIR, ".claude", "hooks", "hook-debug.log");
+const AUDIT_FILE = path.join(PROJECT_DIR, ".claude", "hooks", "delivery-gate-audit.jsonl");
 
 // IDs del Project V2 "Intrale"
 const PROJECT_ID = "PVT_kwDOBTzBoc4AyMGf";
 const FIELD_ID = "PVTSSF_lADOBTzBoc4AyMGfzgoLqjg";
-const DONE_OPTION_ID = "98236657";
+const DONE_OPTION_ID = "b30e67ed";
+const QA_PENDING_OPTION_ID = "dcd0a053";
+
+// Labels de QA que permiten pasar directamente a Done
+const QA_PASS_LABELS = ["qa:passed", "qa:skipped"];
 
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] post-issue-close: " + msg + "\n"); } catch(e) {}
+}
+
+function appendAudit(entry) {
+    try {
+        fs.appendFileSync(AUDIT_FILE, JSON.stringify(entry) + "\n");
+    } catch(e) {
+        log("Error escribiendo audit log: " + e.message);
+    }
 }
 
 // Leer stdin
@@ -81,11 +96,123 @@ function graphqlRequest(token, query, variables) {
     });
 }
 
-async function moveIssueToDone(issueNumber) {
-    log("Moviendo issue #" + issueNumber + " a Done");
+function sendTelegram(message) {
+    try {
+        const cfgPath = path.join(PROJECT_DIR, ".claude", "hooks", "telegram-config.json");
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        const postData = JSON.stringify({
+            chat_id: cfg.chat_id,
+            text: message,
+            parse_mode: "HTML",
+            disable_notification: false
+        });
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + cfg.bot_token + "/sendMessage",
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(postData)
+            },
+            timeout: 8000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => log("Telegram response: " + d.substring(0, 100)));
+        });
+        req.on("error", (e) => log("Telegram error: " + e.message));
+        req.write(postData);
+        req.end();
+    } catch(e) {
+        log("Error enviando Telegram: " + e.message);
+    }
+}
 
-    const token = getGitHubToken();
+async function getIssueLabels(token, issueNumber) {
+    const queryStr = "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){issue(number:$number){labels(first:20){nodes{name}}}}}";
+    const data = await graphqlRequest(token, queryStr, { owner: "intrale", repo: "platform", number: issueNumber });
+    const nodes = data && data.repository && data.repository.issue && data.repository.issue.labels && data.repository.issue.labels.nodes;
+    return (nodes || []).map(function(n) { return n.name; });
+}
 
+async function addLabelToIssue(token, issueNumber, labelName) {
+    // Usar REST API para agregar label
+    return new Promise((resolve, reject) => {
+        const postData = JSON.stringify({ labels: [labelName] });
+        const req = https.request({
+            hostname: "api.github.com",
+            path: "/repos/intrale/platform/issues/" + issueNumber + "/labels",
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(postData),
+                "Authorization": "bearer " + token,
+                "User-Agent": "intrale-hook",
+                "Accept": "application/vnd.github.v3+json"
+            },
+            timeout: 8000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => resolve(d));
+        });
+        req.on("error", (e) => reject(e));
+        req.write(postData);
+        req.end();
+    });
+}
+
+async function ensureLabelExists(token, labelName) {
+    // Verificar si el label existe, si no crearlo
+    return new Promise((resolve) => {
+        const req = https.request({
+            hostname: "api.github.com",
+            path: "/repos/intrale/platform/labels/" + encodeURIComponent(labelName),
+            method: "GET",
+            headers: {
+                "Authorization": "bearer " + token,
+                "User-Agent": "intrale-hook",
+                "Accept": "application/vnd.github.v3+json"
+            },
+            timeout: 5000
+        }, (res) => {
+            // Consumir el body para evitar socket hang
+            res.resume();
+            if (res.statusCode === 200) {
+                resolve(true);
+                return;
+            }
+            // Solo crear label si es 404 (no existe); otros errores resuelven false
+            if (res.statusCode !== 404) {
+                log("ensureLabelExists: status inesperado " + res.statusCode + " para label " + labelName);
+                resolve(false);
+                return;
+            }
+            // Label no existe, crearlo
+            const postData = JSON.stringify({ name: labelName, color: "e4e669", description: "Issue cerrado, pendiente de verificacion QA E2E" });
+            const createReq = https.request({
+                hostname: "api.github.com",
+                path: "/repos/intrale/platform/labels",
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Content-Length": Buffer.byteLength(postData),
+                    "Authorization": "bearer " + token,
+                    "User-Agent": "intrale-hook",
+                    "Accept": "application/vnd.github.v3+json"
+                },
+                timeout: 5000
+            }, () => resolve(true));
+            createReq.on("error", () => resolve(false));
+            createReq.write(postData);
+            createReq.end();
+        });
+        req.on("error", () => resolve(false));
+        req.end();
+    });
+}
+
+async function moveIssueInProject(token, issueNumber, optionId) {
     // Obtener projectItemId del issue en el Project V2
     const queryStr = "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){issue(number:$number){projectItems(first:10){nodes{id project{id}}}}}}";
     const data = await graphqlRequest(token, queryStr, { owner: "intrale", repo: "platform", number: issueNumber });
@@ -93,26 +220,73 @@ async function moveIssueToDone(issueNumber) {
     const nodes = data && data.repository && data.repository.issue && data.repository.issue.projectItems && data.repository.issue.projectItems.nodes;
     if (!nodes || nodes.length === 0) {
         log("Issue #" + issueNumber + " no esta en ningun proyecto, ignorando");
-        return;
+        return null;
     }
 
     // Filtrar por el project id correcto
     const item = nodes.find(function(n) { return n.project && n.project.id === PROJECT_ID; });
     if (!item) {
         log("Issue #" + issueNumber + " no esta en el proyecto Intrale, ignorando");
-        return;
+        return null;
     }
 
-    // Actualizar campo Status a "Done"
+    // Actualizar campo Status
     const mutationStr = "mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$optionId:String!){updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:{singleSelectOptionId:$optionId}}){projectV2Item{id}}}";
     await graphqlRequest(token, mutationStr, {
         projectId: PROJECT_ID,
         itemId: item.id,
         fieldId: FIELD_ID,
-        optionId: DONE_OPTION_ID
+        optionId: optionId
     });
 
-    log("Issue #" + issueNumber + " movido a Done exitosamente");
+    return item.id;
+}
+
+async function processIssueClose(issueNumber, prNumber) {
+    log("Procesando cierre de issue #" + issueNumber);
+
+    const token = getGitHubToken();
+
+    // Obtener labels del issue
+    const labels = await getIssueLabels(token, issueNumber);
+    log("Labels del issue #" + issueNumber + ": " + labels.join(", "));
+
+    // Verificar si tiene label de QA que permite pasar a Done
+    const hasQaPass = labels.some(function(l) { return QA_PASS_LABELS.indexOf(l) !== -1; });
+
+    if (hasQaPass) {
+        // Mover a Done normalmente
+        await moveIssueInProject(token, issueNumber, DONE_OPTION_ID);
+        log("Issue #" + issueNumber + " movido a Done (QA: " + labels.filter(function(l) { return QA_PASS_LABELS.indexOf(l) !== -1; }).join(",") + ")");
+
+        appendAudit({
+            ts: new Date().toISOString(),
+            issue: issueNumber,
+            qa_status: labels.indexOf("qa:passed") !== -1 ? "passed" : "skipped",
+            pr: prNumber || null,
+            action: "moved_to_done"
+        });
+    } else {
+        // No tiene label QA — mover a QA Pending
+        await moveIssueInProject(token, issueNumber, QA_PENDING_OPTION_ID);
+
+        // Agregar label qa:pending
+        await ensureLabelExists(token, "qa:pending");
+        await addLabelToIssue(token, issueNumber, "qa:pending");
+
+        log("Issue #" + issueNumber + " movido a QA Pending (sin label QA E2E)");
+
+        appendAudit({
+            ts: new Date().toISOString(),
+            issue: issueNumber,
+            qa_status: "pending",
+            pr: prNumber || null,
+            action: "moved_to_qa_pending"
+        });
+
+        // Notificar por Telegram
+        sendTelegram("⚙️ Issue #" + issueNumber + " cerrado sin QA E2E — movido a <b>\"QA Pending\"</b> en lugar de Done");
+    }
 }
 
 function handleInput() {
@@ -132,8 +306,13 @@ function handleInput() {
         }
 
         const issueNumber = parseInt(match[1], 10);
-        moveIssueToDone(issueNumber).catch(function(e) {
-            log("Error moviendo issue #" + issueNumber + " a Done: " + e.message);
+
+        // Intentar extraer número de PR del command (gh issue close <N> --comment "Closes PR #M")
+        const prMatch = command.match(/--comment.*?#(\d+)/);
+        const prNumber = prMatch ? parseInt(prMatch[1], 10) : null;
+
+        processIssueClose(issueNumber, prNumber).catch(function(e) {
+            log("Error procesando cierre de issue #" + issueNumber + ": " + e.message);
         });
     } catch(e) {
         log("Error parseando input: " + e.message);
