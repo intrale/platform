@@ -20,6 +20,10 @@ const GUARDIAN_INTERVAL_MS = 300000; // 5 min — verificar inactividad
 const COOLDOWN_MS = 600000;         // 10 min — entre relanzamientos
 const FAILSAFE_MS = 4 * 60 * 60 * 1000; // 4 horas
 
+// Timeouts de agentes (configurables)
+const STALE_MS = 15 * 60 * 1000;        // 15 min sin rama/worktree → stale
+const FAILED_TOTAL_MS = 45 * 60 * 1000; // 45 min total sin actividad → failed
+
 let _pollInterval = null;
 let _guardianInterval = null;
 let _running = false;
@@ -28,6 +32,8 @@ let _startTime = null;
 let _lastLaunchTime = 0;
 let _prevCpuSnapshot = {};
 let _onAllDone = null; // callback cuando todos los agentes terminan
+let _agentStates = {}; // { "N": { status, staleAt, failedAt, notifiedFailed } }
+let _checkingAgents = false; // guard contra re-entradas
 
 let tgClient;
 try { tgClient = require("./telegram-client"); } catch (e) { tgClient = null; }
@@ -91,6 +97,131 @@ function isAgentDone(agente) {
     }
 
     return false;
+}
+
+// ─── Detección de actividad por agente ───────────────────────────────────────
+
+function agentBranchExists(agente) {
+    try {
+        const branchRef = "agent/" + agente.issue + "-" + agente.slug;
+        const localOut = execSync('git branch --list "' + branchRef + '"', {
+            cwd: REPO_ROOT, encoding: "utf8", timeout: 5000, windowsHide: true
+        });
+        if (localOut.trim().length > 0) return true;
+        const remoteOut = execSync('git ls-remote --heads origin "' + branchRef + '"', {
+            cwd: REPO_ROOT, encoding: "utf8", timeout: 8000, windowsHide: true
+        });
+        return remoteOut.trim().length > 0;
+    } catch (e) { return false; }
+}
+
+function getLastAgentActivity(agente) {
+    const wtDir = getWorktreePath(agente);
+    if (!fs.existsSync(wtDir)) return null;
+    const sessionsDir = path.join(wtDir, ".claude", "sessions");
+    if (!fs.existsSync(sessionsDir)) return null;
+    let lastMs = null;
+    try {
+        const files = fs.readdirSync(sessionsDir);
+        for (const f of files) {
+            try {
+                const s = fs.statSync(path.join(sessionsDir, f));
+                if (!lastMs || s.mtimeMs > lastMs) lastMs = s.mtimeMs;
+            } catch (e) {}
+        }
+    } catch (e) {}
+    return lastMs;
+}
+
+function hasAgentStarted(agente) {
+    if (agentBranchExists(agente)) return true;
+    if (fs.existsSync(getWorktreePath(agente))) return true;
+    if (getLastAgentActivity(agente) !== null) return true;
+    return false;
+}
+
+function getOrInitAgentState(agente) {
+    const key = String(agente.numero);
+    if (!_agentStates[key]) {
+        _agentStates[key] = { status: agente.status || "active", staleAt: null, failedAt: null, notifiedFailed: false };
+    }
+    return _agentStates[key];
+}
+
+function updateSprintPlanStatus() {
+    try {
+        if (!fs.existsSync(PLAN_FILE)) return;
+        const plan = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+        if (!Array.isArray(plan.agentes)) return;
+        for (const agente of plan.agentes) {
+            const state = _agentStates[String(agente.numero)];
+            if (state) agente.status = state.status;
+            else if (!agente.status) agente.status = "active";
+        }
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2), "utf8");
+    } catch (e) {
+        log("Error actualizando sprint-plan.json: " + e.message);
+    }
+}
+
+async function checkTimeouts() {
+    if (!_plan || !_plan.agentes) return;
+    const now = Date.now();
+    const elapsedFromStart = now - _startTime;
+
+    for (const agente of _plan.agentes) {
+        const state = getOrInitAgentState(agente);
+
+        // Estados terminales: no reevaluar
+        if (state.status === "failed" || state.status === "completed") continue;
+
+        // Si el agente ya terminó → completed
+        if (isAgentDone(agente)) {
+            state.status = "completed";
+            continue;
+        }
+
+        const started = hasAgentStarted(agente);
+
+        if (!started) {
+            if (elapsedFromStart >= FAILED_TOTAL_MS) {
+                // 45 min totales sin actividad → failed
+                if (state.status !== "failed") {
+                    state.status = "failed";
+                    state.failedAt = now;
+                    log("Agente " + agente.numero + " (issue #" + agente.issue + ") FAILED tras 45min sin actividad");
+                    if (!state.notifiedFailed) {
+                        state.notifiedFailed = true;
+                        await notify(
+                            "⚠️ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") sin actividad por 45min — marcado como fallido</b>\n" +
+                            "Sin rama ni worktree detectados. El sprint continuará sin este agente.",
+                            false
+                        );
+                        updateSprintPlanStatus();
+                    }
+                }
+            } else if (elapsedFromStart >= STALE_MS && state.status === "active") {
+                // 15 min sin rama/worktree → stale
+                state.status = "stale";
+                state.staleAt = now;
+                log("Agente " + agente.numero + " (issue #" + agente.issue + ") STALE tras 15min sin actividad");
+                await notify(
+                    "⏳ <b>Agente #" + agente.numero + " (issue #" + agente.issue + ") sin actividad</b>\n" +
+                    "Sin rama ni worktree tras 15min. Marcado como stale.",
+                    true
+                );
+                updateSprintPlanStatus();
+            }
+        } else {
+            // El agente tiene actividad — si estaba stale, volver a active
+            if (state.status === "stale") {
+                state.status = "active";
+                state.staleAt = null;
+                log("Agente " + agente.numero + " activo (rama/worktree detectado, saliendo de stale)");
+                updateSprintPlanStatus();
+            }
+        }
+    }
 }
 
 // ─── Detección de Claude y zombies ───────────────────────────────────────────
@@ -170,26 +301,46 @@ function hasAgentWorktrees() {
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
 
 function checkAgents() {
+    if (_checkingAgents) return; // Prevenir re-entradas
+    _checkingAgents = true;
+    _checkAgentsImpl()
+        .catch(e => log("checkAgents error: " + e.message))
+        .finally(() => { _checkingAgents = false; });
+}
+
+async function _checkAgentsImpl() {
     if (!_plan || !_plan.agentes || _plan.agentes.length === 0) return;
 
+    // Verificar timeouts (stale/failed) primero
+    await checkTimeouts();
+
     const agentes = _plan.agentes;
-    let doneCount = 0;
+    let terminalCount = 0;
     const statusParts = [];
 
     for (const a of agentes) {
-        if (isAgentDone(a)) {
-            doneCount++;
+        const state = getOrInitAgentState(a);
+        const done = isAgentDone(a);
+
+        if (done && state.status !== "failed") {
+            state.status = "completed";
+            terminalCount++;
             statusParts.push(a.numero + ":OK");
+        } else if (state.status === "failed") {
+            terminalCount++;
+            statusParts.push(a.numero + ":FAIL");
+        } else if (state.status === "stale") {
+            statusParts.push(a.numero + ":STALE");
         } else {
             statusParts.push(a.numero + ":...");
         }
     }
 
     const elapsedMin = Math.round((Date.now() - _startTime) / 60000);
-    log(doneCount + "/" + agentes.length + " finalizados [" + statusParts.join("  ") + "] (" + elapsedMin + " min)");
+    log(terminalCount + "/" + agentes.length + " terminales [" + statusParts.join("  ") + "] (" + elapsedMin + " min)");
 
-    if (doneCount >= agentes.length) {
-        log("Todos los agentes finalizaron!");
+    if (terminalCount >= agentes.length) {
+        log("Todos los agentes en estado terminal (completed o failed)!");
         handleAllDone(elapsedMin);
         return;
     }
@@ -204,7 +355,12 @@ function checkAgents() {
 async function handleAllDone(elapsedMin) {
     stopAgentMonitor();
 
-    await notify("🏁 <b>Agentes finalizados</b>\n\nTodos los agentes terminaron (" + elapsedMin + " min).\nEjecutando cleanup...");
+    // Calcular resumen de estados
+    const completedAgents = Object.values(_agentStates).filter(s => s.status === "completed").length;
+    const failedAgents = Object.values(_agentStates).filter(s => s.status === "failed").length;
+    const failedInfo = failedAgents > 0 ? "\n⚠️ Agentes fallidos: " + failedAgents : "";
+
+    await notify("🏁 <b>Sprint finalizado</b>\n\nAgentes completados: " + completedAgents + failedInfo + "\nTiempo total: " + elapsedMin + " min.\nEjecutando cleanup...");
 
     // Ejecutar Stop-Agente.ps1 all
     const stopScript = path.join(REPO_ROOT, "scripts", "Stop-Agente.ps1");
@@ -352,6 +508,7 @@ function startAgentMonitor(plan, opts) {
     _running = true;
     _onAllDone = opts.onAllDone || null;
     _prevCpuSnapshot = {};
+    _agentStates = {}; // Resetear estados por agente
 
     if (_plan && _plan.agentes && _plan.agentes.length > 0 && !opts.guardianOnly) {
         // Watch mode: monitorear agentes específicos del sprint
@@ -382,25 +539,33 @@ function stopAgentMonitor() {
 function getAgentStatus() {
     if (!_plan || !_plan.agentes) return { active: false, agents: [] };
 
-    const agents = _plan.agentes.map(a => ({
-        numero: a.numero,
-        issue: a.issue,
-        slug: a.slug,
-        done: isAgentDone(a)
-    }));
+    const agents = _plan.agentes.map(a => {
+        const state = _agentStates[String(a.numero)] || { status: a.status || "active" };
+        return {
+            numero: a.numero,
+            issue: a.issue,
+            slug: a.slug,
+            done: isAgentDone(a),
+            status: state.status
+        };
+    });
 
     const elapsed = _startTime ? Math.round((Date.now() - _startTime) / 60000) : 0;
-    const doneCount = agents.filter(a => a.done).length;
+    const completedCount = agents.filter(a => a.done && a.status !== "failed").length;
+    const failedCount = agents.filter(a => a.status === "failed").length;
+    const terminalCount = completedCount + failedCount;
 
     return {
         active: _running,
         elapsed_min: elapsed,
         total: agents.length,
-        done: doneCount,
+        done: completedCount,
+        failed: failedCount,
+        terminal: terminalCount,
         agents: agents,
         guardian: !!_guardianInterval,
         watching: !!_pollInterval
     };
 }
 
-module.exports = { startAgentMonitor, stopAgentMonitor, getAgentStatus };
+module.exports = { startAgentMonitor, stopAgentMonitor, getAgentStatus, STALE_MS, FAILED_TOTAL_MS };
