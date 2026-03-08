@@ -763,6 +763,16 @@ async function main() {
     const caption = `📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`;
     sendReportViaTelegram(htmlPath, caption);
 
+    // Paso 1: Tag de sprint (siempre, sin condiciones)
+    log("--- Iniciando sprint-tagger.js ---");
+    execSafe(`node "${path.join(__dirname, "sprint-tagger.js")}" "${planPath}"`, { timeout: 60000 });
+    log("--- sprint-tagger.js completado ---");
+
+    // Paso 2: Evaluar y crear release (autónomo)
+    log("--- Iniciando evaluate-and-release.js ---");
+    execSafe(`node "${path.join(__dirname, "evaluate-and-release.js")}" "${planPath}"`, { timeout: 60000 });
+    log("--- evaluate-and-release.js completado ---");
+
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     log(`=== sprint-report.js completado en ${elapsed}s ===`);
 }
