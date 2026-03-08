@@ -175,6 +175,32 @@ No hay cleanup necesario.
 [Aprobado para PR | Correcciones requeridas]
 ```
 
+## Paso 5b: Agregar label qa:passed al issue (solo si APROBADO)
+
+Si el veredicto es APROBADO y el branch actual es `agent/<N>-*` o `feature/<N>-*`, extraer el número de issue del nombre del branch y agregar el label `qa:passed`:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+BRANCH=$(git branch --show-current)
+ISSUE_NUM=$(echo "$BRANCH" | sed 's/.*\/\([0-9][0-9]*\)-.*/\1/' 2>/dev/null)
+if [ -n "$ISSUE_NUM" ] && echo "$ISSUE_NUM" | grep -E '^[0-9]+$' > /dev/null 2>&1; then
+  gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "qa:passed" 2>/dev/null && echo "Label qa:passed agregado a issue #$ISSUE_NUM" || echo "No se pudo agregar label (puede no existir el issue)"
+fi
+```
+
+Si el veredicto es RECHAZADO, agregar el label `qa:failed` en su lugar:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+BRANCH=$(git branch --show-current)
+ISSUE_NUM=$(echo "$BRANCH" | sed 's/.*\/\([0-9][0-9]*\)-.*/\1/' 2>/dev/null)
+if [ -n "$ISSUE_NUM" ] && echo "$ISSUE_NUM" | grep -E '^[0-9]+$' > /dev/null 2>&1; then
+  gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "qa:failed" 2>/dev/null && echo "Label qa:failed agregado a issue #$ISSUE_NUM" || echo "No se pudo agregar label"
+fi
+```
+
+Si el branch no tiene un número de issue identificable, omitir este paso sin error.
+
 ---
 
 # Flujo de validación (`validate <issue-number>`)
@@ -480,6 +506,22 @@ bash qa/scripts/qa-env-down.sh
 Limpiar tests generados:
 ```bash
 rm -rf qa/generated/api/ qa/generated/maestro/
+```
+
+## Paso V9: Agregar label qa:passed al issue (si APROBADO)
+
+Si el veredicto es APROBADO, agregar label `qa:passed` al issue validado:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "qa:passed" 2>/dev/null && echo "Label qa:passed agregado a issue #$ISSUE_NUM" || echo "No se pudo agregar label"
+```
+
+Si el veredicto es RECHAZADO, agregar label `qa:failed`:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "qa:failed" 2>/dev/null && echo "Label qa:failed agregado a issue #$ISSUE_NUM" || echo "No se pudo agregar label"
 ```
 
 ---
