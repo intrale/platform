@@ -409,6 +409,22 @@ function groupActivities(activities, limit) {
   return groups.slice(0, limit);
 }
 
+// Formatear estado de espera para HTML/texto
+function formatWaitingBadge(waitingState) {
+  if (!waitingState) return null;
+  const icons = { ci: "⏳", merge: "⏳", merge_pending: "⏳", build: "🔨", delivery: "⏳", approval: "⏳" };
+  const statusIcons = { success: "✅", failure: "❌", timeout: "⚠️", starting: "⏳", in_progress: "⏳", no_runs: "❓" };
+  const icon = waitingState.status === "success" ? "✅"
+    : waitingState.status === "failure" ? "❌"
+    : waitingState.status === "timeout" ? "⚠️"
+    : (icons[waitingState.reason] || "⏳");
+  const elapsed = waitingState.started_at
+    ? formatAge(waitingState.started_at)
+    : null;
+  const detail = (waitingState.detail || "Esperando...").replace(/\n/g, " ");
+  return { icon, detail, elapsed, run_url: waitingState.run_url || null, status: waitingState.status };
+}
+
 function computeVelocity(activities) {
   const now = Date.now();
   const buckets = Array(6).fill(0);
@@ -761,13 +777,28 @@ function renderHTML(data, theme) {
         tasksPct = 0;
       }
       const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+      // Waiting state
+      const waitingState = matchSession ? (matchSession.waiting_state || null) : null;
+      const wb = waitingState ? formatWaitingBadge(waitingState) : null;
+      const isWaiting = wb && (wb.status === "in_progress" || wb.status === "starting");
+      const isFailed = wb && wb.status === "failure";
+      const waitingBarColor = isWaiting ? "linear-gradient(90deg, #fbbf24, #f59e0b)"
+        : isFailed ? "linear-gradient(90deg, #ef4444, #f87171)"
+        : wb && wb.status === "success" ? "var(--gradient-green)"
+        : barColor;
       const statusText = isBlocked ? "&#128721; Bloqueado"
+        : wb ? (wb.icon + " " + escHtml(wb.detail) + (wb.elapsed ? " (" + wb.elapsed + ")" : ""))
         : agStatus === "pending" ? "Pendiente"
         : agStatus === "done" && tasks.length === 0 ? "Completado"
-        : agStatus === "stale" ? "Finalizado · " + actionCount + " acciones"
+        : agStatus === "stale" ? "&#128164; Inactivo · " + actionCount + " acciones"
         : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
         : `${actionCount} acciones · ${tasksPct}%`;
       const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+      // Validar que run_url sea una URL https de GitHub (prevenir javascript: injection)
+      const safeRunUrl = wb && wb.run_url && /^https:\/\/github\.com\//.test(wb.run_url) ? wb.run_url : null;
+      const ciLinkHtml = safeRunUrl
+        ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">▶ CI</a>`
+        : "";
 
       ejecutionHtml += `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
         <div style="display:flex;align-items:center;gap:8px;width:100%;">
@@ -777,10 +808,10 @@ function renderHTML(data, theme) {
           <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;width:100%;">
-          <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${barColor};"></div></div>
-          <span style="font-size:11px;color:${statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
+          <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${isWaiting ? waitingBarColor : barColor};${isWaiting ? 'animation:pulse 1.5s infinite alternate;' : ''}"></div></div>
+          <span style="font-size:11px;color:${isWaiting ? '#fbbf24' : statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
         </div>
-        <div style="font-size:10px;color:var(--text-muted);">${statusText}${actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}</div>
+        <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${ciLinkHtml}</div>
       </div>`;
     }
     ejecutionHtml += `</div></div>`;
@@ -1906,13 +1937,38 @@ async function sendHeartbeat() {
       console.log("[heartbeat] Screenshot no disponible: " + e.message + " — fallback a texto");
     }
 
+    // Construir líneas por agente con estado de espera
+    let agentLines = "";
+    const allSessions = data.sessions || [];
+    for (const s of allSessions) {
+      if (s._status === "done" || s._status === "stale") continue;
+      const agentName = s.agent_name || "Agente (" + s.id + ")";
+      const pct = (() => {
+        const tasks = s.current_tasks || [];
+        if (tasks.length > 0) return Math.round((tasks.filter(t => t.status === "completed").length / tasks.length) * 100);
+        return 0;
+      })();
+      const bar = "\u2588".repeat(Math.round(pct / 10)) + "\u2591".repeat(10 - Math.round(pct / 10));
+      const wb = s.waiting_state ? formatWaitingBadge(s.waiting_state) : null;
+      let stateText;
+      if (wb) {
+        stateText = wb.icon + " " + wb.detail + (wb.elapsed ? " (" + wb.elapsed + ")" : "");
+        if (wb.run_url) stateText += ' <a href="' + wb.run_url + '">CI</a>';
+      } else if (s._status === "idle") {
+        stateText = "\ud83d\udca4 Idle " + formatAge(s.last_activity_ts);
+      } else {
+        stateText = s.current_task || (s.last_tool ? "Ejecutando " + s.last_tool : "Activo");
+      }
+      agentLines += "\n\u25cf <b>" + agentName + "</b> " + bar + " " + pct + "% \u2014 " + stateText;
+    }
+
     const text = caption + "\n\n" +
       "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
       "\u25cf Tareas: <b>" + data.completedTasks + "/" + data.totalTasks + "</b> completadas\n" +
       "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
       "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
-      "\u25cf Costo est: <b>$" + data.metrics.estimatedCostUsd.toFixed(2) + "</b> (" + data.metrics.weeklyUsagePct + "% semanal)\n" +
-      (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "");
+      (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "") +
+      (agentLines ? "\n<b>Estado agentes:</b>" + agentLines : "");
     sendTelegramText(text, true);
   } catch (e) {
     console.log("[heartbeat] Error: " + e.message);
