@@ -139,6 +139,75 @@ Stream E — Cross-cutting
 
 ---
 
+## Priorización inter-sprint: Técnico → QA → Negocio
+
+Al cerrar un sprint y planificar el siguiente, se aplica una priorización por fases.
+Este orden es **estricto**: primero se llena la cuota de la Fase 1 antes de pasar a la Fase 2.
+
+### Fase 1 — Backlog Técnico (máx 5 issues, preferir S/M)
+
+Issues con alguna de estas características:
+
+| Condición | Labels esperados |
+|-----------|-----------------|
+| Infra, hooks, pipeline, CI/CD | `backlog-tecnico`, `tipo:infra`, `area:infra` |
+| Deuda técnica crítica | `backlog-tecnico`, `enhancement` |
+| Bloqueadores (bloquean CI, tests, compilación) | `blocker` |
+| Pipeline de agentes / sprint management | `backlog-tecnico` |
+
+**Bonus de scoring:** +30 pts sobre el scoring base para issues técnicos.
+
+**Regla**: Siempre priorizar infra sobre features de producto. Un bug en el pipeline afecta a todos los sprints futuros.
+
+### Fase 2 — QA/E2E Pendiente (máx 3 issues)
+
+Issues con alguna de estas características:
+
+| Condición | Labels esperados |
+|-----------|-----------------|
+| Issues con status "Ready" pero sin validación QA | `qa-pending` |
+| Issues marcados como "needs-qa" | `needs-qa` |
+| Features implementadas pero sin cobertura de tests | `testing` |
+| Cuerpo del issue menciona "QA E2E" o "validación qa" | (búsqueda en body) |
+
+**Regla**: Un issue que llegó a "Done" sin QA tiene riesgo latente. Priorizarlos antes de agregar más features.
+
+### Fase 3 — Backlog de Negocio (resto del capacity, ~5 issues)
+
+Issues con alguna de estas características:
+
+| Condición | Labels esperados |
+|-----------|-----------------|
+| Features de app cliente | `app:client` |
+| Features de app negocio | `app:business` |
+| Features de app delivery | `app:delivery` |
+| Mejoras de producto sin clasificar | `enhancement`, `feature` |
+
+**Regla**: Las features de negocio son valiosas pero no deben bloquear la salud del sistema.
+
+### Restricciones de capacidad
+
+| Restricción | Valor |
+|------------|-------|
+| Máximo issues por sprint | 5 (ajustable con `--max N`) |
+| Máximo agentes simultáneos | 2 (tandas de 2+2+1) |
+| Issues bloqueados | Excluidos hasta que se resuelva el bloqueador |
+
+### Ejemplo de plan con priorización
+
+```
+Sprint 2026-03-15:
+  Fase 1 (Técnico, 2 issues): #1267 auto-plan, #1280 ci-fix
+  Fase 2 (QA, 1 issue):       #1250 test-coverage-backend
+  Fase 3 (Negocio, 2 issues): #1260 orders-screen, #1245 product-catalog
+
+Agentes simultáneos: #1267 + #1280
+Cola (tanda 2):      #1250 + #1260
+Cola (tanda 3):      #1245
+```
+
+---
+
 ## Template de Gantt (Mermaid)
 
 ```mermaid
