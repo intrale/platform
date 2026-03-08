@@ -293,7 +293,7 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
       "issue": 821,
       "slug": "notificaciones",
       "titulo": "Mejorar notificaciones Telegram",
-      "prompt": "Implementar issue #821. Leer el issue completo con: gh issue view 821 --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #821. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Usar /delivery para commit+PR al terminar. Closes #821",
+      "prompt": "Implementar issue #821. Leer el issue completo con: gh issue view 821 --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #821. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: si el issue toca archivos ui/ o modifica pantallas visibles, invocar /qa para tests E2E con video de evidencia. Si el issue tiene labels tipo:infra o docs y no afecta UI, omitir /qa indicando explícitamente: \"QA E2E omitido: [razón]\". Usar /delivery para commit+PR al terminar. Closes #821",
       "stream": "E",
       "size": "S"
     }
@@ -319,7 +319,7 @@ Reglas del JSON:
 El campo `prompt` de cada agente DEBE incluir las siguientes instrucciones de pipeline. Adaptar `#NNN` al numero de issue real:
 
 ```
-Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #NNN. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Usar /delivery para commit+PR al terminar. Closes #NNN
+Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #NNN. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: si el issue toca archivos ui/ o modifica pantallas visibles, invocar /qa para tests E2E con video de evidencia. Si el issue tiene labels tipo:infra o docs y no afecta UI, omitir /qa indicando explícitamente: "QA E2E omitido: [razón]". Si /qa falla, NO proceder con /delivery — reportar el fallo y detenerse. Usar /delivery para commit+PR al terminar. Closes #NNN
 ```
 
 **Secciones obligatorias del prompt:**
@@ -329,7 +329,32 @@ Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo int
 4. `Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru` — FASE 1 condicional
 5. `Antes de /delivery: invocar /tester` — FASE 3 obligatorio (gate)
 6. `Antes de /delivery: invocar /security` — FASE 3 obligatorio (gate)
-7. `Usar /delivery para commit+PR al terminar. Closes #NNN` — siempre al final
+7. `Antes de /delivery: invocar /qa si el issue toca UI` — FASE 3 condicional (gate — si falla, detener)
+8. `Usar /delivery para commit+PR al terminar. Closes #NNN` — siempre al final
+
+### Criterios para omitir `/qa` (QA E2E)
+
+El paso `/qa` puede omitirse **solo** cuando el issue cumple **todos** los criterios de omisión:
+
+| Criterio | Descripción |
+|----------|-------------|
+| Label `tipo:infra` | El issue es infraestructura pura (hooks, scripts, CI/CD, build) **y** no modifica ninguna pantalla ni componente visual |
+| Label `docs` | El issue es exclusivamente documentación (archivos `.md`, comentarios, docstrings) — cero cambios de código funcional |
+| Refactor interno sin cambio visual | El issue refactoriza código interno (ej: renombrar variables, extraer funciones) sin ningún efecto visible para el usuario |
+
+**Cuando se omite `/qa`, el prompt del agente DEBE incluir:**
+```
+QA E2E omitido: [razón específica, ej: "issue tipo:infra sin cambio de UI", "solo documentación", "refactor interno sin cambio visual"]
+```
+
+**Cuando NO se puede omitir `/qa` (siempre requerido):**
+- Issues que tocan cualquier archivo en `ui/` (pantallas, componentes, ViewModels)
+- Issues que modifican strings visibles para el usuario
+- Issues que agregan o modifican flujos de navegación
+- Issues con labels `app:client`, `app:business`, `app:delivery`
+- Issues que cambian respuestas de API que la UI consume
+
+**Consecuencia de fallo en `/qa`:** Si `/qa` falla, el agente NO debe proceder con `/delivery`. Debe reportar el fallo via `/qa` y detenerse. El issue queda pendiente hasta que los tests E2E pasen.
 
 ### Lanzar agentes automaticamente
 
