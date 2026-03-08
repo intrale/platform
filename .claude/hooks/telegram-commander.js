@@ -2336,6 +2336,88 @@ async function launchHistoriaForProposal(proposal) {
     await sendResult("/historia — " + proposal.title, result);
 }
 
+// ─── Auto-plan callbacks (launch_sprint, view_sprint_plan) ──────────────────
+
+async function handleAutoPlanCallback(callbackData, callbackQueryId, messageId) {
+    if (callbackData === "view_sprint_plan") {
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "📋 Mostrando plan...",
+            show_alert: false
+        }, 5000);
+
+        // Leer sprint-plan.json
+        let planText = "⚠️ No se encontró sprint-plan.json";
+        try {
+            if (fs.existsSync(SPRINT_PLAN_FILE)) {
+                const plan = JSON.parse(fs.readFileSync(SPRINT_PLAN_FILE, "utf8"));
+                const agentes = plan.agentes || [];
+                const cola = plan.cola || [];
+                planText = `📅 <b>Sprint plan</b> — ${escHtml(plan.fecha || "?")} → ${escHtml(plan.fechaFin || "?")}\n`;
+                planText += `<i>Priorización: ${escHtml(plan.priorization || "N/A")}</i>\n`;
+                planText += `<b>Issues seleccionados:</b> ${plan.total_selected || agentes.length + cola.length}/${plan.max_issues || 5}\n\n`;
+                planText += `🚀 <b>Agentes simultáneos (${agentes.length}):</b>\n`;
+                for (const a of agentes) {
+                    planText += `  ${a.numero}. #${a.issue} — ${escHtml(a.slug)}\n`;
+                    planText += `     Stream: ${escHtml(a.stream || "?")}\n`;
+                    if (a.labels && a.labels.length > 0) planText += `     Labels: ${escHtml(a.labels.join(", "))}\n`;
+                }
+                if (cola.length > 0) {
+                    planText += `\n⏳ <b>Cola (${cola.length} issues en tandas):</b>\n`;
+                    for (const a of cola) {
+                        planText += `  ${a.numero}. #${a.issue} — ${escHtml(a.slug)}\n`;
+                    }
+                }
+                planText += `\n<i>Para lanzar: ejecutar Start-Agente.ps1 all en PowerShell</i>`;
+            }
+        } catch (e) {
+            log("Error leyendo sprint-plan.json: " + e.message);
+            planText = "❌ Error leyendo sprint-plan.json: " + escHtml(e.message);
+        }
+
+        // Quitar botones del mensaje original y enviar el plan
+        if (messageId) {
+            try {
+                await telegramPost("editMessageReplyMarkup", {
+                    chat_id: CHAT_ID,
+                    message_id: messageId,
+                    reply_markup: { inline_keyboard: [] }
+                }, 5000);
+            } catch (e) { /* ok */ }
+        }
+        await sendMessage(planText);
+        return;
+    }
+
+    if (callbackData === "launch_sprint") {
+        await telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: "🚀 Confirmado — lanzar Start-Agente.ps1 en PowerShell",
+            show_alert: false
+        }, 5000);
+
+        // Quitar botones del mensaje
+        if (messageId) {
+            try {
+                await telegramPost("editMessageReplyMarkup", {
+                    chat_id: CHAT_ID,
+                    message_id: messageId,
+                    reply_markup: { inline_keyboard: [] }
+                }, 5000);
+            } catch (e) { /* ok */ }
+        }
+
+        await sendMessage(
+            "🚀 <b>Sprint listo para lanzar</b>\n\n" +
+            "El plan fue generado automáticamente.\n" +
+            "Para lanzar los agentes, ejecutar en PowerShell:\n\n" +
+            "<code>cd C:\\Workspaces\\Intrale\\platform\\scripts\n" +
+            ".\\Start-Agente.ps1 all</code>\n\n" +
+            "<i>Los primeros 2 agentes arrancarán en paralelo. Los restantes se activarán automáticamente.</i>"
+        );
+    }
+}
+
 // ─── Polling loop ────────────────────────────────────────────────────────────
 
 async function pollingLoop() {
@@ -2483,6 +2565,22 @@ async function pollingLoop() {
                             await handleProposalCallback(cbData, cq.id);
                         } catch (e) {
                             log("Error procesando callback de propuesta: " + e.message);
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Error: " + e.message.substring(0, 100),
+                                    show_alert: true
+                                }, 5000);
+                            } catch (e2) {}
+                        }
+                    }
+                    // Callbacks de auto-plan (launch_sprint, view_sprint_plan)
+                    else if (cbData === "launch_sprint" || cbData === "view_sprint_plan") {
+                        log("Callback de auto-plan: " + cbData);
+                        try {
+                            await handleAutoPlanCallback(cbData, cq.id, cq.message && cq.message.message_id);
+                        } catch (e) {
+                            log("Error procesando callback de auto-plan: " + e.message);
                             try {
                                 await telegramPost("answerCallbackQuery", {
                                     callback_query_id: cq.id,

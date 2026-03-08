@@ -6,9 +6,15 @@
     Lee sprint-plan.json y monitorea las sesiones de cada agente.
     Al detectar que todos finalizaron:
     1. Ejecuta Stop-Agente.ps1 all (commit + PR + merge + cleanup)
-    2. Pregunta via Telegram si planificar el siguiente sprint
-    3. Si confirma: git pull + nueva terminal con claude '/planner sprint'
-       + nueva terminal con claude '/planner proponer' (en paralelo)
+    2. Genera reporte de sprint (sprint-report.js)
+    3. AUTOMATICO: Propone nuevas historias via Telegram (planner-propose-interactive.js)
+       - El usuario aprueba/descarta cada propuesta con botones inline
+    4. AUTOMATICO: Planifica el siguiente sprint con priorización (auto-plan-sprint.js)
+       - Técnico -> QA -> Negocio
+    5. Notifica via Telegram con botones: Lanzar sprint / Ver plan
+
+    Sin preguntar manualmente si planificar. El flujo es completamente automatico.
+    El usuario solo interactua via Telegram para aprobar/descartar propuestas.
 
 .PARAMETER PollInterval
     Intervalo de polling en segundos (default: 30).
@@ -16,19 +22,26 @@
 .PARAMETER SkipMerge
     Si se indica, se pasa -SkipMerge a Stop-Agente.ps1 (PR sin merge automatico).
 
-.PARAMETER NoAutoProponer
-    Si se indica, no se lanza automaticamente '/planner proponer' en paralelo.
+.PARAMETER NoAutoPlan
+    Si se indica, no ejecuta el flujo automatico de propuestas + planificacion.
+    Equivalente al comportamiento anterior con -NoAutoProponer.
+
+.PARAMETER PropuestaTimeout
+    Segundos a esperar por aprobacion de propuestas antes de continuar con auto-plan (default: 120).
 
 .EXAMPLE
     .\Watch-Agentes.ps1
     .\Watch-Agentes.ps1 -PollInterval 60
     .\Watch-Agentes.ps1 -SkipMerge
-    .\Watch-Agentes.ps1 -NoAutoProponer
+    .\Watch-Agentes.ps1 -NoAutoPlan
 #>
 param(
     [int]$PollInterval = 30,
     [switch]$SkipMerge,
-    [switch]$NoAutoProponer
+    # Alias de compatibilidad con el param anterior
+    [switch]$NoAutoProponer,
+    [switch]$NoAutoPlan,
+    [int]$PropuestaTimeout = 120
 )
 
 Write-Warning "DEPRECADO: Watch-Agentes.ps1 esta siendo reemplazado por agent-monitor.js integrado en Commander. Usar Commander para monitoreo automatico."
@@ -40,6 +53,8 @@ $ErrorActionPreference = "Stop"
 $MainRepo  = "C:\Workspaces\Intrale\platform"
 $PlanFile  = Join-Path $PSScriptRoot "sprint-plan.json"
 $AskScript = Join-Path $PSScriptRoot "ask-next-sprint.js"
+$ProposeScript = Join-Path $PSScriptRoot "planner-propose-interactive.js"
+$AutoPlanScript = Join-Path $PSScriptRoot "auto-plan-sprint.js"
 
 # --- Helpers ---
 $P = '>>'
@@ -123,8 +138,9 @@ Write-Log ('Intervalo de polling: {0}s' -f $PollInterval) 'Cyan'
 if ($SkipMerge) {
     Write-Log 'SkipMerge activado — PRs sin merge automatico' 'Yellow'
 }
-if ($NoAutoProponer) {
-    Write-Log 'Auto-proponer deshabilitado (-NoAutoProponer)' 'Yellow'
+$EffectiveNoAutoPlan = $NoAutoPlan -or $NoAutoProponer
+if ($EffectiveNoAutoPlan) {
+    Write-Log 'Auto-plan deshabilitado (-NoAutoPlan / -NoAutoProponer)' 'Yellow'
 }
 Write-Host ''
 
@@ -279,86 +295,84 @@ else {
 
 Write-Host ''
 
-# --- Preguntar si planificar el siguiente sprint ---
-$confirmed = $false
+# --- Flujo automatico: Propuestas + Planificacion ---
 
-if (Test-Path $AskScript) {
-    # Intentar via Telegram (Node.js helper)
-    Write-Log 'Consultando via Telegram...' 'Cyan'
-    try {
-        $rawResult = & node $AskScript 2>$null
-        $result = $rawResult | ConvertFrom-Json
-        if ($result.confirmed -eq $true) {
-            $confirmed = $true
-            Write-Log 'Usuario confirmo: planificar siguiente sprint.' 'Green'
-        }
-        elseif ($result.timeout -eq $true) {
-            Write-Log 'Timeout en Telegram, preguntando en terminal...' 'Yellow'
-            $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint y proponer nuevas historias? (s/N)'
-            if ($resp -match '^[sS]') { $confirmed = $true }
-        }
-        else {
-            Write-Log 'Usuario rechazo: fin del ciclo.' 'Yellow'
-        }
-    }
-    catch {
-        Write-Log ('Telegram no disponible ({0}), preguntando en terminal...' -f $_.Exception.Message) 'Yellow'
-        $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint y proponer nuevas historias? (s/N)'
-        if ($resp -match '^[sS]') { $confirmed = $true }
-    }
-}
-else {
-    # Fallback: preguntar en terminal
-    $resp = Read-Host '>> Sprint completado. Planificar siguiente sprint y proponer nuevas historias? (s/N)'
-    if ($resp -match '^[sS]') { $confirmed = $true }
-}
-
-if (-not $confirmed) {
+if ($EffectiveNoAutoPlan) {
     Write-Host ''
-    Write-Log 'Ciclo continuo finalizado. Hasta la proxima!' 'Magenta'
+    Write-Log 'Auto-plan deshabilitado. Ciclo continuo finalizado.' 'Magenta'
     exit 0
 }
 
-# --- Actualizar main y relanzar planner ---
+# --- Actualizar main antes de analizar ---
 Write-Host ''
 Write-Log 'Actualizando main con merges del sprint anterior...' 'Cyan'
 Push-Location $MainRepo
 try {
-    git fetch origin main --quiet
-    git pull origin main --quiet
+    git fetch origin main --quiet 2>$null
+    git pull origin main --quiet 2>$null
     Write-Log 'Main actualizado.' 'Green'
 }
 catch {
-    Write-Log ('Error actualizando main: {0}' -f $_.Exception.Message) 'Red'
+    Write-Log ('Advertencia al actualizar main: {0}' -f $_.Exception.Message) 'Yellow'
+    # Fail-open: continuar igualmente
 }
 finally {
     Pop-Location
 }
 
-# Lanzar nueva terminal con /planner sprint
-Write-Log 'Lanzando nuevo ciclo de planificacion...' 'Cyan'
-$cmdSprint = "Set-Location '$MainRepo'; " +
-             "Write-Host ''; " +
-             "Write-Host '  Nuevo sprint -- planificando...' -ForegroundColor Cyan; " +
-             "Write-Host ''; " +
-             "claude '/planner sprint'"
+Write-Host ''
 
-Start-Process powershell -ArgumentList "-Command", $cmdSprint
+# --- Paso 1: Propuestas interactivas via Telegram ---
+Write-Log 'Ejecutando planner-propose-interactive.js...' 'Cyan'
+$tgMsg = 'Iniciando propuesta automatica de nuevas historias para el siguiente sprint...'
+Send-TelegramMessage $tgMsg
 
-# Lanzar /planner proponer en paralelo (segunda terminal)
-if (-not $NoAutoProponer) {
-    Write-Log 'Lanzando analisis de propuestas en paralelo...' 'Magenta'
-    $cmdProponer = "Set-Location '$MainRepo'; " +
-                   "Write-Host ''; " +
-                   "Write-Host '  Analizando codebase para nuevas propuestas...' -ForegroundColor Magenta; " +
-                   "Write-Host ''; " +
-                   "claude '/planner proponer'"
-    Start-Process powershell -ArgumentList "-Command", $cmdProponer
+if (Test-Path $ProposeScript) {
+    try {
+        & node $ProposeScript
+        Write-Log 'planner-propose-interactive.js completado.' 'Green'
+
+        # Esperar PropuestaTimeout segundos para que el usuario interactue con las propuestas en Telegram
+        Write-Log ('Esperando {0}s para que el usuario apruebe/descarte propuestas en Telegram...' -f $PropuestaTimeout) 'Yellow'
+        Write-Host ">> Revisá las propuestas en Telegram y aprobá/descartá cada una." -ForegroundColor Yellow
+        Write-Host ">> Continuando en $PropuestaTimeout segundos..." -ForegroundColor DarkYellow
+        Start-Sleep -Seconds $PropuestaTimeout
+    }
+    catch {
+        Write-Log ('Error en planner-propose-interactive.js: {0}' -f $_.Exception.Message) 'Yellow'
+        # Fail-open: continuar con planificacion igualmente
+    }
+}
+else {
+    Write-Log 'planner-propose-interactive.js no encontrado. Omitiendo propuestas.' 'Yellow'
 }
 
-$bannerMsg = if ($NoAutoProponer) { 'sprint iniciado' } else { 'sprint + proponer iniciados' }
-Write-Log ('Nuevo ciclo lanzado en nueva(s) terminal(es).') 'Green'
+Write-Host ''
+
+# --- Paso 2: Planificacion automatica con priorizacion ---
+Write-Log 'Ejecutando auto-plan-sprint.js (Tecnico -> QA -> Negocio)...' 'Cyan'
+
+if (Test-Path $AutoPlanScript) {
+    try {
+        & node $AutoPlanScript
+        Write-Log 'auto-plan-sprint.js completado. Sprint plan generado.' 'Green'
+    }
+    catch {
+        Write-Log ('Error en auto-plan-sprint.js: {0}' -f $_.Exception.Message) 'Red'
+        # Fallback: lanzar planner interactivo si falla el automatico
+        Write-Log 'Fallback: lanzando /planner sprint en nueva terminal...' 'Yellow'
+        $cmdSprint = "Set-Location '$MainRepo'; claude '/planner sprint'"
+        Start-Process powershell -ArgumentList "-Command", $cmdSprint
+    }
+}
+else {
+    Write-Log 'auto-plan-sprint.js no encontrado. Fallback a /planner sprint.' 'Yellow'
+    $cmdSprint = "Set-Location '$MainRepo'; claude '/planner sprint'"
+    Start-Process powershell -ArgumentList "-Command", $cmdSprint
+}
+
 Write-Host ''
 Write-Host '============================================' -ForegroundColor Magenta
-Write-Host "  Ciclo continuo -- $bannerMsg"                -ForegroundColor Magenta
+Write-Host '  Ciclo continuo -- flujo automatico completado'  -ForegroundColor Magenta
+Write-Host '  Propuestas + Plan generados via Telegram'       -ForegroundColor Magenta
 Write-Host '============================================' -ForegroundColor Magenta
