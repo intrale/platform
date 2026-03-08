@@ -64,10 +64,14 @@ const CHAT_ID = _tgCfg.chat_id;
 // ─── Multimedia API keys (opcionales) ────────────────────────────────────────
 const ANTHROPIC_API_KEY = _tgCfg.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null;
 const OPENAI_API_KEY = _tgCfg.openai_api_key || process.env.OPENAI_API_KEY || null;
+// ElevenLabs TTS (opcional) — si está configurado, se usa en lugar de OpenAI TTS con fallback automático
+const ELEVENLABS_API_KEY = (_tgCfg.elevenlabs_api_key && _tgCfg.elevenlabs_api_key.trim()) ? _tgCfg.elevenlabs_api_key.trim() : (process.env.ELEVENLABS_API_KEY || null);
+// Adam (pNInz6obpgDQGcFmaJgB): voz masculina del catálogo gratuito de ElevenLabs — natural, cálida y profesional
+const ELEVENLABS_VOICE_ID = (_tgCfg.elevenlabs_voice_id && _tgCfg.elevenlabs_voice_id.trim()) ? _tgCfg.elevenlabs_voice_id.trim() : "pNInz6obpgDQGcFmaJgB";
 const VISION_MODEL = "claude-haiku-4-5-20251001";
 const TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 const TTS_MODEL = "gpt-4o-mini-tts";
-const TTS_VOICE = "ash"; // voz masculina cálida y expresiva
+const TTS_VOICE = "ash"; // voz masculina cálida y expresiva (OpenAI fallback)
 const AUDIO_MAX_DURATION_SEC = 300; // 5 minutos máximo
 
 let running = true;
@@ -519,6 +523,70 @@ function callOpenAITTS(text) {
 }
 
 /**
+ * Llama a ElevenLabs TTS para generar audio desde texto.
+ * Retorna Buffer con audio opus_48000_32 (OGG/OPUS compatible con Telegram sendVoice).
+ */
+function callElevenLabsTTS(text) {
+    return new Promise((resolve, reject) => {
+        // Truncar textos largos para TTS (max ~2000 chars)
+        const truncated = text.length > 2000
+            ? text.substring(0, 1950) + "... (respuesta truncada para audio)"
+            : text;
+
+        const body = JSON.stringify({
+            text: truncated,
+            model_id: "eleven_multilingual_v2",
+            output_format: "opus_48000_32"  // OGG/OPUS nativo — compatible con Telegram sendVoice
+        });
+
+        const req = https.request({
+            hostname: "api.elevenlabs.io",
+            path: "/v1/text-to-speech/" + ELEVENLABS_VOICE_ID,
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Content-Length": Buffer.byteLength(body)
+            },
+            timeout: 60000
+        }, (res) => {
+            if (res.statusCode !== 200) {
+                let d = "";
+                res.on("data", (c) => d += c);
+                res.on("end", () => reject(new Error("ElevenLabs TTS HTTP " + res.statusCode + ": " + d.substring(0, 200))));
+                return;
+            }
+            const chunks = [];
+            res.on("data", (c) => chunks.push(c));
+            res.on("end", () => resolve(Buffer.concat(chunks)));
+            res.on("error", reject);
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("ElevenLabs TTS timeout")); });
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
+ * Genera audio TTS usando ElevenLabs si está configurado, con fallback a OpenAI.
+ * Retorna Buffer con audio opus/ogg compatible con Telegram sendVoice.
+ */
+async function callTTS(text) {
+    if (ELEVENLABS_API_KEY) {
+        try {
+            log("TTS: usando ElevenLabs (voice_id=" + ELEVENLABS_VOICE_ID + ")");
+            return await callElevenLabsTTS(text);
+        } catch (e) {
+            log("ElevenLabs TTS falló (" + e.message + ") — fallback a OpenAI");
+            if (!OPENAI_API_KEY) throw e; // sin fallback disponible
+        }
+    }
+    log("TTS: usando OpenAI");
+    return await callOpenAITTS(text);
+}
+
+/**
  * Envía un voice message (audio opus) via Telegram sendVoice.
  * audioBuffer: Buffer con el audio en formato opus/ogg.
  */
@@ -676,10 +744,10 @@ async function handleVoiceOrAudio(msg) {
         await sendResult("🎤 Voz", result);
 
         // TTS: si el mensaje original fue voice Y hay respuesta exitosa, generar audio
-        if (isVoice && result.code === 0 && claudeResponse && OPENAI_API_KEY) {
+        if (isVoice && result.code === 0 && claudeResponse && (ELEVENLABS_API_KEY || OPENAI_API_KEY)) {
             try {
                 log("Generando TTS para respuesta (" + claudeResponse.length + " chars)");
-                const audioBuffer = await callOpenAITTS(claudeResponse);
+                const audioBuffer = await callTTS(claudeResponse);
                 await sendVoiceMessage(audioBuffer);
                 log("TTS enviado: " + audioBuffer.length + " bytes");
             } catch (ttsErr) {
@@ -1074,10 +1142,11 @@ async function handleHelp() {
     msg += "\n<b>Multimedia:</b>\n";
     msg += "  📷 Foto → Claude analiza (vision)\n";
     msg += "  🎤 Audio/voz → transcripción + Claude responde";
-    if (OPENAI_API_KEY) msg += " + TTS";
+    if (ELEVENLABS_API_KEY) msg += " + TTS (ElevenLabs)";
+    else if (OPENAI_API_KEY) msg += " + TTS (OpenAI)";
     msg += "\n";
     if (!ANTHROPIC_API_KEY) msg += "  <i>⚠️ Imágenes: falta anthropic_api_key</i>\n";
-    if (!OPENAI_API_KEY) msg += "  <i>⚠️ Audio: falta openai_api_key</i>\n";
+    if (!ELEVENLABS_API_KEY && !OPENAI_API_KEY) msg += "  <i>⚠️ Audio TTS: falta elevenlabs_api_key u openai_api_key</i>\n";
     msg += "\n<b>Texto libre:</b> cualquier mensaje sin / se ejecuta como prompt directo.";
     await sendLongMessage(msg);
 }
