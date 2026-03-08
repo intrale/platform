@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -114,6 +115,10 @@ class Login : Screen(LOGIN_PATH) {
         val signupDeliveryLinkLabel = Txt(MessageKey.signup_delivery)
         val passwordRecoveryLinkLabel = Txt(MessageKey.password_recovery)
         val confirmRecoveryLinkLabel = Txt(MessageKey.password_recovery_have_code)
+        val forgotPasswordLabel = Txt(MessageKey.login_forgot_password)
+        val noAccountDividerLabel = Txt(MessageKey.login_no_account_divider)
+        val advancedOptionsDividerLabel = Txt(MessageKey.login_advanced_options_divider)
+        val deliveryDriverDividerLabel = Txt(MessageKey.login_delivery_driver_divider)
 
         val loginErrorHandler: suspend (Throwable) -> Unit = { error ->
             when (error) {
@@ -399,52 +404,105 @@ class Login : Screen(LOGIN_PATH) {
                     verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    // "¿Olvidaste tu contraseña?" — acción más frecuente, justo debajo del botón
+                    TextButton(
+                        onClick = {
+                            if (isDeliveryApp) {
+                                logger.info { "[Delivery][Login] Navegando a recuperación de contraseña" }
+                            }
+                            navigate(PASSWORD_RECOVERY_PATH)
+                        }
+                    ) {
+                        Text(
+                            text = forgotPasswordLabel,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
                     when {
                         isDeliveryApp -> {
+                            // Divider contextual para repartidores
+                            LabeledDivider(label = deliveryDriverDividerLabel)
                             TextButton(onClick = {
                                 logger.info { "[Delivery][Login] Navegando a solicitud de alta" }
                                 navigate(SIGNUP_DELIVERY_PATH)
                             }) {
-                                Text(text = requestDeliveryAccessLabel)
+                                Text(
+                                    text = requestDeliveryAccessLabel,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            TextButton(onClick = {
-                                logger.info { "[Delivery][Login] Navegando a recuperación de contraseña" }
-                                navigate(PASSWORD_RECOVERY_PATH)
-                            }) {
-                                Text(text = passwordRecoveryLinkLabel)
-                            }
+                            // Opción avanzada separada
+                            LabeledDivider(label = advancedOptionsDividerLabel)
                             TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                                Text(text = confirmRecoveryLinkLabel)
+                                Text(
+                                    text = confirmRecoveryLinkLabel,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                         isClientApp -> {
+                            // Divider contextual para registro
+                            LabeledDivider(label = noAccountDividerLabel)
                             TextButton(onClick = { navigate(signupDestination) }) {
-                                Text(text = signupLinkLabel)
+                                Text(
+                                    text = signupLinkLabel,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
-                                Text(text = passwordRecoveryLinkLabel)
-                            }
+                            // Opción avanzada separada
+                            LabeledDivider(label = advancedOptionsDividerLabel)
                             TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                                Text(text = confirmRecoveryLinkLabel)
+                                Text(
+                                    text = confirmRecoveryLinkLabel,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                         else -> {
+                            // Divider contextual para registro de negocio
+                            LabeledDivider(label = noAccountDividerLabel)
                             TextButton(onClick = { navigate(REGISTER_NEW_BUSINESS_PATH) }) {
-                                Text(text = registerBusinessLinkLabel)
+                                Text(
+                                    text = registerBusinessLinkLabel,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                             TextButton(onClick = { navigate(SIGNUP_DELIVERY_PATH) }) {
-                                Text(text = signupDeliveryLinkLabel)
+                                Text(
+                                    text = signupDeliveryLinkLabel,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            TextButton(onClick = { navigate(PASSWORD_RECOVERY_PATH) }) {
-                                Text(text = passwordRecoveryLinkLabel)
-                            }
+                            // Opción avanzada separada
+                            LabeledDivider(label = advancedOptionsDividerLabel)
                             TextButton(onClick = { navigate(CONFIRM_PASSWORD_RECOVERY_PATH) }) {
-                                Text(text = confirmRecoveryLinkLabel)
+                                Text(
+                                    text = confirmRecoveryLinkLabel,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LabeledDivider(label: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+    ) {
+        Divider(modifier = Modifier.weight(1f))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Divider(modifier = Modifier.weight(1f))
     }
 }
