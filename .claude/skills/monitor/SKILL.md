@@ -65,7 +65,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │   └─ ⚙ Compilando APK cliente con testTagsAsResourceId...         │
 │ 67eb3124 │ Claude 🤖      │  3 │ 5m   │ Bash: git diff…  │ ○    │
 ├─ EJECUCIÓN ───────────────────────────────────────────────────────┤
-│ Sprint (2026-03-06)        [████████░░ 75%]                       │
+│ Sprint SPR-007 — 2026-03-06  [████████░░ 75%]                     │
 │  #1  #821  notificaciones     S  ●                                 │
 │  #2  #845  refactor-login     M  ◐                                 │
 │ Historias en curso                                                 │
@@ -124,7 +124,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 Este panel unifica lo que antes eran "Sprint" y "Progreso del Sprint" en tres sub-vistas:
 
 1. **Sprint activo** (si `scripts/sprint-plan.json` existe):
-   - Titulo: `Sprint (fecha)` con barra de progreso global
+   - Titulo: `Sprint SPR-NNN — fecha` si `sprint_id` está disponible, o `Sprint (fecha)` como fallback — con barra de progreso global
    - Cada fila: `#numero  #issue  slug  size  estado_icono`
    - El estado se determina cruzando issues del plan con sesiones activas (● activo, ◐ idle, ○ sin sesion, ✓ completado)
 
