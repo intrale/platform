@@ -114,7 +114,7 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH) {
                             label = MessageKey.email,
                             value = viewModel.state.email,
                             state = viewModel.inputsStates[PasswordRecoveryViewModel.PasswordRecoveryUIState::email.name]!!,
-                            onValueChange = { viewModel.state = viewModel.state.copy(email = it) },
+                            onValueChange = viewModel::onEmailChange,
                             modifier = Modifier.fillMaxWidth(),
                             leadingIcon = {
                                 Icon(

@@ -14,6 +14,7 @@ import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ui.cp.inputs.InputState
 import ui.sc.shared.ViewModel
 
 class PasswordRecoveryViewModel(
@@ -44,6 +45,26 @@ class PasswordRecoveryViewModel(
 
     override fun initInputState() {
         inputsStates = mutableMapOf(entry(PasswordRecoveryUIState::email.name))
+    }
+
+    fun onEmailChange(value: String) {
+        state = state.copy(email = value)
+        validateCurrentState()
+    }
+
+    private fun validateCurrentState() {
+        inputsStates.forEach { (_, inputState) ->
+            inputState.value = inputState.value.copy(isValid = true, details = "")
+        }
+        val result = validation(state)
+        result.errors.forEach { error ->
+            val key = error.dataPath.substring(1)
+            val mutableState = inputsStates.getOrPut(key) { mutableStateOf(InputState(key)) }
+            mutableState.value = mutableState.value.copy(
+                isValid = false,
+                details = error.message
+            )
+        }
     }
 
     suspend fun recovery(): Result<DoPasswordRecoveryResult> {
