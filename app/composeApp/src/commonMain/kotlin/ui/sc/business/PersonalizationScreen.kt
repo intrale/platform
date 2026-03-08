@@ -1,5 +1,6 @@
 package ui.sc.business
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Title
@@ -80,26 +82,31 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH) {
                 icon = Icons.Default.Palette,
                 title = Txt(MessageKey.personalization_section_colors),
                 description = pendingLabel,
+                onClick = null,
             ),
             PersonalizationSection(
                 icon = Icons.Default.Title,
                 title = Txt(MessageKey.personalization_section_typography),
-                description = pendingLabel,
+                description = Txt(MessageKey.typography_description),
+                onClick = { navigate(TYPOGRAPHY_PATH) },
             ),
             PersonalizationSection(
                 icon = Icons.Default.Image,
                 title = Txt(MessageKey.personalization_section_images),
                 description = pendingLabel,
+                onClick = null,
             ),
             PersonalizationSection(
                 icon = Icons.Default.Brush,
                 title = Txt(MessageKey.personalization_section_app_icon),
                 description = pendingLabel,
+                onClick = null,
             ),
             PersonalizationSection(
                 icon = Icons.Default.Visibility,
                 title = Txt(MessageKey.personalization_section_preview),
                 description = pendingLabel,
+                onClick = null,
             ),
         )
 
@@ -130,9 +137,12 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH) {
 
     @Composable
     private fun PersonalizationCard(section: PersonalizationSection) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-        ) {
+        val modifier = if (section.onClick != null) {
+            Modifier.fillMaxWidth().clickable { section.onClick.invoke() }
+        } else {
+            Modifier.fillMaxWidth()
+        }
+        Card(modifier = modifier) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -153,7 +163,8 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH) {
     private fun RowHeader(section: PersonalizationSection) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+            modifier = Modifier.fillMaxWidth()
         ) {
             Icon(
                 imageVector = section.icon,
@@ -162,7 +173,15 @@ class PersonalizationScreen : Screen(PERSONALIZATION_PATH) {
             Text(
                 text = section.title,
                 style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f)
             )
+            if (section.onClick != null) {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outline
+                )
+            }
         }
     }
 }
@@ -171,4 +190,5 @@ private data class PersonalizationSection(
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
     val title: String,
     val description: String,
+    val onClick: (() -> Unit)?,
 )

@@ -12,5 +12,6 @@ class Business(
     var emailAdmin: String? = null,
     var description: String? = null,
     var state: BusinessState = BusinessState.PENDING,
-    var autoAcceptDeliveries: Boolean = false
+    var autoAcceptDeliveries: Boolean = false,
+    var fonts: MutableMap<String, String> = mutableMapOf()
 )

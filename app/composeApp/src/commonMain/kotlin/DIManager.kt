@@ -47,6 +47,10 @@ import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
 import asdo.business.DoDeleteCategory
+import asdo.business.DoGetFonts
+import asdo.business.DoUpdateFonts
+import asdo.business.ToDoGetFonts
+import asdo.business.ToDoUpdateFonts
 import asdo.business.DoGetBusinesses
 import asdo.business.DoGetBusinessDashboardSummary
 import asdo.business.DoGetProduct
@@ -111,6 +115,8 @@ import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
 import ext.delivery.DeliveryStateService
+import ext.business.ClientFontsService
+import ext.business.CommFontsService
 import ext.business.ClientGetBusinessDashboardSummaryService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientCategoryService
@@ -169,6 +175,7 @@ import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.DashboardScreen
 import ui.sc.business.PersonalizationScreen
+import ui.sc.business.TypographyScreen
 import ui.sc.business.ProductFormScreen
 import ui.sc.business.ProductListScreen
 import ui.sc.business.CategoryFormScreen
@@ -243,6 +250,7 @@ public const val BUSINESS_CATEGORIES = "businessCategories"
 public const val BUSINESS_CATEGORY_FORM = "businessCategoryForm"
 public const val TWO_FACTOR_SETUP = "twoFactorSetup"
 public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
+public const val TYPOGRAPHY_FONTS = "typographyFonts"
 
 const val LOGIN_PATH = "/login"
 
@@ -315,6 +323,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
     bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
     bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
+    bindSingleton<CommFontsService> { ClientFontsService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -332,6 +341,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoReviewJoinBusiness> { DoReviewJoinBusiness(instance()) }
     bindSingleton<ToGetBusinessProducts> { DoGetBusinessProducts(instance()) }
     bindSingleton<ToGetProduct> { DoGetProduct(instance()) }
+    bindSingleton<ToDoGetFonts> { DoGetFonts(instance()) }
+    bindSingleton<ToDoUpdateFonts> { DoUpdateFonts(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
@@ -405,6 +416,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_CATEGORY_FORM) { CategoryFormScreen() }
     bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
     bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
+    bindSingleton(tag = TYPOGRAPHY_FONTS) { TypographyScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -466,6 +478,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = REQUEST_JOIN_BUSINESS))
                     add(instance(tag = REVIEW_JOIN_BUSINESS))
                     add(instance(tag = PERSONALIZATION))
+                    add(instance(tag = TYPOGRAPHY_FONTS))
                     add(instance(tag = BUSINESS_PRODUCTS))
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))
@@ -493,6 +506,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = REQUEST_JOIN_BUSINESS))
                     add(instance(tag = REVIEW_JOIN_BUSINESS))
                     add(instance(tag = PERSONALIZATION))
+                    add(instance(tag = TYPOGRAPHY_FONTS))
                     add(instance(tag = BUSINESS_PRODUCTS))
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))
