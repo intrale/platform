@@ -30,6 +30,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/agent-concurrency-check.js",
             "timeout": 20000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-monitor-bg.js",
+            "timeout": 60000
           }
         ]
       }
