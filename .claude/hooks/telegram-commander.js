@@ -2866,7 +2866,7 @@ async function pollingLoop() {
                         try {
                             if (action === "persist") {
                                 const pattern = Buffer.from(encodedPattern, "base64url").toString("utf8");
-                                const settingsPaths = getSettingsPaths(resolveMainRepoRoot());
+                                const settingsPaths = getSettingsPaths(REPO_ROOT);
                                 persistPattern(pattern, settingsPaths, log);
                                 await telegramPost("answerCallbackQuery", {
                                     callback_query_id: cq.id,
