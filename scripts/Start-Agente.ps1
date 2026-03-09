@@ -239,19 +239,25 @@ function Start-UnAgente {
     $promptFile = Join-Path $logDir "prompt_$($Agente.numero).txt"
     Set-Content -Path $promptFile -Value $prompt -Encoding UTF8 -NoNewline
 
-    $command = "Start-Transcript -Path '$logFile' -Force | Out-Null; " +
-               "Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; " +
-               "Set-Location '$wtDirResolved'; " +
-               "Write-Host ''; " +
-               "Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; " +
-               "Write-Host '  Branch: $branch' -ForegroundColor Cyan; " +
-               "Write-Host '  Log: $logFile' -ForegroundColor DarkGray; " +
-               "Write-Host ''; " +
-               "Get-Content '$promptFile' -Raw | claude -p --dangerously-skip-permissions; " +
-               "Write-Host ''; " +
-               "Write-Host ('  claude finalizo (exit ' + `$LASTEXITCODE + ')') -ForegroundColor Yellow; " +
-               "Stop-Transcript | Out-Null; " +
-               "Start-Sleep -Seconds 3"
+    # try/finally garantiza que la terminal se cierre aunque claude crashee o muera inesperadamente (#1350)
+    $command = "try { " +
+               "  Start-Transcript -Path '$logFile' -Force | Out-Null; " +
+               "  Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; " +
+               "  Set-Location '$wtDirResolved'; " +
+               "  Write-Host ''; " +
+               "  Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; " +
+               "  Write-Host '  Branch: $branch' -ForegroundColor Cyan; " +
+               "  Write-Host '  Log: $logFile' -ForegroundColor DarkGray; " +
+               "  Write-Host ''; " +
+               "  Get-Content '$promptFile' -Raw | claude -p --dangerously-skip-permissions; " +
+               "  `$exitCode = `$LASTEXITCODE; " +
+               "  Write-Host ''; " +
+               "  Write-Host ('  claude finalizo (exit ' + `$exitCode + ')') -ForegroundColor Yellow; " +
+               "} finally { " +
+               "  Stop-Transcript -ErrorAction SilentlyContinue | Out-Null; " +
+               "  Start-Sleep -Seconds 3; " +
+               "  exit " +
+               "}"
 
     Write-Host ">> Abriendo terminal con claude..."
     $proc = Start-Process powershell -ArgumentList "-Command", $command -PassThru
