@@ -179,18 +179,61 @@ git branch -r --list 'origin/agent/*' | head -20
 
 ## Modo: Auditoría (`/scrum` o `/scrum audit`)
 
-Ejecutar Paso 0 completo, luego analizar y reportar:
+Ejecutar Paso 0 completo, luego:
+1. **Auto-corregir** discrepancias de coherencia estado-columna (Paso 1.1)
+2. Analizar y reportar el resto de las discrepancias
+
+### 1.1 Auto-correcciones de coherencia (NUEVO — ejecutar PRIMERO)
+
+Ejecutar el script de corrección automática integrado en el audit:
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-auto-corrections.js --auto --report 2>/dev/null
+```
+
+Flags disponibles:
+- `--auto` → aplica las correcciones (sin este flag, modo dry-run: solo detecta)
+- `--report` → genera reporte HTML en `docs/qa/` y lo envía a Telegram
+
+Parsear la salida del script. Incluir la sección "Correcciones automáticas aplicadas" en el reporte de auditoría.
+
+El script aplica automáticamente las siguientes reglas (centralizadas en `COHERENCE_RULES`):
+
+| Prioridad | ID | Condición | Acción automática |
+|-----------|-----|-----------|------------------|
+| 1 (Alta) | `closed_not_done` | Issue CLOSED + Status ≠ Done | Mover a Done + comentar |
+| 2 (Media) | `in_progress_label_in_backlog` | Label `in-progress` + Status en Backlog | Mover a In Progress + comentar |
+| 3 (Media) | `ready_label_in_backlog` | Label `ready` + Status en Backlog | Mover a Ready + comentar |
+| 4 (Media) | `blocked_status_no_label` | Sin label `blocked` + Status = Blocked | Mover a Todo + comentar |
+| 5 (Baja) | `blocked_label_not_in_blocked` | Label `blocked` + Status ≠ Blocked | ⚠️ Solo advertencia |
+
+**Prioridades:** la regla 1 (issue cerrado) tiene prioridad sobre todas las demás. Si un issue
+está cerrado Y tiene label `in-progress`, se mueve a Done (no a In Progress).
+
+**Rate limiting:** el script respeta máx 30 mutations/min. Ventana deslizante automática.
+
+**Formato de comentario en cada issue corregido:**
+```
+🔄 Scrum Master: movido de [anterior] → [nuevo]. Razón: [razón].
+_Detección automática: [ISO timestamp]_
+```
+
+El script está disponible también como módulo Node.js (`require`):
+```javascript
+const { runAutoCorrections, formatAuditSection } = require('./scrum-auto-corrections');
+const result = await runAutoCorrections({ dryRun: false, generateReport: true });
+```
 
 ### 1. Discrepancias estado vs realidad
 
-Para cada item del board, verificar coherencia:
+Para cada item del board, verificar coherencia ADICIONAL (más allá de lo que ya corrigió 1.1):
 
 | Condición detectada | Discrepancia |
 |---------------------|-------------|
-| Issue cerrado pero Status ≠ Done | Debería estar en Done |
+| Issue cerrado pero Status ≠ Done | Debería estar en Done (ya manejado por 1.1) |
 | Issue con PR mergeado pero Status ≠ Ready ni Done | Debería avanzar |
-| Issue con label `blocked` pero Status ≠ Blocked | Status incorrecto |
-| Issue sin label `blocked` pero Status = Blocked | Desbloquear |
+| Issue con label `blocked` pero Status ≠ Blocked | Status incorrecto (advertencia en 1.1) |
+| Issue sin label `blocked` pero Status = Blocked | Desbloquear (ya manejado por 1.1) |
 | Issue asignado + rama activa pero Status = Todo | Debería estar In Progress |
 
 ### 2. Huérfanos
@@ -258,6 +301,15 @@ Mostrar las últimas acciones de reparación ejecutadas con timestamp, issue y r
 ```
 ## 🔍 Auditoría del Board — [fecha]
 
+### Correcciones automáticas aplicadas (N)
+| # | Issue | Cambio | Razón |
+|---|-------|--------|-------|
+| 1 | #123 Título | Todo → Done | Issue cerrado (state: CLOSED) |
+| 2 | #456 Título | Todo → In Progress | Tiene label 'in-progress' |
+
+### Advertencias (no auto-corregidas) (N)
+- #789 (In Progress): Tiene label 'blocked' pero está en columna In Progress → Sugerido: Blocked
+
 ### Discrepancias encontradas (N)
 | # | Issue | Status actual | Status correcto | Razón |
 |---|-------|--------------|-----------------|-------|
@@ -286,7 +338,8 @@ Mostrar las últimas acciones de reparación ejecutadas con timestamp, issue y r
 
 ### Resumen
 - Total items en board: N
-- Discrepancias: N
+- Correcciones automáticas: N
+- Discrepancias restantes: N
 - Huérfanos: N
 - Stale: N
 - Salud general: [🟢 Sano | 🟡 Atención | 🔴 Crítico]
