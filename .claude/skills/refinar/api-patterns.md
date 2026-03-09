@@ -126,6 +126,57 @@ gh api graphql -f query="
 "
 ```
 
+## Project V2 — Agregar issue y asignar status (combo completo)
+
+**Patrón recomendado:** usar el helper script `add-to-project-status.js` que encapsula todo el proceso.
+
+```bash
+# Setup
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
+
+# Variables
+ISSUE_NUMBER=1282
+STATUS_NAME="Backlog Tecnico"  # o "Backlog CLIENTE", "Refined", "Done", etc.
+
+# Ejecutar en una línea
+node /c/Workspaces/Intrale/platform/.claude/hooks/add-to-project-status.js "$ISSUE_NUMBER" "$STATUS_NAME"
+
+# Retorna JSON si éxito:
+# {"status":"ok","issueNumber":1282,"statusName":"Backlog Tecnico","itemId":"PVTI_kwDOBTzBoc..."}
+```
+
+**Qué hace `add-to-project-status.js` internamente:**
+
+1. Obtiene token GitHub (`gh auth token` con scope `project`)
+2. Agrega el issue al proyecto: `gh project item-add 1 --owner intrale --url "https://github.com/intrale/platform/issues/$ISSUE_NUMBER"`
+3. Espera 500ms a que GitHub procese
+4. Obtiene `itemId` via GraphQL query `projectItems(...)`
+5. Ejecuta mutación `updateProjectV2ItemFieldValue` con el `optionId` del status destino
+6. Retorna JSON con resultado
+
+**Option IDs disponibles:**
+- `Backlog Tecnico`: `4fef8264`
+- `Backlog CLIENTE`: `74b58f5f`
+- `Backlog NEGOCIO`: `1e51e9ff`
+- `Backlog DELIVERY`: `0fa31c9f`
+- `Refined`: `bac097c6`
+- `Done`: `b30e67ed`
+- (otros: ver `project-utils.js` para lista completa)
+
+**Casos de uso:**
+
+```bash
+# /historia: crear nuevo issue y asignar backlog correcto
+node .claude/hooks/add-to-project-status.js "$NEW_ISSUE_NUMBER" "Backlog CLIENTE"
+
+# /refinar: mover issue a "Refined"
+node .claude/hooks/add-to-project-status.js "$ISSUE_NUMBER" "Refined"
+
+# Script masivo: reparar items sin status
+node .claude/hooks/fix-project-status.js  # reparación automatizada
+```
+
 ## Comentar en un issue
 
 ```bash
