@@ -17,7 +17,7 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 | Argumento | Modo |
 |-----------|------|
 | `planificar` | Plan completo: Gantt, dependencias, streams paralelos |
-| `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 5) |
+| `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 7, rango recomendado: 7-10) |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
 | `<foco> [N]` | **Atajo** — equivale a `sprint N <foco>` (ver tabla de focos abajo) |
 | sin argumento | Digest rápido: qué bloquea, qué está listo, qué sigue |
@@ -28,22 +28,22 @@ Cualquier foco puede usarse **directamente como argumento** sin escribir `sprint
 
 | Atajo | Alias | Equivale a | Prioriza |
 |-------|-------|------------|----------|
-| `tecnico` | `tech`, `infra` | `sprint 5 tecnico` | `area:infra`, `tipo:infra`, `refactor`, CI/CD, build |
-| `qa` | `testing`, `tests` | `sprint 5 qa` | `bug`, issues con tests pendientes, QA, cobertura |
-| `bugs` | `fix` | `sprint 5 bugs` | Solo issues con label `bug` |
-| `features` | `feat` | `sprint 5 features` | Features nuevas (sin label `bug`/`refactor`/`tipo:infra`) |
-| `deuda` | `debt` | `sprint 5 deuda` | `refactor`, tech debt, cleanup, migrations |
-| `backend` | `back` | `sprint 5 backend` | Stream A (`:backend`, `:users`) |
-| `app` | `front` | `sprint 5 app` | Streams B/C/D (`:app`, UI, pantallas) |
-| `cross` | — | `sprint 5 cross` | Stream E (strings, DI, router, buildSrc) |
-| `rapido` | `quick`, `wins` | `sprint 5 rapido` | Solo issues tamaño S/M para wins rápidos |
+| `tecnico` | `tech`, `infra` | `sprint 7 tecnico` | `area:infra`, `tipo:infra`, `refactor`, CI/CD, build |
+| `qa` | `testing`, `tests` | `sprint 7 qa` | `bug`, issues con tests pendientes, QA, cobertura |
+| `bugs` | `fix` | `sprint 7 bugs` | Solo issues con label `bug` |
+| `features` | `feat` | `sprint 7 features` | Features nuevas (sin label `bug`/`refactor`/`tipo:infra`) |
+| `deuda` | `debt` | `sprint 7 deuda` | `refactor`, tech debt, cleanup, migrations |
+| `backend` | `back` | `sprint 7 backend` | Stream A (`:backend`, `:users`) |
+| `app` | `front` | `sprint 7 app` | Streams B/C/D (`:app`, UI, pantallas) |
+| `cross` | — | `sprint 7 cross` | Stream E (strings, DI, router, buildSrc) |
+| `rapido` | `quick`, `wins` | `sprint 7 rapido` | Solo issues tamaño S/M para wins rápidos |
 
 **Ejemplos de uso:**
-- `/planner tecnico` → sprint de 5 issues técnicos/infra
+- `/planner tecnico` → sprint de 7 issues técnicos/infra
 - `/planner qa 3` → sprint de 3 issues de QA/bugs
 - `/planner feat 8` → sprint de 8 features
 - `/planner sprint 4 backend` → sprint de 4 issues de backend
-- `/planner bugs` → sprint de 5 bugs
+- `/planner bugs` → sprint de 7 bugs
 
 ---
 
@@ -206,18 +206,18 @@ gantt
 El modo sprint acepta múltiples formas de invocación:
 
 ```
-/planner sprint              → sprint genérico, 5 issues
+/planner sprint              → sprint genérico, 7 issues (default)
 /planner sprint 8            → sprint genérico, 8 issues
 /planner sprint 4 backend    → sprint con foco backend, 4 issues
-/planner tecnico             → atajo: sprint con foco técnico, 5 issues
+/planner tecnico             → atajo: sprint con foco técnico, 7 issues
 /planner qa 3                → atajo: sprint con foco QA, 3 issues
-/planner bugs                → atajo: sprint solo bugs, 5 issues
+/planner bugs                → atajo: sprint solo bugs, 7 issues
 ```
 
 **Reglas de parsing:**
 1. Si el argumento es un foco conocido (ver tabla de atajos): activar modo `sprint` con ese foco
 2. Si viene un número junto al foco: usarlo como N
-3. Si no hay número: default **5**
+3. Si no hay número: default **7** (rango recomendado: 7-10)
 4. Los alias son intercambiables (`tech` = `tecnico` = `infra`)
 
 ### Límite de issues
@@ -225,6 +225,15 @@ El modo sprint acepta múltiples formas de invocación:
 El límite N controla cuántos issues se incluyen en el `sprint-plan.json` y en el reporte textual.
 La recolección y el scoring se hacen sobre todos los issues del repo; el recorte a N ocurre al
 final tras el ranking (con bonus de foco si aplica).
+
+**Rango recomendado: 7-10 historias por sprint**
+- El sprint tiene `concurrency_limit: 3` agentes simultáneos (esto NO cambia)
+- Los primeros 3 van en `agentes[]` (lanzados por Start-Agente.ps1)
+- Los restantes (4 a N) van en `_queue[]` (promovidos automáticamente por `agent-concurrency-check.js`)
+- **Regla de tamaño:**
+  - Sprint con todas/mayoría S → máximo 10 historias
+  - Sprint con mayoría M → 7-8 historias
+  - Sprint con L/XL → máximo 7 historias (estas bloquean slots por más tiempo)
 
 Seleccionar las **top N tareas accionables** para los próximos días:
 
@@ -235,18 +244,20 @@ Criterios de selección:
 4. Balance entre streams (no saturar uno solo)
 5. Preferir S/M sobre L/XL para tener wins rápidos
 
-Formato de salida (máximo N issues, default 5):
+Formato de salida (máximo N issues, default 7):
 ```
 ## Sprint sugerido — [fecha] (N issues)
 
-### Hoy / Mañana
+### En ejecución (slots 1-3 — lanzados por Start-Agente.ps1)
 1. 🔴 #780 Fix test failure (S - 1 día) → Stream A
 2. 🔴 #776 Fix compilación (M - 2 días) → Stream E
-
-### Esta semana (en paralelo)
 3. 🟢 #NNN [título] (M) → Stream B [codex]
+
+### En cola (slots 4-N — promovidos automáticamente al liberarse slots)
 4. 🟢 #NNN [título] (S) → Stream C
 5. 🟡 #NNN [título] (M) → Stream A
+6. 🟢 #NNN [título] (S) → Stream D
+7. 🟢 #NNN [título] (S) → Stream E
 
 (máximo N issues en total — si hay más candidatos, priorizar por score)
 ```
@@ -284,28 +295,97 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 
 ```json
 {
+  "sprint_id": "SPR-NNN",
   "fecha": "2026-02-20",
   "fechaInicio": "2026-02-20",
   "fechaFin": "2026-02-26",
+  "tema": "Sprint general — mix de prioridades",
+  "estado": "activo",
+  "concurrency_limit": 3,
+  "total_stories": 7,
   "agentes": [
     {
       "numero": 1,
       "issue": 821,
       "slug": "notificaciones",
       "titulo": "Mejorar notificaciones Telegram",
-      "prompt": "Implementar issue #821. Leer el issue completo con: gh issue view 821 --repo intrale/platform. Al iniciar: invocar /ops para verificar estado del entorno. Invocar /po para revisar criterios de aceptación del issue #821. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Implementación especializada según keywords del issue — Si el issue menciona backend, API, Lambda, Ktor, DynamoDB, Cognito, o toca archivos en backend/ o users/: invocar /backend-dev. Si el issue menciona Android, androidMain, flavor, APK: invocar /android-dev. Si el issue menciona iOS, iosMain, Swift: invocar /ios-dev. Si el issue menciona Web, Wasm, wasmJsMain, browser: invocar /web-dev. Si el issue menciona Desktop, desktopMain, JVM: invocar /desktop-dev. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /builder para validar que el build no está roto. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: invocar /review para validar el diff. Si el issue toca archivos ui/ y NO tiene label tipo:infra: invocar /qa para tests E2E de la UI afectada. QA E2E omitido si label tipo:infra. Usar /delivery para commit+PR al terminar. Closes #821. Si este es el último issue del sprint (verificar leyendo scripts/sprint-plan.json): invocar /scrum para métricas y /cleanup para limpiar worktrees.",
+      "prompt": "...",
+      "stream": "E",
+      "size": "S"
+    },
+    {
+      "numero": 2,
+      "issue": 845,
+      "slug": "refactor-login",
+      "titulo": "Refactor login",
+      "prompt": "...",
+      "stream": "A",
+      "size": "M"
+    },
+    {
+      "numero": 3,
+      "issue": 850,
+      "slug": "fix-auth",
+      "titulo": "Fix auth bug",
+      "prompt": "...",
       "stream": "E",
       "size": "S"
     }
-  ]
+  ],
+  "_queue": [
+    {
+      "numero": 4,
+      "issue": 860,
+      "slug": "nueva-pantalla",
+      "titulo": "Nueva pantalla de perfil",
+      "prompt": "...",
+      "stream": "B",
+      "size": "M"
+    },
+    {
+      "numero": 5,
+      "issue": 870,
+      "slug": "fix-crash",
+      "titulo": "Fix crash en checkout",
+      "prompt": "...",
+      "stream": "C",
+      "size": "S"
+    },
+    {
+      "numero": 6,
+      "issue": 880,
+      "slug": "mejora-ci",
+      "titulo": "Mejorar CI pipeline",
+      "prompt": "...",
+      "stream": "E",
+      "size": "S"
+    },
+    {
+      "numero": 7,
+      "issue": 890,
+      "slug": "test-cobertura",
+      "titulo": "Aumentar cobertura de tests",
+      "prompt": "...",
+      "stream": "A",
+      "size": "S"
+    }
+  ],
+  "_completed": []
 }
 ```
 
-Reglas del JSON:
+**CRITICO — Reglas del JSON para sprint de 7-10 historias:**
+- `agentes[]`: SIEMPRE máximo 3 (= `concurrency_limit`). `Start-Agente.ps1` lanza solo estos.
+- `_queue[]`: Las historias 4 a N van aquí, ordenadas por prioridad. `agent-concurrency-check.js` las promueve automáticamente al liberarse slots.
+- `total_stories`: suma de `agentes.length + _queue.length + _completed.length`. Usado por el Monitor para calcular el progreso real del sprint.
+- `_completed[]`: se puebla automáticamente por `agent-concurrency-check.js` al terminar cada agente. Incluye `resultado`, `duracion_min`, `issue_reabierto`.
+- **NUNCA** poner más de 3 en `agentes[]` aunque el sprint tenga 10 historias.
+
+Reglas de otros campos:
 - `fecha`: fecha de creacion del plan (backward compat, mismo valor que `fechaInicio`)
 - `fechaInicio`: fecha de inicio del sprint (ISO 8601, ej: `"2026-03-03"`) — siempre la fecha actual al momento de planificar
 - `fechaFin`: fecha de fin del sprint (ISO 8601, ej: `"2026-03-07"`) — `fechaInicio` + duracion del sprint (default: 5 dias habiles / 1 semana, excluyendo fines de semana). Si el sprint se planifica un lunes, `fechaFin` es el viernes de esa semana. **OBLIGATORIO** — `Start-Agente.ps1` y `Watch-Agentes.ps1` bloquean la ejecucion si `fechaFin` no existe o ya paso
-- `numero`: secuencial empezando en 1
+- `numero`: secuencial empezando en 1 para toda la lista (agentes + _queue juntos)
 - `issue`: numero del issue de GitHub
 - `slug`: identificador corto sin espacios ni caracteres especiales (usado para branch y worktree)
 - `titulo`: titulo humano del issue
