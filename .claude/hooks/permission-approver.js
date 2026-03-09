@@ -489,11 +489,16 @@ async function processInput() {
 
     log("REPO_ROOT=" + REPO_ROOT + " MAIN=" + MAIN_REPO_ROOT + " tool=" + toolName);
 
-    // Fast-path: auto-aprobar si la severidad es AUTO_ALLOW (directorio seguro / tool interno)
+    // Fast-path: auto-aprobar si la severidad es AUTO_ALLOW, LOW o MEDIUM
+    // MEDIUM se auto-aprueba inmediatamente (git push, curl POST, Task/Agent) sin esperar timeout.
+    // git push a main sigue bloqueado por branch-guard.js independientemente de esto.
+    // HIGH sigue requiriendo aprobación manual vía Telegram.
     const severity = classifySeverity(toolName, toolInput, REPO_ROOT);
     log("SEVERITY: " + toolName + " → " + severity);
-    if (severity === Severity.AUTO_ALLOW || severity === Severity.LOW) {
-        const autoReason = severity === Severity.AUTO_ALLOW ? "AUTO_ALLOW (safe dir)" : "LOW severity";
+    if (severity === Severity.AUTO_ALLOW || severity === Severity.LOW || severity === Severity.MEDIUM) {
+        const autoReason = severity === Severity.AUTO_ALLOW ? "AUTO_ALLOW (safe dir)"
+            : severity === Severity.LOW ? "LOW severity"
+            : "MEDIUM severity";
         log("Auto-aprobando sin Telegram: " + toolName + " (" + autoReason + ")");
         const response = {
             hookSpecificOutput: {

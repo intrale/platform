@@ -524,9 +524,11 @@ function isReversibleAction(toolName, toolInput, repoRoot) {
 /**
  * Enum de severidad:
  *   AUTO_ALLOW — acción reversible en directorio seguro → auto-aprobar sin Telegram
- *   LOW        — acción nueva pero recuperable → timeout reducido
- *   MEDIUM     — impacto externo pero reversible → flujo normal
- *   HIGH       — destructiva o irreversible → retry + fallback obligatorio
+ *   LOW        — acción nueva pero recuperable → auto-aprobar inmediatamente
+ *   MEDIUM     — impacto externo pero reversible → auto-aprobar inmediatamente (desde #1302)
+ *                Incluye: git push (a ramas no-main), curl POST, Task/Agent, npm publish
+ *                Protección: branch-guard.js bloquea git push a main independientemente
+ *   HIGH       — destructiva o irreversible → requiere aprobación manual via Telegram
  */
 const Severity = {
     AUTO_ALLOW: "AUTO_ALLOW",
