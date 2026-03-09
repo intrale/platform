@@ -38,6 +38,9 @@ try { agentMonitor = require("./agent-monitor"); } catch (e) { agentMonitor = nu
 // P-14: Process supervisor
 let processSupervisor;
 try { processSupervisor = require("./process-supervisor"); } catch (e) { processSupervisor = null; }
+// #1280: Permission suggester — sugerencias proactivas de auto-aprobación
+let permissionSuggester;
+try { permissionSuggester = require("./permission-suggester"); } catch (e) { permissionSuggester = null; }
 const PENDING_QUESTIONS_FILE = path.join(HOOKS_DIR, "pending-questions.json");
 
 const POLL_TIMEOUT_SEC = 30;
@@ -50,6 +53,7 @@ const TG_MSG_MAX = 4096;
 const SPRINT_MONITOR_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 const CLEANUP_TTL_MS = 4 * 60 * 60 * 1000;       // 4 horas
 const CLEANUP_INTERVAL_MS = 4 * 60 * 60 * 1000;   // cada 4 horas
+const SUGGESTER_INTERVAL_MS = 6 * 60 * 60 * 1000;  // #1280: cada 6 horas
 
 let _tgCfg;
 try {
@@ -83,6 +87,7 @@ let sprintMonitorIntervalMs = SPRINT_MONITOR_INTERVAL_MS; // Intervalo configura
 let sprintStartTime = null;        // Timestamp de inicio del sprint
 let cleanupInterval = null;        // ID del setInterval de limpieza de mensajes
 let outboxDrainInterval = null;    // P-02: ID del setInterval de drain de outbox
+let suggesterInterval = null;      // #1280: ID del setInterval del permission suggester
 // ─── Paralelismo de comandos (#1279) ─────────────────────────────────────────
 // activeCommands: Map<cmdId, { label, sessionId, startTime }> — comandos en ejecución
 const MAX_PARALLEL_COMMANDS = 3;
@@ -2792,6 +2797,77 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
+                    // #1280: Callbacks de permission-suggester (ps_approve, ps_ignore, ps_never)
+                    else if (cbData.startsWith("ps_approve:") || cbData.startsWith("ps_ignore:") || cbData.startsWith("ps_never:")) {
+                        const parts = cbData.split(":");
+                        const action = parts[0]; // ps_approve | ps_ignore | ps_never
+                        const encodedPattern = parts.slice(1).join(":"); // base64url del patrón
+                        log("Callback permission-suggester: action=" + action + " pattern(b64)=" + encodedPattern);
+                        try {
+                            if (action === "ps_approve" && permissionSuggester) {
+                                const result = permissionSuggester.handleSuggestionApprove(encodedPattern);
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: result.ok ? "Guardado: " + result.pattern : "Error",
+                                    show_alert: false
+                                }, 5000);
+                                try {
+                                    await telegramPost("editMessageText", {
+                                        chat_id: CHAT_ID,
+                                        message_id: cq.message && cq.message.message_id,
+                                        text: result.message,
+                                        parse_mode: "HTML",
+                                        reply_markup: { inline_keyboard: [] }
+                                    }, 5000);
+                                } catch (e) { /* ok */ }
+                            } else if (action === "ps_ignore") {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Ignorado — puede volver a sugerirse",
+                                    show_alert: false
+                                }, 5000);
+                                try {
+                                    await telegramPost("editMessageReplyMarkup", {
+                                        chat_id: CHAT_ID,
+                                        message_id: cq.message && cq.message.message_id,
+                                        reply_markup: { inline_keyboard: [] }
+                                    }, 5000);
+                                } catch (e) { /* ok */ }
+                            } else if (action === "ps_never" && permissionSuggester) {
+                                const result = permissionSuggester.handleSuggestionNever(encodedPattern);
+                                const pattern = result.ok ? result.pattern : "?";
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "No se volverá a sugerir",
+                                    show_alert: false
+                                }, 5000);
+                                try {
+                                    await telegramPost("editMessageText", {
+                                        chat_id: CHAT_ID,
+                                        message_id: cq.message && cq.message.message_id,
+                                        text: "⛔ <b>Nunca sugerir</b>\n<code>" + (pattern || "").replace(/</g, "&lt;") + "</code>\n<i>No se volverá a sugerir este patrón.</i>",
+                                        parse_mode: "HTML",
+                                        reply_markup: { inline_keyboard: [] }
+                                    }, 5000);
+                                } catch (e) { /* ok */ }
+                            } else {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Módulo no disponible",
+                                    show_alert: true
+                                }, 5000);
+                            }
+                        } catch (e) {
+                            log("Error en permission-suggester callback: " + e.message);
+                            try {
+                                await telegramPost("answerCallbackQuery", {
+                                    callback_query_id: cq.id,
+                                    text: "Error: " + e.message.substring(0, 100),
+                                    show_alert: true
+                                }, 5000);
+                            } catch (e2) {}
+                        }
+                    }
                     // Callbacks de preguntas pendientes (pq_*)
                     else if (cbData.startsWith("pq_")) {
                         log("Callback de pregunta pendiente: " + cbData);
@@ -3235,6 +3311,32 @@ async function main() {
             log("Error en cleanup periódico: " + e.message);
         }
     }, CLEANUP_INTERVAL_MS);
+
+    // #1280: Permission suggester — análisis en startup + intervalo periódico cada 6h
+    if (permissionSuggester) {
+        // Análisis inicial al arranque (con delay de 30s para no saturar el startup)
+        setTimeout(async () => {
+            try {
+                const result = await permissionSuggester.analyzeSuggestions();
+                log("Permission suggester startup: " + result.sent + " sugerencias enviadas");
+            } catch (e) {
+                log("Error en permission suggester startup: " + e.message);
+            }
+        }, 30000);
+
+        // Análisis periódico cada 6 horas
+        suggesterInterval = setInterval(async () => {
+            try {
+                const result = await permissionSuggester.analyzeSuggestions();
+                if (result.sent > 0) {
+                    log("Permission suggester periódico: " + result.sent + " sugerencias enviadas");
+                }
+            } catch (e) {
+                log("Error en permission suggester periódico: " + e.message);
+            }
+        }, SUGGESTER_INTERVAL_MS);
+        log("Permission suggester iniciado (cada " + Math.round(SUGGESTER_INTERVAL_MS / 3600000) + "h)");
+    }
 
     // Iniciar watcher de pending-questions.json (sync consola ↔ Telegram + orphan check on-demand)
     startPendingQuestionsWatch();
