@@ -1080,6 +1080,11 @@ function parseCommand(text) {
         return { type: "limpiar" };
     }
 
+    // /restart — reinicio operativo completo
+    if (trimmed === "/restart") {
+        return { type: "restart" };
+    }
+
     // /session [clear] — gestión de sesión conversacional
     if (trimmed === "/session") {
         return { type: "session" };
@@ -1145,6 +1150,7 @@ async function handleHelp() {
     msg += "  /pendientes — Preguntas pendientes sin responder\n";
     msg += "  /retry — Reactivar permisos expirados\n";
     msg += "  /limpiar — Borrar mensajes con más de 4 horas\n";
+    msg += "  /restart — Reinicio operativo completo (state files + verificaciones)\n";
     msg += "\n<b>Monitor periódico:</b>\n";
     msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min.\n";
     msg += "\n<b>Multimedia:</b>\n";
@@ -1460,6 +1466,64 @@ async function handleLimpiar() {
     } catch (e) {
         log("Error en handleLimpiar: " + e.message);
         await sendMessage("⚠️ Error en limpieza: <code>" + escHtml(e.message) + "</code>");
+    }
+}
+
+async function handleRestart() {
+    await sendMessage("🔄 <b>Reinicio operativo</b> en progreso...");
+    try {
+        const scriptPath = path.join(REPO_ROOT, "scripts", "restart-operational-system.js");
+        if (!fs.existsSync(scriptPath)) {
+            await sendMessage("❌ Script no encontrado: <code>scripts/restart-operational-system.js</code>");
+            return;
+        }
+        const { execSync } = require("child_process");
+        const output = execSync("node \"" + scriptPath + "\" --json --notify", {
+            timeout: 30000,
+            encoding: "utf8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+        const report = JSON.parse(output);
+        const icon = { ok: "✅", partial: "⚠️", error: "❌" };
+        const stateResetOk = report.stateFiles.filter(f => f.status === "reset").length;
+        const stateTotal = report.stateFiles.length;
+        const cleanedCount = (report.processes.cleaned || []).length;
+
+        let msg = "🔄 <b>Restart Operativo Completado</b>\n\n";
+        msg += "Estado: " + (icon[report.status] || "❓") + " <b>" + report.status.toUpperCase() + "</b>\n\n";
+        msg += "📁 State files: " + stateResetOk + "/" + stateTotal + " reseteados\n";
+        msg += (report.telegram.status === "ok" ? "✅" : "❌") + " Telegram\n";
+        msg += (report.github.status === "ok" ? "✅" : "❌") + " GitHub CLI" + (report.github.account ? " (" + escHtml(report.github.account) + ")" : "") + "\n";
+        msg += (report.java.status === "ok" ? "✅" : "❌") + " Java" + (report.java.version ? " v" + escHtml(report.java.version) : "") + "\n";
+        msg += "🧹 Lockfiles limpiados: " + cleanedCount + "\n";
+        msg += "⏱ Duración: " + report.durationMs + "ms";
+
+        if (report.status !== "ok") {
+            msg += "\n\n<b>Errores:</b>\n";
+            if (report.telegram.status === "error") msg += "• Telegram: " + escHtml(report.telegram.error) + "\n";
+            if (report.github.status === "error") msg += "• GitHub: " + escHtml(report.github.error) + "\n";
+            if (report.java.status === "error") msg += "• Java: " + escHtml(report.java.error) + "\n";
+        }
+
+        await sendLongMessage(msg);
+
+        // Inline buttons for fallback actions
+        if (report.status !== "ok") {
+            await telegramPost("sendMessage", {
+                chat_id: CHAT_ID,
+                text: "¿Qué hacer?",
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🔄 Reintentar", callback_data: "restart_retry" }],
+                        [{ text: "📋 Ver log", callback_data: "restart_log" }],
+                    ]
+                }
+            });
+        }
+    } catch (e) {
+        log("Error en handleRestart: " + e.message);
+        await sendMessage("❌ Error en reinicio: <code>" + escHtml(e.message) + "</code>\n\nIntentar manualmente:\n<code>node scripts/restart-operational-system.js --notify</code>");
     }
 }
 
@@ -2636,6 +2700,51 @@ async function pollingLoop() {
                             } catch (e2) {}
                         }
                     }
+                    // Callbacks de restart operativo
+                    else if (cbData === "restart_retry" || cbData === "restart_log") {
+                        try {
+                            await telegramPost("answerCallbackQuery", {
+                                callback_query_id: cq.id,
+                                text: cbData === "restart_retry" ? "Reintentando..." : "Leyendo log...",
+                                show_alert: false
+                            }, 5000);
+                            // Quitar botones
+                            try {
+                                await telegramPost("editMessageReplyMarkup", {
+                                    chat_id: CHAT_ID,
+                                    message_id: cq.message && cq.message.message_id,
+                                    reply_markup: { inline_keyboard: [] }
+                                }, 5000);
+                            } catch (e) { /* ok */ }
+
+                            if (cbData === "restart_retry") {
+                                await handleRestart();
+                            } else {
+                                // Mostrar últimas entradas del restart log
+                                const logPath = path.join(HOOKS_DIR, "restart-log.jsonl");
+                                try {
+                                    const lines = fs.readFileSync(logPath, "utf8").trim().split("\n").slice(-5);
+                                    let msg = "📋 <b>Últimos reinicios:</b>\n\n";
+                                    for (const line of lines) {
+                                        try {
+                                            const entry = JSON.parse(line);
+                                            const icon = { ok: "✅", partial: "⚠️", error: "❌" }[entry.status] || "❓";
+                                            msg += icon + " " + entry.timestamp;
+                                            if (entry.errors && entry.errors.length > 0) {
+                                                msg += " — " + entry.errors.length + " error(es)";
+                                            }
+                                            msg += "\n";
+                                        } catch { msg += "• (entrada inválida)\n"; }
+                                    }
+                                    await sendLongMessage(msg);
+                                } catch (e) {
+                                    await sendMessage("📋 No hay log de reinicios aún.");
+                                }
+                            }
+                        } catch (e) {
+                            log("Error en callback restart: " + e.message);
+                        }
+                    }
                     // Callbacks de relanzar skill tras retry
                     else if (cbData.startsWith("relaunch_skill:")) {
                         const skillName = cbData.substring("relaunch_skill:".length);
@@ -3052,6 +3161,9 @@ async function pollingLoop() {
                         break;
                     case "limpiar":
                         await handleLimpiar();
+                        break;
+                    case "restart":
+                        await handleRestart();
                         break;
                     case "unknown_command":
                         await sendMessage("❓ Comando <code>/" + escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");

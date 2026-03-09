@@ -1,7 +1,7 @@
 ---
 description: Ops — Validación, diagnóstico y reparación del entorno de ejecución
 user-invocable: true
-argument-hint: "[--fix] [--sprint] [--env] [--hooks] [--resources]"
+argument-hint: "[--fix] [--sprint] [--env] [--hooks] [--resources] [reset]"
 allowed-tools: Bash, Read, Glob, Grep
 model: claude-haiku-4-5-20251001
 ---
@@ -23,6 +23,7 @@ Tu trabajo es validar, diagnosticar y (opcionalmente) reparar el entorno de ejec
 | `--env` | Solo chequear variables de entorno y herramientas |
 | `--hooks` | Solo verificar integridad de hooks |
 | `--resources` | Solo monitorear disco, memoria, procesos |
+| `reset` | Reinicio operativo completo: reset state files + verificaciones + limpieza procesos |
 
 ## NOTA CRITICA: usar heredoc para scripts Node.js
 
@@ -193,6 +194,27 @@ Mostrar qué se reparó en una sección adicional del dashboard:
 - NO alterar settings.json ni settings.local.json
 - NO eliminar archivos .js de hooks
 - Para limpieza profunda, delegar a `/cleanup --run`
+
+## Modo `reset` — Reinicio operativo completo
+
+Si `$ARGUMENTS` es `reset`:
+
+1. Ejecutar el script de reinicio:
+```bash
+node /c/Workspaces/Intrale/platform/scripts/restart-operational-system.js --notify 2>&1
+```
+
+2. Mostrar la salida tal cual (el script genera su propio dashboard box-drawing)
+
+3. Si hay errores, sugerir acciones correctivas:
+   - Telegram falla → verificar `telegram-config.json`
+   - GitHub CLI falla → ejecutar `gh auth login`
+   - Java falla → verificar JAVA_HOME
+   - Lockfiles stale → ya limpiados automáticamente por el script
+
+4. El script genera un log en `.claude/hooks/restart-log.jsonl`
+
+**NO ejecutar los pasos 1-4 del health-check cuando el argumento es `reset`.**
 
 ## Reglas generales
 
