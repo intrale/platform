@@ -88,8 +88,11 @@ let sprintStartTime = null;        // Timestamp de inicio del sprint
 let cleanupInterval = null;        // ID del setInterval de limpieza de mensajes
 let outboxDrainInterval = null;    // P-02: ID del setInterval de drain de outbox
 let suggesterInterval = null;      // #1280: ID del setInterval del permission suggester
-let commandBusy = false;           // Flag para evitar ejecutar dos comandos simultáneos
-let commandBusyLabel = "";         // Descripción del comando en ejecución
+// ─── Paralelismo de comandos (#1279) ─────────────────────────────────────────
+// activeCommands: Map<cmdId, { label, sessionId, startTime }> — comandos en ejecución
+const MAX_PARALLEL_COMMANDS = 3;
+const activeCommands = new Map();
+let _nextCmdNumber = 1;            // Contador secuencial para etiquetar comandos
 const PROCESSED_IDS_MAX = 200;     // Máx message_ids en set de deduplicación
 const processedMessageIds = new Set(); // Deduplicar mensajes procesados
 
@@ -726,8 +729,8 @@ async function handleVoiceOrAudio(msg) {
         log("Transcripción: " + transcription.substring(0, 200));
 
         // Enviar el texto transcrito a Claude como freetext
-        if (commandBusy) {
-            // Si hay un comando en ejecución, verificar permisos pendientes primero
+        if (activeCommands.size >= MAX_PARALLEL_COMMANDS) {
+            // Si se alcanzó el límite de comandos paralelos, verificar permisos pendientes primero
             const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
             if (pendingPerms.length > 0) {
                 const q = pendingPerms[pendingPerms.length - 1];
@@ -737,7 +740,7 @@ async function handleVoiceOrAudio(msg) {
                     return;
                 }
             }
-            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>).\n🎤 <i>" + escHtml(transcription.substring(0, 200)) + "</i>");
+            await sendMessage("⏳ Límite de " + MAX_PARALLEL_COMMANDS + " comandos paralelos alcanzado. Esperá que termine alguno.\n🎤 <i>" + escHtml(transcription.substring(0, 200)) + "</i>");
             return;
         }
 
@@ -1637,7 +1640,7 @@ async function handleSessionClear() {
 }
 
 async function handleSkill(skill, args) {
-    if (commandBusy) {
+    if (activeCommands.size >= MAX_PARALLEL_COMMANDS) {
         const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
         if (pendingPerms.length > 0) {
             const q = pendingPerms[pendingPerms.length - 1];
@@ -1645,7 +1648,8 @@ async function handleSkill(skill, args) {
             await sendMessage("⏳ <b>Hay un permiso bloqueante pendiente</b> para " + toolName + ".\n"
                 + "Respondé con: <b>si</b>, <b>siempre</b>, <b>no</b>, o <b>cancelar permiso</b>");
         } else {
-            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+            const labels = Array.from(activeCommands.values()).map(c => c.label).join(", ");
+            await sendMessage("⏳ Límite de " + MAX_PARALLEL_COMMANDS + " comandos paralelos alcanzado. Esperá que termine alguno.\nActivos: <code>" + escHtml(labels) + "</code>");
         }
         return;
     }
@@ -1658,7 +1662,9 @@ async function handleSkill(skill, args) {
     }
 
     const skillLabel = "/" + skill.name + (args ? " " + args : "");
-    await sendMessage("⚡ Ejecutando <code>" + escHtml(skillLabel) + "</code>...");
+    const cmdNum = _nextCmdNumber; // Peek al próximo número de comando
+    const parallelTag = activeCommands.size > 0 ? " [Cmd #" + cmdNum + "]" : "";
+    await sendMessage("⚡" + parallelTag + " Ejecutando <code>" + escHtml(skillLabel) + "</code>...");
 
     // Construir el prompt para claude -p
     // El Skill tool espera: skill name + args
@@ -1684,7 +1690,7 @@ async function handleSkill(skill, args) {
 }
 
 async function handleFreetext(text) {
-    if (commandBusy) {
+    if (activeCommands.size >= MAX_PARALLEL_COMMANDS) {
         const pendingPerms = getPendingQuestions().filter(q => q.type === "permission");
         if (pendingPerms.length > 0) {
             const q = pendingPerms[pendingPerms.length - 1];
@@ -1692,12 +1698,15 @@ async function handleFreetext(text) {
             await sendMessage("⏳ <b>Hay un permiso bloqueante pendiente</b> para " + toolName + ".\n"
                 + "Respondé con: <b>si</b>, <b>siempre</b>, <b>no</b>, o <b>cancelar permiso</b>");
         } else {
-            await sendMessage("⏳ Ya hay un comando en ejecución (<code>" + escHtml(commandBusyLabel) + "</code>). Esperá a que termine.");
+            const labels = Array.from(activeCommands.values()).map(c => c.label).join(", ");
+            await sendMessage("⏳ Límite de " + MAX_PARALLEL_COMMANDS + " comandos paralelos alcanzado. Esperá que termine alguno.\nActivos: <code>" + escHtml(labels) + "</code>");
         }
         return;
     }
 
-    await sendMessage("💬 Procesando: <code>" + escHtml(text.substring(0, 100)) + (text.length > 100 ? "…" : "") + "</code>");
+    const cmdNum = _nextCmdNumber; // Peek al próximo número de comando
+    const parallelTag = activeCommands.size > 0 ? " [Cmd #" + cmdNum + "]" : "";
+    await sendMessage("💬" + parallelTag + " Procesando: <code>" + escHtml(text.substring(0, 100)) + (text.length > 100 ? "…" : "") + "</code>");
 
     await executeClaudeQueued(text, [], { useSession: true, skill: null });
 }
@@ -1919,33 +1928,42 @@ async function handleSprint(agentNumber) {
     sprintStartTime = null;
 }
 
-// ─── Execution lock — una sola sesión activa a la vez ────────────────────────
-
-let _executionBusy = false;
+// ─── Execution — múltiples comandos paralelos (#1279) ────────────────────────
 
 function isCommandBusy() {
-    return _executionBusy;
+    return activeCommands.size >= MAX_PARALLEL_COMMANDS;
 }
 
 function getCommandBusyLabel() {
-    return commandBusyLabel;
+    if (activeCommands.size === 0) return "";
+    return Array.from(activeCommands.values()).map(c => c.label).join(", ");
+}
+
+function getActiveCommandsList() {
+    return Array.from(activeCommands.entries()).map(([id, cmd]) => ({
+        id,
+        label: cmd.label,
+        startTime: cmd.startTime
+    }));
 }
 
 async function executeClaudeQueued(prompt, extraArgs, options) {
-    if (_executionBusy) {
-        log("executeClaude: ya hay una ejecución en curso — RECHAZANDO (no encolar)");
-        return { code: -2, stdout: "", stderr: "busy", sessionId: null };
+    if (activeCommands.size >= MAX_PARALLEL_COMMANDS) {
+        const labels = Array.from(activeCommands.values()).map(c => c.label).join(", ");
+        log("executeClaude: límite de " + MAX_PARALLEL_COMMANDS + " comandos paralelos alcanzado — RECHAZANDO (" + labels + ")");
+        return { code: -2, stdout: "", stderr: "busy", sessionId: null, cmdId: null };
     }
-    _executionBusy = true;
-    commandBusy = true;
-    commandBusyLabel = (prompt || "").substring(0, 80);
+    const cmdId = _nextCmdNumber++;
+    const label = (prompt || "").substring(0, 80);
+    activeCommands.set(cmdId, { label, sessionId: null, startTime: Date.now() });
+    log("Comando [Cmd #" + cmdId + "] registrado: " + label + " (activos: " + activeCommands.size + ")");
     try {
         const result = await executeClaude(prompt, extraArgs, options);
+        result.cmdId = cmdId;
         return result;
     } finally {
-        _executionBusy = false;
-        commandBusy = false;
-        commandBusyLabel = "";
+        activeCommands.delete(cmdId);
+        log("Comando [Cmd #" + cmdId + "] finalizado (activos: " + activeCommands.size + ")");
     }
 }
 
@@ -1960,14 +1978,18 @@ function executeClaude(prompt, extraArgs, options) {
         const args = ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions"].concat(extraArgs || []);
 
         // Soporte de sesión: agregar --resume si hay sesión activa
+        // Cada comando paralelo usa su propio session-id para evitar mezclar contextos
         let resumedSessionId = null;
-        if (opts.useSession) {
+        if (opts.useSession && activeCommands.size <= 1) {
+            // Solo el primer comando activo puede resumir la sesión conversacional principal
             const activeId = getActiveSessionId();
             if (activeId) {
                 args.push("--resume", activeId);
                 resumedSessionId = activeId;
-                log("Resumiendo sesión: " + activeId);
+                log("Resumiendo sesión principal: " + activeId);
             }
+        } else if (opts.useSession && activeCommands.size > 1) {
+            log("Comando paralelo — sesión independiente (no resume sesión principal)");
         }
 
         log("Ejecutando: claude " + args.join(" ") + " (prompt via stdin, " + prompt.length + " chars)");
@@ -2069,9 +2091,10 @@ function executeClaude(prompt, extraArgs, options) {
 
 async function sendResult(label, result) {
     let output = "";
+    const cmdPrefix = result.cmdId ? "[Cmd #" + result.cmdId + "] " : "";
 
     if (result.code !== 0) {
-        output = "❌ <b>Error</b> (exit code " + result.code + ")\n\n";
+        output = cmdPrefix + "❌ <b>Error</b> (exit code " + result.code + ")\n\n";
         // Extraer mensaje útil del error
         let errorDetail = "";
         if (result.stderr) {
@@ -2105,10 +2128,10 @@ async function sendResult(label, result) {
     try {
         const json = JSON.parse(result.stdout);
         const text = json.result || json.text || json.content || result.stdout;
-        output = "✅ <b>" + escHtml(label) + "</b>\n\n" + escHtml(text);
+        output = cmdPrefix + "✅ <b>" + escHtml(label) + "</b>\n\n" + escHtml(text);
     } catch (e) {
         // No es JSON — enviar raw
-        output = "✅ <b>" + escHtml(label) + "</b>\n\n" + escHtml(result.stdout || "(sin output)");
+        output = cmdPrefix + "✅ <b>" + escHtml(label) + "</b>\n\n" + escHtml(result.stdout || "(sin output)");
     }
 
     await sendLongMessage(output);
