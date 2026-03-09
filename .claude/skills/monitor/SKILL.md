@@ -27,6 +27,7 @@ Recolecta datos de TODAS estas fuentes en paralelo:
 7. **Metricas config**: Lee `.claude/hooks/telegram-config.json` y extrae `claude_metrics` para calcular costos
 8. **Metricas de agentes**: Lee `.claude/hooks/agent-metrics.json` con `Read` (puede no existir — omitir panel si no existe)
 9. **Participacion de agentes**: Lee `.claude/hooks/agent-participation.json` con `Read` (puede no existir — omitir panel COBERTURA si no existe)
+10. **Permisos**: Lee `.claude/hooks/pending-questions.json` y `.claude/hooks/approval-history.json` con `Read` (pueden no existir — omitir panel PERMISOS si no existen)
 
 Luego, para cada sesion de tipo `"parent"`, determina su estado de liveness usando `last_activity_ts` del JSON:
 
@@ -273,6 +274,42 @@ Reglas para los sub-pasos:
 - Tarea `in_progress` sin owner → `⚠ #N in_progress sin owner`
 - Si no hay alertas → `✓ Sin alertas`
 
+**Reglas del panel PERMISOS:**
+
+- Fuentes: `.claude/hooks/pending-questions.json` (permisos recientes) + `.claude/hooks/approval-history.json` (estadísticas por patrón)
+- Si ambos archivos no existen o están vacíos: omitir el panel completamente
+- Formato del panel:
+
+```
+├─ PERMISOS ──────────────────────────────────────────────────────┤
+│ Auto: 42  │ Aprobados: 15  │ Rechazados: 1  │ Pendientes: 2    │
+│                                                                   │
+│ Recientes (últimos 10):                                           │
+│ ✓ AUTO  TaskCreate         (AUTO_ALLOW) hace 2m                  │
+│ ✓ AUTO  WebFetch           (LOW)        hace 5m                  │
+│ ✓ AUTO  git push agent/... (MEDIUM)     hace 8m                  │
+│ ✓ TELE  Bash: curl -X POST (MEDIUM)     hace 12m · @leitolarreta│
+│ ✗ RECH  rm -rf /tmp/*      (HIGH)       hace 1h  · @leitolarreta│
+│ ☐ PEND  git reset --hard   (HIGH)       hace 3m  · esperando... │
+│                                                                   │
+│ Top patrones: Bash(node:*) ×42 | Edit(*) ×38 | WebFetch ×15     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- **Resumen numérico** (primera fila):
+  - `Auto`: contar entradas en `pending-questions.json` donde `answered_via === "auto"` o `action_result === "allow"` y `answered_via === "auto"`
+  - `Aprobados`: contar donde `answered_via === "telegram"` o `answered_via === "console"` y `action_result === "allow"`
+  - `Rechazados`: contar donde `action_result === "deny"`
+  - `Pendientes`: contar donde `status === "pending"`
+- **Permisos recientes**: listar las últimas 10 entradas del array `questions[]` de `pending-questions.json` ordenadas por `created_at` descendente
+  - Estado: `✓ AUTO` = auto-aprobado | `✓ TELE` = aprobado vía Telegram | `✓ CONS` = aprobado vía consola | `✗ RECH` = rechazado | `☐ PEND` = pendiente
+  - Herramienta: campo `tool_name` (truncar a 20 chars)
+  - Severidad: entre paréntesis — inferir desde `tool_name`: TaskCreate/Edit/Write/Read → AUTO_ALLOW; WebFetch/WebSearch/Skill → LOW; git push/curl POST/Task/Agent → MEDIUM; rm/reset → HIGH
+  - Tiempo: calcular diferencia entre `created_at` y ahora (hace Xm / hace Xh)
+  - Aprobador: si fue via Telegram o consola, mostrar ` · @leitolarreta`; si pendiente, mostrar ` · esperando...`
+- **Top patrones**: leer `approval-history.json`, ordenar por `count` descendente, mostrar los top 3 en formato `Patrón ×N`
+- Si `pending-questions.json` existe pero no tiene entradas recientes (últimas 24h), mostrar solo resumen y top patrones
+
 **Formato general:**
 
 - Usa caracteres box-drawing Unicode: `┌ ┐ └ ┘ ├ ┤ ┬ ┴ │ ─`
@@ -319,6 +356,7 @@ Muestra:
 │   TAREAS       Progreso con sub-pasos               │
 │   REPO         Branch, commit, CI                   │
 │   ALERTAS      Bloqueos y advertencias              │
+│   PERMISOS     Solicitudes, clasificación, resultado│
 │                                                     │
 │ Dashboard web (auto-arranca con agentes):           │
 │   http://localhost:3100                             │
