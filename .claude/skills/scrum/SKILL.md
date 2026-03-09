@@ -28,8 +28,10 @@ Sos pragmático, data-driven y facilitador (no bloqueador). Adaptás la metodolo
 | sin arg o `audit` | Auditoría | Escaneo completo: discrepancias, huérfanos, stale, transiciones inválidas |
 | `sync` | Sincronización | Corregir discrepancias (mover issues + comentar trazabilidad) |
 | `standup` | Standup | Resumen rápido: qué movió, qué está bloqueado, qué está stale |
-| `health` | Health | Dashboard de métricas: WIP, blocked ratio, throughput, cycle time |
+| `health` | Health | Dashboard de métricas + salud del sprint actual (inconsistencias, estancadas, PRs) |
 | `mejoras` | Mejoras | Sugerir cambios a la metodología basados en patrones observados |
+| `repair [--auto\|--confirm]` | Reparación | Auto-reparar inconsistencias del sprint (--auto: sin confirmar, --confirm: con confirmación) |
+| `close` | Cierre forzado | Cerrar sprint forzadamente, mover issues pendientes, generar reporte final |
 
 ---
 
@@ -242,6 +244,15 @@ Detectar items que saltaron estados según las reglas de `methodology.md`.
 
 Contar items In Progress → comparar con WIP limit de `methodology.md`.
 
+### 6. Historial de auto-reparaciones del sprint
+
+Leer el audit log:
+```bash
+cat /c/Workspaces/Intrale/platform/.claude/hooks/sprint-audit.jsonl 2>/dev/null | tail -20
+```
+
+Mostrar las últimas acciones de reparación ejecutadas con timestamp, issue y resultado.
+
 ### Formato de reporte
 
 ```
@@ -267,6 +278,11 @@ Contar items In Progress → comparar con WIP limit de `methodology.md`.
 
 ### Transiciones inválidas
 - Ninguna detectada ✓
+
+### Historial de reparaciones del sprint (últimas 24h)
+| Timestamp | Issue | Acción | Estado |
+|-----------|-------|--------|--------|
+| [ISO] | #123  | close_issue_and_move_to_done | ✅ ok |
 
 ### Resumen
 - Total items en board: N
@@ -385,6 +401,16 @@ Ejecutar Paso 0 (solo datos, sin auditoría profunda), luego generar resumen eje
 
 ## Modo: Health (`/scrum health`)
 
+Ejecutar Paso 0 + **health check del sprint** para diagnóstico completo, luego calcular y mostrar métricas:
+
+### Paso H0 adicional: Health check del sprint
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/health-check-sprint.js 2>/dev/null
+```
+
+Parsear el JSON de salida. Agregar sección de salud del sprint al dashboard.
+
 Ejecutar Paso 0, luego calcular y mostrar métricas:
 
 ```
@@ -419,6 +445,15 @@ Ejecutar Paso 0, luego calcular y mostrar métricas:
   Issues resueltos:      N (con PR mergeado)
   Trazabilidad:          N% (sesiones con issue vinculado)
 
+### Salud del Sprint Actual
+  Sprint:          [sprint_id] ([fechaInicio] → [fechaFin])
+  Estado:          [active | overdue | closed]
+  Inconsistencias: N [🟢 0 | 🟡 1-3 | 🔴 >3]
+  ├─ PR mergeado/issue abierto: N
+  ├─ Estancadas (>6h In Progress): N
+  ├─ PRs sin merge >24h: N
+  └─ Sprint vencida: [Sí (N días) | No]
+
 ### Salud general: [🟢 | 🟡 | 🔴]
   [Explicación de por qué ese nivel]
 ```
@@ -426,6 +461,133 @@ Ejecutar Paso 0, luego calcular y mostrar métricas:
 Para cycle time, usar `updatedAt` y `closedAt` de los issues cerrados en los últimos 30 días como aproximación.
 
 Para métricas de agentes, usar las sesiones de `.claude/sessions/*.json` y el `activity-log.jsonl` recolectados en Paso 0.6.
+
+---
+
+## Modo: Reparación (`/scrum repair [--auto|--confirm]`)
+
+Ejecutar Paso 0 parcial (solo sprint-plan.json + process-registry), luego **health check del sprint** y ejecutar reparaciones:
+
+### Paso R1: Ejecutar health check del sprint
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/health-check-sprint.js 2>/dev/null
+```
+
+Parsear el JSON de salida para obtener el diagnóstico completo.
+
+### Paso R2: Mostrar diagnóstico preliminar
+
+Mostrar las inconsistencias encontradas con severidad y acción propuesta:
+
+```
+## 🔍 Diagnóstico del Sprint — [sprint_id]
+
+### Inconsistencias detectadas (N)
+| # | Issue | Tipo | Severidad | Acción propuesta |
+|---|-------|------|-----------|-----------------|
+| 1 | #123  | pr_merged_issue_open | 🔴 ALTO | Cerrar issue + mover a Done |
+| 2 | #456  | stale_in_progress | 🟡 MEDIO | Mover a Blocked (12h sin actividad) |
+```
+
+### Paso R3: Ejecutar reparaciones
+
+**Con `--auto`**: ejecutar sin confirmación
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/auto-repair-sprint.js --auto 2>/dev/null
+```
+
+**Con `--confirm`** o sin argumentos: mostrar diagnóstico y solicitar confirmación al usuario antes de ejecutar.
+
+**Modo interactivo** (sin `--auto`):
+1. Mostrar el diagnóstico completo
+2. Preguntar: "¿Ejecutar las reparaciones? (y/N)"
+3. Si el usuario confirma, ejecutar con `--auto`
+
+### Paso R4: Generar reporte
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/skills/scrum/health-report.js 2>/dev/null
+```
+
+### Formato de reporte repair
+
+```
+## 🔧 Reparaciones completadas — [fecha]
+
+### Resumen
+- Inconsistencias encontradas: N
+- Reparaciones OK: N
+- Errores: N
+
+### Acciones ejecutadas
+| # | Issue | Acción | Estado | Detalle |
+|---|-------|--------|--------|---------|
+| 1 | #123  | close_issue_and_move_to_done | ✅ OK | PR #456 mergeado |
+| 2 | #789  | move_to_blocked | ✅ OK | 12h sin actividad |
+
+### Errores (si hubieron)
+[Lista de acciones que fallaron]
+```
+
+---
+
+## Modo: Cierre forzado (`/scrum close`)
+
+Cierra el sprint activo forzadamente.
+
+### Paso C1: Verificar estado actual
+
+Leer `scripts/sprint-plan.json` y obtener lista de issues del sprint.
+
+Verificar en el board cuáles están en Done y cuáles no.
+
+### Paso C2: Ejecutar health check + reparación automática
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/health-check-sprint.js 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/auto-repair-sprint.js --auto 2>/dev/null
+```
+
+### Paso C3: Cerrar sprint en sprint-plan.json
+
+Actualizar `scripts/sprint-plan.json` agregando:
+```json
+{
+  "sprint_cerrado": true,
+  "sprint_cerrado_at": "2026-...",
+  "sprint_cerrado_by": "/scrum close"
+}
+```
+
+Mover todos los agentes activos a `_completed`.
+
+### Paso C4: Generar reporte final de cierre
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/skills/scrum/health-report.js 2>/dev/null
+```
+
+### Formato de reporte close
+
+```
+## 🏁 Sprint Cerrado — [sprint_id]
+
+### Resumen del sprint
+- **Período**: [fechaInicio] → [fechaFin]
+- **Historias completadas**: N/M
+- **Reparaciones ejecutadas**: N
+- **Estado final**: Cerrado ✓
+
+### Historias del sprint
+| Issue | Título | Estado final |
+|-------|--------|-------------|
+| #123  | feat: ... | ✅ Done |
+| #456  | fix: ...  | ✅ Done |
+
+### Acciones de cierre
+[Lista de reparaciones y correcciones ejecutadas]
+```
 
 ---
 
