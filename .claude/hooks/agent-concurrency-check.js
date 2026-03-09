@@ -214,14 +214,30 @@ function launchAgent(agente) {
 
         log("Lanzando agente " + agente.numero + " (issue #" + agente.issue + ") via PowerShell...");
 
+        // Bug 2: Redirigir stdout+stderr a archivo de log para capturar errores del spawn (#1345)
+        // Antes: stdio: "ignore" — descartaba toda salida y no había forma de diagnosticar fallos
+        const logsDir = path.join(REPO_ROOT, "scripts", "logs");
+        try { if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true }); } catch (e) {}
+        const spawnLogPath = path.join(logsDir, "spawn_agente_" + agente.numero + ".log");
+        let logFd;
+        let stdio = "ignore";
+        try {
+            logFd = fs.openSync(spawnLogPath, "w");
+            stdio = ["ignore", logFd, logFd];
+        } catch (e) {
+            log("No se pudo abrir log de spawn: " + e.message + " — usando stdio:ignore");
+        }
+
         const child = spawn("powershell.exe", args, {
             detached: true,
-            stdio: "ignore",
+            stdio: stdio,
             windowsHide: false
         });
         child.unref();
+        // Cerrar el fd del padre — el hijo ya tiene su copia duplicada
+        if (logFd !== undefined) { try { fs.closeSync(logFd); } catch (e) {} }
 
-        log("Agente " + agente.numero + " lanzado (PID hijo " + child.pid + ")");
+        log("Agente " + agente.numero + " lanzado (PID hijo " + child.pid + ") — log: " + spawnLogPath);
         return true;
     } catch (e) {
         log("launchAgent error: " + e.message);
@@ -281,8 +297,13 @@ async function processInput() {
         return;
     }
 
-    // Adquirir lock antes de leer+modificar
+    // Bug 4: Adquirir lock ANTES de leer+modificar para prevenir race conditions (#1345)
+    // Si dos agentes terminan simultáneamente, el segundo espera al primero.
+    // fail-open: si el lock no se puede adquirir (timeout), se continúa con advertencia.
     const locked = acquireLock();
+    if (!locked) {
+        log("ADVERTENCIA: Operando sin lock — posible race condition si otro hook terminó simultáneamente");
+    }
     let plan;
     try {
         plan = loadPlan();
@@ -306,6 +327,15 @@ async function processInput() {
         plan.agentes = (plan.agentes || []).filter(ag => ag.issue !== finishingAgent.issue);
         const afterCount = plan.agentes.length;
         log("Agentes activos: " + prevCount + " → " + afterCount + " (límite: " + concurrencyLimit + ")");
+
+        // Bug 3: Agregar agente completado a _completed para mantener historial del sprint (#1345)
+        // Antes: el agente se removía de `agentes` sin dejar rastro de que completó
+        if (!Array.isArray(plan._completed)) plan._completed = [];
+        plan._completed.push(Object.assign({}, finishingAgent, {
+            resultado: "ok",
+            completedAt: new Date().toISOString()
+        }));
+        log("Agente #" + finishingAgent.issue + " agregado a _completed (" + plan._completed.length + " total)");
 
         const queue = getQueue(plan);
 

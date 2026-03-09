@@ -132,6 +132,29 @@ function Start-UnAgente {
         Write-Host ">> Worktree existente, reutilizando: $wtDir" -ForegroundColor Yellow
     }
 
+    # Bug 1: Verificar si ya hay un proceso claude activo para este agente (#1345)
+    # Si el worktree existe y el PID anterior sigue vivo, no relanzar para evitar
+    # conflictos de archivos bloqueados al intentar copiar .claude/
+    if ($wtExists) {
+        $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
+        if (Test-Path $pidsFile) {
+            try {
+                $pidsData = Get-Content $pidsFile -Raw | ConvertFrom-Json
+                $existingPid = $pidsData."agente_$($Agente.numero)"
+                if ($existingPid) {
+                    $proc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+                    if ($proc) {
+                        Write-Host ">> WARN: Agente $($Agente.numero) (PID $existingPid) ya esta activo en $wtDir — skip" -ForegroundColor Yellow
+                        Write-Host ">> Para forzar relanzamiento, terminar el proceso primero." -ForegroundColor DarkGray
+                        return
+                    }
+                }
+            } catch {
+                Write-Host ">> INFO: No se pudo verificar PIDs previos (fail-open): $_" -ForegroundColor DarkGray
+            }
+        }
+    }
+
     if (-not $wtExists) {
         # Ir al repo principal y actualizar main
         Push-Location $MainRepo
@@ -179,7 +202,14 @@ function Start-UnAgente {
                 cmd /c rmdir "$claudeDst" 2>$null
             } else {
                 # Directorio real de git checkout — eliminar para reemplazar con copia fresca
-                Remove-Item $claudeDst -Recurse -Force
+                # Bug 1: usar try/catch para no crashear si hay archivos bloqueados (#1345)
+                try {
+                    Remove-Item $claudeDst -Recurse -Force
+                } catch {
+                    Write-Host ">> WARN: No se pudo eliminar $claudeDst — archivos bloqueados: $_" -ForegroundColor Yellow
+                    Write-Host ">> Abortando relanzamiento para evitar estado parcial." -ForegroundColor Yellow
+                    return
+                }
             }
         }
         Copy-Item -Path $claudeSrc -Destination $claudeDst -Recurse -Force
