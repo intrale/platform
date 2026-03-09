@@ -492,8 +492,9 @@ async function processInput() {
     // Fast-path: auto-aprobar si la severidad es AUTO_ALLOW (directorio seguro / tool interno)
     const severity = classifySeverity(toolName, toolInput, REPO_ROOT);
     log("SEVERITY: " + toolName + " → " + severity);
-    if (severity === Severity.AUTO_ALLOW) {
-        log("AUTO_ALLOW (PermissionRequest): " + toolName + " auto-aprobado");
+    if (severity === Severity.AUTO_ALLOW || severity === Severity.LOW) {
+        const autoReason = severity === Severity.AUTO_ALLOW ? "AUTO_ALLOW (safe dir)" : "LOW severity";
+        log("Auto-aprobando sin Telegram: " + toolName + " (" + autoReason + ")");
         const response = {
             hookSpecificOutput: {
                 hookEventName: "PermissionRequest",
