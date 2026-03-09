@@ -148,6 +148,27 @@ function sendTelegramPhoto(photoBuffer, caption, silent) {
   });
 }
 
+// Obtener screenshots por sección semántica del dashboard (nuevo endpoint #1263)
+// Retorna array de { id, buf } o null si el endpoint no está disponible
+function fetchScreenshotSections(width) {
+  return new Promise((resolve) => {
+    const req = http.get("http://localhost:" + DASHBOARD_PORT + "/screenshots/sections?w=" + width, { timeout: 30000 }, (res) => {
+      if (res.statusCode !== 200) { resolve(null); return; }
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const sections = JSON.parse(d);
+          if (!Array.isArray(sections) || sections.length === 0) { resolve(null); return; }
+          resolve(sections.map(function(s) { return { id: s.id, buf: Buffer.from(s.image, "base64") }; }));
+        } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
 // Obtener screenshots partidos del dashboard web (para álbum)
 function fetchScreenshots(width, height) {
   return new Promise((resolve) => {
@@ -254,9 +275,27 @@ async function sendPeriodicReport() {
   // Esperar un momento para que arranque
   await new Promise(r => setTimeout(r, 2000));
 
-  const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + new Date().toLocaleString("es-AR");
+  const dateStr = new Date().toLocaleString("es-AR");
 
-  // Intentar álbum de 2 fotos primero
+  // 1. Intentar álbum por secciones semánticas (mobile-first 390px, #1263)
+  try {
+    const sections = await fetchScreenshotSections(390);
+    if (sections && sections.length >= 2) {
+      const validBufs = sections.map(function(s) { return s.buf; }).filter(function(b) { return b.length > 1000; });
+      if (validBufs.length >= 2) {
+        const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 " + dateStr + "\n" + validBufs.length + " paneles";
+        await sendTelegramMediaGroup(validBufs, caption, true);
+        debugLog("Heartbeat secciones OK (" + validBufs.length + " paneles)");
+        return;
+      }
+    }
+  } catch (e) {
+    debugLog("Error con secciones: " + e.message);
+  }
+
+  const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + dateStr;
+
+  // 2. Fallback: álbum top/bottom (endpoint /screenshots)
   try {
     const parts = await fetchScreenshots(600, 800);
     if (parts && parts.top.length > 1000 && parts.bottom.length > 1000) {
@@ -267,14 +306,14 @@ async function sendPeriodicReport() {
     debugLog("Error con álbum screenshots: " + e.message);
   }
 
-  // Fallback: single screenshot
+  // 3. Fallback: foto única
   const screenshot = await fetchScreenshot(375, 640);
   if (screenshot && screenshot.length > 1000) {
     try {
       await sendTelegramPhoto(screenshot, caption, true);
     } catch(e) {
       debugLog("Error enviando screenshot: " + e.message);
-      await sendTelegramText("\ud83d\udc9a <b>Heartbeat</b>\nDashboard activo en localhost:" + DASHBOARD_PORT + "\n" + new Date().toLocaleString("es-AR"), true);
+      await sendTelegramText("\ud83d\udc9a <b>Heartbeat</b>\nDashboard activo en localhost:" + DASHBOARD_PORT + "\n" + dateStr, true);
     }
   } else {
     debugLog("Screenshot no disponible, enviando texto");

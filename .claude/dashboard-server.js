@@ -1485,7 +1485,7 @@ function renderHTML(data, theme) {
     </div>
 
     <!-- Ejecución + Agents -->
-    <div class="grid-2col">
+    <div class="grid-2col" data-panel="exec">
       <div class="panel">
         <div class="panel-title">Ejecuci&oacute;n <span class="chip chip-green">${sprintProgress}% completado</span></div>
         <div class="tasks-progress-bar">
@@ -1500,7 +1500,7 @@ function renderHTML(data, theme) {
     </div>
 
     <!-- Flow Graph + Feed -->
-    <div class="grid-flow">
+    <div class="grid-flow" data-panel="sessions">
       <div class="panel">
         <div class="panel-title">Flujo de agentes <span class="chip chip-blue">${data.agentNodes.length} nodos</span></div>
         ${flowGraphHtml}
@@ -1512,7 +1512,7 @@ function renderHTML(data, theme) {
     </div>
 
     <!-- Métricas Claude + Tasks -->
-    <div class="grid-2equal">
+    <div class="grid-2equal" data-panel="metrics">
       <div class="panel">
         <div class="panel-title">Uso de agentes <span class="chip chip-purple">${totalSkillInvocations} inv.</span></div>
         ${metricsHtml}
@@ -1533,7 +1533,7 @@ function renderHTML(data, theme) {
     </div>
 
     <!-- CI -->
-    <div class="panel" style="margin-bottom:16px;">
+    <div class="panel" style="margin-bottom:16px;" data-panel="ci">
       <div class="panel-title">CI / CD</div>
       ${ciHtml}
     </div>
@@ -1700,6 +1700,15 @@ function handleRequest(req, res) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end("Screenshots error: " + err.message);
     });
+  } else if (pathname === "/screenshots/sections") {
+    const width = parseInt(url.searchParams.get("w")) || 390;
+    takeScreenshotSections(width).then(sections => {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify(sections));
+    }).catch(err => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Sections screenshot error: " + err.message);
+    });
   } else if (pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", uptime: process.uptime(), port: PORT }));
@@ -1742,6 +1751,69 @@ async function takeScreenshot(width, height, options) {
     }
 
     return await page.screenshot({ type: "png", fullPage: true });
+  } finally {
+    await page.close();
+  }
+}
+
+// Captura cada sección semántica del dashboard usando getBoundingClientRect()
+// Retorna array de { id, image: "<base64>" } — omite paneles vacíos o inexistentes
+async function takeScreenshotSections(width) {
+  let puppeteer;
+  try { puppeteer = require("puppeteer"); } catch {
+    try { puppeteer = require(path.join(REPO_ROOT, "docs", "qa", "node_modules", "puppeteer")); }
+    catch { throw new Error("puppeteer not installed — run: cd docs/qa && npm install"); }
+  }
+
+  if (!puppeteerBrowser || !puppeteerBrowser.isConnected()) {
+    puppeteerBrowser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+    });
+  }
+
+  const page = await puppeteerBrowser.newPage();
+  try {
+    // Viewport alto para que todos los paneles rendericen antes del scroll
+    await page.setViewport({ width, height: 2400 });
+    await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "domcontentloaded", timeout: 15000 });
+    await new Promise(r => setTimeout(r, 1000));
+
+    const sections = await page.evaluate(() => {
+      const selectors = [
+        { id: "kpis",      sel: ".kpi-row" },
+        { id: "ejecucion", sel: "[data-panel='exec']" },
+        { id: "sesiones",  sel: "[data-panel='sessions']" },
+        { id: "metricas",  sel: "[data-panel='metrics']" },
+        { id: "ci",        sel: "[data-panel='ci']" },
+      ];
+      return selectors.map(function(s) {
+        var el = document.querySelector(s.sel);
+        if (!el) return null;
+        var r = el.getBoundingClientRect();
+        // Ignorar paneles vacíos o sin altura visible
+        if (r.height < 20 || r.width < 20) return null;
+        return { id: s.id, x: Math.max(0, r.x), y: r.y + window.scrollY, width: r.width, height: r.height };
+      }).filter(Boolean);
+    });
+
+    const results = [];
+    for (const section of sections) {
+      const buf = await page.screenshot({
+        type: "png",
+        clip: {
+          x: section.x,
+          y: section.y,
+          width: section.width,
+          height: section.height,
+        },
+      });
+      // Solo incluir si la imagen tiene contenido real (> 5KB)
+      if (buf.length > 5000) {
+        results.push({ id: section.id, image: buf.toString("base64") });
+      }
+    }
+    return results;
   } finally {
     await page.close();
   }
