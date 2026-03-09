@@ -9,7 +9,32 @@ const path = require("path");
 const { execSync, spawn } = require("child_process");
 
 const HOOKS_DIR = __dirname;
-const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HOOKS_DIR, "..", "..");
+
+// Bug fix (#1266): Resolver el repo principal desde worktrees.
+function resolveMainRepoRoot(hooksDir) {
+    const envRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(hooksDir, "..", "..");
+    try {
+        const output = execSync("git worktree list", {
+            encoding: "utf8",
+            cwd: envRoot,
+            timeout: 5000,
+            windowsHide: true
+        });
+        const firstLine = output.split("\n")[0] || "";
+        const match = firstLine.match(/^(.+?)\s+[0-9a-f]{5,}/);
+        if (match) {
+            const mainPath = match[1].trim();
+            return mainPath.replace(/^\/([a-z])\//, "$1:\\").replace(/\//g, "\\");
+        }
+    } catch (e) {}
+    const planFile = path.join(envRoot, "scripts", "sprint-plan.json");
+    if (!fs.existsSync(planFile)) {
+        return path.resolve(hooksDir, "..", "..");
+    }
+    return envRoot;
+}
+
+const REPO_ROOT = resolveMainRepoRoot(HOOKS_DIR);
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 const PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const PIDS_FILE = path.join(REPO_ROOT, "scripts", "sprint-pids.json");
@@ -196,39 +221,8 @@ function hasAgentWorktrees() {
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
 
 function checkAgents() {
-    // Re-leer el plan en cada ciclo para detectar cambios de status (queued→active)
-    const freshPlan = loadPlan();
-    if (freshPlan) _plan = freshPlan;
-
-    if (!_plan || !_plan.agentes || _plan.agentes.length === 0) return;
-
-    const agentes = _plan.agentes;
-    let doneCount = 0;
-    const statusParts = [];
-
-    for (const a of agentes) {
-        if (isAgentDone(a)) {
-            doneCount++;
-            statusParts.push(a.numero + ":OK");
-        } else {
-            statusParts.push(a.numero + ":...");
-        }
-    }
-
-    const elapsedMin = Math.round((Date.now() - _startTime) / 60000);
-    log(doneCount + "/" + agentes.length + " finalizados [" + statusParts.join("  ") + "] (" + elapsedMin + " min)");
-
-    if (doneCount >= agentes.length) {
-        log("Todos los agentes finalizaron!");
-        handleAllDone(elapsedMin);
-        return;
-    }
-
-    // Failsafe: si paso mucho tiempo y no hay procesos claude
-    if ((Date.now() - _startTime) > FAILSAFE_MS && !isAnyClaude()) {
-        log("Failsafe: no hay procesos claude activos tras " + elapsedMin + " min. Procediendo.");
-        handleAllDone(elapsedMin);
-    }
+    // Delegar a _checkAgentsImpl que incluye lógica de promoción de cola
+    _checkAgentsImpl().catch(e => log("checkAgents error: " + e.message));
 }
 
 async function handleAllDone(elapsedMin) {
@@ -538,8 +532,192 @@ function getAgentStatus() {
     };
 }
 
+// ─── Bug 2 fix: promoción automática de _queue (#1266) ───────────────────────
+
+const MAX_CONCURRENT_AGENTS = 2;
+
+/**
+ * Cuenta agentes activos en el plan (excluye los con status "queued").
+ */
+function countActiveAgents(plan) {
+    if (!plan || !Array.isArray(plan.agentes)) return 0;
+    return plan.agentes.filter(ag => ag.status !== "queued").length;
+}
+
+/**
+ * Promueve items de _queue (o cola) a agentes respetando MAX_CONCURRENT_AGENTS.
+ * Lee el plan fresco del archivo si no se pasa como argumento.
+ * Retorna array de agentes promovidos.
+ * Persiste los cambios en sprint-plan.json.
+ */
+function promoteFromQueue(plan) {
+    const currentPlan = plan || loadPlan();
+    if (!currentPlan) return [];
+    const agentes = currentPlan.agentes || [];
+    // Usar _queue o cola según cuál esté disponible
+    const _queue = Array.isArray(currentPlan._queue) ? currentPlan._queue :
+        (Array.isArray(currentPlan.cola) ? currentPlan.cola : []);
+    if (_queue.length === 0) return [];
+
+    const activeCount = countActiveAgents(currentPlan);
+    const slotsAvailable = Math.max(0, MAX_CONCURRENT_AGENTS - activeCount);
+    if (slotsAvailable === 0) return [];
+
+    // Extraer los primeros N items de la cola
+    const promoted = _queue.splice(0, slotsAvailable);
+
+    // Actualizar el campo correcto de la cola
+    if (Array.isArray(currentPlan._queue)) {
+        currentPlan._queue = _queue;
+    } else {
+        currentPlan.cola = _queue;
+    }
+
+    // Asignar número a los promovidos y moverlos a agentes
+    const maxNumero = agentes.reduce((m, ag) => Math.max(m, ag.numero || 0), 0);
+    promoted.forEach((ag, idx) => {
+        ag.numero = maxNumero + idx + 1;
+        ag.status = "active";
+        agentes.push(ag);
+    });
+    currentPlan.agentes = agentes;
+
+    // Persistir cambios en sprint-plan.json
+    try {
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(currentPlan, null, 2) + "\n", "utf8");
+    } catch (e) {
+        log("promoteFromQueue: error escribiendo sprint-plan.json: " + e.message);
+    }
+
+    return promoted;
+}
+
+/**
+ * Mueve un agente del array activo a un array _completed.
+ * Persiste los cambios en sprint-plan.json.
+ */
+function moveToCompleted(plan, issueNumber) {
+    if (!plan || !issueNumber) return;
+    if (!Array.isArray(plan._completed)) plan._completed = [];
+
+    const idx = (plan.agentes || []).findIndex(ag => ag.issue === issueNumber);
+    if (idx === -1) return;
+
+    const [finished] = plan.agentes.splice(idx, 1);
+    finished.completed_at = new Date().toISOString();
+    plan._completed.push(finished);
+
+    try {
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+    } catch (e) {
+        log("moveToCompleted: error escribiendo sprint-plan.json: " + e.message);
+    }
+}
+
+/**
+ * Lanza agentes promovidos vía Start-Agente.ps1.
+ */
+function launchAgents(agents) {
+    if (!agents || agents.length === 0) return;
+    const START_SCRIPT = path.join(REPO_ROOT, "scripts", "Start-Agente.ps1");
+    if (!fs.existsSync(START_SCRIPT)) {
+        log("launchAgents: Start-Agente.ps1 no encontrado en " + START_SCRIPT);
+        return;
+    }
+    for (const ag of agents) {
+        try {
+            const ps1 = START_SCRIPT.replace(/\//g, "\\");
+            const child = spawn("powershell.exe", ["-NonInteractive", "-File", ps1, String(ag.numero)], {
+                detached: true,
+                stdio: "ignore",
+                windowsHide: false
+            });
+            child.unref();
+            log("launchAgents: lanzado agente #" + ag.issue + " (numero " + ag.numero + ", PID " + child.pid + ")");
+        } catch (e) {
+            log("launchAgents: error lanzando agente #" + ag.issue + ": " + e.message);
+        }
+    }
+}
+
+/**
+ * Lógica principal de chequeo de agentes con promoción automática de cola.
+ * Separada de checkAgents para poder ser probada/exportada independientemente.
+ */
+async function _checkAgentsImpl() {
+    const freshPlan = loadPlan();
+    if (freshPlan) _plan = freshPlan;
+
+    if (!_plan || !_plan.agentes || _plan.agentes.length === 0) return;
+
+    const agentes = _plan.agentes;
+    let doneCount = 0;
+    const statusParts = [];
+
+    // Detectar agentes terminados
+    const finishedIssues = [];
+    for (const a of agentes) {
+        if (isAgentDone(a)) {
+            doneCount++;
+            statusParts.push(a.numero + ":OK");
+            finishedIssues.push(a.issue);
+        } else {
+            statusParts.push(a.numero + ":...");
+        }
+    }
+
+    const elapsedMin = Math.round((Date.now() - _startTime) / 60000);
+    log(doneCount + "/" + agentes.length + " finalizados [" + statusParts.join("  ") + "] (" + elapsedMin + " min)");
+
+    // Mover agentes terminados a _completed y promover cola
+    if (finishedIssues.length > 0) {
+        const planForMutation = loadPlan();
+        if (planForMutation) {
+            for (const issue of finishedIssues) {
+                moveToCompleted(planForMutation, issue);
+            }
+            // promoteFromQueue() lee el plan fresco del archivo (ya actualizado por moveToCompleted)
+            const promoted = promoteFromQueue();
+            _plan = loadPlan() || _plan;
+
+            if (promoted.length > 0) {
+                launchAgents(promoted);
+                const freshPlanAfter = loadPlan() || _plan;
+                const currentQueue = Array.isArray(freshPlanAfter._queue) ? freshPlanAfter._queue :
+                    (Array.isArray(freshPlanAfter.cola) ? freshPlanAfter.cola : []);
+                const msg = "🚀 <b>Cola de sprint avanzó</b>\n" +
+                    "Promovidos: " + promoted.map(ag => "#" + ag.issue + " (" + ag.slug + ")").join(", ") + "\n" +
+                    "Cola restante: " + currentQueue.length + "\n" +
+                    "Activos: " + countActiveAgents(freshPlanAfter) + "/" + MAX_CONCURRENT_AGENTS;
+                await notify(msg);
+                return;
+            }
+        }
+    }
+
+    // Verificar si el sprint terminó
+    const currentPlan = loadPlan() || _plan;
+    const currentQueue = Array.isArray(currentPlan._queue) ? currentPlan._queue :
+        (Array.isArray(currentPlan.cola) ? currentPlan.cola : []);
+    const allTerminal = (currentPlan.agentes || []).every(ag => isAgentDone(ag));
+
+    if (currentQueue.length === 0 && allTerminal) {
+        log("Sprint completado: cola vacía y todos los agentes terminados");
+        handleAllDone(elapsedMin);
+        return;
+    }
+
+    // Failsafe: si pasó mucho tiempo y no hay procesos claude
+    if ((Date.now() - _startTime) > FAILSAFE_MS && !isAnyClaude()) {
+        log("Failsafe: no hay procesos claude activos tras " + elapsedMin + " min. Procediendo.");
+        handleAllDone(elapsedMin);
+    }
+}
+
 module.exports = {
     startAgentMonitor, stopAgentMonitor, getAgentStatus,
     recordSprintParticipation, alertInactiveAgents,
-    ALL_PIPELINE_AGENTS
+    ALL_PIPELINE_AGENTS,
+    promoteFromQueue, countActiveAgents, moveToCompleted, launchAgents,
+    MAX_CONCURRENT_AGENTS, _checkAgentsImpl
 };
