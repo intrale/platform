@@ -107,11 +107,30 @@ EOF
   --assignee leitolarreta
 ```
 
-### Paso 7: Agregar al Project V2
+### Paso 7: Agregar al Project V2 y asignar Status
 
-Seguir los patrones de `../refinar/api-patterns.md`:
-1. Agregar al proyecto: `gh project item-add 1 --owner intrale --url "https://github.com/intrale/platform/issues/$ISSUE_NUMBER"`
-2. Cambiar status al Backlog correspondiente (ver Paso 5)
+Agregar el issue al proyecto Project V2 con status correcto (Backlog Tecnico, Backlog CLIENTE, etc. según Paso 5):
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
+
+# Determinar backlog según labels
+BACKLOG="Backlog Tecnico"  # Default
+[[ "$LABELS" == *"app:client"* ]] && BACKLOG="Backlog CLIENTE"
+[[ "$LABELS" == *"app:business"* ]] && BACKLOG="Backlog NEGOCIO"
+[[ "$LABELS" == *"app:delivery"* ]] && BACKLOG="Backlog DELIVERY"
+
+# Ejecutar script auxiliar para agregar + setear status
+node /c/Workspaces/Intrale/platform/.claude/hooks/add-to-project-status.js $ISSUE_NUMBER "$BACKLOG"
+```
+
+**Nota técnica:** El script `add-to-project-status.js` (helper simplificado):
+- Agrega el issue al proyecto con `gh project item-add`
+- Obtiene el `itemId` via GraphQL query
+- Ejecuta mutación `updateProjectV2ItemFieldValue` para asignar el status
+- Requiere token con scope `project` (ya lo tiene el `gh` CLI configurado)
+- Retorna: `{status: "ok", itemId: "..."}` o error
 
 ### Paso 8: Detectar sub-tareas (opcional)
 

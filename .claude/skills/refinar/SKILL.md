@@ -82,11 +82,25 @@ gh issue edit $ISSUE_NUMBER --repo intrale/platform \
 
 ### Paso 7: Mover a "Refined" en Project V2
 
-Seguir los patrones de `api-patterns.md`:
-1. Agregar al proyecto: `gh project item-add 1 --owner intrale --url "https://github.com/intrale/platform/issues/$ISSUE_NUMBER"`
-2. Obtener campo Status y option ID de "Refined" via `gh api graphql`
-3. Cambiar status a "Refined"
-4. Comentar: `gh issue comment $ISSUE_NUMBER --repo intrale/platform --body 'Status cambiado a "Refined"'`
+Agregar el issue al proyecto con status "Refined":
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
+
+# Ejecutar script auxiliar para agregar + asignar "Refined"
+node /c/Workspaces/Intrale/platform/.claude/hooks/add-to-project-status.js $ISSUE_NUMBER "Refined"
+
+# Comentar en el issue
+gh issue comment $ISSUE_NUMBER --repo intrale/platform \
+  --body 'Status cambiado a "Refined"'
+```
+
+**Nota técnica:** El script `add-to-project-status.js` realiza:
+- `gh project item-add` para agregar el issue
+- GraphQL query para obtener el `itemId`
+- Mutación `updateProjectV2ItemFieldValue` para asignar status "Refined"
+- Retorna `{status: "ok", itemId: "..."}` en JSON
 
 ### Paso 8: Reportar resultado
 
