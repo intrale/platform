@@ -265,6 +265,29 @@ function sendTelegramText(text, silent) {
   });
 }
 
+// Consultar si hay agentes activos via dashboard API
+function hasActiveAgents() {
+  return new Promise((resolve) => {
+    const req = http.get("http://localhost:" + DASHBOARD_PORT + "/api/status", { timeout: 3000 }, (res) => {
+      let d = "";
+      res.on("data", (c) => d += c);
+      res.on("end", () => {
+        try {
+          const status = JSON.parse(d);
+          resolve((status.activeSessions || 0) > 0);
+        } catch { resolve(false); }
+      });
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+  });
+}
+
+// Constantes de frecuencia adaptativa
+const INACTIVITY_THRESHOLD_MIN = 5;   // Minutos sin actividad para empezar a escalar
+const INTERVAL_STEP_MIN = 10;         // Minutos extra por cada ciclo inactivo
+const MAX_INTERVAL_MIN = 60;          // Cap máximo del intervalo
+
 // Reporte periódico: screenshot + envío a Telegram
 async function sendPeriodicReport() {
   debugLog("Generando reporte periodico...");
@@ -353,16 +376,37 @@ function start(intervalMin) {
 
   // Escribir PID del reporter (este proceso en modo loop, o detached)
   if (process.argv.includes("--daemon")) {
-    // Modo daemon: loop infinito con reportes periódicos
+    // Modo daemon: loop con frecuencia adaptativa (#1255)
     fs.writeFileSync(PID_FILE, String(process.pid), "utf8");
-    debugLog("Reporter daemon PID " + process.pid + " cada " + intervalMin + " min");
-    console.log("Reporter daemon: PID " + process.pid + ", reporte cada " + intervalMin + " min");
+    debugLog("Reporter daemon PID " + process.pid + " base " + intervalMin + " min (adaptativo)");
+    console.log("Reporter daemon: PID " + process.pid + ", base " + intervalMin + " min (adaptativo)");
+
+    let inactiveCycles = 0;
+
+    async function adaptiveLoop() {
+      // Enviar reporte
+      await sendPeriodicReport();
+
+      // Calcular próximo intervalo según actividad
+      const active = await hasActiveAgents();
+      if (active) {
+        inactiveCycles = 0;
+      } else {
+        inactiveCycles++;
+      }
+
+      // Intervalo: base + (ciclos_inactivos * step), con cap máximo
+      const nextInterval = Math.min(
+        intervalMin + (inactiveCycles * INTERVAL_STEP_MIN),
+        MAX_INTERVAL_MIN
+      );
+      debugLog("intervalo adaptativo: " + nextInterval + "min (ciclos_inactivos=" + inactiveCycles + ", agentes_activos=" + active + ")");
+
+      setTimeout(adaptiveLoop, nextInterval * 60 * 1000);
+    }
 
     // Primer reporte inmediato
-    sendPeriodicReport();
-
-    // Reportes periódicos
-    setInterval(sendPeriodicReport, intervalMin * 60 * 1000);
+    adaptiveLoop();
     return process.pid;
   }
 
