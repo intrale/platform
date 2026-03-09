@@ -289,31 +289,128 @@ async function processIssueClose(issueNumber, prNumber) {
     }
 }
 
+// ─── Bug 1 fix: detectar cierre de issues vía PR merge (#1266) ─────────────
+
+/**
+ * Extrae el número de PR del comando gh pr merge.
+ * Retorna el número (int) si el comando es gh pr merge <N>
+ * Retorna 0 si es gh pr merge sin número explícito
+ * Retorna null si el comando no es gh pr merge
+ */
+function extractPrNumber(command) {
+    if (!command || typeof command !== "string") return null;
+    if (!/gh\s+pr\s+merge/.test(command)) return null;
+    const match = command.match(/gh\s+pr\s+merge\s+(\d+)/);
+    return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Extrae números de issues cerrados del body de un PR.
+ * Detecta patrones: closes #N, fixes #N, resolves #N (case-insensitive)
+ */
+function extractIssueNumbers(prBody) {
+    if (!prBody) return [];
+    const issues = [];
+    const pattern = /(?:closes?|fixes?|resolves?)\s+#(\d+)/gi;
+    let m;
+    while ((m = pattern.exec(prBody)) !== null) {
+        issues.push(parseInt(m[1], 10));
+    }
+    return issues;
+}
+
+/**
+ * Obtiene datos del PR vía GraphQL.
+ */
+async function ghGetPr(token, prNumber) {
+    const queryStr = "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){number,merged,merged_at,baseRefName,body}}}";
+    const data = await graphqlRequest(token, queryStr, { owner: "intrale", repo: "platform", number: prNumber });
+    return data && data.repository && data.repository.pullRequest;
+}
+
+/**
+ * Procesa un PR mergeado: extrae issues referenciados y los mueve a Done.
+ */
+async function handlePrMerge(prNumber) {
+    log("Procesando PR merge #" + prNumber);
+    try {
+        const token = getGitHubToken();
+        const pr = await ghGetPr(token, prNumber);
+
+        if (!pr) {
+            log("PR #" + prNumber + " no encontrado");
+            return;
+        }
+
+        // Verificar que fue mergeado (tiene merged_at)
+        if (!pr.merged_at) {
+            log("PR #" + prNumber + " no fue mergeado (merged_at ausente), ignorando");
+            return;
+        }
+
+        // Verificar que el PR fue a main
+        if (pr.baseRefName !== "main") {
+            log("PR #" + prNumber + " no fue a main (base: " + pr.baseRefName + "), ignorando");
+            return;
+        }
+
+        const issueNumbers = extractIssueNumbers(pr.body);
+        if (issueNumbers.length === 0) {
+            log("PR #" + prNumber + " no referencia issues (Closes/Fixes/Resolves), ignorando");
+            return;
+        }
+
+        log("PR #" + prNumber + " cierra issues: " + issueNumbers.join(", "));
+
+        for (let i = 0; i < issueNumbers.length; i++) {
+            try {
+                await processIssueClose(issueNumbers[i], prNumber);
+            } catch (e) {
+                log("Error procesando issue #" + issueNumbers[i] + " del PR #" + prNumber + ": " + e.message);
+            }
+        }
+    } catch (e) {
+        log("handlePrMerge error: " + e.message);
+    }
+}
+
 function handleInput() {
     try {
         const data = JSON.parse(input || "{}");
         const command = (data.tool_input && data.tool_input.command) || "";
-
-        // Detectar gh issue close <N>
-        const match = command.match(/gh\s+issue\s+close\s+(\d+)/);
-        if (!match) return;
-
-        // Verificar que no hubo error en stderr
         const stderr = (data.tool_result && data.tool_result.stderr) || "";
-        if (/error|rejected|denied|failed/i.test(stderr)) {
-            log("gh issue close tuvo error en stderr, ignorando");
+
+        // Caso 1: gh issue close <N> — cierre explícito
+        const issueMatch = command.match(/gh\s+issue\s+close\s+(\d+)/);
+        if (issueMatch) {
+            if (/error|rejected|denied|failed/i.test(stderr)) {
+                log("gh issue close tuvo error en stderr, ignorando");
+                return;
+            }
+            const issueNumber = parseInt(issueMatch[1], 10);
+            const prMatch = command.match(/--comment.*?#(\d+)/);
+            const prNumber = prMatch ? parseInt(prMatch[1], 10) : null;
+            processIssueClose(issueNumber, prNumber).catch(function(e) {
+                log("Error procesando cierre de issue #" + issueNumber + ": " + e.message);
+            });
             return;
         }
 
-        const issueNumber = parseInt(match[1], 10);
-
-        // Intentar extraer número de PR del command (gh issue close <N> --comment "Closes PR #M")
-        const prMatch = command.match(/--comment.*?#(\d+)/);
-        const prNumber = prMatch ? parseInt(prMatch[1], 10) : null;
-
-        processIssueClose(issueNumber, prNumber).catch(function(e) {
-            log("Error procesando cierre de issue #" + issueNumber + ": " + e.message);
-        });
+        // Caso 2: gh pr merge <N> — issues cerrados vía Closes #N en el PR body
+        const prMergeNumber = extractPrNumber(command);
+        if (prMergeNumber !== null) {
+            if (/error|rejected|denied|failed/i.test(stderr)) {
+                log("gh pr merge tuvo error en stderr, ignorando");
+                return;
+            }
+            if (prMergeNumber === 0) {
+                log("gh pr merge sin número explícito — no se puede detectar PR, ignorando");
+                return;
+            }
+            handlePrMerge(prMergeNumber).catch(function(e) {
+                log("Error en handlePrMerge #" + prMergeNumber + ": " + e.message);
+            });
+        }
     } catch(e) {
         log("Error parseando input: " + e.message);
     }
