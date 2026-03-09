@@ -16,7 +16,14 @@ const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HOOKS_DIR, ".."
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const AUDIT_FILE = path.join(HOOKS_DIR, "sprint-audit.jsonl");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
-const GH_CLI = "/c/Workspaces/gh-cli/bin/gh.exe";
+// Intentar paths en orden: Windows nativo → MSYS2 → gh en PATH
+const GH_CLI_CANDIDATES = [
+    "C:/Workspaces/gh-cli/bin/gh.exe",
+    "/c/Workspaces/gh-cli/bin/gh.exe",
+    "gh"
+];
+// Path resuelto en runtime para uso directo en exec
+let GH_CLI = "gh"; // default, se sobreescribe en getGitHubToken()
 
 // IDs del Project V2 "Intrale"
 const PROJECT_ID = "PVT_kwDOBTzBoc4AyMGf";
@@ -48,15 +55,26 @@ function appendAudit(entry) {
 }
 
 function getGitHubToken() {
-    try {
-        const token = execSync(GH_CLI + " auth token", {
-            encoding: "utf8",
-            cwd: REPO_ROOT,
-            timeout: 5000,
-            windowsHide: true
-        }).trim();
-        if (token) return token;
-    } catch (e) {}
+    // Probar cada path de gh CLI — el primero que devuelva un token gana
+    for (const ghPath of GH_CLI_CANDIDATES) {
+        try {
+            const token = execSync(ghPath + " auth token", {
+                encoding: "utf8",
+                cwd: REPO_ROOT,
+                timeout: 5000,
+                windowsHide: true
+            }).trim();
+            if (token) {
+                GH_CLI = ghPath; // persistir el path que funcionó
+                log("Token obtenido via " + ghPath);
+                return token;
+            }
+        } catch (e) {
+            log("gh auth token falló con " + ghPath + ": " + e.message.split("\n")[0]);
+        }
+    }
+    // Fallback: git credential fill (puede no tener scope read:project)
+    log("Usando git credential fill como fallback (scope limitado)");
     const credInput = "protocol=https\nhost=github.com\n\n";
     const result = execSync("git credential fill", {
         input: credInput,
