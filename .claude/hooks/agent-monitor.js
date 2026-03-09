@@ -73,10 +73,25 @@ function isProcessAlive(pid) {
 }
 
 function isAgentDone(agente) {
-    const wtDir = getWorktreePath(agente);
+    // Guard: agentes con status "queued" NUNCA están done (no se han lanzado)
+    if (agente.status === "queued") {
+        return false;
+    }
 
-    // Worktree no existe → done
-    if (!fs.existsSync(wtDir)) return true;
+    const wtDir = getWorktreePath(agente);
+    if (!fs.existsSync(wtDir)) {
+        // Sin worktree: verificar si tiene PID registrado
+        let hasPid = false;
+        if (fs.existsSync(PIDS_FILE) && agente.numero) {
+            try {
+                const pidsData = JSON.parse(fs.readFileSync(PIDS_FILE, "utf8"));
+                hasPid = !!pidsData["agente_" + agente.numero];
+            } catch (e) {}
+        }
+        // Sin worktree + sin PID → nunca se lanzó → NOT done
+        // Sin worktree + con PID → terminó y se limpió → done
+        return hasPid;
+    }
 
     // Check PID del agente desde sprint-pids.json
     if (fs.existsSync(PIDS_FILE) && agente.numero) {
@@ -181,6 +196,10 @@ function hasAgentWorktrees() {
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
 
 function checkAgents() {
+    // Re-leer el plan en cada ciclo para detectar cambios de status (queued→active)
+    const freshPlan = loadPlan();
+    if (freshPlan) _plan = freshPlan;
+
     if (!_plan || !_plan.agentes || _plan.agentes.length === 0) return;
 
     const agentes = _plan.agentes;
