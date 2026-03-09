@@ -202,3 +202,101 @@ describe("P-22: agent-concurrency-check — lógica de concurrencia", () => {
         assert.ok(source.includes("stop_hook_active"), "debe verificar stop_hook_active para evitar recursión");
     });
 });
+
+// ─── Tests para Bug 1345: 4 bugs de concurrencia ────────────────────────────
+
+describe("P-22b: Bug 1345 — captura de errores y estado completo", () => {
+
+    it("Bug 2: launchAgent redirige stdio a spawn_agente_N.log (no usa stdio:ignore)", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("spawn_agente_"), "debe crear log file con patrón spawn_agente_N");
+        assert.ok(source.includes("spawnLogPath"), "debe definir spawnLogPath");
+        assert.ok(source.includes("openSync"), "debe abrir el fd del log con fs.openSync");
+        assert.ok(source.includes("closeSync"), "debe cerrar el fd del padre después del spawn");
+        // Verifica que el path principal usa logFd, no stdio:ignore
+        const launchFn = source.slice(source.indexOf("function launchAgent"), source.indexOf("// ─── Leer stdin"));
+        assert.ok(launchFn.includes("stdio = ["), 'la asignación principal debe usar stdio = [logFd, logFd]');
+        assert.ok(launchFn.includes("logFd"), "debe usar logFd para stderr/stdout");
+    });
+
+    it("Bug 2: log de spawn tiene path en scripts/logs/", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(source.includes('"scripts"') || source.includes("scripts/logs") || source.includes("scripts\", \"logs\""),
+            "el path del log de spawn debe apuntar a scripts/logs/");
+    });
+
+    it("Bug 3: _completed se actualiza al remover agente de agentes", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("plan._completed"), "debe referenciar plan._completed");
+        assert.ok(source.includes("_completed.push"), "debe agregar el agente a _completed");
+        assert.ok(source.includes("completedAt"), "debe guardar timestamp de completado");
+        assert.ok(source.includes("resultado"), "debe guardar campo resultado en _completed");
+    });
+
+    it("Bug 3: _completed se inicializa como array si no existe", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes("Array.isArray(plan._completed)"),
+            "debe verificar que _completed es array antes de push"
+        );
+    });
+
+    it("Bug 4: lock se adquiere ANTES de loadPlan (protege lectura+escritura)", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        const lockIdx = source.indexOf("acquireLock()");
+        const loadPlanIdx = source.indexOf("plan = loadPlan()");
+        assert.ok(lockIdx !== -1, "debe llamar a acquireLock()");
+        assert.ok(loadPlanIdx !== -1, "debe llamar a loadPlan()");
+        assert.ok(lockIdx < loadPlanIdx, "acquireLock() debe llamarse ANTES que loadPlan() — protege lectura+escritura");
+    });
+
+    it("Bug 4: warn cuando fail-open por timeout de lock", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes("Operando sin lock") || source.includes("race condition"),
+            "debe advertir sobre posible race condition cuando el lock no se pudo adquirir"
+        );
+    });
+
+    it("Bug 1: Start-Agente.ps1 verifica PID activo antes de remover .claude/", () => {
+        const ps1Path = path.join(__dirname, "..", "..", "..", "scripts", "Start-Agente.ps1");
+        assert.ok(fs.existsSync(ps1Path), "Start-Agente.ps1 debe existir");
+        const source = fs.readFileSync(ps1Path, "utf8");
+        assert.ok(source.includes("sprint-pids.json"), "debe leer sprint-pids.json para verificar PIDs");
+        assert.ok(source.includes("Get-Process -Id"), "debe verificar si el proceso está vivo con Get-Process");
+        assert.ok(source.includes("ya esta activo") || source.includes("ya está activo"),
+            "debe loguear warning cuando el agente ya está corriendo");
+    });
+
+    it("Bug 1: Start-Agente.ps1 usa try/catch en Remove-Item .claude/", () => {
+        const ps1Path = path.join(__dirname, "..", "..", "..", "scripts", "Start-Agente.ps1");
+        const source = fs.readFileSync(ps1Path, "utf8");
+        // Verificar que hay un try/catch alrededor de Remove-Item $claudeDst
+        const removeItemIdx = source.indexOf("Remove-Item $claudeDst -Recurse -Force");
+        assert.ok(removeItemIdx !== -1, "debe tener Remove-Item $claudeDst");
+        // Buscar el try { previo a Remove-Item
+        const beforeRemove = source.slice(Math.max(0, removeItemIdx - 200), removeItemIdx);
+        assert.ok(beforeRemove.includes("try {"), "Remove-Item $claudeDst debe estar dentro de un bloque try");
+        // Buscar catch posterior
+        const afterRemove = source.slice(removeItemIdx, removeItemIdx + 300);
+        assert.ok(afterRemove.includes("} catch {"), "debe tener catch después de Remove-Item $claudeDst");
+    });
+});
