@@ -119,11 +119,38 @@ Este panel unifica lo que antes eran "Sprint" y "Progreso del Sprint" en tres su
    - Titulo: `Sprint (fecha)` con barra de progreso global
    - Cada fila: `#numero  #issue  slug  size  estado_icono`
    - El estado se determina cruzando issues del plan con sesiones activas (● activo, ◐ idle, ○ sin sesion, ✓ completado)
+   - **Porcentaje global del sprint** (OBLIGATORIO — calcular siempre asi):
+     ```
+     completadas = (sprint._completed || []).length
+     en_curso    = (sprint.agentes   || []).length
+     en_cola     = (sprint._queue    || []).length
+     total       = completadas + en_curso + en_cola
+     porcentaje  = total > 0 ? Math.round(completadas / total * 100) : 0
+     ```
+   - Retrocompatibilidad: si `_completed` no existe en el JSON, asumir `[]` (0 completadas)
+   - Formato de barra: `Sprint SPR-XXX: N/M (XX%) ████████░░ [N OK, 0 FAIL, M en progreso]`
+   - Las historias en `_completed` cuentan como procesadas; mostrar `✓` en su fila
 
-2. **Historias en curso** (issues sin sprint):
-   - Sesiones cuya branch tiene patron `agent/<N>-*` o `feature/<N>-*` pero el issue NO esta en sprint-plan
+2. **Historias en curso** (issues en sprint con sesion activa, o sessions cuya branch tiene patron `agent/<N>-*`/`feature/<N>-*` fuera del sprint):
    - Mostrar como: `📌 agente  branch  progreso%  acciones`
-   - Progreso = tareas_completadas / tareas_totales de esa sesion
+   - **Calculo de progreso individual** (en orden de prioridad):
+     1. **Fuente primaria — sub-pasos**: si la sesion tiene tareas con `metadata.steps` y `metadata.current_step`, usar `completed_steps.length / steps.length * 100`
+     2. **Fuente secundaria — heuristica de fases del pipeline** (si no hay sub-pasos):
+        ```
+        /ops  completado → 10%
+        /po   completado → 20%
+        /guru completado → 30%
+        Implementacion   → 30-70% proporcional a acciones (Edit/Write/Bash) vs estimado por size (S≈20, M≈50, L≈100)
+        /tester   compl  → 75%
+        /builder  compl  → 80%
+        /security compl  → 85%
+        /review   compl  → 90%
+        /delivery compl  → 95%
+        Issue cerrado    → 100%
+        ```
+        Detectar fase leyendo `agent_transitions[]` o `skills_invoked[]` del JSON de sesion
+     3. **Fuente terciaria — conteo de acciones**: `Math.min(Math.round(action_count / 50 * 60) + 10, 69)` (cap 69% si no hay evidencia de fases finales)
+   - **Datos stale**: si `last_activity_ts` hace >5 minutos, mostrar `⚠ sin actividad reciente` en lugar del porcentaje
 
 3. **Prompts ad-hoc** (sesiones sin issue):
    - Sesiones sin patron de issue en la branch
