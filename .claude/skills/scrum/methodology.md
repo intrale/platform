@@ -81,12 +81,36 @@ Todo → Done             (no se puede completar sin haber trabajado — salvo d
 
 ### Automáticas (detectadas por auditoría)
 
-1. Issue cerrado → Status debe ser Done
-2. Issue con PR mergeado → Status debe ser Ready o Done
-3. Issue con label `blocked` → Status debe ser Blocked
-4. Issue sin label `blocked` pero Status = Blocked → desbloquear
-5. Issue con rama `agent/*` activa y asignado → Status debe ser In Progress
-6. Issue abierto no en board → huérfano, agregar al board
+Las siguientes reglas son ejecutadas automáticamente por `/scrum audit` mediante
+`scrum-auto-corrections.js`. Las correcciones se aplican sin intervención manual
+y se comentan en cada issue con el patrón:
+`🔄 Scrum Master: movido de [anterior] → [nuevo]. Razón: [razón]. Detectado: [timestamp]`
+
+#### Reglas de coherencia estado → columna
+
+| # | Condición | Acción | Prioridad |
+|---|-----------|--------|-----------|
+| 1 | Issue `state: CLOSED` + Status ≠ Done | Mover a **Done** | Alta (1) |
+| 2 | Label `in-progress` + Status en Backlog/Todo | Mover a **In Progress** | Media (2) |
+| 3 | Label `ready` + Status en Backlog/Todo | Mover a **Ready** | Media (3) |
+| 4 | Sin label `blocked` + Status = Blocked | Mover a **Todo** | Media (4) |
+| 5 | Label `blocked` + Status ≠ Blocked | ⚠️ Advertencia (no auto-corrige) | — |
+
+**Notas importantes:**
+- La regla 1 tiene prioridad sobre todas las demás. Un issue cerrado con label `in-progress`
+  se mueve a Done (no a In Progress).
+- La regla 5 no se auto-corrige porque el movimiento a Blocked puede requerir contexto humano.
+- Rate limit: máx 30 mutations/minuto. Si hay más correcciones, se procesan en batches.
+- Columnas consideradas "Backlog": `Todo`, `Refined`, `Backlog Tecnico`, `Backlog CLIENTE`,
+  `Backlog NEGOCIO`, `Backlog DELIVERY`.
+- Patrón de comentario en el issue: `🔄 Scrum Master: movido de [anterior] → [nuevo]. Razón: [razón]. _Detección automática: [timestamp]_`
+- Script de correcciones: `.claude/hooks/scrum-auto-corrections.js`
+
+#### Otras reglas (detectadas, corregidas en modo sync)
+
+6. Issue con PR mergeado → Status debe ser Ready o Done
+7. Issue con rama `agent/*` activa y asignado → Status debe ser In Progress
+8. Issue abierto no en board → huérfano, agregar al board
 
 ### Manuales (sugeridas en standup)
 
@@ -98,4 +122,5 @@ Todo → Done             (no se puede completar sin haber trabajado — salvo d
 
 | Fecha | Cambio | Razón |
 |-------|--------|-------|
+| 2026-03-09 | Agregar sección "Reglas de coherencia estado → columna" + alinear con `scrum-auto-corrections.js` | Issue #1301 — auditoría con auto-correcciones |
 | 2026-03-02 | Versión inicial | Creación del skill /scrum |
