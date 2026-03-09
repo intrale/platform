@@ -327,9 +327,7 @@ async function processInput() {
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                 try {
                     const r = await sendTelegram(fullText, attempt);
-                    if (r && r.result && r.result.message_id) {
-                        registerMessage(r.result.message_id, "stop");
-                    }
+                    try { if (r && r.result && r.result.message_id) registerMessage(r.result.message_id, "stop"); } catch(re) { log("registerMessage error (ignorado): " + re.message); }
                     return;
                 } catch(e) {
                     if (attempt < MAX_RETRIES) {
@@ -359,9 +357,7 @@ async function processInput() {
                 for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                     try {
                         const photoResult = await sendTelegramPhoto(BOT_TOKEN, CHAT_ID, png, caption);
-                        if (photoResult && photoResult.result && photoResult.result.message_id) {
-                            registerMessage(photoResult.result.message_id, "stop");
-                        }
+                        try { if (photoResult && photoResult.result && photoResult.result.message_id) registerMessage(photoResult.result.message_id, "stop"); } catch(re) { log("registerMessage error (ignorado): " + re.message); }
                         log("Imagen enviada OK intento " + attempt);
                         return;
                     } catch(e) {
@@ -381,9 +377,7 @@ async function processInput() {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
             const r = await sendTelegram(text, attempt);
-            if (r && r.result && r.result.message_id) {
-                registerMessage(r.result.message_id, "stop");
-            }
+            try { if (r && r.result && r.result.message_id) registerMessage(r.result.message_id, "stop"); } catch(re) { log("registerMessage error (ignorado): " + re.message); }
             return;
         } catch(e) {
             if (attempt < MAX_RETRIES) {

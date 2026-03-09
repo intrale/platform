@@ -20,7 +20,11 @@ function log(msg) {
 function loadRegistry() {
     try {
         if (!fs.existsSync(REGISTRY_FILE)) return { messages: [] };
-        return JSON.parse(fs.readFileSync(REGISTRY_FILE, "utf8"));
+        const data = JSON.parse(fs.readFileSync(REGISTRY_FILE, "utf8"));
+        if (!data || !Array.isArray(data.messages)) {
+            return { messages: [] };
+        }
+        return data;
     } catch (e) {
         log("Error leyendo registry: " + e.message);
         return { messages: [] };

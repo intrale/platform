@@ -360,9 +360,7 @@ async function processInput() {
                         inlineKeyboard: classification.inlineKeyboard,
                         category: classification.category
                     });
-                    if (r && r.result && r.result.message_id) {
-                        registerMessage(r.result.message_id, classification.category);
-                    }
+                    try { if (r && r.result && r.result.message_id) registerMessage(r.result.message_id, classification.category); } catch(re) { log("registerMessage error (ignorado): " + re.message); }
                     return;
                 } catch(e) {
                     if (attempt < MAX_RETRIES) {
@@ -392,9 +390,7 @@ async function processInput() {
                 inlineKeyboard: classification.inlineKeyboard,
                 category: classification.category
             });
-            if (r && r.result && r.result.message_id) {
-                registerMessage(r.result.message_id, classification.category);
-            }
+            try { if (r && r.result && r.result.message_id) registerMessage(r.result.message_id, classification.category); } catch(re) { log("registerMessage error (ignorado): " + re.message); }
             return;
         } catch(e) {
             if (attempt < MAX_RETRIES) {
