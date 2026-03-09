@@ -1,0 +1,76 @@
+{
+  "_comment": "Configuración de ejemplo para sistema de mensajería dual-channel (Telegram + WhatsApp).",
+  "_note": "Copiar este archivo como messaging-config.json (sin .example) y completar los valores reales.",
+  "_warning": "NUNCA commitear messaging-config.json — agregar a .gitignore junto a telegram-config.json.",
+
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "bot_token": "123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "chat_id": "1234567890",
+      "_comment_chat_id": "ID del chat privado o grupo donde enviar mensajes"
+    },
+    "whatsapp": {
+      "enabled": false,
+      "_comment_enabled": "Cambiar a true cuando la integración esté implementada",
+      "phone_number_id": "1234567890",
+      "_comment_phone_number_id": "ID del número de teléfono en Meta Business Manager",
+      "access_token": "EAAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "_comment_access_token": "System User Access Token de larga duración (nunca expira si se configura correctamente)",
+      "app_secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "_comment_app_secret": "App Secret para validar firma HMAC-SHA256 de webhooks entrantes",
+      "recipient_phone": "+549111234567",
+      "_comment_recipient": "Número del destinatario con código de país (formato E.164)",
+      "webhook_port": 3000,
+      "_comment_webhook": "Puerto local donde escucha el servidor de webhooks entrantes",
+      "webhook_path": "/webhook/whatsapp",
+      "api_version": "v21.0",
+      "_comment_api_version": "Verificar última versión en developers.facebook.com/docs/whatsapp"
+    }
+  },
+
+  "routing": {
+    "_comment": "Define qué mensajes van a qué canal(es).",
+
+    "notifications": {
+      "channels": ["telegram"],
+      "_comment": "Notificaciones del sistema de hooks (Stop, Notification events). Solo Telegram para mensajes internos."
+    },
+
+    "product_notifications": {
+      "channels": ["whatsapp"],
+      "_comment": "Notificaciones de producto a clientes/negocios (estado de pedido, confirmaciones). Solo WhatsApp."
+    },
+
+    "broadcast": {
+      "channels": ["telegram", "whatsapp"],
+      "_comment": "Mensajes que deben llegar a ambos canales simultáneamente (alertas críticas)."
+    },
+
+    "permissions": {
+      "channels": ["telegram"],
+      "_comment": "Aprobación de permisos: SOLO Telegram. WhatsApp no soporta callback_query ni edición de mensajes."
+    },
+
+    "commands": {
+      "channels": ["telegram"],
+      "_comment": "Comandos remotos (/skill, texto libre): SOLO Telegram. WhatsApp requiere servidor webhook público adicional."
+    }
+  },
+
+  "whatsapp_limits": {
+    "_comment": "Documentación de limitaciones importantes de WhatsApp Cloud API.",
+    "max_buttons": 3,
+    "max_list_items": 10,
+    "max_button_text_chars": 25,
+    "max_message_chars": 4096,
+    "supports_edit_message": false,
+    "supports_html_formatting": false,
+    "markdown_supported": ["*bold*", "_italic_", "~strikethrough~", "`monospace`", "```code block```"],
+    "proactive_messages": "solo templates pre-aprobados por Meta fuera de ventana de 24h",
+    "free_window_hours": 24
+  },
+
+  "telegram_config_file": ".claude/hooks/telegram-config.json",
+  "_comment_telegram_compat": "El canal Telegram puede seguir usando telegram-config.json existente para compatibilidad hacia atrás."
+}
