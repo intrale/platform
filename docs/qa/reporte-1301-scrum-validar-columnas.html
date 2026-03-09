@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Issue #1301 — Scrum Master: Validación automática de columnas Project V2</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 30px; color: #333; max-width: 900px; }
+    h1 { color: #1a1a2e; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+    h2 { color: #16213e; margin-top: 25px; }
+    h3 { color: #0f3460; }
+    table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+    th { background: #1a1a2e; color: white; padding: 10px; text-align: left; }
+    td { padding: 8px 10px; border-bottom: 1px solid #ddd; }
+    tr:nth-child(even) { background: #f5f5f5; }
+    .pass { color: green; font-weight: bold; }
+    .warn { color: orange; font-weight: bold; }
+    .info { background: #e3f2fd; border-left: 4px solid #2196F3; padding: 12px; margin: 15px 0; }
+    .success { background: #e8f5e9; border-left: 4px solid #4CAF50; padding: 12px; margin: 15px 0; }
+    code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+    pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+    footer { margin-top: 40px; color: #888; font-size: 0.85em; border-top: 1px solid #ddd; padding-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>🔄 Issue #1301 — Scrum Master: Validación automática de columnas</h1>
+
+  <div class="info">
+    <strong>Fecha de implementación:</strong> 2026-03-09<br>
+    <strong>Branch:</strong> agent/1301-scrum-validar-columnas<br>
+    <strong>Tipo:</strong> refactor · area:infra · backlog-tecnico
+  </div>
+
+  <h2>Resumen ejecutivo</h2>
+  <p>El skill <code>/scrum</code> ahora incluye auditoría de coherencia automática entre el estado real de los issues (open/closed, labels) y su columna en el Project V2. Cuando se ejecuta <code>/scrum audit</code>, las correcciones se aplican automáticamente sin necesidad de <code>/scrum sync</code> explícito.</p>
+
+  <h2>Cambios implementados</h2>
+  <table>
+    <tr><th>Archivo</th><th>Tipo</th><th>Descripción</th></tr>
+    <tr><td><code>.claude/hooks/scrum-auto-corrections.js</code></td><td>NUEVO</td><td>Script Node.js de auditoría y auto-corrección (926 líneas)</td></tr>
+    <tr><td><code>.claude/skills/scrum/SKILL.md</code></td><td>MODIFICADO</td><td>Integrar Paso 1.1 de auto-correcciones en modo audit</td></tr>
+    <tr><td><code>.claude/skills/scrum/methodology.md</code></td><td>MODIFICADO</td><td>Centralizar reglas de coherencia estado-columna</td></tr>
+  </table>
+
+  <h2>Reglas de coherencia implementadas</h2>
+  <table>
+    <tr><th>Prioridad</th><th>ID</th><th>Condición</th><th>Acción</th><th>Severidad</th></tr>
+    <tr><td>1 (Alta)</td><td><code>closed_not_done</code></td><td>Issue CLOSED + Status ≠ Done</td><td>✅ Mover a Done</td><td>🔴 Alta</td></tr>
+    <tr><td>2 (Media)</td><td><code>in_progress_label_in_backlog</code></td><td>Label 'in-progress' + Status en Backlog</td><td>✅ Mover a In Progress</td><td>🟡 Media</td></tr>
+    <tr><td>3 (Media)</td><td><code>ready_label_in_backlog</code></td><td>Label 'ready' + Status en Backlog</td><td>✅ Mover a Ready</td><td>🟡 Media</td></tr>
+    <tr><td>4 (Media)</td><td><code>blocked_status_no_label</code></td><td>Sin label 'blocked' + Status = Blocked</td><td>✅ Mover a Todo</td><td>🟡 Media</td></tr>
+    <tr><td>5 (Baja)</td><td><code>blocked_label_not_in_blocked</code></td><td>Label 'blocked' + Status ≠ Blocked</td><td>⚠️ Solo advertencia</td><td>🟢 Baja</td></tr>
+  </table>
+
+  <h2>Criterios de aceptación</h2>
+  <table>
+    <tr><th>#</th><th>Criterio</th><th>Estado</th></tr>
+    <tr><td>1</td><td>El skill /scrum detecta issues cerrados fuera de Done durante auditoría</td><td class="pass">✅ Implementado (regla closed_not_done)</td></tr>
+    <tr><td>2</td><td>El skill /scrum mueve automáticamente issues cerrados a Done con comentario</td><td class="pass">✅ Implementado (--auto flag)</td></tr>
+    <tr><td>3</td><td>El skill /scrum detecta issues con labels (in-progress, ready) en Backlog</td><td class="pass">✅ Implementado (reglas 2 y 3)</td></tr>
+    <tr><td>4</td><td>Todas las correcciones generan comentarios con patrón 🔄 Scrum Master</td><td class="pass">✅ Implementado en commentOnIssue()</td></tr>
+    <tr><td>5</td><td>Las correcciones respetan rate limits (máx 30 mutations/min)</td><td class="pass">✅ Implementado con ventana deslizante</td></tr>
+    <tr><td>6</td><td>El reporte incluye sección de correcciones automáticas aplicadas</td><td class="pass">✅ Implementado en formatAuditSection()</td></tr>
+    <tr><td>7</td><td>Genera reporte HTML → PDF → Telegram</td><td class="pass">✅ Implementado con --report flag</td></tr>
+  </table>
+
+  <h2>Análisis de seguridad</h2>
+  <table>
+    <tr><th>Categoría OWASP</th><th>Estado</th><th>Notas</th></tr>
+    <tr><td>A02 Cryptographic Failures</td><td class="pass">✅ PASS</td><td>Sin secrets hardcodeados; token via gh auth token / git credential fill</td></tr>
+    <tr><td>A03 Injection</td><td class="pass">✅ PASS</td><td>GraphQL variables tipadas; comentarios via archivo temporal (evita shell injection)</td></tr>
+    <tr><td>A04 Insecure Design</td><td class="pass">✅ PASS</td><td>Rate limiting implementado; prioridades de reglas documentadas</td></tr>
+    <tr><td>A09 Logging Failures</td><td class="pass">✅ PASS</td><td>Logs en hook-debug.log sin datos sensibles</td></tr>
+  </table>
+
+  <h2>Verificaciones ejecutadas</h2>
+  <div class="success">
+    <strong>✅ Sintaxis Node.js:</strong> <code>node --check scrum-auto-corrections.js</code> — PASS<br>
+    <strong>✅ verifyNoLegacyStrings:</strong> BUILD SUCCESSFUL<br>
+    <strong>✅ Secrets scan:</strong> Sin hardcoded secrets detectados<br>
+    <strong>✅ Patrón de código:</strong> Consistente con auto-repair-sprint.js y post-issue-close.js
+  </div>
+
+  <h2>Arquitectura del script</h2>
+  <pre>COHERENCE_RULES → evaluateCoherenceRules(items)
+                      ↓
+              corrections[] + warnings[]
+                      ↓
+          applyWithRateLimit(corrections)
+                      ↓
+    moveItemInProject() + commentOnIssue()
+                      ↓
+           appendAudit(sprint-audit.jsonl)
+                      ↓
+        formatAuditSection() → /scrum audit report</pre>
+
+  <footer>
+    <p>Generado por agente agent/1301-scrum-validar-columnas · Intrale Platform</p>
+    <p>Closes #1301</p>
+  </footer>
+</body>
+</html>
