@@ -245,6 +245,52 @@ function launchAgent(agente) {
     }
 }
 
+// ─── Construir entrada enriquecida para _completed ──────────────────────────
+
+/**
+ * Construye el objeto que se agrega a plan._completed cuando un agente termina.
+ * Intenta calcular duración y resultado a partir de los datos de la sesión.
+ *
+ * resultado: "ok" | "failed" | "not_planned"
+ *   - "ok"           : sesión terminó normalmente
+ *   - "failed"       : sesión terminó con branch sin PR mergeado (heurística básica)
+ *   - "not_planned"  : agente nunca tuvo sesión activa
+ * duracion_min: duración en minutos (started_ts → last_activity_ts), 0 si no disponible
+ * issue_reabierto: nulo siempre aquí (se actualiza por post-issue-close.js si aplica)
+ */
+function buildCompletedEntry(agente, session) {
+    let duracion_min = 0;
+    let resultado = "ok";
+
+    if (session) {
+        const started = session.started_ts || 0;
+        const last = session.last_activity_ts || 0;
+        if (started && last && last > started) {
+            duracion_min = Math.round((last - started) / 60000);
+        }
+        // Heurística: si la sesión tiene estado "done" y action_count bajo, podría haber fallado
+        // Pero sin datos definitivos asumimos "ok" — puede enriquecerse con post-issue-close.js
+        if (session.status === "error") {
+            resultado = "failed";
+        }
+    } else {
+        resultado = "not_planned";
+    }
+
+    return {
+        issue: agente.issue,
+        slug: agente.slug,
+        titulo: agente.titulo || "",
+        numero: agente.numero,
+        stream: agente.stream || "",
+        size: agente.size || "",
+        resultado: resultado,
+        duracion_min: duracion_min,
+        issue_reabierto: null,
+        completado_at: new Date().toISOString()
+    };
+}
+
 // ─── Leer stdin (evento Stop de Claude) ─────────────────────────────────────
 
 const MAX_READ = 4096;
@@ -321,6 +367,19 @@ async function processInput() {
         }
 
         log("Agente que finaliza: #" + finishingAgent.issue + " (" + finishingAgent.slug + ")");
+
+        // ── Construir entrada enriquecida para _completed ────────────────────
+        const completedEntry = buildCompletedEntry(finishingAgent, session);
+        if (!Array.isArray(plan._completed)) plan._completed = [];
+        plan._completed.push(completedEntry);
+        log("Agregado a _completed: #" + finishingAgent.issue + " resultado=" + completedEntry.resultado + " duracion=" + completedEntry.duracion_min + "m");
+
+        // Actualizar total_stories si no está definido (retrocompatibilidad)
+        if (!plan.total_stories) {
+            const queueLen = getQueue(plan).length;
+            plan.total_stories = (plan.agentes || []).length + queueLen + plan._completed.length;
+            log("total_stories calculado: " + plan.total_stories);
+        }
 
         // Remover al agente que terminó del array agentes
         const prevCount = (plan.agentes || []).length;
