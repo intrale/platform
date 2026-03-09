@@ -1776,8 +1776,11 @@ async function takeScreenshotSections(width) {
   try {
     // Viewport alto para que todos los paneles rendericen antes del scroll
     await page.setViewport({ width, height: 2400 });
-    await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "domcontentloaded", timeout: 15000 });
-    await new Promise(r => setTimeout(r, 1000));
+    await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "load", timeout: 15000 });
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Obtener altura total de la página para bounds checking
+    const pageHeight = await page.evaluate(() => document.body.scrollHeight);
 
     const sections = await page.evaluate(() => {
       const selectors = [
@@ -1793,24 +1796,40 @@ async function takeScreenshotSections(width) {
         var r = el.getBoundingClientRect();
         // Ignorar paneles vacíos o sin altura visible
         if (r.height < 20 || r.width < 20) return null;
-        return { id: s.id, x: Math.max(0, r.x), y: r.y + window.scrollY, width: r.width, height: r.height };
+        // Redondear a enteros (Puppeteer clip requiere enteros) y corregir offset de scroll
+        return {
+          id: s.id,
+          x: Math.max(0, Math.round(r.x)),
+          y: Math.max(0, Math.round(r.y + window.scrollY)),
+          width: Math.round(r.width),
+          height: Math.round(r.height),
+        };
       }).filter(Boolean);
     });
 
     const results = [];
     for (const section of sections) {
-      const buf = await page.screenshot({
-        type: "png",
-        clip: {
-          x: section.x,
-          y: section.y,
-          width: section.width,
-          height: section.height,
-        },
-      });
-      // Solo incluir si la imagen tiene contenido real (> 5KB)
-      if (buf.length > 5000) {
-        results.push({ id: section.id, image: buf.toString("base64") });
+      try {
+        // Bounds check: el clip no puede superar el alto total de la página
+        const clampedHeight = Math.min(section.height, Math.max(1, pageHeight - section.y));
+        if (clampedHeight < 20) continue;
+
+        const buf = await page.screenshot({
+          type: "png",
+          clip: {
+            x: section.x,
+            y: section.y,
+            width: Math.min(section.width, width),
+            height: clampedHeight,
+          },
+        });
+        // Solo incluir si la imagen tiene contenido real (> 5KB)
+        if (buf.length > 5000) {
+          results.push({ id: section.id, image: buf.toString("base64") });
+        }
+      } catch (sectionErr) {
+        // Una sección fallida no rompe las demás
+        console.error("[dashboard-server] Error capturando sección " + section.id + ": " + sectionErr.message);
       }
     }
     return results;
