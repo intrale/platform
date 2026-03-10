@@ -46,6 +46,7 @@ const PID_FILE = path.join(CLAUDE_DIR, "tmp", "dashboard-server.pid");
 const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
 const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+const ROADMAP_FILE = path.join(REPO_ROOT, "scripts", "roadmap.json");
 const AGENT_METRICS_FILE = path.join(CLAUDE_DIR, "hooks", "agent-metrics.json");
 const ICONS_DIR = path.join(CLAUDE_DIR, "icons");
 
@@ -168,14 +169,13 @@ function collectData() {
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
-  // Normalizar: combinar agentes + _queue + _completed en agentes para que el panel los muestre todos
+  // FIX: combinar agentes + _queue + _completed para que el panel sprint los muestre todos
   if (sprintPlan) {
-    const combined = [
+    sprintPlan.agentes = [
       ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
       ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
       ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
     ];
-    sprintPlan.agentes = combined;
   }
   const sprintIssueSet = new Set(
     sprintPlan && Array.isArray(sprintPlan.agentes)
@@ -437,6 +437,10 @@ function collectData() {
   // Group activities for feed (collapse consecutive same-agent same-tool)
   const groupedActivities = groupActivities(activities.slice(-RECENT_ACTIVITY_COUNT * 2).reverse(), FEED_LIMIT);
 
+  // Roadmap macro (#1382)
+  let roadmap = null;
+  try { roadmap = readJson(ROADMAP_FILE); } catch {}
+
   const data = {
     timestamp: new Date().toISOString(),
     sessions,
@@ -470,6 +474,7 @@ function collectData() {
     agentNodes: Array.from(agentNodes),
     skillUsage,
     agentMetrics,
+    roadmap,
     metrics: {
       totalActions,
       totalActiveTimeMs: totalActiveTime,
@@ -965,6 +970,229 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-height:${svgH}px;">${svg}</svg>`;
 }
 
+// --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
+function buildGanttChart(roadmap) {
+  if (!roadmap || !Array.isArray(roadmap.sprints) || roadmap.sprints.length === 0) {
+    return '<div class="empty-state">Sin roadmap generado — ejecutar /scrum roadmap</div>';
+  }
+
+  const STREAM_COLORS = {
+    A: "#f87171",   // Backend — rojo
+    B: "#60a5fa",   // Cliente — azul
+    C: "#fbbf24",   // Negocio — amarillo
+    D: "#34d399",   // Delivery — verde
+    E: "#a78bfa",   // Cross-cutting — violeta
+  };
+  const STREAM_LABELS = { A: "Backend", B: "Cliente", C: "Negocio", D: "Delivery", E: "Cross" };
+  const STATUS_OPACITY = { done: 0.45, deferred: 0.25, blocked: 1, in_progress: 1, planned: 1 };
+
+  const sprints = roadmap.sprints;
+  const numSprints = sprints.length;
+
+  // Collect all issues with sprint index
+  const allIssues = [];
+  for (let si = 0; si < sprints.length; si++) {
+    const spr = sprints[si];
+    for (const iss of (spr.issues || [])) {
+      allIssues.push({ ...iss, _sprintIdx: si, _sprintId: spr.id });
+    }
+  }
+
+  // Build issue index for dependency arrows
+  const issueByNum = {};
+  for (const iss of allIssues) issueByNum[iss.number] = iss;
+
+  // Group by stream for Y axis
+  const streams = ["E", "B", "C", "D", "A"];
+  const streamGroups = {};
+  for (const s of streams) streamGroups[s] = [];
+  for (const iss of allIssues) {
+    const s = iss.stream || "E";
+    if (!streamGroups[s]) streamGroups[s] = [];
+    streamGroups[s].push(iss);
+  }
+
+  // Layout constants
+  const colW = 110;           // width per sprint column
+  const rowH = 22;            // height per issue row
+  const barPad = 3;           // vertical padding inside row
+  const labelColW = 58;       // left label column (stream names)
+  const headerH = 42;         // top header for sprint labels
+  const streamGap = 10;       // gap between stream groups
+  const streamLabelH = 16;    // height of stream group header
+
+  // Compute total height
+  let totalY = headerH;
+  const streamYMap = {}; // stream -> { y, issues }
+  for (const s of streams) {
+    const group = streamGroups[s];
+    if (group.length === 0) continue;
+    // Issues per row per sprint column — stack vertically within sprint
+    // Count max issues per sprint for this stream
+    const perSprint = {};
+    for (const iss of group) {
+      const si = iss._sprintIdx;
+      if (!perSprint[si]) perSprint[si] = 0;
+      perSprint[si]++;
+    }
+    const maxRows = Math.max(...Object.values(perSprint), 1);
+    const groupH = streamLabelH + maxRows * rowH + streamGap;
+    streamYMap[s] = { y: totalY, h: groupH, maxRows };
+    totalY += groupH;
+  }
+  const svgH = Math.max(totalY + 10, 120);
+  const svgW = labelColW + numSprints * colW + 20;
+
+  let defs = `<defs>
+    <marker id="gantt-arrow" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto">
+      <polygon points="0 0, 6 2.5, 0 5" fill="var(--text-muted)" opacity="0.7"/>
+    </marker>`;
+
+  // Hatch pattern for in_progress
+  defs += `<pattern id="hatch-inprogress" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>
+    </pattern>`;
+  defs += `</defs>`;
+
+  let svg = defs;
+
+  // --- Header: sprint columns ---
+  // Background header
+  svg += `<rect x="${labelColW}" y="0" width="${numSprints * colW}" height="${headerH}" fill="var(--surface-2,#1e2030)" rx="4"/>`;
+
+  for (let si = 0; si < numSprints; si++) {
+    const spr = sprints[si];
+    const x = labelColW + si * colW;
+    // Column separator
+    svg += `<line x1="${x}" y1="0" x2="${x}" y2="${svgH}" stroke="var(--border)" stroke-width="0.5" stroke-opacity="0.4"/>`;
+    // Sprint label (ID)
+    svg += `<text x="${x + colW / 2}" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="var(--white)" opacity="0.9">${escHtml(spr.id)}</text>`;
+    // Date range
+    const start = (spr.start || "").substring(5); // MM-DD
+    const end = (spr.end || "").substring(5);
+    svg += `<text x="${x + colW / 2}" y="28" text-anchor="middle" font-size="8" fill="var(--text-dim)">${escHtml(start)}→${escHtml(end)}</text>`;
+    // Sprint tema (truncated)
+    const tema = (spr.tema || "").substring(0, 18);
+    svg += `<text x="${x + colW / 2}" y="39" text-anchor="middle" font-size="7" fill="var(--text-muted)" opacity="0.7">${escHtml(tema)}</text>`;
+  }
+
+  // --- Stream groups and bars ---
+  const barPositions = {}; // issueNum -> { cx, cy } for arrow rendering
+
+  for (const s of streams) {
+    const group = streamGroups[s];
+    if (group.length === 0) continue;
+    const sm = streamYMap[s];
+    const color = STREAM_COLORS[s] || "#888";
+
+    // Stream label background
+    svg += `<rect x="0" y="${sm.y}" width="${labelColW - 2}" height="${sm.h - streamGap}" fill="${color}" fill-opacity="0.12" rx="3"/>`;
+    svg += `<text x="${(labelColW - 2) / 2}" y="${sm.y + streamLabelH - 4}" text-anchor="middle" font-size="9" font-weight="700" fill="${color}">${STREAM_LABELS[s] || s}</text>`;
+
+    // Background stripe for stream area
+    svg += `<rect x="${labelColW}" y="${sm.y}" width="${numSprints * colW}" height="${sm.h - streamGap}" fill="${color}" fill-opacity="0.04" rx="2"/>`;
+
+    // Track row position per sprint for stacking
+    const sprintRowCount = {};
+
+    for (const iss of group) {
+      const si = iss._sprintIdx;
+      if (!sprintRowCount[si]) sprintRowCount[si] = 0;
+      const rowInSprint = sprintRowCount[si]++;
+
+      const barX = labelColW + si * colW + 3;
+      const barY = sm.y + streamLabelH + rowInSprint * rowH + barPad;
+      const barW = colW - 6;
+      const barH = rowH - barPad * 2;
+      const cx = barX + barW / 2;
+      const cy = barY + barH / 2;
+      barPositions[iss.number] = { cx, cy };
+
+      const status = iss.status || "planned";
+      const opacity = STATUS_OPACITY[status] !== undefined ? STATUS_OPACITY[status] : 1;
+      const fillColor = status === "blocked" ? "#f87171" : color;
+
+      // Main bar
+      svg += `<g opacity="${opacity}">`;
+      svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="${fillColor}" fill-opacity="0.22" stroke="${fillColor}" stroke-width="1" rx="3">`;
+      svg += `<title>#${iss.number} ${iss.title}\nStream: ${s} | Size: ${iss.size || "M"} | Status: ${status}</title>`;
+      svg += `</rect>`;
+
+      // Hatch overlay for in_progress
+      if (status === "in_progress") {
+        svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="url(#hatch-inprogress)" rx="3" opacity="0.5"/>`;
+      }
+
+      // Checkmark for done
+      if (status === "done") {
+        svg += `<text x="${barX + 5}" y="${barY + barH - 3}" font-size="9" fill="${fillColor}" opacity="0.9">✓</text>`;
+      }
+
+      // Label: #NUM + title truncated
+      const maxChars = Math.floor((barW - (status === "done" ? 14 : 4)) / 5.2);
+      const title = iss.title.substring(0, maxChars);
+      const labelX = barX + (status === "done" ? 14 : 4);
+      svg += `<text x="${labelX}" y="${barY + barH - 4}" font-size="7.5" fill="var(--white)" font-weight="600" opacity="0.9" style="pointer-events:none">${escHtml(title)}</text>`;
+
+      // Issue number chip
+      svg += `<text x="${barX + 2}" y="${barY + 8}" font-size="6.5" fill="${fillColor}" font-weight="700" opacity="0.85">#${iss.number}</text>`;
+
+      svg += `</g>`;
+    }
+  }
+
+  // --- Dependency arrows (Bézier curves) ---
+  const drawnArrows = new Set();
+  for (const iss of allIssues) {
+    const to = barPositions[iss.number];
+    if (!to) continue;
+    for (const depNum of (iss.depends_on || [])) {
+      const from = barPositions[depNum];
+      if (!from) continue;
+      const arrowKey = `${depNum}->${iss.number}`;
+      if (drawnArrows.has(arrowKey)) continue;
+      drawnArrows.add(arrowKey);
+
+      // Only draw if different sprint (same sprint deps are fine but arrows get cluttered)
+      if (issueByNum[depNum] && issueByNum[depNum]._sprintIdx === iss._sprintIdx) continue;
+
+      const x1 = from.cx + (colW / 2 - 4);
+      const y1 = from.cy;
+      const x2 = to.cx - (colW / 2 - 4);
+      const y2 = to.cy;
+      const midX = (x1 + x2) / 2;
+      // Slight S-curve
+      const cp1x = midX;
+      const cp1y = y1;
+      const cp2x = midX;
+      const cp2y = y2;
+      svg += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="var(--text-muted)" stroke-width="1" stroke-opacity="0.5" stroke-dasharray="3,2" marker-end="url(#gantt-arrow)"/>`;
+    }
+  }
+
+  // Legend
+  const legendY = svgH - 16;
+  let legendX = labelColW + 4;
+  const legendStreams = streams.filter(s => streamGroups[s].length > 0);
+  for (const s of legendStreams) {
+    const color = STREAM_COLORS[s];
+    svg += `<rect x="${legendX}" y="${legendY}" width="8" height="8" fill="${color}" rx="2"/>`;
+    svg += `<text x="${legendX + 11}" y="${legendY + 7}" font-size="7.5" fill="var(--text-dim)">${STREAM_LABELS[s]}</text>`;
+    legendX += 55;
+  }
+
+  const updatedLabel = roadmap.updated_ts ? roadmap.updated_ts.substring(0, 10) : "";
+  svg += `<text x="${svgW - 4}" y="${legendY + 7}" text-anchor="end" font-size="7" fill="var(--text-muted)" opacity="0.6">actualizado ${updatedLabel}</text>`;
+
+  const horizTotal = numSprints * colW + labelColW + 20;
+  // Scrollable wrapper
+  return `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
+    <svg viewBox="0 0 ${horizTotal} ${svgH}" style="min-width:${Math.min(horizTotal, 900)}px;width:100%;max-height:${svgH}px;display:block;" preserveAspectRatio="xMinYMin meet">
+      ${svg}
+    </svg>
+  </div>`;
+}
+
 // --- HTML Template ---
 function renderHTML(data, theme) {
   const isDark = theme !== "light";
@@ -1237,6 +1465,10 @@ function renderHTML(data, theme) {
 
   // --- FLOW TREE (ASCII tree layout) ---
   const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS);
+
+  // --- GANTT ROADMAP (#1382) ---
+  const ganttHtml = buildGanttChart(data.roadmap);
+  const roadmapNumSprints = (data.roadmap && data.roadmap.horizon_sprints) || 0;
 
   // --- ACTIVITY FEED (chat-style with grouping) ---
   let feedHtml = "";
@@ -1818,6 +2050,12 @@ function renderHTML(data, theme) {
       ${agentMetricsHtml}
     </div>
 
+    <!-- Roadmap Gantt (#1382) -->
+    <div class="panel" style="margin-bottom:16px;" data-panel="roadmap">
+      <div class="panel-title">Roadmap <span class="chip chip-purple">${roadmapNumSprints} sprints</span></div>
+      ${ganttHtml}
+    </div>
+
     <!-- CI -->
     <div class="panel" style="margin-bottom:16px;" data-panel="ci">
       <div class="panel-title">CI / CD</div>
@@ -2076,6 +2314,7 @@ async function takeScreenshotSections(width) {
         { id: "ejecucion", sel: "[data-panel='exec']" },
         { id: "sesiones",  sel: "[data-panel='sessions']" },
         { id: "metricas",  sel: "[data-panel='metrics']" },
+        { id: "roadmap",   sel: "[data-panel='roadmap']" },
         { id: "ci",        sel: "[data-panel='ci']" },
       ];
       return selectors.map(function(s) {
