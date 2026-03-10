@@ -288,6 +288,49 @@ El campo `tema` del `sprint-plan.json` debe reflejar el foco elegido:
 - Sin foco: `"tema": "Sprint general — mix de prioridades"`
 - Con foco: `"tema": "Sprint QA — prioridad en bugs y testing"`, `"tema": "Sprint técnico — infra y refactors"`, etc.
 
+### Validar dependencias con /po (obligatorio)
+
+Antes de escribir el `sprint-plan.json`, **siempre** invocar el modo `dependencias` del skill `/po` con los N issues seleccionados.
+
+Invocar con los números de los issues separados por coma:
+```
+/po dependencias N1,N2,N3,...
+```
+
+El PO analizará:
+- Dependencias explícitas en los body de los issues (`depends on`, `blocked by`, `requiere`, `after #NNN`)
+- Dependencias implícitas por área (mismo `area:*`) o archivos compartidos
+- Estado de dependencias externas (issues fuera del sprint que siguen abiertos)
+- Inversiones en el orden propuesto
+
+**Acciones según el resultado:**
+
+| Veredicto del PO | Acción |
+|------------------|--------|
+| Sin inversiones | Continuar con el orden propuesto |
+| Inversiones detectadas ⚠️ | Reordenar el array `agentes[]` según el orden recomendado por el PO |
+| Dependencias externas abiertas ⚠️ | Incluir el issue externo en el sprint (si es pequeño) o agregar advertencia visible en el reporte |
+| Ciclo detectado ⛔ | Reportar al usuario y no lanzar agentes hasta resolver |
+
+Incluir la sección de dependencias en el reporte final del sprint:
+
+```
+## Dependencias validadas por PO
+
+- #N1 → depende de → #N2 (explícita)
+- #N3 → independiente
+
+## Orden final (post-validación)
+1. #N2 (sin dependencias)
+2. #N1 (depende de #N2)
+3. #N3 (independiente — paralelo posible)
+```
+
+Si el PO detectó que el orden fue modificado respecto al ranking original, indicarlo en el reporte:
+> ⚠️ Orden ajustado por dependencias: #N1 movido al puesto 2 (depende de #N2 que estaba en puesto 3).
+
+---
+
 ### Generar plan JSON para Start-Agente
 
 Al finalizar el sprint, **siempre** escribir `scripts/sprint-plan.json` con el plan estructurado
