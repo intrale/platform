@@ -152,6 +152,7 @@ class PasswordRecoveryScreen : Screen(PASSWORD_RECOVERY_PATH) {
                                     coroutine.launch {
                                         snackbarHostState.showSnackbar(passwordRecoverySuccessMessage)
                                     }
+                                    PasswordRecoveryArgs.email = viewModel.state.email
                                     navigate(CONFIRM_PASSWORD_RECOVERY_PATH)
                                 },
                                 onError = { error ->

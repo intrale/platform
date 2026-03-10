@@ -20,6 +20,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -68,6 +69,7 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
         val genericErrorMessage = Txt(MessageKey.error_generic)
         val userIconDescription = Txt(MessageKey.login_user_icon_content_description)
         val passwordIconDescription = Txt(MessageKey.login_password_icon_content_description)
+        val resendCodeText = Txt(MessageKey.password_recovery_resend_code)
 
         val submitForm: () -> Unit = {
             focusManager.clearFocus()
@@ -155,7 +157,7 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
                                 imeAction = ImeAction.Next
                             ),
                             keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                            enabled = !viewModel.loading
+                            enabled = false
                         )
 
                         TextField(
@@ -171,6 +173,7 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
                                 )
                             },
                             keyboardOptions = KeyboardOptions.Default.copy(
+                                keyboardType = KeyboardType.NumberPassword,
                                 imeAction = ImeAction.Next
                             ),
                             keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
@@ -217,6 +220,13 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
                     enabled = !viewModel.loading,
                     onClick = submitForm
                 )
+
+                TextButton(
+                    onClick = { navigate(PASSWORD_RECOVERY_PATH) },
+                    enabled = !viewModel.loading
+                ) {
+                    Text(text = resendCodeText)
+                }
             }
         }
     }

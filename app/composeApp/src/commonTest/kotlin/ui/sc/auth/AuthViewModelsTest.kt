@@ -343,6 +343,21 @@ class ConfirmPasswordRecoveryViewModelTest {
         assertFalse(confirmState.isValid)
         assertEquals(resolveMessage(MessageKey.form_error_passwords_mismatch), confirmState.details)
     }
+
+    @Test
+    fun `email se precarga desde PasswordRecoveryArgs al inicializar`() {
+        PasswordRecoveryArgs.email = "prefilled@test.com"
+        val vm = ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
+        assertEquals("prefilled@test.com", vm.state.email)
+        assertEquals("", PasswordRecoveryArgs.email)
+    }
+
+    @Test
+    fun `PasswordRecoveryArgs se limpia al crear el ViewModel`() {
+        PasswordRecoveryArgs.email = "otro@test.com"
+        ConfirmPasswordRecoveryViewModel(FakeConfirmPasswordRecovery(), testLoggerFactory)
+        assertEquals("", PasswordRecoveryArgs.email)
+    }
 }
 
 // endregion

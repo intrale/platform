@@ -336,6 +336,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.password_recovery_send_code to "Send code",
     MessageKey.password_recovery_have_code to "I already have a recovery code",
     MessageKey.password_recovery_email_sent to "We sent you an email with instructions to continue",
+    MessageKey.password_recovery_resend_code to "Resend code",
     MessageKey.business to "Business",
     MessageKey.request_join_business to "Request to join",
     MessageKey.request_join_business_sent to "Request sent",

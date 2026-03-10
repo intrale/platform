@@ -339,6 +339,7 @@ enum class MessageKey {
     password_recovery_send_code,
     password_recovery_have_code,
     password_recovery_email_sent,
+    password_recovery_resend_code,
     business,
     request_join_business,
     request_join_business_sent,

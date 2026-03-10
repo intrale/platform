@@ -23,7 +23,9 @@ class ConfirmPasswordRecoveryViewModel(
 ) : ViewModel() {
     private val logger = loggerFactory.newLogger<ConfirmPasswordRecoveryViewModel>()
 
-    var state by mutableStateOf(ConfirmPasswordRecoveryUIState())
+    var state by mutableStateOf(
+        ConfirmPasswordRecoveryUIState(email = PasswordRecoveryArgs.email.also { PasswordRecoveryArgs.email = "" })
+    )
     var loading by mutableStateOf(false)
 
     data class ConfirmPasswordRecoveryUIState(
