@@ -511,6 +511,8 @@ function mockEjecucionData() {
   ];
 
   const mockSprintPlan = {
+    sprint_id: "SPR-013",
+    estado: "activo",
     fecha: new Date().toISOString().split("T")[0],
     fechaInicio: new Date().toISOString().split("T")[0],
     fechaFin: new Date(Date.now() + 5 * 86400000).toISOString().split("T")[0],
@@ -716,6 +718,9 @@ function renderHTML(data, theme) {
   // Sprint sub-view
   if (data.sprintPlan && Array.isArray(data.sprintPlan.agentes) && data.sprintPlan.agentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
+    const sprintId = data.sprintPlan.sprint_id || null;
+    const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
+    const isFinalizado = sprintEstado === "finalizado";
     // Progreso del sprint: usar tareas si existen, si no, contar agentes done/total
     const agentesTotal = data.sprintPlan.agentes.length;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
@@ -742,10 +747,14 @@ function renderHTML(data, theme) {
       sprintPct = agentesTotal > 0 ? Math.round(totalPctSum / agentesTotal) : 0;
     }
 
+    const sprintLabelId = sprintId ? escHtml(sprintId) : (spDate ? escHtml(spDate) : "Sprint");
+    const sprintEstadoBadge = isFinalizado
+      ? `<span class="sprint-status-badge sprint-finalizado">&#10003; FINALIZADO</span>`
+      : `<span class="sprint-status-badge sprint-activo">ACTIVO</span>`;
     ejecutionHtml += `<div class="exec-subview">
       <div class="exec-subview-header">
-        <span class="exec-label">&#128640; Sprint${spDate ? ' (' + escHtml(spDate) + ')' : ''}</span>
-        <span class="exec-progress-badge">${sprintPct}%</span>
+        <span class="exec-label">&#128640; Sprint ${sprintLabelId} &#9656; ${sprintEstadoBadge}</span>
+        <span class="exec-progress-badge">${isFinalizado ? '&#10003; ' : ''}${sprintPct}%</span>
       </div>
       <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>
       <div class="exec-table">`;
@@ -1312,8 +1321,11 @@ function renderHTML(data, theme) {
     .exec-subview { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
     .exec-subview:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
     .exec-subview-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    .exec-label { font-size: 12px; font-weight: 700; color: var(--white); }
+    .exec-label { font-size: 12px; font-weight: 700; color: var(--white); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .exec-progress-badge { font-size: 13px; font-weight: 800; color: var(--green); }
+    .sprint-status-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 100px; letter-spacing: 0.04em; }
+    .sprint-activo { background: var(--green-dim, rgba(34,197,94,0.15)); color: var(--green, #22c55e); }
+    .sprint-finalizado { background: var(--blue-dim, rgba(59,130,246,0.15)); color: var(--blue, #60a5fa); }
     .exec-bar { height: 6px; background: var(--surface3); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
     .exec-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
     .exec-table { display: flex; flex-direction: column; gap: 4px; }
