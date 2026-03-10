@@ -169,63 +169,36 @@ Este panel unifica lo que antes eran "Sprint" y "Progreso del Sprint" en tres su
 
 **Reglas del panel FLUJO:**
 
-Muestra la jerarquía de skills/agentes invocados por sesión como un árbol ASCII. Cada sesión activa es un árbol independiente:
-
-```
-├─ FLUJO ─────────────────────────────────────────────────────────┤
-│ Sesión #a1b2c3d4 (agent/1303-monitor-grafos-arbol) ●             │
-│ ├── /ops        ✓  2m                                            │
-│ ├── /po         ✓  1m                                            │
-│ ├── /guru       ✓  3m                                            │
-│ ├── [código]    ►  15m  Edit×12 Write×3                          │
-│ ├── /tester     ☐  —                                             │
-│ └── /delivery   ☐  —                                             │
-│                                                                   │
-│ Sesión #e5f6g7h8 (agent/1269-feature-x) ○                        │
-│ ├── /ops        ✓  1m                                            │
-│ └── /delivery   ✓  2m                                            │
-└─────────────────────────────────────────────────────────────────┘
-```
+Muestra un grafo SVG interactivo con layout force-directed donde cada agente/skill es un nodo (círculo pequeño con icono) y las flechas curvas representan comunicación entre ellos. Los nodos se distribuyen orgánicamente como ramas de un árbol, optimizando la visibilidad de las flechas.
 
 **Fuentes de datos:**
-- `skills_invoked[]` del JSON de sesión: lista de skills en orden cronológico de invocación
-- `agent_transitions[]` del JSON de sesión: `[{from, to, ts}]` para calcular duración de cada skill
-- `tool_counts{}` del JSON de sesión: para detectar fase de implementación (Edit, Write, Bash)
+- `agentNodes[]` — conjunto de todos los agentes que participaron (de `agent_transitions`, `skills_invoked`, `agent_name`)
+- `agentTransitions[]` — `[{from, to, _session}]` aristas dirigidas de comunicación entre agentes
+- Sesiones activas — para determinar estado de cada nodo (activo, terminado, inactivo)
 
-**Construcción del árbol por sesión:**
+**Nodos:**
+- Cada agente es un círculo con el color y el icono definidos en `AGENT_COLORS` / `AGENT_ICONS`
+- Label debajo del nodo (nombre truncado a 12 chars con `…`)
+- Opacidad 0.35 para nodos sin actividad (ni activos ni done)
+- Nodos activos: animación pulsante en stroke-opacity + filtro glow
+- Nodos completados: muestran checkmark (✓) en lugar del icono
 
-1. **Encabezado**: `Sesión #XXXXXXXX (branch) [icono_liveness]`
-   - Truncar branch con `…` si excede 40 chars
+**Flechas:**
+- Curvas Bézier cuadráticas con offset perpendicular para aspecto orgánico
+- Cuando hay aristas bidireccionales (A→B y B→A), se incrementa la curvatura para evitar superposición
+- Punta de flecha (marker-end) para indicar dirección
+- Stroke semi-transparente (opacity 0.45)
 
-2. **Nodos de skills invocados**: para cada entrada en `skills_invoked[]`, en orden:
-   - Estado del nodo:
-     - `✓` — completado: hay un skill posterior en la lista, o la sesión está `done`
-     - `►` — activo: es el último skill y la sesión está `active` y < 5min de inactividad
-     - `✗` — fallido: último skill si la sesión terminó abruptamente (status=done sin /delivery ejecutado)
-   - Duración: usar `agent_transitions[]` — el skill que empieza en `ts[i]` dura hasta `ts[i+1]`
-     - Para el último skill activo: `last_activity_ts - ts[último]`; si no hay timestamps: `—`
-     - Formatear como: `Xm` si < 60m, `Xh Ym` si ≥ 60m
-
-3. **Nodo [código]** — insertar entre fase pre y post implementación:
-   - Condición: hay skills pre-impl en `skills_invoked[]` (/ops, /po, /guru) Y skills post-impl (/tester, /builder, /security, /review, /delivery) Y `tool_counts.Edit > 0 || tool_counts.Write > 0`
-   - Posición: después del último skill pre-implementación, antes del primer skill post-implementación
-   - Estado: `✓` si ya hay un post-impl ejecutado; `►` si es la fase actual (no hay post-impl en `skills_invoked[]`)
-   - Duración: diff entre último ts pre-impl y primer ts post-impl (o `last_activity_ts` si activo)
-   - Detalle: `Edit×N Write×M` usando totales de `tool_counts` como estimado (omitir si ambos son 0)
-
-4. **Nodos pendientes** — skills del pipeline estándar que aún no se ejecutaron:
-   - Pipeline estándar: /ops → /po → /guru → [código] → /tester → /builder → /security → /review → /delivery
-   - Mostrar con `☐` y `—` los que no están en `skills_invoked[]`
-   - Solo para sesiones activas que no hayan completado /delivery
-
-5. **Caracteres de árbol**: `├──` para todos los nodos excepto el último que usa `└──`
-
-**Reglas de presentación:**
-- Mostrar máximo 3 sesiones: activas primero (ordenadas por `last_activity_ts` desc), luego done < 15min
-- Si hay más de 3 sesiones activas: mostrar las 3 más recientes + `... (+N más)` al final
-- Si una sesión tiene más de 10 nodos en su árbol: mostrar los primeros 9 + `└── ... (+N nodos)` al final
-- Si NINGUNA sesión tiene `skills_invoked[]` ni `agent_transitions[]`: mostrar `│ Sin flujo registrado`
-- Ancho máximo: ~78 columnas (box-drawing incluido)
+**Layout force-directed:**
+- Inicialización con ángulo dorado (golden angle) para distribución uniforme
+- 50 iteraciones de simulación con:
+  - Repulsión entre todos los pares de nodos (1/dist²)
+  - Atracción a lo largo de aristas (spring con largo ideal 90px)
+  - Gravedad suave hacia el centro
+  - Alpha decay lineal (0.3 → 0)
+- Resultado: nodos conectados quedan cercanos, desconectados se separan naturalmente
+- ViewBox fijo: 420×360px
+- Determinístico: mismos datos → mismo layout
 
 **Reglas del panel MÉTRICAS:**
 

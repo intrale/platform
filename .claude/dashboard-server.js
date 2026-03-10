@@ -15,6 +15,13 @@ const path = require("path");
 const { execSync } = require("child_process");
 const zlib = require("zlib");
 
+// Permission severity classifier
+let classifySeverity;
+try {
+  const permUtils = require(path.resolve(__dirname, "hooks", "permission-utils.js"));
+  classifySeverity = permUtils.classifySeverity;
+} catch { classifySeverity = null; }
+
 // --- Config ---
 // Resolver REPO_ROOT al repo principal (no al worktree) — igual que activity-logger.js
 function resolveMainRepoRoot() {
@@ -197,20 +204,61 @@ function collectData() {
   let agentMetrics = null;
   try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
 
-  // Pending questions
+  // Pending questions (all + pending-only for blocking)
+  let allQuestions = [];
   let pendingQuestions = [];
   try {
     const pq = readJson(PENDING_QUESTIONS_FILE);
     if (pq && Array.isArray(pq.questions)) {
+      allQuestions = pq.questions;
       pendingQuestions = pq.questions.filter(q => q.status === "pending");
     }
   } catch {}
 
-  // Blocking relations
+  // Approval history (pattern stats)
+  let approvalHistory = {};
+  try {
+    const ah = readJson(APPROVAL_HISTORY_FILE);
+    if (ah && ah.patterns) approvalHistory = ah.patterns;
+  } catch {}
+
+  // Permission stats
+  const permissionStats = { auto: 0, approved: 0, denied: 0, pending: 0 };
+  for (const q of allQuestions) {
+    if (q.status === "pending") permissionStats.pending++;
+    else if (q.answered_via === "auto" || q.answered_via === "auto_allow" || q.answered_via === "fast_path") permissionStats.auto++;
+    else if (q.action_result === "deny" || q.action_result === "deny_once" || q.action_result === "deny_always") permissionStats.denied++;
+    else permissionStats.approved++;
+  }
+  // Blocking relations (build pid→session map first, used by enrichment too)
   const pidToSession = {};
   for (const s of sessions) {
     if (s.pid) pidToSession[s.pid] = s;
   }
+
+  // Enrich questions with agent, issue, severity
+  for (const q of allQuestions) {
+    const html = q.original_html || "";
+    // Try parse from original_html (format with robot emoji: "🤖 AgentName (#issue)  ·  🔀 branch")
+    const agentHtmlMatch = html.match(/\u{1F916}\s*([^(\u00B7\n]+)/u);
+    const issueHtmlMatch = html.match(/#(\d+)/);
+    // Fallback: cross-reference approver_pid with sessions
+    const linkedSession = q.approver_pid ? pidToSession[q.approver_pid] : null;
+    const sessionAgent = linkedSession ? (linkedSession.agent_name || null) : null;
+    const sessionBranch = linkedSession ? (linkedSession.branch || "") : "";
+    const branchIssueMatch = sessionBranch.match(/^(?:agent|feature|bugfix)\/(\d+)/);
+
+    q._agent = (agentHtmlMatch ? agentHtmlMatch[1].trim() : null) || sessionAgent || (q.action_data && q.action_data.agent) || null;
+    q._issue = (issueHtmlMatch ? issueHtmlMatch[1] : null) || (branchIssueMatch ? branchIssueMatch[1] : null);
+    // Severity
+    if (classifySeverity && q.action_data) {
+      try {
+        q._severity = classifySeverity(q.action_data.tool_name, q.action_data.tool_input || {}, REPO_ROOT);
+      } catch { q._severity = null; }
+    }
+  }
+  // Recent permissions (last 10, most recent first)
+  const recentPermissions = allQuestions.slice(-10).reverse();
   const blockingRelations = [];
   for (const q of pendingQuestions) {
     if (q.approver_pid && pidToSession[q.approver_pid]) {
@@ -356,6 +404,10 @@ function collectData() {
     lastCommits,
     allTasks,
     pendingQuestions,
+    allQuestions,
+    approvalHistory,
+    permissionStats,
+    recentPermissions,
     blockingRelations,
     sprintPlan,
     sprintSessions,
@@ -585,7 +637,30 @@ function mockEjecucionData() {
     ],
     allTasks,
     pendingQuestions: [
-      { type: "permission", status: "pending", approver_pid: 2002, message: "Aprobar: gh issue create", timestamp: ago(3) },
+      { type: "permission", status: "pending", approver_pid: 2002, message: "Aprobar: gh issue create", timestamp: ago(3), action_data: { tool_name: "Bash" } },
+    ],
+    allQuestions: [
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "TaskCreate", timestamp: ago(2), action_data: { tool_name: "TaskCreate" } },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "WebFetch", timestamp: ago(5), action_data: { tool_name: "WebFetch" } },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "git push agent/...", timestamp: ago(8), action_data: { tool_name: "Bash" } },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "allow", message: "curl -X POST", timestamp: ago(12), action_data: { tool_name: "Bash" } },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "deny", message: "rm -rf /tmp/*", timestamp: ago(60), action_data: { tool_name: "Bash" } },
+      { type: "permission", status: "pending", approver_pid: 2002, message: "gh issue create", timestamp: ago(3), action_data: { tool_name: "Bash" } },
+    ],
+    approvalHistory: {
+      "Bash(node:*)": { count: 42, first: ago(120), last: ago(2) },
+      "Edit(*)": { count: 38, first: ago(120), last: ago(1) },
+      "WebFetch": { count: 15, first: ago(60), last: ago(5) },
+      "Bash(export:*)": { count: 12, first: ago(90), last: ago(10) },
+    },
+    permissionStats: { auto: 3, approved: 1, denied: 1, pending: 1 },
+    recentPermissions: [
+      { type: "permission", status: "pending", message: "gh issue create", timestamp: ago(3), action_data: { tool_name: "Bash" }, _agent: "Planner", _issue: "1302", _severity: "MEDIUM" },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "TaskCreate", timestamp: ago(2), action_data: { tool_name: "TaskCreate" }, _agent: "BackendDev", _issue: "1300", _severity: "AUTO_ALLOW" },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "WebFetch context7", timestamp: ago(5), action_data: { tool_name: "WebFetch" }, _agent: "Guru", _issue: "1301", _severity: "LOW" },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "git push agent/1300-api-pedidos", timestamp: ago(8), action_data: { tool_name: "Bash" }, _agent: "DeliveryManager", _issue: "1300", _severity: "MEDIUM" },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "allow", message: "curl -X POST https://api.example.com", timestamp: ago(12), action_data: { tool_name: "Bash" }, _agent: "BackendDev", _issue: "1300", _severity: "MEDIUM" },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "deny", message: "rm -rf /tmp/*", timestamp: ago(60), action_data: { tool_name: "Bash" }, _agent: "QA", _issue: "1303", _severity: "HIGH" },
     ],
     blockingRelations: mockBlockingRelations,
     sprintPlan: mockSprintPlan,
@@ -653,189 +728,181 @@ function formatMinutes(ms) {
   return rem > 0 ? hrs + 'h ' + rem + 'm' : hrs + 'h';
 }
 
-// --- BUILD FLOW TREE (replaces circular SVG) ---
-function buildFlowTree(sessions) {
-  if (!Array.isArray(sessions) || sessions.length === 0) {
-    return '<div style="font-family:monospace;padding:8px;color:var(--text-muted);font-size:12px;">Sin flujo registrado</div>';
+// --- BUILD FLOW GRAPH SVG (force-directed organic layout) ---
+function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS) {
+  const nodes = Array.isArray(agentNodes) ? agentNodes : [];
+  const transitions = Array.isArray(agentTransitions) ? agentTransitions : [];
+
+  if (nodes.length === 0) {
+    return '<div class="empty-state">Sin flujo de agentes registrado</div>';
   }
 
-  // Sort by last_activity_ts descending, take max 3
-  const sortedSessions = sessions
-    .filter(s => s && (Array.isArray(s.skills_invoked) || Array.isArray(s.agent_transitions)))
-    .sort((a, b) => new Date(b.last_activity_ts || 0).getTime() - new Date(a.last_activity_ts || 0).getTime())
-    .slice(0, 3);
-
-  if (sortedSessions.length === 0) {
-    return '<div style="font-family:monospace;padding:8px;color:var(--text-muted);font-size:12px;">Sin flujo registrado</div>';
-  }
-
-  let treeHtml = '<div style="font-family:monospace;font-size:11px;line-height:1.4;color:var(--text-dim);white-space:pre-wrap;word-break:break-word;padding:8px;">';
-
-  for (let sIdx = 0; sIdx < sortedSessions.length; sIdx++) {
-    const session = sortedSessions[sIdx];
-    const skillsInvoked = Array.isArray(session.skills_invoked) ? session.skills_invoked : [];
-    const agentTransitions = Array.isArray(session.agent_transitions) ? session.agent_transitions : [];
-    const toolCounts = session.tool_counts || {};
-    const lastActivityTs = new Date(session.last_activity_ts || session.started_ts).getTime();
-
-    // Session liveness icon
-    const livenessMs = Date.now() - lastActivityTs;
-    let livenessIcon = '●';
-    if (session.status === 'done') livenessIcon = '✗';
-    else if (livenessMs > 15 * 60 * 1000) livenessIcon = '○';
-    else if (livenessMs > 5 * 60 * 1000) livenessIcon = '◐';
-
-    // Truncate branch name
-    const rawBranch = session.branch || '';
-    const branchDisplay = rawBranch.length > 40 ? rawBranch.substring(0, 40) + '…' : rawBranch;
-    const sessionIdShort = (session.id || '').substring(0, 8).toUpperCase();
-
-    treeHtml += `Sesión #${escHtml(sessionIdShort)} (${escHtml(branchDisplay)}) ${livenessIcon}&#10;`;
-
-    // Build tree nodes
-
-    // Track which skills are pre-impl, post-impl
-    const preImplSkills = ['/ops', '/po', '/guru'];
-    const postImplSkills = ['/tester', '/builder', '/security', '/review', '/delivery'];
-    const hasCodePhase = (toolCounts.Edit > 0 || toolCounts.Write > 0) &&
-                          skillsInvoked.some(sk => preImplSkills.includes(sk)) &&
-                          skillsInvoked.some(sk => postImplSkills.includes(sk));
-
-    // Determine insertion point for [código] node
-    let codeNodeIndex = -1;
-    if (hasCodePhase) {
-      const lastPreImplIdx = skillsInvoked.findIndex((sk, idx) =>
-        preImplSkills.includes(sk) && !skillsInvoked.slice(idx + 1).some(s => preImplSkills.includes(s))
-      );
-      if (lastPreImplIdx !== -1) {
-        codeNodeIndex = lastPreImplIdx + 1;
-      }
+  // Determine active/done agents from sessions
+  const activeAgents = new Set();
+  const doneAgents = new Set();
+  const sessionsList = Array.isArray(sessions) ? sessions : [];
+  for (const s of sessionsList) {
+    if (s.agent_name) {
+      if (s._status === "active" || s.status === "active") activeAgents.add(s.agent_name);
+      if (s._status === "done" || s.status === "done") doneAgents.add(s.agent_name);
     }
-
-    // Build nodes array
-    const nodes = [];
-    for (let i = 0; i < skillsInvoked.length; i++) {
-      const skill = skillsInvoked[i];
-
-      // Insert [código] node if needed
-      if (codeNodeIndex === i) {
-        // Determine state: ✓ if post-impl exists, ► if no post-impl yet
-        const hasPostImpl = skillsInvoked.slice(i).some(sk => postImplSkills.includes(sk));
-        const state = hasPostImpl ? '✓' : '►';
-
-        // Duration: diff between last pre-impl and first post-impl ts
-        let duration = '—';
-        if (agentTransitions.length >= 2) {
-          const preTs = agentTransitions[i - 1]?.ts;
-          const postTs = agentTransitions[i]?.ts;
-          if (preTs && postTs) {
-            const diff = new Date(postTs).getTime() - new Date(preTs).getTime();
-            duration = formatMinutes(diff);
-          } else if (preTs && !hasPostImpl) {
-            const diff = lastActivityTs - new Date(preTs).getTime();
-            duration = formatMinutes(diff);
-          }
-        }
-
-        // Tool detail
-        const editCount = toolCounts.Edit || 0;
-        const writeCount = toolCounts.Write || 0;
-        const detail = (editCount > 0 || writeCount > 0)
-          ? (editCount > 0 ? `Edit×${editCount}` : '') + (writeCount > 0 ? (editCount > 0 ? ' ' : '') + `Write×${writeCount}` : '')
-          : '';
-
-        nodes.push({
-          name: '[código]',
-          state,
-          duration,
-          detail,
-          isCodeNode: true
-        });
+    if (Array.isArray(s.skills_invoked)) {
+      for (const sk of s.skills_invoked) {
+        const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
+        if (!activeAgents.has(mapped)) doneAgents.add(mapped);
       }
-
-      // Determine skill state: ✓ if completed, ► if active, ☐ if pending
-      let state = '✓';  // default completed
-      if (i === skillsInvoked.length - 1) {
-        // Last skill
-        if (session.status === 'active' && livenessMs < 5 * 60 * 1000) {
-          state = '►';  // Active
-        } else if (session.status === 'done' && !skillsInvoked.slice(i + 1).some(sk => postImplSkills.includes(sk))) {
-          state = '✗';  // Failed (done without completion)
-        }
-      }
-
-      // Calculate duration from transitions
-      let duration = '—';
-      if (agentTransitions.length > i && agentTransitions.length > i + 1) {
-        const startTs = agentTransitions[i].ts;
-        const endTs = agentTransitions[i + 1].ts;
-        if (startTs && endTs) {
-          const diff = new Date(endTs).getTime() - new Date(startTs).getTime();
-          duration = formatMinutes(diff);
-        }
-      } else if (agentTransitions.length > i && i === skillsInvoked.length - 1) {
-        // Last skill, use last_activity_ts
-        const startTs = agentTransitions[i].ts;
-        if (startTs) {
-          const diff = lastActivityTs - new Date(startTs).getTime();
-          duration = formatMinutes(diff);
-        }
-      }
-
-      nodes.push({
-        name: skill.replace(/^\//, ''),
-        state,
-        duration,
-        detail: ''
-      });
-    }
-
-    // Add pending skills if session is active
-    if (session.status !== 'done') {
-      const standardPipeline = ['ops', 'po', 'guru', 'tester', 'builder', 'security', 'review', 'delivery'];
-      const invokedNames = skillsInvoked.map(sk => sk.replace(/^\//, ''));
-
-      for (const skill of standardPipeline) {
-        if (!invokedNames.includes(skill) && nodes.length < 10) {
-          nodes.push({
-            name: skill,
-            state: '☐',
-            duration: '—',
-            detail: '',
-            isPending: true
-          });
-        }
-      }
-    }
-
-    // Truncate to max 10 nodes
-    let displayNodes = nodes.slice(0, 10);
-    const truncated = nodes.length > 10 ? nodes.length - 10 : 0;
-
-    // Render tree
-    for (let nIdx = 0; nIdx < displayNodes.length; nIdx++) {
-      const node = displayNodes[nIdx];
-      const isLast = nIdx === displayNodes.length - 1 && truncated === 0;
-      const prefix = isLast ? '└──' : '├──';
-
-      let nodeLine = prefix + ' /' + escHtml(node.name) + '  ' + node.state + '  ' + escHtml(node.duration);
-      if (node.detail) nodeLine += '  ' + escHtml(node.detail);
-
-      treeHtml += nodeLine + '&#10;';
-    }
-
-    if (truncated > 0) {
-      treeHtml += '└── ... (+' + truncated + ' nodos)&#10;';
-    }
-
-    // Add blank line between sessions
-    if (sIdx < sortedSessions.length - 1) {
-      treeHtml += '&#10;';
     }
   }
 
-  treeHtml += '</div>';
-  return treeHtml;
+  // Deduplicate edges
+  const edgeList = [];
+  const edgeSet = new Set();
+  for (const t of transitions) {
+    const key = t.from + "->" + t.to;
+    if (!edgeSet.has(key) && nodes.includes(t.from) && nodes.includes(t.to)) {
+      edgeSet.add(key);
+      edgeList.push({ from: t.from, to: t.to });
+    }
+  }
+
+  // --- Force-directed layout (simplified, deterministic) ---
+  const nodeR = 22;
+  const svgW = 420;
+  const svgH = 360;
+  const cx = svgW / 2, cy = svgH / 2;
+
+  // Initialize positions: spread nodes using golden angle for good distribution
+  const positions = {};
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  nodes.forEach((name, i) => {
+    const r = 60 + Math.sqrt(i) * 45;
+    const angle = i * goldenAngle;
+    positions[name] = {
+      x: cx + r * Math.cos(angle),
+      y: cy + r * Math.sin(angle),
+    };
+  });
+
+  // Build adjacency
+  const neighbors = {};
+  for (const n of nodes) neighbors[n] = new Set();
+  for (const e of edgeList) {
+    neighbors[e.from].add(e.to);
+    neighbors[e.to].add(e.from);
+  }
+
+  // Run force simulation (50 iterations)
+  const padding = nodeR + 20;
+  for (let iter = 0; iter < 50; iter++) {
+    const alpha = 0.3 * (1 - iter / 50);
+
+    for (const a of nodes) {
+      let fx = 0, fy = 0;
+      const pa = positions[a];
+
+      // Repulsion between all pairs
+      for (const b of nodes) {
+        if (a === b) continue;
+        const pb = positions[b];
+        let dx = pa.x - pb.x, dy = pa.y - pb.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) { dx = 0.5; dy = 0.3; dist = 1; }
+        const repulse = 2500 / (dist * dist);
+        fx += (dx / dist) * repulse;
+        fy += (dy / dist) * repulse;
+      }
+
+      // Attraction along edges
+      for (const b of neighbors[a]) {
+        const pb = positions[b];
+        const dx = pb.x - pa.x, dy = pb.y - pa.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const ideal = 90;
+        const attract = (dist - ideal) * 0.05;
+        fx += (dx / Math.max(dist, 1)) * attract;
+        fy += (dy / Math.max(dist, 1)) * attract;
+      }
+
+      // Gravity toward center (mild)
+      fx += (cx - pa.x) * 0.005;
+      fy += (cy - pa.y) * 0.005;
+
+      pa.x += fx * alpha;
+      pa.y += fy * alpha;
+
+      // Keep within bounds
+      pa.x = Math.max(padding, Math.min(svgW - padding, pa.x));
+      pa.y = Math.max(padding, Math.min(svgH - padding, pa.y));
+    }
+  }
+
+  // Build SVG
+  let svg = `<defs>
+    <marker id="flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--text-muted)" opacity="0.6"/>
+    </marker>
+    <filter id="node-glow"><feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>`;
+
+  // Draw edges as curved arrows
+  for (const e of edgeList) {
+    const from = positions[e.from];
+    const to = positions[e.to];
+    if (!from || !to) continue;
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 1) continue;
+    const ux = dx / dist, uy = dy / dist;
+    const x1 = from.x + ux * (nodeR + 4);
+    const y1 = from.y + uy * (nodeR + 4);
+    const x2 = to.x - ux * (nodeR + 8);
+    const y2 = to.y - uy * (nodeR + 8);
+    // Slight perpendicular offset for organic curved arrows
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+    const perpX = -(y2 - y1) * 0.12;
+    const perpY = (x2 - x1) * 0.12;
+    // Check if reverse edge exists → increase curve to avoid overlap
+    const reverseKey = e.to + "->" + e.from;
+    const curveMult = edgeSet.has(reverseKey) ? 0.25 : 0.12;
+    const cpx = midX + (-(y2 - y1) * curveMult);
+    const cpy = midY + ((x2 - x1) * curveMult);
+    svg += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="var(--text-muted)" stroke-width="1.5" stroke-opacity="0.45" marker-end="url(#flow-arrow)"/>`;
+  }
+
+  // Draw nodes
+  for (const name of nodes) {
+    const pos = positions[name];
+    if (!pos) continue;
+    const color = (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
+    const icon = (AGENT_ICONS && AGENT_ICONS[name]) || "&#129302;";
+    const isActive = activeAgents.has(name);
+    const isDone = doneAgents.has(name);
+    const opacity = (!isActive && !isDone) ? "0.35" : "1";
+    const filterAttr = isActive ? 'filter="url(#node-glow)"' : '';
+
+    svg += `<g class="flow-node" data-agent="${escHtml(name)}" style="cursor:pointer;opacity:${opacity};" ${filterAttr}>`;
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${nodeR}" fill="${color}" fill-opacity="0.15" stroke="${color}" stroke-width="2"`;
+    if (isActive) {
+      svg += `><animate attributeName="stroke-opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/></circle>`;
+    } else {
+      svg += `/>`;
+    }
+    // Icon or check mark
+    if (isDone && !isActive) {
+      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
+    } else {
+      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="14">${icon}</text>`;
+    }
+    // Label below node
+    const shortName = name.length > 12 ? name.substring(0, 10) + "\u2026" : name;
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + nodeR + 14).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)" font-weight="600">${escHtml(shortName)}</text>`;
+    svg += `</g>`;
+  }
+
+  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-height:${svgH}px;">${svg}</svg>`;
 }
 
 // --- HTML Template ---
@@ -1107,7 +1174,7 @@ function renderHTML(data, theme) {
   }
 
   // --- FLOW TREE (ASCII tree layout) ---
-  const flowGraphHtml = buildFlowTree(data.sessions);
+  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS);
 
   // --- ACTIVITY FEED (chat-style with grouping) ---
   let feedHtml = "";
@@ -1218,29 +1285,68 @@ function renderHTML(data, theme) {
       ${agentBarsHtml}
     </div>`;
 
-  // --- TASKS ---
-  let tasksHtml = "";
-  for (const t of data.allTasks) {
-    const isDone = t.status === "completed";
-    const isActive = t.status === "in_progress";
-    const checkClass = isDone ? "task-check-done" : isActive ? "task-check-active" : "task-check-pending";
-    const checkIcon = isDone ? "&#10003;" : isActive ? "&#9654;" : "";
-    const nameClass = isDone ? "task-name-done" : "";
-    const subText = t.steps ? (isDone ? t.steps.length + "/" + t.steps.length + " sub-pasos" : (t.current_step || 0) + "/" + t.steps.length + " sub-pasos") : "";
-    const progressWidth = t.progress || 0;
-    tasksHtml += `<div class="task-item">
-      <div class="task-check ${checkClass}">${checkIcon}</div>
-      <div class="task-content">
-        <div class="task-name ${nameClass}">${escHtml(t.subject)}</div>
-        ${subText ? '<div class="task-sub">' + escHtml(subText) + '</div>' : ""}
-        ${isActive && t.steps ? '<div class="task-bar"><div class="task-bar-fill" style="width:' + progressWidth + '%;background:var(--blue);"></div></div>' : ""}
+  // --- PERMISOS ---
+  const permStats = data.permissionStats || { auto: 0, approved: 0, denied: 0, pending: 0 };
+  const permTotal = permStats.auto + permStats.approved + permStats.denied + permStats.pending;
+
+  let permissionsListHtml = "";
+  const recentPerms = data.recentPermissions || [];
+  for (const q of recentPerms.slice(0, 8)) {
+    const isPending = q.status === "pending";
+    const isDenied = q.action_result === "deny" || q.action_result === "deny_once" || q.action_result === "deny_always";
+    const isAuto = q.answered_via === "auto" || q.answered_via === "auto_allow" || q.answered_via === "fast_path";
+    const isTelegram = q.answered_via === "telegram";
+    const isConsole = q.answered_via === "console";
+
+    let statusIcon, statusLabel, statusClass;
+    if (isPending) { statusIcon = "&#9711;"; statusLabel = "PEND"; statusClass = "perm-pending"; }
+    else if (isDenied) { statusIcon = "&#10007;"; statusLabel = "RECH"; statusClass = "perm-denied"; }
+    else if (isAuto) { statusIcon = "&#10003;"; statusLabel = "AUTO"; statusClass = "perm-auto"; }
+    else if (isTelegram) { statusIcon = "&#10003;"; statusLabel = "TELE"; statusClass = "perm-telegram"; }
+    else if (isConsole) { statusIcon = "&#10003;"; statusLabel = "CONS"; statusClass = "perm-console"; }
+    else { statusIcon = "&#10003;"; statusLabel = "OK"; statusClass = "perm-auto"; }
+
+    const toolName = (q.action_data && q.action_data.tool_name) || "???";
+    const msgShort = escHtml((q.message || "").replace(/<[^>]*>/g, "").substring(0, 50));
+    const age = formatAge(q.timestamp);
+    const severity = q._severity || "???";
+    const agentName = q._agent || "";
+    const issueNum = q._issue || "";
+    const sevColor = severity === "HIGH" ? "var(--red)" : severity === "MEDIUM" ? "var(--yellow)" : severity === "LOW" ? "var(--green)" : severity === "AUTO_ALLOW" ? "var(--text-dim)" : "var(--text-muted)";
+
+    permissionsListHtml += `<div class="perm-item">
+      <div class="perm-status ${statusClass}">${statusIcon}</div>
+      <div class="perm-method">${statusLabel}</div>
+      <div class="perm-detail">
+        <span class="perm-tool">${escHtml(toolName)}</span>
+        <span class="perm-severity" style="color:${sevColor}">${escHtml(severity)}</span>
+        <span class="perm-msg">${msgShort}</span>
+        ${agentName || issueNum ? '<div class="perm-origin">' + (agentName ? escHtml(agentName) : '') + (issueNum ? ' <span class="perm-issue">#' + escHtml(issueNum) + '</span>' : '') + '</div>' : ''}
       </div>
-      <div class="task-owner">${escHtml(t._agent || "")}</div>
+      <div class="perm-age">${age}</div>
     </div>`;
   }
-  if (data.allTasks.length === 0) {
-    tasksHtml = '<div class="empty-state">Sin tareas</div>';
+  if (recentPerms.length === 0) {
+    permissionsListHtml = '<div class="empty-state">Sin permisos registrados</div>';
   }
+
+  // Top patterns
+  const patterns = data.approvalHistory || {};
+  const topPatterns = Object.entries(patterns)
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 4)
+    .map(([pat, info]) => escHtml(pat) + " &times;" + info.count)
+    .join(" &middot; ");
+
+  let permissionsHtml = `
+    <div class="perm-summary">
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--green)">${permStats.auto}</span><span class="perm-stat-lbl">Auto</span></div>
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--blue)">${permStats.approved}</span><span class="perm-stat-lbl">Aprobados</span></div>
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--red)">${permStats.denied}</span><span class="perm-stat-lbl">Rechazados</span></div>
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--yellow)">${permStats.pending}</span><span class="perm-stat-lbl">Pendientes</span></div>
+    </div>
+    ${permissionsListHtml}
+    ${topPatterns ? '<div class="perm-patterns">Top: ' + topPatterns + '</div>' : ''}`;
 
   // --- CI ---
   let ciHtml = "";
@@ -1480,20 +1586,28 @@ function renderHTML(data, theme) {
     .metric-gauge { height: 8px; background: var(--surface3); border-radius: 4px; overflow: hidden; }
     .metric-gauge-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
 
-    /* Tasks */
-    .task-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-    .task-item:last-child { border-bottom: none; }
-    .task-check { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; margin-top: 2px; }
-    .task-check-done { background: var(--green-dim); color: var(--green); }
-    .task-check-active { background: var(--blue-dim); color: var(--blue); animation: pulse 2s infinite; }
-    .task-check-pending { background: var(--surface2); border: 1px solid var(--border); }
-    .task-content { flex: 1; min-width: 0; }
-    .task-name { font-size: 12px; color: var(--text); font-weight: 500; }
-    .task-name-done { text-decoration: line-through; color: var(--text-muted); }
-    .task-sub { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
-    .task-bar { width: 80px; height: 4px; background: var(--surface3); border-radius: 2px; margin-top: 6px; overflow: hidden; }
-    .task-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
-    .task-owner { font-size: 10px; color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+    /* Permissions */
+    .perm-summary { display: flex; gap: 12px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+    .perm-stat { display: flex; flex-direction: column; align-items: center; flex: 1; }
+    .perm-stat-val { font-size: 18px; font-weight: 800; }
+    .perm-stat-lbl { font-size: 9px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .perm-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .perm-item:last-child { border-bottom: none; }
+    .perm-status { width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; }
+    .perm-auto { background: var(--green-dim); color: var(--green); }
+    .perm-telegram { background: var(--blue-dim); color: var(--blue); }
+    .perm-console { background: var(--purple-dim); color: var(--purple); }
+    .perm-denied { background: var(--red-dim); color: var(--red); }
+    .perm-pending { background: var(--yellow-dim); color: var(--yellow); animation: pulse 2s infinite; }
+    .perm-method { font-size: 9px; font-weight: 700; color: var(--text-muted); width: 32px; flex-shrink: 0; text-align: center; }
+    .perm-detail { flex: 1; min-width: 0; overflow: hidden; }
+    .perm-tool { font-size: 11px; font-weight: 600; color: var(--text); margin-right: 6px; }
+    .perm-severity { font-size: 9px; font-weight: 700; margin-right: 4px; }
+    .perm-msg { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .perm-origin { font-size: 9px; color: var(--text-muted); margin-top: 2px; }
+    .perm-issue { color: var(--blue); font-weight: 600; }
+    .perm-age { font-size: 10px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
+    .perm-patterns { font-size: 10px; color: var(--text-dim); margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
     .tasks-progress-bar { height: 4px; background: var(--surface3); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
     .tasks-progress-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
 
@@ -1572,9 +1686,9 @@ function renderHTML(data, theme) {
         <div class="kt" style="color:var(--green)">${data.idleSessions > 0 ? data.idleSessions + ' idle' : 'Todos trabajando'}</div>
       </div>
       <div class="kpi kpi-blue">
-        <div class="kv" style="color:var(--blue)">${data.totalTasks}</div>
-        <div class="kl">Tareas totales</div>
-        <div class="kt" style="color:var(--blue)">${data.pendingTasks} pendientes</div>
+        <div class="kv" style="color:var(--blue)">${permTotal}</div>
+        <div class="kl">Permisos</div>
+        <div class="kt" style="color:${permStats.pending > 0 ? 'var(--yellow)' : 'var(--green)'}">${permStats.pending > 0 ? permStats.pending + ' pendiente(s)' : permStats.auto + ' auto'}</div>
       </div>
       <div class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : 'kpi-orange'}">
         <div class="kv" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? '&#10003;' : data.ciStatus === 'fail' ? '&#10007;' : '&#9203;'}</div>
@@ -1627,11 +1741,8 @@ function renderHTML(data, theme) {
         ${metricsHtml}
       </div>
       <div class="panel">
-        <div class="panel-title">Tareas <span class="chip chip-green">${data.completedTasks}/${data.totalTasks}</span></div>
-        <div class="tasks-progress-bar">
-          <div class="tasks-progress-fill" style="width:${sprintProgress}%; background: var(--gradient-green);"></div>
-        </div>
-        ${tasksHtml}
+        <div class="panel-title">Permisos <span class="chip chip-blue">${permTotal} total</span></div>
+        ${permissionsHtml}
       </div>
     </div>
 
@@ -1781,6 +1892,8 @@ function handleRequest(req, res) {
       groupedActivities: data.groupedActivities,
       blockingRelations: data.blockingRelations,
       pendingQuestionsCount: data.pendingQuestions.length,
+      permissionStats: data.permissionStats,
+      approvalHistory: data.approvalHistory,
       sprintPlan: data.sprintPlan,
       metrics: data.metrics,
       agentMetrics: data.agentMetrics,
@@ -2164,7 +2277,7 @@ async function sendHeartbeat() {
 
     const text = caption + "\n\n" +
       "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
-      "\u25cf Tareas: <b>" + data.completedTasks + "/" + data.totalTasks + "</b> completadas\n" +
+      "\u25cf Permisos: <b>" + (data.permissionStats ? data.permissionStats.auto + " auto, " + data.permissionStats.approved + " aprobados" + (data.permissionStats.denied > 0 ? ", " + data.permissionStats.denied + " rechazados" : "") + (data.permissionStats.pending > 0 ? ", " + data.permissionStats.pending + " pendientes" : "") : "sin datos") + "</b>\n" +
       "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
       "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
       (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "") +
