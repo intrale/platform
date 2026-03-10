@@ -730,7 +730,7 @@ async function main() {
     if (shouldRunCheck(componentState, "worktrees", now)) {
         checks.worktrees = checkDeadWorktrees();
     } else {
-        checks.worktrees = { ok: true, dead: [] };
+        checks.worktrees = { ok: true, dead: [], cleaned: [], strategies: {} };
     }
 
     // P-07: Actualizar estado por componente
@@ -742,15 +742,15 @@ async function main() {
     saveComponentState(componentState);
 
     const checkDetails = {
-        commander: checks.commander.detail,
-        approvers: checks.approvers.detail,
-        telegram: checks.telegram.detail,
-        settings: checks.settings.details.join(", "),
-        hooks: checks.hooks.missing.length > 0 ? "Faltantes: " + checks.hooks.missing.join(", ") : "Todos presentes",
-        worktrees: checks.worktrees.dead.length > 0
+        commander: checks.commander.detail || "",
+        approvers: checks.approvers.detail || "",
+        telegram: checks.telegram.detail || "",
+        settings: (checks.settings.details || []).join(", "),
+        hooks: (checks.hooks.missing || []).length > 0 ? "Faltantes: " + checks.hooks.missing.join(", ") : "Todos presentes",
+        worktrees: (checks.worktrees.dead || []).length > 0
             ? checks.worktrees.dead.length + " muertos [" + checks.worktrees.dead.join(", ") + "]"
-                + (checks.worktrees.cleaned.length > 0 ? " (" + checks.worktrees.cleaned.length + " limpiados)" : "")
-            : checks.worktrees.cleaned.length > 0
+                + ((checks.worktrees.cleaned || []).length > 0 ? " (" + checks.worktrees.cleaned.length + " limpiados)" : "")
+            : (checks.worktrees.cleaned || []).length > 0
                 ? checks.worktrees.cleaned.length + " limpiados ✅"
                     + (Object.keys(checks.worktrees.strategies || {}).length > 0
                         ? " (" + Object.values(checks.worktrees.strategies).join(", ") + ")"
@@ -798,8 +798,8 @@ async function main() {
     if (!checks.approvers.ok) rawIssues.push({ msg: "🟡 Approvers: " + checks.approvers.detail, check: "approvers" });
     if (!checks.telegram.ok) rawIssues.push({ msg: "🔴 Telegram Bot: " + checks.telegram.detail, check: "telegram" });
     if (!checks.settings.ok) rawIssues.push({ msg: "🔴 Settings: " + checks.settings.details.join(", "), check: "settings" });
-    if (!checks.hooks.ok) rawIssues.push({ msg: "🔴 Hooks faltantes: " + checks.hooks.missing.join(", "), check: "hooks" });
-    if (!checks.worktrees.ok) rawIssues.push({ msg: "🟡 Worktrees muertos: " + checks.worktrees.dead.length, check: "worktrees" });
+    if (!checks.hooks.ok) rawIssues.push({ msg: "🔴 Hooks faltantes: " + (checks.hooks.missing || []).join(", "), check: "hooks" });
+    if (!checks.worktrees.ok) rawIssues.push({ msg: "🟡 Worktrees muertos: " + (checks.worktrees.dead || []).length, check: "worktrees" });
 
     for (const ri of rawIssues) {
         const results = allResults[ri.check] || [];
@@ -886,4 +886,4 @@ async function main() {
     }
 }
 
-main().catch(e => log("Error en health-check: " + e.message));
+main().catch(e => log("Error en health-check: " + e.message + (e.stack ? "\n" + e.stack : "")));
