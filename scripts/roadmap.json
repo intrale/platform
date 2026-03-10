@@ -1,0 +1,595 @@
+{
+  "updated_ts": "2026-03-10T14:00:00Z",
+  "updated_by": "scrum",
+  "horizon_sprints": 9,
+  "sprints": [
+    {
+      "id": "SPR-019",
+      "start": "2026-03-10",
+      "end": "2026-03-14",
+      "tema": "Sprint técnico — roadmap Gantt + validación de consistencia del board",
+      "issues": [
+        {
+          "number": 1382,
+          "title": "roadmap macro con Gantt interactivo",
+          "size": "L",
+          "stream": "E",
+          "depends_on": [],
+          "status": "in_progress"
+        },
+        {
+          "number": 1373,
+          "title": "validación de consistencia y cobertura del board",
+          "size": "M",
+          "stream": "E",
+          "depends_on": [],
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "id": "SPR-020",
+      "start": "2026-03-17",
+      "end": "2026-03-21",
+      "tema": "Infra dashboard + UX contraseñas",
+      "issues": [
+        {
+          "number": 1378,
+          "title": "redistribuir layout para mejorar visualización de flujos",
+          "size": "M",
+          "stream": "E",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1379,
+          "title": "mejorar panel de Permisos — layout full-width, severidad visible",
+          "size": "M",
+          "stream": "E",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1380,
+          "title": "heartbeat Telegram no envía screenshots por sección",
+          "size": "M",
+          "stream": "E",
+          "depends_on": [1378],
+          "status": "planned"
+        },
+        {
+          "number": 1376,
+          "title": "pr-cleanup.js no registrado como hook Stop",
+          "size": "S",
+          "stream": "E",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1375,
+          "title": "agent-monitor.js carece de detección stale/failed",
+          "size": "S",
+          "stream": "E",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1148,
+          "title": "Agregar indicador de fortaleza y coincidencia de contraseñas",
+          "size": "S",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1145,
+          "title": "Separar cambio de contraseña temporal en pantalla dedicada",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-021",
+      "start": "2026-03-24",
+      "end": "2026-03-28",
+      "tema": "App Cliente — Productos, Carrito y Seguridad",
+      "issues": [
+        {
+          "number": 716,
+          "title": "CPROD-001 – Detalle de producto en la app cliente",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 717,
+          "title": "CCART-001 – Visualización del carrito de compras",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [716],
+          "status": "planned"
+        },
+        {
+          "number": 718,
+          "title": "CCART-002 – Confirmación de pedido y resumen de compra",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [717],
+          "status": "planned"
+        },
+        {
+          "number": 720,
+          "title": "CPAY-001 – Selección de medio de pago en app cliente",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [718],
+          "status": "planned"
+        },
+        {
+          "number": 721,
+          "title": "CORD-001 – Listado de pedidos del cliente",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 724,
+          "title": "CNOT-001 – Notificaciones de pedidos y mensajes del negocio",
+          "size": "S",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 726,
+          "title": "CSEC-001 – 2FA para cliente",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-022",
+      "start": "2026-03-31",
+      "end": "2026-04-04",
+      "tema": "App Cliente — Pedidos y QA evidencia en video",
+      "issues": [
+        {
+          "number": 722,
+          "title": "CORD-002 – Detalle y seguimiento básico de pedido",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [721],
+          "status": "planned"
+        },
+        {
+          "number": 723,
+          "title": "CORD-003 – Repetir un pedido anterior",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [722],
+          "status": "planned"
+        },
+        {
+          "number": 1094,
+          "title": "qa(video): App Cliente — onboarding y home",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1095,
+          "title": "qa(video): App Cliente — catálogo, detalle y carrito",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [717, 718],
+          "status": "planned"
+        },
+        {
+          "number": 1096,
+          "title": "qa(video): App Cliente — perfil y direcciones",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1097,
+          "title": "qa(video): App Cliente — pedidos",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [721, 722],
+          "status": "planned"
+        },
+        {
+          "number": 1119,
+          "title": "qa(compliance): Reporte PO+QA v2.0 — Entry y onboarding del cliente",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-023",
+      "start": "2026-04-07",
+      "end": "2026-04-11",
+      "tema": "App Negocio — Onboarding, Productos y Pedidos",
+      "issues": [
+        {
+          "number": 601,
+          "title": "App de negocio como variante de build (APP_TYPE=BUSINESS)",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 602,
+          "title": "Onboarding y login de la app de negocio",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [601],
+          "status": "planned"
+        },
+        {
+          "number": 603,
+          "title": "Home / dashboard de la app de negocio",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [602],
+          "status": "planned"
+        },
+        {
+          "number": 612,
+          "title": "BPROD-002 – Alta y edición de producto",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [602],
+          "status": "planned"
+        },
+        {
+          "number": 613,
+          "title": "BPROD-003 – Publicación de productos hacia la app cliente",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [612],
+          "status": "planned"
+        },
+        {
+          "number": 673,
+          "title": "BORD-001 – Listado de pedidos del negocio con filtros básicos",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [603],
+          "status": "planned"
+        },
+        {
+          "number": 674,
+          "title": "BORD-002 – Detalle de pedido y actualización de estado",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [673],
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-024",
+      "start": "2026-04-14",
+      "end": "2026-04-18",
+      "tema": "App Negocio — Config, Delivery y QA video",
+      "issues": [
+        {
+          "number": 675,
+          "title": "BDEL-001 – Gestión de repartidores del negocio",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [602],
+          "status": "planned"
+        },
+        {
+          "number": 676,
+          "title": "BDEL-002 – Asignación de pedidos a repartidores",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [675],
+          "status": "planned"
+        },
+        {
+          "number": 677,
+          "title": "BCONF-001 – Configuración de datos básicos del negocio",
+          "size": "S",
+          "stream": "C",
+          "depends_on": [602],
+          "status": "planned"
+        },
+        {
+          "number": 678,
+          "title": "BCONF-002 – Configuración de horarios y zonas de entrega",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [677],
+          "status": "planned"
+        },
+        {
+          "number": 1098,
+          "title": "qa(video): App Negocio — onboarding y dashboard",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [603],
+          "status": "planned"
+        },
+        {
+          "number": 1099,
+          "title": "qa(video): App Negocio — registro y revisión",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [602],
+          "status": "planned"
+        },
+        {
+          "number": 1100,
+          "title": "qa(video): App Negocio — categorías y productos",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [612, 613],
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-025",
+      "start": "2026-04-22",
+      "end": "2026-04-25",
+      "tema": "App Negocio QA Compliance + App Delivery inicio",
+      "issues": [
+        {
+          "number": 672,
+          "title": "BPROD-005 – Productos destacados y promociones",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [612],
+          "status": "planned"
+        },
+        {
+          "number": 679,
+          "title": "BCONF-003 – Configuración de medios de pago aceptados",
+          "size": "S",
+          "stream": "C",
+          "depends_on": [677],
+          "status": "planned"
+        },
+        {
+          "number": 680,
+          "title": "BCONF-004 – Gestión de banners y mensajes de marketing",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [677],
+          "status": "planned"
+        },
+        {
+          "number": 1101,
+          "title": "qa(video): App Negocio — unión a negocio y personalización",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [602],
+          "status": "planned"
+        },
+        {
+          "number": 732,
+          "title": "DORD-002 – Listado de pedidos disponibles para tomar",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 734,
+          "title": "DSTA-001 – Flujo básico de estados de entrega",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [732],
+          "status": "planned"
+        },
+        {
+          "number": 735,
+          "title": "DLOC-001 – Placeholder de ubicación y mapa en app delivery",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [],
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-026",
+      "start": "2026-04-28",
+      "end": "2026-05-02",
+      "tema": "App Delivery completa + QA video",
+      "issues": [
+        {
+          "number": 736,
+          "title": "DORD-004 – Confirmación de entrega y resultado",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [734],
+          "status": "planned"
+        },
+        {
+          "number": 737,
+          "title": "DHIST-001 – Historial de pedidos del repartidor",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [732],
+          "status": "planned"
+        },
+        {
+          "number": 740,
+          "title": "DNOT-001 – Notificaciones de nuevos pedidos y estados",
+          "size": "S",
+          "stream": "D",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 741,
+          "title": "DCMM-001 – Contacto con comercio o cliente desde delivery",
+          "size": "S",
+          "stream": "D",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 742,
+          "title": "DSEC-001 – 2FA para delivery",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1102,
+          "title": "qa(video): App Delivery — home y dashboard",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [734, 735],
+          "status": "planned"
+        },
+        {
+          "number": 1103,
+          "title": "qa(video): App Delivery — perfil y detalle de pedido",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [736],
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-027",
+      "start": "2026-05-05",
+      "end": "2026-05-09",
+      "tema": "QA Compliance — cierre de cobertura total",
+      "issues": [
+        {
+          "number": 1093,
+          "title": "qa(video): Registros especializados — delivery, platform admin, saler",
+          "size": "M",
+          "stream": "E",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1118,
+          "title": "qa(compliance): Gestión de categorías (CRUD)",
+          "size": "M",
+          "stream": "C",
+          "depends_on": [612],
+          "status": "planned"
+        },
+        {
+          "number": 1120,
+          "title": "qa(compliance): Catálogo y detalle de producto (cliente)",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [716],
+          "status": "planned"
+        },
+        {
+          "number": 1121,
+          "title": "qa(compliance): Carrito de compras y pedidos (cliente)",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [717, 718, 721],
+          "status": "planned"
+        },
+        {
+          "number": 1122,
+          "title": "qa(compliance): Perfil y direcciones del cliente",
+          "size": "M",
+          "stream": "B",
+          "depends_on": [],
+          "status": "planned"
+        },
+        {
+          "number": 1123,
+          "title": "qa(compliance): Home y dashboard del repartidor",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [734, 735],
+          "status": "planned"
+        },
+        {
+          "number": 1124,
+          "title": "qa(compliance): Detalle de pedido y flujo de estados (delivery)",
+          "size": "M",
+          "stream": "D",
+          "depends_on": [736],
+          "status": "planned"
+        }
+      ]
+    }
+  ],
+  "deferred": [
+    {
+      "number": 597,
+      "title": "Pantalla de carrito y resumen de pedido",
+      "reason": "Cubierto por CCART-001/002 (#717, #718)"
+    },
+    {
+      "number": 607,
+      "title": "[INTAKE] Backlog NEGOCIO — primera carga",
+      "reason": "Issue de intake ya procesado (intake-processed)"
+    },
+    {
+      "number": 610,
+      "title": "BAPP-003 – Dashboard de administración de negocio",
+      "reason": "Cubierto por #603 en SPR-023"
+    },
+    {
+      "number": 615,
+      "title": "[INTAKE] Backlog NEGOCIO — features app negocios",
+      "reason": "Issue de intake ya procesado (intake-processed)"
+    },
+    {
+      "number": 681,
+      "title": "[INTAKE] Backlog CLIENTE",
+      "reason": "Issue de intake ya procesado (intake-processed)"
+    },
+    {
+      "number": 727,
+      "title": "[INTAKE] Backlog DELIVERY",
+      "reason": "Issue de intake ya procesado (intake-processed)"
+    },
+    {
+      "number": 1093,
+      "title": "qa(video): Registros especializados (saler, platform admin)",
+      "reason": "Movido a SPR-027 como primera prioridad QA cierre"
+    },
+    {
+      "number": 1125,
+      "title": "qa(compliance): Perfil y disponibilidad del repartidor",
+      "reason": "Excede horizonte de 9 sprints — próximo ciclo"
+    },
+    {
+      "number": 1126,
+      "title": "qa(compliance): Solicitar y revisar unión a negocio",
+      "reason": "Excede horizonte de 9 sprints — próximo ciclo"
+    },
+    {
+      "number": 1127,
+      "title": "qa(compliance): Personalización del negocio",
+      "reason": "Excede horizonte de 9 sprints — próximo ciclo"
+    }
+  ]
+}

@@ -33,6 +33,7 @@ Sos pragmático, data-driven y facilitador (no bloqueador). Adaptás la metodolo
 | `repair [--auto\|--confirm]` | Reparación | Auto-reparar inconsistencias del sprint (--auto: sin confirmar, --confirm: con confirmación) |
 | `close` | Cierre forzado | Cerrar sprint forzadamente, mover issues pendientes, generar reporte final |
 | `consistencia` | Consistencia | Auditar duplicaciones, historias contenidas y gaps de cobertura del backlog |
+| `roadmap` | Roadmap macro | Generar/actualizar `scripts/roadmap.json` con planificación de 7-10 sprints |
 
 ---
 
@@ -808,6 +809,151 @@ Al crear un nuevo issue que fue revisado contra el backlog, incluir en el body:
 - Verificado contra backlog existente el [fecha]
 - Issues similares revisados: #N (score X%), #M (score Y%)
 - Decisión: crear nueva historia porque [razón]
+
+---
+
+## Modo: Roadmap (`/scrum roadmap`)
+
+Genera y actualiza `scripts/roadmap.json` con la planificación macro de 7-10 sprints futuros,
+distribuyendo todos los issues abiertos del tablero de GitHub respetando dependencias y capacidad.
+
+**Este modo también se ejecuta automáticamente al final de `/scrum sync` y `/scrum audit`.**
+
+### Paso RM1: Obtener todos los issues abiertos
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue list --repo intrale/platform --state open --limit 200 \
+  --json number,title,labels,body,assignees,updatedAt
+```
+
+### Paso RM2: Clasificar por prioridad y stream
+
+**Prioridad:**
+- P0 (Crítico): issues con label `bug` + `blocked`
+- P1 (Alto): issues que otros issues mencionan como dependencia
+- P2 (Normal): `enhancement`, `feature`, `qa-compliance`
+- P3 (Bajo): `docs`, `refactor`, INTAKE issues
+
+**Stream:**
+- A (Backend): `tipo:infra` sin app-label + `area:infra`
+- B (Cliente): `app:client`
+- C (Negocio): `app:business`
+- D (Delivery): `app:delivery`
+- E (Cross-cutting): `area:dashboard`, `area:testing`, `backlog-tecnico`, sin stream label
+
+### Paso RM3: Detectar dependencias
+
+Para cada issue, buscar en el body referencias a otros issues:
+- Patrón explícito: `depende de #NNN`, `depends on #NNN`, `bloqueado por #NNN`, `after #NNN`
+- Patrón suelto: cualquier `#NNN` donde NNN corresponde a un issue abierto existente
+
+Registrar dependencias detectadas en campo `depends_on` de cada issue.
+
+### Paso RM4: Distribuir en sprints (ordenamiento topológico)
+
+Reglas de distribución:
+1. **Dependencias respetadas**: si A depende de B, A nunca puede estar en un sprint anterior a B
+2. **Capacidad por sprint**: máximo 7-10 issues por sprint
+3. **Máximo 3 agentes concurrentes** por sprint (no sobrecargar el pipeline)
+4. **Sprint activo**: respetar `sprint-plan.json` para el sprint actual
+5. **Balance de streams**: distribuir equitativamente entre A/B/C/D/E por sprint
+6. **Issues sin info suficiente**: size `M` por defecto
+
+**Estimación de size (heurística del Planner):**
+- S: bug fix, config change, script pequeño (< 1 día)
+- M: feature nueva, integración simple (2-3 días)
+- L: refactor mayor, feature compleja (1 semana)
+- XL: arquitectura nueva, módulo completo (2+ semanas)
+
+**Issues que van a `deferred`:**
+- Issues de INTAKE ya procesados (label `intake-processed`)
+- Issues que exceden el horizonte de 9 sprints
+- Issues redundantes (cubiertos por otro issue)
+
+### Paso RM5: Leer roadmap.json existente
+
+```bash
+cat /c/Workspaces/Intrale/platform/scripts/roadmap.json 2>/dev/null
+```
+
+Si existe, preservar el `sprint_id` y fechas del sprint activo. Actualizar solo:
+- Issues que se cerraron (estado `done`)
+- Issues nuevos (que no estaban en el roadmap previo)
+- Re-priorización basada en cambios detectados
+
+**Idempotencia**: si el backlog no cambió, el resultado debe ser idéntico al anterior.
+
+### Paso RM6: Escribir roadmap.json
+
+Escribir el archivo `scripts/roadmap.json` con la estructura:
+
+```json
+{
+  "updated_ts": "<ISO timestamp>",
+  "updated_by": "scrum",
+  "horizon_sprints": <número>,
+  "sprints": [
+    {
+      "id": "SPR-NNN",
+      "start": "YYYY-MM-DD",
+      "end": "YYYY-MM-DD",
+      "tema": "<descripción del sprint>",
+      "issues": [
+        {
+          "number": <N>,
+          "title": "<título corto, máx 80 chars>",
+          "size": "S|M|L|XL",
+          "stream": "A|B|C|D|E",
+          "depends_on": [<números de issues>],
+          "status": "planned|in_progress|done|blocked|deferred"
+        }
+      ]
+    }
+  ],
+  "deferred": [
+    {
+      "number": <N>,
+      "title": "<título>",
+      "reason": "<razón del defer>"
+    }
+  ]
+}
+```
+
+**Fechas de sprints**: 5 días hábiles cada uno (Lun-Vie), el primer sprint futuro
+empieza el lunes siguiente a la fecha actual.
+
+### Paso RM7: Reportar resultado
+
+```
+## 🗺️ Roadmap actualizado — [fecha]
+
+### Distribución de issues
+
+| Sprint | Período | Tema | Issues |
+|--------|---------|------|--------|
+| SPR-019 | 2026-03-10→14 | ... | N issues (N active, N done) |
+| SPR-020 | 2026-03-17→21 | ... | N issues |
+...
+
+### Por stream
+
+| Stream | Issues planificados |
+|--------|-------------------|
+| A (Backend) | N |
+| B (Cliente) | N |
+| C (Negocio) | N |
+| D (Delivery) | N |
+| E (Cross-cutting) | N |
+| Deferred | N |
+
+### Dependencias detectadas: N
+
+### Cambios vs versión anterior
+- Nuevos en roadmap: N issues
+- Cerrados (→ done): N issues
+- Re-planificados: N issues
 ```
 
 ---
@@ -844,3 +990,4 @@ node scripts/sprint-report.js scripts/sprint-plan.json 2>&1 || true
 7. **NO crear ni eliminar issues** — solo gestionar su estado en el board
 8. Usar `board-config.json` para IDs estáticos y `methodology.md` para reglas
 9. Siempre responder en español
+10. **Al finalizar `sync` o `audit`**: ejecutar automáticamente el modo `roadmap` para mantener `scripts/roadmap.json` actualizado con los cambios de estado detectados en el board.
