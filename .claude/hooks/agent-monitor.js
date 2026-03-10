@@ -50,11 +50,13 @@ const ALL_PIPELINE_AGENTS = [
     "/planner", "/refinar", "/priorizar", "/historia"
 ];
 
-// Intervalos configurables
+// Intervalos y timeouts configurables
 const POLL_INTERVAL_MS = 30000;      // 30s — verificar agentes
 const GUARDIAN_INTERVAL_MS = 300000; // 5 min — verificar inactividad
 const COOLDOWN_MS = 600000;         // 10 min — entre relanzamientos
 const FAILSAFE_MS = 4 * 60 * 60 * 1000; // 4 horas
+const STALE_MS = 15 * 60 * 1000;    // 15 minutos — agente sin actividad = stale
+const FAILED_TOTAL_MS = 45 * 60 * 1000; // 45 minutos — agente sin actividad = failed
 
 let _pollInterval = null;
 let _guardianInterval = null;
@@ -509,17 +511,20 @@ function stopAgentMonitor() {
  * Obtener estado actual.
  */
 function getAgentStatus() {
-    if (!_plan || !_plan.agentes) return { active: false, agents: [] };
+    if (!_plan || !_plan.agentes) return { active: false, agents: [], failed: 0, terminal: 0 };
 
     const agents = _plan.agentes.map(a => ({
         numero: a.numero,
         issue: a.issue,
         slug: a.slug,
-        done: isAgentDone(a)
+        done: isAgentDone(a),
+        status: a.status || "active"  // Campo status: active, stale, failed, queued
     }));
 
     const elapsed = _startTime ? Math.round((Date.now() - _startTime) / 60000) : 0;
     const doneCount = agents.filter(a => a.done).length;
+    const failedCount = agents.filter(a => a.status === "failed").length;
+    const terminalCount = failedCount; // Agentes failed se cuentan como terminales
 
     return {
         active: _running,
@@ -528,7 +533,9 @@ function getAgentStatus() {
         done: doneCount,
         agents: agents,
         guardian: !!_guardianInterval,
-        watching: !!_pollInterval
+        watching: !!_pollInterval,
+        failed: failedCount,      // Campo failed: número de agentes marcados como failed
+        terminal: terminalCount    // Campo terminal: agentes terminales (failed)
     };
 }
 
@@ -714,10 +721,133 @@ async function _checkAgentsImpl() {
     }
 }
 
+// ─── Detección de timeouts stale/failed (issue #1257) ────────────────────────
+
+/**
+ * Obtiene la última actividad registrada para un agente desde activity-log.jsonl.
+ */
+function getAgentLastActivity(agente) {
+    const activityLog = path.join(REPO_ROOT, ".claude", "hooks", "activity-log.jsonl");
+    if (!fs.existsSync(activityLog)) return null;
+
+    try {
+        const lines = fs.readFileSync(activityLog, "utf8").split("\n").reverse();
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+                const entry = JSON.parse(line);
+                // Buscar entry que corresponda al agente (por issue o número)
+                if (entry.agent_issue === agente.issue || entry.agent_number === agente.numero) {
+                    return entry.timestamp ? new Date(entry.timestamp).getTime() : null;
+                }
+            } catch (e) {}
+        }
+    } catch (e) {
+        log("Error leyendo activity-log.jsonl: " + e.message);
+    }
+    return null;
+}
+
+/**
+ * Verifica si una rama agent/* existe en el repositorio.
+ */
+function agentBranchExists(agente) {
+    try {
+        const output = execSync("git branch -a", {
+            cwd: REPO_ROOT,
+            encoding: "utf8",
+            timeout: 5000,
+            windowsHide: true
+        });
+        const branchName = "agent/" + agente.issue + "-" + agente.slug;
+        return output.includes(branchName);
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Detecta y marca agentes stale/failed basado en inactividad.
+ * Retorna objeto { status, staleCount, failedCount }.
+ */
+async function checkTimeouts(plan) {
+    if (!plan || !Array.isArray(plan.agentes)) {
+        return { status: null, staleCount: 0, failedCount: 0 };
+    }
+
+    const now = Date.now();
+    let staleCount = 0;
+    let failedCount = 0;
+    const changedAgents = [];
+
+    for (const agente of plan.agentes) {
+        // Skip agentes que ya son failed
+        if (agente.status === "failed") {
+            failedCount++;
+            continue;
+        }
+
+        const lastActivity = getAgentLastActivity(agente);
+        const inactiveMs = lastActivity ? (now - lastActivity) : 0;
+
+        // Determinar nuevo status
+        const state = { status: agente.status || "active" };
+        if (inactiveMs > FAILED_TOTAL_MS) {
+            state.status = "failed";
+            failedCount++;
+            changedAgents.push({ agente, oldStatus: agente.status, newStatus: state.status, inactiveMin: Math.round(inactiveMs / 60000) });
+        } else if (inactiveMs > STALE_MS) {
+            state.status = "stale";
+            staleCount++;
+            changedAgents.push({ agente, oldStatus: agente.status, newStatus: state.status, inactiveMin: Math.round(inactiveMs / 60000) });
+        }
+
+        // Persistir status en el agente
+        agente.status = state.status;
+    }
+
+    // Persistir cambios en sprint-plan.json
+    if (changedAgents.length > 0) {
+        updateSprintPlanStatus(plan);
+
+        // Alertar sobre cambios de status
+        for (const change of changedAgents) {
+            const msg = (state => {
+                if (state.status === "failed") {
+                    return "🔴 <b>Agente #" + change.agente.issue + " marcado como FAILED</b>\nInactivo por " + change.inactiveMin + " min";
+                }
+                return "🟡 <b>Agente #" + change.agente.issue + " marcado como STALE</b>\nInactivo por " + change.inactiveMin + " min";
+            })({ status: change.newStatus });
+            await notify(msg);
+            log("Status change: agente #" + change.agente.issue + " " + change.oldStatus + " → " + change.newStatus);
+        }
+    }
+
+    return { status: "checked", staleCount, failedCount };
+}
+
+/**
+ * Persiste los cambios de status de agentes en sprint-plan.json.
+ */
+function updateSprintPlanStatus(plan) {
+    if (!plan || !PLAN_FILE) return;
+
+    try {
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        log("Sprint plan status actualizado: " + plan.agentes.map(a => a.numero + ":" + a.status).join(" "));
+    } catch (e) {
+        log("Error actualizando sprint-plan.json: " + e.message);
+    }
+}
+
+// ─── API pública (actualizada) ────────────────────────────────────────────────
+
 module.exports = {
     startAgentMonitor, stopAgentMonitor, getAgentStatus,
     recordSprintParticipation, alertInactiveAgents,
     ALL_PIPELINE_AGENTS,
     promoteFromQueue, countActiveAgents, moveToCompleted, launchAgents,
-    MAX_CONCURRENT_AGENTS, _checkAgentsImpl
+    MAX_CONCURRENT_AGENTS, _checkAgentsImpl,
+    checkTimeouts, updateSprintPlanStatus, agentBranchExists,
+    STALE_MS, FAILED_TOTAL_MS
 };
