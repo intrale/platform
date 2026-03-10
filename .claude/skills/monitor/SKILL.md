@@ -60,9 +60,12 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │  📌 Agente 1 (#1225) agent/1225-monitor… 80% 12 acc               │
 │ Prompts ad-hoc                                                     │
 │  ⚡ a1b2c3d4  Edit: SKILL.md  5 acc · 3min                        │
-├─ FLUJO ───────────────────────────────────────────────────────────┤
-│ PO --> Planner --> Branch --> BackendDev --> Tester --> Delivery    │
-│ ok      ok         ok          act           pend       pend      │
+├─ FLUJO ─────────────────────────────────────────────────────────┤
+│ Sesión #a1b2c3d4 (agent/1303-monitor-grafos-arbol) ●             │
+│ ├── /ops        ✓  2m                                            │
+│ ├── /po         ✓  1m                                            │
+│ ├── [código]    ►  15m  Edit×12 Write×3                          │
+│ └── /tester     ☐  —                                             │
 ├─ MÉTRICAS ────────────────────────────────────────────────────────┤
 │ Sesión: 234 acciones · 1h 23m · ~$0.70                            │
 │ Semanal: ========-- 78% (est. $39.00 / $50.00)                    │
@@ -166,19 +169,63 @@ Este panel unifica lo que antes eran "Sprint" y "Progreso del Sprint" en tres su
 
 **Reglas del panel FLUJO:**
 
-Muestra la secuencia de agentes/skills invocados durante la sesion actual como un flujo ASCII:
+Muestra la jerarquía de skills/agentes invocados por sesión como un árbol ASCII. Cada sesión activa es un árbol independiente:
 
 ```
-│ PO --> Planner --> Branch --> BackendDev --> Tester --> Delivery    │
-│ ok      ok         ok          act           pend       pend      │
+├─ FLUJO ─────────────────────────────────────────────────────────┤
+│ Sesión #a1b2c3d4 (agent/1303-monitor-grafos-arbol) ●             │
+│ ├── /ops        ✓  2m                                            │
+│ ├── /po         ✓  1m                                            │
+│ ├── /guru       ✓  3m                                            │
+│ ├── [código]    ►  15m  Edit×12 Write×3                          │
+│ ├── /tester     ☐  —                                             │
+│ └── /delivery   ☐  —                                             │
+│                                                                   │
+│ Sesión #e5f6g7h8 (agent/1269-feature-x) ○                        │
+│ ├── /ops        ✓  1m                                            │
+│ └── /delivery   ✓  2m                                            │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-- Fuente: `agent_transitions[]` del JSON de sesion, o `skills_invoked[]` como fallback
-- Cada nodo es el nombre del agente (abreviado si es largo)
-- Debajo de cada nodo: estado (`ok` = completado, `act` = activo, `pend` = pendiente, `err` = error)
-- Si no hay transiciones: "Sin flujo registrado"
-- Si hay mas de 6 agentes, mostrar en 2 lineas con `...` de continuacion
-- El flujo se construye recorriendo TODAS las sesiones visibles, no solo la actual
+**Fuentes de datos:**
+- `skills_invoked[]` del JSON de sesión: lista de skills en orden cronológico de invocación
+- `agent_transitions[]` del JSON de sesión: `[{from, to, ts}]` para calcular duración de cada skill
+- `tool_counts{}` del JSON de sesión: para detectar fase de implementación (Edit, Write, Bash)
+
+**Construcción del árbol por sesión:**
+
+1. **Encabezado**: `Sesión #XXXXXXXX (branch) [icono_liveness]`
+   - Truncar branch con `…` si excede 40 chars
+
+2. **Nodos de skills invocados**: para cada entrada en `skills_invoked[]`, en orden:
+   - Estado del nodo:
+     - `✓` — completado: hay un skill posterior en la lista, o la sesión está `done`
+     - `►` — activo: es el último skill y la sesión está `active` y < 5min de inactividad
+     - `✗` — fallido: último skill si la sesión terminó abruptamente (status=done sin /delivery ejecutado)
+   - Duración: usar `agent_transitions[]` — el skill que empieza en `ts[i]` dura hasta `ts[i+1]`
+     - Para el último skill activo: `last_activity_ts - ts[último]`; si no hay timestamps: `—`
+     - Formatear como: `Xm` si < 60m, `Xh Ym` si ≥ 60m
+
+3. **Nodo [código]** — insertar entre fase pre y post implementación:
+   - Condición: hay skills pre-impl en `skills_invoked[]` (/ops, /po, /guru) Y skills post-impl (/tester, /builder, /security, /review, /delivery) Y `tool_counts.Edit > 0 || tool_counts.Write > 0`
+   - Posición: después del último skill pre-implementación, antes del primer skill post-implementación
+   - Estado: `✓` si ya hay un post-impl ejecutado; `►` si es la fase actual (no hay post-impl en `skills_invoked[]`)
+   - Duración: diff entre último ts pre-impl y primer ts post-impl (o `last_activity_ts` si activo)
+   - Detalle: `Edit×N Write×M` usando totales de `tool_counts` como estimado (omitir si ambos son 0)
+
+4. **Nodos pendientes** — skills del pipeline estándar que aún no se ejecutaron:
+   - Pipeline estándar: /ops → /po → /guru → [código] → /tester → /builder → /security → /review → /delivery
+   - Mostrar con `☐` y `—` los que no están en `skills_invoked[]`
+   - Solo para sesiones activas que no hayan completado /delivery
+
+5. **Caracteres de árbol**: `├──` para todos los nodos excepto el último que usa `└──`
+
+**Reglas de presentación:**
+- Mostrar máximo 3 sesiones: activas primero (ordenadas por `last_activity_ts` desc), luego done < 15min
+- Si hay más de 3 sesiones activas: mostrar las 3 más recientes + `... (+N más)` al final
+- Si una sesión tiene más de 10 nodos en su árbol: mostrar los primeros 9 + `└── ... (+N nodos)` al final
+- Si NINGUNA sesión tiene `skills_invoked[]` ni `agent_transitions[]`: mostrar `│ Sin flujo registrado`
+- Ancho máximo: ~78 columnas (box-drawing incluido)
 
 **Reglas del panel MÉTRICAS:**
 
@@ -380,7 +427,7 @@ Muestra:
 │ Paneles:                                            │
 │   SESIONES     Agentes y estado de liveness         │
 │   EJECUCIÓN    Sprint + historias + ad-hoc          │
-│   FLUJO        Grafo ASCII de agentes invocados     │
+│   FLUJO        Árbol de skills por sesión (✓/►/☐/✗) │
 │   MÉTRICAS     Acciones, costo, presupuesto         │
 │   MÉT.AGENTES  Calls, archivos, tareas por sesión  │
 │   COBERTURA    % de agentes activos por sprint      │
