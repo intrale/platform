@@ -1318,10 +1318,13 @@ function renderHTML(data, theme) {
       <div class="perm-status ${statusClass}">${statusIcon}</div>
       <div class="perm-method">${statusLabel}</div>
       <div class="perm-detail">
-        <span class="perm-tool">${escHtml(toolName)}</span>
-        <span class="perm-severity" style="color:${sevColor}">${escHtml(severity)}</span>
-        <span class="perm-msg">${msgShort}</span>
-        ${agentName || issueNum ? '<div class="perm-origin">' + (agentName ? escHtml(agentName) : '') + (issueNum ? ' <span class="perm-issue">#' + escHtml(issueNum) + '</span>' : '') + '</div>' : ''}
+        <div class="perm-row1">
+          <span class="perm-tool">${escHtml(toolName)}</span>
+          <span class="perm-severity" style="color:${sevColor}">${escHtml(severity)}</span>
+          ${issueNum ? '<span class="perm-issue">#' + escHtml(issueNum) + '</span>' : ''}
+          ${agentName ? '<span style="color:var(--text-muted);font-size:9px">' + escHtml(agentName) + '</span>' : ''}
+        </div>
+        <div class="perm-msg">${msgShort}</div>
       </div>
       <div class="perm-age">${age}</div>
     </div>`;
@@ -1591,22 +1594,23 @@ function renderHTML(data, theme) {
     .perm-stat { display: flex; flex-direction: column; align-items: center; flex: 1; }
     .perm-stat-val { font-size: 18px; font-weight: 800; }
     .perm-stat-lbl { font-size: 9px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-    .perm-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .perm-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
     .perm-item:last-child { border-bottom: none; }
-    .perm-status { width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; }
+    .perm-status { width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; margin-top: 2px; }
     .perm-auto { background: var(--green-dim); color: var(--green); }
     .perm-telegram { background: var(--blue-dim); color: var(--blue); }
     .perm-console { background: var(--purple-dim); color: var(--purple); }
     .perm-denied { background: var(--red-dim); color: var(--red); }
     .perm-pending { background: var(--yellow-dim); color: var(--yellow); animation: pulse 2s infinite; }
-    .perm-method { font-size: 9px; font-weight: 700; color: var(--text-muted); width: 32px; flex-shrink: 0; text-align: center; }
-    .perm-detail { flex: 1; min-width: 0; overflow: hidden; }
-    .perm-tool { font-size: 11px; font-weight: 600; color: var(--text); margin-right: 6px; }
-    .perm-severity { font-size: 9px; font-weight: 700; margin-right: 4px; }
-    .perm-msg { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .perm-origin { font-size: 9px; color: var(--text-muted); margin-top: 2px; }
+    .perm-method { font-size: 9px; font-weight: 700; color: var(--text-muted); width: 32px; flex-shrink: 0; text-align: center; margin-top: 3px; }
+    .perm-detail { flex: 1; min-width: 0; }
+    .perm-row1 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .perm-tool { font-size: 11px; font-weight: 600; color: var(--text); }
+    .perm-severity { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: var(--surface2); white-space: nowrap; }
+    .perm-msg { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: block; margin-top: 2px; }
+    .perm-origin { font-size: 9px; color: var(--text-muted); margin-top: 2px; display: flex; align-items: center; gap: 4px; }
     .perm-issue { color: var(--blue); font-weight: 600; }
-    .perm-age { font-size: 10px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
+    .perm-age { font-size: 10px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; margin-top: 2px; }
     .perm-patterns { font-size: 10px; color: var(--text-dim); margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
     .tasks-progress-bar { height: 4px; background: var(--surface3); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
     .tasks-progress-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
