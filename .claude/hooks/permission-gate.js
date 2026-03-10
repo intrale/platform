@@ -428,28 +428,22 @@ async function processInput() {
     const severity = classifySeverity(toolName, toolInput, REPO_ROOT);
     log("SEVERITY: " + toolName + " → " + severity);
 
-    // AUTO_ALLOW: acción reversible en directorio seguro → aprobar sin Telegram
-    if (severity === Severity.AUTO_ALLOW) {
-        log("AUTO_ALLOW: " + toolName + " auto-aprobado (directorio seguro / tool interno)");
-        outputAllow("auto: " + toolName + " en directorio seguro");
+    // AUTO_ALLOW, LOW, MEDIUM: auto-aprobar inmediatamente sin Telegram
+    // HIGH sigue requiriendo aprobación manual vía Telegram
+    // git push a main sigue bloqueado por branch-guard.js independientemente
+    if (severity === Severity.AUTO_ALLOW || severity === Severity.LOW || severity === Severity.MEDIUM) {
+        const autoReason = severity === Severity.AUTO_ALLOW ? "AUTO_ALLOW (safe dir)"
+            : severity === Severity.LOW ? "LOW severity"
+            : "MEDIUM severity";
+        log("Auto-aprobando sin Telegram: " + toolName + " (" + autoReason + ")");
+        outputAllow("auto: " + toolName + " (" + autoReason + ")");
         return;
     }
 
-    // Ajustar retry intervals según severidad
-    const severityTimeouts = loadSeverityTimeouts();
-    let effectiveRetryIntervals;
-    if (severity === Severity.LOW) {
-        // LOW: un solo intento con timeout reducido, sin retry
-        effectiveRetryIntervals = [severityTimeouts.low * 60 * 1000];
-    } else if (severity === Severity.HIGH) {
-        // HIGH: usar los retry intervals configurados (flujo completo)
-        effectiveRetryIntervals = RETRY_INTERVALS;
-    } else {
-        // MEDIUM: flujo estándar
-        effectiveRetryIntervals = RETRY_INTERVALS;
-    }
+    // A partir de aquí solo llega HIGH → usar retry intervals completos
+    const effectiveRetryIntervals = RETRY_INTERVALS;
 
-    // ─── Necesita permiso → Enviar a Telegram ────────────────────────────────
+    // ─── HIGH: necesita permiso → Enviar a Telegram ──────────────────────────
     const action = formatAction(toolName, toolInput);
     const sessionId = data.session_id || "";
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
