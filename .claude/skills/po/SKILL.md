@@ -46,6 +46,7 @@ Al iniciar, parsear el primer argumento:
 | `validar <issue>` | Validar implementación | Sección "Modo: Validar" |
 | `acceptance <issue>` | Criterios de aceptación | Sección "Modo: Acceptance" |
 | `revisar-ux <pantalla>` | Revisar UX | Sección "Modo: Revisar UX" |
+| `dependencias <N,M,...>` | Análisis de dependencias | Sección "Modo: Dependencias" |
 | sin argumento / `gaps` | Gap analysis | Sección "Modo: Gaps" |
 
 ---
@@ -368,6 +369,147 @@ Para cada aspecto, evaluar en escala:
 ### Recomendaciones
 [Lista priorizada de mejoras]
 ```
+
+---
+
+## Modo: Dependencias (`/po dependencias <N,M,...>`)
+
+Analiza las dependencias entre un conjunto de historias candidatas para un sprint. Produce un grafo de dependencias y un orden de priorización que respeta las dependencias técnicas y funcionales.
+
+Invocar como: `/po dependencias 1301,1302,1303,1304`
+
+### Paso DEP1: Obtener datos de los issues
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+```
+
+Para cada issue en la lista, leer su body y labels:
+
+```bash
+gh issue view <N> --repo intrale/platform --json number,title,body,labels,state
+```
+
+Ejecutar en paralelo para todos los issues de la lista.
+
+### Paso DEP2: Detectar dependencias explícitas
+
+En el body de cada issue buscar menciones a otros issues usando estas heurísticas (en orden de prioridad):
+
+1. **Referencia directa en frases clave** — patrón: `(depends on|blocked by|requiere|after|necesita|depende de)\s+#(\d+)`
+2. **Menciones sueltas** — cualquier `#NNN` en el body donde NNN corresponde a otro issue de la lista candidata
+3. **Labels de bloqueo** — si el issue tiene label `blocked-by` o `depends-on`, leer su descripción
+
+Para cada dependencia detectada, registrar:
+- `from`: número del issue que depende
+- `to`: número del issue del que depende
+- `type`: `explicit` (frase clave) o `mention` (mención suelta)
+- `context`: fragmento del texto donde se detectó
+
+### Paso DEP3: Detectar dependencias implícitas
+
+Buscar dependencias implícitas entre los issues candidatos:
+
+**Por área (labels):**
+- Si dos issues tienen el mismo label `area:*` y uno crea algo que el otro consume (leer body para detectar verbos como "crear", "agregar", "implementar" vs "consumir", "usar", "llamar", "integrar")
+
+**Por archivos mencionados:**
+- Extraer nombres de archivos y módulos mencionados en cada body (patrones: `backend/`, `users/`, rutas tipo `src/...`, nombres de archivos `.kt`, `.js`)
+- Si dos issues mencionan los mismos archivos/módulos, hay posible dependencia
+
+**Por flujo funcional:**
+- Si un issue crea un endpoint/función y otro lo consume (patrones: uno tiene "endpoint", "función", "crear" y el otro tiene "llamar", "consumir", "integrar")
+
+Marcar estas dependencias como `type: implicit` con nivel de confianza: `high` / `medium`.
+
+### Paso DEP4: Verificar estado de dependencias externas
+
+Para cada dependencia detectada donde el issue del que se depende NO está en la lista candidata:
+
+```bash
+gh issue view <dep_number> --repo intrale/platform --json number,title,state
+```
+
+Clasificar cada dependencia externa:
+- `closed` → dependencia resuelta, no es riesgo
+- `open` → **RIESGO**: el issue del que se depende no está en el sprint ni completado
+
+### Paso DEP5: Detectar inversiones de dependencias
+
+Comparar el orden de la lista original con el grafo de dependencias:
+
+Una **inversión** ocurre cuando el issue A depende de B, pero en el orden propuesto A aparece antes que B.
+
+Para cada inversión detectada:
+- Marcar con alerta ⚠️
+- Proponer el intercambio de posiciones
+
+### Paso DEP6: Generar orden recomendado (orden topológico)
+
+Aplicar ordenamiento topológico sobre el grafo:
+1. Primero los issues sin dependencias entrantes (hojas del grafo invertido)
+2. Luego los que solo dependen de issues ya incluidos
+3. Al final los que tienen más dependencias
+
+Si hay ciclos de dependencias, reportar el ciclo como ⛔ y sugerir romperlo dividiendo el issue o revisando el scope.
+
+### Paso DEP7: Reporte de dependencias
+
+```
+## Análisis de Dependencias — Sprint candidato
+
+### Issues analizados
+| # | Título | Labels | Dependencias |
+|---|--------|--------|--------------|
+| #N | [título] | area:X | #M (explícita) |
+| #M | [título] | area:X | ninguna |
+
+### Grafo de dependencias
+
+```
+#N → depende de → #M (explícita: "blocked by #M")
+#P → depende de → #Q (implícita: misma área area:infra, alta confianza)
+#R → independiente
+```
+
+### Dependencias externas (fuera del sprint)
+
+| Issue | Depende de | Estado externo | Riesgo |
+|-------|-----------|----------------|--------|
+| #N | #EXT (fuera del sprint) | OPEN | ⚠️ Alto — bloquea #N |
+| #P | #EXT2 | CLOSED | ✅ Resuelto |
+
+### Inversiones detectadas
+
+⚠️ **#N antes que #M**: #N depende de #M pero está priorizado primero.
+   → Recomendación: mover #M al puesto antes que #N.
+
+### Orden recomendado
+
+1. #M (sin dependencias)
+2. #R (sin dependencias — puede ejecutarse en paralelo con #M)
+3. #N (depende de #M)
+4. #P (depende de #M y #R)
+
+### Riesgos identificados
+
+⚠️ **#N depende de #EXT (OPEN)**: El issue #EXT no está en el sprint y sigue abierto.
+   Opciones: (a) incluir #EXT en el sprint, (b) mover #N al siguiente sprint, (c) implementar #N con stub y aceptar deuda técnica.
+
+### Veredicto
+
+✅ Sin inversiones — orden propuesto es válido.
+ó
+⚠️ N inversiones detectadas — ver recomendaciones de reordenamiento arriba.
+ó
+⛔ Ciclo detectado: #A → #B → #A — revisar scope de los issues.
+```
+
+**Reglas del análisis:**
+- Solo reportar dependencias con evidencia concreta (no especular)
+- Las dependencias explícitas tienen prioridad sobre las implícitas
+- Si la confianza de una dependencia implícita es `medium` o baja, reportarla como "posible dependencia" en vez de dependencia confirmada
+- El PO NO bloquea la planificación — solo advierte y recomienda, la decisión final es del usuario
 
 ---
 
