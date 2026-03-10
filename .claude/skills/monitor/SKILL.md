@@ -53,7 +53,7 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 │   └─ ⚙ Compilando APK cliente con testTagsAsResourceId...         │
 │ 67eb3124 │ Claude 🤖      │  3 │ 5m   │ Bash: git diff…  │ ○    │
 ├─ EJECUCIÓN ───────────────────────────────────────────────────────┤
-│ Sprint (2026-03-06)        [████████░░ 75%]                       │
+│ Sprint SPR-013 ▸ ACTIVO   [████████░░ 75%]                        │
 │  #1  #821  notificaciones     S  ●                                 │
 │  #2  #845  refactor-login     M  ◐                                 │
 │ Historias en curso                                                 │
@@ -117,7 +117,10 @@ Genera el dashboard con este formato (ajustando ancho a ~70 columnas):
 Este panel unifica lo que antes eran "Sprint" y "Progreso del Sprint" en tres sub-vistas:
 
 1. **Sprint activo** (si `scripts/sprint-plan.json` existe):
-   - Titulo: `Sprint (fecha)` con barra de progreso global
+   - Titulo: `Sprint SPR-NNN ▸ ACTIVO` o `Sprint SPR-NNN ▸ FINALIZADO` (usando campos `sprint_id` y `estado`)
+   - Si `sprint_id` no existe en el JSON, fallback a mostrar la fecha
+   - Si `estado` es `"finalizado"`, mostrar indicador `FINALIZADO` prominente (no solo 100%)
+   - Si `estado` es `"activo"` o no está definido, mostrar `ACTIVO`
    - Cada fila: `#numero  #issue  slug  size  estado_icono`
    - El estado se determina cruzando issues del plan con sesiones activas (● activo, ◐ idle, ○ sin sesion, ✓ completado)
    - **Porcentaje global del sprint** (OBLIGATORIO — calcular siempre asi):
@@ -129,8 +132,9 @@ Este panel unifica lo que antes eran "Sprint" y "Progreso del Sprint" en tres su
      porcentaje  = total > 0 ? Math.round(completadas / total * 100) : 0
      ```
    - Retrocompatibilidad: si `_completed` no existe en el JSON, asumir `[]` (0 completadas)
-   - Formato de barra: `Sprint SPR-XXX: N/M (XX%) ████████░░ [N OK, 0 FAIL, M en progreso]`
+   - Formato de barra: `Sprint SPR-XXX ▸ ACTIVO: N/M (XX%) ████████░░` o `Sprint SPR-XXX ▸ FINALIZADO: M/M (100%) ✓`
    - Las historias en `_completed` cuentan como procesadas; mostrar `✓` en su fila
+   - Cuando el sprint está finalizado: barra al 100% + ✓ al final
 
 2. **Historias en curso** (issues en sprint con sesion activa, o sessions cuya branch tiene patron `agent/<N>-*`/`feature/<N>-*` fuera del sprint):
    - Mostrar como: `📌 agente  branch  progreso%  acciones`
