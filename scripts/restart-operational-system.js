@@ -24,6 +24,8 @@ const RESTART_LOG_FILE = path.join(HOOKS_DIR, "restart-log.jsonl");
 // Algunos archivos requieren estructura específica (no solo {})
 const STATE_FILE_DEFAULTS = {
     "pending-questions.json": '{"questions":[]}\n',
+    "health-check-history.json": '{"problems":[]}\n',
+    "telegram-messages.json": '{"messages":[]}\n',
 };
 const STATE_FILES_TO_RESET = [
     "activity-logger-last.json",

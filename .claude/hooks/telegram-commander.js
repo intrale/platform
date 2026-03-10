@@ -3357,16 +3357,33 @@ async function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-// Capturar errores no manejados para limpiar lockfile siempre
+// Capturar errores no manejados — tolerar errores aislados, crash solo si son persistentes
+let _uncaughtErrorCount = 0;
+const UNCAUGHT_THRESHOLD = 3;
+const UNCAUGHT_RESET_MS = 60000;
+let _uncaughtResetTimer = null;
+
 process.on("uncaughtException", (e) => {
-    log("uncaughtException: " + e.message);
-    releaseLock();
-    process.exit(1);
+    _uncaughtErrorCount++;
+    log("uncaughtException (" + _uncaughtErrorCount + "/" + UNCAUGHT_THRESHOLD + "): " + e.message + (e.stack ? "\n" + e.stack : ""));
+    if (_uncaughtErrorCount >= UNCAUGHT_THRESHOLD) {
+        log("Demasiados errores no manejados — cerrando commander");
+        releaseLock();
+        process.exit(1);
+    }
+    clearTimeout(_uncaughtResetTimer);
+    _uncaughtResetTimer = setTimeout(() => { _uncaughtErrorCount = 0; }, UNCAUGHT_RESET_MS);
 });
 process.on("unhandledRejection", (reason) => {
-    log("unhandledRejection: " + String(reason));
-    releaseLock();
-    process.exit(1);
+    _uncaughtErrorCount++;
+    log("unhandledRejection (" + _uncaughtErrorCount + "/" + UNCAUGHT_THRESHOLD + "): " + String(reason));
+    if (_uncaughtErrorCount >= UNCAUGHT_THRESHOLD) {
+        log("Demasiados rejections no manejadas — cerrando commander");
+        releaseLock();
+        process.exit(1);
+    }
+    clearTimeout(_uncaughtResetTimer);
+    _uncaughtResetTimer = setTimeout(() => { _uncaughtErrorCount = 0; }, UNCAUGHT_RESET_MS);
 });
 
 // ─── Main ────────────────────────────────────────────────────────────────────
