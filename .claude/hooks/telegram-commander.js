@@ -65,6 +65,19 @@ try {
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
 
+// ─── API Keys Guardian: auto-restore desde backup al arrancar ────────────────
+try {
+    const guardian = require("./api-keys-guardian");
+    const result = guardian.verify();
+    if (result.restored && result.restored.length > 0) {
+        // Re-leer config después del auto-restore
+        _tgCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+        console.log(`[guardian] Auto-restauradas keys: ${result.restored.join(", ")}`);
+    }
+} catch (e) {
+    console.warn("[guardian] No se pudo verificar API keys:", e.message);
+}
+
 // ─── Multimedia API keys (opcionales) ────────────────────────────────────────
 const ANTHROPIC_API_KEY = _tgCfg.anthropic_api_key || process.env.ANTHROPIC_API_KEY || null;
 const OPENAI_API_KEY = _tgCfg.openai_api_key || process.env.OPENAI_API_KEY || null;
@@ -3437,6 +3450,14 @@ async function main() {
 
     if (skills.length === 0) {
         log("ADVERTENCIA: no se encontraron skills en " + SKILLS_DIR);
+    }
+
+    // Backup de API keys al arrancar (si están presentes)
+    try {
+        const guardian = require("./api-keys-guardian");
+        guardian.backup();
+    } catch (e) {
+        log("[guardian] No se pudo hacer backup de keys: " + e.message);
     }
 
     // Notificar arranque
