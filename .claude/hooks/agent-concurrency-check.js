@@ -17,7 +17,39 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
+// Bug fix (#1266): Resolver el repo principal desde worktrees.
+// Cuando el hook se ejecuta en un worktree (agent/*), CLAUDE_PROJECT_DIR
+// puede apuntar al worktree vacío. Usamos git worktree list para encontrar
+// el repo principal (siempre el primer item de la lista).
+function resolveMainRepoRoot() {
+    const envRoot = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
+    try {
+        const { execSync } = require("child_process");
+        const output = execSync("git worktree list", {
+            encoding: "utf8",
+            cwd: envRoot,
+            timeout: 5000,
+            windowsHide: true
+        });
+        const firstLine = output.split("\n")[0] || "";
+        const match = firstLine.match(/^(.+?)\s+[0-9a-f]{5,}/);
+        if (match) {
+            const mainPath = match[1].trim();
+            // Convertir path POSIX a Windows si aplica
+            return mainPath.replace(/^\/([a-z])\//, "$1:\\").replace(/\//g, "\\");
+        }
+    } catch (e) {
+        // Si git falla (ej: directorio vacío sin .git), usar el fallback
+    }
+    // Fallback: si el repo apunta al worktree vacío, usar el repo por defecto
+    const planFile = path.join(envRoot, "scripts", "sprint-plan.json");
+    if (!fs.existsSync(planFile)) {
+        return "C:\\Workspaces\\Intrale\\platform";
+    }
+    return envRoot;
+}
+
+const REPO_ROOT = resolveMainRepoRoot();
 const HOOKS_DIR = path.join(REPO_ROOT, ".claude", "hooks");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
