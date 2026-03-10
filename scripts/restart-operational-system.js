@@ -21,6 +21,10 @@ const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
 const RESTART_LOG_FILE = path.join(HOOKS_DIR, "restart-log.jsonl");
 
 // State files a resetear (a JSON vacío {})
+// Algunos archivos requieren estructura específica (no solo {})
+const STATE_FILE_DEFAULTS = {
+    "pending-questions.json": '{"questions":[]}\n',
+};
 const STATE_FILES_TO_RESET = [
     "activity-logger-last.json",
     "health-check-state.json",
@@ -129,7 +133,8 @@ function resetStateFiles() {
                 const stat = fs.statSync(filePath);
                 previousSize = stat.size;
             }
-            fs.writeFileSync(filePath, "{}\n", "utf8");
+            const defaultContent = STATE_FILE_DEFAULTS[fileName] || "{}\n";
+            fs.writeFileSync(filePath, defaultContent, "utf8");
             results.push({ file: fileName, status: "reset", existed, previousSize });
         } catch (e) {
             results.push({ file: fileName, status: "error", error: e.message });

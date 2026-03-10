@@ -33,7 +33,9 @@ function loadQuestions() {
         try {
             const raw = fs.readFileSync(PENDING_FILE, "utf8");
             if (!raw || !raw.trim()) return { questions: [] };
-            return JSON.parse(raw);
+            const parsed = JSON.parse(raw);
+            if (!parsed || !Array.isArray(parsed.questions)) return { questions: [] };
+            return parsed;
         } catch (e) {
             // Si es JSON corrupto (race condition con escritura concurrente), reintentar
             if (e instanceof SyntaxError && attempt < LOAD_RETRY_COUNT - 1) {
