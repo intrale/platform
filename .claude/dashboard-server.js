@@ -644,6 +644,200 @@ function mockEjecucionData() {
   };
 }
 
+// Helper: format a duration in ms to "Xm" or "Xh Ym"
+function formatMinutes(ms) {
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return mins + 'm';
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem > 0 ? hrs + 'h ' + rem + 'm' : hrs + 'h';
+}
+
+// --- BUILD FLOW TREE (replaces circular SVG) ---
+function buildFlowTree(sessions) {
+  if (!Array.isArray(sessions) || sessions.length === 0) {
+    return '<div style="font-family:monospace;padding:8px;color:var(--text-muted);font-size:12px;">Sin flujo registrado</div>';
+  }
+
+  // Sort by last_activity_ts descending, take max 3
+  const sortedSessions = sessions
+    .filter(s => s && (Array.isArray(s.skills_invoked) || Array.isArray(s.agent_transitions)))
+    .sort((a, b) => new Date(b.last_activity_ts || 0).getTime() - new Date(a.last_activity_ts || 0).getTime())
+    .slice(0, 3);
+
+  if (sortedSessions.length === 0) {
+    return '<div style="font-family:monospace;padding:8px;color:var(--text-muted);font-size:12px;">Sin flujo registrado</div>';
+  }
+
+  let treeHtml = '<div style="font-family:monospace;font-size:11px;line-height:1.4;color:var(--text-dim);white-space:pre-wrap;word-break:break-word;padding:8px;">';
+
+  for (let sIdx = 0; sIdx < sortedSessions.length; sIdx++) {
+    const session = sortedSessions[sIdx];
+    const skillsInvoked = Array.isArray(session.skills_invoked) ? session.skills_invoked : [];
+    const agentTransitions = Array.isArray(session.agent_transitions) ? session.agent_transitions : [];
+    const toolCounts = session.tool_counts || {};
+    const lastActivityTs = new Date(session.last_activity_ts || session.started_ts).getTime();
+
+    // Session liveness icon
+    const livenessMs = Date.now() - lastActivityTs;
+    let livenessIcon = '●';
+    if (session.status === 'done') livenessIcon = '✗';
+    else if (livenessMs > 15 * 60 * 1000) livenessIcon = '○';
+    else if (livenessMs > 5 * 60 * 1000) livenessIcon = '◐';
+
+    // Truncate branch name
+    const rawBranch = session.branch || '';
+    const branchDisplay = rawBranch.length > 40 ? rawBranch.substring(0, 40) + '…' : rawBranch;
+    const sessionIdShort = (session.id || '').substring(0, 8).toUpperCase();
+
+    treeHtml += `Sesión #${escHtml(sessionIdShort)} (${escHtml(branchDisplay)}) ${livenessIcon}&#10;`;
+
+    // Build tree nodes
+
+    // Track which skills are pre-impl, post-impl
+    const preImplSkills = ['/ops', '/po', '/guru'];
+    const postImplSkills = ['/tester', '/builder', '/security', '/review', '/delivery'];
+    const hasCodePhase = (toolCounts.Edit > 0 || toolCounts.Write > 0) &&
+                          skillsInvoked.some(sk => preImplSkills.includes(sk)) &&
+                          skillsInvoked.some(sk => postImplSkills.includes(sk));
+
+    // Determine insertion point for [código] node
+    let codeNodeIndex = -1;
+    if (hasCodePhase) {
+      const lastPreImplIdx = skillsInvoked.findIndex((sk, idx) =>
+        preImplSkills.includes(sk) && !skillsInvoked.slice(idx + 1).some(s => preImplSkills.includes(s))
+      );
+      if (lastPreImplIdx !== -1) {
+        codeNodeIndex = lastPreImplIdx + 1;
+      }
+    }
+
+    // Build nodes array
+    const nodes = [];
+    for (let i = 0; i < skillsInvoked.length; i++) {
+      const skill = skillsInvoked[i];
+
+      // Insert [código] node if needed
+      if (codeNodeIndex === i) {
+        // Determine state: ✓ if post-impl exists, ► if no post-impl yet
+        const hasPostImpl = skillsInvoked.slice(i).some(sk => postImplSkills.includes(sk));
+        const state = hasPostImpl ? '✓' : '►';
+
+        // Duration: diff between last pre-impl and first post-impl ts
+        let duration = '—';
+        if (agentTransitions.length >= 2) {
+          const preTs = agentTransitions[i - 1]?.ts;
+          const postTs = agentTransitions[i]?.ts;
+          if (preTs && postTs) {
+            const diff = new Date(postTs).getTime() - new Date(preTs).getTime();
+            duration = formatMinutes(diff);
+          } else if (preTs && !hasPostImpl) {
+            const diff = lastActivityTs - new Date(preTs).getTime();
+            duration = formatMinutes(diff);
+          }
+        }
+
+        // Tool detail
+        const editCount = toolCounts.Edit || 0;
+        const writeCount = toolCounts.Write || 0;
+        const detail = (editCount > 0 || writeCount > 0)
+          ? (editCount > 0 ? `Edit×${editCount}` : '') + (writeCount > 0 ? (editCount > 0 ? ' ' : '') + `Write×${writeCount}` : '')
+          : '';
+
+        nodes.push({
+          name: '[código]',
+          state,
+          duration,
+          detail,
+          isCodeNode: true
+        });
+      }
+
+      // Determine skill state: ✓ if completed, ► if active, ☐ if pending
+      let state = '✓';  // default completed
+      if (i === skillsInvoked.length - 1) {
+        // Last skill
+        if (session.status === 'active' && livenessMs < 5 * 60 * 1000) {
+          state = '►';  // Active
+        } else if (session.status === 'done' && !skillsInvoked.slice(i + 1).some(sk => postImplSkills.includes(sk))) {
+          state = '✗';  // Failed (done without completion)
+        }
+      }
+
+      // Calculate duration from transitions
+      let duration = '—';
+      if (agentTransitions.length > i && agentTransitions.length > i + 1) {
+        const startTs = agentTransitions[i].ts;
+        const endTs = agentTransitions[i + 1].ts;
+        if (startTs && endTs) {
+          const diff = new Date(endTs).getTime() - new Date(startTs).getTime();
+          duration = formatMinutes(diff);
+        }
+      } else if (agentTransitions.length > i && i === skillsInvoked.length - 1) {
+        // Last skill, use last_activity_ts
+        const startTs = agentTransitions[i].ts;
+        if (startTs) {
+          const diff = lastActivityTs - new Date(startTs).getTime();
+          duration = formatMinutes(diff);
+        }
+      }
+
+      nodes.push({
+        name: skill.replace(/^\//, ''),
+        state,
+        duration,
+        detail: ''
+      });
+    }
+
+    // Add pending skills if session is active
+    if (session.status !== 'done') {
+      const standardPipeline = ['ops', 'po', 'guru', 'tester', 'builder', 'security', 'review', 'delivery'];
+      const invokedNames = skillsInvoked.map(sk => sk.replace(/^\//, ''));
+
+      for (const skill of standardPipeline) {
+        if (!invokedNames.includes(skill) && nodes.length < 10) {
+          nodes.push({
+            name: skill,
+            state: '☐',
+            duration: '—',
+            detail: '',
+            isPending: true
+          });
+        }
+      }
+    }
+
+    // Truncate to max 10 nodes
+    let displayNodes = nodes.slice(0, 10);
+    const truncated = nodes.length > 10 ? nodes.length - 10 : 0;
+
+    // Render tree
+    for (let nIdx = 0; nIdx < displayNodes.length; nIdx++) {
+      const node = displayNodes[nIdx];
+      const isLast = nIdx === displayNodes.length - 1 && truncated === 0;
+      const prefix = isLast ? '└──' : '├──';
+
+      let nodeLine = prefix + ' /' + escHtml(node.name) + '  ' + node.state + '  ' + escHtml(node.duration);
+      if (node.detail) nodeLine += '  ' + escHtml(node.detail);
+
+      treeHtml += nodeLine + '&#10;';
+    }
+
+    if (truncated > 0) {
+      treeHtml += '└── ... (+' + truncated + ' nodos)&#10;';
+    }
+
+    // Add blank line between sessions
+    if (sIdx < sortedSessions.length - 1) {
+      treeHtml += '&#10;';
+    }
+  }
+
+  treeHtml += '</div>';
+  return treeHtml;
+}
+
 // --- HTML Template ---
 function renderHTML(data, theme) {
   const isDark = theme !== "light";
@@ -912,105 +1106,8 @@ function renderHTML(data, theme) {
     agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
   }
 
-  // --- FLOW GRAPH SVG (circular layout) ---
-  let flowGraphHtml = "";
-  const nodes = data.agentNodes.length > 0 ? data.agentNodes : [];
-  if (nodes.length > 0) {
-    const cx = 200, cy = 180, radius = 140;
-    const nodeR = 28;
-    const svgW = 400, svgH = 360;
-    const angleStep = (2 * Math.PI) / Math.max(nodes.length, 1);
-
-    // Compute positions
-    const positions = {};
-    nodes.forEach((n, i) => {
-      positions[n] = {
-        x: cx + radius * Math.cos(angleStep * i - Math.PI / 2),
-        y: cy + radius * Math.sin(angleStep * i - Math.PI / 2),
-      };
-    });
-
-    // Determine active agents
-    const activeAgents = new Set();
-    const doneAgents = new Set();
-    for (const s of visibleSessions) {
-      if (s.agent_name) {
-        if (s._status === "active") activeAgents.add(s.agent_name);
-        if (s._status === "done") doneAgents.add(s.agent_name);
-      }
-      if (Array.isArray(s.skills_invoked)) {
-        for (const sk of s.skills_invoked) {
-          const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
-          // Mark as done if not currently active
-          if (!activeAgents.has(mapped)) doneAgents.add(mapped);
-        }
-      }
-    }
-
-    // Arrow defs
-    let graphSvg = `<defs>
-      <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-        <polygon points="0 0, 8 3, 0 6" fill="var(--text-muted)" opacity="0.6"/>
-      </marker>
-      <filter id="glow"><feGaussianBlur stdDeviation="3" result="coloredBlur"/>
-        <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
-      </filter>
-    </defs>`;
-
-    // Draw edges (transitions)
-    const drawnEdges = new Set();
-    for (const t of data.agentTransitions) {
-      const from = positions[t.from];
-      const to = positions[t.to];
-      if (!from || !to) continue;
-      const edgeKey = t.from + "->" + t.to;
-      if (drawnEdges.has(edgeKey)) continue;
-      drawnEdges.add(edgeKey);
-      // Shorten arrow to stop at node boundary
-      const dx = to.x - from.x, dy = to.y - from.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 1) continue;
-      const ux = dx / dist, uy = dy / dist;
-      const x1 = from.x + ux * (nodeR + 4), y1 = from.y + uy * (nodeR + 4);
-      const x2 = to.x - ux * (nodeR + 8), y2 = to.y - uy * (nodeR + 8);
-      graphSvg += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--text-muted)" stroke-width="1.5" stroke-opacity="0.5" marker-end="url(#arrowhead)"/>`;
-    }
-
-    // Draw nodes
-    for (const name of nodes) {
-      const pos = positions[name];
-      if (!pos) continue;
-      const color = AGENT_COLORS[name] || "#6C7086";
-      const icon = AGENT_ICONS[name] || "&#129302;";
-      const isActive = activeAgents.has(name);
-      const isDone = doneAgents.has(name);
-      const opacity = (!isActive && !isDone) ? "0.4" : "1";
-      const filterAttr = isActive ? 'filter="url(#glow)"' : '';
-
-      graphSvg += `<g class="flow-node" data-agent="${escHtml(name)}" style="cursor:pointer;opacity:${opacity};" ${filterAttr}>`;
-      graphSvg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${nodeR}" fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="2"`;
-      if (isActive) {
-        graphSvg += `><animate attributeName="stroke-opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/>`;
-        graphSvg += `</circle>`;
-      } else {
-        graphSvg += `/>`;
-      }
-      // Check mark for done
-      if (isDone && !isActive) {
-        graphSvg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="18" fill="${color}">&#10003;</text>`;
-      } else {
-        graphSvg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16">${icon}</text>`;
-      }
-      // Label below
-      const shortName = name.length > 12 ? name.substring(0, 10) + "…" : name;
-      graphSvg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + nodeR + 14).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)" font-weight="600">${escHtml(shortName)}</text>`;
-      graphSvg += `</g>`;
-    }
-
-    flowGraphHtml = `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-height:${svgH}px;">${graphSvg}</svg>`;
-  } else {
-    flowGraphHtml = '<div class="empty-state">Sin flujo de agentes registrado</div>';
-  }
+  // --- FLOW TREE (ASCII tree layout) ---
+  const flowGraphHtml = buildFlowTree(data.sessions);
 
   // --- ACTIVITY FEED (chat-style with grouping) ---
   let feedHtml = "";
