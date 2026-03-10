@@ -1,11 +1,122 @@
 // Hook PostToolUse[Bash]: detecta git push y lanza monitoreo CI en background
 // Pure Node.js — sin dependencia de bash ni ci-monitor.sh
 // Polling: consulta GitHub Actions cada 30s hasta que el workflow concluya, luego notifica via Telegram
+// #1356: al detectar git push, marca el agente como "waiting" en sprint-plan.json y promueve siguiente de cola
 const { execSync, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
+const HOOKS_DIR = path.join(PROJECT_DIR, ".claude", "hooks");
+const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
+const PLAN_FILE = path.join(PROJECT_DIR, "scripts", "sprint-plan.json");
+const START_SCRIPT = path.join(PROJECT_DIR, "scripts", "Start-Agente.ps1");
+
+function logHook(msg) {
+    try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] PostGitPush: " + msg + "\n"); } catch(e) {}
+}
+
+function escHtml(str) {
+    return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function notifyTelegram(text) {
+    try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(HOOKS_DIR, "telegram-config.json"), "utf8"));
+        const https = require("https");
+        const querystring = require("querystring");
+        const postData = querystring.stringify({ chat_id: cfg.chat_id, text: text, parse_mode: "HTML" });
+        await new Promise((resolve) => {
+            const req = https.request({
+                hostname: "api.telegram.org",
+                path: "/bot" + cfg.bot_token + "/sendMessage",
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                timeout: 6000
+            }, (res) => { res.resume(); resolve(); });
+            req.on("error", resolve);
+            req.on("timeout", () => { req.destroy(); resolve(); });
+            req.write(postData);
+            req.end();
+        });
+    } catch(e) { logHook("notifyTelegram error: " + e.message); }
+}
+
+function launchAgentFromPlan(agente) {
+    try {
+        if (!fs.existsSync(START_SCRIPT)) { logHook("Start-Agente.ps1 no encontrado"); return false; }
+        const ps1 = START_SCRIPT.replace(/\//g, "\\");
+        const child = spawn("powershell.exe", ["-NonInteractive", "-File", ps1, String(agente.numero)], {
+            detached: true, stdio: "ignore", windowsHide: false
+        });
+        child.unref();
+        logHook("Agente " + agente.numero + " (issue #" + agente.issue + ") lanzado desde cola (PID " + child.pid + ")");
+        return true;
+    } catch(e) { logHook("launchAgentFromPlan error: " + e.message); return false; }
+}
+
+// Marca el agente como "waiting" en sprint-plan.json y promueve el siguiente de la cola (#1356)
+async function markAgentWaitingInPlan(branch) {
+    if (!fs.existsSync(PLAN_FILE)) return;
+    let plan;
+    try { plan = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8")); } catch(e) { return; }
+    if (!Array.isArray(plan.agentes)) return;
+
+    // Encontrar el agente por branch
+    const agent = plan.agentes.find(ag =>
+        branch.includes("/" + String(ag.issue) + "-") ||
+        branch === "agent/" + ag.issue + "-" + (ag.slug || "")
+    );
+    if (!agent) { logHook("markAgentWaitingInPlan: sin coincidencia para branch " + branch); return; }
+    if (agent.status === "waiting") { logHook("Agente #" + agent.issue + " ya está en waiting — sin cambios"); return; }
+
+    // Marcar como waiting
+    agent.status = "waiting";
+    agent.waiting_since = new Date().toISOString();
+    agent.waiting_reason = "ci";
+
+    const concurrencyLimit = plan.concurrency_limit || 3;
+    // Contar solo agentes activos (no-waiting): este agente ahora libera su slot
+    const activeCount = plan.agentes.filter(ag => ag.status !== "waiting").length;
+    const queue = Array.isArray(plan._queue) ? plan._queue : (Array.isArray(plan.cola) ? plan.cola : []);
+
+    logHook("Agente #" + agent.issue + " en waiting (CI) — activos no-waiting: " + activeCount + "/" + concurrencyLimit + " — cola: " + queue.length);
+
+    if (activeCount < concurrencyLimit && queue.length > 0) {
+        // Promover siguiente de la cola
+        const nextAgent = queue[0];
+        const newQueue = queue.slice(1);
+        const maxNumero = plan.agentes.reduce((m, ag) => Math.max(m, ag.numero || 0), 0);
+        nextAgent.numero = maxNumero + 1;
+        plan.agentes.push(nextAgent);
+        if (Array.isArray(plan._queue)) plan._queue = newQueue;
+        else plan.cola = newQueue;
+
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        logHook("Agente #" + agent.issue + " en waiting (CI) — slot liberado, promoviendo #" + nextAgent.issue + " de cola");
+
+        const launched = launchAgentFromPlan(nextAgent);
+        const waitingTotal = plan.agentes.filter(ag => ag.status === "waiting").length;
+        const activeNow = plan.agentes.filter(ag => ag.status !== "waiting").length;
+
+        await notifyTelegram(
+            "⏳ <b>Slot liberado — Agente #" + agent.issue + " en espera de CI</b>\n" +
+            (launched
+                ? "🚀 Promovido #" + nextAgent.issue + " (" + escHtml(nextAgent.slug || "") + ") de la cola\n"
+                : "⚠️ Issue #" + nextAgent.issue + " movido a agentes pero sin lanzar automáticamente\n") +
+            "Slots activos: <b>" + activeNow + "/" + concurrencyLimit + "</b>" +
+            (waitingTotal > 0 ? " (+ " + waitingTotal + " en waiting)" : "") + "\n" +
+            "Cola restante: " + newQueue.length + " issue(s)"
+        );
+    } else {
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        if (queue.length === 0) {
+            logHook("Agente #" + agent.issue + " en waiting (CI) — cola vacía, sin promoción");
+        } else {
+            logHook("Agente #" + agent.issue + " en waiting (CI) — slots llenos (" + activeCount + "/" + concurrencyLimit + "), sin promoción");
+        }
+    }
+}
 
 // Leer stdin
 const MAX_READ = 4096;
@@ -60,7 +171,7 @@ function markWaitingCi(branch, sha) {
     return null;
 }
 
-function handleInput() {
+async function handleInput() {
     try {
         const data = JSON.parse(input || "{}");
         const command = (data.tool_input && data.tool_input.command) || "";
@@ -80,6 +191,11 @@ function handleInput() {
 
         // Marcar inicio de espera de CI en la session activa
         const sessionFile = markWaitingCi(branch, sha);
+
+        // Marcar agente como waiting en sprint-plan.json y promover siguiente de cola (#1356)
+        if (branch.startsWith("agent/")) {
+            await markAgentWaitingInPlan(branch);
+        }
 
         // Lanzar monitoreo CI en background (proceso hijo desacoplado)
         const monitorScript = path.join(__dirname, "ci-monitor-bg.js");

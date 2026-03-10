@@ -1,11 +1,12 @@
-// agent-concurrency-check.js — Hook Stop: valida concurrencia de agentes y auto-lanza siguiente (#1277)
+// agent-concurrency-check.js — Hook Stop: valida concurrencia de agentes y auto-lanza siguiente (#1277, #1356)
 // Se ejecuta al finalizar cualquier sesión Claude.
 // Solo actúa si la sesión corresponde a un agente de sprint (rama agent/* en sprint-plan.json).
 //
 // Lógica:
 //   1. Detectar si la sesión que termina es de sprint
 //   2. Remover al agente que terminó del array agentes
-//   3. Comparar agentes activos restantes vs concurrency_limit
+//   3. Comparar agentes ACTIVOS (no-waiting) restantes vs concurrency_limit
+//      Los agentes en status="waiting" no cuentan contra el límite (#1356)
 //   4. Si hay espacio Y hay items en cola: mover primero de cola a agentes + lanzar
 //   5. Si se excede el límite: alerta crítica a Telegram
 //   6. Siempre: log detallado en hook-debug.log
@@ -398,7 +399,11 @@ async function processInput() {
             return;
         }
 
-        log("Agente que finaliza: #" + finishingAgent.issue + " (" + finishingAgent.slug + ")");
+        const wasWaiting = finishingAgent.status === "waiting";
+        log(
+            "Agente que finaliza: #" + finishingAgent.issue + " (" + finishingAgent.slug + ")" +
+            (wasWaiting ? " [estaba en waiting]" : "")
+        );
 
         // ── Construir entrada enriquecida para _completed ────────────────────
         const completedEntry = buildCompletedEntry(finishingAgent, session);
@@ -416,8 +421,15 @@ async function processInput() {
         // Remover al agente que terminó del array agentes
         const prevCount = (plan.agentes || []).length;
         plan.agentes = (plan.agentes || []).filter(ag => ag.issue !== finishingAgent.issue);
-        const afterCount = plan.agentes.length;
-        log("Agentes activos: " + prevCount + " → " + afterCount + " (límite: " + concurrencyLimit + ")");
+
+        // Contar solo agentes no-waiting: los waiting ya liberaron su slot al entrar en espera (#1356)
+        const afterCount = plan.agentes.filter(ag => ag.status !== "waiting").length;
+        const waitingCount = plan.agentes.filter(ag => ag.status === "waiting").length;
+        log(
+            "Agentes activos (no-waiting): " + afterCount + "/" + concurrencyLimit +
+            (waitingCount > 0 ? " (+ " + waitingCount + " en waiting)" : "") +
+            (wasWaiting ? " — terminó desde estado waiting (slot ya estaba liberado)" : "")
+        );
 
         // Bug 3: Agregar agente completado a _completed para mantener historial del sprint (#1345)
         // Antes: el agente se removía de `agentes` sin dejar rastro de que completó
@@ -439,7 +451,7 @@ async function processInput() {
                 "Agente que terminó: #" + finishingAgent.issue + " (" + escHtml(finishingAgent.slug) + ")\n" +
                 "Revisar sprint-plan.json manualmente."
             );
-            log("ANOMALIA: " + afterCount + " agentes > límite " + concurrencyLimit);
+            log("ANOMALIA: " + afterCount + " agentes no-waiting > límite " + concurrencyLimit);
             savePlan(plan);
             await notify(alertMsg);
             return;
@@ -464,14 +476,16 @@ async function processInput() {
             // Lanzar el agente
             const launched = launchAgent(nextAgente);
 
-            const slotsOccupied = plan.agentes.length;
+            const slotsOccupied = plan.agentes.filter(ag => ag.status !== "waiting").length;
             const remainingQueue = newQueue.length;
+            const stillWaiting = plan.agentes.filter(ag => ag.status === "waiting").length;
+            const waitingSuffix = stillWaiting > 0 ? " (+ " + stillWaiting + " en waiting)" : "";
 
             const msg = launched
                 ? (
                     "🚀 <b>Auto-lanzado agente para #" + nextAgente.issue + "</b>\n" +
                     "Slug: " + escHtml(nextAgente.slug) + "\n" +
-                    "Slots activos: <b>" + slotsOccupied + "/" + concurrencyLimit + "</b>\n" +
+                    "Slots activos: <b>" + slotsOccupied + "/" + concurrencyLimit + "</b>" + waitingSuffix + "\n" +
                     "Cola restante: " + remainingQueue + " issue(s)\n" +
                     "<i>Agente finalizado: #" + finishingAgent.issue + " (" + escHtml(finishingAgent.slug) + ")</i>"
                 )
@@ -479,7 +493,7 @@ async function processInput() {
                     "⚠️ <b>Cola: issue #" + nextAgente.issue + " movido pero no pudo lanzarse</b>\n" +
                     "Start-Agente.ps1 no disponible o falló. Lanzar manualmente:\n" +
                     "<code>.\\Start-Agente.ps1 " + nextAgente.numero + "</code>\n" +
-                    "Slots activos: " + slotsOccupied + "/" + concurrencyLimit
+                    "Slots activos: " + slotsOccupied + "/" + concurrencyLimit + waitingSuffix
                 );
 
             await notify(msg);

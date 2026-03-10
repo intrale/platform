@@ -201,6 +201,125 @@ describe("P-22: agent-concurrency-check — lógica de concurrencia", () => {
         );
         assert.ok(source.includes("stop_hook_active"), "debe verificar stop_hook_active para evitar recursión");
     });
+
+    // ─── Tests #1356: estado waiting ─────────────────────────────────────────
+
+    it("#1356: hook excluye agentes en waiting del conteo de slots activos", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes('ag.status !== "waiting"'),
+            "debe filtrar agentes waiting al contar slots activos"
+        );
+        assert.ok(
+            source.includes("afterCount = plan.agentes.filter"),
+            "afterCount debe calcularse filtrando waiting"
+        );
+    });
+
+    it("#1356: hook detecta si el agente que termina estaba en waiting", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes('finishingAgent.status === "waiting"'),
+            "debe detectar si el agente que termina estaba en waiting"
+        );
+        assert.ok(
+            source.includes("wasWaiting"),
+            "debe usar variable wasWaiting para tracking del estado"
+        );
+    });
+
+    it("#1356: post-git-push.js tiene función markAgentWaitingInPlan", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "post-git-push.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("markAgentWaitingInPlan"), "debe tener función markAgentWaitingInPlan");
+        assert.ok(source.includes('status = "waiting"'), "debe marcar status=waiting en el agente");
+        assert.ok(source.includes("waiting_since"), "debe registrar waiting_since timestamp");
+        assert.ok(source.includes("waiting_reason"), "debe registrar waiting_reason");
+    });
+
+    it("#1356: post-git-push.js promueve siguiente de cola al liberar slot", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "post-git-push.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes("activeCount < concurrencyLimit"),
+            "debe verificar si hay espacio para promover de cola"
+        );
+        assert.ok(source.includes("launchAgentFromPlan"), "debe lanzar el agente promovido");
+        assert.ok(
+            source.includes("slot liberado, promoviendo"),
+            "debe loguear el mensaje de liberación de slot"
+        );
+    });
+
+    it("#1356: post-git-push.js notifica Telegram al liberar slot", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "post-git-push.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("notifyTelegram"), "debe notificar a Telegram");
+        assert.ok(source.includes("Slot liberado"), "debe mencionar 'Slot liberado' en la notificación");
+        assert.ok(source.includes("en espera de CI"), "debe indicar que el agente espera CI");
+    });
+
+    it("#1356: post-git-push.js solo actúa en ramas agent/*", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "post-git-push.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes('branch.startsWith("agent/")'),
+            "debe validar que la rama es agent/* antes de marcar waiting"
+        );
+    });
+
+    it("#1356: activity-logger.js tiene función syncWaitingToSprintPlan", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "activity-logger.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("syncWaitingToSprintPlan"), "debe tener función syncWaitingToSprintPlan");
+        assert.ok(
+            source.includes('agent.status === "waiting"'),
+            "syncWaitingToSprintPlan debe ser idempotente (verificar si ya es waiting)"
+        );
+    });
+
+    it("#1356: activity-logger.js sincroniza waiting al detectar por primera vez", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "activity-logger.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("wasAlreadyWaiting"), "debe detectar primera vez con wasAlreadyWaiting");
+        assert.ok(
+            source.includes("syncWaitingToSprintPlan(session.branch"),
+            "debe llamar syncWaitingToSprintPlan cuando es primera vez en waiting"
+        );
+    });
+
+    it("#1356: log incluye conteo de agentes en waiting junto con activos", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes("en waiting"),
+            "debe mostrar agentes en waiting en los logs"
+        );
+        assert.ok(
+            source.includes("waitingCount"),
+            "debe calcular waitingCount separado de afterCount"
+        );
+    });
 });
 
 // ─── Tests para Bug 1345: 4 bugs de concurrencia ────────────────────────────
