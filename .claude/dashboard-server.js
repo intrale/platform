@@ -85,6 +85,7 @@ const AGENT_ICON_MAP = {
   "DesktopDev": loadIconDataUri("desktop.png"),
   "Ops": loadIconDataUri("ops.png"),
   "Branch": loadIconDataUri("branch.png"),
+  "Security": loadIconDataUri("security.png"),
 };
 const CLAUDE_ICONS = [
   loadIconDataUri("claude-1.svg"),
@@ -92,6 +93,36 @@ const CLAUDE_ICONS = [
   loadIconDataUri("claude-3.svg"),
   loadIconDataUri("claude-4.svg"),
 ].filter(Boolean);
+if (CLAUDE_ICONS.length > 0) AGENT_ICON_MAP["Claude"] = CLAUDE_ICONS[0];
+
+// Skill-name → canonical agent name mapping
+const SKILL_TO_AGENT = {
+  "/guru": "Guru", "/doc": "Doc", "/historia": "Doc", "/refinar": "Doc", "/priorizar": "Doc",
+  "/planner": "Planner", "/delivery": "DeliveryManager", "/tester": "Tester",
+  "/monitor": "Monitor", "/builder": "Builder", "/review": "Review", "/qa": "QA",
+  "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
+  "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
+  "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
+  "/security": "Security",
+};
+// Case-insensitive lookup for AGENT_ICON_MAP
+const _ICON_MAP_LC = {};
+for (const k of Object.keys(AGENT_ICON_MAP)) _ICON_MAP_LC[k.toLowerCase()] = AGENT_ICON_MAP[k];
+
+function resolveIconUri(name) {
+  if (AGENT_ICON_MAP[name]) return AGENT_ICON_MAP[name];
+  const lc = (name || "").toLowerCase();
+  const mapped = SKILL_TO_AGENT[lc] || SKILL_TO_AGENT["/" + lc];
+  if (mapped && AGENT_ICON_MAP[mapped]) return AGENT_ICON_MAP[mapped];
+  if (_ICON_MAP_LC[lc]) return _ICON_MAP_LC[lc];
+  // Generic/unknown → rotate among Claude variants
+  if (CLAUDE_ICONS.length > 0) {
+    let hash = 0;
+    for (let i = 0; i < (name || "").length; i++) hash = ((hash << 5) - hash + (name || "").charCodeAt(i)) | 0;
+    return CLAUDE_ICONS[Math.abs(hash) % CLAUDE_ICONS.length];
+  }
+  return AGENT_ICON_MAP["Claude"] || "";
+}
 
 // Logging a archivo (detached processes no tienen stdio)
 const _origLog = console.log;
@@ -937,12 +968,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const pos = positions[name];
     if (!pos) continue;
     const color = (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
-    // Resolve icon data URI for SVG <image>
-    let iconUrl = AGENT_ICON_MAP[name];
-    if (!iconUrl && CLAUDE_ICONS.length > 0) {
-      iconUrl = CLAUDE_ICONS[_claudeIdx % CLAUDE_ICONS.length];
-      _claudeIdx++;
-    }
+    // Resolve icon data URI for SVG <image> — case/skill-insensitive
+    const iconUrl = resolveIconUri(name);
     const isActive = activeAgents.has(name);
     const isDone = doneAgents.has(name);
     const opacity = (!isActive && !isDone) ? "0.35" : "1";
@@ -955,11 +982,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     } else {
       svg += `/>`;
     }
-    // Icon: done checkmark or agent image
-    if (isDone && !isActive) {
-      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
-    } else if (iconUrl) {
+    // Icon: always show agent image; done agents get a small check badge
+    if (iconUrl) {
       svg += `<image href="${iconUrl}" x="${(pos.x - imgSize / 2).toFixed(1)}" y="${(pos.y - imgSize / 2).toFixed(1)}" width="${imgSize.toFixed(0)}" height="${imgSize.toFixed(0)}" style="pointer-events:none;"/>`;
+      if (isDone && !isActive) {
+        svg += `<circle cx="${(pos.x + imgSize/2 - 2).toFixed(1)}" cy="${(pos.y - imgSize/2 + 2).toFixed(1)}" r="5" fill="${color}"/>`;
+        svg += `<text x="${(pos.x + imgSize/2 - 2).toFixed(1)}" y="${(pos.y - imgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="7" fill="white">&#10003;</text>`;
+      }
+    } else if (isDone && !isActive) {
+      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
     }
     // Label below node
     const shortName = name.length > 12 ? name.substring(0, 10) + "\u2026" : name;
@@ -1012,14 +1043,14 @@ function buildGanttChart(roadmap) {
     streamGroups[s].push(iss);
   }
 
-  // Layout constants
-  const colW = 110;           // width per sprint column
-  const rowH = 22;            // height per issue row
-  const barPad = 3;           // vertical padding inside row
-  const labelColW = 58;       // left label column (stream names)
-  const headerH = 42;         // top header for sprint labels
-  const streamGap = 10;       // gap between stream groups
-  const streamLabelH = 16;    // height of stream group header
+  // Layout constants (large for readability — scroll handles overflow)
+  const colW = 220;           // width per sprint column
+  const rowH = 44;            // height per issue row
+  const barPad = 5;           // vertical padding inside row
+  const labelColW = 100;      // left label column (stream names)
+  const headerH = 72;         // top header for sprint labels
+  const streamGap = 18;       // gap between stream groups
+  const streamLabelH = 30;    // height of stream group header
 
   // Compute total height
   let totalY = headerH;
@@ -1066,14 +1097,14 @@ function buildGanttChart(roadmap) {
     // Column separator
     svg += `<line x1="${x}" y1="0" x2="${x}" y2="${svgH}" stroke="var(--border)" stroke-width="0.5" stroke-opacity="0.4"/>`;
     // Sprint label (ID)
-    svg += `<text x="${x + colW / 2}" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="var(--white)" opacity="0.9">${escHtml(spr.id)}</text>`;
+    svg += `<text x="${x + colW / 2}" y="24" text-anchor="middle" font-size="18" font-weight="700" fill="var(--white)" opacity="0.9">${escHtml(spr.id)}</text>`;
     // Date range
     const start = (spr.start || "").substring(5); // MM-DD
     const end = (spr.end || "").substring(5);
-    svg += `<text x="${x + colW / 2}" y="28" text-anchor="middle" font-size="8" fill="var(--text-dim)">${escHtml(start)}→${escHtml(end)}</text>`;
+    svg += `<text x="${x + colW / 2}" y="44" text-anchor="middle" font-size="13" fill="var(--text-dim)">${escHtml(start)}→${escHtml(end)}</text>`;
     // Sprint tema (truncated)
-    const tema = (spr.tema || "").substring(0, 18);
-    svg += `<text x="${x + colW / 2}" y="39" text-anchor="middle" font-size="7" fill="var(--text-muted)" opacity="0.7">${escHtml(tema)}</text>`;
+    const tema = (spr.tema || "").substring(0, 30);
+    svg += `<text x="${x + colW / 2}" y="62" text-anchor="middle" font-size="11" fill="var(--text-muted)" opacity="0.7">${escHtml(tema)}</text>`;
   }
 
   // --- Stream groups and bars ---
@@ -1087,7 +1118,7 @@ function buildGanttChart(roadmap) {
 
     // Stream label background
     svg += `<rect x="0" y="${sm.y}" width="${labelColW - 2}" height="${sm.h - streamGap}" fill="${color}" fill-opacity="0.12" rx="3"/>`;
-    svg += `<text x="${(labelColW - 2) / 2}" y="${sm.y + streamLabelH - 4}" text-anchor="middle" font-size="9" font-weight="700" fill="${color}">${STREAM_LABELS[s] || s}</text>`;
+    svg += `<text x="${(labelColW - 2) / 2}" y="${sm.y + streamLabelH - 6}" text-anchor="middle" font-size="15" font-weight="700" fill="${color}">${STREAM_LABELS[s] || s}</text>`;
 
     // Background stripe for stream area
     svg += `<rect x="${labelColW}" y="${sm.y}" width="${numSprints * colW}" height="${sm.h - streamGap}" fill="${color}" fill-opacity="0.04" rx="2"/>`;
@@ -1125,17 +1156,17 @@ function buildGanttChart(roadmap) {
 
       // Checkmark for done
       if (status === "done") {
-        svg += `<text x="${barX + 5}" y="${barY + barH - 3}" font-size="9" fill="${fillColor}" opacity="0.9">✓</text>`;
+        svg += `<text x="${barX + 7}" y="${barY + barH - 6}" font-size="16" fill="${fillColor}" opacity="0.9">✓</text>`;
       }
 
       // Label: #NUM + title truncated
-      const maxChars = Math.floor((barW - (status === "done" ? 14 : 4)) / 5.2);
+      const maxChars = Math.floor((barW - (status === "done" ? 26 : 8)) / 7.5);
       const title = iss.title.substring(0, maxChars);
-      const labelX = barX + (status === "done" ? 14 : 4);
-      svg += `<text x="${labelX}" y="${barY + barH - 4}" font-size="7.5" fill="var(--white)" font-weight="600" opacity="0.9" style="pointer-events:none">${escHtml(title)}</text>`;
+      const labelX = barX + (status === "done" ? 26 : 8);
+      svg += `<text x="${labelX}" y="${barY + barH - 7}" font-size="13" fill="var(--white)" font-weight="600" opacity="0.9" style="pointer-events:none">${escHtml(title)}</text>`;
 
       // Issue number chip
-      svg += `<text x="${barX + 2}" y="${barY + 8}" font-size="6.5" fill="${fillColor}" font-weight="700" opacity="0.85">#${iss.number}</text>`;
+      svg += `<text x="${barX + 4}" y="${barY + 15}" font-size="12" fill="${fillColor}" font-weight="700" opacity="0.85">#${iss.number}</text>`;
 
       svg += `</g>`;
     }
@@ -1209,15 +1240,16 @@ function renderHTML(data, theme) {
     return `${x},${y}`;
   }).join(" ");
 
-  // Agent icons — <img> tags with base64 data URIs from .claude/icons/
+  // Agent icons — resolves any name (case/skill-insensitive) to <img> tag
+  function agentIconHtml(name) {
+    const uri = resolveIconUri(name);
+    return uri
+      ? '<img src="' + uri + '" width="16" height="16" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name || "") + '">'
+      : "&#129302;";
+  }
   const AGENT_ICONS = {};
-  for (const [name, uri] of Object.entries(AGENT_ICON_MAP)) {
-    AGENT_ICONS[name] = uri ? '<img src="' + uri + '" width="16" height="16" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name) + '">' : "";
-  }
-  if (CLAUDE_ICONS.length > 0) {
-    AGENT_ICONS["Claude"] = '<img src="' + CLAUDE_ICONS[0] + '" width="16" height="16" style="vertical-align:middle;margin-right:2px;" alt="Claude">';
-  }
-  let claudeIconIdx = 0;
+  for (const name of Object.keys(AGENT_ICON_MAP)) AGENT_ICONS[name] = agentIconHtml(name);
+  for (const [skill, agent] of Object.entries(SKILL_TO_AGENT)) AGENT_ICONS[skill] = agentIconHtml(agent);
 
   const AGENT_GRADIENTS = {
     "Guru": "linear-gradient(135deg, #6366f1, #a78bfa)",
@@ -1321,7 +1353,7 @@ function renderHTML(data, theme) {
       const tasks = matchSession ? (matchSession.current_tasks || []) : [];
       const tasksDone = tasks.filter(t => t.status === "completed").length;
       const tasksInProgress = tasks.filter(t => t.status === "in_progress").length;
-      const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || "&#9675;";
+      const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || agentIconHtml(matchSession ? matchSession.agent_name : "");
       const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
       // Progreso: si hay tareas registradas, usar tareas; si no, heurística por action_count + size
       let tasksPct;
@@ -1385,7 +1417,7 @@ function renderHTML(data, theme) {
         <span class="chip chip-blue">${data.standaloneSessions.length}</span>
       </div>`;
     for (const s of data.standaloneSessions) {
-      const icon = AGENT_ICONS[s.agent_name] || "&#129302;";
+      const icon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
       const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
       const statusColor = STATUS_COLORS[s._status] || "#555872";
       const tasks = s.current_tasks || [];
@@ -1432,7 +1464,7 @@ function renderHTML(data, theme) {
   let agentsHtml = "";
   const visibleSessions = data.sessions.filter(s => s._status !== "stale");
   for (const s of visibleSessions) {
-    const icon = AGENT_ICONS[s.agent_name] || "&#129302;";
+    const icon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
     const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
     const statusColor = STATUS_COLORS[s._status] || "#555872";
     const statusLabel = STATUS_LABELS[s._status] || s._status;
@@ -1491,7 +1523,7 @@ function renderHTML(data, theme) {
     for (const s of data.sessions) {
       if (s.id === g.session) {
         agentName = s.agent_name || "Agente (" + s.id + ")";
-        agentIcon = AGENT_ICONS[s.agent_name] || "&#129302;";
+        agentIcon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
         break;
       }
     }
@@ -2053,7 +2085,9 @@ function renderHTML(data, theme) {
     <!-- Roadmap Gantt (#1382) -->
     <div class="panel" style="margin-bottom:16px;" data-panel="roadmap">
       <div class="panel-title">Roadmap <span class="chip chip-purple">${roadmapNumSprints} sprints</span></div>
-      ${ganttHtml}
+      <div style="overflow-x:auto;overflow-y:hidden;max-width:100%;padding-bottom:8px;">
+        ${ganttHtml}
+      </div>
     </div>
 
     <!-- CI -->
