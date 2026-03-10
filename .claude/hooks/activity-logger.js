@@ -276,6 +276,27 @@ function detectWaitingState(toolName, toolInput, ts) {
     return null;
 }
 
+// Sincroniza el estado waiting del agente en sprint-plan.json (#1356).
+// Solo actualiza el status — la promoción de cola la maneja post-git-push.js.
+// Es idempotente: si el agente ya está en waiting, no hace nada.
+function syncWaitingToSprintPlan(branch, reason) {
+    try {
+        const planPath = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+        if (!fs.existsSync(planPath)) return;
+        const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
+        if (!Array.isArray(plan.agentes)) return;
+        const agent = plan.agentes.find(ag =>
+            branch.includes("/" + String(ag.issue) + "-") ||
+            branch === "agent/" + ag.issue + "-" + (ag.slug || "")
+        );
+        if (!agent || agent.status === "waiting") return;
+        agent.status = "waiting";
+        agent.waiting_since = new Date().toISOString();
+        agent.waiting_reason = reason || "unknown";
+        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2) + "\n", "utf8");
+    } catch(e) { /* no bloquear hook */ }
+}
+
 function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
     try {
         if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -442,7 +463,14 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
         // Detectar y registrar estado de espera legítima
         const waitingState = detectWaitingState(toolName, toolInput, ts);
         if (waitingState) {
+            const wasAlreadyWaiting = !!session.waiting_state;
             session.waiting_state = waitingState;
+            // Si es la primera vez que entra en waiting, sincronizar sprint-plan.json (#1356)
+            // post-git-push.js ya maneja el caso "git push" con promoción de cola.
+            // Aquí cubrimos otros signals (gh pr create, /delivery) — solo actualizamos el estado.
+            if (!wasAlreadyWaiting && session.branch && session.branch.startsWith("agent/")) {
+                syncWaitingToSprintPlan(session.branch, waitingState.reason);
+            }
         } else if (session.waiting_state) {
             // Si hay actividad real (no Bash trivial) después de espera → limpiar
             const clearOnTools = ["Edit", "Write", "NotebookEdit", "TaskCreate"];
