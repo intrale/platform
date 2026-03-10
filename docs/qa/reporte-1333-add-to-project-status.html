@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte QA #1333 — add-to-project-status.js</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }
+  h1 { color: #1a1a2e; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+  h2 { color: #333; margin-top: 30px; }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  th { background: #f5f5f5; padding: 10px; text-align: left; border: 1px solid #ddd; }
+  td { padding: 10px; border: 1px solid #ddd; }
+  .pass { color: #4CAF50; font-weight: bold; }
+  .fail { color: #f44336; font-weight: bold; }
+  .badge-pass { background: #4CAF50; color: white; padding: 3px 10px; border-radius: 12px; font-size: 13px; }
+  .badge-fail { background: #f44336; color: white; padding: 3px 10px; border-radius: 12px; font-size: 13px; }
+  pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+  .summary { background: #e8f5e9; border-left: 4px solid #4CAF50; padding: 15px; margin: 20px 0; }
+  .meta { color: #666; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>Reporte QA — Issue #1333<br><small>Validación de add-to-project-status.js</small></h1>
+
+<p class="meta">
+  <strong>Fecha:</strong> 2026-03-10 |
+  <strong>Agente:</strong> agent/1333-qa-test-status-project-v2 |
+  <strong>Issue:</strong> <a href="https://github.com/intrale/platform/issues/1333">#1333</a>
+</p>
+
+<div class="summary">
+  <strong>Resultado:</strong> <span class="badge-pass">APROBADO</span><br>
+  6/6 tests unitarios pasaron. Test de integración real con Project V2 exitoso.
+</div>
+
+<h2>Objetivo</h2>
+<p>Validar que el script <code>.claude/hooks/add-to-project-status.js</code> funciona correctamente asignando el Status en el Project V2 al crear issues, y que la función <code>getBacklogOptionId</code> en <code>project-utils.js</code> determina el backlog correcto según las labels del issue.</p>
+
+<h2>Test de integración real</h2>
+<table>
+  <tr>
+    <th>Issue</th>
+    <th>Labels</th>
+    <th>Status esperado</th>
+    <th>Status asignado</th>
+    <th>ItemId en Project V2</th>
+    <th>Resultado</th>
+  </tr>
+  <tr>
+    <td>#1333</td>
+    <td>backlog-tecnico, area:infra</td>
+    <td>Backlog Tecnico</td>
+    <td>Backlog Tecnico (4fef8264)</td>
+    <td>PVTI_lADOBTzBoc4AyMGfzgm_iWM</td>
+    <td class="pass">✓ PASS</td>
+  </tr>
+</table>
+
+<p><strong>Verificación en Project V2 via GraphQL:</strong></p>
+<pre>{"data":{"node":{"fieldValueByName":{"name":"Backlog Tecnico","optionId":"4fef8264"}}}}</pre>
+
+<h2>Tests unitarios — getBacklogOptionId (test-p28)</h2>
+<table>
+  <tr>
+    <th>#</th>
+    <th>Descripción</th>
+    <th>Labels de entrada</th>
+    <th>OptionId esperado</th>
+    <th>Resultado</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td>Backlog Tecnico (default)</td>
+    <td>backlog-tecnico, area:infra</td>
+    <td>4fef8264</td>
+    <td class="pass">✓ PASS</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Backlog CLIENTE</td>
+    <td>app:client, area:ux</td>
+    <td>74b58f5f</td>
+    <td class="pass">✓ PASS</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>Backlog NEGOCIO</td>
+    <td>app:business</td>
+    <td>1e51e9ff</td>
+    <td class="pass">✓ PASS</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>Backlog DELIVERY</td>
+    <td>app:delivery</td>
+    <td>0fa31c9f</td>
+    <td class="pass">✓ PASS</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>Sin labels (default Tecnico)</td>
+    <td>(vacío)</td>
+    <td>4fef8264</td>
+    <td class="pass">✓ PASS</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>STATUS_OPTIONS completo</td>
+    <td>—</td>
+    <td>Todas las columnas</td>
+    <td class="pass">✓ PASS</td>
+  </tr>
+</table>
+
+<h2>Artefactos generados</h2>
+<ul>
+  <li><code>.claude/hooks/tests/test-p28-add-to-project-status.js</code> — Suite de tests unitarios</li>
+</ul>
+
+<h2>Conclusión</h2>
+<p>
+  El script <code>add-to-project-status.js</code> funciona correctamente:
+  <ul>
+    <li>Agrega el issue al Project V2 via <code>gh project item-add</code></li>
+    <li>Obtiene el itemId via GraphQL</li>
+    <li>Asigna el status correcto via <code>updateProjectV2ItemFieldValue</code></li>
+    <li>La función <code>getBacklogOptionId</code> determina el backlog correcto según labels (app:client, app:business, app:delivery, o Tecnico por defecto)</li>
+  </ul>
+  El script es utilizado correctamente por los skills <code>/historia</code> y <code>/refinar</code>.
+</p>
+
+<p class="meta">Cierra #1333</p>
+</body>
+</html>
