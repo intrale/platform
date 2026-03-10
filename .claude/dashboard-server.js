@@ -47,6 +47,50 @@ const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
 const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const AGENT_METRICS_FILE = path.join(CLAUDE_DIR, "hooks", "agent-metrics.json");
+const ICONS_DIR = path.join(CLAUDE_DIR, "icons");
+
+// --- Load agent icons as base64 data URIs (once at startup) ---
+function loadIconDataUri(filename) {
+  try {
+    const filePath = path.join(ICONS_DIR, filename);
+    const buf = fs.readFileSync(filePath);
+    const ext = path.extname(filename).toLowerCase();
+    const mime = ext === ".svg" ? "image/svg+xml" : "image/png";
+    return "data:" + mime + ";base64," + buf.toString("base64");
+  } catch { return ""; }
+}
+
+const AGENT_ICON_MAP = {
+  "Guru": loadIconDataUri("guru.png"),
+  "Doc": loadIconDataUri("doc.png"),
+  "Doc (historia)": loadIconDataUri("doc.png"),
+  "Doc (refinar)": loadIconDataUri("doc.png"),
+  "Doc (priorizar)": loadIconDataUri("doc.png"),
+  "Planner": loadIconDataUri("planner.png"),
+  "DeliveryManager": loadIconDataUri("delivery.png"),
+  "Tester": loadIconDataUri("tester.png"),
+  "Monitor": loadIconDataUri("monitor.png"),
+  "Builder": loadIconDataUri("builder.png"),
+  "Review": loadIconDataUri("review.png"),
+  "QA": loadIconDataUri("qa.png"),
+  "Auth": loadIconDataUri("auth.png"),
+  "UX Specialist": loadIconDataUri("ux.png"),
+  "Scrum Master": loadIconDataUri("scrum.png"),
+  "PO": loadIconDataUri("po.png"),
+  "BackendDev": loadIconDataUri("backend.png"),
+  "AndroidDev": loadIconDataUri("android.png"),
+  "iOSDev": loadIconDataUri("ios.png"),
+  "WebDev": loadIconDataUri("web.png"),
+  "DesktopDev": loadIconDataUri("desktop.png"),
+  "Ops": loadIconDataUri("ops.png"),
+  "Branch": loadIconDataUri("branch.png"),
+};
+const CLAUDE_ICONS = [
+  loadIconDataUri("claude-1.svg"),
+  loadIconDataUri("claude-2.svg"),
+  loadIconDataUri("claude-3.svg"),
+  loadIconDataUri("claude-4.svg"),
+].filter(Boolean);
 
 // Logging a archivo (detached processes no tienen stdio)
 const _origLog = console.log;
@@ -124,6 +168,15 @@ function collectData() {
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+  // Normalizar: combinar agentes + _queue + _completed en agentes para que el panel los muestre todos
+  if (sprintPlan) {
+    const combined = [
+      ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
+      ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
+      ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
+    ];
+    sprintPlan.agentes = combined;
+  }
   const sprintIssueSet = new Set(
     sprintPlan && Array.isArray(sprintPlan.agentes)
       ? sprintPlan.agentes.map(a => String(a.issue))
@@ -873,11 +926,18 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // Draw nodes
+  const imgSize = nodeR * 1.4;
+  let _claudeIdx = 0;
   for (const name of nodes) {
     const pos = positions[name];
     if (!pos) continue;
     const color = (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
-    const icon = (AGENT_ICONS && AGENT_ICONS[name]) || "&#129302;";
+    // Resolve icon data URI for SVG <image>
+    let iconUrl = AGENT_ICON_MAP[name];
+    if (!iconUrl && CLAUDE_ICONS.length > 0) {
+      iconUrl = CLAUDE_ICONS[_claudeIdx % CLAUDE_ICONS.length];
+      _claudeIdx++;
+    }
     const isActive = activeAgents.has(name);
     const isDone = doneAgents.has(name);
     const opacity = (!isActive && !isDone) ? "0.35" : "1";
@@ -890,11 +950,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     } else {
       svg += `/>`;
     }
-    // Icon or check mark
+    // Icon: done checkmark or agent image
     if (isDone && !isActive) {
       svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
-    } else {
-      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="14">${icon}</text>`;
+    } else if (iconUrl) {
+      svg += `<image href="${iconUrl}" x="${(pos.x - imgSize / 2).toFixed(1)}" y="${(pos.y - imgSize / 2).toFixed(1)}" width="${imgSize.toFixed(0)}" height="${imgSize.toFixed(0)}" style="pointer-events:none;"/>`;
     }
     // Label below node
     const shortName = name.length > 12 ? name.substring(0, 10) + "\u2026" : name;
@@ -921,20 +981,15 @@ function renderHTML(data, theme) {
     return `${x},${y}`;
   }).join(" ");
 
-  // Agent icons
-  const AGENT_ICONS = {
-    "Guru": "&#129497;", "Doc": "&#128214;", "Doc (historia)": "&#128214;",
-    "Doc (refinar)": "&#128214;", "Doc (priorizar)": "&#128214;",
-    "Planner": "&#128218;", "DeliveryManager": "&#127939;",
-    "Tester": "&#128373;&#65039;", "Monitor": "&#128065;&#65039;",
-    "Builder": "&#127959;&#65039;", "Review": "&#128270;",
-    "QA": "&#128373;&#65039;", "Auth": "&#128274;",
-    "UX Specialist": "&#127912;", "Scrum Master": "&#128203;",
-    "PO": "&#128188;", "BackendDev": "&#9881;&#65039;",
-    "AndroidDev": "&#128241;", "iOSDev": "&#127823;",
-    "WebDev": "&#127760;", "DesktopDev": "&#128187;",
-    "Ops": "&#128295;", "Branch": "&#127796;", "Claude": "&#129302;",
-  };
+  // Agent icons — <img> tags with base64 data URIs from .claude/icons/
+  const AGENT_ICONS = {};
+  for (const [name, uri] of Object.entries(AGENT_ICON_MAP)) {
+    AGENT_ICONS[name] = uri ? '<img src="' + uri + '" width="16" height="16" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name) + '">' : "";
+  }
+  if (CLAUDE_ICONS.length > 0) {
+    AGENT_ICONS["Claude"] = '<img src="' + CLAUDE_ICONS[0] + '" width="16" height="16" style="vertical-align:middle;margin-right:2px;" alt="Claude">';
+  }
+  let claudeIconIdx = 0;
 
   const AGENT_GRADIENTS = {
     "Guru": "linear-gradient(135deg, #6366f1, #a78bfa)",
@@ -976,14 +1031,19 @@ function renderHTML(data, theme) {
   // --- EJECUCIÓN PANEL ---
   let ejecutionHtml = "";
 
-  // Sprint sub-view
-  if (data.sprintPlan && Array.isArray(data.sprintPlan.agentes) && data.sprintPlan.agentes.length > 0) {
+  // Sprint sub-view — combinar agentes + _queue + _completed para vista completa
+  const allSprintAgentes = data.sprintPlan ? [
+    ...(Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : []),
+    ...(Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : []),
+    ...(Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : []),
+  ] : [];
+  if (data.sprintPlan && allSprintAgentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
     const sprintId = data.sprintPlan.sprint_id || null;
     const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
     const isFinalizado = sprintEstado === "finalizado";
     // Progreso del sprint: usar tareas si existen, si no, contar agentes done/total
-    const agentesTotal = data.sprintPlan.agentes.length;
+    const agentesTotal = allSprintAgentes.length;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
     const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
     let sprintPct;
@@ -993,12 +1053,14 @@ function renderHTML(data, theme) {
       // Sin tareas registradas: heurística por action_count ponderado por size
       const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
       let totalPctSum = 0;
-      for (const ag of data.sprintPlan.agentes) {
+      for (const ag of allSprintAgentes) {
         const match = data.sprintSessions.find(s => {
           const m = (s.branch || "").match(/(\d+)/);
           return m && m[1] === String(ag.issue);
         });
-        if (match && (match._status === "done" || match._status === "stale")) {
+        if (ag.completed_at) {
+          totalPctSum += 100;
+        } else if (match && (match._status === "done" || match._status === "stale")) {
           totalPctSum += 100;
         } else if (match && match.action_count > 0) {
           const expected = sizeExpected[ag.size] || 60;
@@ -1019,7 +1081,7 @@ function renderHTML(data, theme) {
       </div>
       <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>
       <div class="exec-table">`;
-    for (const ag of data.sprintPlan.agentes) {
+    for (const ag of allSprintAgentes) {
       const matchSession = data.sprintSessions.find(s => {
         const issueMatch = (s.branch || "").match(/(\d+)/);
         return issueMatch && issueMatch[1] === String(ag.issue);
