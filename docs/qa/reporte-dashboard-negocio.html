@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Dashboard de Negocio</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .tag-ux { background: #e8eaf6; color: #283593; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .ux-note { background: #e0f7fa; border-left: 3px solid #00838f; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .overlay-example { background: #111; color: #fff; border-radius: 4px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; margin: 6px 0; position: relative; }
+  .overlay-example .ov-id { color: #64b5f6; font-weight: bold; }
+  .overlay-example .ov-step { color: #81c784; }
+  .overlay-example .ov-result { color: #ffb74d; }
+  .overlay-example .ov-time { color: #bbb; position: absolute; right: 10px; top: 10px; }
+  .ok { color: #2e7d32; font-weight: 600; }
+  .warn { color: #f57f17; font-weight: 600; }
+  .fail { color: #b71c1c; font-weight: 600; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Dashboard de Negocio (Business Admin)</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+    <span class="tag tag-ux">UX</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
+    análisis UX, guiones de video y criterios de evidencia para la<br>
+    funcionalidad del Dashboard de Negocio de la plataforma Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Issue:</strong> #1116</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-03-10</p>
+    <p><strong>Generado por:</strong> PO + QA + UX Agents</p>
+    <p><strong>Pantallas:</strong> DashboardScreen.kt, DashboardViewModel.kt</p>
+    <p><strong>Flavor:</strong> business (com.intrale.app.business)</p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Indice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo PO</a></li>
+  <li><a href="#s2">Estandar de Evidencia en Video</a></li>
+  <li><a href="#s3">Arquitectura del Dashboard de Negocio</a></li>
+  <li><a href="#s4">Analisis UX — Evaluacion por Heuristicas</a></li>
+  <li><a href="#s5">Flujo A — Carga del Dashboard (un solo negocio)</a></li>
+  <li><a href="#s6">Flujo B — Selector de Negocio (multiples negocios)</a></li>
+  <li><a href="#s7">Flujo C — Tarjetas de Resumen y Navegacion</a></li>
+  <li><a href="#s8">Flujo D — Estados de Error y Reintento</a></li>
+  <li><a href="#s9">Flujo E — SessionStore y Persistencia de Seleccion</a></li>
+  <li><a href="#s10">Catalogo de Casos de Prueba</a></li>
+  <li><a href="#s11">Resumen de Cobertura y Gaps</a></li>
+</ol>
+
+<!-- ========== S1: RESUMEN EJECUTIVO PO ========== -->
+<h2 id="s1">1. Resumen Ejecutivo PO</h2>
+
+<h3>Contexto de negocio</h3>
+<p>El <strong>Dashboard de Negocio</strong> es la pantalla principal post-login del BusinessAdmin. Es el punto de entrada al ecosistema operativo del comercio: desde aqui el administrador del negocio accede a sus productos, monitorea pedidos pendientes, gestiona repartidores y configura el negocio. Un administrador puede gestionar <em>multiples negocios</em> — el selector permite cambiar de contexto en tiempo real.</p>
+
+<div class="note">
+  <strong>Ola de prioridad 2 — Core de negocio.</strong> Esta pantalla es el corazon de la app business. Un fallo aqui bloquea toda la operacion del comercio.
+</div>
+
+<h3>Scope de la funcionalidad</h3>
+<table>
+  <tr><th>Componente</th><th>Descripcion</th><th>Archivo</th><th>Estado</th></tr>
+  <tr><td>Selector de negocio</td><td>Dropdown para usuarios con 2+ negocios. Auto-seleccion si tiene 1 solo.</td><td>DashboardScreen.kt:96-123</td><td class="ok">Implementado</td></tr>
+  <tr><td>Tarjeta Productos</td><td>Muestra count de productos. CTA → ProductListScreen (/business/products)</td><td>DashboardScreen.kt:156-164</td><td class="ok">Implementado</td></tr>
+  <tr><td>Tarjeta Pedidos</td><td>Muestra pedidos pendientes. CTA → DeliveryDashboardScreen</td><td>DashboardScreen.kt:165-174</td><td class="ok">Implementado</td></tr>
+  <tr><td>Tarjeta Delivery</td><td>Muestra repartidores activos. CTA → DeliveryDashboardScreen</td><td>DashboardScreen.kt:175-182</td><td class="ok">Implementado</td></tr>
+  <tr><td>Tarjeta Configuracion</td><td>CTA → PersonalizationScreen (/personalization)</td><td>DashboardScreen.kt:183-189</td><td class="ok">Implementado</td></tr>
+  <tr><td>SessionStore.selectedBusinessId</td><td>Persiste el negocio seleccionado entre navegaciones</td><td>DashboardViewModel.kt:66-73</td><td class="ok">Implementado</td></tr>
+  <tr><td>Tests unitarios DashboardViewModel</td><td>Casos de exito, error, multi-negocio</td><td>—</td><td class="fail">AUSENTE</td></tr>
+  <tr><td>Tests E2E Dashboard</td><td>Flujo completo en emulador</td><td>DashboardGuardTest.kt (solo guard)</td><td class="warn">Parcial</td></tr>
+</table>
+
+<h3>Criterios de aceptacion del issue #1116</h3>
+<table>
+  <tr><th>#</th><th>Criterio</th><th>Estado de compliance</th></tr>
+  <tr><td>1</td><td>Reporte PDF v2.0 con diagramas Mermaid</td><td class="ok">✅ Generado en este documento</td></tr>
+  <tr><td>2</td><td>Casos de prueba con guion de video y evidencia requerida</td><td class="ok">✅ Ver Seccion 10</td></tr>
+  <tr><td>3</td><td>Cobertura de selector de negocio + tarjetas + navegacion</td><td class="ok">✅ Ver Flujos A–E</td></tr>
+</table>
+
+<h3>Reglas de negocio aplicables</h3>
+<ul>
+  <li><strong>RN-DASH-01</strong>: Un BusinessAdmin puede administrar multiples negocios. La combinacion email + business + profile es unica.</li>
+  <li><strong>RN-DASH-02</strong>: Si el usuario administra exactamente 1 negocio, se auto-selecciona sin mostrar el selector.</li>
+  <li><strong>RN-DASH-03</strong>: Si el usuario administra 2+ negocios, se muestra el dropdown. Si habia una seleccion previa en SessionStore y sigue siendo valida, se restaura.</li>
+  <li><strong>RN-DASH-04</strong>: El summary (metricas) solo se carga si hay un negocio seleccionado. Sin negocio → estado MissingBusiness.</li>
+  <li><strong>RN-DASH-05</strong>: El endpoint de metricas requiere JWT valido (SecuredFunction). Un token expirado devuelve 401.</li>
+  <li><strong>RN-DASH-06</strong>: Los negocios se obtienen via GET /{biz}/searchBusinesses (requiere token).</li>
+</ul>
+
+<!-- ========== S2: ESTANDAR DE VIDEO ========== -->
+<h2 id="s2">2. Estandar de Evidencia en Video</h2>
+
+<div class="video-std">
+  <strong>Estandar v2.0 — Guion de Video para QA</strong><br>
+  Cada video debe comenzar mostrando el ID del caso de prueba en overlay. Duración recomendada: 30-90 segundos por caso.
+  Resolución mínima: 1080x1920 (portrait). Formato: MP4 o WebM.
+</div>
+
+<h4>Overlay requerido en cada video</h4>
+<div class="overlay-example">
+  <span class="ov-id">TC-DASH-01</span><br>
+  <span class="ov-step">Paso 1: Login como BusinessAdmin con 1 negocio</span><br>
+  <span class="ov-result">Esperado: Dashboard carga auto-seleccionando el negocio</span>
+  <span class="ov-time">00:03</span>
+</div>
+
+<h4>Estructura del guion de video</h4>
+<table>
+  <tr><th>Seccion</th><th>Que mostrar</th><th>Duracion</th></tr>
+  <tr><td>Apertura</td><td>Overlay con ID + descripcion del caso</td><td>3 seg</td></tr>
+  <tr><td>Precondicion</td><td>Estado inicial (usuario logueado, pantalla anterior)</td><td>5-10 seg</td></tr>
+  <tr><td>Ejecucion</td><td>Pasos del caso uno a uno, con pausa en cada resultado</td><td>15-60 seg</td></tr>
+  <tr><td>Resultado</td><td>Pantalla final con el resultado esperado claramente visible</td><td>5-10 seg</td></tr>
+  <tr><td>Cierre</td><td>Overlay con PASS / FAIL</td><td>3 seg</td></tr>
+</table>
+
+<!-- ========== S3: ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura del Dashboard de Negocio</h2>
+
+<h3>Diagrama de capas (Architecture)</h3>
+<div class="mermaid">
+graph TD
+    A["DashboardScreen\n(Composable UI)"] -->|"viewModel()"| B["DashboardViewModel\n(State Manager)"]
+    B -->|"toGetBusinesses.execute()"| C["ToGetBusinesses\n(Use Case Interface)"]
+    B -->|"toGetBusinessDashboardSummary.execute()"| D["ToGetBusinessDashboardSummary\n(Use Case Interface)"]
+    B -->|"SessionStore.updateSelectedBusiness()"| E["SessionStore\n(Estado Global de Sesion)"]
+    C -->|"GET /{biz}/searchBusinesses"| F["ClientSearchBusinessesService\n(HTTP Client)"]
+    D -->|"GET /{biz}/business/{id}/dashboard/summary"| G["ClientGetBusinessDashboardSummaryService\n(HTTP Client)"]
+    F -->|"JWT"| H["AWS Cognito / Backend\n(SecuredFunction)"]
+    G -->|"JWT"| H
+    style A fill:#e3f2fd
+    style B fill:#e8f5e9
+    style E fill:#fff8e1
+    style H fill:#ffebee
+</div>
+
+<h3>Modelo de estado (DashboardUiState)</h3>
+<div class="mermaid">
+classDiagram
+    class DashboardUiState {
+        +businesses: List~DashboardBusiness~
+        +selectedBusinessId: String?
+        +selectedBusinessName: String
+        +isBusinessLoading: Boolean
+        +businessError: String?
+        +summaryState: BusinessDashboardSummaryState
+    }
+    class BusinessDashboardSummaryState {
+        <<sealed>>
+        Loading
+        MissingBusiness
+        Error(message)
+        Loaded(summary)
+    }
+    class DashboardBusiness {
+        +id: String
+        +name: String
+    }
+    class BusinessDashboardSummaryDTO {
+        +productsCount: Int
+        +pendingOrders: Int
+        +activeDrivers: Int
+    }
+    DashboardUiState --> BusinessDashboardSummaryState
+    DashboardUiState --> DashboardBusiness
+    BusinessDashboardSummaryState --> BusinessDashboardSummaryDTO
+</div>
+
+<h3>Navegacion desde el Dashboard</h3>
+<div class="mermaid">
+graph LR
+    DASH["/dashboard\nDashboardScreen"] -->|"Gestionar productos"| PROD["/business/products\nProductListScreen"]
+    DASH -->|"Ver pedidos"| DELDASH["/delivery/dashboard\nDeliveryDashboardScreen"]
+    DASH -->|"Gestionar delivery"| DELDASH
+    DASH -->|"Abrir configuracion"| PERS["/personalization\nPersonalizationScreen"]
+    style DASH fill:#e3f2fd,stroke:#1565c0
+</div>
+
+<!-- ========== S4: ANALISIS UX ========== -->
+<h2 id="s4">4. Analisis UX — Evaluacion por Heuristicas</h2>
+
+<div class="ux-note">
+  <strong>Contexto de uso — BusinessAdmin (H14):</strong> Usa la app en el local/cocina, con interrupciones frecuentes. Necesita dashboard rapido, notificaciones de pedidos, gestion batch. Tipicamente en Android, en orientacion portrait, con una mano.
+</div>
+
+<h3>Score UX: 68/100 — Aceptable (necesita mejoras)</h3>
+
+<table>
+  <tr><th>#</th><th>Heuristica</th><th>Estado</th><th>Hallazgos</th></tr>
+  <tr>
+    <td>H1</td>
+    <td>Visibilidad del estado</td>
+    <td class="warn">⚠️ Parcial</td>
+    <td>Loading usa <code>Text("Cargando negocios...")</code> en vez de skeleton o CircularProgressIndicator. Sin indicador visual de progreso en carga de metricas.</td>
+  </tr>
+  <tr>
+    <td>H2</td>
+    <td>Correspondencia sistema-mundo real</td>
+    <td class="ok">✅ Bien</td>
+    <td>"Panel principal", "Productos", "Pedidos pendientes", "Repartidores activos" — terminologia correcta en espanol argentino.</td>
+  </tr>
+  <tr>
+    <td>H3</td>
+    <td>Control y libertad</td>
+    <td class="warn">⚠️ Parcial</td>
+    <td>Boton "Reintentar" en error de summary: OK. Sin pull-to-refresh para recargar datos manualmente. Sin confirmacion en cambio de negocio (podria generar confusion).</td>
+  </tr>
+  <tr>
+    <td>H4</td>
+    <td>Consistencia y estandares</td>
+    <td class="warn">⚠️ Parcial</td>
+    <td>Cards usan <code>Card(colors=surface)</code> en vez de <code>ElevatedCard</code> para contenido interactivo (segun ux-patterns.md). CTAs usan <code>TextButton</code> en vez de un patron estandar de card action.</td>
+  </tr>
+  <tr>
+    <td>H5</td>
+    <td>Prevencion de errores</td>
+    <td class="ok">✅ Bien</td>
+    <td>Auto-seleccion cuando hay 1 negocio. Validacion de sessionStore antes de usar businessId. No se puede cargar summary sin negocio seleccionado.</td>
+  </tr>
+  <tr>
+    <td>H6</td>
+    <td>Reconocimiento antes que recuerdo</td>
+    <td class="ok">✅ Bien</td>
+    <td>BusinessHeader muestra el nombre del negocio activo. SessionStore restaura seleccion previa. Selector muestra el nombre actual en el campo.</td>
+  </tr>
+  <tr>
+    <td>H7</td>
+    <td>Flexibilidad y eficiencia</td>
+    <td class="warn">⚠️ Parcial</td>
+    <td>Sin pull-to-refresh. Sin atajo para recargar metricas. Sin opcion de ocultar/mostrar tarjetas. Sin acciones batch.</td>
+  </tr>
+  <tr>
+    <td>H8</td>
+    <td>Diseño estetico y minimalista</td>
+    <td class="ok">✅ Bien</td>
+    <td>Layout limpio con cards. Jerarquia tipografica clara (headlineMedium > bodyLarge > titleMedium). Espaciado consistente via MaterialTheme.spacing.</td>
+  </tr>
+  <tr>
+    <td>H9</td>
+    <td>Recuperacion de errores</td>
+    <td class="ok">✅ Bien</td>
+    <td>Error de businesses: mensaje en espanol. Error de summary: mensaje + boton "Reintentar". Estado MissingBusiness con instruccion clara.</td>
+  </tr>
+  <tr>
+    <td>H11</td>
+    <td>Responsividad y adaptabilidad</td>
+    <td class="ok">✅ Bien</td>
+    <td>fillMaxWidth en todas las cards. verticalScroll para pantallas chicas. Espaciado via MaterialTheme.spacing tokens.</td>
+  </tr>
+  <tr>
+    <td>H13</td>
+    <td>Accesibilidad</td>
+    <td class="warn">⚠️ Parcial</td>
+    <td>Sin contentDescription en las DashboardActionCards. TextButton tiene texto — OK. ExposedDropdownMenuBox usa semantica de Material3. Sin semantics {} explícito en las cards.</td>
+  </tr>
+  <tr>
+    <td>H14</td>
+    <td>Contexto de uso por rol</td>
+    <td class="warn">⚠️ Parcial</td>
+    <td>Metricas numericas directas: OK. Sin grafico del dia (ventas). Sin notificacion de pedidos entrantes desde el Dashboard. Para BusinessAdmin en cocina, los botones podrian ser mas grandes.</td>
+  </tr>
+</table>
+
+<h3>Friction points detectados</h3>
+<table>
+  <tr><th>#</th><th>Pantalla/Componente</th><th>Problema</th><th>Impacto</th><th>Esfuerzo fix</th><th>Prioridad</th></tr>
+  <tr>
+    <td>FP-01</td>
+    <td>DashboardScreen — carga inicial</td>
+    <td>Loading mostrado como texto plano en vez de skeleton/spinner. El usuario puede creer que la pantalla se "quedo trabada".</td>
+    <td>Medio</td><td>S</td><td>P2</td>
+  </tr>
+  <tr>
+    <td>FP-02</td>
+    <td>DashboardActionCard</td>
+    <td>Usa <code>Card(surface)</code> en vez de <code>ElevatedCard</code>. Segun ux-patterns.md, el contenido interactivo debe usar ElevatedCard para comunicar que es clickable.</td>
+    <td>Bajo</td><td>S</td><td>P3</td>
+  </tr>
+  <tr>
+    <td>FP-03</td>
+    <td>DashboardScreen — lista de negocios</td>
+    <td>Si el usuario tiene 0 negocios administrados, no hay un empty state dedicado. Cae en summaryState=MissingBusiness con un mensaje poco descriptivo.</td>
+    <td>Bajo</td><td>S</td><td>P2</td>
+  </tr>
+  <tr>
+    <td>FP-04</td>
+    <td>DashboardScreen — refresco</td>
+    <td>No hay pull-to-refresh. El usuario no puede recargar datos sin salir y entrar.</td>
+    <td>Medio</td><td>M</td><td>P2</td>
+  </tr>
+  <tr>
+    <td>FP-05</td>
+    <td>DashboardActionCard</td>
+    <td>Sin contentDescription en las cards para TalkBack. Usuarios con discapacidad visual no pueden navegar eficientemente.</td>
+    <td>Alto (accesibilidad)</td><td>S</td><td>P1</td>
+  </tr>
+</table>
+
+<!-- ========== S5: FLUJO A ========== -->
+<h2 id="s5">5. Flujo A — Carga del Dashboard (un solo negocio)</h2>
+
+<p>Escenario: el usuario administra exactamente 1 negocio. El sistema auto-selecciona sin mostrar selector.</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as Usuario (BusinessAdmin)
+    participant DS as DashboardScreen
+    participant VM as DashboardViewModel
+    participant SVC as ToGetBusinesses
+    participant SUM as ToGetBusinessDashboardSummary
+    participant SS as SessionStore
+
+    U->>DS: Navega a /dashboard (post-login)
+    DS->>VM: LaunchedEffect → viewModel.loadDashboard()
+    DS-->>U: Muestra "Cargando negocios..."
+    VM->>SVC: execute()
+    SVC-->>VM: Result.success([{id:"biz-001", name:"La Trattoria"}])
+    VM->>VM: businesses.size == 1 → resolvedBusinessId = "biz-001"
+    VM->>SS: updateSelectedBusiness("biz-001")
+    VM->>VM: state.copy(isBusinessLoading=false, summaryState=Loading)
+    DS-->>U: Muestra header "Negocio: La Trattoria"
+    DS-->>U: Muestra "Cargando metricas del panel..."
+    VM->>SUM: execute("biz-001")
+    SUM-->>VM: Result.success({productsCount:12, pendingOrders:3, activeDrivers:2})
+    VM->>VM: state.copy(summaryState=Loaded(summary))
+    DS-->>U: Muestra 4 tarjetas con metricas
+</div>
+
+<h3>Estados de UI en este flujo</h3>
+<table>
+  <tr><th>Momento</th><th>isBusinessLoading</th><th>summaryState</th><th>Visible en pantalla</th></tr>
+  <tr><td>Inicial</td><td>true</td><td>Loading</td><td>"Cargando negocios..."</td></tr>
+  <tr><td>Negocios cargados</td><td>false</td><td>Loading</td><td>Header + "Cargando metricas..."</td></tr>
+  <tr><td>Summary cargado</td><td>false</td><td>Loaded</td><td>Header + 4 tarjetas con metricas</td></tr>
+</table>
+
+<!-- ========== S6: FLUJO B ========== -->
+<h2 id="s6">6. Flujo B — Selector de Negocio (multiples negocios)</h2>
+
+<p>Escenario: el usuario administra 2+ negocios. Puede cambiar el contexto activo via dropdown.</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as Usuario
+    participant DS as DashboardScreen
+    participant VM as DashboardViewModel
+    participant SVC as ToGetBusinesses
+    participant SUM as ToGetBusinessDashboardSummary
+    participant SS as SessionStore
+
+    DS->>VM: loadDashboard()
+    VM->>SVC: execute()
+    SVC-->>VM: Result.success([{id:"biz-001","La Trattoria"}, {id:"biz-002","El Bodegon"}])
+    VM->>VM: businesses.size > 1, storedBusinessId=null → resolvedBusinessId=null
+    VM->>VM: summaryState = MissingBusiness
+    DS-->>U: Muestra dropdown selector + "Selecciona un negocio para ver las metricas"
+
+    U->>DS: Abre dropdown, selecciona "El Bodegon"
+    DS->>VM: selectBusiness("biz-002")
+    VM->>SS: updateSelectedBusiness("biz-002")
+    VM->>VM: state.copy(selectedBusinessId="biz-002", summaryState=Loading)
+    DS-->>U: Header: "Negocio: El Bodegon" + "Cargando metricas..."
+    VM->>SUM: execute("biz-002")
+    SUM-->>VM: Result.success({productsCount:8, pendingOrders:5, activeDrivers:1})
+    DS-->>U: 4 tarjetas actualizadas para "El Bodegon"
+
+    Note over U,SS: Si el usuario vuelve al Dashboard, SessionStore restaura "biz-002"
+</div>
+
+<h3>Logica de resolucion del negocio seleccionado</h3>
+<div class="precond">
+<strong>Codigo fuente (DashboardViewModel.kt:66-87):</strong><br>
+<code>
+val resolvedBusinessId = when {<br>
+&nbsp;&nbsp;businesses.size == 1 → businesses.first().id<br>
+&nbsp;&nbsp;storedBusinessId != null &amp;&amp; businesses.any { it.id == storedBusinessId } → storedBusinessId<br>
+&nbsp;&nbsp;else → null<br>
+}
+</code>
+</div>
+
+<!-- ========== S7: FLUJO C ========== -->
+<h2 id="s7">7. Flujo C — Tarjetas de Resumen y Navegacion</h2>
+
+<p>Una vez cargadas las metricas, el usuario puede navegar a sub-secciones mediante los CTA de cada tarjeta.</p>
+
+<div class="mermaid">
+graph TD
+    DASH["DashboardScreen\nEstado: Loaded"]
+    PROD_CARD["Tarjeta Productos\n'12 productos cargados'\n[Gestionar productos]"]
+    ORD_CARD["Tarjeta Pedidos\n'3 pedidos pendientes'\n[Ver pedidos]"]
+    DEL_CARD["Tarjeta Delivery\n'2 repartidores activos'\n[Gestionar delivery]"]
+    SET_CARD["Tarjeta Configuracion\n'Ajustes y personalizacion'\n[Abrir configuracion]"]
+
+    DASH --> PROD_CARD
+    DASH --> ORD_CARD
+    DASH --> DEL_CARD
+    DASH --> SET_CARD
+
+    PROD_CARD -->|"navigate(BUSINESS_PRODUCTS_PATH)"| PROD_LIST["ProductListScreen\n/business/products"]
+    ORD_CARD -->|"navigate(DELIVERY_DASHBOARD_PATH)"| DEL_DASH["DeliveryDashboardScreen\n/delivery/dashboard"]
+    DEL_CARD -->|"navigate(DELIVERY_DASHBOARD_PATH)"| DEL_DASH
+    SET_CARD -->|"navigate(PERSONALIZATION_PATH)"| PERS["PersonalizationScreen\n/personalization"]
+
+    style DASH fill:#e3f2fd,stroke:#1565c0
+    style PROD_LIST fill:#e8f5e9
+    style DEL_DASH fill:#e8f5e9
+    style PERS fill:#e8f5e9
+</div>
+
+<div class="ux-note">
+  <strong>UX Nota:</strong> La tarjeta "Pedidos" y "Delivery" navegan ambas a DELIVERY_DASHBOARD_PATH. Esto es correcto segun la implementacion actual, pero podria confundir al usuario ya que son dos tarjetas con metricas distintas que llevan al mismo destino.
+</div>
+
+<!-- ========== S8: FLUJO D ========== -->
+<h2 id="s8">8. Flujo D — Estados de Error y Reintento</h2>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> BusinessLoading: loadDashboard()
+    BusinessLoading --> BusinessLoaded: API success
+    BusinessLoading --> BusinessError: API failure
+
+    BusinessLoaded --> SummaryLoading: negocio seleccionado
+    BusinessLoaded --> MissingBusiness: sin negocio seleccionado
+
+    SummaryLoading --> SummaryLoaded: API success
+    SummaryLoading --> SummaryError: API failure
+
+    SummaryError --> SummaryLoading: refreshSummary() [reintentar]
+    MissingBusiness --> SummaryLoading: selectBusiness()
+
+    BusinessError --> BusinessError: sin accion disponible (sin reintentar)
+    SummaryLoaded --> SummaryLoading: selectBusiness() [cambio de negocio]
+</div>
+
+<div class="note">
+  <strong>Gap detectado (PO):</strong> El estado <code>BusinessError</code> no tiene boton "Reintentar". Si falla la carga de negocios, el usuario queda bloqueado sin poder refrescar. Se recomienda agregar un CTA de reintento para el error de businesses.
+</div>
+
+<h3>Mensajes de error actuales</h3>
+<table>
+  <tr><th>Estado</th><th>Mensaje mostrado</th><th>Accion disponible</th></tr>
+  <tr><td>BusinessError</td><td>"No pudimos cargar tus negocios."</td><td class="fail">❌ Ninguna (sin reintentar)</td></tr>
+  <tr><td>SummaryError</td><td>"No pudimos cargar las metricas del panel."</td><td class="ok">✅ Boton "Reintentar"</td></tr>
+  <tr><td>MissingBusiness</td><td>"Selecciona un negocio para ver las metricas."</td><td class="ok">✅ Selector visible</td></tr>
+</table>
+
+<!-- ========== S9: FLUJO E ========== -->
+<h2 id="s9">9. Flujo E — SessionStore y Persistencia de Seleccion</h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as Usuario
+    participant VM as DashboardViewModel
+    participant SS as SessionStore
+
+    Note over U,SS: Primera visita — selecciona "El Bodegon"
+    VM->>SS: updateSelectedBusiness("biz-002")
+    SS->>SS: sessionState.value.selectedBusinessId = "biz-002"
+
+    Note over U,SS: Navega a ProductListScreen y vuelve
+    VM->>SS: sessionState.value.selectedBusinessId (leer)
+    SS-->>VM: "biz-002"
+    VM->>VM: storedBusinessId="biz-002" → resolvedBusinessId="biz-002"
+    VM-->>U: Restaura "El Bodegon" automaticamente
+
+    Note over U,SS: Cambio de negocio a "La Trattoria"
+    U->>VM: selectBusiness("biz-001")
+    VM->>SS: updateSelectedBusiness("biz-001")
+    VM->>VM: state.copy(selectedBusinessId="biz-001", summaryState=Loading)
+</div>
+
+<div class="precond">
+  <strong>Nota de implementacion:</strong> Si el negocio almacenado en SessionStore ya no esta en la lista actual (ej: perdi acceso), la logica cae al caso <code>else → null</code> y se pide seleccion manual. Esto es correcto y no genera un estado invalido.
+</div>
+
+<!-- ========== S10: CASOS DE PRUEBA ========== -->
+<h2 id="s10">10. Catalogo de Casos de Prueba</h2>
+
+<!-- CATEGORIA: HAPPY PATH -->
+<h3>Categoria 1 — Happy Path</h3>
+
+<table>
+  <tr>
+    <th style="width:12%">ID</th>
+    <th style="width:28%">Descripcion</th>
+    <th style="width:20%">Precondicion</th>
+    <th style="width:20%">Pasos</th>
+    <th style="width:12%">Resultado esperado</th>
+    <th style="width:8%">Evidencia</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-01</span><br><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span></td>
+    <td>Dashboard carga correctamente con un solo negocio</td>
+    <td class="precond">Usuario autenticado como BusinessAdmin con exactamente 1 negocio aprobado. Token JWT valido.</td>
+    <td>
+      1. Abrir app Intrale Negocios<br>
+      2. Completar login<br>
+      3. Observar pantalla Dashboard
+    </td>
+    <td>
+      - Header muestra "Negocio: [nombre]"<br>
+      - 4 tarjetas visibles con metricas numericas<br>
+      - Sin selector de dropdown
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar estado inicial de carga (texto "Cargando...") y luego las 4 tarjetas cargadas.<br>
+      📸 Screenshot: pantalla final con las 4 tarjetas.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-02</span><br><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span></td>
+    <td>Dashboard con multiples negocios muestra selector</td>
+    <td class="precond">Usuario autenticado con 2+ negocios aprobados. Sin seleccion previa en SessionStore.</td>
+    <td>
+      1. Login y navegar a Dashboard<br>
+      2. Observar si aparece dropdown<br>
+      3. Verificar mensaje de MissingBusiness
+    </td>
+    <td>
+      - Dropdown "Selecciona un negocio" visible<br>
+      - Mensaje "Selecciona un negocio para ver las metricas"<br>
+      - Sin tarjetas de metricas aun
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar el dropdown con los negocios disponibles.<br>
+      📸 Screenshot: dropdown expandido con lista de negocios.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-03</span><br><span class="tag tag-high">HIGH</span></td>
+    <td>Seleccion de negocio actualiza metricas</td>
+    <td class="precond">Usuario con 2+ negocios en pantalla Dashboard con dropdown visible.</td>
+    <td>
+      1. Tocar el dropdown<br>
+      2. Seleccionar "El Bodegon"<br>
+      3. Esperar carga de metricas
+    </td>
+    <td>
+      - Header cambia a "Negocio: El Bodegon"<br>
+      - Tarjetas muestran metricas de El Bodegon<br>
+      - Dropdown muestra "El Bodegon" como seleccionado
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar apertura del dropdown, seleccion, transicion de carga y tarjetas actualizadas.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-04</span><br><span class="tag tag-high">HIGH</span></td>
+    <td>Tarjeta Productos navega correctamente</td>
+    <td class="precond">Dashboard cargado con negocio seleccionado y metricas visibles.</td>
+    <td>
+      1. Observar tarjeta "Productos"<br>
+      2. Verificar que muestra el count de productos<br>
+      3. Tocar "Gestionar productos"
+    </td>
+    <td>
+      - Tarjeta muestra "X productos cargados"<br>
+      - Navegacion a /business/products<br>
+      - ProductListScreen se abre
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar la tarjeta con el count y la navegacion a la lista de productos.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-05</span><br><span class="tag tag-high">HIGH</span></td>
+    <td>Tarjeta Pedidos navega a DeliveryDashboard</td>
+    <td class="precond">Dashboard cargado con negocio seleccionado.</td>
+    <td>
+      1. Observar tarjeta "Pedidos"<br>
+      2. Verificar count de pedidos pendientes<br>
+      3. Tocar "Ver pedidos"
+    </td>
+    <td>
+      - Tarjeta muestra "X pedidos pendientes"<br>
+      - Navegacion a /delivery/dashboard
+    </td>
+    <td class="evidence-col video-script">
+      📸 Screenshot: tarjeta con count y pantalla destino.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-06</span><br><span class="tag tag-med">MED</span></td>
+    <td>Tarjeta Configuracion navega a Personalizacion</td>
+    <td class="precond">Dashboard cargado con negocio seleccionado.</td>
+    <td>
+      1. Tocar "Abrir configuracion"
+    </td>
+    <td>
+      - Navegacion a /personalization<br>
+      - PersonalizationScreen visible
+    </td>
+    <td class="evidence-col video-script">
+      📸 Screenshot: PersonalizationScreen.
+    </td>
+  </tr>
+</table>
+
+<!-- CATEGORIA: PERSISTENCIA DE SESION -->
+<h3>Categoria 2 — SessionStore y Persistencia</h3>
+
+<table>
+  <tr>
+    <th style="width:12%">ID</th>
+    <th style="width:28%">Descripcion</th>
+    <th style="width:20%">Precondicion</th>
+    <th style="width:20%">Pasos</th>
+    <th style="width:12%">Resultado esperado</th>
+    <th style="width:8%">Evidencia</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-07</span><br><span class="tag tag-high">HIGH</span></td>
+    <td>Seleccion de negocio persiste al navegar y volver</td>
+    <td class="precond">Usuario con 2+ negocios. Selecciono "El Bodegon" en el Dashboard.</td>
+    <td>
+      1. Seleccionar "El Bodegon" en dropdown<br>
+      2. Navegar a ProductListScreen<br>
+      3. Presionar Back<br>
+      4. Observar el Dashboard
+    </td>
+    <td>
+      - Dashboard restaura "El Bodegon" automaticamente<br>
+      - Sin necesidad de volver a seleccionar<br>
+      - Metricas de "El Bodegon" visibles
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar seleccion, navegacion, back y restauracion.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-08</span><br><span class="tag tag-edge">EDGE</span></td>
+    <td>Negocio en SessionStore ya no pertenece al usuario</td>
+    <td class="precond">SessionStore tiene guardado "biz-003" pero el usuario ya no administra ese negocio (fue removido). El usuario tiene solo "biz-001".</td>
+    <td>
+      1. Iniciar sesion<br>
+      2. Navegar a Dashboard
+    </td>
+    <td>
+      - El sistema ignora "biz-003" de SessionStore<br>
+      - Auto-selecciona "biz-001" (el unico disponible)<br>
+      - Sin crash ni error visible
+    </td>
+    <td class="evidence-col video-script">
+      📸 Screenshot: Dashboard con el negocio valido auto-seleccionado.
+    </td>
+  </tr>
+</table>
+
+<!-- CATEGORIA: ESTADOS DE ERROR -->
+<h3>Categoria 3 — Estados de Error y Recuperacion</h3>
+
+<table>
+  <tr>
+    <th style="width:12%">ID</th>
+    <th style="width:28%">Descripcion</th>
+    <th style="width:20%">Precondicion</th>
+    <th style="width:20%">Pasos</th>
+    <th style="width:12%">Resultado esperado</th>
+    <th style="width:8%">Evidencia</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-09</span><br><span class="tag tag-high">HIGH</span></td>
+    <td>Error en carga de negocios (sin red)</td>
+    <td class="precond">Usuario autenticado. Conexion a internet deshabilitada.</td>
+    <td>
+      1. Deshabilitar red<br>
+      2. Navegar a Dashboard
+    </td>
+    <td>
+      - Muestra "No pudimos cargar tus negocios."<br>
+      - Sin crash<br>
+      - Sin selector ni tarjetas
+    </td>
+    <td class="evidence-col video-script">
+      📸 Screenshot: estado de error de businesses.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-10</span><br><span class="tag tag-high">HIGH</span></td>
+    <td>Error en carga de metricas — boton Reintentar</td>
+    <td class="precond">Negocios cargados OK. Backend falla al devolver el summary (simular con proxy).</td>
+    <td>
+      1. Cargar Dashboard con negocio seleccionado<br>
+      2. Simular error en /business/{id}/dashboard/summary<br>
+      3. Observar estado de error<br>
+      4. Tocar "Reintentar"
+    </td>
+    <td>
+      - Muestra "No pudimos cargar las metricas del panel."<br>
+      - Boton "Reintentar" visible<br>
+      - Al tocar, recarga las metricas<br>
+      - Si el segundo intento es exitoso, muestra las 4 tarjetas
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar el estado de error, el boton reintentar y la recuperacion exitosa.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-11</span><br><span class="tag tag-edge">EDGE</span></td>
+    <td>Token JWT expirado al cargar Dashboard</td>
+    <td class="precond">Token almacenado expirado. Backend devuelve 401.</td>
+    <td>
+      1. Esperar expiracion del token (o manipular manualmente)<br>
+      2. Navegar a Dashboard
+    </td>
+    <td>
+      - Error visible al usuario (mensaje de red o autenticacion)<br>
+      - Sin crash<br>
+      - Idealmente redireccion a Login (verificar comportamiento actual)
+    </td>
+    <td class="evidence-col video-script">
+      📸 Screenshot: comportamiento al recibir 401.
+    </td>
+  </tr>
+</table>
+
+<!-- CATEGORIA: UX Y FEEDBACK -->
+<h3>Categoria 4 — UX y Feedback Visual</h3>
+
+<table>
+  <tr>
+    <th style="width:12%">ID</th>
+    <th style="width:28%">Descripcion</th>
+    <th style="width:20%">Precondicion</th>
+    <th style="width:20%">Pasos</th>
+    <th style="width:12%">Resultado esperado</th>
+    <th style="width:8%">Evidencia</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-12</span><br><span class="tag tag-ux">UX</span> <span class="tag tag-med">MED</span></td>
+    <td>Estado de carga visible durante loadDashboard</td>
+    <td class="precond">Conexion lenta simulada (throttle 3G).</td>
+    <td>
+      1. Simular red lenta<br>
+      2. Navegar a Dashboard<br>
+      3. Observar feedback de carga
+    </td>
+    <td>
+      - Texto "Cargando negocios..." visible mientras espera<br>
+      - Luego "Cargando metricas del panel..." durante carga de summary<br>
+      - Usuario no ve pantalla en blanco
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: en modo slow network, mostrar los estados de carga texto antes del contenido.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-13</span><br><span class="tag tag-ux">UX</span> <span class="tag tag-low">LOW</span></td>
+    <td>Strings sin prefijo de fallback (guard test)</td>
+    <td class="precond">App en ejecucion en emulador Android. DashboardGuardTest configurado.</td>
+    <td>
+      1. Ejecutar DashboardGuardTest<br>
+      2. Verificar que no hay textos con RES_ERROR_PREFIX
+    </td>
+    <td>
+      - Test PASS<br>
+      - 0 textos con prefijo de fallback visible<br>
+      - "Panel principal" visible en la pantalla
+    </td>
+    <td class="evidence-col video-script">
+      📸 Screenshot: resultado del test en Android Studio o log de consola.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-14</span><br><span class="tag tag-ux">UX</span> <span class="tag tag-med">MED</span></td>
+    <td>Cambio de negocio actualiza header inmediatamente</td>
+    <td class="precond">Dashboard con 2 negocios cargados y "La Trattoria" seleccionada.</td>
+    <td>
+      1. Abrir dropdown<br>
+      2. Seleccionar "El Bodegon"
+    </td>
+    <td>
+      - Header cambia a "Negocio: El Bodegon" inmediatamente<br>
+      - Summary entra en estado Loading<br>
+      - Sin lag visible entre seleccion y cambio de header
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar el cambio de header al seleccionar en el dropdown.
+    </td>
+  </tr>
+</table>
+
+<!-- CATEGORIA: MULTIPLES NEGOCIOS -->
+<h3>Categoria 5 — Edge Cases Multiples Negocios</h3>
+
+<table>
+  <tr>
+    <th style="width:12%">ID</th>
+    <th style="width:28%">Descripcion</th>
+    <th style="width:20%">Precondicion</th>
+    <th style="width:20%">Pasos</th>
+    <th style="width:12%">Resultado esperado</th>
+    <th style="width:8%">Evidencia</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-15</span><br><span class="tag tag-edge">EDGE</span></td>
+    <td>Cambio de negocio mientras metricas cargan</td>
+    <td class="precond">Dashboard con selector visible. Red lenta simulada.</td>
+    <td>
+      1. Seleccionar "La Trattoria" (carga lenta)<br>
+      2. Inmediatamente seleccionar "El Bodegon"
+    </td>
+    <td>
+      - Se muestran las metricas del ultimo negocio seleccionado ("El Bodegon")<br>
+      - Sin mezcla de datos entre negocios<br>
+      - Sin crash
+    </td>
+    <td class="evidence-col video-script">
+      🎬 Video: mostrar que los datos mostrados corresponden al ultimo negocio seleccionado.
+    </td>
+  </tr>
+  <tr>
+    <td><span class="case-id">TC-DASH-16</span><br><span class="tag tag-edge">EDGE</span></td>
+    <td>refreshSummary cuando selectedBusinessId es null</td>
+    <td class="precond">Dashboard con estado MissingBusiness (sin negocio seleccionado).</td>
+    <td>
+      1. Forzar llamada a refreshSummary() sin negocio seleccionado (via test unitario o depuracion)
+    </td>
+    <td>
+      - Estado cambia a MissingBusiness<br>
+      - Sin llamada al backend<br>
+      - Sin crash
+    </td>
+    <td class="evidence-col video-script">
+      📸 Resultado de test unitario en consola.
+    </td>
+  </tr>
+</table>
+
+<!-- ========== S11: COBERTURA Y GAPS ========== -->
+<h2 id="s11">11. Resumen de Cobertura y Gaps</h2>
+
+<h3>Mapa de cobertura de casos de prueba</h3>
+<div class="mermaid">
+pie title Distribucion de Casos de Prueba (16 total)
+    "Happy Path" : 6
+    "Persistencia de Sesion" : 2
+    "Estados de Error" : 3
+    "UX y Feedback" : 3
+    "Edge Cases" : 2
+</div>
+
+<h3>Tabla de cobertura por componente</h3>
+<table>
+  <tr><th>Componente</th><th>Casos cubiertos</th><th>Nivel de cobertura</th></tr>
+  <tr><td>Auto-seleccion 1 negocio</td><td>TC-DASH-01</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Selector multi-negocio</td><td>TC-DASH-02, TC-DASH-03, TC-DASH-14, TC-DASH-15</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Tarjeta Productos</td><td>TC-DASH-04</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Tarjeta Pedidos</td><td>TC-DASH-05</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Tarjeta Delivery</td><td>(incluido en TC-DASH-01)</td><td class="warn">⚠️ Basico</td></tr>
+  <tr><td>Tarjeta Configuracion</td><td>TC-DASH-06</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>SessionStore persistencia</td><td>TC-DASH-07, TC-DASH-08</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Error carga negocios</td><td>TC-DASH-09</td><td class="warn">⚠️ Parcial (sin reintentar)</td></tr>
+  <tr><td>Error carga metricas + reintentar</td><td>TC-DASH-10</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Token expirado</td><td>TC-DASH-11</td><td class="warn">⚠️ Basico</td></tr>
+  <tr><td>Estados de carga visibles</td><td>TC-DASH-12</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Strings sin fallback</td><td>TC-DASH-13 (DashboardGuardTest)</td><td class="ok">✅ Cubierto</td></tr>
+  <tr><td>Tests unitarios ViewModel</td><td>—</td><td class="fail">❌ AUSENTES</td></tr>
+</table>
+
+<h3>Gaps de producto detectados</h3>
+<table>
+  <tr><th>ID</th><th>Gap</th><th>Impacto</th><th>Prioridad</th></tr>
+  <tr><td>GAP-01</td><td>Sin boton "Reintentar" para error de carga de negocios (BusinessError state)</td><td>Alto: usuario bloqueado sin poder recuperarse</td><td class="fail">P1</td></tr>
+  <tr><td>GAP-02</td><td>Sin contentDescription en DashboardActionCard para accesibilidad TalkBack</td><td>Alto: usuarios con discapacidad visual no pueden navegar</td><td class="fail">P1</td></tr>
+  <tr><td>GAP-03</td><td>Sin pull-to-refresh para actualizar datos del dashboard</td><td>Medio: usuario no puede refrescar sin salir y entrar</td><td class="warn">P2</td></tr>
+  <tr><td>GAP-04</td><td>Sin tests unitarios del DashboardViewModel</td><td>Alto: regressions no detectables sin E2E completo</td><td class="warn">P2</td></tr>
+  <tr><td>GAP-05</td><td>Cards usan Card(surface) en vez de ElevatedCard para contenido interactivo</td><td>Bajo: inconsistencia con ux-patterns.md</td><td class="ok">P3</td></tr>
+  <tr><td>GAP-06</td><td>Estado "0 negocios" no tiene empty state dedicado con CTA</td><td>Bajo: mensaje generico MissingBusiness</td><td class="ok">P3</td></tr>
+  <tr><td>GAP-07</td><td>Tarjetas Pedidos y Delivery navegan ambas al mismo destino (DELIVERY_DASHBOARD_PATH)</td><td>Medio: puede confundir al BusinessAdmin</td><td class="warn">P2</td></tr>
+</table>
+
+<h3>Recomendaciones finales PO</h3>
+<ol>
+  <li><strong>Agregar Reintentar en BusinessError</strong> (GAP-01): Agregar un <code>TextButton(onClick = { loadDashboard() })</code> cuando <code>businessError != null</code>. Critico para usabilidad.</li>
+  <li><strong>contentDescription en cards</strong> (GAP-02): Agregar <code>semantics { contentDescription = "$title: $metric. $actionLabel" }</code> en cada DashboardActionCard.</li>
+  <li><strong>Tests unitarios DashboardViewModel</strong> (GAP-04): Crear <code>DashboardViewModelTest.kt</code> cubriendo: carga exitosa 1 negocio, multiples negocios, error de negocios, error de summary, selectBusiness, refreshSummary.</li>
+  <li><strong>Pull-to-refresh</strong> (GAP-03): Integrar <code>PullRefreshIndicator</code> de Material3 para permitir refresco manual.</li>
+</ol>
+
+<hr>
+<p style="text-align:center; color:#888; font-size:9px; margin-top:20px;">
+  Reporte PO+QA v2.0 — Issue #1116 — Dashboard de Negocio — Intrale Platform — 2026-03-10<br>
+  Generado por PO Agent + QA Agent + UX Agent
+</p>
+
+</body>
+</html>
