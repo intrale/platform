@@ -144,6 +144,39 @@ function isLockStale(data) {
     return false;
 }
 
+/**
+ * Matar otros procesos telegram-commander.js antes de arrancar.
+ * Esto previene conflictos 409 de Telegram cuando el lockfile se pierde
+ * pero el proceso viejo sigue vivo haciendo polling.
+ */
+function killOtherCommanders() {
+    try {
+        const { execSync } = require("child_process");
+        const wmicOutput = execSync(
+            'wmic process where "name=\'node.exe\' and commandline like \'%telegram-commander.js%\'" get ProcessId /FORMAT:LIST 2>NUL',
+            { encoding: "utf8", timeout: 5000, windowsHide: true }
+        );
+        const pids = [];
+        wmicOutput.split("\n").forEach(line => {
+            const m = line.trim().match(/^ProcessId=(\d+)$/);
+            if (m) pids.push(parseInt(m[1]));
+        });
+        const myPid = process.pid;
+        const others = pids.filter(p => p !== myPid);
+        for (const pid of others) {
+            try {
+                execSync("taskkill /PID " + pid + " /F 2>NUL", { timeout: 3000, windowsHide: true });
+                log("Matado commander previo (PID " + pid + ") para evitar conflicto 409");
+            } catch (e) {}
+        }
+        if (others.length > 0) {
+            log("Eliminados " + others.length + " commander(s) previo(s): " + others.join(", "));
+        }
+    } catch (e) {
+        log("killOtherCommanders error (no crítico): " + e.message);
+    }
+}
+
 function acquireLock() {
     if (fs.existsSync(LOCK_FILE)) {
         let data;
@@ -165,6 +198,10 @@ function acquireLock() {
             }
         }
     }
+
+    // Matar cualquier commander zombie antes de tomar el lock
+    killOtherCommanders();
+
     fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), "utf8");
     log("Lock adquirido (PID " + process.pid + ")");
 }

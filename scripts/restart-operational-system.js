@@ -205,7 +205,15 @@ function cleanStaleProcesses() {
                 if (fs.existsSync(lockFile)) {
                     try {
                         const content = fs.readFileSync(lockFile, "utf8").trim();
-                        const pid = parseInt(content, 10);
+                        // Lockfile puede ser JSON {"pid":NNN,...} o número plano
+                        let pid;
+                        try {
+                            const parsed = JSON.parse(content);
+                            pid = parsed.pid;
+                        } catch (e) {
+                            pid = parseInt(content, 10);
+                        }
+                        if (!pid || isNaN(pid)) continue; // No borrar si no podemos determinar el PID
                         // Verificar si el PID sigue vivo
                         const check = execSafe("tasklist /FI \"PID eq " + pid + "\" /NH 2>&1");
                         if (!check || !check.includes("" + pid)) {
@@ -226,7 +234,14 @@ function cleanStaleProcesses() {
                 if (fs.existsSync(lockFile)) {
                     try {
                         const content = fs.readFileSync(lockFile, "utf8").trim();
-                        const pid = parseInt(content, 10);
+                        let pid;
+                        try {
+                            const parsed = JSON.parse(content);
+                            pid = parsed.pid;
+                        } catch (e) {
+                            pid = parseInt(content, 10);
+                        }
+                        if (!pid || isNaN(pid)) continue;
                         const check = execSafe("kill -0 " + pid + " 2>&1");
                         if (check !== null && check.includes("No such process")) {
                             fs.unlinkSync(lockFile);
