@@ -32,6 +32,7 @@ Sos pragmático, data-driven y facilitador (no bloqueador). Adaptás la metodolo
 | `mejoras` | Mejoras | Sugerir cambios a la metodología basados en patrones observados |
 | `repair [--auto\|--confirm]` | Reparación | Auto-reparar inconsistencias del sprint (--auto: sin confirmar, --confirm: con confirmación) |
 | `close` | Cierre forzado | Cerrar sprint forzadamente, mover issues pendientes, generar reporte final |
+| `consistencia` | Consistencia | Auditar duplicaciones, historias contenidas y gaps de cobertura del backlog |
 
 ---
 
@@ -677,6 +678,137 @@ Ejecutar Paso 0 + Health, luego analizar patrones y sugerir cambios concretos a 
 
 **IMPORTANTE:** No aplicar cambios automáticamente a `methodology.md`. Solo sugerir.
 El usuario decide si aceptar las mejoras. Si acepta, indicar qué líneas cambiar.
+
+---
+
+## Modo: Consistencia (`/scrum consistencia`)
+
+Audita el backlog del Project V2 buscando:
+- **Duplicaciones potenciales**: issues con títulos/objetivos similares (fuzzy matching)
+- **Historias parcialmente contenidas**: si el 70%+ de los criterios de A están en B → alerta
+- **Recomendaciones de consolidación**: fusionar, absorber, revisar o vincular
+
+### Paso CON1: Ejecutar script de auditoría
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-consistency-check.js --report --alert 2>/dev/null
+```
+
+Flags disponibles:
+- `--report` → genera reporte HTML en `docs/qa/` y lo envía a Telegram
+- `--alert`  → envía alerta Telegram si se detectan N≥2 duplicaciones potenciales
+- `--json`   → imprime resultado JSON completo en stdout
+
+El script:
+1. Obtiene todos los issues **abiertos y activos** del Project V2 (estado: Todo, In Progress, Blocked, Ready, Refined, Backlogs — excluye Done)
+2. Para cada par de issues, calcula **score compuesto = 40% título + 60% objetivo** (Jaccard similarity con tokens)
+3. Marca como duplicación si score ≥ 50% (alta: ≥75%, media: 60-74%, baja: 50-59%)
+4. Extrae criterios de aceptación (checkboxes `- [ ]`) y mide qué % de los criterios de A aparecen en B
+5. Marca contención si ≥ 70% de criterios de A están en B
+
+### Paso CON2: Parsear resultado JSON
+
+```bash
+cat /c/Workspaces/Intrale/platform/.claude/hooks/scrum-consistency-report.json 2>/dev/null
+```
+
+Extraer:
+- `duplicates[]` — pares con score ≥ 50%
+- `contained[]` — historias con ≥70% criterios en otra
+- `recommendations[]` — acciones sugeridas (merge, absorb, review, link)
+- `summary.health` — consistent | attention | critical
+
+### Paso CON3: Reportar resultados
+
+Mostrar resumen en formato:
+
+```
+## 🔍 Auditoría de Consistencia del Backlog — [fecha]
+
+### Duplicaciones potenciales (N)
+| Issue A | Issue B | Score | Severidad | Acción |
+|---------|---------|-------|-----------|--------|
+| #123 Título... | #456 Título... | 78% | 🔴 Alta | Fusionar |
+| #789 Título... | #012 Título... | 62% | 🟡 Media | Revisar |
+
+### Historias parcialmente contenidas (N)
+| Contenida | En historia | % cubierto | Criterios | Acción |
+|-----------|-------------|-----------|-----------|--------|
+| #123 | #456 | 85% | 6/7 | Absorber criterios únicos en #456 |
+
+### Recomendaciones de consolidación (N)
+1. [tipo] — #A y #B — [acción concreta]
+
+### Matriz de decisión rápida
+| Situación | Decisión |
+|-----------|----------|
+| Similaridad ≥ 75% | Fusionar |
+| Similaridad 60-74% | Revisar + posible ampliación |
+| 70%+ criterios de A en B | Absorber |
+| Mismo área + estimaciones S | Agrupar en épica |
+| Mismos actores + distinto módulo | Mantener separadas con referencia cruzada |
+| Similaridad < 50% | Crear nueva historia |
+
+### Estado del backlog: [🟢 Consistente | 🟡 Atención | 🔴 Inconsistencias]
+```
+
+### Paso CON4: Acciones post-auditoría (solo en modo manual)
+
+Si el usuario pide acción sobre las recomendaciones:
+
+**Para fusionar** — NO es acción automática del Scrum Master, solo informar:
+- El Scrum Master informa cuáles issues fusionar, pero la fusión la ejecuta el agente `/refinar`
+- Comentar en ambos issues: `🔍 Scrum Master: posible duplicación con #N detectada (similaridad: X%). Revisar para consolidar.`
+
+**Para vincular**:
+```bash
+gh issue comment <NUMBER> --repo $GH_REPO \
+  --body "🔍 Scrum Master: posible relación con #N detectada (similaridad: X%). Revisar si están relacionados."
+```
+
+**NO hacer automáticamente**:
+- NO cerrar issues (eso es de `/po` o del equipo)
+- NO editar body de issues (eso es de `/refinar`)
+- Solo informar y vincular vía comentario
+
+---
+
+## Matriz de decisión — cuándo crear nueva historia vs. ampliar vs. agrupar
+
+Esta guía aplica al proceso de **revisión pre-creación** que debe ejecutar el Scrum Master
+antes de aprobar una nueva historia:
+
+### Paso 1: Buscar en backlog existente
+
+```bash
+gh issue list --repo intrale/platform --state open --limit 200 \
+  --json number,title,labels | grep -i "<palabras-clave>"
+```
+
+O ejecutar el script de consistencia en modo dry-run para detectar similitudes.
+
+### Paso 2: Aplicar la matriz
+
+| Condición | Decisión | Justificación |
+|-----------|----------|---------------|
+| Score ≥ 75% con issue existente | 🔴 NO crear — Fusionar | Duplicado claro |
+| Score 60-74% con issue existente | 🟡 Revisar antes de crear | Posible solapamiento |
+| 70%+ criterios ya en issue existente | 🟡 Ampliar existente | Sub-feature del mismo dominio |
+| Issue existente en Done | ✅ Crear nueva | El trabajo previo ya está hecho |
+| Issue existente Blocked | 🔵 Desbloquear + ampliar | Preferir resolver el bloqueo |
+| Distinto módulo + actor diferente | ✅ Crear nueva | Scope independiente |
+| Estimación S + 3+ issues similares S | 🟡 Agrupar en épica | Eficiencia de gestión |
+| Score < 50% con todos los issues | ✅ Crear nueva | Claramente diferente |
+
+### Paso 3: Documentar la decisión en el issue
+
+Al crear un nuevo issue que fue revisado contra el backlog, incluir en el body:
+```
+## Revisión de consistencia
+- Verificado contra backlog existente el [fecha]
+- Issues similares revisados: #N (score X%), #M (score Y%)
+- Decisión: crear nueva historia porque [razón]
+```
 
 ---
 
