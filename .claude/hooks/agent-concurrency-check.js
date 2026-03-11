@@ -18,6 +18,31 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
+// ─── Sprint sync: actualizar roadmap en puntos clave (#1433) ─────────────────
+
+let _sprintSyncAcc = null;
+function getSprintSyncAcc() {
+    if (_sprintSyncAcc !== null) return _sprintSyncAcc;
+    try {
+        _sprintSyncAcc = require("./sprint-sync");
+    } catch (e) {
+        _sprintSyncAcc = { syncRoadmapOnly: () => {} };
+    }
+    return _sprintSyncAcc;
+}
+
+/**
+ * Llama syncRoadmapOnly(plan) de sprint-sync.js con manejo de errores.
+ * Actualiza roadmap.json a partir del estado actual de sprint-plan.
+ */
+function callSyncRoadmapOnly(plan) {
+    try {
+        getSprintSyncAcc().syncRoadmapOnly(plan);
+    } catch (e) {
+        // No propagar errores del sync para no interrumpir la lógica del hook
+    }
+}
+
 // Bug fix (#1266): Resolver el repo principal desde worktrees.
 // Cuando el hook se ejecuta en un worktree (agent/*), CLAUDE_PROJECT_DIR
 // puede apuntar al worktree vacío. Usamos git worktree list para encontrar
@@ -180,8 +205,6 @@ function releaseLock() {
 }
 
 // ─── Detección de sesiones zombie (#1408) ────────────────────────────────────
-
-const ZOMBIE_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutos (threshold configurable)
 
 // Verifica si un PID de proceso sigue vivo en Windows
 function isPidAlive(pid) {
@@ -630,6 +653,7 @@ async function sweepWaitingAgents(plan) {
             const entry = buildCompletedEntry(ag, null, "ok");
             plan._completed.push(entry);
             log("Sweep: #" + ag.issue + " → _completed (PR mergeada detectada)");
+            callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al completar agente
             freed++;
             await notify(
                 "✅ <b>Agente #" + ag.issue + " completado (sweep periódico)</b>\n" +
@@ -801,6 +825,7 @@ async function processInput() {
                 if (!nextAgente.prompt) nextAgente.prompt = generateDefaultPrompt(nextAgente.issue, nextAgente.slug);
                 plan.agentes = (plan.agentes || []).concat([nextAgente]);
                 setQueue(plan, newQueue);
+                callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al promover
                 savePlan(plan);
                 await updateProjectV2(nextAgente.issue, "In Progress");
                 const launched = launchAgent(nextAgente);
@@ -838,6 +863,7 @@ async function processInput() {
             const completedEntry = buildCompletedEntry(finishingAgent, session, "ok");
             plan._completed.push(completedEntry);
             log("Agente #" + finishingAgent.issue + " → _completed (PR mergeada, duracion=" + completedEntry.duracion_min + "m)");
+            callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al completar agente
             await notify(
                 "✅ <b>Agente #" + finishingAgent.issue + " completado</b>\n" +
                 "PR mergeada · Slug: " + escHtml(finishingAgent.slug) + "\n" +
@@ -932,6 +958,7 @@ async function processInput() {
             // Mover de cola a agentes
             plan.agentes.push(nextAgente);
             setQueue(plan, newQueue);
+            callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al promover de cola
 
             savePlan(plan);
             log("Movido issue #" + nextAgente.issue + " de cola a agentes (número " + nextAgente.numero + ")");
