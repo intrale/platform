@@ -152,10 +152,12 @@ function markSessionDone(sessionId) {
         if (!fs.existsSync(sessionFile)) return;
 
         const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+        const completedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
         session.status = "done";
-        session.last_activity_ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        session.completed_at = completedAt;
+        session.last_activity_ts = completedAt;
         fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");
-        log("Sesion " + shortId + " marcada como done");
+        log("Sesion " + shortId + " marcada como done con completed_at=" + completedAt);
     } catch(e) { log("Error marcando sesion done: " + e.message); }
 }
 

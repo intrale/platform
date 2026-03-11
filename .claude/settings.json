@@ -35,6 +35,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-monitor-bg.js",
             "timeout": 60000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/pr-cleanup.js",
+            "timeout": 120000
           }
         ]
       }
@@ -148,6 +153,11 @@
           {
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/agent-progress.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/session-gc.js",
             "timeout": 5000
           }
         ]

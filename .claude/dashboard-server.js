@@ -215,10 +215,11 @@ function collectData() {
   );
 
   // Sessions
-  // Umbral zombie: sesiones con status "active" pero sin actividad por >30min se omiten
-  // (alineado con SKILL.md). Sesiones del sprint nunca se descartan por edad.
+  // Solo mostrar sesiones active y stale (no done).
+  // - active: con actividad reciente (incluyendo sprint sessions que pueden compilar largos)
+  // - stale: sin actividad >2h, marcadas por activity-logger.js
+  // - done: excluidas — el session-gc.js las limpia después de 1h
   const ZOMBIE_THRESHOLD_MS = 30 * 60 * 1000;
-  const DONE_SHOW_MS = 15 * 60 * 1000;
   const sessions = [];
   try {
     if (fs.existsSync(SESSIONS_DIR)) {
@@ -228,17 +229,17 @@ function collectData() {
         if (!s) continue;
         // Solo sesiones parent (ignorar sub-agentes)
         if (s.type && s.type !== "parent") continue;
+        // Excluir sesiones done — ya terminaron, el GC las limpiará
+        if (s.status === "done") continue;
         const status = getSessionStatus(s);
         const elapsed = now - new Date(s.last_activity_ts).getTime();
         const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
         const isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
         if (!isSprintSession) {
-          // Zombie: status active pero sin actividad >30min → omitir
-          if (s.status !== "done" && elapsed > ZOMBIE_THRESHOLD_MS) continue;
-          // Sesiones done: mostrar solo por 15min
-          if (s.status === "done" && elapsed > DONE_SHOW_MS) continue;
+          // Zombie: status active pero sin actividad >30min → omitir (stale se muestra igual)
+          if (s.status === "active" && elapsed > ZOMBIE_THRESHOLD_MS) continue;
         }
-        // Sprint sessions: nunca se descartan por edad (agentes pueden compilar largos)
+        // Sprint sessions activas: nunca se descartan por edad (agentes pueden compilar largos)
         sessions.push({ ...s, _status: status });
       }
     }
@@ -1837,7 +1838,8 @@ function renderHTML(data, theme) {
     /* Layout */
     .grid-2col { display: grid; grid-template-columns: 1fr 340px; gap: 14px; margin-bottom: 16px; }
     .grid-2equal { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
-    .grid-flow { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+    .grid-flow { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 16px; }
+    .grid-activity { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
 
     /* Panel base */
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; }
@@ -1969,7 +1971,7 @@ function renderHTML(data, theme) {
     /* Responsive */
     @media (max-width: 768px) {
       .kpi-row { grid-template-columns: repeat(3, 1fr); }
-      .grid-2col, .grid-2equal, .grid-flow { grid-template-columns: 1fr; }
+      .grid-2col, .grid-2equal, .grid-flow, .grid-activity { grid-template-columns: 1fr; }
       .kv { font-size: 22px; }
       .metrics-grid { grid-template-columns: repeat(2, 1fr); }
     }
@@ -2052,23 +2054,19 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
-    <!-- Flow Graph + Feed -->
+    <!-- Fila 1: Flujo de agentes (ancho completo) #1378 -->
     <div class="grid-flow" data-panel="sessions">
       <div class="panel">
         <div class="panel-title">Flujo de agentes <span class="chip chip-blue">${data.agentNodes.length} nodos</span></div>
         ${flowGraphHtml}
       </div>
+    </div>
+
+    <!-- Fila 2: Actividad en vivo | Permisos #1378 -->
+    <div class="grid-activity">
       <div class="feed-panel" id="activity-feed">
         <div class="panel-title">Actividad en vivo <span class="chip ${data.blockingRelations.length > 0 ? 'chip-red' : 'chip-green'}">${data.blockingRelations.length > 0 ? data.blockingRelations.length + ' bloq.' : 'Sin bloqueos'}</span></div>
         ${feedHtml}
-      </div>
-    </div>
-
-    <!-- Métricas Claude + Tasks -->
-    <div class="grid-2equal" data-panel="metrics">
-      <div class="panel">
-        <div class="panel-title">Uso de agentes <span class="chip chip-purple">${totalSkillInvocations} inv.</span></div>
-        ${metricsHtml}
       </div>
       <div class="panel">
         <div class="panel-title">Permisos <span class="chip chip-blue">${permTotal} total</span></div>
@@ -2076,10 +2074,16 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
-    <!-- Agent Metrics (#1226) -->
-    <div class="panel" style="margin-bottom:16px;">
-      <div class="panel-title">M&eacute;tricas de agentes <span class="chip chip-purple">${metricsToShow.length} ses.</span></div>
-      ${agentMetricsHtml}
+    <!-- Fila 3: Uso de agentes | Métricas de agentes #1378 -->
+    <div class="grid-2equal" data-panel="metrics">
+      <div class="panel">
+        <div class="panel-title">Uso de agentes <span class="chip chip-purple">${totalSkillInvocations} inv.</span></div>
+        ${metricsHtml}
+      </div>
+      <div class="panel">
+        <div class="panel-title">M&eacute;tricas de agentes <span class="chip chip-purple">${metricsToShow.length} ses.</span></div>
+        ${agentMetricsHtml}
+      </div>
     </div>
 
     <!-- Roadmap Gantt (#1382) -->

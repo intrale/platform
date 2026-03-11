@@ -520,4 +520,13 @@ enum class MessageKey {
     typography_preview_sample_body,
     typography_preview_sample_button,
     typography_access_denied,
+    password_strength_weak,
+    password_strength_medium,
+    password_strength_strong,
+    password_strength_hint_weak,
+    password_strength_hint_medium,
+    password_strength_hint_strong,
+    password_match,
+    password_no_match,
+    change_password_confirm_new_password,
 }

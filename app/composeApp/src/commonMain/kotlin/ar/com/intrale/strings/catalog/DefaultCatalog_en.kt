@@ -517,4 +517,13 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.typography_preview_sample_body to "Body text sample",
     MessageKey.typography_preview_sample_button to "BUTTON",
     MessageKey.typography_access_denied to "You do not have permission to configure typography",
+    MessageKey.password_strength_weak to "Weak",
+    MessageKey.password_strength_medium to "Medium",
+    MessageKey.password_strength_strong to "Strong",
+    MessageKey.password_strength_hint_weak to "Minimum 8 characters with letters and numbers",
+    MessageKey.password_strength_hint_medium to "Add symbols for more security",
+    MessageKey.password_strength_hint_strong to "Secure password",
+    MessageKey.password_match to "Passwords match",
+    MessageKey.password_no_match to "Passwords do not match",
+    MessageKey.change_password_confirm_new_password to "Confirm new password",
 )

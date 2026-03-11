@@ -517,4 +517,13 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.typography_preview_sample_body to "Texto de cuerpo de ejemplo",
     MessageKey.typography_preview_sample_button to "BOTON",
     MessageKey.typography_access_denied to "No tenes permiso para configurar tipografias",
+    MessageKey.password_strength_weak to "Debil",
+    MessageKey.password_strength_medium to "Media",
+    MessageKey.password_strength_strong to "Fuerte",
+    MessageKey.password_strength_hint_weak to "Minimo 8 caracteres con letras y numeros",
+    MessageKey.password_strength_hint_medium to "Agrega simbolos para mayor seguridad",
+    MessageKey.password_strength_hint_strong to "Contrasena segura",
+    MessageKey.password_match to "Las contrasenas coinciden",
+    MessageKey.password_no_match to "Las contrasenas no coinciden",
+    MessageKey.change_password_confirm_new_password to "Confirmar nueva contrasena",
 )

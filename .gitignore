@@ -65,6 +65,8 @@ qa/generated/
 .claude/hooks/telegram-commander.lock
 .claude/hooks/planner-proposals.json
 .claude/hooks/tg-session-store.json
+.claude/hooks/activity-logger-stale-check.json
+.claude/hooks/session-gc-state.json
 
 # Sprint — archivos de agentes (no commitear, local de trabajo)
 scripts/sprint-plan.json
