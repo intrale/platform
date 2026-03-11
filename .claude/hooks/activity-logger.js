@@ -180,9 +180,61 @@ function handleInput() {
             updateSession(sessionId, ts, toolName, target, ti, data.usage || null);
         }
 
+        // Detectar sesiones stale periódicamente (cada ~10 invocaciones)
+        markStaleSessions();
+
         // Auto-iniciar reporter PNG si no esta corriendo
         ensureReporterRunning();
     } catch(e) {}
+}
+
+// Marca como "stale" sesiones active con inactividad >2h
+// Solo corre 1 de cada 10 veces para no impactar performance
+const STALE_CHECK_STATE_FILE = path.join(REPO_ROOT, ".claude", "hooks", "activity-logger-stale-check.json");
+const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 horas
+const STALE_CHECK_EVERY_N = 10;
+
+function markStaleSessions() {
+    try {
+        // Throttle: solo correr cada N invocaciones
+        let count = 0;
+        try {
+            if (fs.existsSync(STALE_CHECK_STATE_FILE)) {
+                const s = JSON.parse(fs.readFileSync(STALE_CHECK_STATE_FILE, "utf8"));
+                count = (s.count || 0) + 1;
+            } else {
+                count = 1;
+            }
+        } catch(e) { count = 1; }
+
+        fs.writeFileSync(STALE_CHECK_STATE_FILE, JSON.stringify({ count }), "utf8");
+        if (count % STALE_CHECK_EVERY_N !== 0) return;
+
+        if (!fs.existsSync(SESSIONS_DIR)) return;
+        const now = Date.now();
+        const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+        let staleCount = 0;
+        for (const file of files) {
+            try {
+                const filePath = path.join(SESSIONS_DIR, file);
+                const session = JSON.parse(fs.readFileSync(filePath, "utf8"));
+                if (session.status !== "active") continue;
+                const lastActivity = new Date(session.last_activity_ts || 0).getTime();
+                if (now - lastActivity > STALE_THRESHOLD_MS) {
+                    // Escritura atómica: tmp + rename
+                    session.status = "stale";
+                    const tmpPath = filePath + ".tmp";
+                    fs.writeFileSync(tmpPath, JSON.stringify(session, null, 2) + "\n", "utf8");
+                    fs.renameSync(tmpPath, filePath);
+                    staleCount++;
+                }
+            } catch(e) { /* ignorar errores por archivo */ }
+        }
+        if (staleCount > 0) {
+            const logFile = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+            try { fs.appendFileSync(logFile, "[" + new Date().toISOString() + "] activity-logger: " + staleCount + " sesion(es) marcadas stale\n"); } catch(e) {}
+        }
+    } catch(e) { /* no bloquear hook */ }
 }
 
 // --- Auto-inicio del dashboard web server + reporter ---
@@ -333,7 +385,8 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
 
         session.last_activity_ts = ts;
         session.action_count = (session.action_count || 0) + 1;
-        session.status = "active";
+        // No sobreescribir status "done" — la sesión puede haber terminado (hook Stop ya corrió)
+        if (session.status !== "done") session.status = "active";
         session.last_tool = toolName;
         session.last_target = target.substring(0, 120);
 

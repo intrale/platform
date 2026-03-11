@@ -215,10 +215,11 @@ function collectData() {
   );
 
   // Sessions
-  // Umbral zombie: sesiones con status "active" pero sin actividad por >30min se omiten
-  // (alineado con SKILL.md). Sesiones del sprint nunca se descartan por edad.
+  // Solo mostrar sesiones active y stale (no done).
+  // - active: con actividad reciente (incluyendo sprint sessions que pueden compilar largos)
+  // - stale: sin actividad >2h, marcadas por activity-logger.js
+  // - done: excluidas — el session-gc.js las limpia después de 1h
   const ZOMBIE_THRESHOLD_MS = 30 * 60 * 1000;
-  const DONE_SHOW_MS = 15 * 60 * 1000;
   const sessions = [];
   try {
     if (fs.existsSync(SESSIONS_DIR)) {
@@ -228,17 +229,17 @@ function collectData() {
         if (!s) continue;
         // Solo sesiones parent (ignorar sub-agentes)
         if (s.type && s.type !== "parent") continue;
+        // Excluir sesiones done — ya terminaron, el GC las limpiará
+        if (s.status === "done") continue;
         const status = getSessionStatus(s);
         const elapsed = now - new Date(s.last_activity_ts).getTime();
         const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
         const isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
         if (!isSprintSession) {
-          // Zombie: status active pero sin actividad >30min → omitir
-          if (s.status !== "done" && elapsed > ZOMBIE_THRESHOLD_MS) continue;
-          // Sesiones done: mostrar solo por 15min
-          if (s.status === "done" && elapsed > DONE_SHOW_MS) continue;
+          // Zombie: status active pero sin actividad >30min → omitir (stale se muestra igual)
+          if (s.status === "active" && elapsed > ZOMBIE_THRESHOLD_MS) continue;
         }
-        // Sprint sessions: nunca se descartan por edad (agentes pueden compilar largos)
+        // Sprint sessions activas: nunca se descartan por edad (agentes pueden compilar largos)
         sessions.push({ ...s, _status: status });
       }
     }
