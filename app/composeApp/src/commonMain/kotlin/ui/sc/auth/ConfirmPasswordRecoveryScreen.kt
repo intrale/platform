@@ -39,6 +39,8 @@ import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
+import ui.cp.inputs.PasswordMatchIndicator
+import ui.cp.inputs.PasswordStrengthIndicator
 import ui.cp.inputs.TextField
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
@@ -195,6 +197,11 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
                             enabled = !viewModel.loading
                         )
 
+                        PasswordStrengthIndicator(
+                            password = viewModel.state.password,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         TextField(
                             label = MessageKey.confirm_password_recovery_confirm_password,
                             visualTransformation = true,
@@ -208,6 +215,12 @@ class ConfirmPasswordRecoveryScreen : Screen(CONFIRM_PASSWORD_RECOVERY_PATH) {
                             ),
                             keyboardActions = KeyboardActions(onDone = { submitForm() }),
                             enabled = !viewModel.loading
+                        )
+
+                        PasswordMatchIndicator(
+                            password = viewModel.state.password,
+                            confirmPassword = viewModel.state.confirmPassword,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
