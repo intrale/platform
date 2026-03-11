@@ -322,25 +322,60 @@ async function sendPeriodicReport() {
 
   const dateStr = new Date().toLocaleString("es-AR");
 
+  // Mapa de captions descriptivos por section ID
+  const SECTION_CAPTIONS = {
+    kpis:            "\ud83d\udcca <b>KPIs</b> \u2014 Intrale Monitor \u2014 " + dateStr,
+    ejecucion:       "\u26a1 <b>Ejecuci\u00f3n de agentes</b>",
+    sesiones:        "\ud83e\uddd1\u200d\ud83d\udcbb <b>Sesiones activas</b>",
+    metricas:        "\ud83d\udcca <b>M\u00e9tricas de uso</b>",
+    flujo:           "\ud83d\udd00 <b>Flujo de agentes</b>",
+    actividad:       "\ud83d\udce1 <b>Actividad en vivo</b>",
+    permisos:        "\ud83d\udd12 <b>Permisos</b>",
+    "agentes-metricas": "\ud83d\udcca <b>M\u00e9tricas de agentes</b>",
+    roadmap:         "\ud83d\uddd3\ufe0f <b>Roadmap</b>",
+    ci:              "\ud83d\udee0\ufe0f <b>CI / CD</b>",
+  };
+
   // 1. Intentar álbum por secciones semánticas (mobile-first 390px, #1263)
   try {
     debugLog("Intentando screenshot de secciones (390px)...");
     const sections = await fetchScreenshotSections(390);
+    debugLog("fetchScreenshotSections result: " + (sections ? sections.length + " secciones [" + sections.map(s => s.id + "=" + s.buf.length + "b").join(", ") + "]" : "null"));
     if (sections && sections.length >= 2) {
-      const validBufs = sections.map(function(s) { return s.buf; }).filter(function(b) {
-        return isPngValid(b) && b.length > 1000;
+      const validSections = sections.filter(function(s) {
+        const ok = isPngValid(s.buf) && s.buf.length > 500;
+        if (!ok) debugLog("Seccion descartada: id=" + s.id + " size=" + s.buf.length + "b isPng=" + isPngValid(s.buf));
+        return ok;
       });
-      if (validBufs.length >= 2) {
-        const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 " + dateStr + "\n" + validBufs.length + " paneles";
-        await sendTelegramMediaGroup(validBufs, caption, true);
-        debugLog("Heartbeat secciones OK (" + validBufs.length + " paneles, bufs: " + validBufs.map(b => b.length).join(",") + " bytes)");
-        consecutiveSkipCount = 0;
-        return;
+      debugLog("Secciones válidas: " + validSections.length + "/" + sections.length + " [" + validSections.map(s => s.id).join(", ") + "]");
+      if (validSections.length >= 2) {
+        // Enviar fotos en serie con captions individuales (Telegram solo soporta caption en 1ra foto de sendMediaGroup)
+        debugLog("Enviando " + validSections.length + " paneles con captions individuales...");
+        let sentCount = 0;
+        for (const section of validSections) {
+          try {
+            const cap = SECTION_CAPTIONS[section.id] || ("\ud83d\udcf8 <b>" + section.id + "</b>");
+            await sendTelegramPhoto(section.buf, cap, true);
+            sentCount++;
+            if (sentCount < validSections.length) {
+              await new Promise(r => setTimeout(r, 200));
+            }
+          } catch (photoErr) {
+            debugLog("Error enviando panel " + section.id + ": " + (photoErr.stack || photoErr.message));
+          }
+        }
+        if (sentCount > 0) {
+          debugLog("Heartbeat secciones OK (" + sentCount + "/" + validSections.length + " paneles enviados)");
+          consecutiveSkipCount = 0;
+          return;
+        }
       }
-      debugLog("Secciones insuficientes o inválidas: " + (sections ? sections.length : 0) + " secciones");
+      debugLog("Secciones insuficientes o inválidas: " + sections.length + " totales, " + (sections ? sections.filter(s => isPngValid(s.buf) && s.buf.length > 500).length : 0) + " válidas (umbral 500b)");
+    } else {
+      debugLog("fetchScreenshotSections devolvió " + (sections ? sections.length + " secciones (mínimo 2 requeridas)" : "null"));
     }
   } catch (e) {
-    debugLog("Error con secciones: " + e.message);
+    debugLog("Error con secciones: " + (e.stack || e.message));
   }
 
   const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + dateStr;

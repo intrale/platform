@@ -2357,43 +2357,62 @@ async function takeScreenshotSections(width) {
     // Viewport alto para que todos los paneles rendericen antes del scroll
     await page.setViewport({ width, height: 2400 });
     await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "load", timeout: 15000 });
-    await new Promise(r => setTimeout(r, 2000));
+    // Esperar 3000ms (aumentado desde 2000ms) para dar tiempo a renders con datos
+    await new Promise(r => setTimeout(r, 3000));
 
     // Obtener altura total de la página para bounds checking
     const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+    console.log("[dashboard-server] takeScreenshotSections: pageHeight=" + pageHeight + " width=" + width);
 
-    const sections = await page.evaluate(() => {
+    const sectionData = await page.evaluate(() => {
       const selectors = [
-        { id: "kpis",      sel: ".kpi-row" },
-        { id: "ejecucion", sel: "[data-panel='exec']" },
-        { id: "sesiones",  sel: "[data-panel='sessions']" },
-        { id: "metricas",  sel: "[data-panel='metrics']" },
-        { id: "roadmap",   sel: "[data-panel='roadmap']" },
-        { id: "ci",        sel: "[data-panel='ci']" },
+        { id: "kpis",               sel: ".kpi-row" },
+        { id: "ejecucion",          sel: "[data-panel='exec']" },
+        { id: "sesiones",           sel: "[data-panel='sessions']" },
+        { id: "metricas",           sel: "[data-panel='metrics']" },
+        { id: "flujo",              sel: "[data-panel='flow']" },
+        { id: "actividad",          sel: "[data-panel='activity']" },
+        { id: "permisos",           sel: "[data-panel='permissions']" },
+        { id: "agentes-metricas",   sel: "[data-panel='agent-metrics']" },
+        { id: "roadmap",            sel: "[data-panel='roadmap']" },
+        { id: "ci",                 sel: "[data-panel='ci']" },
       ];
       return selectors.map(function(s) {
         var el = document.querySelector(s.sel);
-        if (!el) return null;
+        if (!el) return { id: s.id, found: false };
         var r = el.getBoundingClientRect();
         // Ignorar paneles vacíos o sin altura visible
-        if (r.height < 20 || r.width < 20) return null;
+        if (r.height < 20 || r.width < 20) return { id: s.id, found: true, visible: false, rect: { h: r.height, w: r.width } };
         // Redondear a enteros (Puppeteer clip requiere enteros) y corregir offset de scroll
         return {
           id: s.id,
+          found: true,
+          visible: true,
           x: Math.max(0, Math.round(r.x)),
           y: Math.max(0, Math.round(r.y + window.scrollY)),
           width: Math.round(r.width),
           height: Math.round(r.height),
         };
-      }).filter(Boolean);
+      });
     });
 
+    // Logear resultado del DOM scan
+    const found = sectionData.filter(s => s.found && s.visible);
+    const missing = sectionData.filter(s => !s.found).map(s => s.id);
+    const hidden = sectionData.filter(s => s.found && !s.visible).map(s => s.id);
+    console.log("[dashboard-server] Paneles encontrados: [" + found.map(s => s.id).join(", ") + "]" +
+      (missing.length ? " | Faltantes en DOM: [" + missing.join(", ") + "]" : "") +
+      (hidden.length ? " | Ocultos (rect<20): [" + hidden.join(", ") + "]" : ""));
+
     const results = [];
-    for (const section of sections) {
+    for (const section of found) {
       try {
         // Bounds check: el clip no puede superar el alto total de la página
         const clampedHeight = Math.min(section.height, Math.max(1, pageHeight - section.y));
-        if (clampedHeight < 20) continue;
+        if (clampedHeight < 20) {
+          console.log("[dashboard-server] Sección " + section.id + " clampedHeight=" + clampedHeight + " < 20 — omitida");
+          continue;
+        }
 
         const buf = await page.screenshot({
           type: "png",
@@ -2407,12 +2426,16 @@ async function takeScreenshotSections(width) {
         // Solo incluir si la imagen tiene contenido real (> 5KB)
         if (buf.length > 5000) {
           results.push({ id: section.id, image: buf.toString("base64") });
+          console.log("[dashboard-server] Sección " + section.id + " capturada: " + buf.length + " bytes");
+        } else {
+          console.log("[dashboard-server] Sección " + section.id + " descartada: solo " + buf.length + " bytes (umbral 5KB)");
         }
       } catch (sectionErr) {
         // Una sección fallida no rompe las demás
-        console.error("[dashboard-server] Error capturando sección " + section.id + ": " + sectionErr.message);
+        console.error("[dashboard-server] Error capturando sección " + section.id + ": " + (sectionErr.stack || sectionErr.message));
       }
     }
+    console.log("[dashboard-server] takeScreenshotSections completado: " + results.length + "/" + found.length + " secciones capturadas");
     return results;
   } finally {
     await page.close();

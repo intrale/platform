@@ -133,14 +133,16 @@ describe("P-25: Heartbeat Telegram - screenshots por seccion semantica (#1263)",
         it("requiere minimo 2 secciones validas para enviar album de secciones", () => {
             assert.ok(reporterSrc.includes("sections.length >= 2"), "Debe requerir al menos 2 secciones");
         });
-        it("filtra buffers menores a 1000 bytes antes de enviar", () => {
-            assert.ok(reporterSrc.includes("b.length > 1000"), "Debe filtrar buffers invalidos");
+        it("filtra buffers menores a 500 bytes antes de enviar (#1380: threshold bajado de 1000 a 500)", () => {
+            assert.ok(reporterSrc.includes("s.buf.length > 500"), "Debe filtrar buffers invalidos con umbral 500 bytes");
         });
         it("la caption incluye cantidad de paneles (N paneles)", () => {
             assert.ok(reporterSrc.includes("paneles"), "La caption debe incluir N paneles");
         });
-        it("usa sendTelegramMediaGroup para enviar multiples fotos (no sendPhoto)", () => {
-            assert.ok(reporterSrc.includes("sendTelegramMediaGroup"), "Debe usar sendTelegramMediaGroup");
+        it("usa sendTelegramPhoto en serie para enviar secciones con captions individuales (#1380)", () => {
+            // #1380: cambiado de sendTelegramMediaGroup a sendTelegramPhoto en serie
+            // para poder incluir captions descriptivos por panel
+            assert.ok(reporterSrc.includes("sendTelegramPhoto"), "Debe usar sendTelegramPhoto para enviar secciones con captions");
         });
         it("el album se envia silencioso (disable_notification: true)", () => {
             assert.ok(
