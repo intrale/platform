@@ -22,9 +22,16 @@ const LOG_FILE = path.join(REPO_ROOT, "hooks", "hook-debug.log");
 const TG_CONFIG_FILE = path.join(REPO_ROOT, "hooks", "telegram-config.json");
 const DASHBOARD_PORT = 3100;
 const SKIP_ALERT_THRESHOLD = 3; // Alertar a Telegram tras N skips consecutivos
+const HEARTBEAT_STATE_FILE = path.join(REPO_ROOT, "hooks", "heartbeat-state.json");
+const SESSIONS_DIR = path.join(REPO_ROOT, "sessions");
+const ACTIVITY_THRESHOLD_MIN = 15; // Minutos para considerar una sesión como activa
 
 // Contador de heartbeats saltados por fallo de screenshot
 let consecutiveSkipCount = 0;
+
+// Estado del modo actual (se actualiza antes de cada sendPeriodicReport)
+let heartbeatMode = "normal";   // "normal" | "idle"
+let heartbeatIntervalMin = 10;  // Intervalo actual en minutos
 
 function debugLog(msg) {
   try {
@@ -294,8 +301,49 @@ function hasActiveAgents() {
   });
 }
 
+// Detectar sesiones activas leyendo .claude/sessions/*.json directamente
+// Criterio: status === "active" y last_activity_ts < ACTIVITY_THRESHOLD_MIN minutos
+function hasActiveSessions() {
+  try {
+    if (!fs.existsSync(SESSIONS_DIR)) return false;
+    const files = fs.readdirSync(SESSIONS_DIR).filter(function(f) { return f.endsWith(".json"); });
+    const now = Date.now();
+    const threshold = ACTIVITY_THRESHOLD_MIN * 60 * 1000;
+    for (const file of files) {
+      try {
+        const session = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
+        if (session.status === "active" && session.last_activity_ts) {
+          const lastActivity = new Date(session.last_activity_ts).getTime();
+          if (now - lastActivity < threshold) return true;
+        }
+      } catch {}
+    }
+    return false;
+  } catch { return false; }
+}
+
+// Cargar estado persistido del heartbeat desde heartbeat-state.json
+function loadHeartbeatState() {
+  try {
+    if (!fs.existsSync(HEARTBEAT_STATE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(HEARTBEAT_STATE_FILE, "utf8"));
+  } catch { return null; }
+}
+
+// Guardar estado del heartbeat en heartbeat-state.json
+function saveHeartbeatState(currentInterval, consecutiveIdle, mode) {
+  try {
+    const state = {
+      currentInterval,
+      consecutiveIdle,
+      lastHeartbeat: new Date().toISOString(),
+      mode
+    };
+    fs.writeFileSync(HEARTBEAT_STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+  } catch (e) { debugLog("Error guardando heartbeat-state.json: " + e.message); }
+}
+
 // Constantes de frecuencia adaptativa
-const INACTIVITY_THRESHOLD_MIN = 5;   // Minutos sin actividad para empezar a escalar
 const INTERVAL_STEP_MIN = 10;         // Minutos extra por cada ciclo inactivo
 const MAX_INTERVAL_MIN = 60;          // Cap máximo del intervalo
 
@@ -322,9 +370,14 @@ async function sendPeriodicReport() {
 
   const dateStr = new Date().toLocaleString("es-AR");
 
+  // Indicador de modo en el caption principal
+  const modeLabel = heartbeatMode === "normal"
+    ? "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat (cada " + heartbeatIntervalMin + " min)"
+    : "\ud83d\udca4 <b>Intrale Monitor</b> \u2014 Heartbeat (cada " + heartbeatIntervalMin + " min \u2014 sin actividad)";
+
   // Mapa de captions descriptivos por section ID
   const SECTION_CAPTIONS = {
-    kpis:            "\ud83d\udcca <b>KPIs</b> \u2014 Intrale Monitor \u2014 " + dateStr,
+    kpis:            "\ud83d\udcca <b>KPIs</b> \u2014 " + modeLabel + " \u2014 " + dateStr,
     ejecucion:       "\u26a1 <b>Ejecuci\u00f3n de agentes</b>",
     sesiones:        "\ud83e\uddd1\u200d\ud83d\udcbb <b>Sesiones activas</b>",
     metricas:        "\ud83d\udcca <b>M\u00e9tricas de uso</b>",
@@ -378,7 +431,7 @@ async function sendPeriodicReport() {
     debugLog("Error con secciones: " + (e.stack || e.message));
   }
 
-  const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + dateStr;
+  const caption = modeLabel + "\n" + dateStr;
 
   // 2. Intentar álbum top/bottom (endpoint /screenshots)
   try {
@@ -455,26 +508,47 @@ function start(intervalMin) {
     debugLog("Reporter daemon PID " + process.pid + " base " + intervalMin + " min (adaptativo)");
     console.log("Reporter daemon: PID " + process.pid + ", base " + intervalMin + " min (adaptativo)");
 
-    let inactiveCycles = 0;
+    // Cargar estado persistido al arrancar (sobrevive reinicios)
+    const persistedState = loadHeartbeatState();
+    let consecutiveIdle = persistedState ? (persistedState.consecutiveIdle || 0) : 0;
+    let previousMode = persistedState ? (persistedState.mode || "normal") : "normal";
 
     async function adaptiveLoop() {
-      // Enviar reporte
-      await sendPeriodicReport();
+      // Detectar actividad leyendo sesiones directamente (.claude/sessions/*.json)
+      const active = hasActiveSessions();
+      const wasIdle = previousMode === "idle";
 
-      // Calcular próximo intervalo según actividad
-      const active = await hasActiveAgents();
+      // Actualizar modo y contador
       if (active) {
-        inactiveCycles = 0;
+        if (wasIdle) {
+          // Transición: inactivo → normal — notificar y enviar heartbeat inmediato
+          debugLog("Transicion idle->normal detectada — enviando mensaje de actividad");
+          try {
+            await sendTelegramText(
+              "\ud83d\udd04 <b>Actividad detectada</b> \u2014 volviendo a monitoreo normal (10 min)",
+              false
+            );
+          } catch (e) { debugLog("Error enviando msg transicion: " + e.message); }
+        }
+        consecutiveIdle = 0;
+        heartbeatMode = "normal";
       } else {
-        inactiveCycles++;
+        consecutiveIdle++;
+        heartbeatMode = "idle";
       }
 
-      // Intervalo: base + (ciclos_inactivos * step), con cap máximo
-      const nextInterval = Math.min(
-        intervalMin + (inactiveCycles * INTERVAL_STEP_MIN),
-        MAX_INTERVAL_MIN
-      );
-      debugLog("intervalo adaptativo: " + nextInterval + "min (ciclos_inactivos=" + inactiveCycles + ", agentes_activos=" + active + ")");
+      // Intervalo adaptativo: 10 base, +10 por cada ciclo inactivo, cap 60
+      const nextInterval = active ? intervalMin : Math.min(intervalMin + (consecutiveIdle * INTERVAL_STEP_MIN), MAX_INTERVAL_MIN);
+      heartbeatIntervalMin = nextInterval;
+      previousMode = heartbeatMode;
+
+      debugLog("intervalo adaptativo: " + nextInterval + "min (consecutiveIdle=" + consecutiveIdle + ", modo=" + heartbeatMode + ")");
+
+      // Enviar reporte con el modo actualizado en los captions
+      await sendPeriodicReport();
+
+      // Persistir estado para sobrevivir reinicios
+      saveHeartbeatState(nextInterval, consecutiveIdle, heartbeatMode);
 
       setTimeout(adaptiveLoop, nextInterval * 60 * 1000);
     }
