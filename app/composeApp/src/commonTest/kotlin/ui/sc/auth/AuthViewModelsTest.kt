@@ -206,7 +206,7 @@ class ChangePasswordViewModelTest {
     @Test
     fun `changePassword exitoso retorna resultado`() = runTest {
         val vm = ChangePasswordViewModel(FakeChangePassword(), testLoggerFactory)
-        vm.state = ChangePasswordViewModel.ChangePasswordUIState("oldpass12", "newpass12")
+        vm.state = ChangePasswordViewModel.ChangePasswordUIState("oldpass12", "newpass12", "newpass12")
 
         val result = vm.changePassword()
 
@@ -217,14 +217,14 @@ class ChangePasswordViewModelTest {
     @Test
     fun `isValid con contraseñas validas retorna true`() {
         val vm = ChangePasswordViewModel(FakeChangePassword(), testLoggerFactory)
-        vm.state = ChangePasswordViewModel.ChangePasswordUIState("oldpass12", "newpass12")
+        vm.state = ChangePasswordViewModel.ChangePasswordUIState("oldpass12", "newpass12", "newpass12")
         assertTrue(vm.isValid())
     }
 
     @Test
     fun `isValid con contraseña corta retorna false`() {
         val vm = ChangePasswordViewModel(FakeChangePassword(), testLoggerFactory)
-        vm.state = ChangePasswordViewModel.ChangePasswordUIState("short", "newpass12")
+        vm.state = ChangePasswordViewModel.ChangePasswordUIState("short", "newpass12", "newpass12")
         assertFalse(vm.isValid())
     }
 }

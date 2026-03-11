@@ -23,6 +23,8 @@ import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.Button
+import ui.cp.inputs.PasswordMatchIndicator
+import ui.cp.inputs.PasswordStrengthIndicator
 import ui.cp.inputs.TextField
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
@@ -46,6 +48,7 @@ class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH) {
 
         val currentPasswordLabel = MessageKey.change_password_current_password
         val newPasswordLabel = MessageKey.new_password
+        val confirmNewPasswordLabel = MessageKey.change_password_confirm_new_password
         val submitLabel = Txt(MessageKey.change_password_submit)
         val successMessage = Txt(MessageKey.change_password_success)
         val genericError = Txt(MessageKey.error_generic)
@@ -76,7 +79,26 @@ class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH) {
                     visualTransformation = true,
                     value = viewModel.state.newPassword,
                     state = viewModel.inputsStates[ChangePasswordViewModel.ChangePasswordUIState::newPassword.name]!!,
-                    onValueChange = { viewModel.state = viewModel.state.copy(newPassword = it) }
+                    onValueChange = { viewModel.state = viewModel.state.copy(newPassword = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                PasswordStrengthIndicator(
+                    password = viewModel.state.newPassword,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
+                TextField(
+                    confirmNewPasswordLabel,
+                    visualTransformation = true,
+                    value = viewModel.state.confirmNewPassword,
+                    state = viewModel.inputsStates[ChangePasswordViewModel.ChangePasswordUIState::confirmNewPassword.name]!!,
+                    onValueChange = { viewModel.state = viewModel.state.copy(confirmNewPassword = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                PasswordMatchIndicator(
+                    password = viewModel.state.newPassword,
+                    confirmPassword = viewModel.state.confirmNewPassword,
+                    modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(modifier = Modifier.size(MaterialTheme.spacing.x1_5))
                 Button(
@@ -84,6 +106,7 @@ class ChangePasswordScreen : Screen(CHANGE_PASSWORD_PATH) {
                     loading = viewModel.loading,
                     enabled = !viewModel.loading,
                     onClick = {
+                        viewModel.setupValidation()
                         if (viewModel.isValid()) {
                             logger.debug { "Formulario válido" }
                             logger.debug { "Invocando cambio de contraseña" }

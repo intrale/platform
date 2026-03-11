@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.auth.DoChangePasswordResult
 import asdo.auth.ToDoChangePassword
+import ar.com.intrale.strings.model.MessageKey
+import ar.com.intrale.strings.resolveMessage
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import org.kodein.di.direct
@@ -26,7 +28,8 @@ class ChangePasswordViewModel(
 
     data class ChangePasswordUIState(
         val oldPassword: String = "",
-        val newPassword: String = ""
+        val newPassword: String = "",
+        val confirmNewPassword: String = "",
     )
 
     override fun getState(): Any = state
@@ -39,10 +42,15 @@ class ChangePasswordViewModel(
     fun setupValidation() {
         validation = Validation<ChangePasswordUIState> {
             ChangePasswordUIState::oldPassword required {
-                minLength(8) hint "Debe contener al menos 8 caracteres."
+                minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
             }
             ChangePasswordUIState::newPassword required {
-                minLength(8) hint "Debe contener al menos 8 caracteres."
+                minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
+            }
+            ChangePasswordUIState::confirmNewPassword required {
+                addConstraint(resolveMessage(MessageKey.form_error_passwords_mismatch)) {
+                    it == state.newPassword
+                }
             }
         } as Validation<Any>
     }
@@ -50,7 +58,8 @@ class ChangePasswordViewModel(
     override fun initInputState() {
         inputsStates = mutableMapOf(
             entry(ChangePasswordUIState::oldPassword.name),
-            entry(ChangePasswordUIState::newPassword.name)
+            entry(ChangePasswordUIState::newPassword.name),
+            entry(ChangePasswordUIState::confirmNewPassword.name),
         )
     }
 
