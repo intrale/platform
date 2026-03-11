@@ -435,6 +435,5 @@ Muestra:
 - **Dashboard web** (auto-arranca): `http://localhost:3100` — iniciado por `activity-logger.js` al detectar actividad de agentes
 - El dashboard web server (`dashboard-server.js`) se auto-detiene si no hay sesiones activas por 30 min
 - Screenshots periodicos a Telegram via `dashboard-server.js` (Puppeteer PNG)
-- Control manual del reporter: `node .claude/hooks/reporter-bg.js [start|stop|status] [minutos]`
 - El dashboard terminal (`dashboard.js`) fue deprecado en #1180 — usar `/monitor` para snapshots on-demand
 - **Metricas**: costo estimado usa `claude_metrics.cost_per_action_usd` de `telegram-config.json` (default: $0.003/accion)

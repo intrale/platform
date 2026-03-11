@@ -9,10 +9,8 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 
-const REPORTER_FILE = path.join(__dirname, "..", "reporter-bg.js");
 const DASHBOARD_FILE = path.join(__dirname, "..", "..", "dashboard-server.js");
 
-const reporterSrc = fs.readFileSync(REPORTER_FILE, "utf8");
 const dashboardSrc = fs.readFileSync(DASHBOARD_FILE, "utf8");
 
 describe("P-25: Heartbeat Telegram - screenshots por seccion semantica (#1263)", () => {
@@ -104,60 +102,8 @@ describe("P-25: Heartbeat Telegram - screenshots por seccion semantica (#1263)",
         });
     });
 
-    describe("reporter-bg.js: funcion fetchScreenshotSections", () => {
-        it("la funcion fetchScreenshotSections existe", () => {
-            assert.ok(reporterSrc.includes("function fetchScreenshotSections"), "Debe definir fetchScreenshotSections");
-        });
-        it("llama al endpoint /screenshots/sections?w=390 (mobile-first)", () => {
-            assert.ok(reporterSrc.includes("/screenshots/sections?w="), "Debe llamar a /screenshots/sections?w=");
-            assert.ok(reporterSrc.includes("fetchScreenshotSections(390)"), "Debe pasar width=390");
-        });
-        it("convierte image base64 a Buffer para envio a Telegram", () => {
-            assert.ok(reporterSrc.includes('Buffer.from(s.image, "base64")'), "Debe convertir base64 a Buffer");
-        });
-        it("retorna null en caso de error para activar fallback", () => {
-            assert.ok(reporterSrc.includes("resolve(null)"), "Debe retornar null en caso de error");
-        });
-        it("tiene timeout de 30 segundos (mas generoso que split de 25s)", () => {
-            assert.ok(reporterSrc.includes("30000"), "El timeout debe ser 30000ms");
-        });
-    });
-
-    describe("reporter-bg.js: sendPeriodicReport - prioridad y fallback", () => {
-        it("intenta secciones ANTES que album top/bottom (mayor prioridad)", () => {
-            const sectionsIdx = reporterSrc.indexOf("fetchScreenshotSections");
-            const screenshotsIdx = reporterSrc.indexOf("fetchScreenshots");
-            assert.ok(sectionsIdx !== -1 && screenshotsIdx !== -1, "Ambas funciones deben existir");
-            assert.ok(sectionsIdx < screenshotsIdx, "fetchScreenshotSections debe aparecer ANTES que fetchScreenshots");
-        });
-        it("requiere minimo 2 secciones validas para enviar album de secciones", () => {
-            assert.ok(reporterSrc.includes("sections.length >= 2"), "Debe requerir al menos 2 secciones");
-        });
-        it("filtra buffers menores a 500 bytes antes de enviar (#1380: threshold bajado de 1000 a 500)", () => {
-            assert.ok(reporterSrc.includes("s.buf.length > 500"), "Debe filtrar buffers invalidos con umbral 500 bytes");
-        });
-        it("la caption incluye cantidad de paneles (N paneles)", () => {
-            assert.ok(reporterSrc.includes("paneles"), "La caption debe incluir N paneles");
-        });
-        it("usa sendTelegramPhoto en serie para enviar secciones con captions individuales (#1380)", () => {
-            // #1380: cambiado de sendTelegramMediaGroup a sendTelegramPhoto en serie
-            // para poder incluir captions descriptivos por panel
-            assert.ok(reporterSrc.includes("sendTelegramPhoto"), "Debe usar sendTelegramPhoto para enviar secciones con captions");
-        });
-        it("el album se envia silencioso (disable_notification: true)", () => {
-            assert.ok(
-                reporterSrc.includes("sendTelegramMediaGroup(validBufs, caption, true)") ||
-                reporterSrc.includes(", caption, true)"),
-                "El album debe enviarse silencioso"
-            );
-        });
-        it("tiene fallback a /screenshots si endpoint de secciones falla", () => {
-            assert.ok(reporterSrc.includes("fetchScreenshots"), "Debe tener fallback fetchScreenshots");
-        });
-        it("tiene fallback final a foto unica si el album falla", () => {
-            assert.ok(reporterSrc.includes("fetchScreenshot("), "Debe tener fallback final a screenshot simple");
-        });
-    });
+    // Nota: los describes de reporter-bg.js (fetchScreenshotSections, sendPeriodicReport) fueron
+    // eliminados en #1431 — reporter-bg.js fue removido del repo al unificarse en heartbeat-manager.js
 
     describe("Retrocompatibilidad: endpoints originales siguen disponibles", () => {
         it('el endpoint /screenshots (split geometrico) sigue disponible', () => {
