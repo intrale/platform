@@ -298,6 +298,71 @@ cat /c/Workspaces/Intrale/platform/.claude/hooks/sprint-audit.jsonl 2>/dev/null 
 
 Mostrar las últimas acciones de reparación ejecutadas con timestamp, issue y resultado.
 
+### 7. Consistencia sprint-plan.json vs Project V2 (sincronización de fuentes de verdad)
+
+**Esta sección es obligatoria en modo `audit`.**
+
+Leer sprint-plan.json:
+```bash
+cat /c/Workspaces/Intrale/platform/scripts/sprint-plan.json 2>/dev/null
+```
+
+Extraer:
+- `agentes[]` → issues que deben estar en **In Progress** en Project V2
+- `_queue[]` → issues que deben estar en su backlog (no In Progress)
+- `_completed[]` → issues que deben estar en **Done** en Project V2
+
+Cruzar con el snapshot del board (ya obtenido en Paso 0.4). Para cada issue, verificar:
+
+| Issue | Esperado en sprint-plan | Estado real en Project V2 | ¿Coincide? |
+|-------|------------------------|--------------------------|------------|
+
+Detectar discrepancias:
+1. **agentes[] pero NO In Progress** → desincronización (mover en modo `sync`)
+2. **_completed[] pero NO Done** → desincronización (mover en modo `sync`)
+3. **In Progress en Project V2 pero NO en agentes[]** → issue espúreo (candidato a remover de In Progress)
+4. **No en sprint-plan en ninguna sección** → issue ajeno al sprint (no es discrepancia por sí solo)
+
+También leer roadmap.json para validar que el sprint actual corresponde al sprint indicado en el roadmap:
+```bash
+cat /c/Workspaces/Intrale/platform/scripts/roadmap.json 2>/dev/null | head -50
+```
+
+Verificar:
+- ¿El `sprint_id` de sprint-plan.json coincide con el sprint activo del roadmap?
+- ¿Los issues de agentes[] + _queue[] están todos en el sprint del roadmap?
+- ¿Hay issues en el roadmap del sprint activo que no están en sprint-plan.json? → posible omisión
+
+Reportar resumen de consistencia:
+```
+### Consistencia sprint-plan.json vs Project V2
+
+**Sprint activo:** SPR-XXX
+**Fuente roadmap.json:** ✅ coincide / ⚠️ discrepancia
+
+#### Issues en agentes[] (deben ser In Progress)
+| Issue | Título | Estado en V2 | ¿OK? |
+|-------|--------|-------------|------|
+| #NNN | título | In Progress | ✅ |
+| #MMM | título | Todo        | ❌ desincronizado |
+
+#### Issues en _completed[] (deben ser Done)
+| Issue | Título | Estado en V2 | ¿OK? |
+|-------|--------|-------------|------|
+
+#### Issues espúreos In Progress (no están en agentes[])
+| Issue | Título | Acción sugerida |
+|-------|--------|----------------|
+
+#### Roadmap vs Sprint-plan
+- Issues del roadmap no en sprint-plan: #NNN, #MMM (posible omisión)
+- Issues del sprint-plan no en roadmap: #NNN (posible adición manual)
+
+**Salud sync:** 🟢 Sincronizado / 🟡 N discrepancias / 🔴 Desincronizado
+```
+
+**En modo `sync`:** ejecutar `node /c/Workspaces/Intrale/platform/scripts/update-project-board.js` para auto-corregir las discrepancias detectadas.
+
 ### Formato de reporte
 
 ```
