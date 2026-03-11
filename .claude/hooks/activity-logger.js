@@ -192,6 +192,9 @@ function handleInput() {
         // Detectar sesiones stale periódicamente (cada ~10 invocaciones)
         markStaleSessions();
 
+        // Detectar sesiones zombie (PID muerto + >20min inactivas), throttled a 1/min (#1408)
+        checkZombieSessions();
+
         // Auto-iniciar reporter PNG si no esta corriendo
         ensureReporterRunning();
     } catch(e) {}
@@ -202,6 +205,10 @@ function handleInput() {
 const STALE_CHECK_STATE_FILE = path.join(REPO_ROOT, ".claude", "hooks", "activity-logger-stale-check.json");
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 horas
 const STALE_CHECK_EVERY_N = 10;
+
+const ZOMBIE_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutos (threshold configurable)
+const ZOMBIE_CHECK_STATE_FILE = path.join(REPO_ROOT, ".claude", "hooks", "activity-logger-zombie-check.json");
+const ZOMBIE_CHECK_THROTTLE_MS = 60 * 1000; // máximo 1 vez por minuto
 
 function markStaleSessions() {
     try {
@@ -242,6 +249,65 @@ function markStaleSessions() {
         if (staleCount > 0) {
             const logFile = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
             try { fs.appendFileSync(logFile, "[" + new Date().toISOString() + "] activity-logger: " + staleCount + " sesion(es) marcadas stale\n"); } catch(e) {}
+        }
+    } catch(e) { /* no bloquear hook */ }
+}
+
+// Verifica si un PID de proceso sigue vivo en Windows
+function isPidAlive(pid) {
+    if (!pid) return false;
+    try {
+        const output = execSync('tasklist /FI "PID eq ' + parseInt(pid, 10) + '" /NH', {
+            timeout: 3000, windowsHide: true, encoding: "utf8"
+        });
+        // Si el PID existe, la salida contiene una línea con el nombre del proceso
+        // Si no existe: "No tasks are running which match the specified criteria"
+        return output.indexOf("No tasks") === -1 && output.trim().length > 0;
+    } catch (e) {
+        // Fallback: process.kill(pid, 0) solo verifica existencia sin matar
+        try { process.kill(parseInt(pid, 10), 0); return true; } catch (ke) { return ke.code === "EPERM"; }
+    }
+}
+
+// Detecta sesiones zombie: status "active" + last_activity_ts >20min + PID muerto
+// Throttled: corre como máximo 1 vez por minuto (#1408)
+function checkZombieSessions() {
+    try {
+        // Throttle: solo correr cada ZOMBIE_CHECK_THROTTLE_MS
+        try {
+            if (fs.existsSync(ZOMBIE_CHECK_STATE_FILE)) {
+                const s = JSON.parse(fs.readFileSync(ZOMBIE_CHECK_STATE_FILE, "utf8"));
+                if (s.last_check && (Date.now() - s.last_check) < ZOMBIE_CHECK_THROTTLE_MS) return;
+            }
+        } catch(e) { /* si falla leer el state, continuar */ }
+        fs.writeFileSync(ZOMBIE_CHECK_STATE_FILE, JSON.stringify({ last_check: Date.now() }), "utf8");
+
+        if (!fs.existsSync(SESSIONS_DIR)) return;
+        const now = Date.now();
+        const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+        let zombieCount = 0;
+        for (const file of files) {
+            try {
+                const filePath = path.join(SESSIONS_DIR, file);
+                const session = JSON.parse(fs.readFileSync(filePath, "utf8"));
+                if (session.status !== "active") continue;
+                const age = now - new Date(session.last_activity_ts || 0).getTime();
+                if (age > ZOMBIE_THRESHOLD_MS && session.pid) {
+                    if (!isPidAlive(session.pid)) {
+                        session.status = "done";
+                        session.completed_at = session.last_activity_ts;
+                        // Escritura atómica: tmp + rename
+                        const tmpPath = filePath + ".tmp";
+                        fs.writeFileSync(tmpPath, JSON.stringify(session, null, 2) + "\n", "utf8");
+                        fs.renameSync(tmpPath, filePath);
+                        zombieCount++;
+                    }
+                }
+            } catch(e) { /* ignorar errores por archivo */ }
+        }
+        if (zombieCount > 0) {
+            const logFile = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+            try { fs.appendFileSync(logFile, "[" + new Date().toISOString() + "] activity-logger: " + zombieCount + " sesion(es) zombie marcadas done (PID muerto)\n"); } catch(e) {}
         }
     } catch(e) { /* no bloquear hook */ }
 }
