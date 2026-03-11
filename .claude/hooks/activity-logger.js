@@ -120,6 +120,15 @@ function handleInput() {
             case "WebFetch": case "WebSearch":
                 target = ti.url || ti.query || "--";
                 break;
+            case "TodoWrite": {
+                // { todos: [{content, status, activeForm}] }
+                const todos = Array.isArray(ti.todos) ? ti.todos : [];
+                const inP = todos.find(t => t.status === "in_progress");
+                target = inP
+                    ? (inP.activeForm || inP.content || "--").substring(0, 80)
+                    : "todos[" + todos.length + "]";
+                break;
+            }
         }
 
         const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -502,6 +511,27 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
                 }
                 session.current_tasks.push(newTask);
             }
+        }
+
+        // Sincronizar current_tasks[] y current_task desde TodoWrite
+        if (toolName === "TodoWrite" && Array.isArray(toolInput.todos)) {
+            const todos = toolInput.todos;
+            // Reemplazar current_tasks con el estado completo del array de todos
+            session.current_tasks = todos.map((todo, idx) => ({
+                id: String(idx + 1),
+                subject: (todo.content || "--").substring(0, 120),
+                status: todo.status || "pending",
+                activeForm: todo.activeForm || null,
+            }));
+            // Actualizar current_task con la tarea en progreso
+            const inProgressTodo = todos.find(t => t.status === "in_progress");
+            session.current_task = inProgressTodo
+                ? (inProgressTodo.activeForm || inProgressTodo.content || null)
+                : null;
+            // Contar completadas
+            const completedCount = todos.filter(t => t.status === "completed").length;
+            session.tasks_completed = completedCount;
+            session.tasks_created = todos.length;
         }
 
         // Mantener current_task (singular) para activeForm en panel SESIONES

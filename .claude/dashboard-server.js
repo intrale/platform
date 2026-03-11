@@ -200,18 +200,14 @@ function collectData() {
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
-  // FIX: combinar agentes + _queue + _completed para que el panel sprint los muestre todos
-  if (sprintPlan) {
-    sprintPlan.agentes = [
+  // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed)
+  // para retener sesiones activas y evitar que se clasifiquen como zombie.
+  const sprintIssueSet = new Set(
+    sprintPlan ? [
       ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
       ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
       ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
-    ];
-  }
-  const sprintIssueSet = new Set(
-    sprintPlan && Array.isArray(sprintPlan.agentes)
-      ? sprintPlan.agentes.map(a => String(a.issue))
-      : []
+    ].map(a => String(a.issue)) : []
   );
 
   // Sessions
@@ -1293,39 +1289,99 @@ function renderHTML(data, theme) {
   let ejecutionHtml = "";
 
   // Sprint sub-view — combinar agentes + _queue + _completed para vista completa
-  const allSprintAgentes = data.sprintPlan ? [
-    ...(Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : []),
-    ...(Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : []),
-    ...(Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : []),
-  ] : [];
+  // Fuente de verdad: sprint-plan.json (agentes activos + cola + completados)
+  const spAgentes = data.sprintPlan && Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : [];
+  const spQueue = data.sprintPlan && Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : [];
+  const spCompleted = data.sprintPlan && Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : [];
+  const allSprintAgentes = [...spAgentes, ...spQueue, ...spCompleted];
+
+  // Helper para renderizar una fila de agente del sprint
+  function renderSprintAgentRow(ag, forcedStatus) {
+    const matchSession = data.sprintSessions.find(s => {
+      const issueMatch = (s.branch || "").match(/(\d+)/);
+      return issueMatch && issueMatch[1] === String(ag.issue);
+    });
+    const agStatus = forcedStatus || (matchSession ? matchSession._status : "pending");
+    const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
+    const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
+    const isBlocked = matchSession && blockedPids.has(matchSession.id);
+    const tasks = matchSession ? (matchSession.current_tasks || []) : [];
+    const tasksDone = tasks.filter(t => t.status === "completed").length;
+    const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+    let tasksPct;
+    if (tasks.length > 0) {
+      tasksPct = Math.round((tasksDone / tasks.length) * 100);
+    } else if (agStatus === "done" || agStatus === "stale" || forcedStatus === "done") {
+      tasksPct = 100;
+    } else if (actionCount > 0) {
+      const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+      tasksPct = Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
+    } else {
+      tasksPct = 0;
+    }
+    const barColor = (agStatus === "done" || forcedStatus === "done") ? "var(--gradient-green)"
+      : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+    const waitingState = matchSession ? (matchSession.waiting_state || null) : null;
+    const wb = waitingState ? formatWaitingBadge(waitingState) : null;
+    const isWaiting = wb && (wb.status === "in_progress" || wb.status === "starting");
+    const isFailed = wb && wb.status === "failure";
+    const waitingBarColor = isWaiting ? "linear-gradient(90deg, #fbbf24, #f59e0b)"
+      : isFailed ? "linear-gradient(90deg, #ef4444, #f87171)"
+      : wb && wb.status === "success" ? "var(--gradient-green)" : barColor;
+    const statusText = isBlocked ? "&#128721; Bloqueado"
+      : wb ? (wb.icon + " " + escHtml(wb.detail) + (wb.elapsed ? " (" + wb.elapsed + ")" : ""))
+      : forcedStatus === "pending" ? "En cola"
+      : forcedStatus === "done" ? "Completado"
+      : agStatus === "pending" ? "Pendiente"
+      : agStatus === "done" && tasks.length === 0 ? "Completado"
+      : agStatus === "stale" ? "&#128164; Inactivo · " + actionCount + " acciones"
+      : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
+      : `${actionCount} acciones · ${tasksPct}%`;
+    const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+    const safeRunUrl = wb && wb.run_url && /^https:\/\/github\.com\//.test(wb.run_url) ? wb.run_url : null;
+    const ciLinkHtml = safeRunUrl
+      ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">&#9654; CI</a>`
+      : "";
+    return `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
+      <div style="display:flex;align-items:center;gap:8px;width:100%;">
+        <span class="exec-issue" style="min-width:52px;">#${escHtml(String(ag.issue))}</span>
+        <span class="exec-slug" style="flex:1;">${escHtml(ag.slug || "")}</span>
+        <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
+        <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;width:100%;">
+        <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${isWaiting ? waitingBarColor : barColor};${isWaiting ? 'animation:pulse 1.5s infinite alternate;' : ''}"></div></div>
+        <span style="font-size:11px;color:${isWaiting ? '#fbbf24' : statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
+      </div>
+      <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${ciLinkHtml}</div>
+    </div>`;
+  }
+
   if (data.sprintPlan && allSprintAgentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
     const sprintId = data.sprintPlan.sprint_id || null;
     const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
     const isFinalizado = sprintEstado === "finalizado";
-    // Progreso del sprint: usar tareas si existen, si no, contar agentes done/total
-    const agentesTotal = allSprintAgentes.length;
+    const agentesTotal = data.sprintPlan.total_stories || allSprintAgentes.length;
+    const completedCount = spCompleted.length;
+
+    // Progreso del sprint: completados / total_stories
+    let sprintPct;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
     const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
-    let sprintPct;
     if (sprintTasksTotal > 0) {
       sprintPct = Math.round((sprintTasksDone / sprintTasksTotal) * 100);
     } else {
-      // Sin tareas registradas: heurística por action_count ponderado por size
+      // Heurística: completados cuentan 100%, activos por action_count, cola en 0%
       const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
-      let totalPctSum = 0;
-      for (const ag of allSprintAgentes) {
+      let totalPctSum = completedCount * 100;
+      for (const ag of spAgentes) {
         const match = data.sprintSessions.find(s => {
           const m = (s.branch || "").match(/(\d+)/);
           return m && m[1] === String(ag.issue);
         });
-        if (ag.completed_at) {
-          totalPctSum += 100;
-        } else if (match && (match._status === "done" || match._status === "stale")) {
-          totalPctSum += 100;
-        } else if (match && match.action_count > 0) {
-          const expected = sizeExpected[ag.size] || 60;
-          totalPctSum += Math.min(90, Math.round((match.action_count / expected) * 100));
+        if (match && match.action_count > 0) {
+          totalPctSum += Math.min(90, Math.round((match.action_count / (sizeExpected[ag.size] || 60)) * 100));
         }
       }
       sprintPct = agentesTotal > 0 ? Math.round(totalPctSum / agentesTotal) : 0;
@@ -1335,79 +1391,39 @@ function renderHTML(data, theme) {
     const sprintEstadoBadge = isFinalizado
       ? `<span class="sprint-status-badge sprint-finalizado">&#10003; FINALIZADO</span>`
       : `<span class="sprint-status-badge sprint-activo">ACTIVO</span>`;
+
     ejecutionHtml += `<div class="exec-subview">
       <div class="exec-subview-header">
         <span class="exec-label">&#128640; Sprint ${sprintLabelId} &#9656; ${sprintEstadoBadge}</span>
-        <span class="exec-progress-badge">${isFinalizado ? '&#10003; ' : ''}${sprintPct}%</span>
+        <span class="exec-progress-badge">${completedCount}/${agentesTotal} &middot; ${sprintPct}%</span>
       </div>
-      <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>
-      <div class="exec-table">`;
-    for (const ag of allSprintAgentes) {
-      const matchSession = data.sprintSessions.find(s => {
-        const issueMatch = (s.branch || "").match(/(\d+)/);
-        return issueMatch && issueMatch[1] === String(ag.issue);
-      });
-      const agStatus = matchSession ? matchSession._status : "pending";
-      const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
-      const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
-      const isBlocked = matchSession && blockedPids.has(matchSession.id);
-      const tasks = matchSession ? (matchSession.current_tasks || []) : [];
-      const tasksDone = tasks.filter(t => t.status === "completed").length;
-      const tasksInProgress = tasks.filter(t => t.status === "in_progress").length;
-      const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || agentIconHtml(matchSession ? matchSession.agent_name : "");
-      const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
-      // Progreso: si hay tareas registradas, usar tareas; si no, heurística por action_count + size
-      let tasksPct;
-      if (tasks.length > 0) {
-        tasksPct = Math.round((tasksDone / tasks.length) * 100);
-      } else if (agStatus === "done" || agStatus === "stale") {
-        tasksPct = 100;
-      } else if (actionCount > 0) {
-        const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
-        const expected = sizeExpected[ag.size] || 60;
-        tasksPct = Math.min(90, Math.round((actionCount / expected) * 100));
-      } else {
-        tasksPct = 0;
-      }
-      const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
-      // Waiting state
-      const waitingState = matchSession ? (matchSession.waiting_state || null) : null;
-      const wb = waitingState ? formatWaitingBadge(waitingState) : null;
-      const isWaiting = wb && (wb.status === "in_progress" || wb.status === "starting");
-      const isFailed = wb && wb.status === "failure";
-      const waitingBarColor = isWaiting ? "linear-gradient(90deg, #fbbf24, #f59e0b)"
-        : isFailed ? "linear-gradient(90deg, #ef4444, #f87171)"
-        : wb && wb.status === "success" ? "var(--gradient-green)"
-        : barColor;
-      const statusText = isBlocked ? "&#128721; Bloqueado"
-        : wb ? (wb.icon + " " + escHtml(wb.detail) + (wb.elapsed ? " (" + wb.elapsed + ")" : ""))
-        : agStatus === "pending" ? "Pendiente"
-        : agStatus === "done" && tasks.length === 0 ? "Completado"
-        : agStatus === "stale" ? "&#128164; Inactivo · " + actionCount + " acciones"
-        : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
-        : `${actionCount} acciones · ${tasksPct}%`;
-      const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
-      // Validar que run_url sea una URL https de GitHub (prevenir javascript: injection)
-      const safeRunUrl = wb && wb.run_url && /^https:\/\/github\.com\//.test(wb.run_url) ? wb.run_url : null;
-      const ciLinkHtml = safeRunUrl
-        ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">▶ CI</a>`
-        : "";
+      <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>`;
 
-      ejecutionHtml += `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
-        <div style="display:flex;align-items:center;gap:8px;width:100%;">
-          <span class="exec-issue" style="min-width:52px;">#${escHtml(String(ag.issue))}</span>
-          <span class="exec-slug" style="flex:1;">${escHtml(ag.slug || "")}</span>
-          <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
-          <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;width:100%;">
-          <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${isWaiting ? waitingBarColor : barColor};${isWaiting ? 'animation:pulse 1.5s infinite alternate;' : ''}"></div></div>
-          <span style="font-size:11px;color:${isWaiting ? '#fbbf24' : statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
-        </div>
-        <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${ciLinkHtml}</div>
-      </div>`;
+    // Sección 1: Agentes activos (slot 1-3)
+    if (spAgentes.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--accent-green);letter-spacing:.04em;">&#9654; EN EJECUCIÓN (${spAgentes.length}/${data.sprintPlan.concurrency_limit || 3})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of spAgentes) { ejecutionHtml += renderSprintAgentRow(ag, null); }
+      ejecutionHtml += `</div>`;
     }
-    ejecutionHtml += `</div></div>`;
+
+    // Sección 2: Cola
+    if (spQueue.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:#fbbf24;letter-spacing:.04em;">&#9711; EN COLA (${spQueue.length})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of spQueue) { ejecutionHtml += renderSprintAgentRow(ag, "pending"); }
+      ejecutionHtml += `</div>`;
+    }
+
+    // Sección 3: Completados
+    if (spCompleted.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--text-muted);letter-spacing:.04em;">&#10003; COMPLETADOS (${spCompleted.length})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of spCompleted) { ejecutionHtml += renderSprintAgentRow(ag, "done"); }
+      ejecutionHtml += `</div>`;
+    }
+
+    ejecutionHtml += `</div>`;
   }
 
   // Standalone issues sub-view
@@ -2341,43 +2357,62 @@ async function takeScreenshotSections(width) {
     // Viewport alto para que todos los paneles rendericen antes del scroll
     await page.setViewport({ width, height: 2400 });
     await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "load", timeout: 15000 });
-    await new Promise(r => setTimeout(r, 2000));
+    // Esperar 3000ms (aumentado desde 2000ms) para dar tiempo a renders con datos
+    await new Promise(r => setTimeout(r, 3000));
 
     // Obtener altura total de la página para bounds checking
     const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+    console.log("[dashboard-server] takeScreenshotSections: pageHeight=" + pageHeight + " width=" + width);
 
-    const sections = await page.evaluate(() => {
+    const sectionData = await page.evaluate(() => {
       const selectors = [
-        { id: "kpis",      sel: ".kpi-row" },
-        { id: "ejecucion", sel: "[data-panel='exec']" },
-        { id: "sesiones",  sel: "[data-panel='sessions']" },
-        { id: "metricas",  sel: "[data-panel='metrics']" },
-        { id: "roadmap",   sel: "[data-panel='roadmap']" },
-        { id: "ci",        sel: "[data-panel='ci']" },
+        { id: "kpis",               sel: ".kpi-row" },
+        { id: "ejecucion",          sel: "[data-panel='exec']" },
+        { id: "sesiones",           sel: "[data-panel='sessions']" },
+        { id: "metricas",           sel: "[data-panel='metrics']" },
+        { id: "flujo",              sel: "[data-panel='flow']" },
+        { id: "actividad",          sel: "[data-panel='activity']" },
+        { id: "permisos",           sel: "[data-panel='permissions']" },
+        { id: "agentes-metricas",   sel: "[data-panel='agent-metrics']" },
+        { id: "roadmap",            sel: "[data-panel='roadmap']" },
+        { id: "ci",                 sel: "[data-panel='ci']" },
       ];
       return selectors.map(function(s) {
         var el = document.querySelector(s.sel);
-        if (!el) return null;
+        if (!el) return { id: s.id, found: false };
         var r = el.getBoundingClientRect();
         // Ignorar paneles vacíos o sin altura visible
-        if (r.height < 20 || r.width < 20) return null;
+        if (r.height < 20 || r.width < 20) return { id: s.id, found: true, visible: false, rect: { h: r.height, w: r.width } };
         // Redondear a enteros (Puppeteer clip requiere enteros) y corregir offset de scroll
         return {
           id: s.id,
+          found: true,
+          visible: true,
           x: Math.max(0, Math.round(r.x)),
           y: Math.max(0, Math.round(r.y + window.scrollY)),
           width: Math.round(r.width),
           height: Math.round(r.height),
         };
-      }).filter(Boolean);
+      });
     });
 
+    // Logear resultado del DOM scan
+    const found = sectionData.filter(s => s.found && s.visible);
+    const missing = sectionData.filter(s => !s.found).map(s => s.id);
+    const hidden = sectionData.filter(s => s.found && !s.visible).map(s => s.id);
+    console.log("[dashboard-server] Paneles encontrados: [" + found.map(s => s.id).join(", ") + "]" +
+      (missing.length ? " | Faltantes en DOM: [" + missing.join(", ") + "]" : "") +
+      (hidden.length ? " | Ocultos (rect<20): [" + hidden.join(", ") + "]" : ""));
+
     const results = [];
-    for (const section of sections) {
+    for (const section of found) {
       try {
         // Bounds check: el clip no puede superar el alto total de la página
         const clampedHeight = Math.min(section.height, Math.max(1, pageHeight - section.y));
-        if (clampedHeight < 20) continue;
+        if (clampedHeight < 20) {
+          console.log("[dashboard-server] Sección " + section.id + " clampedHeight=" + clampedHeight + " < 20 — omitida");
+          continue;
+        }
 
         const buf = await page.screenshot({
           type: "png",
@@ -2391,12 +2426,16 @@ async function takeScreenshotSections(width) {
         // Solo incluir si la imagen tiene contenido real (> 5KB)
         if (buf.length > 5000) {
           results.push({ id: section.id, image: buf.toString("base64") });
+          console.log("[dashboard-server] Sección " + section.id + " capturada: " + buf.length + " bytes");
+        } else {
+          console.log("[dashboard-server] Sección " + section.id + " descartada: solo " + buf.length + " bytes (umbral 5KB)");
         }
       } catch (sectionErr) {
         // Una sección fallida no rompe las demás
-        console.error("[dashboard-server] Error capturando sección " + section.id + ": " + sectionErr.message);
+        console.error("[dashboard-server] Error capturando sección " + section.id + ": " + (sectionErr.stack || sectionErr.message));
       }
     }
+    console.log("[dashboard-server] takeScreenshotSections completado: " + results.length + "/" + found.length + " secciones capturadas");
     return results;
   } finally {
     await page.close();
@@ -2563,6 +2602,17 @@ function sendTelegramMediaGroup(photos, caption, silent) {
   });
 }
 
+// Validar que un buffer es un PNG real (magic bytes: 89 50 4E 47 0D 0A 1A 0A)
+function isPngValid(buf) {
+  if (!buf || buf.length < 8) return false;
+  return buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 &&
+         buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A;
+}
+
+// Contador de heartbeats saltados por fallo de Puppeteer (en este proceso)
+let heartbeatSkipCount = 0;
+const HEARTBEAT_SKIP_ALERT = 3;
+
 async function sendHeartbeat() {
   try {
     console.log("[heartbeat] Generando heartbeat...");
@@ -2571,63 +2621,54 @@ async function sendHeartbeat() {
     const caption = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n" +
       new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
 
+    // 1. Intentar álbum top/bottom (split screenshot)
     try {
+      console.log("[heartbeat] Intentando álbum top/bottom (600x800)...");
       const parts = await takeScreenshot(600, 800, { split: true });
-      if (Array.isArray(parts) && parts[0].length > 1000 && parts[1].length > 1000) {
+      if (Array.isArray(parts) && isPngValid(parts[0]) && parts[0].length > 1000 &&
+          isPngValid(parts[1]) && parts[1].length > 1000) {
         await sendTelegramMediaGroup(parts, caption, true);
-        console.log("[heartbeat] Álbum enviado OK");
+        console.log("[heartbeat] Álbum enviado OK (top=" + parts[0].length + "b bottom=" + parts[1].length + "b)");
+        heartbeatSkipCount = 0;
         return;
       }
+      console.log("[heartbeat] Álbum inválido — top=" + (parts ? parts[0].length : 0) + "b bottom=" + (parts ? parts[1].length : 0) + "b");
     } catch (e) {
-      console.log("[heartbeat] Álbum no disponible: " + e.message + " — fallback a single");
+      console.log("[heartbeat] Álbum fallido: " + e.message);
     }
 
+    // 2. Intentar screenshot único
     try {
+      console.log("[heartbeat] Intentando screenshot único (600x800)...");
       const screenshot = await takeScreenshot(600, 800);
-      if (screenshot && screenshot.length > 1000) {
+      if (screenshot && isPngValid(screenshot) && screenshot.length > 1000) {
         await sendTelegramPhoto(screenshot, caption, true);
-        console.log("[heartbeat] Screenshot enviado OK");
+        console.log("[heartbeat] Screenshot único enviado OK (" + screenshot.length + "b)");
+        heartbeatSkipCount = 0;
         return;
       }
+      console.log("[heartbeat] Screenshot único inválido — " + (screenshot ? screenshot.length : 0) + "b, isPng=" + (screenshot ? isPngValid(screenshot) : false));
     } catch (e) {
-      console.log("[heartbeat] Screenshot no disponible: " + e.message + " — fallback a texto");
+      console.log("[heartbeat] Screenshot único fallido: " + e.message);
     }
 
-    // Construir líneas por agente con estado de espera
-    let agentLines = "";
-    const allSessions = data.sessions || [];
-    for (const s of allSessions) {
-      if (s._status === "done" || s._status === "stale") continue;
-      const agentName = s.agent_name || "Agente (" + s.id + ")";
-      const pct = (() => {
-        const tasks = s.current_tasks || [];
-        if (tasks.length > 0) return Math.round((tasks.filter(t => t.status === "completed").length / tasks.length) * 100);
-        return 0;
-      })();
-      const bar = "\u2588".repeat(Math.round(pct / 10)) + "\u2591".repeat(10 - Math.round(pct / 10));
-      const wb = s.waiting_state ? formatWaitingBadge(s.waiting_state) : null;
-      let stateText;
-      if (wb) {
-        stateText = wb.icon + " " + wb.detail + (wb.elapsed ? " (" + wb.elapsed + ")" : "");
-        if (wb.run_url) stateText += ' <a href="' + wb.run_url + '">CI</a>';
-      } else if (s._status === "idle") {
-        stateText = "\ud83d\udca4 Idle " + formatAge(s.last_activity_ts);
-      } else {
-        stateText = s.current_task || (s.last_tool ? "Ejecutando " + s.last_tool : "Activo");
-      }
-      agentLines += "\n\u25cf <b>" + agentName + "</b> " + bar + " " + pct + "% \u2014 " + stateText;
-    }
+    // Todos los intentos fallaron — omitir heartbeat este ciclo (NUNCA enviar texto ASCII)
+    heartbeatSkipCount++;
+    console.log("[heartbeat] Omitido — screenshot no disponible. Skips consecutivos: " + heartbeatSkipCount);
 
-    const text = caption + "\n\n" +
-      "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
-      "\u25cf Permisos: <b>" + (data.permissionStats ? data.permissionStats.auto + " auto, " + data.permissionStats.approved + " aprobados" + (data.permissionStats.denied > 0 ? ", " + data.permissionStats.denied + " rechazados" : "") + (data.permissionStats.pending > 0 ? ", " + data.permissionStats.pending + " pendientes" : "") : "sin datos") + "</b>\n" +
-      "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
-      "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
-      (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "") +
-      (agentLines ? "\n<b>Estado agentes:</b>" + agentLines : "");
-    sendTelegramText(text, true);
+    // Alertar si se supera el umbral de skips
+    if (heartbeatSkipCount >= HEARTBEAT_SKIP_ALERT) {
+      console.log("[heartbeat] Umbral de skips alcanzado — enviando alerta");
+      sendTelegramText(
+        "\u26a0\ufe0f <b>Heartbeat: sin screenshots</b>\n" +
+        "El heartbeat fue omitido <b>" + heartbeatSkipCount + " veces consecutivas</b>.\n" +
+        "Puppeteer no pudo capturar el dashboard. Verifica que est\u00e9 instalado y que el puerto " + PORT + " responda.",
+        false
+      );
+      heartbeatSkipCount = 0;
+    }
   } catch (e) {
-    console.log("[heartbeat] Error: " + e.message);
+    console.log("[heartbeat] Error inesperado: " + e.message);
   }
 }
 

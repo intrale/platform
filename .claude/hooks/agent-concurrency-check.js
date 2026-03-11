@@ -211,6 +211,30 @@ function setQueue(plan, newQueue) {
     }
 }
 
+// ─── Actualizar Project V2 via project-utils.js ─────────────────────────────
+
+let projectUtils = null;
+try { projectUtils = require("./project-utils"); } catch (e) { log("project-utils no disponible: " + e.message); }
+
+async function updateProjectV2(issue, statusName) {
+    if (!projectUtils) {
+        log("project-utils no cargado — skip Project V2 update para #" + issue);
+        return;
+    }
+    try {
+        const token = projectUtils.getGitHubToken();
+        const statusId = projectUtils.STATUS_OPTIONS[statusName];
+        if (!statusId) {
+            log("Status desconocido: " + statusName + " — skip Project V2 update para #" + issue);
+            return;
+        }
+        const itemId = await projectUtils.addAndSetStatus(token, issue, statusId);
+        log("Project V2 actualizado: #" + issue + " → " + statusName + " (item " + itemId + ")");
+    } catch (e) {
+        log("updateProjectV2 error para #" + issue + ": " + e.message);
+    }
+}
+
 // ─── Lanzar agente via Start-Agente.ps1 (detached) ──────────────────────────
 
 function generateDefaultPrompt(issue, slug) {
@@ -242,7 +266,8 @@ function launchAgent(agente) {
         const args = [
             "-NonInteractive",
             "-File", ps1,
-            String(agente.numero)
+            String(agente.numero),
+            "-Force"  // #1399: forzar worktree fresco desde origin/main para agentes promovidos
         ];
 
         log("Lanzando agente " + agente.numero + " (issue #" + agente.issue + ") via PowerShell...");
@@ -281,19 +306,18 @@ function launchAgent(agente) {
 // ─── Construir entrada enriquecida para _completed ──────────────────────────
 
 /**
- * Construye el objeto que se agrega a plan._completed cuando un agente termina.
- * Intenta calcular duración y resultado a partir de los datos de la sesión.
+ * Construye el objeto que se agrega a plan._completed / plan._incomplete cuando un agente termina.
+ * Calcula duración a partir de los datos de la sesión.
  *
- * resultado: "ok" | "failed" | "not_planned"
- *   - "ok"           : sesión terminó normalmente
- *   - "failed"       : sesión terminó con branch sin PR mergeado (heurística básica)
- *   - "not_planned"  : agente nunca tuvo sesión activa
+ * @param {object} agente - Agente del plan
+ * @param {object|null} session - Sesión de Claude (puede ser null)
+ * @param {string} resultado - "ok" | "failed" | "pending_review" | "not_planned"
  * duracion_min: duración en minutos (started_ts → last_activity_ts), 0 si no disponible
  * issue_reabierto: nulo siempre aquí (se actualiza por post-issue-close.js si aplica)
  */
-function buildCompletedEntry(agente, session) {
+function buildCompletedEntry(agente, session, resultado) {
     let duracion_min = 0;
-    let resultado = "ok";
+    if (!resultado) resultado = session ? "ok" : "not_planned";
 
     if (session) {
         const started = session.started_ts || 0;
@@ -301,13 +325,6 @@ function buildCompletedEntry(agente, session) {
         if (started && last && last > started) {
             duracion_min = Math.round((last - started) / 60000);
         }
-        // Heurística: si la sesión tiene estado "done" y action_count bajo, podría haber fallado
-        // Pero sin datos definitivos asumimos "ok" — puede enriquecerse con post-issue-close.js
-        if (session.status === "error") {
-            resultado = "failed";
-        }
-    } else {
-        resultado = "not_planned";
     }
 
     return {
@@ -322,6 +339,55 @@ function buildCompletedEntry(agente, session) {
         issue_reabierto: null,
         completado_at: new Date().toISOString()
     };
+}
+
+/**
+ * Verifica el estado de la PR para una rama usando gh CLI.
+ * Retorna: { status: "merged" | "open" | "closed_no_merge" | "none" | "unknown" }
+ * - "merged"         : PR existe y fue mergeada
+ * - "open"           : PR existe y está abierta (pendiente de review)
+ * - "closed_no_merge": PR existe pero fue cerrada sin merge
+ * - "none"           : no existe ninguna PR para la rama
+ * - "unknown"        : error al consultar (gh CLI no disponible, timeout, etc.)
+ */
+function checkPRStatus(branch) {
+    try {
+        const { execSync } = require("child_process");
+        // Buscar gh en múltiples ubicaciones
+        const ghCandidates = [
+            "C:\\Workspaces\\gh-cli\\bin\\gh.exe",
+            "gh"
+        ];
+        let ghCmd = null;
+        for (const candidate of ghCandidates) {
+            try {
+                execSync(`"${candidate}" --version`, { encoding: "utf8", timeout: 3000, windowsHide: true });
+                ghCmd = candidate;
+                break;
+            } catch (e) {}
+        }
+        if (!ghCmd) {
+            log("checkPRStatus: gh CLI no encontrado");
+            return { status: "unknown" };
+        }
+        const cmd = `"${ghCmd}" pr list --repo intrale/platform --head "${branch}" --state all --json number,state`;
+        const output = execSync(cmd, {
+            encoding: "utf8",
+            timeout: 15000,
+            windowsHide: true
+        });
+        const prs = JSON.parse(output || "[]");
+        if (!Array.isArray(prs) || prs.length === 0) return { status: "none", prs: [] };
+        const merged = prs.find(pr => pr.state === "MERGED");
+        if (merged) return { status: "merged", prs };
+        const open = prs.find(pr => pr.state === "OPEN");
+        if (open) return { status: "open", prs };
+        // PR existe pero fue cerrada sin merge
+        return { status: "closed_no_merge", prs };
+    } catch (e) {
+        log("checkPRStatus error: " + e.message);
+        return { status: "unknown" };
+    }
 }
 
 // ─── Leer stdin (evento Stop de Claude) ─────────────────────────────────────
@@ -405,22 +471,64 @@ async function processInput() {
             (wasWaiting ? " [estaba en waiting]" : "")
         );
 
-        // ── Construir entrada enriquecida para _completed ────────────────────
-        const completedEntry = buildCompletedEntry(finishingAgent, session);
+        // ── Verificar PR del agente que terminó (#1399) ──────────────────────
+        const agentBranch = session.branch || ("agent/" + finishingAgent.issue + "-" + finishingAgent.slug);
+        const prStatus = checkPRStatus(agentBranch);
+        log("PR check para " + agentBranch + ": " + prStatus.status);
+
+        // Remover al agente que terminó del array agentes
+        plan.agentes = (plan.agentes || []).filter(ag => ag.issue !== finishingAgent.issue);
+
+        // ── Decidir destino según PR status ──────────────────────────────────
         if (!Array.isArray(plan._completed)) plan._completed = [];
-        plan._completed.push(completedEntry);
-        log("Agregado a _completed: #" + finishingAgent.issue + " resultado=" + completedEntry.resultado + " duracion=" + completedEntry.duracion_min + "m");
+        if (!Array.isArray(plan._incomplete)) plan._incomplete = [];
+
+        if (prStatus.status === "merged") {
+            // PR mergeada → _completed con resultado "ok"
+            const completedEntry = buildCompletedEntry(finishingAgent, session, "ok");
+            plan._completed.push(completedEntry);
+            log("Agente #" + finishingAgent.issue + " → _completed (PR mergeada, duracion=" + completedEntry.duracion_min + "m)");
+            await notify(
+                "✅ <b>Agente #" + finishingAgent.issue + " completado</b>\n" +
+                "PR mergeada · Slug: " + escHtml(finishingAgent.slug) + "\n" +
+                "Duración: " + completedEntry.duracion_min + " min"
+            );
+        } else if (prStatus.status === "open") {
+            // PR abierta → mantener en agentes[] con status "waiting" (slot liberado)
+            const waitingEntry = Object.assign({}, finishingAgent, { status: "waiting", resultado: "pending_review" });
+            plan.agentes.push(waitingEntry);
+            log("Agente #" + finishingAgent.issue + " → agentes[waiting] (PR abierta, pendiente review)");
+            await notify(
+                "⏳ <b>Agente #" + finishingAgent.issue + " terminó — PR abierta</b>\n" +
+                "Rama: " + escHtml(agentBranch) + "\n" +
+                "Estado: pendiente de review · slot liberado"
+            );
+        } else {
+            // Sin PR (none, closed_no_merge, unknown) → _incomplete con resultado "failed"
+            const motivo = prStatus.status === "unknown"
+                ? "No se pudo verificar PR (gh CLI falló)"
+                : "Sin PR — el agente no completó /delivery";
+            const incompleteEntry = buildCompletedEntry(finishingAgent, session, "failed");
+            incompleteEntry.motivo = motivo;
+            plan._incomplete.push(incompleteEntry);
+            log("Agente #" + finishingAgent.issue + " → _incomplete (sin PR): " + motivo);
+            await notify(
+                "⚠️ <b>Agente #" + finishingAgent.issue + " FALLIDO</b>\n" +
+                "Rama: " + escHtml(agentBranch) + "\n" +
+                "Motivo: " + escHtml(motivo) + "\n" +
+                "<i>Acción: revisar worktree y relanzar si es necesario</i>"
+            );
+        }
+
+        // Actualizar Project V2: issue completado → Done
+        await updateProjectV2(finishingAgent.issue, "Done");
 
         // Actualizar total_stories si no está definido (retrocompatibilidad)
         if (!plan.total_stories) {
             const queueLen = getQueue(plan).length;
-            plan.total_stories = (plan.agentes || []).length + queueLen + plan._completed.length;
+            plan.total_stories = (plan.agentes || []).length + queueLen + plan._completed.length + plan._incomplete.length;
             log("total_stories calculado: " + plan.total_stories);
         }
-
-        // Remover al agente que terminó del array agentes
-        const prevCount = (plan.agentes || []).length;
-        plan.agentes = (plan.agentes || []).filter(ag => ag.issue !== finishingAgent.issue);
 
         // Contar solo agentes no-waiting: los waiting ya liberaron su slot al entrar en espera (#1356)
         const afterCount = plan.agentes.filter(ag => ag.status !== "waiting").length;
@@ -430,15 +538,6 @@ async function processInput() {
             (waitingCount > 0 ? " (+ " + waitingCount + " en waiting)" : "") +
             (wasWaiting ? " — terminó desde estado waiting (slot ya estaba liberado)" : "")
         );
-
-        // Bug 3: Agregar agente completado a _completed para mantener historial del sprint (#1345)
-        // Antes: el agente se removía de `agentes` sin dejar rastro de que completó
-        if (!Array.isArray(plan._completed)) plan._completed = [];
-        plan._completed.push(Object.assign({}, finishingAgent, {
-            resultado: "ok",
-            completedAt: new Date().toISOString()
-        }));
-        log("Agente #" + finishingAgent.issue + " agregado a _completed (" + plan._completed.length + " total)");
 
         const queue = getQueue(plan);
 
@@ -466,12 +565,21 @@ async function processInput() {
             const maxNumero = plan.agentes.reduce((m, ag) => Math.max(m, ag.numero || 0), 0);
             nextAgente.numero = maxNumero + 1;
 
+            // Asegurar que el prompt está asignado ANTES de guardar el plan (#1399)
+            // Start-Agente.ps1 lee el plan del disco para obtener el prompt
+            if (!nextAgente.prompt) {
+                nextAgente.prompt = generateDefaultPrompt(nextAgente.issue, nextAgente.slug);
+            }
+
             // Mover de cola a agentes
             plan.agentes.push(nextAgente);
             setQueue(plan, newQueue);
 
             savePlan(plan);
             log("Movido issue #" + nextAgente.issue + " de cola a agentes (número " + nextAgente.numero + ")");
+
+            // Actualizar Project V2: issue promovido → In Progress
+            await updateProjectV2(nextAgente.issue, "In Progress");
 
             // Lanzar el agente
             const launched = launchAgent(nextAgente);
@@ -483,16 +591,15 @@ async function processInput() {
 
             const msg = launched
                 ? (
-                    "🚀 <b>Auto-lanzado agente para #" + nextAgente.issue + "</b>\n" +
-                    "Slug: " + escHtml(nextAgente.slug) + "\n" +
+                    "🚀 <b>Agente #" + nextAgente.issue + " lanzado desde cola</b>\n" +
+                    "Slug: " + escHtml(nextAgente.slug || "") + "\n" +
                     "Slots activos: <b>" + slotsOccupied + "/" + concurrencyLimit + "</b>" + waitingSuffix + "\n" +
-                    "Cola restante: " + remainingQueue + " issue(s)\n" +
-                    "<i>Agente finalizado: #" + finishingAgent.issue + " (" + escHtml(finishingAgent.slug) + ")</i>"
+                    "Cola restante: " + remainingQueue + " issue(s)"
                 )
                 : (
                     "⚠️ <b>Cola: issue #" + nextAgente.issue + " movido pero no pudo lanzarse</b>\n" +
                     "Start-Agente.ps1 no disponible o falló. Lanzar manualmente:\n" +
-                    "<code>.\\Start-Agente.ps1 " + nextAgente.numero + "</code>\n" +
+                    "<code>.\\scripts\\Start-Agente.ps1 " + nextAgente.numero + "</code>\n" +
                     "Slots activos: " + slotsOccupied + "/" + concurrencyLimit + waitingSuffix
                 );
 
