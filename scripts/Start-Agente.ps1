@@ -310,7 +310,9 @@ function Start-UnAgente {
 
 # --- Ejecutar ---
 # Nota: El dashboard terminal (dashboard.js) fue deprecado en #1180.
-# El dashboard web (dashboard-server.js en :3100) se auto-arranca via activity-logger.js.
+# El dashboard web (dashboard-server.js en :3100) se auto-arranca via activity-logger.js,
+# pero SOLO desde el repo principal — los worktrees de agentes NO lanzan su propia instancia (#1429).
+# activity-logger.js detecta worktrees chequeando si .git es archivo (worktree) o directorio (repo principal).
 # Para snapshot on-demand: usar /monitor. Para web: http://localhost:3100
 if ($Numero -eq "all") {
     Write-Host ">> Lanzando TODOS los agentes del plan ($($Plan.agentes.Count))..." -ForegroundColor Magenta

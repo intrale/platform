@@ -313,7 +313,7 @@ function checkZombieSessions() {
 }
 
 // --- Auto-inicio del dashboard web server + reporter ---
-const DASHBOARD_SERVER_PID_FILE = path.join(REPO_ROOT, ".claude", "tmp", "dashboard-server.pid");
+const DASHBOARD_SERVER_PID_FILE = path.join(REPO_ROOT, ".claude", "hooks", "dashboard-server.pid");
 const REPORTER_PID_FILE = path.join(REPO_ROOT, ".claude", "tmp", "reporter.pid");
 const REPORTER_INTERVAL = (() => {
     try {
@@ -325,21 +325,29 @@ const REPORTER_INTERVAL = (() => {
 
 // El heartbeat de Telegram ahora está integrado en dashboard-server.js.
 // Este hook solo necesita asegurar que el dashboard server esté corriendo.
+// En worktrees, .git es un archivo (no directorio), por lo que .git/HEAD no existe como ruta.
+// Los worktrees NUNCA lanzan dashboard-server — usan la instancia del repo principal via HTTP (#1429).
 function ensureReporterRunning() {
+    // Detectar si estamos en un worktree: los worktrees tienen .git como archivo, no directorio.
+    // En el repo principal, .git es un directorio y .git/HEAD existe.
+    // En un worktree, .git es un archivo plano → .git/HEAD no existe como ruta.
+    if (!fs.existsSync(path.join(WORKTREE_ROOT, ".git", "HEAD"))) return;
     ensureDashboardServerRunning();
 }
 
 function ensureDashboardServerRunning() {
     try {
-        // 1. Verificar PID file del dashboard web server usando isPidAlive() (Windows-safe)
+        // 1. Verificar PID file del dashboard web server usando isPidAlive() (Windows-safe) (#1428)
         if (fs.existsSync(DASHBOARD_SERVER_PID_FILE)) {
             const pid = parseInt(fs.readFileSync(DASHBOARD_SERVER_PID_FILE, "utf8").trim(), 10);
             if (!isNaN(pid) && isPidAlive(pid)) {
                 return; // Proceso vivo — no arrancar otra instancia (#1412)
             }
+            // PID muerto — limpiar PID file stale antes de continuar (#1428)
+            try { fs.unlinkSync(DASHBOARD_SERVER_PID_FILE); } catch(e) {}
         }
 
-        // 2. HTTP health check (cubre server sin PID file)
+        // 2. HTTP health check: TCP connect check en puerto 3100 (#1428)
         try {
             execSync('node -e "const r=require(\'http\').get(\'http://localhost:3100/health\',{timeout:2000},s=>{process.exit(s.statusCode===200?0:1)});r.on(\'error\',()=>process.exit(1))"', { timeout: 4000, windowsHide: true, stdio: "ignore" });
             return; // Server responde, no arrancar otro
@@ -357,6 +365,12 @@ function ensureDashboardServerRunning() {
             cwd: path.dirname(dashboardServer),
         });
         child.on("error", () => {});
+        // Escribir PID inmediatamente para prevenir lanzamientos concurrentes (#1428)
+        if (child.pid) {
+            try {
+                fs.writeFileSync(DASHBOARD_SERVER_PID_FILE, String(child.pid), "utf8");
+            } catch(e) {}
+        }
         child.unref();
     } catch(e) { /* no bloquear hook */ }
 }
