@@ -2038,11 +2038,11 @@ function renderHTML(data, theme) {
         <div class="kl">Permisos</div>
         <div class="kt" style="color:${permStats.pending > 0 ? 'var(--yellow)' : 'var(--green)'}">${permStats.pending > 0 ? permStats.pending + ' pendiente(s)' : permStats.auto + ' auto'}</div>
       </div>
-      <div class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : 'kpi-orange'}">
+      ${data.ciStatus !== 'unknown' ? `<div class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : 'kpi-orange'}">
         <div class="kv" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? '&#10003;' : data.ciStatus === 'fail' ? '&#10007;' : '&#9203;'}</div>
         <div class="kl">CI / CD</div>
-        <div class="kt" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? 'Build OK' : data.ciStatus === 'fail' ? 'Build FAIL' : data.ciStatus === 'running' ? 'En curso...' : 'Sin datos'}</div>
-      </div>
+        <div class="kt" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? 'Build OK' : data.ciStatus === 'fail' ? 'Build FAIL' : 'En curso...'}</div>
+      </div>` : ''}
       <div class="kpi kpi-orange">
         <div class="kv" style="color:var(--orange)">${data.totalActions}</div>
         <div class="kl">Acciones hoy</div>
@@ -2110,11 +2110,11 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
-    <!-- CI -->
-    <div class="panel" style="margin-bottom:16px;" data-panel="ci">
+    <!-- CI (solo si hay datos) -->
+    ${data.ciRuns.length > 0 ? `<div class="panel" style="margin-bottom:16px;" data-panel="ci">
       <div class="panel-title">CI / CD</div>
       ${ciHtml}
-    </div>
+    </div>` : ''}
 
   </div>
 
