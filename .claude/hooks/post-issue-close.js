@@ -11,6 +11,56 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\
 const LOG_FILE = path.join(PROJECT_DIR, ".claude", "hooks", "hook-debug.log");
 const AUDIT_FILE = path.join(PROJECT_DIR, ".claude", "hooks", "delivery-gate-audit.jsonl");
 
+// ─── Sprint sync: reconciliar sprint al cerrar issues (#1433) ────────────────
+
+const SPRINT_PLAN_FILE = path.join(PROJECT_DIR, "scripts", "sprint-plan.json");
+
+let _sprintSyncPic = null;
+function getSprintSyncPic() {
+    if (_sprintSyncPic !== null) return _sprintSyncPic;
+    try {
+        _sprintSyncPic = require("./sprint-sync");
+    } catch (e) {
+        _sprintSyncPic = null;
+    }
+    return _sprintSyncPic;
+}
+
+/**
+ * Verifica si un issue pertenece al sprint activo (agentes[] o _queue[]).
+ */
+function isIssueInSprint(issueNumber) {
+    try {
+        const plan = JSON.parse(fs.readFileSync(SPRINT_PLAN_FILE, "utf8"));
+        const num = Number(issueNumber);
+        const inAgentes = (plan.agentes || []).some(function(a) { return Number(a.issue) === num; });
+        const inQueue = (plan._queue || plan.cola || []).some(function(a) { return Number(a.issue) === num; });
+        return inAgentes || inQueue;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Si el issue pertenece al sprint activo, invoca reconcileSprintPlan() via runSync.
+ * Async — no bloquea el flujo principal del hook.
+ */
+function maybeReconcileSprintPlan(issueNumber) {
+    try {
+        if (!isIssueInSprint(issueNumber)) return;
+        const ss = getSprintSyncPic();
+        if (!ss) return;
+        log("Issue #" + issueNumber + " pertenece al sprint activo — iniciando reconciliación");
+        ss.runSync({ force: true, silent: false }).then(function(result) {
+            log("Sprint sync completado: changes=" + ((result && result.changes && result.changes.length) || 0));
+        }).catch(function(e) {
+            log("Sprint sync error: " + e.message);
+        });
+    } catch (e) {
+        log("maybeReconcileSprintPlan error: " + e.message);
+    }
+}
+
 // IDs del Project V2 "Intrale"
 const PROJECT_ID = "PVT_kwDOBTzBoc4AyMGf";
 const FIELD_ID = "PVTSSF_lADOBTzBoc4AyMGfzgoLqjg";
@@ -287,6 +337,9 @@ async function processIssueClose(issueNumber, prNumber) {
         // Notificar por Telegram
         sendTelegram("⚙️ Issue #" + issueNumber + " cerrado sin QA E2E — movido a <b>\"QA Pending\"</b> en lugar de Done");
     }
+
+    // #1433: reconciliar sprint si el issue pertenece al sprint activo
+    maybeReconcileSprintPlan(issueNumber);
 }
 
 // ─── Bug 1 fix: detectar cierre de issues vía PR merge (#1266) ─────────────
