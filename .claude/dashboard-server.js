@@ -155,6 +155,9 @@ const DATA_CACHE_MS = 2000;
 let etag = "0";
 // Freshness: mtime del sprint-plan.json — si cambia, invalida el cache aunque no expire el TTL (#1417)
 let sprintPlanMtime = 0;
+// Watcher mtime: para broadcast SSE inmediato al detectar cambio en sprint-plan.json (#1434)
+// Se inicializa con el valor actual al arrancar para no hacer un broadcast espurio en el primer tick.
+let sprintPlanWatchMtime = (() => { try { return fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch { return 0; } })();
 
 // --- Helpers ---
 function readJson(filePath) {
@@ -2538,6 +2541,19 @@ function broadcastSSE() {
   }
 }
 
+// --- Sprint-plan freshness watcher (#1434) ---
+// Polling de mtime cada 1s (O(1), sin reread completo).
+// Si sprint-plan.json cambió, hace broadcast SSE inmediato sin esperar el ciclo de 5s.
+function checkSprintPlanFreshness() {
+  let currentMtime = 0;
+  try { currentMtime = fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch {}
+  if (currentMtime !== 0 && currentMtime !== sprintPlanWatchMtime) {
+    sprintPlanWatchMtime = currentMtime;
+    console.log("[dashboard-server] sprint-plan.json cambió → broadcast SSE inmediato");
+    broadcastSSE();
+  }
+}
+
 // --- Auto-stop ---
 function checkAutoStop() {
   const data = collectData();
@@ -2574,6 +2590,7 @@ server.listen(PORT, () => {
   writePid();
 
   setInterval(broadcastSSE, SSE_INTERVAL_MS);
+  setInterval(checkSprintPlanFreshness, 1000); // Watcher freshness sprint-plan.json (#1434)
   setInterval(checkAutoStop, 5 * 60 * 1000);
 
   startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, port: PORT });
