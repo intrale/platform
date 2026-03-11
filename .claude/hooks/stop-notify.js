@@ -76,6 +76,68 @@ setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } ca
 
 const AGENT_METRICS_FILE = path.join(REPO_ROOT, ".claude", "hooks", "agent-metrics.json");
 
+// Detecta si el proceso corre en un worktree sibling (no es el repo principal)
+function detectWorktreeRoot() {
+    try {
+        const { execSync } = require("child_process");
+        const currentDir = process.env.CLAUDE_PROJECT_DIR || __dirname;
+        const output = execSync("git worktree list", {
+            encoding: "utf8",
+            cwd: currentDir,
+            timeout: 5000,
+            windowsHide: true
+        });
+        const lines = output.split("\n").filter(l => l.trim());
+        if (lines.length === 0) return null;
+        const firstLine = lines[0];
+        const match = firstLine.match(/^(.+?)\s+[0-9a-f]{5,}/);
+        if (!match) return null;
+        const mainPath = match[1].trim()
+            .replace(/^\/([a-z])\//, "$1:\\").replace(/\//g, "\\");
+        const currentNorm = (currentDir || "").replace(/\//g, "\\").toLowerCase();
+        const mainNorm = mainPath.toLowerCase();
+        // Si el repo principal difiere del directorio actual, estamos en worktree
+        if (currentNorm && mainNorm && currentNorm !== mainNorm) {
+            return mainPath; // retorna la ruta del repo principal
+        }
+    } catch (e) { /* fall through */ }
+    return null;
+}
+
+// Consolida sesiones del worktree actual al archivo de métricas del repo principal (#1419)
+// Solo fusiona sesiones que no existan aún en el principal (por session id).
+function consolidateWorktreeMetrics(worktreeMetricsFile, mainRepoRoot) {
+    try {
+        if (!fs.existsSync(worktreeMetricsFile)) return;
+        const mainMetricsFile = path.join(mainRepoRoot, ".claude", "hooks", "agent-metrics.json");
+        const wtData = JSON.parse(fs.readFileSync(worktreeMetricsFile, "utf8"));
+        if (!wtData || !Array.isArray(wtData.sessions) || wtData.sessions.length === 0) return;
+
+        let mainData = { updated_ts: new Date().toISOString(), sessions: [] };
+        try {
+            if (fs.existsSync(mainMetricsFile)) {
+                const existing = JSON.parse(fs.readFileSync(mainMetricsFile, "utf8"));
+                if (existing && Array.isArray(existing.sessions)) mainData = existing;
+            }
+        } catch (e) {}
+
+        const existingIds = new Set(mainData.sessions.map(s => s.id));
+        let merged = 0;
+        for (const session of wtData.sessions) {
+            if (!existingIds.has(session.id)) {
+                mainData.sessions.push(session);
+                existingIds.add(session.id);
+                merged++;
+            }
+        }
+        if (merged > 0) {
+            mainData.updated_ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+            fs.writeFileSync(mainMetricsFile, JSON.stringify(mainData, null, 2) + "\n", "utf8");
+            log("Worktree consolidation: " + merged + " sesion(es) mergeadas al repo principal");
+        }
+    } catch (e) { log("Error en consolidateWorktreeMetrics: " + e.message); }
+}
+
 // Leer sprint_id activo desde sprint-plan.json para correlación histórica
 function getActiveSprintId() {
     try {
@@ -152,6 +214,12 @@ function flushMetrics(sessionId) {
         metrics.updated_ts = endedTs;
         fs.writeFileSync(AGENT_METRICS_FILE, JSON.stringify(metrics, null, 2) + "\n", "utf8");
         log("Metricas flushed para sesion " + shortId + " (sprint: " + (entry.sprint_id || "unknown") + ")");
+
+        // Consolidar al repo principal si estamos en un worktree (#1419)
+        const mainRepoRoot = detectWorktreeRoot();
+        if (mainRepoRoot) {
+            consolidateWorktreeMetrics(AGENT_METRICS_FILE, mainRepoRoot);
+        }
     } catch(e) { log("Error en flushMetrics: " + e.message); }
 }
 

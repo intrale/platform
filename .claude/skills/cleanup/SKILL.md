@@ -661,6 +661,10 @@ Reglas:
 - `.claude/hooks/tg-session-store.json`
 - `.claude/hooks/tg-offsets.json`
 - `.claude/session-state.json`
+- `.claude/hooks/agent-metrics.json` (historial de métricas de agentes — append-only, pérdida irreversible)
+- `.claude/hooks/agent-participation.json` (cobertura de agentes por sprint)
+- `.claude/hooks/heartbeat-state.json` (estado de frecuencia adaptativa del heartbeat)
+- `.claude/hooks/scrum-health-history.jsonl` (historial de salud del board — tendencias a largo plazo)
 
 ### NUNCA usar estos comandos (deny rules)
 - `rm -rf` — usar `node fs.rmSync()` o `node fs.unlinkSync()`

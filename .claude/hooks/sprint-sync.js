@@ -408,6 +408,84 @@ function reconcileRoadmap(plan, roadmap) {
     return changes;
 }
 
+// ─── Archivado de métricas por sprint (#1419) ─────────────────────────────────
+
+const AGENT_METRICS_FILE   = path.join(HOOKS_DIR, "agent-metrics.json");
+const METRICS_ARCHIVE_DIR  = path.join(HOOKS_DIR, "metrics-archive");
+
+/**
+ * Archiva las métricas del sprint cerrado en metrics-archive/agent-metrics-SPR-NNN.json.
+ * Solo crea el archivo si no existe ya (idempotente).
+ * Mantiene el archivo original intacto — el siguiente sprint lo sigue usando.
+ *
+ * @param {object} plan - sprint-plan.json actual
+ * @returns {{ ok: boolean, archiveFile?: string, message?: string }}
+ */
+function archiveSprintMetrics(plan) {
+    if (!plan || !plan.sprint_id) {
+        return { ok: false, message: "sprint_id no disponible en plan" };
+    }
+
+    const sprintId = plan.sprint_id;
+
+    // Crear directorio de archivo si no existe
+    try {
+        if (!fs.existsSync(METRICS_ARCHIVE_DIR)) {
+            fs.mkdirSync(METRICS_ARCHIVE_DIR, { recursive: true });
+            log("metrics-archive: directorio creado en " + METRICS_ARCHIVE_DIR);
+        }
+    } catch (e) {
+        return { ok: false, message: "Error creando metrics-archive/: " + e.message };
+    }
+
+    const archiveFile = path.join(METRICS_ARCHIVE_DIR, "agent-metrics-" + sprintId + ".json");
+
+    // Idempotente: si el archivo ya existe, no sobreescribir
+    if (fs.existsSync(archiveFile)) {
+        log("metrics-archive: " + sprintId + " ya archivado en " + path.basename(archiveFile));
+        return { ok: true, archiveFile, message: "ya archivado (idempotente)" };
+    }
+
+    // Leer métricas actuales
+    let metricsData;
+    try {
+        if (!fs.existsSync(AGENT_METRICS_FILE)) {
+            return { ok: false, message: "agent-metrics.json no existe — sin datos que archivar" };
+        }
+        metricsData = JSON.parse(fs.readFileSync(AGENT_METRICS_FILE, "utf8"));
+    } catch (e) {
+        return { ok: false, message: "Error leyendo agent-metrics.json: " + e.message };
+    }
+
+    if (!metricsData || !Array.isArray(metricsData.sessions)) {
+        return { ok: false, message: "agent-metrics.json sin sesiones" };
+    }
+
+    // Filtrar solo sesiones del sprint actual
+    const sprintSessions = metricsData.sessions.filter(s => s.sprint_id === sprintId);
+
+    // Calcular velocity (stories completadas con resultado "ok")
+    const completedCount = Array.isArray(plan._completed)
+        ? plan._completed.filter(c => c.resultado === "ok").length
+        : 0;
+
+    const archivePayload = {
+        sprint_id:    sprintId,
+        archived_at:  new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+        velocity:     plan.velocity || completedCount,
+        sessions:     sprintSessions
+    };
+
+    try {
+        fs.writeFileSync(archiveFile, JSON.stringify(archivePayload, null, 2) + "\n", "utf8");
+        log("metrics-archive: " + sprintSessions.length + " sesiones de " + sprintId
+            + " archivadas en " + path.basename(archiveFile));
+        return { ok: true, archiveFile, sessionsArchived: sprintSessions.length };
+    } catch (e) {
+        return { ok: false, message: "Error escribiendo archivo de archivo: " + e.message };
+    }
+}
+
 // ─── runSync: función principal exportada ─────────────────────────────────────
 
 /**
@@ -579,4 +657,4 @@ if (require.main === module) {
     }, 2000);
 }
 
-module.exports = { runSync, syncRoadmapOnly };
+module.exports = { runSync, syncRoadmapOnly, archiveSprintMetrics };
