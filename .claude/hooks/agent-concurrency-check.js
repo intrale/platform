@@ -138,6 +138,58 @@ function releaseLock() {
     try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
 }
 
+// ─── Detección de sesiones zombie (#1408) ────────────────────────────────────
+
+const ZOMBIE_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutos (threshold configurable)
+
+// Verifica si un PID de proceso sigue vivo en Windows
+function isPidAlive(pid) {
+    if (!pid) return false;
+    try {
+        const { execSync } = require("child_process");
+        const output = execSync('tasklist /FI "PID eq ' + parseInt(pid, 10) + '" /NH', {
+            timeout: 3000, windowsHide: true, encoding: "utf8"
+        });
+        return output.indexOf("No tasks") === -1 && output.trim().length > 0;
+    } catch (e) {
+        try { process.kill(parseInt(pid, 10), 0); return true; } catch (ke) { return ke.code === "EPERM"; }
+    }
+}
+
+/**
+ * Marca sesiones zombie como done y retorna el Set de issue numbers afectados.
+ * Idempotente: ejecutar 2 veces no causa problemas.
+ * Solo actualiza status — NO mata procesos.
+ */
+function markZombieSessions() {
+    const zombieIssues = new Set();
+    try {
+        if (!fs.existsSync(SESSIONS_DIR)) return zombieIssues;
+        const now = Date.now();
+        const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+            try {
+                const filePath = path.join(SESSIONS_DIR, file);
+                const session = JSON.parse(fs.readFileSync(filePath, "utf8"));
+                if (session.status !== "active") continue;
+                const age = now - new Date(session.last_activity_ts || 0).getTime();
+                if (age > ZOMBIE_THRESHOLD_MS && session.pid) {
+                    if (!isPidAlive(session.pid)) {
+                        session.status = "done";
+                        session.completed_at = session.last_activity_ts;
+                        fs.writeFileSync(filePath, JSON.stringify(session, null, 2) + "\n", "utf8");
+                        // Extraer issue number del branch para excluirlo del conteo de slots
+                        const branchMatch = (session.branch || "").match(/\/(\d+)-/);
+                        if (branchMatch) zombieIssues.add(parseInt(branchMatch[1], 10));
+                        log("Zombie detectado: sesion " + (session.id || file) + " (branch=" + session.branch + ", PID=" + session.pid + " muerto) → done");
+                    }
+                }
+            } catch(e) { /* ignorar errores por archivo */ }
+        }
+    } catch(e) { log("markZombieSessions error: " + e.message); }
+    return zombieIssues;
+}
+
 // ─── Leer/escribir sprint-plan.json ─────────────────────────────────────────
 
 function loadPlan() {
@@ -530,8 +582,16 @@ async function processInput() {
             log("total_stories calculado: " + plan.total_stories);
         }
 
+        // Verificar y marcar sesiones zombie antes de evaluar slots disponibles (#1408)
+        // Garantiza conteo correcto cuando Stop no se disparó en sesiones anteriores
+        const zombieIssues = markZombieSessions();
+        if (zombieIssues.size > 0) {
+            log("Sesiones zombie marcadas: issues " + Array.from(zombieIssues).join(", ") + " → excluidos del conteo de slots");
+        }
+
         // Contar solo agentes no-waiting: los waiting ya liberaron su slot al entrar en espera (#1356)
-        const afterCount = plan.agentes.filter(ag => ag.status !== "waiting").length;
+        // Excluir agentes cuya sesión es zombie (PID muerto, slot ya no está ocupado) (#1408)
+        const afterCount = plan.agentes.filter(ag => ag.status !== "waiting" && !zombieIssues.has(ag.issue)).length;
         const waitingCount = plan.agentes.filter(ag => ag.status === "waiting").length;
         log(
             "Agentes activos (no-waiting): " + afterCount + "/" + concurrencyLimit +

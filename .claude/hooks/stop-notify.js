@@ -172,20 +172,49 @@ function markSessionDone(sessionId) {
     } catch(e) { log("Error marcando sesion done: " + e.message); }
 }
 
+// Verifica si un PID de proceso sigue vivo en Windows
+function isPidAlive(pid) {
+    if (!pid) return false;
+    try {
+        const { execSync } = require("child_process");
+        const output = execSync('tasklist /FI "PID eq ' + parseInt(pid, 10) + '" /NH', {
+            timeout: 3000, windowsHide: true, encoding: "utf8"
+        });
+        return output.indexOf("No tasks") === -1 && output.trim().length > 0;
+    } catch (e) {
+        try { process.kill(parseInt(pid, 10), 0); return true; } catch (ke) { return ke.code === "EPERM"; }
+    }
+}
+
 function cleanOldSessions() {
     try {
         if (!fs.existsSync(SESSIONS_DIR)) return;
         const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
         const now = Date.now();
         const MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 horas (safety net — dashboard ya filtra a 15min)
+        const ZOMBIE_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutos (threshold configurable, #1408)
         let cleaned = 0;
+        let zombies = 0;
 
         for (const file of files) {
             try {
                 const filePath = path.join(SESSIONS_DIR, file);
                 const session = JSON.parse(fs.readFileSync(filePath, "utf8"));
 
-                // Solo limpiar sessions terminadas
+                // GC periódico: marcar sesiones activas con PID muerto como done (#1408)
+                // Solo actualiza el status — NO mata procesos. Idempotente.
+                if (session.status === "active" && session.pid) {
+                    const age = now - new Date(session.last_activity_ts || 0).getTime();
+                    if (age > ZOMBIE_THRESHOLD_MS && !isPidAlive(session.pid)) {
+                        session.status = "done";
+                        session.completed_at = session.last_activity_ts;
+                        fs.writeFileSync(filePath, JSON.stringify(session, null, 2) + "\n", "utf8");
+                        log("GC zombie: sesion " + (session.id || file) + " marcada done (PID=" + session.pid + " muerto, edad=" + Math.round(age / 60000) + "min)");
+                        zombies++;
+                    }
+                }
+
+                // Solo limpiar sessions terminadas con más de 2h de antigüedad
                 if (session.status !== "done") continue;
 
                 const lastActivity = new Date(session.last_activity_ts || 0).getTime();
@@ -199,6 +228,7 @@ function cleanOldSessions() {
             }
         }
 
+        if (zombies > 0) log("GC: " + zombies + " sesion(es) zombie marcadas done");
         if (cleaned > 0) log("Rotacion: " + cleaned + " session(s) antiguas eliminadas");
     } catch(e) { log("Error en rotacion de sessions: " + e.message); }
 }
