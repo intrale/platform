@@ -62,12 +62,53 @@ const DEFAULT_CONCURRENCY_LIMIT = 3;
 const LOCK_TIMEOUT_MS = 8000;
 const LOCK_RETRY_MS = 300;
 
+const WORKTREES_PARENT = path.dirname(REPO_ROOT); // C:\Workspaces\Intrale
+const SWEEP_INTERVAL_MS = 60 * 1000;       // max 1 vez por minuto
+const SENTINEL_INTERVAL_MS = 5 * 60 * 1000; // max 1 vez cada 5 minutos
+const ZOMBIE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutos sin actividad
+const SPAWN_VERIFY_DELAY_MS = 60 * 1000;   // verificar worktree a los 60s
+
 // ─── Logging ────────────────────────────────────────────────────────────────
 
 function log(msg) {
     try {
         fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] ConcurrencyCheck: " + msg + "\n");
     } catch (e) {}
+}
+
+// ─── Helpers de estado ───────────────────────────────────────────────────────
+
+/** Retorna el path esperado del worktree para un agente dado su issue y slug */
+function getExpectedWorktreePath(agente) {
+    return path.join(WORKTREES_PARENT, path.basename(REPO_ROOT) + ".agent-" + agente.issue + "-" + agente.slug);
+}
+
+/** Busca una sesión activa por branch en SESSIONS_DIR */
+function findSessionByBranch(branch) {
+    try {
+        if (!fs.existsSync(SESSIONS_DIR)) return null;
+        const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+            try {
+                const data = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
+                if (data.branch === branch) return data;
+            } catch (e) {}
+        }
+    } catch (e) {}
+    return null;
+}
+
+/** Verifica si un PID está vivo usando tasklist */
+function isPidAlive(pid) {
+    if (!pid) return false;
+    try {
+        const { execSync } = require("child_process");
+        const out = execSync(
+            "tasklist /FI \"PID eq " + pid + "\" /FO CSV /NH",
+            { encoding: "utf8", timeout: 5000, windowsHide: true }
+        );
+        return out.includes(String(pid));
+    } catch (e) { return false; }
 }
 
 // ─── Telegram (via telegram-client.js si disponible, fallback directo) ──────
@@ -324,18 +365,20 @@ function launchAgent(agente) {
 
         log("Lanzando agente " + agente.numero + " (issue #" + agente.issue + ") via PowerShell...");
 
-        // Bug 2: Redirigir stdout+stderr a archivo de log para capturar errores del spawn (#1345)
-        // Antes: stdio: "ignore" — descartaba toda salida y no había forma de diagnosticar fallos
+        // Fix 1 (#1425): Redirigir stdout y stderr a archivos SEPARADOS para diagnóstico
+        // stdout → spawn_agente_N.log | stderr → spawn_agente_N.err
         const logsDir = path.join(REPO_ROOT, "scripts", "logs");
         try { if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true }); } catch (e) {}
         const spawnLogPath = path.join(logsDir, "spawn_agente_" + agente.numero + ".log");
-        let logFd;
+        const spawnErrPath = path.join(logsDir, "spawn_agente_" + agente.numero + ".err");
+        let logFd, errFd;
         let stdio = "ignore";
         try {
             logFd = fs.openSync(spawnLogPath, "w");
-            stdio = ["ignore", logFd, logFd];
+            errFd = fs.openSync(spawnErrPath, "w");
+            stdio = ["ignore", logFd, errFd];
         } catch (e) {
-            log("No se pudo abrir log de spawn: " + e.message + " — usando stdio:ignore");
+            log("No se pudo abrir logs de spawn: " + e.message + " — usando stdio:ignore");
         }
 
         const child = spawn("powershell.exe", args, {
@@ -344,10 +387,14 @@ function launchAgent(agente) {
             windowsHide: false
         });
         child.unref();
-        // Cerrar el fd del padre — el hijo ya tiene su copia duplicada
+        // Cerrar los fds del padre — el hijo ya tiene sus copias duplicadas
         if (logFd !== undefined) { try { fs.closeSync(logFd); } catch (e) {} }
+        if (errFd !== undefined) { try { fs.closeSync(errFd); } catch (e) {} }
 
-        log("Agente " + agente.numero + " lanzado (PID hijo " + child.pid + ") — log: " + spawnLogPath);
+        log("Agente " + agente.numero + " lanzado (PID hijo " + child.pid + ") — stdout: " + spawnLogPath + " · stderr: " + spawnErrPath);
+
+        // Fix 1 (#1425): Verificación post-spawn — a los 60s comprueba que el worktree fue creado
+        scheduleVerification(agente, child.pid);
         return true;
     } catch (e) {
         log("launchAgent error: " + e.message);
@@ -442,6 +489,218 @@ function checkPRStatus(branch) {
     }
 }
 
+// ─── Fix 1: Verificador post-spawn (detached, corre 60s después) ─────────────
+
+/**
+ * Genera el código JS del verificador. Se escribe a un archivo temporal y se
+ * lanza como proceso Node.js detached. A los SPAWN_VERIFY_DELAY_MS segundos
+ * comprueba que el worktree fue creado; si no, revierte al agente a _queue
+ * y envía alerta Telegram.
+ */
+function generateVerifierScript(agente, worktreePath) {
+    const P = {
+        repoRoot: REPO_ROOT,
+        hooksDir: HOOKS_DIR,
+        planFile: PLAN_FILE,
+        lockFile: LOCK_FILE,
+        logFile: LOG_FILE,
+        issue: agente.issue,
+        slug: agente.slug,
+        worktreePath: worktreePath,
+        checkDelayMs: SPAWN_VERIFY_DELAY_MS
+    };
+    return (
+        '"use strict";\n' +
+        'const fs = require("fs");\n' +
+        'const path = require("path");\n' +
+        'const P = ' + JSON.stringify(P) + ';\n' +
+        '\n' +
+        'function log(m) { try { fs.appendFileSync(P.logFile, "[" + new Date().toISOString() + "] Verifier[#" + P.issue + "]: " + m + "\\n"); } catch(e) {} }\n' +
+        '\n' +
+        'function acquireLock() {\n' +
+        '    const dead = Date.now() + 8000;\n' +
+        '    while (Date.now() < dead) {\n' +
+        '        try { fs.writeFileSync(P.lockFile, String(process.pid), { flag: "wx" }); return true; } catch(e) {\n' +
+        '            try { const lp = parseInt(fs.readFileSync(P.lockFile, "utf8"), 10);\n' +
+        '                if (lp && lp !== process.pid) { try { process.kill(lp, 0); } catch(ke) { fs.writeFileSync(P.lockFile, String(process.pid), {flag:"w"}); return true; } }\n' +
+        '            } catch(e2) {}\n' +
+        '            const w = Date.now() + 300; while (Date.now() < w) {}\n' +
+        '        }\n' +
+        '    }\n' +
+        '    return false;\n' +
+        '}\n' +
+        'function releaseLock() { try { fs.unlinkSync(P.lockFile); } catch(e) {} }\n' +
+        '\n' +
+        'async function sendAlert(text) {\n' +
+        '    let tgClient = null;\n' +
+        '    try { tgClient = require(path.join(P.hooksDir, "telegram-client")); } catch(e) {}\n' +
+        '    if (tgClient) { try { await tgClient.sendMessage(text); return; } catch(e) {} }\n' +
+        '    try {\n' +
+        '        const cfg = JSON.parse(fs.readFileSync(path.join(P.hooksDir, "telegram-config.json"), "utf8"));\n' +
+        '        const https = require("https"), qs = require("querystring");\n' +
+        '        const body = qs.stringify({ chat_id: cfg.chat_id, text, parse_mode: "HTML" });\n' +
+        '        await new Promise(r => {\n' +
+        '            const req = https.request({ hostname: "api.telegram.org", path: "/bot" + cfg.bot_token + "/sendMessage", method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 6000 }, res => { res.resume(); r(); });\n' +
+        '            req.on("error", r); req.on("timeout", () => { req.destroy(); r(); });\n' +
+        '            req.write(body); req.end();\n' +
+        '        });\n' +
+        '    } catch(e) { log("sendAlert error: " + e.message); }\n' +
+        '}\n' +
+        '\n' +
+        'async function main() {\n' +
+        '    await new Promise(r => setTimeout(r, P.checkDelayMs));\n' +
+        '    log("Verificando worktree: " + P.worktreePath);\n' +
+        '    if (fs.existsSync(P.worktreePath)) {\n' +
+        '        log("OK — worktree existe, spawn exitoso");\n' +
+        '        try { fs.unlinkSync(__filename); } catch(e) {}\n' +
+        '        return;\n' +
+        '    }\n' +
+        '    log("FALLO — worktree ausente tras " + (P.checkDelayMs/1000) + "s, revirtiendo #" + P.issue + " a _queue");\n' +
+        '    const locked = acquireLock();\n' +
+        '    try {\n' +
+        '        if (!fs.existsSync(P.planFile)) { log("plan no encontrado"); return; }\n' +
+        '        const plan = JSON.parse(fs.readFileSync(P.planFile, "utf8"));\n' +
+        '        const idx = (plan.agentes || []).findIndex(a => a.issue === P.issue);\n' +
+        '        if (idx === -1) { log("agente #" + P.issue + " ya no está en agentes — skip revert"); return; }\n' +
+        '        const ag = plan.agentes.splice(idx, 1)[0];\n' +
+        '        if (!Array.isArray(plan._queue)) plan._queue = [];\n' +
+        '        plan._queue.unshift(ag);\n' +
+        '        const tmp = P.planFile + ".tmp." + process.pid;\n' +
+        '        fs.writeFileSync(tmp, JSON.stringify(plan, null, 2) + "\\n");\n' +
+        '        try { if (fs.existsSync(P.planFile)) fs.unlinkSync(P.planFile); fs.renameSync(tmp, P.planFile); }\n' +
+        '        catch(e) { try { fs.unlinkSync(tmp); } catch(e2) {} fs.writeFileSync(P.planFile, JSON.stringify(plan, null, 2) + "\\n"); }\n' +
+        '        log("Agente #" + P.issue + " revertido a _queue (frente)");\n' +
+        '    } finally { if (locked) releaseLock(); }\n' +
+        '    await sendAlert("⚠️ <b>Spawn fallido: agente #" + P.issue + "</b>\\nWorktree no creado en " + (P.checkDelayMs/1000) + "s.\\nSlug: " + P.slug + "\\nAgente devuelto a cola para reintento automático.");\n' +
+        '    try { fs.unlinkSync(__filename); } catch(e) {}\n' +
+        '}\n' +
+        '\n' +
+        'main().catch(e => log("error: " + e.message));\n'
+    );
+}
+
+/**
+ * Lanza un proceso Node.js detached que verifica en SPAWN_VERIFY_DELAY_MS ms
+ * si el worktree del agente fue creado. Si no, revierte a _queue + alerta.
+ */
+function scheduleVerification(agente, spawnedPid) {
+    try {
+        const worktreePath = getExpectedWorktreePath(agente);
+        const logsDir = path.join(REPO_ROOT, "scripts", "logs");
+        try { if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true }); } catch (e) {}
+        const verifierPath = path.join(logsDir, "verifier_" + agente.issue + "_" + agente.numero + ".js");
+        fs.writeFileSync(verifierPath, generateVerifierScript(agente, worktreePath), "utf8");
+        const ver = spawn("node", [verifierPath], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true
+        });
+        ver.unref();
+        log("Verificador post-spawn lanzado para agente #" + agente.issue +
+            " (PID spawn=" + spawnedPid + ", worktree esperado: " + worktreePath + ")");
+    } catch (e) {
+        log("scheduleVerification error: " + e.message);
+    }
+}
+
+// ─── Fix 2: Sweep periódico de agentes waiting ────────────────────────────────
+
+/**
+ * Verifica el estado de la PR para todos los agentes en status "waiting".
+ * - Si PR mergeada → mueve a _completed y libera el slot contable
+ * - Si PR cerrada sin merge → mueve a _incomplete y libera el slot
+ * - Si PR abierta → mantiene en waiting (sin cambio)
+ * Retorna la cantidad de slots liberados.
+ */
+async function sweepWaitingAgents(plan) {
+    const waitingAgents = (plan.agentes || []).filter(ag => ag.status === "waiting");
+    if (waitingAgents.length === 0) return 0;
+
+    log("Sweep: " + waitingAgents.length + " agente(s) en waiting — verificando PRs...");
+    let freed = 0;
+
+    for (const ag of waitingAgents) {
+        const branch = "agent/" + ag.issue + "-" + ag.slug;
+        const prStatus = checkPRStatus(branch);
+        log("Sweep: #" + ag.issue + " branch=" + branch + " PR=" + prStatus.status);
+
+        if (prStatus.status === "merged") {
+            plan.agentes = (plan.agentes || []).filter(a => a.issue !== ag.issue);
+            if (!Array.isArray(plan._completed)) plan._completed = [];
+            const entry = buildCompletedEntry(ag, null, "ok");
+            plan._completed.push(entry);
+            log("Sweep: #" + ag.issue + " → _completed (PR mergeada detectada)");
+            freed++;
+            await notify(
+                "✅ <b>Agente #" + ag.issue + " completado (sweep periódico)</b>\n" +
+                "PR mergeada detectada. Slug: " + escHtml(ag.slug) + "\n" +
+                "Slot liberado · Cola verificada automáticamente"
+            );
+        } else if (prStatus.status === "closed_no_merge") {
+            plan.agentes = (plan.agentes || []).filter(a => a.issue !== ag.issue);
+            if (!Array.isArray(plan._incomplete)) plan._incomplete = [];
+            const entry = buildCompletedEntry(ag, null, "failed");
+            entry.motivo = "PR cerrada sin merge (detectado en sweep periódico)";
+            plan._incomplete.push(entry);
+            log("Sweep: #" + ag.issue + " → _incomplete (PR cerrada sin merge)");
+            freed++;
+            await notify(
+                "⚠️ <b>Agente #" + ag.issue + " incompleto (sweep periódico)</b>\n" +
+                "PR cerrada sin merge. Slug: " + escHtml(ag.slug) + "\n" +
+                "Slot liberado"
+            );
+        }
+        // "open" → mantener en waiting
+        // "none" / "unknown" → no mover (puede ser error transitorio de gh CLI)
+    }
+
+    return freed;
+}
+
+// ─── Fix 3: Sentinel de liveness para agentes activos ────────────────────────
+
+/**
+ * Para cada agente activo (no-waiting), busca su sesión y verifica:
+ * - Si last_activity_ts > ZOMBIE_THRESHOLD_MS AND PID muerto → alerta Telegram
+ * NO mueve automáticamente (podría estar en un build largo). Solo alerta.
+ */
+async function sentinelLiveness(plan) {
+    const activeAgents = (plan.agentes || []).filter(ag => ag.status !== "waiting");
+    if (activeAgents.length === 0) return;
+
+    log("Sentinel: verificando liveness de " + activeAgents.length + " agente(s) activo(s)...");
+    const now = Date.now();
+
+    for (const ag of activeAgents) {
+        const branch = "agent/" + ag.issue + "-" + ag.slug;
+        const session = findSessionByBranch(branch);
+        if (!session) {
+            log("Sentinel: #" + ag.issue + " — sin sesión activa, skip");
+            continue;
+        }
+
+        const lastActivity = session.last_activity_ts || 0;
+        if (!lastActivity) continue;
+
+        const idleMs = now - lastActivity;
+        if (idleMs < ZOMBIE_THRESHOLD_MS) continue;
+
+        const idleMins = Math.round(idleMs / 60000);
+        const pid = session.pid || session.claude_pid;
+        const pidAlive = pid ? isPidAlive(pid) : false;
+
+        if (!pidAlive) {
+            log("Sentinel: ZOMBIE detectado — #" + ag.issue + " sin actividad " + idleMins + "min, PID " + (pid || "?") + " muerto");
+            await notify(
+                "☠️ <b>Agente #" + ag.issue + " posiblemente muerto</b>\n" +
+                "Sin actividad: <b>" + idleMins + " min</b> · PID " + (pid || "?") + " muerto\n" +
+                "Slug: " + escHtml(ag.slug) + "\n" +
+                "<i>No se mueve automáticamente — verificar y relanzar si es necesario</i>"
+            );
+        }
+    }
+}
+
 // ─── Leer stdin (evento Stop de Claude) ─────────────────────────────────────
 
 const MAX_READ = 4096;
@@ -510,10 +769,49 @@ async function processInput() {
         }
 
         const concurrencyLimit = plan.concurrency_limit || DEFAULT_CONCURRENCY_LIMIT;
+        const nowMs = Date.now();
+
+        // ── Fix 2+3: Sweep periódico de agentes waiting + sentinel de liveness ──
+        // Se ejecutan con throttle para no sobrecargar gh CLI en cada PostToolUse
+        if (nowMs - (plan._waiting_sweep_ts || 0) >= SWEEP_INTERVAL_MS) {
+            plan._waiting_sweep_ts = nowMs;
+            const freedFromSweep = await sweepWaitingAgents(plan);
+            if (freedFromSweep > 0) {
+                log("Sweep liberó " + freedFromSweep + " slot(s) — verificando cola...");
+            }
+        }
+        if (nowMs - (plan._sentinel_ts || 0) >= SENTINEL_INTERVAL_MS) {
+            plan._sentinel_ts = nowMs;
+            await sentinelLiveness(plan);
+        }
+
         const finishingAgent = findFinishingAgent(plan, session);
 
         if (!finishingAgent) {
-            log("Sesión branch=" + session.branch + " no coincide con ningún agente del plan — omitiendo");
+            // El agente puede haber sido movido por el sweep (estaba en waiting, PR mergeada).
+            // Aún así, verificar si hay slots libres + cola para promoción.
+            const afterCount = (plan.agentes || []).filter(ag => ag.status !== "waiting").length;
+            const queue = getQueue(plan);
+            if (afterCount < concurrencyLimit && queue.length > 0) {
+                log("finishingAgent no encontrado post-sweep — promoviendo desde cola (slots: " + afterCount + "/" + concurrencyLimit + ", cola: " + queue.length + ")");
+                const nextAgente = queue[0];
+                const newQueue = queue.slice(1);
+                const maxNumero = (plan.agentes || []).reduce((m, ag) => Math.max(m, ag.numero || 0), 0);
+                nextAgente.numero = maxNumero + 1;
+                if (!nextAgente.prompt) nextAgente.prompt = generateDefaultPrompt(nextAgente.issue, nextAgente.slug);
+                plan.agentes = (plan.agentes || []).concat([nextAgente]);
+                setQueue(plan, newQueue);
+                savePlan(plan);
+                await updateProjectV2(nextAgente.issue, "In Progress");
+                const launched = launchAgent(nextAgente);
+                await notify(launched
+                    ? "🚀 <b>Agente #" + nextAgente.issue + " lanzado (post-sweep)</b>\nSlug: " + escHtml(nextAgente.slug) + "\nSlots: " + (afterCount + 1) + "/" + concurrencyLimit + " · Cola: " + newQueue.length
+                    : "⚠️ <b>#" + nextAgente.issue + " movido pero no pudo lanzarse</b>\nLanzar manualmente: <code>.\\scripts\\Start-Agente.ps1 " + nextAgente.numero + "</code>"
+                );
+            } else {
+                log("Sesión branch=" + session.branch + " no coincide con ningún agente del plan — omitiendo");
+                savePlan(plan); // guardar cambios del sweep aunque no haya promoción
+            }
             return;
         }
 
