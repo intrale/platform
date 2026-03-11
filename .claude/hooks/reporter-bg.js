@@ -21,11 +21,22 @@ const SERVER_PID_FILE = path.join(REPO_ROOT, "tmp", "dashboard-server.pid");
 const LOG_FILE = path.join(REPO_ROOT, "hooks", "hook-debug.log");
 const TG_CONFIG_FILE = path.join(REPO_ROOT, "hooks", "telegram-config.json");
 const DASHBOARD_PORT = 3100;
+const SKIP_ALERT_THRESHOLD = 3; // Alertar a Telegram tras N skips consecutivos
+
+// Contador de heartbeats saltados por fallo de screenshot
+let consecutiveSkipCount = 0;
 
 function debugLog(msg) {
   try {
     fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] reporter-bg: " + msg + "\n");
   } catch (e) {}
+}
+
+// Validar que un buffer es un PNG real (magic bytes 89 50 4E 47 0D 0A 1A 0A)
+function isPngValid(buf) {
+  if (!buf || buf.length < 8) return false;
+  return buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 &&
+         buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A;
 }
 
 function isRunning(pid) {
@@ -83,7 +94,7 @@ function ensureDashboardServer() {
     detached: true,
     stdio: "ignore",
     windowsHide: true,
-    cwd: path.dirname(script),
+    cwd: REPO_ROOT,
   });
   child.on("error", () => {}); // No crashear si spawn falla
   child.unref();
@@ -289,28 +300,44 @@ const INTERVAL_STEP_MIN = 10;         // Minutos extra por cada ciclo inactivo
 const MAX_INTERVAL_MIN = 60;          // Cap máximo del intervalo
 
 // Reporte periódico: screenshot + envío a Telegram
+// NUNCA cae al fallback ASCII — si screenshot falla, omite el envío (silencioso)
 async function sendPeriodicReport() {
-  debugLog("Generando reporte periodico...");
+  debugLog("Generando reporte periodico (intento)...");
 
   // Asegurar que el dashboard server está corriendo
   ensureDashboardServer();
 
-  // Esperar un momento para que arranque
+  // Esperar a que el server arranque si recién inició
   await new Promise(r => setTimeout(r, 2000));
+
+  // Verificar que el dashboard responde antes de intentar screenshot
+  const reachable = isDashboardServerReachable();
+  if (!reachable) {
+    debugLog("Dashboard no responde — omitiendo heartbeat este ciclo");
+    consecutiveSkipCount++;
+    debugLog("Skips consecutivos: " + consecutiveSkipCount);
+    await checkAndAlertSkips();
+    return;
+  }
 
   const dateStr = new Date().toLocaleString("es-AR");
 
   // 1. Intentar álbum por secciones semánticas (mobile-first 390px, #1263)
   try {
+    debugLog("Intentando screenshot de secciones (390px)...");
     const sections = await fetchScreenshotSections(390);
     if (sections && sections.length >= 2) {
-      const validBufs = sections.map(function(s) { return s.buf; }).filter(function(b) { return b.length > 1000; });
+      const validBufs = sections.map(function(s) { return s.buf; }).filter(function(b) {
+        return isPngValid(b) && b.length > 1000;
+      });
       if (validBufs.length >= 2) {
         const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 " + dateStr + "\n" + validBufs.length + " paneles";
         await sendTelegramMediaGroup(validBufs, caption, true);
-        debugLog("Heartbeat secciones OK (" + validBufs.length + " paneles)");
+        debugLog("Heartbeat secciones OK (" + validBufs.length + " paneles, bufs: " + validBufs.map(b => b.length).join(",") + " bytes)");
+        consecutiveSkipCount = 0;
         return;
       }
+      debugLog("Secciones insuficientes o inválidas: " + (sections ? sections.length : 0) + " secciones");
     }
   } catch (e) {
     debugLog("Error con secciones: " + e.message);
@@ -318,46 +345,58 @@ async function sendPeriodicReport() {
 
   const caption = "\ud83d\udc9a <b>Intrale Monitor</b> \u2014 Heartbeat\n" + dateStr;
 
-  // 2. Fallback: álbum top/bottom (endpoint /screenshots)
+  // 2. Intentar álbum top/bottom (endpoint /screenshots)
   try {
+    debugLog("Intentando álbum top/bottom (600x800)...");
     const parts = await fetchScreenshots(600, 800);
-    if (parts && parts.top.length > 1000 && parts.bottom.length > 1000) {
+    if (parts && isPngValid(parts.top) && parts.top.length > 1000 && isPngValid(parts.bottom) && parts.bottom.length > 1000) {
       await sendTelegramMediaGroup([parts.top, parts.bottom], caption, true);
+      debugLog("Heartbeat álbum top/bottom OK (top=" + parts.top.length + "b bottom=" + parts.bottom.length + "b)");
+      consecutiveSkipCount = 0;
       return;
     }
+    debugLog("Álbum inválido o buffers vacíos: top=" + (parts ? parts.top.length : 0) + "b bottom=" + (parts ? parts.bottom.length : 0) + "b");
   } catch (e) {
     debugLog("Error con álbum screenshots: " + e.message);
   }
 
-  // 3. Fallback: foto única
-  const screenshot = await fetchScreenshot(375, 640);
-  if (screenshot && screenshot.length > 1000) {
-    try {
+  // 3. Último intento: foto única (375x640)
+  try {
+    debugLog("Intentando screenshot único (375x640)...");
+    const screenshot = await fetchScreenshot(375, 640);
+    if (screenshot && isPngValid(screenshot) && screenshot.length > 1000) {
       await sendTelegramPhoto(screenshot, caption, true);
-    } catch(e) {
-      debugLog("Error enviando screenshot: " + e.message);
-      await sendTelegramText("\ud83d\udc9a <b>Heartbeat</b>\nDashboard activo en localhost:" + DASHBOARD_PORT + "\n" + dateStr, true);
+      debugLog("Heartbeat foto única OK (" + screenshot.length + " bytes)");
+      consecutiveSkipCount = 0;
+      return;
     }
-  } else {
-    debugLog("Screenshot no disponible, enviando texto");
-    // Intentar obtener status JSON
+    debugLog("Screenshot único inválido o vacío: " + (screenshot ? screenshot.length : 0) + "b, isPng=" + (screenshot ? isPngValid(screenshot) : false));
+  } catch (e) {
+    debugLog("Error enviando screenshot único: " + e.message);
+  }
+
+  // Todos los intentos fallaron — omitir heartbeat este ciclo (NUNCA enviar texto ASCII)
+  consecutiveSkipCount++;
+  debugLog("Heartbeat omitido — todos los screenshots fallaron. Skips consecutivos: " + consecutiveSkipCount);
+  await checkAndAlertSkips();
+}
+
+// Enviar alerta a Telegram si se superó el umbral de skips consecutivos
+async function checkAndAlertSkips() {
+  if (consecutiveSkipCount >= SKIP_ALERT_THRESHOLD) {
+    debugLog("Umbral de skips alcanzado (" + consecutiveSkipCount + ") — enviando alerta a Telegram");
     try {
-      const statusData = await new Promise((resolve) => {
-        const req = http.get("http://localhost:" + DASHBOARD_PORT + "/api/status", { timeout: 5000 }, (res) => {
-          let d = ""; res.on("data", c => d += c);
-          res.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
-        });
-        req.on("error", () => resolve(null));
-      });
-      if (statusData) {
-        const text = "\ud83d\udc9a <b>Heartbeat</b>\n" +
-          "\u25cf " + statusData.activeSessions + " activos, " + statusData.idleSessions + " idle\n" +
-          "\u25cf " + statusData.completedTasks + "/" + statusData.totalTasks + " tareas\n" +
-          "\u25cf CI: " + statusData.ciStatus + "\n" +
-          "\u25cf " + statusData.totalActions + " acciones";
-        await sendTelegramText(text, true);
-      }
-    } catch(e) { debugLog("Fallback text tambien fallo: " + e.message); }
+      await sendTelegramText(
+        "\u26a0\ufe0f <b>Reporter: sin screenshots</b>\n" +
+        "El heartbeat fue omitido <b>" + consecutiveSkipCount + " veces consecutivas</b>.\n" +
+        "Verifica que <code>dashboard-server.js</code> est\u00e9 corriendo y que Puppeteer est\u00e9 instalado.",
+        false
+      );
+      // Reset para no spamear (alertar cada SKIP_ALERT_THRESHOLD ciclos)
+      consecutiveSkipCount = 0;
+    } catch (e) {
+      debugLog("Error enviando alerta de skips: " + e.message);
+    }
   }
 }
 

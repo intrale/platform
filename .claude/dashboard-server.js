@@ -2579,6 +2579,17 @@ function sendTelegramMediaGroup(photos, caption, silent) {
   });
 }
 
+// Validar que un buffer es un PNG real (magic bytes: 89 50 4E 47 0D 0A 1A 0A)
+function isPngValid(buf) {
+  if (!buf || buf.length < 8) return false;
+  return buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 &&
+         buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A;
+}
+
+// Contador de heartbeats saltados por fallo de Puppeteer (en este proceso)
+let heartbeatSkipCount = 0;
+const HEARTBEAT_SKIP_ALERT = 3;
+
 async function sendHeartbeat() {
   try {
     console.log("[heartbeat] Generando heartbeat...");
@@ -2587,63 +2598,54 @@ async function sendHeartbeat() {
     const caption = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n" +
       new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
 
+    // 1. Intentar álbum top/bottom (split screenshot)
     try {
+      console.log("[heartbeat] Intentando álbum top/bottom (600x800)...");
       const parts = await takeScreenshot(600, 800, { split: true });
-      if (Array.isArray(parts) && parts[0].length > 1000 && parts[1].length > 1000) {
+      if (Array.isArray(parts) && isPngValid(parts[0]) && parts[0].length > 1000 &&
+          isPngValid(parts[1]) && parts[1].length > 1000) {
         await sendTelegramMediaGroup(parts, caption, true);
-        console.log("[heartbeat] Álbum enviado OK");
+        console.log("[heartbeat] Álbum enviado OK (top=" + parts[0].length + "b bottom=" + parts[1].length + "b)");
+        heartbeatSkipCount = 0;
         return;
       }
+      console.log("[heartbeat] Álbum inválido — top=" + (parts ? parts[0].length : 0) + "b bottom=" + (parts ? parts[1].length : 0) + "b");
     } catch (e) {
-      console.log("[heartbeat] Álbum no disponible: " + e.message + " — fallback a single");
+      console.log("[heartbeat] Álbum fallido: " + e.message);
     }
 
+    // 2. Intentar screenshot único
     try {
+      console.log("[heartbeat] Intentando screenshot único (600x800)...");
       const screenshot = await takeScreenshot(600, 800);
-      if (screenshot && screenshot.length > 1000) {
+      if (screenshot && isPngValid(screenshot) && screenshot.length > 1000) {
         await sendTelegramPhoto(screenshot, caption, true);
-        console.log("[heartbeat] Screenshot enviado OK");
+        console.log("[heartbeat] Screenshot único enviado OK (" + screenshot.length + "b)");
+        heartbeatSkipCount = 0;
         return;
       }
+      console.log("[heartbeat] Screenshot único inválido — " + (screenshot ? screenshot.length : 0) + "b, isPng=" + (screenshot ? isPngValid(screenshot) : false));
     } catch (e) {
-      console.log("[heartbeat] Screenshot no disponible: " + e.message + " — fallback a texto");
+      console.log("[heartbeat] Screenshot único fallido: " + e.message);
     }
 
-    // Construir líneas por agente con estado de espera
-    let agentLines = "";
-    const allSessions = data.sessions || [];
-    for (const s of allSessions) {
-      if (s._status === "done" || s._status === "stale") continue;
-      const agentName = s.agent_name || "Agente (" + s.id + ")";
-      const pct = (() => {
-        const tasks = s.current_tasks || [];
-        if (tasks.length > 0) return Math.round((tasks.filter(t => t.status === "completed").length / tasks.length) * 100);
-        return 0;
-      })();
-      const bar = "\u2588".repeat(Math.round(pct / 10)) + "\u2591".repeat(10 - Math.round(pct / 10));
-      const wb = s.waiting_state ? formatWaitingBadge(s.waiting_state) : null;
-      let stateText;
-      if (wb) {
-        stateText = wb.icon + " " + wb.detail + (wb.elapsed ? " (" + wb.elapsed + ")" : "");
-        if (wb.run_url) stateText += ' <a href="' + wb.run_url + '">CI</a>';
-      } else if (s._status === "idle") {
-        stateText = "\ud83d\udca4 Idle " + formatAge(s.last_activity_ts);
-      } else {
-        stateText = s.current_task || (s.last_tool ? "Ejecutando " + s.last_tool : "Activo");
-      }
-      agentLines += "\n\u25cf <b>" + agentName + "</b> " + bar + " " + pct + "% \u2014 " + stateText;
-    }
+    // Todos los intentos fallaron — omitir heartbeat este ciclo (NUNCA enviar texto ASCII)
+    heartbeatSkipCount++;
+    console.log("[heartbeat] Omitido — screenshot no disponible. Skips consecutivos: " + heartbeatSkipCount);
 
-    const text = caption + "\n\n" +
-      "\u25cf Agentes: <b>" + data.activeSessions + "</b> activos" + (data.idleSessions > 0 ? ", " + data.idleSessions + " idle" : "") + "\n" +
-      "\u25cf Permisos: <b>" + (data.permissionStats ? data.permissionStats.auto + " auto, " + data.permissionStats.approved + " aprobados" + (data.permissionStats.denied > 0 ? ", " + data.permissionStats.denied + " rechazados" : "") + (data.permissionStats.pending > 0 ? ", " + data.permissionStats.pending + " pendientes" : "") : "sin datos") + "</b>\n" +
-      "\u25cf CI: <b>" + (data.ciStatus === "ok" ? "\u2705 OK" : data.ciStatus === "fail" ? "\u274c FAIL" : data.ciStatus) + "</b>\n" +
-      "\u25cf Acciones: <b>" + data.totalActions + "</b> (" + (data.velocity[0] || 0) + "/h)\n" +
-      (data.alerts.length > 0 ? "\u25cf \u26a0\ufe0f <b>" + data.alerts.length + " alerta(s)</b>\n" : "") +
-      (agentLines ? "\n<b>Estado agentes:</b>" + agentLines : "");
-    sendTelegramText(text, true);
+    // Alertar si se supera el umbral de skips
+    if (heartbeatSkipCount >= HEARTBEAT_SKIP_ALERT) {
+      console.log("[heartbeat] Umbral de skips alcanzado — enviando alerta");
+      sendTelegramText(
+        "\u26a0\ufe0f <b>Heartbeat: sin screenshots</b>\n" +
+        "El heartbeat fue omitido <b>" + heartbeatSkipCount + " veces consecutivas</b>.\n" +
+        "Puppeteer no pudo capturar el dashboard. Verifica que est\u00e9 instalado y que el puerto " + PORT + " responda.",
+        false
+      );
+      heartbeatSkipCount = 0;
+    }
   } catch (e) {
-    console.log("[heartbeat] Error: " + e.message);
+    console.log("[heartbeat] Error inesperado: " + e.message);
   }
 }
 
