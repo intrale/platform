@@ -182,13 +182,6 @@ class LoginViewModelTest {
     }
 
     @Test
-    fun `requirePasswordChange activa campos adicionales`() {
-        val vm = createVm()
-        vm.requirePasswordChange()
-        assertTrue(vm.changePasswordRequired)
-    }
-
-    @Test
     fun `markCredentialsAsInvalid marca campos como invalidos`() {
         val vm = createVm()
         vm.markCredentialsAsInvalid("Credenciales incorrectas")
@@ -430,6 +423,92 @@ class TwoFactorVerifyViewModelTest {
         val vm = TwoFactorVerifyViewModel(FakeTwoFactorVerify(), testLoggerFactory)
         vm.state = TwoFactorVerifyViewModel.TwoFactorVerifyUIState("123")
         assertFalse(vm.isValid())
+    }
+}
+
+// endregion
+
+// region ForceChangePasswordViewModel
+
+class ForceChangePasswordViewModelTest {
+
+    private fun createVm(
+        login: ToDoLogin = FakeLogin()
+    ) = ForceChangePasswordViewModel(login, testLoggerFactory)
+
+    @Test
+    fun `onNewPasswordChange actualiza estado`() {
+        val vm = createVm()
+        vm.onNewPasswordChange("nuevaPass123")
+        assertEquals("nuevaPass123", vm.state.newPassword)
+    }
+
+    @Test
+    fun `onNameChange actualiza estado`() {
+        val vm = createVm()
+        vm.onNameChange("Carlos")
+        assertEquals("Carlos", vm.state.name)
+    }
+
+    @Test
+    fun `onFamilyNameChange actualiza estado`() {
+        val vm = createVm()
+        vm.onFamilyNameChange("Garcia")
+        assertEquals("Garcia", vm.state.familyName)
+    }
+
+    @Test
+    fun `isValid con datos completos retorna true`() {
+        val vm = createVm()
+        vm.onNewPasswordChange("nuevaPass123")
+        vm.onNameChange("Carlos")
+        vm.onFamilyNameChange("Garcia")
+        assertTrue(vm.isValid())
+    }
+
+    @Test
+    fun `isValid con password corta retorna false`() {
+        val vm = createVm()
+        vm.onNewPasswordChange("corta")
+        vm.onNameChange("Carlos")
+        vm.onFamilyNameChange("Garcia")
+        assertFalse(vm.isValid())
+    }
+
+    @Test
+    fun `isValid con nombre vacio retorna false`() {
+        val vm = createVm()
+        vm.onNewPasswordChange("nuevaPass123")
+        vm.onNameChange("")
+        vm.onFamilyNameChange("Garcia")
+        assertFalse(vm.isValid())
+    }
+
+    @Test
+    fun `completeLogin invoca todoLogin con exito`() = runTest {
+        ForceChangePasswordCredentialsStore.store("test@test.com", "oldPass123")
+        val vm = createVm()
+        vm.onNewPasswordChange("nuevaPass123")
+        vm.onNameChange("Carlos")
+        vm.onFamilyNameChange("Garcia")
+
+        val result = vm.completeLogin()
+
+        assertTrue(result.isSuccess)
+    }
+
+    @Test
+    fun `credentialsStore limpia credenciales tras login exitoso`() = runTest {
+        ForceChangePasswordCredentialsStore.store("user@test.com", "pass123")
+        val vm = createVm()
+        vm.onNewPasswordChange("nuevaPass123")
+        vm.onNameChange("Ana")
+        vm.onFamilyNameChange("Lopez")
+
+        vm.completeLogin()
+
+        assertEquals("", ForceChangePasswordCredentialsStore.user)
+        assertEquals("", ForceChangePasswordCredentialsStore.password)
     }
 }
 

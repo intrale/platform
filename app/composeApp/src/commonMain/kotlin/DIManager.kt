@@ -168,6 +168,7 @@ import ui.ro.CommonRouter
 import ui.ro.Router
 import ui.sc.auth.ChangePasswordScreen
 import ui.sc.auth.ConfirmPasswordRecoveryScreen
+import ui.sc.auth.ForceChangePasswordScreen
 import ui.sc.auth.Login
 import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
@@ -251,6 +252,7 @@ public const val BUSINESS_CATEGORY_FORM = "businessCategoryForm"
 public const val TWO_FACTOR_SETUP = "twoFactorSetup"
 public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 public const val TYPOGRAPHY_FONTS = "typographyFonts"
+public const val FORCE_CHANGE_PASSWORD = "forceChangePassword"
 
 const val LOGIN_PATH = "/login"
 
@@ -417,6 +419,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
     bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
     bindSingleton(tag = TYPOGRAPHY_FONTS) { TypographyScreen() }
+    bindSingleton(tag = FORCE_CHANGE_PASSWORD) { ForceChangePasswordScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -438,6 +441,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = SIGNUP))
                     add(instance(tag = CONFIRM_SIGNUP))
                     add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = FORCE_CHANGE_PASSWORD))
                     add(instance(tag = PASSWORD_RECOVERY))
                     add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
                     add(instance(tag = TWO_FACTOR_SETUP))
@@ -453,6 +457,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = SIGNUP_DELIVERY))
                     add(instance(tag = CONFIRM_SIGNUP))
                     add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = FORCE_CHANGE_PASSWORD))
                     add(instance(tag = PASSWORD_RECOVERY))
                     add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
                     add(instance(tag = TWO_FACTOR_SETUP))
@@ -471,6 +476,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = SIGNUP_DELIVERY))
                     add(instance(tag = REGISTER_SALER))
                     add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = FORCE_CHANGE_PASSWORD))
                     add(instance(tag = PASSWORD_RECOVERY))
                     add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
                     add(instance(tag = REVIEW_BUSINESS))
@@ -499,6 +505,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = SIGNUP_DELIVERY))
                     add(instance(tag = REGISTER_SALER))
                     add(instance(tag = CHANGE_PASSWORD))
+                    add(instance(tag = FORCE_CHANGE_PASSWORD))
                     add(instance(tag = PASSWORD_RECOVERY))
                     add(instance(tag = CONFIRM_PASSWORD_RECOVERY))
                     add(instance(tag = REVIEW_BUSINESS))

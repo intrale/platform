@@ -1,7 +1,6 @@
 package ui.sc.auth
 
 import ar.com.intrale.appconfig.AppRuntimeConfig
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,7 +37,6 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -86,7 +84,6 @@ class Login : Screen(LOGIN_PATH) {
         val checkingSessionText = Txt(MessageKey.login_checking_session)
         val loginText = Txt(MessageKey.login_button)
         val errorCredentials = Txt(MessageKey.login_error_credentials)
-        val changePasswordMessage = Txt(MessageKey.login_change_password_required)
         val genericError = Txt(MessageKey.login_generic_error)
         val blockedUserMessage = Txt(MessageKey.login_error_user_blocked)
         val isDeliveryApp = AppRuntimeConfig.isDelivery
@@ -107,8 +104,6 @@ class Login : Screen(LOGIN_PATH) {
         )
         val userIconDescription = Txt(MessageKey.login_user_icon_content_description)
         val passwordIconDescription = Txt(MessageKey.login_password_icon_content_description)
-        val changePasswordTitle = Txt(MessageKey.login_change_password_title)
-        val changePasswordDescription = Txt(MessageKey.login_change_password_description)
         val signupLinkLabel = Txt(MessageKey.signup)
         val requestDeliveryAccessLabel = Txt(MessageKey.delivery_request_access)
         val registerBusinessLinkLabel = Txt(MessageKey.register_business)
@@ -136,11 +131,16 @@ class Login : Screen(LOGIN_PATH) {
                     }
 
                     error.message?.contains("newPassword is required", ignoreCase = true) == true -> {
-                        viewModel.requirePasswordChange()
                         if (isDeliveryApp) {
-                            logger.info { "[Delivery][Login] Se requiere cambio de contraseña" }
+                            logger.info { "[Delivery][Login] Se requiere cambio de contraseña — navegando a pantalla dedicada" }
+                        } else {
+                            logger.info { "Se requiere cambio de contraseña — navegando a pantalla dedicada" }
                         }
-                        snackbarHostState.showSnackbar(changePasswordMessage)
+                        ForceChangePasswordCredentialsStore.store(
+                            user = viewModel.state.user,
+                            password = viewModel.state.password
+                        )
+                        navigate(FORCE_CHANGE_PASSWORD_PATH)
                     }
 
                     else -> {
@@ -316,77 +316,12 @@ class Login : Screen(LOGIN_PATH) {
                             },
                             keyboardOptions = KeyboardOptions.Default.copy(
                                 keyboardType = KeyboardType.Password,
-                                imeAction = if (viewModel.changePasswordRequired) ImeAction.Next else ImeAction.Done
+                                imeAction = ImeAction.Done
                             ),
-                            keyboardActions = if (viewModel.changePasswordRequired) {
-                                KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) })
-                            } else {
-                                KeyboardActions(onDone = { submitLogin() })
-                            },
+                            keyboardActions = KeyboardActions(onDone = { submitLogin() }),
                             placeholder = MessageKey.login_password_placeholder,
                             enabled = !viewModel.loading
                         )
-
-                        AnimatedVisibility(visible = viewModel.changePasswordRequired) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
-                            ) {
-                                Divider()
-                                Text(
-                                    text = changePasswordTitle,
-                                    style = MaterialTheme.typography.titleLarge
-                                )
-                                Text(
-                                    text = changePasswordDescription,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                TextField(
-                                    label = MessageKey.new_password,
-                                    value = viewModel.state.newPassword,
-                                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::newPassword.name]!!,
-                                    visualTransformation = true,
-                                    onValueChange = viewModel::onNewPasswordChange,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    keyboardOptions = KeyboardOptions.Default.copy(
-                                        keyboardType = KeyboardType.Password,
-                                        imeAction = ImeAction.Next
-                                    ),
-                                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                                    placeholder = MessageKey.login_new_password_placeholder,
-                                    enabled = !viewModel.loading
-                                )
-                                TextField(
-                                    label = MessageKey.first_name,
-                                    value = viewModel.state.name,
-                                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::name.name]!!,
-                                    onValueChange = viewModel::onNameChange,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    keyboardOptions = KeyboardOptions.Default.copy(
-                                        capitalization = KeyboardCapitalization.Words,
-                                        imeAction = ImeAction.Next
-                                    ),
-                                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                                    placeholder = MessageKey.login_name_placeholder,
-                                    enabled = !viewModel.loading
-                                )
-                                TextField(
-                                    label = MessageKey.family_name,
-                                    value = viewModel.state.familyName,
-                                    state = viewModel.inputsStates[LoginViewModel.LoginUIState::familyName.name]!!,
-                                    onValueChange = viewModel::onFamilyNameChange,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    keyboardOptions = KeyboardOptions.Default.copy(
-                                        capitalization = KeyboardCapitalization.Words,
-                                        imeAction = ImeAction.Done
-                                    ),
-                                    keyboardActions = KeyboardActions(onDone = { submitLogin() }),
-                                    placeholder = MessageKey.login_family_name_placeholder,
-                                    enabled = !viewModel.loading
-                                )
-                            }
-                        }
                     }
                 }
 

@@ -526,4 +526,8 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.password_match to "Las contrasenas coinciden",
     MessageKey.password_no_match to "Las contrasenas no coinciden",
     MessageKey.change_password_confirm_new_password to "Confirmar nueva contrasena",
+    MessageKey.force_change_password_appbar_title to "Cambio de contrasena",
+    MessageKey.force_change_password_welcome_title to "Bienvenido/a",
+    MessageKey.force_change_password_security_message to "Por seguridad, necesitas cambiar tu contrasena antes de continuar.",
+    MessageKey.force_change_password_continue to "Continuar",
 )
