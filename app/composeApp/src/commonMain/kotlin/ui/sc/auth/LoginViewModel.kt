@@ -33,43 +33,31 @@ class LoginViewModel(
     var loading by mutableStateOf(false)
     var isCheckingSession by mutableStateOf(false)
         private set
-    var changePasswordRequired by mutableStateOf(false)
-        private set
     private var loginValidation: Validation<LoginUIState> = buildValidation()
 
-    data class LoginUIState (
+    data class LoginUIState(
         val user: String = "",
-        val password: String = "",
-        val newPassword: String = "",
-        val name: String = "",
-        val familyName: String = ""
+        val password: String = ""
     )
-    override fun getState(): Any  = state
+
+    override fun getState(): Any = state
 
     // inputs and validations initialize
     init {
         setupValidation()
         initInputState()
-
-   }
+    }
 
     fun setupValidation() {
         loginValidation = buildValidation()
         validation = loginValidation as Validation<Any>
     }
-   override fun initInputState() {
-       inputsStates = mutableMapOf(
+
+    override fun initInputState() {
+        inputsStates = mutableMapOf(
             entry(LoginUIState::user.name),
             entry(LoginUIState::password.name),
-            entry(LoginUIState::newPassword.name),
-            entry(LoginUIState::name.name),
-            entry(LoginUIState::familyName.name),
-       )
-       /*if (changePasswordRequired) {
-            inputsStates[LoginUIState::newPassword.name] = mutableStateOf(InputState(LoginUIState::newPassword.name))
-            inputsStates[LoginUIState::name.name] = mutableStateOf(InputState(LoginUIState::name.name))
-            inputsStates[LoginUIState::familyName.name] = mutableStateOf(InputState(LoginUIState::familyName.name))
-       }*/
+        )
     }
 
     // Features
@@ -79,10 +67,7 @@ class LoginViewModel(
         validateCurrentState()
         val result = todoLogin.execute(
             user = state.user,
-            password = state.password,
-            newPassword = if (changePasswordRequired) state.newPassword else null,
-            name = if (changePasswordRequired) state.name else null,
-            familyName = if (changePasswordRequired) state.familyName else null
+            password = state.password
         )
         result.onSuccess { logger.debug { "Login exitoso" } }
             .onFailure { error -> logger.error { "Error al iniciar sesión: ${error.message}" } }
@@ -111,35 +96,12 @@ class LoginViewModel(
         validateCurrentState()
     }
 
-    fun onNewPasswordChange(value: String) {
-        state = state.copy(newPassword = value)
-        validateCurrentState()
-    }
-
-    fun onNameChange(value: String) {
-        state = state.copy(name = value)
-        validateCurrentState()
-    }
-
-    fun onFamilyNameChange(value: String) {
-        state = state.copy(familyName = value)
-        validateCurrentState()
-    }
-
     fun markCredentialsAsInvalid(message: String) {
         listOf(LoginUIState::user.name, LoginUIState::password.name).forEach { key ->
             inputsStates[key]?.let {
                 it.value = it.value.copy(isValid = false, details = message)
             }
         }
-    }
-
-    fun requirePasswordChange() {
-        if (!changePasswordRequired) {
-            changePasswordRequired = true
-            setupValidation()
-        }
-        validateCurrentState()
     }
 
     private fun validateCurrentState() {
@@ -165,18 +127,6 @@ class LoginViewModel(
         LoginUIState::password required {
             minLength(1) hint resolveMessage(MessageKey.form_error_required)
             minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
-        }
-        if (changePasswordRequired) {
-            LoginUIState::newPassword required {
-                minLength(1) hint resolveMessage(MessageKey.form_error_required)
-                minLength(8) hint resolveMessage(MessageKey.form_error_min_length_8)
-            }
-            LoginUIState::name required {
-                minLength(1) hint resolveMessage(MessageKey.form_error_required)
-            }
-            LoginUIState::familyName required {
-                minLength(1) hint resolveMessage(MessageKey.form_error_required)
-            }
         }
     }
 }

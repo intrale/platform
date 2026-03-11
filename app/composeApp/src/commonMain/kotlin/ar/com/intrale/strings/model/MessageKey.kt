@@ -529,4 +529,8 @@ enum class MessageKey {
     password_match,
     password_no_match,
     change_password_confirm_new_password,
+    force_change_password_appbar_title,
+    force_change_password_welcome_title,
+    force_change_password_security_message,
+    force_change_password_continue,
 }

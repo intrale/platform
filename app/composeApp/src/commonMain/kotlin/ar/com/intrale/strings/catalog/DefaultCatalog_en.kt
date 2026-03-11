@@ -526,4 +526,8 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.password_match to "Passwords match",
     MessageKey.password_no_match to "Passwords do not match",
     MessageKey.change_password_confirm_new_password to "Confirm new password",
+    MessageKey.force_change_password_appbar_title to "Password Change",
+    MessageKey.force_change_password_welcome_title to "Welcome!",
+    MessageKey.force_change_password_security_message to "For security reasons, you must change your password before continuing.",
+    MessageKey.force_change_password_continue to "Continue",
 )
