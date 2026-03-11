@@ -42,7 +42,7 @@ const REPO_ROOT = resolveMainRepoRoot();
 const CLAUDE_DIR = path.join(REPO_ROOT, ".claude");
 const SESSIONS_DIR = path.join(CLAUDE_DIR, "sessions");
 const LOG_FILE = path.join(CLAUDE_DIR, "activity-log.jsonl");
-const PID_FILE = path.join(CLAUDE_DIR, "tmp", "dashboard-server.pid");
+const PID_FILE = path.join(CLAUDE_DIR, "hooks", "dashboard-server.pid");
 const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
 const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
@@ -153,6 +153,8 @@ let cachedData = null;
 let cachedDataTs = 0;
 const DATA_CACHE_MS = 2000;
 let etag = "0";
+// Freshness: mtime del sprint-plan.json — si cambia, invalida el cache aunque no expire el TTL (#1417)
+let sprintPlanMtime = 0;
 
 // --- Helpers ---
 function readJson(filePath) {
@@ -192,10 +194,23 @@ function escHtml(s) {
   return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function formatIssueLink(issueNumber) {
+  if (!issueNumber || isNaN(Number(issueNumber))) return "";
+  const num = Number(issueNumber);
+  const url = `https://github.com/intrale/platform/issues/${num}`;
+  const displayText = `#${num}`;
+  return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="issue-link">${escHtml(displayText)}</a>`;
+}
+
 // --- Data Collection ---
 function collectData() {
   const now = Date.now();
-  if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS) return cachedData;
+  // Invalidar cache si sprint-plan.json cambió (mtime-based freshness, #1417)
+  let currentSprintPlanMtime = 0;
+  try { currentSprintPlanMtime = fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch {}
+  const sprintPlanUnchanged = currentSprintPlanMtime === sprintPlanMtime;
+  if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS && sprintPlanUnchanged) return cachedData;
+  sprintPlanMtime = currentSprintPlanMtime;
 
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
@@ -1205,19 +1220,21 @@ function buildGanttChart(roadmap) {
       const fillColor = status === "blocked" ? "#f87171" : color;
 
       // Main bar
+      const issueUrl = `https://github.com/intrale/platform/issues/${iss.number}`;
       svg += `<g opacity="${opacity}">`;
-      svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="${fillColor}" fill-opacity="0.22" stroke="${fillColor}" stroke-width="1" rx="3">`;
+      svg += `<a href="${issueUrl}" target="_blank" rel="noopener noreferrer" class="gantt-bar-link">`;
+      svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="${fillColor}" fill-opacity="0.22" stroke="${fillColor}" stroke-width="1" rx="3" style="cursor:pointer;">`;
       svg += `<title>#${iss.number} ${iss.title}\nStream: ${s} | Size: ${iss.size || "M"} | Status: ${status}</title>`;
       svg += `</rect>`;
 
       // Hatch overlay for in_progress
       if (status === "in_progress") {
-        svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="url(#hatch-inprogress)" rx="3" opacity="0.5"/>`;
+        svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="url(#hatch-inprogress)" rx="3" opacity="0.5" style="pointer-events:none;"/>`;
       }
 
       // Checkmark for done
       if (status === "done") {
-        svg += `<text x="${barX + 7}" y="${barY + barH - 6}" font-size="16" fill="${fillColor}" opacity="0.9">✓</text>`;
+        svg += `<text x="${barX + 7}" y="${barY + barH - 6}" font-size="16" fill="${fillColor}" opacity="0.9" style="pointer-events:none;">✓</text>`;
       }
 
       // Label: #NUM + title truncated
@@ -1227,8 +1244,9 @@ function buildGanttChart(roadmap) {
       svg += `<text x="${labelX}" y="${barY + barH - 7}" font-size="13" fill="var(--white)" font-weight="600" opacity="0.9" style="pointer-events:none">${escHtml(title)}</text>`;
 
       // Issue number chip
-      svg += `<text x="${barX + 4}" y="${barY + 15}" font-size="12" fill="${fillColor}" font-weight="700" opacity="0.85">#${iss.number}</text>`;
+      svg += `<text x="${barX + 4}" y="${barY + 15}" font-size="12" fill="${fillColor}" font-weight="700" opacity="0.85" style="pointer-events:none;">#${iss.number}</text>`;
 
+      svg += `</a>`;
       svg += `</g>`;
     }
   }
@@ -1408,7 +1426,7 @@ function renderHTML(data, theme) {
       : "";
     return `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
       <div style="display:flex;align-items:center;gap:8px;width:100%;">
-        <span class="exec-issue" style="min-width:52px;">#${escHtml(String(ag.issue))}</span>
+        <span class="exec-issue" style="min-width:52px;">${formatIssueLink(ag.issue)}</span>
         <span class="exec-slug" style="flex:1;">${escHtml(ag.slug || "")}</span>
         <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
         <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
@@ -1728,7 +1746,7 @@ function renderHTML(data, theme) {
         <div class="perm-row1">
           <span class="perm-tool">${escHtml(toolName)}</span>
           <span class="perm-severity" style="color:${sevColor}">${escHtml(severity)}</span>
-          ${issueNum ? '<span class="perm-issue">#' + escHtml(issueNum) + '</span>' : ''}
+          ${issueNum ? '<span class="perm-issue">' + formatIssueLink(issueNum) + '</span>' : ''}
           ${agentName ? '<span style="color:var(--text-muted);font-size:9px">' + escHtml(agentName) + '</span>' : ''}
         </div>
         <div class="perm-msg">${msgShort}</div>
@@ -2018,6 +2036,9 @@ function renderHTML(data, theme) {
     .perm-msg { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: block; margin-top: 2px; }
     .perm-origin { font-size: 9px; color: var(--text-muted); margin-top: 2px; display: flex; align-items: center; gap: 4px; }
     .perm-issue { color: var(--blue); font-weight: 600; }
+    .issue-link { color: var(--accent-blue, #60a5fa); text-decoration: none; border-bottom: 1px solid var(--accent-blue, #60a5fa); cursor: pointer; transition: color 0.2s, border-bottom-color 0.2s; }
+    .issue-link:hover { color: var(--accent-bright, #93c5fd); border-bottom-color: var(--accent-bright, #93c5fd); }
+    .gantt-bar-link:hover rect { filter: brightness(1.2); cursor: pointer; }
     .perm-age { font-size: 10px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; margin-top: 2px; }
     .perm-patterns { font-size: 10px; color: var(--text-dim); margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
     .tasks-progress-bar { height: 4px; background: var(--surface3); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
