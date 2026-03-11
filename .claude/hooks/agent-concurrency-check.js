@@ -211,6 +211,30 @@ function setQueue(plan, newQueue) {
     }
 }
 
+// ─── Actualizar Project V2 via project-utils.js ─────────────────────────────
+
+let projectUtils = null;
+try { projectUtils = require("./project-utils"); } catch (e) { log("project-utils no disponible: " + e.message); }
+
+async function updateProjectV2(issue, statusName) {
+    if (!projectUtils) {
+        log("project-utils no cargado — skip Project V2 update para #" + issue);
+        return;
+    }
+    try {
+        const token = projectUtils.getGitHubToken();
+        const statusId = projectUtils.STATUS_OPTIONS[statusName];
+        if (!statusId) {
+            log("Status desconocido: " + statusName + " — skip Project V2 update para #" + issue);
+            return;
+        }
+        const itemId = await projectUtils.addAndSetStatus(token, issue, statusId);
+        log("Project V2 actualizado: #" + issue + " → " + statusName + " (item " + itemId + ")");
+    } catch (e) {
+        log("updateProjectV2 error para #" + issue + ": " + e.message);
+    }
+}
+
 // ─── Lanzar agente via Start-Agente.ps1 (detached) ──────────────────────────
 
 function generateDefaultPrompt(issue, slug) {
@@ -411,6 +435,9 @@ async function processInput() {
         plan._completed.push(completedEntry);
         log("Agregado a _completed: #" + finishingAgent.issue + " resultado=" + completedEntry.resultado + " duracion=" + completedEntry.duracion_min + "m");
 
+        // Actualizar Project V2: issue completado → Done
+        await updateProjectV2(finishingAgent.issue, "Done");
+
         // Actualizar total_stories si no está definido (retrocompatibilidad)
         if (!plan.total_stories) {
             const queueLen = getQueue(plan).length;
@@ -472,6 +499,9 @@ async function processInput() {
 
             savePlan(plan);
             log("Movido issue #" + nextAgente.issue + " de cola a agentes (número " + nextAgente.numero + ")");
+
+            // Actualizar Project V2: issue promovido → In Progress
+            await updateProjectV2(nextAgente.issue, "In Progress");
 
             // Lanzar el agente
             const launched = launchAgent(nextAgente);

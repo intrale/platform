@@ -200,18 +200,14 @@ function collectData() {
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
-  // FIX: combinar agentes + _queue + _completed para que el panel sprint los muestre todos
-  if (sprintPlan) {
-    sprintPlan.agentes = [
+  // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed)
+  // para retener sesiones activas y evitar que se clasifiquen como zombie.
+  const sprintIssueSet = new Set(
+    sprintPlan ? [
       ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
       ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
       ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
-    ];
-  }
-  const sprintIssueSet = new Set(
-    sprintPlan && Array.isArray(sprintPlan.agentes)
-      ? sprintPlan.agentes.map(a => String(a.issue))
-      : []
+    ].map(a => String(a.issue)) : []
   );
 
   // Sessions
@@ -1293,39 +1289,99 @@ function renderHTML(data, theme) {
   let ejecutionHtml = "";
 
   // Sprint sub-view — combinar agentes + _queue + _completed para vista completa
-  const allSprintAgentes = data.sprintPlan ? [
-    ...(Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : []),
-    ...(Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : []),
-    ...(Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : []),
-  ] : [];
+  // Fuente de verdad: sprint-plan.json (agentes activos + cola + completados)
+  const spAgentes = data.sprintPlan && Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : [];
+  const spQueue = data.sprintPlan && Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : [];
+  const spCompleted = data.sprintPlan && Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : [];
+  const allSprintAgentes = [...spAgentes, ...spQueue, ...spCompleted];
+
+  // Helper para renderizar una fila de agente del sprint
+  function renderSprintAgentRow(ag, forcedStatus) {
+    const matchSession = data.sprintSessions.find(s => {
+      const issueMatch = (s.branch || "").match(/(\d+)/);
+      return issueMatch && issueMatch[1] === String(ag.issue);
+    });
+    const agStatus = forcedStatus || (matchSession ? matchSession._status : "pending");
+    const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
+    const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
+    const isBlocked = matchSession && blockedPids.has(matchSession.id);
+    const tasks = matchSession ? (matchSession.current_tasks || []) : [];
+    const tasksDone = tasks.filter(t => t.status === "completed").length;
+    const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+    let tasksPct;
+    if (tasks.length > 0) {
+      tasksPct = Math.round((tasksDone / tasks.length) * 100);
+    } else if (agStatus === "done" || agStatus === "stale" || forcedStatus === "done") {
+      tasksPct = 100;
+    } else if (actionCount > 0) {
+      const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+      tasksPct = Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
+    } else {
+      tasksPct = 0;
+    }
+    const barColor = (agStatus === "done" || forcedStatus === "done") ? "var(--gradient-green)"
+      : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+    const waitingState = matchSession ? (matchSession.waiting_state || null) : null;
+    const wb = waitingState ? formatWaitingBadge(waitingState) : null;
+    const isWaiting = wb && (wb.status === "in_progress" || wb.status === "starting");
+    const isFailed = wb && wb.status === "failure";
+    const waitingBarColor = isWaiting ? "linear-gradient(90deg, #fbbf24, #f59e0b)"
+      : isFailed ? "linear-gradient(90deg, #ef4444, #f87171)"
+      : wb && wb.status === "success" ? "var(--gradient-green)" : barColor;
+    const statusText = isBlocked ? "&#128721; Bloqueado"
+      : wb ? (wb.icon + " " + escHtml(wb.detail) + (wb.elapsed ? " (" + wb.elapsed + ")" : ""))
+      : forcedStatus === "pending" ? "En cola"
+      : forcedStatus === "done" ? "Completado"
+      : agStatus === "pending" ? "Pendiente"
+      : agStatus === "done" && tasks.length === 0 ? "Completado"
+      : agStatus === "stale" ? "&#128164; Inactivo · " + actionCount + " acciones"
+      : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
+      : `${actionCount} acciones · ${tasksPct}%`;
+    const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+    const safeRunUrl = wb && wb.run_url && /^https:\/\/github\.com\//.test(wb.run_url) ? wb.run_url : null;
+    const ciLinkHtml = safeRunUrl
+      ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">&#9654; CI</a>`
+      : "";
+    return `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
+      <div style="display:flex;align-items:center;gap:8px;width:100%;">
+        <span class="exec-issue" style="min-width:52px;">#${escHtml(String(ag.issue))}</span>
+        <span class="exec-slug" style="flex:1;">${escHtml(ag.slug || "")}</span>
+        <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
+        <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;width:100%;">
+        <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${isWaiting ? waitingBarColor : barColor};${isWaiting ? 'animation:pulse 1.5s infinite alternate;' : ''}"></div></div>
+        <span style="font-size:11px;color:${isWaiting ? '#fbbf24' : statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
+      </div>
+      <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${ciLinkHtml}</div>
+    </div>`;
+  }
+
   if (data.sprintPlan && allSprintAgentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
     const sprintId = data.sprintPlan.sprint_id || null;
     const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
     const isFinalizado = sprintEstado === "finalizado";
-    // Progreso del sprint: usar tareas si existen, si no, contar agentes done/total
-    const agentesTotal = allSprintAgentes.length;
+    const agentesTotal = data.sprintPlan.total_stories || allSprintAgentes.length;
+    const completedCount = spCompleted.length;
+
+    // Progreso del sprint: completados / total_stories
+    let sprintPct;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
     const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
-    let sprintPct;
     if (sprintTasksTotal > 0) {
       sprintPct = Math.round((sprintTasksDone / sprintTasksTotal) * 100);
     } else {
-      // Sin tareas registradas: heurística por action_count ponderado por size
+      // Heurística: completados cuentan 100%, activos por action_count, cola en 0%
       const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
-      let totalPctSum = 0;
-      for (const ag of allSprintAgentes) {
+      let totalPctSum = completedCount * 100;
+      for (const ag of spAgentes) {
         const match = data.sprintSessions.find(s => {
           const m = (s.branch || "").match(/(\d+)/);
           return m && m[1] === String(ag.issue);
         });
-        if (ag.completed_at) {
-          totalPctSum += 100;
-        } else if (match && (match._status === "done" || match._status === "stale")) {
-          totalPctSum += 100;
-        } else if (match && match.action_count > 0) {
-          const expected = sizeExpected[ag.size] || 60;
-          totalPctSum += Math.min(90, Math.round((match.action_count / expected) * 100));
+        if (match && match.action_count > 0) {
+          totalPctSum += Math.min(90, Math.round((match.action_count / (sizeExpected[ag.size] || 60)) * 100));
         }
       }
       sprintPct = agentesTotal > 0 ? Math.round(totalPctSum / agentesTotal) : 0;
@@ -1335,79 +1391,39 @@ function renderHTML(data, theme) {
     const sprintEstadoBadge = isFinalizado
       ? `<span class="sprint-status-badge sprint-finalizado">&#10003; FINALIZADO</span>`
       : `<span class="sprint-status-badge sprint-activo">ACTIVO</span>`;
+
     ejecutionHtml += `<div class="exec-subview">
       <div class="exec-subview-header">
         <span class="exec-label">&#128640; Sprint ${sprintLabelId} &#9656; ${sprintEstadoBadge}</span>
-        <span class="exec-progress-badge">${isFinalizado ? '&#10003; ' : ''}${sprintPct}%</span>
+        <span class="exec-progress-badge">${completedCount}/${agentesTotal} &middot; ${sprintPct}%</span>
       </div>
-      <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>
-      <div class="exec-table">`;
-    for (const ag of allSprintAgentes) {
-      const matchSession = data.sprintSessions.find(s => {
-        const issueMatch = (s.branch || "").match(/(\d+)/);
-        return issueMatch && issueMatch[1] === String(ag.issue);
-      });
-      const agStatus = matchSession ? matchSession._status : "pending";
-      const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
-      const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
-      const isBlocked = matchSession && blockedPids.has(matchSession.id);
-      const tasks = matchSession ? (matchSession.current_tasks || []) : [];
-      const tasksDone = tasks.filter(t => t.status === "completed").length;
-      const tasksInProgress = tasks.filter(t => t.status === "in_progress").length;
-      const agentIcon = AGENT_ICONS[matchSession ? matchSession.agent_name : ""] || agentIconHtml(matchSession ? matchSession.agent_name : "");
-      const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
-      // Progreso: si hay tareas registradas, usar tareas; si no, heurística por action_count + size
-      let tasksPct;
-      if (tasks.length > 0) {
-        tasksPct = Math.round((tasksDone / tasks.length) * 100);
-      } else if (agStatus === "done" || agStatus === "stale") {
-        tasksPct = 100;
-      } else if (actionCount > 0) {
-        const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
-        const expected = sizeExpected[ag.size] || 60;
-        tasksPct = Math.min(90, Math.round((actionCount / expected) * 100));
-      } else {
-        tasksPct = 0;
-      }
-      const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
-      // Waiting state
-      const waitingState = matchSession ? (matchSession.waiting_state || null) : null;
-      const wb = waitingState ? formatWaitingBadge(waitingState) : null;
-      const isWaiting = wb && (wb.status === "in_progress" || wb.status === "starting");
-      const isFailed = wb && wb.status === "failure";
-      const waitingBarColor = isWaiting ? "linear-gradient(90deg, #fbbf24, #f59e0b)"
-        : isFailed ? "linear-gradient(90deg, #ef4444, #f87171)"
-        : wb && wb.status === "success" ? "var(--gradient-green)"
-        : barColor;
-      const statusText = isBlocked ? "&#128721; Bloqueado"
-        : wb ? (wb.icon + " " + escHtml(wb.detail) + (wb.elapsed ? " (" + wb.elapsed + ")" : ""))
-        : agStatus === "pending" ? "Pendiente"
-        : agStatus === "done" && tasks.length === 0 ? "Completado"
-        : agStatus === "stale" ? "&#128164; Inactivo · " + actionCount + " acciones"
-        : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
-        : `${actionCount} acciones · ${tasksPct}%`;
-      const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
-      // Validar que run_url sea una URL https de GitHub (prevenir javascript: injection)
-      const safeRunUrl = wb && wb.run_url && /^https:\/\/github\.com\//.test(wb.run_url) ? wb.run_url : null;
-      const ciLinkHtml = safeRunUrl
-        ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">▶ CI</a>`
-        : "";
+      <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>`;
 
-      ejecutionHtml += `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
-        <div style="display:flex;align-items:center;gap:8px;width:100%;">
-          <span class="exec-issue" style="min-width:52px;">#${escHtml(String(ag.issue))}</span>
-          <span class="exec-slug" style="flex:1;">${escHtml(ag.slug || "")}</span>
-          <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
-          <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;width:100%;">
-          <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${isWaiting ? waitingBarColor : barColor};${isWaiting ? 'animation:pulse 1.5s infinite alternate;' : ''}"></div></div>
-          <span style="font-size:11px;color:${isWaiting ? '#fbbf24' : statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
-        </div>
-        <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${ciLinkHtml}</div>
-      </div>`;
+    // Sección 1: Agentes activos (slot 1-3)
+    if (spAgentes.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--accent-green);letter-spacing:.04em;">&#9654; EN EJECUCIÓN (${spAgentes.length}/${data.sprintPlan.concurrency_limit || 3})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of spAgentes) { ejecutionHtml += renderSprintAgentRow(ag, null); }
+      ejecutionHtml += `</div>`;
     }
-    ejecutionHtml += `</div></div>`;
+
+    // Sección 2: Cola
+    if (spQueue.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:#fbbf24;letter-spacing:.04em;">&#9711; EN COLA (${spQueue.length})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of spQueue) { ejecutionHtml += renderSprintAgentRow(ag, "pending"); }
+      ejecutionHtml += `</div>`;
+    }
+
+    // Sección 3: Completados
+    if (spCompleted.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--text-muted);letter-spacing:.04em;">&#10003; COMPLETADOS (${spCompleted.length})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of spCompleted) { ejecutionHtml += renderSprintAgentRow(ag, "done"); }
+      ejecutionHtml += `</div>`;
+    }
+
+    ejecutionHtml += `</div>`;
   }
 
   // Standalone issues sub-view
