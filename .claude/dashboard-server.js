@@ -153,6 +153,8 @@ let cachedData = null;
 let cachedDataTs = 0;
 const DATA_CACHE_MS = 2000;
 let etag = "0";
+// Freshness: mtime del sprint-plan.json — si cambia, invalida el cache aunque no expire el TTL (#1417)
+let sprintPlanMtime = 0;
 
 // --- Helpers ---
 function readJson(filePath) {
@@ -195,7 +197,12 @@ function escHtml(s) {
 // --- Data Collection ---
 function collectData() {
   const now = Date.now();
-  if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS) return cachedData;
+  // Invalidar cache si sprint-plan.json cambió (mtime-based freshness, #1417)
+  let currentSprintPlanMtime = 0;
+  try { currentSprintPlanMtime = fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch {}
+  const sprintPlanUnchanged = currentSprintPlanMtime === sprintPlanMtime;
+  if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS && sprintPlanUnchanged) return cachedData;
+  sprintPlanMtime = currentSprintPlanMtime;
 
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
