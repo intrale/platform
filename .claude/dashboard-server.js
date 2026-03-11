@@ -1797,8 +1797,9 @@ function renderHTML(data, theme) {
     ciHtml = '<div class="empty-state">Sin datos CI</div>';
   }
 
-  // --- AGENT METRICS TABLE (#1226) ---
+  // --- AGENT METRICS TABLE (#1226, #1419) ---
   let agentMetricsHtml = "";
+  const currentSprintId = (data.sprintPlan && data.sprintPlan.sprint_id) || null;
   const metricsEntries = [];
   const activeSessionIds = new Set();
   for (const s of data.sessions) {
@@ -1813,6 +1814,7 @@ function renderHTML(data, theme) {
     metricsEntries.push({
       agent: s.agent_name || "Claude",
       session: s.id,
+      sprintId: s.sprint_id || currentSprintId || "",
       calls: totalCalls || s.action_count || 0,
       files: Array.isArray(s.modified_files) ? s.modified_files.length : 0,
       tasksCreated: s.tasks_created || 0,
@@ -1827,6 +1829,7 @@ function renderHTML(data, theme) {
       metricsEntries.push({
         agent: ms.agent_name || "Claude",
         session: ms.id,
+        sprintId: ms.sprint_id || "",
         calls: ms.total_tool_calls || 0,
         files: ms.modified_files_count || 0,
         tasksCreated: ms.tasks_created || 0,
@@ -1836,9 +1839,31 @@ function renderHTML(data, theme) {
       });
     }
   }
-  const metricsToShow = metricsEntries.slice(0, 8);
+  const metricsToShow = metricsEntries.slice(0, 12);
+  const totalHistoric = data.agentMetrics && Array.isArray(data.agentMetrics.sessions) ? data.agentMetrics.sessions.length : 0;
+  const sprintSessionCount = currentSprintId
+    ? metricsToShow.filter(m => m.sprintId === currentSprintId).length
+    : 0;
   if (metricsToShow.length > 0) {
-    agentMetricsHtml = '<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+    // Filtro toggle por sprint (#1419): botón que muestra solo el sprint activo
+    const filterToggleId = "agMetricsFilter_" + Date.now();
+    agentMetricsHtml = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <span style="font-size:10px;color:var(--text-muted);">${totalHistoric > 0 ? 'Hist&oacute;rico: ' + totalHistoric + ' ses.' : ''}</span>
+      ${currentSprintId ? `<button id="${filterToggleId}" onclick="(function(btn){
+        var tbl=btn.closest('.ag-metrics-wrap').querySelector('.ag-metrics-tbl');
+        var rows=tbl.querySelectorAll('tr[data-sprint]');
+        var isFiltered=btn.dataset.filtered==='1';
+        rows.forEach(function(r){
+          if(isFiltered){r.style.display='';}
+          else{r.style.display=(r.dataset.sprint==='${escHtml(currentSprintId)}')?'':'none';}
+        });
+        btn.dataset.filtered=isFiltered?'0':'1';
+        btn.textContent=isFiltered?'Sprint actual':'Todos';
+        btn.style.background=isFiltered?'var(--surface3)':'var(--blue-dim)';
+        btn.style.color=isFiltered?'var(--text-muted)':'var(--blue)';
+      })(this)" data-filtered="0" style="font-size:10px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface3);color:var(--text-muted);cursor:pointer;">${escHtml(currentSprintId)}</button>` : ''}
+    </div>`;
+    agentMetricsHtml += '<div class="ag-metrics-wrap"><table class="ag-metrics-tbl" style="width:100%;font-size:11px;border-collapse:collapse;">';
     agentMetricsHtml += '<tr style="color:var(--text-muted);border-bottom:1px solid var(--border);">'
       + '<th style="text-align:left;padding:4px;">Agente</th>'
       + '<th style="text-align:left;padding:4px;">Sesi&oacute;n</th>'
@@ -1850,7 +1875,12 @@ function renderHTML(data, theme) {
       const indicator = m.active ? '<span style="color:var(--green);">&#9679;</span> ' : '';
       const tasksStr = m.tasksCompleted + "/" + m.tasksCreated;
       const durStr = m.durMin < 60 ? m.durMin + "m" : Math.floor(m.durMin / 60) + "h " + (m.durMin % 60) + "m";
-      agentMetricsHtml += '<tr style="border-bottom:1px solid var(--border);">'
+      const sprintAttr = m.sprintId ? ' data-sprint="' + escHtml(m.sprintId) + '"' : '';
+      const isCurrentSprint = currentSprintId && m.sprintId === currentSprintId;
+      const rowStyle = isCurrentSprint
+        ? 'border-bottom:1px solid var(--border);background:var(--blue-dim);'
+        : 'border-bottom:1px solid var(--border);';
+      agentMetricsHtml += `<tr style="${rowStyle}"${sprintAttr}>`
         + '<td style="padding:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">' + indicator + escHtml(m.agent) + '</td>'
         + '<td style="padding:4px;font-family:monospace;font-size:10px;">' + escHtml(m.session) + '</td>'
         + '<td style="text-align:right;padding:4px;font-weight:600;">' + m.calls + '</td>'
@@ -1858,12 +1888,13 @@ function renderHTML(data, theme) {
         + '<td style="text-align:right;padding:4px;">' + tasksStr + '</td>'
         + '<td style="text-align:right;padding:4px;">' + durStr + '</td></tr>';
     }
-    agentMetricsHtml += '</table>';
-    const totalHistoric = data.agentMetrics && Array.isArray(data.agentMetrics.sessions) ? data.agentMetrics.sessions.length : 0;
+    agentMetricsHtml += '</table></div>';
     if (totalHistoric > 0) {
       const lastTs = data.agentMetrics.updated_ts;
-      agentMetricsHtml += '<div style="font-size:10px;color:var(--text-muted);margin-top:6px;">'
-        + 'Hist&oacute;rico: ' + totalHistoric + ' sesiones &mdash; &uacute;ltima: ' + formatAge(lastTs) + '</div>';
+      agentMetricsHtml += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px;">'
+        + '&uacute;ltima: ' + formatAge(lastTs)
+        + (currentSprintId && sprintSessionCount > 0 ? ' &mdash; ' + sprintSessionCount + ' en ' + escHtml(currentSprintId) : '')
+        + '</div>';
     }
   } else {
     agentMetricsHtml = '<div class="empty-state">Sin m&eacute;tricas de agentes</div>';

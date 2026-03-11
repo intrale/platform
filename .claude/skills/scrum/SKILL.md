@@ -832,6 +832,29 @@ Actualizar `scripts/sprint-plan.json` agregando:
 
 Mover todos los agentes activos a `_completed`.
 
+### Paso C7b: Archivar métricas de agentes del sprint cerrado (#1419)
+
+Archivar las métricas de sesiones del sprint en `.claude/hooks/metrics-archive/`:
+
+```bash
+cat > /tmp/archive-sprint-metrics.js << 'EOF'
+const path = require('path');
+const REPO_ROOT = '/c/Workspaces/Intrale/platform';
+const sprintSync = require(path.join(REPO_ROOT, '.claude', 'hooks', 'sprint-sync.js'));
+const fs = require('fs');
+const plan = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'sprint-plan.json'), 'utf8'));
+const result = sprintSync.archiveSprintMetrics(plan);
+console.log(JSON.stringify(result));
+EOF
+node /tmp/archive-sprint-metrics.js
+```
+
+Parsear el JSON de salida. Si `result.ok === true`:
+- Confirmar: `✓ Métricas archivadas: N sesiones → metrics-archive/agent-metrics-SPR-NNN.json`
+
+Si `result.ok === false`:
+- Reportar el `result.message` como advertencia (no bloquea el cierre del sprint)
+
 ### Paso C8: Sincronizar Project V2
 
 Para cada issue completado (CLOSED) del sprint:
