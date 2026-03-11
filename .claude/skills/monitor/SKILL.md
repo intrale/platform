@@ -348,17 +348,17 @@ Reglas para los sub-pasos:
 ```
 
 - **Resumen numérico** (primera fila):
-  - `Auto`: contar entradas en `pending-questions.json` donde `answered_via === "auto"` o `action_result === "allow"` y `answered_via === "auto"`
-  - `Aprobados`: contar donde `answered_via === "telegram"` o `answered_via === "console"` y `action_result === "allow"`
+  - `Auto`: contar entradas en `pending-questions.json` donde `answered_via === "auto"`
+  - `Aprobados`: contar donde (`answered_via === "telegram"` || `answered_via === "console"`) && (`action_result === "allow"` || `action_result === "always"`)
   - `Rechazados`: contar donde `action_result === "deny"`
   - `Pendientes`: contar donde `status === "pending"`
-- **Permisos recientes**: listar las últimas 10 entradas del array `questions[]` de `pending-questions.json` ordenadas por `created_at` descendente
-  - Estado: `✓ AUTO` = auto-aprobado | `✓ TELE` = aprobado vía Telegram | `✓ CONS` = aprobado vía consola | `✗ RECH` = rechazado | `☐ PEND` = pendiente
-  - Herramienta: campo `tool_name` (truncar a 20 chars)
-  - Severidad: entre paréntesis — inferir desde `tool_name`: TaskCreate/Edit/Write/Read → AUTO_ALLOW; WebFetch/WebSearch/Skill → LOW; git push/curl POST/Task/Agent → MEDIUM; rm/reset → HIGH
-  - Tiempo: calcular diferencia entre `created_at` y ahora (hace Xm / hace Xh)
+- **Permisos recientes**: listar las últimas 10 entradas del array `questions[]` de `pending-questions.json` ordenadas por `timestamp` descendente
+  - Estado: `✓ AUTO` = `answered_via === "auto"` | `✓ TELE` = aprobado vía Telegram (`answered_via === "telegram"`) | `✓ CONS` = aprobado vía consola (`answered_via === "console"`) | `✗ RECH` = `action_result === "deny"` | `☐ PEND` = `status === "pending"`
+  - Herramienta: campo `action_data.tool_name` (truncar a 20 chars); si hay `action_data.tool_input.command`, agregar los primeros 20 chars del comando como contexto
+  - Severidad: entre paréntesis — inferir desde `action_data.tool_name`: TaskCreate/Edit/Write/Read → AUTO_ALLOW; WebFetch/WebSearch/Skill → LOW; git push/curl POST/Task/Agent → MEDIUM; rm/reset → HIGH
+  - Tiempo: calcular diferencia entre `timestamp` y ahora (hace Xm / hace Xh)
   - Aprobador: si fue via Telegram o consola, mostrar ` · @leitolarreta`; si pendiente, mostrar ` · esperando...`
-- **Top patrones**: leer `approval-history.json`, ordenar por `count` descendente, mostrar los top 3 en formato `Patrón ×N`
+- **Top patrones**: leer `approval-history.json` — tiene estructura `{ "patterns": { "NombrePatrón": { "count": N, ... }, ... } }`. Iterar `Object.entries(data.patterns)`, ordenar por `count` descendente, mostrar los top 3 en formato `Patrón ×N`
 - Si `pending-questions.json` existe pero no tiene entradas recientes (últimas 24h), mostrar solo resumen y top patrones
 
 **Formato general:**
