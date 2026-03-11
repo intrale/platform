@@ -12,15 +12,21 @@
 .PARAMETER SkipMerge
     Si se indica, se pasa -SkipMerge al Watch-Agentes (PRs sin merge automatico).
 
+.PARAMETER Force
+    Si se indica, elimina el worktree existente y lo recrea desde el ultimo commit de origin/main.
+    Usado por agent-concurrency-check.js al promover agentes de la cola (#1399).
+
 .EXAMPLE
     .\Start-Agente.ps1 1
+    .\Start-Agente.ps1 1 -Force
     .\Start-Agente.ps1 all
     .\Start-Agente.ps1 all -SkipMerge
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$Numero,
-    [switch]$SkipMerge
+    [switch]$SkipMerge,
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -129,7 +135,34 @@ function Start-UnAgente {
     $wtExists = $false
     if (Test-Path $wtDir) {
         $wtExists = $true
-        Write-Host ">> Worktree existente, reutilizando: $wtDir" -ForegroundColor Yellow
+        Write-Host ">> Worktree encontrado: $wtDir" -ForegroundColor Yellow
+    }
+
+    # -Force (#1399): eliminar worktree existente y recrear desde origin/main actual
+    # Usado para agentes promovidos de la cola — evita trabajar desde commit viejo
+    if ($wtExists -and $Force) {
+        Write-Host ">> -Force activado: eliminando worktree existente para recrear desde origin/main..." -ForegroundColor Yellow
+        Push-Location $MainRepo
+        try {
+            # Quitar registro del worktree en git
+            git worktree remove "$wtDir" --force 2>$null
+            # Si el directorio sigue existiendo (race condition o fallo silencioso), eliminar
+            if (Test-Path $wtDir) {
+                Remove-Item $wtDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host ">> Worktree eliminado. Se creará uno nuevo desde origin/main." -ForegroundColor Green
+        } catch {
+            Write-Host ">> WARN: No se pudo eliminar worktree anterior: $_" -ForegroundColor Yellow
+            Write-Host ">> Continuando con worktree existente (puede estar desactualizado)." -ForegroundColor DarkGray
+        } finally {
+            Pop-Location
+        }
+        # Marcar como no-existente para que el bloque de creación lo recree
+        if (-not (Test-Path $wtDir)) { $wtExists = $false }
+    }
+
+    if ($wtExists -and -not $Force) {
+        Write-Host ">> Reutilizando worktree existente: $wtDir" -ForegroundColor Yellow
     }
 
     # Bug 1: Verificar si ya hay un proceso claude activo para este agente (#1345)
