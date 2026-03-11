@@ -331,11 +331,11 @@ function ensureReporterRunning() {
 
 function ensureDashboardServerRunning() {
     try {
-        // 1. Verificar PID file del dashboard web server
+        // 1. Verificar PID file del dashboard web server usando isPidAlive() (Windows-safe)
         if (fs.existsSync(DASHBOARD_SERVER_PID_FILE)) {
             const pid = parseInt(fs.readFileSync(DASHBOARD_SERVER_PID_FILE, "utf8").trim(), 10);
-            if (!isNaN(pid)) {
-                try { process.kill(pid, 0); return; } catch(e) { /* PID muerto */ }
+            if (!isNaN(pid) && isPidAlive(pid)) {
+                return; // Proceso vivo — no arrancar otra instancia (#1412)
             }
         }
 
