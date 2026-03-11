@@ -75,7 +75,16 @@ process.stdin.on("error", () => { if (!done) { done = true; processInput(); } })
 setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} processInput(); } }, 3000);
 
 const AGENT_METRICS_FILE = path.join(REPO_ROOT, ".claude", "hooks", "agent-metrics.json");
-const MAX_METRIC_SESSIONS = 50;
+
+// Leer sprint_id activo desde sprint-plan.json para correlación histórica
+function getActiveSprintId() {
+    try {
+        const planPath = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+        if (!fs.existsSync(planPath)) return null;
+        const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
+        return plan.sprint_id || plan.id || null;
+    } catch(e) { return null; }
+}
 
 function flushMetrics(sessionId) {
     try {
@@ -103,6 +112,7 @@ function flushMetrics(sessionId) {
 
         const entry = {
             id: shortId,
+            sprint_id: getActiveSprintId(),
             agent_name: session.agent_name || null,
             branch: session.branch || null,
             started_ts: session.started_ts || endedTs,
@@ -119,6 +129,9 @@ function flushMetrics(sessionId) {
             tokens_total: tokensTotal,
         };
 
+        // Append-only: leer el archivo existente y agregar el nuevo registro.
+        // NUNCA regenerar desde cero ni eliminar registros históricos.
+        // Solo evitar duplicados exactos por session id (re-flush de la misma sesión).
         let metrics = { updated_ts: endedTs, sessions: [] };
         try {
             if (fs.existsSync(AGENT_METRICS_FILE)) {
@@ -129,18 +142,16 @@ function flushMetrics(sessionId) {
             }
         } catch(e) {}
 
-        // Evitar duplicados por session id
+        // Evitar duplicados por session id (re-flush de la misma sesión)
         metrics.sessions = metrics.sessions.filter(s => s.id !== shortId);
         metrics.sessions.push(entry);
 
-        // Rotación FIFO: mantener máximo N sesiones
-        if (metrics.sessions.length > MAX_METRIC_SESSIONS) {
-            metrics.sessions = metrics.sessions.slice(-MAX_METRIC_SESSIONS);
-        }
+        // No hay rotación FIFO — agent-metrics.json es append-only.
+        // Las métricas históricas se preservan siempre, independientemente de limpiezas de sesiones.
 
         metrics.updated_ts = endedTs;
         fs.writeFileSync(AGENT_METRICS_FILE, JSON.stringify(metrics, null, 2) + "\n", "utf8");
-        log("Metricas flushed para sesion " + shortId);
+        log("Metricas flushed para sesion " + shortId + " (sprint: " + (entry.sprint_id || "unknown") + ")");
     } catch(e) { log("Error en flushMetrics: " + e.message); }
 }
 

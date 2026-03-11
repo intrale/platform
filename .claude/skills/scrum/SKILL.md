@@ -589,13 +589,19 @@ node /c/Workspaces/Intrale/platform/.claude/skills/scrum/health-report.js 2>/dev
 
 ## Modo: Cierre forzado (`/scrum close`)
 
-Cierra el sprint activo forzadamente.
+Cierra el sprint activo forzadamente con replanificación inteligente de issues incompletos.
+
+**CRÍTICO: Preservar todos los sprints futuros del roadmap. NUNCA reducir la cantidad de sprints.**
 
 ### Paso C1: Verificar estado actual
 
-Leer `scripts/sprint-plan.json` y obtener lista de issues del sprint.
+Leer `scripts/sprint-plan.json` y obtener lista de issues del sprint activo.
 
-Verificar en el board cuáles están en Done y cuáles no.
+```bash
+cat /c/Workspaces/Intrale/platform/scripts/sprint-plan.json 2>/dev/null
+```
+
+Extraer: `sprint_id`, lista de issues, fechas del sprint.
 
 ### Paso C2: Ejecutar health check + reparación automática
 
@@ -604,20 +610,189 @@ node /c/Workspaces/Intrale/platform/.claude/hooks/health-check-sprint.js 2>/dev/
 node /c/Workspaces/Intrale/platform/.claude/hooks/auto-repair-sprint.js --auto 2>/dev/null
 ```
 
-### Paso C3: Cerrar sprint en sprint-plan.json
+### Paso C2b: Backup de roadmap.json ANTES de cualquier modificación
+
+**OBLIGATORIO — nunca saltar este paso.**
+
+```bash
+cp /c/Workspaces/Intrale/platform/scripts/roadmap.json \
+   /c/Workspaces/Intrale/platform/scripts/roadmap.backup.json 2>/dev/null
+```
+
+Si el backup falla (roadmap.json no existe), abortar con:
+```
+⛔ ABORT: no se puede cerrar sprint sin roadmap.json. Generar primero con /scrum roadmap.
+```
+
+### Paso C2c: Leer roadmap COMPLETO
+
+```bash
+cat /c/Workspaces/Intrale/platform/scripts/roadmap.json 2>/dev/null
+```
+
+Cargar todos los sprints (`sprints[]`). Separar:
+- `currentSprints` = sprints con `status !== "done"` (futuros + activo)
+- `doneSprints` = sprints con `status === "done"`
+
+Registrar `currentFutureCount = currentSprints.filter(s => s.id !== sprint_activo).length`
+
+### Paso C3: Identificar issues incompletos
+
+Para cada issue en `sprint-plan.json`, verificar su estado real en GitHub:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue view <NUMBER> --repo intrale/platform --json number,title,state,labels 2>/dev/null
+```
+
+Ejecutar en paralelo para todos los issues del sprint.
+
+Clasificar:
+- **Completados**: `state === "CLOSED"` — van a Done en Project V2
+- **Incompletos**: `state === "OPEN"` — necesitan replanificación
+
+### Paso C4: Evaluar cada issue incompleto
+
+Para cada issue OPEN, determinar su tipo y prioridad de replanificación:
+
+| Criterio | Prioridad | Destino |
+|----------|-----------|---------|
+| Label `bug` o `tipo:infra` | Alta | Sprint inmediato siguiente (SPR+1) |
+| Dependencias completadas en este sprint | Alta | Sprint inmediato siguiente (SPR+1) |
+| Label `tipo:feature` o `app:*` | Normal | Sprint con tema afín |
+| Label UX/enhancement sin dependencias | Baja | Sprint que corresponda por stream/tema |
+
+Para detectar si un issue bloqueante se resolvió, buscar en su body referencias a issues del sprint actual con `state === "CLOSED"`.
+
+### Paso C5: Redistribuir issues incompletos en el roadmap
+
+Proceso de redistribución:
+
+1. **Obtener lista de sprints futuros** del roadmap (todos los que no son `done` y no son el sprint actual).
+2. **Para cada issue incompleto** (por orden de prioridad alta→baja):
+   - Buscar el sprint destino según el criterio del Paso C4
+   - Insertar en `issues[]` del sprint destino con campo `moved_from: "<sprint_actual>"`
+   - Si el sprint destino queda con más de 10 issues → aplicar efecto cascada (ver abajo)
+3. **Efecto cascada controlado**: si el sprint SPR+N excede 10 issues tras la inserción, mover los issues de MENOR prioridad al sprint SPR+N+1 (solo los que superen el límite). Repetir si es necesario.
+4. **Sprints no afectados**: los sprints que no reciben issues trasladados deben permanecer byte-for-byte idénticos.
+
+### Paso C5b: Validación pre-write del roadmap
+
+**CRÍTICO: Ejecutar ANTES de escribir roadmap.json.**
+
+```bash
+cat > /tmp/roadmap-validate.js << 'EOF'
+const fs = require('fs');
+const roadmapPath = '/c/Workspaces/Intrale/platform/scripts/roadmap.json';
+const backupPath = '/c/Workspaces/Intrale/platform/scripts/roadmap.backup.json';
+
+const current = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+const currentFuture = current.sprints.filter(s => s.status !== 'done');
+
+// Leer el nuevo roadmap propuesto desde stdin o argumento
+const proposed = JSON.parse(process.argv[2] || '{}');
+if (!proposed.sprints) { console.error('ABORT: newRoadmap sin sprints'); process.exit(1); }
+const newFuture = proposed.sprints.filter(s => s.status !== 'done');
+
+if (newFuture.length < currentFuture.length) {
+    console.error(
+        'ABORT: newSprints (' + newFuture.length + ') < currentFutureSprints (' + currentFuture.length + ')\n' +
+        'El roadmap propuesto REDUCE la cantidad de sprints futuros. Operacion cancelada.\n' +
+        'Backup disponible en: ' + backupPath
+    );
+    process.exit(2);
+}
+console.log('OK: ' + newFuture.length + ' sprints futuros >= ' + currentFuture.length + ' anteriores');
+EOF
+node /tmp/roadmap-validate.js '<JSON_DEL_NUEVO_ROADMAP>'
+```
+
+Si la validación retorna exit code != 0:
+- **ABORTAR** la escritura del roadmap
+- Enviar alerta por Telegram (si está disponible)
+- Preservar `roadmap.json` original
+- Mostrar el mensaje de error al usuario
+
+### Paso C6: Actualizar sprint cerrado en roadmap y escribir
+
+Solo si la validación del Paso C5b fue exitosa:
+
+1. En el array `sprints[]`, actualizar el sprint cerrado:
+```json
+{
+  "id": "<sprint_actual>",
+  "status": "done",
+  "closed_at": "<ISO timestamp>",
+  "velocity": <número de issues completados>,
+  "moved_issues": [
+    { "number": <N>, "moved_to": "<sprint_destino>" }
+  ]
+}
+```
+
+2. Construir el JSON final del roadmap con:
+   - Sprint cerrado actualizado a `done`
+   - Issues incompletos redistribuidos en sus sprints destino (con `moved_from`)
+   - Todos los demás sprints intactos
+
+3. Escribir `scripts/roadmap.json`:
+```bash
+cat > /tmp/write-roadmap.js << 'EOF'
+const fs = require('fs');
+const newRoadmap = JSON.parse(process.argv[2]);
+newRoadmap.updated_ts = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+newRoadmap.updated_by = 'scrum close';
+fs.writeFileSync(
+    '/c/Workspaces/Intrale/platform/scripts/roadmap.json',
+    JSON.stringify(newRoadmap, null, 2) + '\n',
+    'utf8'
+);
+console.log('roadmap.json actualizado correctamente');
+EOF
+node /tmp/write-roadmap.js '<JSON_DEL_NUEVO_ROADMAP>'
+```
+
+### Paso C7: Cerrar sprint en sprint-plan.json
 
 Actualizar `scripts/sprint-plan.json` agregando:
 ```json
 {
   "sprint_cerrado": true,
-  "sprint_cerrado_at": "2026-...",
-  "sprint_cerrado_by": "/scrum close"
+  "sprint_cerrado_at": "<ISO timestamp>",
+  "sprint_cerrado_by": "/scrum close",
+  "velocity": <número de issues completados>,
+  "issues_movidos": [<números de issues redistribuidos>]
 }
 ```
 
 Mover todos los agentes activos a `_completed`.
 
-### Paso C4: Generar reporte final de cierre
+### Paso C8: Sincronizar Project V2
+
+Para cada issue completado (CLOSED) del sprint:
+```bash
+# Mover a columna Done en Project V2
+gh api graphql -f query='mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+    value: { singleSelectOptionId: $optionId }
+  }) { projectV2Item { id } }
+}' -f projectId="PVT_kwDOBTzBoc4AyMGf" \
+   -f itemId="<ITEM_ID>" \
+   -f fieldId="PVTSSF_lADOBTzBoc4AyMGfzgoLqjg" \
+   -f optionId="98236657"
+```
+
+Para cada issue incompleto redistribuido:
+```bash
+# Mover al backlog correspondiente con comentario de trazabilidad
+gh issue comment <NUMBER> --repo intrale/platform \
+  --body "🔄 Scrum Master: issue incompleto trasladado de <sprint_actual> → <sprint_destino> al cerrar el sprint. Replanificación automática."
+```
+
+Verificar que no queden issues en "In Progress" sin sprint activo asignado.
+
+### Paso C9: Generar reporte final de cierre
 
 ```bash
 node /c/Workspaces/Intrale/platform/.claude/skills/scrum/health-report.js 2>/dev/null
@@ -630,15 +805,33 @@ node /c/Workspaces/Intrale/platform/.claude/skills/scrum/health-report.js 2>/dev
 
 ### Resumen del sprint
 - **Período**: [fechaInicio] → [fechaFin]
-- **Historias completadas**: N/M
-- **Reparaciones ejecutadas**: N
+- **Historias completadas**: N/M (velocity: N)
+- **Issues redistribuidos**: N
+- **Backup roadmap**: scripts/roadmap.backup.json ✓
 - **Estado final**: Cerrado ✓
 
 ### Historias del sprint
 | Issue | Título | Estado final |
 |-------|--------|-------------|
 | #123  | feat: ... | ✅ Done |
-| #456  | fix: ...  | ✅ Done |
+| #456  | fix: ...  | 🔄 Redistribuido → SPR-022 |
+
+### Redistribución de issues incompletos
+| Issue | Título | Tipo | Motivo | Destino |
+|-------|--------|------|--------|---------|
+| #789  | fix:... | bug (alta prioridad) | OPEN al cierre | SPR-022 |
+| #101  | feat:.. | UX (baja prioridad) | OPEN al cierre | SPR-023 |
+
+### Sprints futuros afectados
+| Sprint | Issues anteriores | Issues tras cierre | Delta |
+|--------|------------------|-------------------|-------|
+| SPR-022 | N | N+M | +M |
+| SPR-023 | N | N | 0 |
+
+### Roadmap integridad
+- Sprints futuros antes del cierre: N
+- Sprints futuros después del cierre: N (≥ anterior ✓)
+- Backup disponible: scripts/roadmap.backup.json ✓
 
 ### Acciones de cierre
 [Lista de reparaciones y correcciones ejecutadas]
