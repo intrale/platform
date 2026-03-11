@@ -154,7 +154,7 @@ describe("P-22: agent-concurrency-check — lógica de concurrencia", () => {
             path.join(__dirname, "..", "agent-concurrency-check.js"),
             "utf8"
         );
-        assert.ok(source.includes("Auto-lanzado agente"), "debe notificar auto-lanzamiento");
+        assert.ok(source.includes("lanzado desde cola"), "debe notificar auto-lanzamiento desde cola");
         assert.ok(source.includes("Slots activos"), "debe incluir conteo de slots en notificación");
     });
 
@@ -357,7 +357,7 @@ describe("P-22b: Bug 1345 — captura de errores y estado completo", () => {
         );
         assert.ok(source.includes("plan._completed"), "debe referenciar plan._completed");
         assert.ok(source.includes("_completed.push"), "debe agregar el agente a _completed");
-        assert.ok(source.includes("completedAt"), "debe guardar timestamp de completado");
+        assert.ok(source.includes("completado_at"), "debe guardar timestamp de completado (completado_at)");
         assert.ok(source.includes("resultado"), "debe guardar campo resultado en _completed");
     });
 
@@ -417,5 +417,148 @@ describe("P-22b: Bug 1345 — captura de errores y estado completo", () => {
         // Buscar catch posterior
         const afterRemove = source.slice(removeItemIdx, removeItemIdx + 300);
         assert.ok(afterRemove.includes("} catch {"), "debe tener catch después de Remove-Item $claudeDst");
+    });
+});
+
+// ─── Tests para Bug 1399: validación PR y lanzamiento real de agentes ─────────
+
+describe("P-22c: Bug 1399 — validación PR y lanzamiento real de agentes", () => {
+
+    it("#1399: hook tiene función checkPRStatus", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("function checkPRStatus"), "debe tener función checkPRStatus");
+        assert.ok(source.includes("pr list"), "checkPRStatus debe llamar 'pr list'");
+        assert.ok(source.includes("--state all"), "debe consultar PRs en todos los estados");
+        assert.ok(source.includes("--json number,state"), "debe retornar número y estado del PR");
+    });
+
+    it("#1399: checkPRStatus retorna 'merged', 'open', 'none' o 'unknown'", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(source.includes('"merged"'), "debe manejar estado merged");
+        assert.ok(source.includes('"open"'), "debe manejar estado open");
+        assert.ok(source.includes('"none"'), "debe manejar ausencia de PR");
+        assert.ok(source.includes('"unknown"'), "debe manejar error en gh CLI");
+    });
+
+    it("#1399: agente sin PR se mueve a _incomplete[] con resultado 'failed'", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("plan._incomplete"), "debe referenciar plan._incomplete");
+        assert.ok(source.includes("_incomplete.push"), "debe agregar el agente a _incomplete");
+        assert.ok(source.includes('"failed"'), "debe marcar resultado como failed");
+        assert.ok(
+            source.includes("Sin PR — el agente no completó /delivery"),
+            "debe incluir motivo descriptivo para PR faltante"
+        );
+        assert.ok(source.includes("incompleteEntry.motivo"), "debe guardar motivo en la entrada");
+    });
+
+    it("#1399: agente con PR abierta se mantiene en agentes[] con status waiting", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes('"pending_review"'),
+            "debe usar resultado pending_review para PR abierta"
+        );
+        assert.ok(
+            source.includes('status: "waiting"'),
+            "debe mantener agente en waiting cuando PR está abierta"
+        );
+    });
+
+    it("#1399: agente con PR mergeada se mueve a _completed[] con resultado 'ok'", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        const completedBlock = source.slice(
+            source.indexOf("prStatus.status === \"merged\""),
+            source.indexOf("prStatus.status === \"open\"")
+        );
+        assert.ok(completedBlock.includes("_completed.push"), "PR mergeada debe ir a _completed");
+        assert.ok(completedBlock.includes('"ok"'), "PR mergeada debe tener resultado ok");
+    });
+
+    it("#1399: Telegram notifica agente fallido con motivo", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(source.includes("FALLIDO"), "debe notificar FALLIDO por Telegram");
+        assert.ok(source.includes("Acción: revisar worktree"), "debe incluir acción sugerida");
+    });
+
+    it("#1399: _incomplete se inicializa como array si no existe", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes("Array.isArray(plan._incomplete)"),
+            "debe inicializar _incomplete como array si no existe"
+        );
+    });
+
+    it("#1399: launchAgent pasa -Force a Start-Agente.ps1", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        assert.ok(
+            source.includes('"-Force"'),
+            "launchAgent debe pasar -Force al PowerShell para worktree fresco"
+        );
+    });
+
+    it("#1399: prompt se asigna al agente antes de guardar plan", () => {
+        const source = fs.readFileSync(
+            path.join(__dirname, "..", "agent-concurrency-check.js"),
+            "utf8"
+        );
+        // Verificar que el prompt se asigna antes de savePlan en el bloque de cola
+        const queueBlock = source.slice(
+            source.indexOf("// Asegurar que el prompt está asignado"),
+            source.indexOf("// Mover de cola a agentes")
+        );
+        assert.ok(queueBlock.length > 0, "debe asignar prompt antes de mover de cola");
+        assert.ok(queueBlock.includes("nextAgente.prompt"), "debe asignar prompt al agente promovido");
+        assert.ok(queueBlock.includes("generateDefaultPrompt"), "debe generar prompt por defecto si falta");
+    });
+
+    it("#1399: Start-Agente.ps1 tiene parámetro -Force", () => {
+        const ps1Path = path.join(__dirname, "..", "..", "..", "scripts", "Start-Agente.ps1");
+        const source = fs.readFileSync(ps1Path, "utf8");
+        assert.ok(source.includes("[switch]$Force"), "Start-Agente.ps1 debe tener parámetro -Force");
+        assert.ok(
+            source.includes("$wtExists -and $Force"),
+            "debe verificar combinación $wtExists + $Force"
+        );
+        assert.ok(
+            source.includes("git worktree remove"),
+            "debe eliminar worktree viejo con git worktree remove"
+        );
+        assert.ok(
+            source.includes("Se creará uno nuevo desde origin/main"),
+            "debe loguear que se creará worktree fresco"
+        );
+    });
+
+    it("#1399: Start-Agente.ps1 documenta -Force en synopsis", () => {
+        const ps1Path = path.join(__dirname, "..", "..", "..", "scripts", "Start-Agente.ps1");
+        const source = fs.readFileSync(ps1Path, "utf8");
+        assert.ok(
+            source.includes(".PARAMETER Force") || source.includes("Start-Agente.ps1 1 -Force"),
+            "debe documentar el parámetro -Force en el synopsis"
+        );
     });
 });
