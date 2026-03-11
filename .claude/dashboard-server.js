@@ -816,7 +816,7 @@ function formatMinutes(ms) {
 
 // --- BUILD FLOW GRAPH SVG (force-directed organic layout) ---
 function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS) {
-  const nodes = Array.isArray(agentNodes) ? agentNodes : [];
+  const nodes = Array.isArray(agentNodes) ? [...new Set(agentNodes)] : [];
   const transitions = Array.isArray(agentTransitions) ? agentTransitions : [];
 
   if (nodes.length === 0) {
@@ -840,28 +840,43 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Deduplicate edges
+  // Build session map for quick lookup (used to resolve branch → issue number)
+  const sessionMap = {};
+  for (const s of sessionsList) {
+    if (s.id) sessionMap[s.id] = s;
+  }
+
+  // Deduplicate edges, carrying issue + recency metadata
   const edgeList = [];
   const edgeSet = new Set();
+  let edgeSeq = 0;
+  const now = Date.now();
   for (const t of transitions) {
     const key = t.from + "->" + t.to;
     if (!edgeSet.has(key) && nodes.includes(t.from) && nodes.includes(t.to)) {
       edgeSet.add(key);
-      edgeList.push({ from: t.from, to: t.to });
+      edgeSeq++;
+      // Resolve issue number from session branch (e.g. "agent/1394-foo" → "1394")
+      const session = t._session ? (sessionMap[t._session] || null) : null;
+      const branchMatch = session ? (session.branch || "").match(/(\d+)/) : null;
+      const issueNum = branchMatch ? branchMatch[1] : null;
+      // Recent = transition happened in the last 5 minutes
+      const isRecent = t.ts ? (now - new Date(t.ts).getTime() < 5 * 60 * 1000) : false;
+      edgeList.push({ from: t.from, to: t.to, seq: edgeSeq, issueNum, isRecent });
     }
   }
 
   // --- Force-directed layout (simplified, deterministic) ---
   const nodeR = 22;
-  const svgW = 420;
-  const svgH = 360;
+  const svgW = 600;
+  const svgH = 500;
   const cx = svgW / 2, cy = svgH / 2;
 
   // Initialize positions: spread nodes using golden angle for good distribution
   const positions = {};
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   nodes.forEach((name, i) => {
-    const r = 60 + Math.sqrt(i) * 45;
+    const r = 70 + Math.sqrt(i) * 55;
     const angle = i * goldenAngle;
     positions[name] = {
       x: cx + r * Math.cos(angle),
@@ -877,41 +892,41 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     neighbors[e.to].add(e.from);
   }
 
-  // Run force simulation (50 iterations)
-  const padding = nodeR + 20;
-  for (let iter = 0; iter < 50; iter++) {
-    const alpha = 0.3 * (1 - iter / 50);
+  // Run force simulation (80 iterations for better convergence)
+  const padding = nodeR + 24;
+  for (let iter = 0; iter < 80; iter++) {
+    const alpha = 0.3 * (1 - iter / 80);
 
     for (const a of nodes) {
       let fx = 0, fy = 0;
       const pa = positions[a];
 
-      // Repulsion between all pairs
+      // Repulsion between all pairs (stronger to avoid clustering)
       for (const b of nodes) {
         if (a === b) continue;
         const pb = positions[b];
         let dx = pa.x - pb.x, dy = pa.y - pb.y;
         let dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 1) { dx = 0.5; dy = 0.3; dist = 1; }
-        const repulse = 2500 / (dist * dist);
+        const repulse = 5000 / (dist * dist);
         fx += (dx / dist) * repulse;
         fy += (dy / dist) * repulse;
       }
 
-      // Attraction along edges
+      // Attraction along edges (larger ideal distance)
       for (const b of neighbors[a]) {
         const pb = positions[b];
         const dx = pb.x - pa.x, dy = pb.y - pa.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const ideal = 90;
+        const ideal = 130;
         const attract = (dist - ideal) * 0.05;
         fx += (dx / Math.max(dist, 1)) * attract;
         fy += (dy / Math.max(dist, 1)) * attract;
       }
 
-      // Gravity toward center (mild)
-      fx += (cx - pa.x) * 0.005;
-      fy += (cy - pa.y) * 0.005;
+      // Gravity toward center (reduced to avoid clustering)
+      fx += (cx - pa.x) * 0.002;
+      fy += (cy - pa.y) * 0.002;
 
       pa.x += fx * alpha;
       pa.y += fy * alpha;
@@ -922,17 +937,48 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
+  // Post-layout: ensure minimum separation (2.5 × nodeR) between all nodes
+  const minDist = nodeR * 2.5;
+  for (let pass = 0; pass < 10; pass++) {
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const pa = positions[nodes[i]];
+        const pb = positions[nodes[j]];
+        let dx = pa.x - pb.x, dy = pa.y - pb.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < minDist && dist > 0) {
+          const push = (minDist - dist) / 2;
+          const ux = dx / dist, uy = dy / dist;
+          pa.x = Math.max(padding, Math.min(svgW - padding, pa.x + ux * push));
+          pa.y = Math.max(padding, Math.min(svgH - padding, pa.y + uy * push));
+          pb.x = Math.max(padding, Math.min(svgW - padding, pb.x - ux * push));
+          pb.y = Math.max(padding, Math.min(svgH - padding, pb.y - uy * push));
+        }
+      }
+    }
+  }
+
   // Build SVG
   let svg = `<defs>
     <marker id="flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
       <polygon points="0 0, 8 3, 0 6" fill="var(--text-muted)" opacity="0.6"/>
     </marker>
+    <marker id="flow-arrow-recent" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#f59e0b" opacity="0.9"/>
+    </marker>
     <filter id="node-glow"><feGaussianBlur stdDeviation="4" result="coloredBlur"/>
       <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
+    <filter id="icon-brighten" color-interpolation-filters="sRGB">
+      <feComponentTransfer>
+        <feFuncR type="linear" slope="1.5" intercept="0.2"/>
+        <feFuncG type="linear" slope="1.5" intercept="0.2"/>
+        <feFuncB type="linear" slope="1.5" intercept="0.2"/>
+      </feComponentTransfer>
+    </filter>
   </defs>`;
 
-  // Draw edges as curved arrows
+  // Draw edges as curved arrows with sequential labels and issue reference
   for (const e of edgeList) {
     const from = positions[e.from];
     const to = positions[e.to];
@@ -945,17 +991,32 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const y1 = from.y + uy * (nodeR + 4);
     const x2 = to.x - ux * (nodeR + 8);
     const y2 = to.y - uy * (nodeR + 8);
-    // Slight perpendicular offset for organic curved arrows
-    const midX = (x1 + x2) / 2;
-    const midY = (y1 + y2) / 2;
-    const perpX = -(y2 - y1) * 0.12;
-    const perpY = (x2 - x1) * 0.12;
     // Check if reverse edge exists → increase curve to avoid overlap
     const reverseKey = e.to + "->" + e.from;
     const curveMult = edgeSet.has(reverseKey) ? 0.25 : 0.12;
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
     const cpx = midX + (-(y2 - y1) * curveMult);
     const cpy = midY + ((x2 - x1) * curveMult);
-    svg += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="var(--text-muted)" stroke-width="1.5" stroke-opacity="0.45" marker-end="url(#flow-arrow)"/>`;
+    // Midpoint on the quadratic Bézier curve (t=0.5)
+    const bMidX = 0.25 * x1 + 0.5 * cpx + 0.25 * x2;
+    const bMidY = 0.25 * y1 + 0.5 * cpy + 0.25 * y2;
+
+    const isRecent = e.isRecent;
+    const strokeColor = isRecent ? "#f59e0b" : "var(--text-muted)";
+    const strokeWidth = isRecent ? "3" : "1.5";
+    const strokeOpacity = isRecent ? "0.85" : "0.45";
+    const arrowMarker = isRecent ? "url(#flow-arrow-recent)" : "url(#flow-arrow)";
+
+    svg += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
+
+    // Label: sequential number + issue (if available)
+    const label = e.issueNum ? `${e.seq} #${e.issueNum}` : `${e.seq}`;
+    const labelBg = isRecent ? "rgba(245,158,11,0.18)" : "rgba(17,17,27,0.7)";
+    const labelColor = isRecent ? "#fbbf24" : "var(--text-dim)";
+    const labelW = e.issueNum ? 40 : 16;
+    svg += `<rect x="${(bMidX - labelW / 2).toFixed(1)}" y="${(bMidY - 7).toFixed(1)}" width="${labelW}" height="13" rx="3" fill="${labelBg}"/>`;
+    svg += `<text x="${bMidX.toFixed(1)}" y="${(bMidY + 4).toFixed(1)}" text-anchor="middle" font-size="7.5" font-weight="600" fill="${labelColor}" style="pointer-events:none;">${escHtml(label)}</text>`;
   }
 
   // Draw nodes
@@ -973,15 +1034,18 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const filterAttr = isActive ? 'filter="url(#node-glow)"' : '';
 
     svg += `<g class="flow-node" data-agent="${escHtml(name)}" style="cursor:pointer;opacity:${opacity};" ${filterAttr}>`;
-    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${nodeR}" fill="${color}" fill-opacity="0.15" stroke="${color}" stroke-width="2"`;
+    // Fondo más opaco para garantizar contraste del icono sobre fondo oscuro
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${nodeR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="2.5"`;
     if (isActive) {
       svg += `><animate attributeName="stroke-opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/></circle>`;
     } else {
       svg += `/>`;
     }
-    // Icon: always show agent image; done agents get a small check badge
+    // Círculo de color semitransparente detrás del icono para contraste
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${(nodeR - 3).toFixed(1)}" fill="${color}" fill-opacity="0.30"/>`;
+    // Icon: filter brighten para garantizar visibilidad sobre fondo oscuro
     if (iconUrl) {
-      svg += `<image href="${iconUrl}" x="${(pos.x - imgSize / 2).toFixed(1)}" y="${(pos.y - imgSize / 2).toFixed(1)}" width="${imgSize.toFixed(0)}" height="${imgSize.toFixed(0)}" style="pointer-events:none;"/>`;
+      svg += `<image href="${iconUrl}" x="${(pos.x - imgSize / 2).toFixed(1)}" y="${(pos.y - imgSize / 2).toFixed(1)}" width="${imgSize.toFixed(0)}" height="${imgSize.toFixed(0)}" style="pointer-events:none;" filter="url(#icon-brighten)"/>`;
       if (isDone && !isActive) {
         svg += `<circle cx="${(pos.x + imgSize/2 - 2).toFixed(1)}" cy="${(pos.y - imgSize/2 + 2).toFixed(1)}" r="5" fill="${color}"/>`;
         svg += `<text x="${(pos.x + imgSize/2 - 2).toFixed(1)}" y="${(pos.y - imgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="7" fill="white">&#10003;</text>`;
@@ -1274,10 +1338,10 @@ function renderHTML(data, theme) {
     "Guru": "#818cf8", "Doc": "#a78bfa", "Planner": "#fbbf24",
     "DeliveryManager": "#34d399", "Tester": "#d946ef", "QA": "#d946ef",
     "Builder": "#fb923c", "Review": "#818cf8", "Monitor": "#22d3ee",
-    "Auth": "#94a3b8", "PO": "#38bdf8", "UX Specialist": "#f472b6",
-    "Scrum Master": "#2dd4bf", "Ops": "#a8a29e",
+    "Auth": "#cbd5e1", "PO": "#38bdf8", "UX Specialist": "#f472b6",
+    "Scrum Master": "#2dd4bf", "Ops": "#e7e5e4",
     "BackendDev": "#f87171", "AndroidDev": "#4ade80", "WebDev": "#60a5fa",
-    "Branch": "#84cc16", "Claude": "#6C7086",
+    "Branch": "#84cc16", "Claude": "#9399b2",
   };
 
   const STATUS_COLORS = { active: "#34d399", idle: "#fbbf24", done: "#6C7086", stale: "#555872" };
