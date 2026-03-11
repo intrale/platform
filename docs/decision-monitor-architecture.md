@@ -12,7 +12,7 @@ El sistema de monitoreo de sprints contaba con tres componentes:
 |------------|--------|-----|
 | `dashboard.js` | 1.348 | Dashboard live de terminal (auto-refresh 5s, keyboard, PNG canvas) |
 | `dashboard-server.js` | 1.047 | Servidor HTTP en `:3100` (HTML, SSE, Puppeteer screenshots, API) |
-| `reporter-bg.js` | 313 | Proceso manager (arranca server + screenshots periodicos a Telegram) |
+| `reporter-bg.js` | 313 | Proceso manager (arranca server + screenshots periodicos a Telegram) — **eliminado en #1431** |
 | **Total** | **2.708** | |
 
 Al lanzar un sprint con `Start-Agente.ps1 all`, se abria automaticamente una nueva ventana PowerShell ejecutando `node dashboard.js` (funcion `Start-MonitorLive`). Simultaneamente, `activity-logger.js` (hook PostToolUse) auto-arrancaba `dashboard-server.js` en background.
@@ -56,7 +56,7 @@ Al lanzar un sprint con `Start-Agente.ps1 all`, se abria automaticamente una nue
 
 1. **Eliminado `.claude/dashboard.js`** (1.348 lineas) — dashboard terminal live, ya no existe
 2. **`scripts/Start-Agente.ps1`**: eliminada funcion `Start-MonitorLive` y sus invocaciones; reemplazadas con mensaje informativo apuntando al web dashboard
-3. **`.claude/hooks/reporter-bg.js`**: eliminado fallback a `dashboard.js` (solo usa `dashboard-server.js`)
+3. **`.claude/hooks/reporter-bg.js`**: eliminado fallback a `dashboard.js` (solo usa `dashboard-server.js`) — *luego eliminado completamente en #1431, lógica migrada a `heartbeat-manager.js`*
 4. **`.claude/skills/monitor/SKILL.md`**: actualizada seccion de ayuda y notas — web dashboard como principal, `/monitor` para on-demand
 5. **Limpieza de comentarios**: eliminadas referencias obsoletas en `delivery-report.js` y `telegram-image-utils.js`
 
@@ -88,5 +88,5 @@ Al lanzar un sprint con `Start-Agente.ps1 all`, se abria automaticamente una nue
 ### Metricas
 
 - **Antes**: 2.708 lineas en 3 archivos + funcion Start-MonitorLive
-- **Despues**: 1.360 lineas en 2 archivos (dashboard-server.js + reporter-bg.js)
+- **Despues**: 1.360 lineas en 2 archivos (dashboard-server.js + reporter-bg.js) — *reporter-bg.js luego eliminado en #1431*
 - **Reduccion**: 1.348 lineas (-50%), 1 archivo eliminado, 1 funcion PowerShell eliminada
