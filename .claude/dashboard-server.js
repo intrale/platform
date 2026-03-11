@@ -2549,6 +2549,59 @@ const TG_CONFIG = (() => {
 })();
 const REPORT_INTERVAL_MIN = parseInt(TG_CONFIG.task_report_interval_min, 10) || 10;
 
+// --- Frecuencia adaptativa del heartbeat ---
+const HEARTBEAT_STATE_FILE = path.join(CLAUDE_DIR, "hooks", "heartbeat-state.json");
+const INTERVAL_STEP_MIN = 10;         // Minutos extra por cada ciclo inactivo
+const MAX_INTERVAL_MIN = 60;          // Cap máximo del intervalo
+const ACTIVITY_THRESHOLD_MIN = 15;    // Umbral de actividad en minutos
+
+// Estado del heartbeat adaptativo
+let heartbeatCurrentInterval = REPORT_INTERVAL_MIN;
+let heartbeatConsecutiveIdle = 0;
+let heartbeatMode = "normal";  // "normal" | "idle"
+
+// Cargar estado persistido del heartbeat desde heartbeat-state.json
+function loadHeartbeatState() {
+  try {
+    if (!fs.existsSync(HEARTBEAT_STATE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(HEARTBEAT_STATE_FILE, "utf8"));
+  } catch { return null; }
+}
+
+// Guardar estado del heartbeat en heartbeat-state.json
+function saveHeartbeatState() {
+  try {
+    const state = {
+      currentInterval: heartbeatCurrentInterval,
+      consecutiveIdle: heartbeatConsecutiveIdle,
+      lastHeartbeat: new Date().toISOString(),
+      mode: heartbeatMode
+    };
+    fs.writeFileSync(HEARTBEAT_STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+  } catch (e) { console.log("[heartbeat] Error guardando heartbeat-state.json: " + e.message); }
+}
+
+// Detectar sesiones activas leyendo .claude/sessions/*.json directamente
+// Criterio: status === "active" y last_activity_ts < ACTIVITY_THRESHOLD_MIN minutos
+function hasActiveSessions() {
+  try {
+    if (!fs.existsSync(SESSIONS_DIR)) return false;
+    const files = fs.readdirSync(SESSIONS_DIR).filter(function(f) { return f.endsWith(".json"); });
+    const now = Date.now();
+    const threshold = ACTIVITY_THRESHOLD_MIN * 60 * 1000;
+    for (const file of files) {
+      try {
+        const session = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
+        if (session.status === "active" && session.last_activity_ts) {
+          const lastActivity = new Date(session.last_activity_ts).getTime();
+          if (now - lastActivity < threshold) return true;
+        }
+      } catch {}
+    }
+    return false;
+  } catch { return false; }
+}
+
 function sendTelegramText(text, silent) {
   if (!TG_CONFIG.bot_token || !TG_CONFIG.chat_id) return;
   const https = require("https");
@@ -2682,7 +2735,11 @@ async function sendHeartbeat() {
     console.log("[heartbeat] Generando heartbeat...");
     const data = collectData();
     console.log("[heartbeat] Sessions: active=" + data.activeSessions + " idle=" + data.idleSessions);
-    const caption = "\ud83d\udc9a <b>Intrale Monitor \u2014 Heartbeat</b>\n" +
+    const modeIcon = heartbeatMode === "normal" ? "\ud83d\udc9a" : "\ud83d\udca4";
+    const modeLabel = heartbeatMode === "normal"
+      ? " (cada " + heartbeatCurrentInterval + " min)"
+      : " (cada " + heartbeatCurrentInterval + " min \u2014 sin actividad)";
+    const caption = modeIcon + " <b>Intrale Monitor \u2014 Heartbeat</b>" + modeLabel + "\n" +
       new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
 
     // 1. Intentar álbum top/bottom (split screenshot)
@@ -2747,9 +2804,44 @@ server.listen(PORT, () => {
   setInterval(checkAutoStop, 5 * 60 * 1000);
 
   if (TG_CONFIG.bot_token && REPORT_INTERVAL_MIN > 0) {
-    console.log("[dashboard-server] Heartbeat Telegram cada " + REPORT_INTERVAL_MIN + " min");
-    setTimeout(sendHeartbeat, 5000);
-    setInterval(sendHeartbeat, REPORT_INTERVAL_MIN * 60 * 1000);
+    // Cargar estado persistido al arrancar (sobrevive reinicios)
+    const persistedState = loadHeartbeatState();
+    if (persistedState) {
+      heartbeatConsecutiveIdle = persistedState.consecutiveIdle || 0;
+      heartbeatCurrentInterval = persistedState.currentInterval || REPORT_INTERVAL_MIN;
+      heartbeatMode = persistedState.mode || "normal";
+    }
+    console.log("[dashboard-server] Heartbeat adaptativo iniciado (base " + REPORT_INTERVAL_MIN + " min, modo=" + heartbeatMode + ")");
+
+    async function adaptiveHeartbeatLoop() {
+      // Detectar actividad leyendo sesiones directamente (.claude/sessions/*.json)
+      const active = hasActiveSessions();
+
+      // Actualizar modo y contador
+      if (active) {
+        heartbeatConsecutiveIdle = 0;
+        heartbeatMode = "normal";
+        heartbeatCurrentInterval = REPORT_INTERVAL_MIN;
+      } else {
+        heartbeatConsecutiveIdle++;
+        heartbeatMode = "idle";
+        heartbeatCurrentInterval = Math.min(REPORT_INTERVAL_MIN + (heartbeatConsecutiveIdle * INTERVAL_STEP_MIN), MAX_INTERVAL_MIN);
+      }
+
+      console.log("[dashboard-server] Heartbeat adaptativo: modo=" + heartbeatMode + " intervalo=" + heartbeatCurrentInterval + "min consecutiveIdle=" + heartbeatConsecutiveIdle);
+
+      // Enviar heartbeat
+      await sendHeartbeat();
+
+      // Persistir estado para sobrevivir reinicios
+      saveHeartbeatState();
+
+      // Programar próximo ciclo con setTimeout dinámico
+      setTimeout(adaptiveHeartbeatLoop, heartbeatCurrentInterval * 60 * 1000);
+    }
+
+    // Primer heartbeat después de 5 segundos
+    setTimeout(adaptiveHeartbeatLoop, 5000);
   } else {
     console.log("[dashboard-server] Heartbeat desactivado (bot_token=" + !!TG_CONFIG.bot_token + " interval=" + REPORT_INTERVAL_MIN + ")");
   }
