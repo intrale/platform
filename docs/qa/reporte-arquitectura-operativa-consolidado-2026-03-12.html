@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Arquitectura Operativa Completa — Intrale Platform</title>
+  <style>
+    @page { margin: 15mm; size: A4; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; margin: 30px; color: #333; line-height: 1.5; font-size: 11px; }
+    h1 { color: #1a5276; border-bottom: 3px solid #2980b9; padding-bottom: 8px; font-size: 22px; margin-top: 0; }
+    h2 { color: #2c3e50; margin-top: 25px; border-bottom: 2px solid #bdc3c7; padding-bottom: 5px; font-size: 16px; page-break-after: avoid; }
+    h3 { color: #34495e; margin-top: 18px; font-size: 13px; page-break-after: avoid; }
+    h4 { color: #7f8c8d; font-size: 12px; margin-top: 12px; }
+    .doc-separator { border: none; border-top: 4px double #2980b9; margin: 40px 0; page-break-before: always; }
+    .doc-header { background: linear-gradient(135deg, #2c3e50, #3498db); color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 20px; }
+    .doc-header h2 { color: white; border: none; margin: 0; font-size: 18px; }
+    .doc-header p { color: #ecf0f1; margin: 5px 0 0; font-size: 11px; }
+    .box { border-left: 4px solid #3498db; padding: 12px 15px; margin: 12px 0; background: #ebf5fb; border-radius: 0 4px 4px 0; }
+    .alert { border-left: 4px solid #e74c3c; padding: 12px 15px; margin: 12px 0; background: #fdedec; border-radius: 0 4px 4px 0; }
+    .warning { border-left: 4px solid #f39c12; padding: 12px 15px; margin: 12px 0; background: #fef9e7; border-radius: 0 4px 4px 0; }
+    .success { border-left: 4px solid #27ae60; padding: 12px 15px; margin: 12px 0; background: #eafaf1; border-radius: 0 4px 4px 0; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 10px; }
+    th { background: #2c3e50; color: white; padding: 8px 10px; text-align: left; font-size: 10px; }
+    td { border: 1px solid #d5d8dc; padding: 6px 10px; vertical-align: top; }
+    tr:nth-child(even) { background: #f8f9f9; }
+    code { background: #f4f6f7; padding: 1px 5px; border-radius: 3px; font-family: 'Consolas', monospace; font-size: 10px; }
+    pre { background: #2c3e50; color: #ecf0f1; padding: 12px; border-radius: 5px; overflow-x: auto; font-size: 10px; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; page-break-inside: avoid; }
+    .toc { background: #f8f9f9; border: 1px solid #d5d8dc; padding: 15px 20px; border-radius: 6px; margin: 20px 0; }
+    .toc h3 { margin-top: 0; color: #2c3e50; }
+    .toc ul { margin: 5px 0; padding-left: 20px; }
+    .toc li { margin: 3px 0; }
+    .toc a { color: #2980b9; text-decoration: none; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 9px; font-weight: bold; color: white; }
+    .badge-critical { background: #e74c3c; }
+    .badge-important { background: #f39c12; }
+    .badge-ok { background: #27ae60; }
+    .badge-info { background: #3498db; }
+    .star { color: #f39c12; }
+    .footer { margin-top: 30px; padding-top: 15px; border-top: 1px solid #bdc3c7; color: #7f8c8d; font-size: 9px; text-align: center; }
+    ul, ol { margin: 6px 0; padding-left: 22px; }
+    li { margin: 3px 0; }
+    p { margin: 6px 0; }
+  </style>
+</head>
+<body>
+
+<!-- PORTADA -->
+<h1>Arquitectura Operativa Completa</h1>
+<p><strong>Intrale Platform</strong> &mdash; Issue #1456</p>
+<p><strong>Fecha:</strong> 2026-03-12 &nbsp;|&nbsp; <strong>Documentos:</strong> 4 &nbsp;|&nbsp; <strong>Hooks:</strong> 52+ &nbsp;|&nbsp; <strong>Agentes:</strong> 25+</p>
+
+<div class="box">
+  <strong>Premisa Principal:</strong> Este reporte documenta c&oacute;mo interact&uacute;an entre s&iacute; los agentes IA especializados y c&oacute;mo se involucran proactivamente en el proceso de desarrollo, desde la planificaci&oacute;n inicial hasta el monitoreo post-merge.
+</div>
+
+<div class="toc">
+  <h3>Contenido</h3>
+  <ul>
+    <li><strong>Documento 1:</strong> Arquitectura Operativa &mdash; Visi&oacute;n general, ciclo de vida, interacciones, permisos</li>
+    <li><strong>Documento 2:</strong> Registry de Hooks &mdash; Inventario completo de 52+ hooks por evento</li>
+    <li><strong>Documento 3:</strong> Gu&iacute;a de Monitoreo &mdash; 3 niveles, umbrales, diagn&oacute;stico por subsistema</li>
+    <li><strong>Documento 4:</strong> Troubleshooting &mdash; 8 &aacute;rboles de decisi&oacute;n (A-H) para incidentes</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<!-- DOCUMENTO 1: ARQUITECTURA OPERATIVA -->
+<!-- ============================================================ -->
+<hr class="doc-separator">
+<div class="doc-header">
+  <h2>Documento 1: Arquitectura Operativa</h2>
+  <p>docs/arquitectura-operativa.md &mdash; 626 l&iacute;neas</p>
+</div>
+
+<h2>1. Visi&oacute;n General: El Ecosistema de Agentes</h2>
+
+<p>El sistema operativo de Intrale Platform est&aacute; dise&ntilde;ado como un <strong>ecosistema de agentes orquestados</strong> que trabajan juntos de forma <strong>proactiva y aut&oacute;noma</strong>:</p>
+
+<pre>
+┌─────────────────────────────────────────────────────────────────┐
+│                    ECOSISTEMA DE AGENTES                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Usuario solicita feature/bug fix (CLI o Telegram)             │
+│         ↓                                                       │
+│  Planner: analiza, prioriza, crea sprint-plan.json             │
+│         ↓                                                       │
+│  Start-Agente.ps1 lanza 3 agentes máximo en paralelo           │
+│         ↓                                                       │
+│  Agentes especializados trabajan en worktrees aislados:        │
+│    • Agent 1 (issue A) implementa feature                      │
+│    • Agent 2 (issue B) implementa bug fix                      │
+│    • Agent 3 (issue C) documenta cambios                       │
+│         ↓                                                       │
+│  Al terminar cada agente:                                       │
+│    1. Hook Stop dispara agent-concurrency-check.js             │
+│    2. Si hay capacidad, promociona siguiente de _queue[]       │
+│    3. Start-Agente.ps1 lanza el nuevo agente en paralelo       │
+│         ↓                                                       │
+│  Mientras trabajan, sistemas monitorean en background:         │
+│    • telegram-commander: espera comandos remotos               │
+│    • scrum-monitor-bg: verifica salud del sprint c/30min       │
+│    • agent-watcher: detecta agentes terminados                 │
+│    • ci-monitor-bg: pollea GitHub Actions tras cada push       │
+│         ↓                                                       │
+│  Al finalizar todas las historias del sprint:                  │
+│    Scrum cierra sprint, genera métricas, notifica velocity     │
+└─────────────────────────────────────────────────────────────────┘
+</pre>
+
+<h2>2. Ciclo de Vida Completo de un Agente</h2>
+
+<h3>Fase 1: PLANIFICACI&Oacute;N (Planner)</h3>
+<p><strong>Agente involucrado:</strong> <code>/planner</code></p>
+<ol>
+  <li>Planner analiza issues abiertos (prioridad, dependencias, tama&ntilde;o)</li>
+  <li>Selecciona top N historias accionables (default 7-10)</li>
+  <li>Valida dependencias con <code>/po</code> (Product Owner)</li>
+  <li>Crea <code>scripts/sprint-plan.json</code> con estructura:
+    <ul>
+      <li><code>agentes[]</code> &mdash; Primeros 3 (lanzados por Start-Agente.ps1)</li>
+      <li><code>_queue[]</code> &mdash; Restantes (4 a N, promovidos autom&aacute;ticamente)</li>
+      <li><code>_completed[]</code> &mdash; Historial de agentes terminados</li>
+      <li><code>concurrency_limit: 3</code> &mdash; m&aacute;ximo de agentes simult&aacute;neos</li>
+    </ul>
+  </li>
+</ol>
+
+<h3>Fase 2: EJECUCI&Oacute;N PARALELA (Agentes especializados)</h3>
+<p><strong>Agentes involucrados:</strong> <code>/backend-dev</code>, <code>/android-dev</code>, <code>/ios-dev</code>, <code>/web-dev</code>, <code>/desktop-dev</code>, <code>/ux</code>, <code>/qa</code>, <code>/security</code></p>
+<p>Cada agente:</p>
+<ol>
+  <li>Lee su issue con <code>gh issue view &lt;N&gt;</code></li>
+  <li>Invoca pipeline de especialistas (<code>/guru</code> &rarr; <code>/review</code> &rarr; <code>/builder</code> &rarr; <code>/tester</code>)</li>
+  <li>Trabaja en worktree aislado (<code>platform.agent-&lt;issue&gt;-&lt;slug&gt;</code>)</li>
+  <li>Hace cambios, corre tests, valida build</li>
+  <li>Invoca <code>/delivery</code> para commit + PR + push</li>
+</ol>
+
+<div class="box">
+<strong>Interacci&oacute;n clave:</strong> Los agentes pueden invocar otros agentes en el pipeline:
+<ul>
+  <li>Agent implementa con <code>/backend-dev</code> &rarr; invoca <code>/builder</code> para validar &rarr; <code>/tester</code> para tests</li>
+  <li>Si falla, agente pide ayuda a <code>/guru</code> para investigar el error</li>
+  <li>Al terminar, <code>/review</code> valida el c&oacute;digo antes de <code>/delivery</code></li>
+</ul>
+</div>
+
+<h3>Fase 3: PROMOCI&Oacute;N AUTOM&Aacute;TICA</h3>
+<p><strong>Disparadores:</strong></p>
+<ul>
+  <li><strong>Hook Stop</strong> &mdash; <code>agent-concurrency-check.js</code> (ejecutado cuando agente termina)</li>
+  <li><strong>Watcher externo</strong> &mdash; <code>agent-watcher.js</code> (cada 60s, detecta agentes muertos)</li>
+</ul>
+
+<pre>
+Agent 1 termina (git push finalizado)
+    ↓
+Hook Stop → agent-concurrency-check.js
+    ↓
+Busca agentes en lista:
+  • Cuenta activos (status != "waiting"): 2
+  • Límite: 3 → Capacidad disponible: 1 slot
+    ↓
+¿Hay items en _queue[]?
+  ✓ SÍ → Promocionar siguiente de _queue[] a agentes[]
+    ↓
+Actualizar sprint-plan.json → Lanzar Start-Agente.ps1
+</pre>
+
+<h3>Fase 4: MONITOREO PASIVO (4 subsistemas en background)</h3>
+
+<table>
+  <tr><th>Subsistema</th><th>Ciclo</th><th>Prop&oacute;sito</th><th>Proactividad</th></tr>
+  <tr><td><strong>telegram-commander</strong></td><td>10-300s (adaptativo)</td><td>Recibir comandos remotos via Telegram</td><td>Env&iacute;a heartbeat con screenshots del Monitor</td></tr>
+  <tr><td><strong>scrum-monitor-bg</strong></td><td>Cada 30min</td><td>Verificar salud del sprint, auto-reparar</td><td>Genera m&eacute;tricas autom&aacute;ticas sin que se lo pida</td></tr>
+  <tr><td><strong>agent-watcher</strong></td><td>Cada 60s</td><td>Detectar agentes muertos, promover cola</td><td>Corre continuamente sin trigger externo</td></tr>
+  <tr><td><strong>ci-monitor-bg</strong></td><td>Cada 30s (por push)</td><td>Pollear GitHub Actions, notificar resultado</td><td>Lanzado autom&aacute;ticamente por post-git-push.js</td></tr>
+</table>
+
+<h2>3. Matriz de Interacciones Proactivas</h2>
+
+<table>
+  <tr><th>Agente A</th><th>Invoca</th><th>Agente B</th><th>Prop&oacute;sito</th><th>Momento</th></tr>
+  <tr><td><strong>Planner</strong></td><td>&rarr;</td><td><code>/po</code> (dependencias)</td><td>Validar orden de ejecuci&oacute;n</td><td>Pre-sprint</td></tr>
+  <tr><td><strong>Planner</strong></td><td>&rarr;</td><td><code>/historia</code></td><td>Crear nuevas historias si hay gaps</td><td>Pre-sprint</td></tr>
+  <tr><td><strong>Any Agent</strong></td><td>&rarr;</td><td><code>/branch</code></td><td>Crear rama antes de trabajar</td><td>Inicio</td></tr>
+  <tr><td><strong>Any Agent</strong></td><td>&rarr;</td><td><code>/po</code> (acceptance)</td><td>Entender criterios del issue</td><td>Inicio</td></tr>
+  <tr><td><strong>Any Agent</strong></td><td>&rarr;</td><td><code>/guru</code></td><td>Investigar patrones/libs</td><td>Cuando no sabe</td></tr>
+  <tr><td><strong>BackendDev</strong></td><td>&rarr;</td><td><code>/builder</code></td><td>Validar build backend</td><td>Pre-delivery</td></tr>
+  <tr><td><strong>BackendDev</strong></td><td>&rarr;</td><td><code>/tester</code></td><td>Ejecutar tests unitarios</td><td>Pre-delivery</td></tr>
+  <tr><td><strong>Any Dev Agent</strong></td><td>&rarr;</td><td><code>/security</code></td><td>Auditor&iacute;a de seguridad</td><td>Pre-delivery</td></tr>
+  <tr><td><strong>Any Dev Agent</strong></td><td>&rarr;</td><td><code>/review</code></td><td>Code review automatizado</td><td>Pre-delivery (gate)</td></tr>
+  <tr><td><strong>Any Dev Agent</strong></td><td>&rarr;</td><td><code>/qa</code></td><td>Tests E2E en entorno real</td><td>Pre-delivery (si UI)</td></tr>
+  <tr><td><strong>Any Dev Agent</strong></td><td>&rarr;</td><td><code>/delivery</code></td><td>Commit + PR + push</td><td>Final</td></tr>
+  <tr><td><strong>post-git-push</strong></td><td>&rarr;</td><td>ci-monitor-bg</td><td>Pollear CI tras push</td><td>Despu&eacute;s de push</td></tr>
+  <tr><td><strong>agent-concurrency-check</strong></td><td>&rarr;</td><td>Start-Agente.ps1</td><td>Lanzar siguiente agente</td><td>Tras Stop</td></tr>
+  <tr><td><strong>agent-watcher</strong></td><td>&rarr;</td><td>Start-Agente.ps1</td><td>Promocionar cola (fallback)</td><td>Cada 60s</td></tr>
+  <tr><td><strong>scrum-monitor-bg</strong></td><td>&rarr;</td><td><code>/scrum</code> (auto-repair)</td><td>Reparar inconsistencias</td><td>Cada 30min</td></tr>
+  <tr><td><strong>telegram-commander</strong></td><td>&rarr;</td><td><code>/monitor</code>/<code>/ops</code></td><td>Responder comandos</td><td>On-demand via Telegram</td></tr>
+</table>
+
+<h2>4. Sistema de Permisos</h2>
+
+<table>
+  <tr><th>Severidad</th><th>Herramientas</th><th>Comportamiento</th></tr>
+  <tr><td><span class="badge badge-ok">AUTO_ALLOW</span></td><td>TaskCreate, TaskUpdate, Skill, EnterPlanMode</td><td>Aprobadas autom&aacute;ticamente</td></tr>
+  <tr><td><span class="badge badge-info">LOW</span></td><td>WebFetch, WebSearch, Bash gen&eacute;rico</td><td>Auto-aprobadas (sin Telegram)</td></tr>
+  <tr><td><span class="badge badge-important">MEDIUM</span></td><td>git push, curl POST, Bash con pipes</td><td>Auto-aprobadas desde #1302</td></tr>
+  <tr><td><span class="badge badge-critical">HIGH</span></td><td>rm -rf, git reset --hard, destructivos</td><td>Requiere aprobaci&oacute;n manual via Telegram</td></tr>
+</table>
+
+<h2>5. Archivos de Estado Cr&iacute;ticos</h2>
+
+<table>
+  <tr><th>Archivo</th><th>Prop&oacute;sito</th><th>Qui&eacute;n escribe</th><th>Qui&eacute;n lee</th></tr>
+  <tr><td><code>scripts/sprint-plan.json</code></td><td>Plan actual + agentes + cola + m&eacute;tricas</td><td>Planner, concurrency-check, watcher</td><td>Start-Agente, agentes, Monitor</td></tr>
+  <tr><td><code>.claude/activity-log.jsonl</code></td><td>Log de actividad en tiempo real</td><td>activity-logger.js (hook)</td><td>Monitor, tendencias</td></tr>
+  <tr><td><code>.claude/hooks/health-check-*.json</code></td><td>Estado de salud por componente</td><td>ops-check, health-check</td><td>Monitor</td></tr>
+  <tr><td><code>.claude/hooks/scrum-health-history.jsonl</code></td><td>Historial de inconsistencias</td><td>scrum-monitor-bg</td><td>An&aacute;lisis tendencias</td></tr>
+  <tr><td><code>.claude/sessions/*.json</code></td><td>Metadatos de sesi&oacute;n Claude</td><td>Claude Code</td><td>Monitor, session-gc</td></tr>
+</table>
+
+<h2>6. Diagrama de Flujo: 5 Agentes en Paralelo</h2>
+
+<pre>
+HORA 10:00 — Planner crea sprint-plan.json
+  agentes: [#1456, #1457, #1458]  |  _queue: [#1459, #1460, #1461]
+     ↓
+Start-Agente.ps1 all → lanza 3 agentes + agent-watcher en background
+
+HORA 10:15 — Agent 1 hace git push
+  → post-git-push.js marca "waiting", promociona Agent 4 de _queue
+  → ci-monitor-bg inicia polling GitHub Actions
+  → AHORA: 4 agentes (1 waiting + 3 activos)
+
+HORA 10:45 — Agent 2 termina
+  → Hook Stop: agent-concurrency-check.js
+  → Cola vacía → sin promoción
+
+HORA 11:00 — scrum-monitor-bg ejecuta (cada 30min)
+  → Verifica salud: Agent 2 terminado, PR sin mergear → Auto-mergea
+
+HORA 11:30 — CI de Agent 1 pasa
+  → ci-monitor-bg notifica "CI PASS ✓" → Auto-mergea PR
+
+HORA 12:30 — Último agente termina
+  → scrum-monitor-bg cierra sprint → velocity = 100%
+  → SPRINT CLOSED → Ready para /planner sprint (SPR-026)
+</pre>
+
+<h2>7. Tabla de Eventos y Hooks</h2>
+
+<table>
+  <tr><th>Evento</th><th>Cu&aacute;ndo</th><th>Hooks</th><th>Acci&oacute;n</th></tr>
+  <tr><td><strong>Notification</strong></td><td>Siempre</td><td>notify-telegram.js</td><td>Informar usuario via Telegram</td></tr>
+  <tr><td><strong>Stop</strong></td><td>Sesi&oacute;n termina</td><td>stop-notify, agent-concurrency-check, scrum-monitor-bg</td><td>Notificar, promocionar cola, auditar sprint</td></tr>
+  <tr><td><strong>PreToolUse[Bash]</strong></td><td>Antes de bash</td><td>branch-guard, worktree-guard, delivery-gate</td><td>Bloquear push a main, alertas</td></tr>
+  <tr><td><strong>PreToolUse[*]</strong></td><td>Antes de tool</td><td>permission-gate</td><td>Control de acceso por severidad</td></tr>
+  <tr><td><strong>PostToolUse[Bash]</strong></td><td>Despu&eacute;s de bash</td><td>post-git-push</td><td>Orquestar CI, promocionar cola</td></tr>
+  <tr><td><strong>PostToolUse[*]</strong></td><td>Despu&eacute;s de tool</td><td>permission-tracker, activity-logger</td><td>Auditor&iacute;a y trazabilidad</td></tr>
+  <tr><td><strong>PermissionRequest</strong></td><td>Solicitud acceso</td><td>permission-approver</td><td>Auto-aprobar o enviar a Telegram</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<!-- DOCUMENTO 2: HOOKS REGISTRY -->
+<!-- ============================================================ -->
+<hr class="doc-separator">
+<div class="doc-header">
+  <h2>Documento 2: Registry de Hooks &mdash; Inventario Completo</h2>
+  <p>docs/operativo/hooks-registry.md &mdash; 353 l&iacute;neas &mdash; 52+ hooks registrados</p>
+</div>
+
+<h2>Event: Notification</h2>
+<table>
+  <tr><th>Hook</th><th>Prop&oacute;sito</th><th>Estado que toca</th><th>Timeout</th><th>Cr&iacute;tico</th></tr>
+  <tr><td><code>notify-telegram.js</code></td><td>Enviar notificaci&oacute;n a Telegram</td><td>telegram-outbox.json, telegram-message-registry.json</td><td>15s</td><td>NO</td></tr>
+</table>
+
+<h2>Event: Stop</h2>
+<table>
+  <tr><th>Hook</th><th>Prop&oacute;sito</th><th>Estado que toca</th><th>Timeout</th><th>Cr&iacute;tico</th></tr>
+  <tr><td><code>stop-notify.js</code></td><td>Notificar fin de agente</td><td>.claude/sessions/*.json</td><td>15s</td><td>NO</td></tr>
+  <tr><td><code>post-console-response.js</code></td><td>Registrar output final</td><td>activity-log.jsonl, hook-debug.log</td><td>10s</td><td>NO</td></tr>
+  <tr><td><code>agent-concurrency-check.js</code> <span class="star">&#9733;&#9733;&#9733;</span></td><td>Promocionar siguiente de _queue[]</td><td>sprint-plan.json, hook-debug.log</td><td>20s</td><td><strong>S&Iacute;</strong></td></tr>
+  <tr><td><code>scrum-monitor-bg.js</code> <span class="star">&#9733;</span></td><td>Auditar salud del sprint</td><td>sprint-plan.json, scrum-health-history.jsonl</td><td>60s</td><td>NO</td></tr>
+  <tr><td><code>pr-cleanup.js</code></td><td>Limpiar PRs viejas</td><td>Git branches remotas</td><td>120s</td><td>NO</td></tr>
+</table>
+
+<h2>Event: PreToolUse</h2>
+
+<h3>Matcher: "Bash"</h3>
+<table>
+  <tr><th>Hook</th><th>Prop&oacute;sito</th><th>L&oacute;gica</th><th>Cr&iacute;tico</th></tr>
+  <tr><td><code>branch-guard.js</code> <span class="star">&#9733;&#9733;</span></td><td>Bloquear git push en main</td><td>Detecta <code>git push origin main</code> &rarr; Error fatal</td><td><strong>S&Iacute;</strong></td></tr>
+  <tr><td><code>worktree-guard.js</code> <span class="star">&#9733;</span></td><td>Alerta en rama protegida</td><td>Si main/develop &rarr; Alerta Telegram</td><td>NO</td></tr>
+  <tr><td><code>delivery-gate.js</code> <span class="star">&#9733;&#9733;</span></td><td>Bloquear delivery incompleta</td><td>Cambios sin stagear, tests rotos, build roto</td><td><strong>S&Iacute;</strong></td></tr>
+</table>
+
+<h3>Matcher: "" (todas las herramientas)</h3>
+<table>
+  <tr><th>Hook</th><th>Prop&oacute;sito</th><th>Severidades</th><th>Timeout</th></tr>
+  <tr><td><code>permission-gate.js</code> <span class="star">&#9733;&#9733;&#9733;</span></td><td>Control de acceso por severidad</td><td>AUTO_ALLOW &rarr; LOW &rarr; MEDIUM &rarr; HIGH</td><td>1830s</td></tr>
+</table>
+
+<h2>Event: PostToolUse</h2>
+
+<h3>Matcher: "Bash"</h3>
+<table>
+  <tr><th>Hook</th><th>Prop&oacute;sito</th><th>L&oacute;gica</th><th>Cr&iacute;tico</th></tr>
+  <tr><td><code>post-git-push.js</code> <span class="star">&#9733;&#9733;&#9733;</span></td><td>Orquestar CI tras push</td><td>Detecta git push &rarr; marca waiting &rarr; promociona cola &rarr; lanza ci-monitor-bg</td><td>NO</td></tr>
+</table>
+
+<h3>Matcher: "" (todas)</h3>
+<table>
+  <tr><th>Hook</th><th>Prop&oacute;sito</th><th>Cr&iacute;tico</th></tr>
+  <tr><td><code>ensure-permissions.js</code></td><td>Registrar permiso otorgado</td><td>NO</td></tr>
+  <tr><td><code>permission-tracker.js</code></td><td>Registrar cambios de permisos</td><td>NO</td></tr>
+  <tr><td><code>activity-logger.js</code> <span class="star">&#9733;</span></td><td>Registrar TODA actividad en activity-log.jsonl</td><td>NO</td></tr>
+</table>
+
+<h2>Event: PermissionRequest</h2>
+<table>
+  <tr><th>Hook</th><th>Prop&oacute;sito</th><th>Timeout</th></tr>
+  <tr><td><code>permission-approver.js</code></td><td>Auto-aprobar o enviar a Telegram</td><td>Hasta respuesta usuario</td></tr>
+</table>
+
+<h2>Subsistemas Background</h2>
+<table>
+  <tr><th>Script</th><th>Lanzado por</th><th>Ciclo</th><th>PID file</th><th>Prop&oacute;sito</th></tr>
+  <tr><td><code>agent-watcher.js</code> <span class="star">&#9733;&#9733;&#9733;</span></td><td>Start-Agente.ps1 all</td><td>60s</td><td>agent-watcher.pid</td><td>Detectar agentes muertos, promover</td></tr>
+  <tr><td><code>ci-monitor-bg.js</code> <span class="star">&#9733;&#9733;</span></td><td>post-git-push.js</td><td>30s</td><td>ci-monitor-bg.pid</td><td>Pollear CI, notificar, auto-merge</td></tr>
+  <tr><td><code>scrum-monitor-bg.js</code> <span class="star">&#9733;</span></td><td>Hook Stop</td><td>30min</td><td>scrum-monitor-bg.pid</td><td>Auditar sprint, auto-reparar</td></tr>
+  <tr><td><code>telegram-commander.js</code> <span class="star">&#9733;&#9733;</span></td><td>commander-launcher.js</td><td>10-300s</td><td>telegram-commander.lock</td><td>Comandos remotos, heartbeat</td></tr>
+</table>
+
+<h2>Dependencias Entre Scripts</h2>
+<pre>
+agent-concurrency-check.js
+  ├─→ sprint-sync.js (sincronizar roadmap)
+  ├─→ Start-Agente.ps1 (lanzar siguiente)
+  └─→ notify-telegram.js (notificar)
+
+post-git-push.js
+  ├─→ ci-monitor-bg.js (lanzar en background)
+  ├─→ Start-Agente.ps1 (promover cola)
+  └─→ notify-telegram.js (notificar)
+
+scrum-monitor-bg.js
+  ├─→ health-check-sprint.js (auditoría)
+  ├─→ scrum-auto-corrections.js (auto-reparar)
+  └─→ notify-telegram.js (alerta crítica)
+
+permission-gate.js
+  ├─→ permission-approver.js (decisión)
+  └─→ telegram-commander.js (aprobación remota)
+</pre>
+
+<!-- ============================================================ -->
+<!-- DOCUMENTO 3: GUIA DE MONITOREO -->
+<!-- ============================================================ -->
+<hr class="doc-separator">
+<div class="doc-header">
+  <h2>Documento 3: Gu&iacute;a de Monitoreo</h2>
+  <p>docs/operativo/monitoring-guide.md &mdash; 457 l&iacute;neas</p>
+</div>
+
+<h2>Tres Niveles de Monitoreo</h2>
+
+<table>
+  <tr><th>Nivel</th><th>M&eacute;todo</th><th>Frecuencia</th><th>Acci&oacute;n del usuario</th></tr>
+  <tr><td><span class="badge badge-ok">PASIVO</span></td><td>Telegram Heartbeat</td><td>Cada 10-30 min (autom&aacute;tico)</td><td>Solo leer notificaciones</td></tr>
+  <tr><td><span class="badge badge-info">ACTIVO</span></td><td>Comandos Remotos</td><td>On-demand</td><td>Enviar <code>/monitor</code>, <code>/ops</code>, <code>/cleanup</code></td></tr>
+  <tr><td><span class="badge badge-important">INTERNO</span></td><td>Logs y State Files</td><td>Manual (debugging)</td><td>Leer activity-log.jsonl, hook-debug.log</td></tr>
+</table>
+
+<h2>Monitoreo por Subsistema</h2>
+
+<h3>Agentes (concurrency, promotion, lifecycle)</h3>
+<div class="box">
+<strong>Qu&eacute; monitorear:</strong> &iquest;Hay siempre 3 agentes activos? &iquest;Se promueven de _queue[]? &iquest;Hay agentes en "waiting"?<br>
+<strong>C&oacute;mo:</strong> <code>/monitor</code> en Telegram o <code>cat scripts/sprint-plan.json | jq '.agentes[]'</code><br>
+<strong>Auto-reparaci&oacute;n:</strong> agent-watcher detecta zombies (30+ min) &rarr; marca dead &rarr; promueve siguiente
+</div>
+
+<h3>CI Monitor (GitHub Actions)</h3>
+<div class="box">
+<strong>Qu&eacute; monitorear:</strong> &iquest;Builds se lanzan tras push? &iquest;Notifica status? &iquest;Auto-merge funciona?<br>
+<strong>C&oacute;mo:</strong> Observar mensajes Telegram: "CI: Testando..." / "CI: PASS ✓" / "CI: FAIL ✗"<br>
+<strong>Auto-reparaci&oacute;n:</strong> ci-monitor-bg reintenta polling cada 30s; si falla >5 veces &rarr; alerta Telegram
+</div>
+
+<h3>Sprint Health (Project V2)</h3>
+<div class="box">
+<strong>Qu&eacute; monitorear:</strong> &iquest;Issues en estado correcto? &iquest;PRs mergeados = issues Done?<br>
+<strong>C&oacute;mo:</strong> <code>/scrum audit</code> en Telegram<br>
+<strong>Auto-reparaci&oacute;n:</strong> scrum-monitor-bg detecta inconsistencias cada 30min &rarr; auto-repara las menores
+</div>
+
+<h3>Permisos y Seguridad</h3>
+<div class="box">
+<strong>Qu&eacute; monitorear:</strong> &iquest;HIGH severity requiere aprobaci&oacute;n? &iquest;Hay intentos bloqueados?<br>
+<strong>C&oacute;mo:</strong> <code>tail -50 .claude/hooks/permission-tracker.log</code><br>
+<strong>Umbrales:</strong> >5 bloqueos en 10min &rarr; posible error recurrente
+</div>
+
+<h2>Tabla de Umbrales</h2>
+
+<table>
+  <tr><th>M&eacute;trica</th><th>Amarillo (&le;)</th><th>Rojo (&le;)</th><th>Acci&oacute;n</th></tr>
+  <tr><td>Agentes activos</td><td>&lt;2 cuando esperado &ge;3</td><td>0 durante sprint</td><td><code>/ops</code> + reinicio</td></tr>
+  <tr><td>Agente en "waiting"</td><td>&gt;15 min</td><td>&gt;30 min</td><td>Revisar CI, cancelar workflow</td></tr>
+  <tr><td>Cola pendiente</td><td>&gt;5 items</td><td>&gt;10 items</td><td>Sprint demasiado grande</td></tr>
+  <tr><td>CI en "running"</td><td>&gt;30 min</td><td>&gt;60 min</td><td>Cancelar workflow en GitHub</td></tr>
+  <tr><td>Scrum inconsistencies</td><td>&gt;1</td><td>&gt;3</td><td><code>/scrum audit</code> + auto-repair</td></tr>
+  <tr><td>hook-debug.log size</td><td>&gt;1 MB</td><td>&gt;2 MB</td><td><code>/cleanup --logs --run</code></td></tr>
+  <tr><td>Telegram no responde</td><td>&gt;5 seg</td><td>&gt;30 seg</td><td>Reiniciar commander</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<!-- DOCUMENTO 4: TROUBLESHOOTING -->
+<!-- ============================================================ -->
+<hr class="doc-separator">
+<div class="doc-header">
+  <h2>Documento 4: Troubleshooting &mdash; &Aacute;rboles de Decisi&oacute;n</h2>
+  <p>docs/operativo/troubleshooting.md &mdash; 582 l&iacute;neas &mdash; 8 flujos (A-H)</p>
+</div>
+
+<h2>Flujo Principal: Identificar el S&iacute;ntoma</h2>
+
+<table>
+  <tr><th>S&iacute;ntoma</th><th>Flujo</th><th>Descripci&oacute;n</th></tr>
+  <tr><td>Agente no se lanza / no contin&uacute;a</td><td><strong>A</strong></td><td>Rama, concurrencia, promoci&oacute;n, Start-Agente</td></tr>
+  <tr><td>Build/Tests fallan</td><td><strong>B</strong></td><td>Compilaci&oacute;n Kotlin, tests, dependencias Gradle</td></tr>
+  <tr><td>CI/GitHub stuck</td><td><strong>C</strong></td><td>PR sin crear, workflow stuck, merge fallido</td></tr>
+  <tr><td>Permisos bloqueados</td><td><strong>D</strong></td><td>branch-guard, HIGH severity, aprobaci&oacute;n Telegram</td></tr>
+  <tr><td>Telegram no responde</td><td><strong>E</strong></td><td>Commander muerto, token, red, chat ID</td></tr>
+  <tr><td>Sprint desincronizado</td><td><strong>F</strong></td><td>PR merged/issue open, plan &ne; Project V2</td></tr>
+  <tr><td>Error desconocido</td><td><strong>G</strong></td><td>Diagn&oacute;stico general, /ops, /guru, logs</td></tr>
+  <tr><td>Workspace lento / disco lleno</td><td><strong>H</strong></td><td>Disco, worktrees, procesos zombie, logs grandes</td></tr>
+</table>
+
+<h2>FLUJO A: Agente no se lanza</h2>
+<div class="warning">
+<strong>Pregunta 1:</strong> &iquest;La rama <code>agent/*</code> existe? &rarr; NO: <code>/branch &lt;issue&gt; &lt;slug&gt;</code><br>
+<strong>Pregunta 2:</strong> &iquest;Hay 3+ agentes activos? &rarr; S&Iacute;: Esperar (l&iacute;mite concurrencia)<br>
+<strong>Pregunta 3:</strong> &iquest;Hay items en _queue[]? &rarr; S&Iacute;: Verificar hook Stop &rarr; Verificar Start-Agente.ps1 &rarr; Lanzar manualmente<br>
+<strong>&Uacute;ltimo recurso:</strong> <code>/ops --fix</code> + reintentar lanzamiento manual
+</div>
+
+<h2>FLUJO B: Build/Tests fallan</h2>
+<div class="warning">
+<strong>Compilaci&oacute;n Kotlin:</strong> Leer error &rarr; buscar en logs &rarr; <code>/guru</code> para investigar &rarr; arreglar &rarr; <code>/builder</code><br>
+<strong>Test assertion:</strong> Leer esperado vs actual &rarr; <code>/guru</code> &rarr; arreglar test O c&oacute;digo &rarr; <code>/tester</code><br>
+<strong>Dependencia Gradle:</strong> <code>./gradlew clean build</code> &rarr; verificar red &rarr; <code>/guru</code>
+</div>
+
+<h2>FLUJO C: CI/GitHub stuck</h2>
+<div class="warning">
+<strong>Sin PR:</strong> Ejecutar <code>/delivery</code><br>
+<strong>Workflow no trigger:</strong> Verificar .github/workflows/ &rarr; re-trigger en web<br>
+<strong>Workflow stuck >30min:</strong> <code>gh run cancel &lt;run-id&gt;</code> + re-run<br>
+<strong>CI pass pero no merge:</strong> <code>gh pr merge &lt;PR&gt; --auto</code>
+</div>
+
+<h2>FLUJO D: Permisos bloqueados</h2>
+<div class="warning">
+<strong>git push main:</strong> branch-guard (correcto) &rarr; crear rama con <code>/branch</code><br>
+<strong>rm -rf:</strong> HIGH severity &rarr; aprobar en Telegram o usar <code>/cleanup --run</code><br>
+<strong>Agente pide comando riesgoso:</strong> Denegar &rarr; investigar &rarr; parar agente
+</div>
+
+<h2>FLUJO E: Telegram no responde</h2>
+<div class="warning">
+<strong>Commander muerto:</strong> Matar PID &rarr; borrar lock &rarr; relanzar <code>commander-launcher.js</code><br>
+<strong>Token inv&aacute;lido:</strong> Obtener nuevo en @BotFather &rarr; actualizar telegram-config.json<br>
+<strong>Red bloqueada:</strong> <code>curl -I https://api.telegram.org/</code> &rarr; verificar VPN/firewall<br>
+<strong>Chat ID incorrecto:</strong> Enviar /start al bot &rarr; obtener chat ID correcto
+</div>
+
+<h2>FLUJO F: Sprint desincronizado</h2>
+<div class="warning">
+<strong>PR merged + issue open:</strong> <code>node health-check-sprint.js --auto-repair</code><br>
+<strong>Issue Done sin PR:</strong> Buscar rama &rarr; crear PR o revisar historial<br>
+<strong>Agent done + In Progress:</strong> <code>scrum-auto-corrections.js --repair-status</code><br>
+<strong>Plan &ne; Project V2:</strong> Decidir fuente de verdad &rarr; <code>sprint-sync.js --force-sync</code>
+</div>
+
+<h2>FLUJO G-H: Error desconocido / Performance</h2>
+<div class="warning">
+<strong>Error desconocido:</strong> <code>/ops</code> &rarr; <code>/guru "&lt;error&gt;"</code> &rarr; buscar en activity-log &rarr; crear issue si persiste<br>
+<strong>Disco lleno:</strong> <code>/cleanup --run --deep</code><br>
+<strong>Worktrees antiguos:</strong> <code>/cleanup --worktrees --run</code><br>
+<strong>Procesos zombie:</strong> Identificar con <code>ps aux</code> &rarr; matar PIDs viejos<br>
+<strong>Logs gigantes:</strong> <code>/cleanup --logs --run</code>
+</div>
+
+<h2>Referencia R&aacute;pida</h2>
+<table>
+  <tr><th>Problema</th><th>Comando Diagn&oacute;stico</th><th>Acci&oacute;n R&aacute;pida</th></tr>
+  <tr><td>Agente no se promueve</td><td><code>grep ConcurrencyCheck hook-debug.log</code></td><td><code>Start-Agente.ps1 &lt;num&gt;</code></td></tr>
+  <tr><td>CI stuck</td><td><code>gh run view &lt;run-id&gt;</code></td><td>Cancel + re-run en GitHub</td></tr>
+  <tr><td>Telegram no responde</td><td><code>ps aux | grep commander</code></td><td>Relanzar commander</td></tr>
+  <tr><td>Tests fallan</td><td><code>./gradlew test --info</code></td><td>Arreglar test O c&oacute;digo</td></tr>
+  <tr><td>Build falla</td><td><code>./gradlew clean build</code></td><td>Investigar con <code>/guru</code></td></tr>
+  <tr><td>Permisos bloqueados</td><td>Ver Telegram</td><td>Aprobar / Denegar</td></tr>
+  <tr><td>Disco lleno</td><td><code>df -h /c/Workspaces/</code></td><td><code>/cleanup --run --deep</code></td></tr>
+  <tr><td>Sprint desincronizado</td><td><code>/scrum audit</code></td><td><code>/scrum repair --auto</code></td></tr>
+</table>
+
+<!-- FOOTER -->
+<div class="footer">
+  <p><strong>Arquitectura Operativa Completa</strong> &mdash; Intrale Platform &mdash; Issue #1456</p>
+  <p>Generado: 2026-03-12 &nbsp;|&nbsp; 4 documentos consolidados &nbsp;|&nbsp; 52+ hooks &nbsp;|&nbsp; 25+ agentes</p>
+  <p>Documento vivo &mdash; Actualizar cuando cambie la arquitectura de agentes o flujo de hooks</p>
+</div>
+
+</body>
+</html>
