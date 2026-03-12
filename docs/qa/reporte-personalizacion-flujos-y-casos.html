@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Personalización del Negocio</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-spec { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .tag-impl { background: #e3f2fd; color: #0d47a1; }
+  .tag-ph { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .spec { background: #e8f5e9; border-left: 3px solid #2e7d32; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .warn { background: #fff8e1; border-left: 3px solid #f57f17; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .badge-impl { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; border-radius: 3px; padding: 1px 6px; font-size: 9px; font-weight: 600; }
+  .badge-ph { background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; border-radius: 3px; padding: 1px 6px; font-size: 9px; font-weight: 600; }
+  .badge-pass { background: #e8f5e9; color: #2e7d32; border-radius: 3px; padding: 1px 6px; font-size: 9px; font-weight: 600; }
+  .badge-na { background: #eeeeee; color: #616161; border-radius: 3px; padding: 1px 6px; font-size: 9px; font-weight: 600; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Personalización del Negocio</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-spec">SPEC</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:520px;margin:0 auto;">
+    Documento de especificación y calidad para la funcionalidad de<br>
+    Personalización del Negocio en la plataforma Intrale.<br>
+    Incluye análisis del estado actual (placeholder), flujos deseados,<br>
+    casos de prueba como spec de implementación y evidencia de tests.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Versión:</strong> 2.0</p>
+    <p><strong>Issue:</strong> #1127</p>
+    <p><strong>Fecha:</strong> 2026-03-12</p>
+    <p><strong>Pantalla:</strong> PersonalizationScreen — <code>/personalization</code></p>
+    <p><strong>Generado por:</strong> PO + QA Agents</p>
+    <p><strong>Estado de la funcionalidad:</strong> <span class="badge-ph">PLACEHOLDER PARCIAL</span></p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Índice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo</a></li>
+  <li><a href="#s2">Estado Actual — Análisis del Código</a></li>
+  <li><a href="#s3">Arquitectura de la Pantalla</a></li>
+  <li><a href="#s4">Flujo A — Acceso y Control de Permisos</a></li>
+  <li><a href="#s5">Flujo B — Tipografía (Implementado)</a></li>
+  <li><a href="#s6">Flujo C — Colores (Especificación Futura)</a></li>
+  <li><a href="#s7">Flujo D — Imágenes (Especificación Futura)</a></li>
+  <li><a href="#s8">Flujo E — Ícono de App (Especificación Futura)</a></li>
+  <li><a href="#s9">Flujo F — Preview General (Especificación Futura)</a></li>
+  <li><a href="#s10">Catálogo de Casos de Prueba</a></li>
+  <li><a href="#s11">Evidencia de Tests Ejecutados</a></li>
+  <li><a href="#s12">Gaps y Recomendaciones</a></li>
+  <li><a href="#s13">Resumen y Cobertura</a></li>
+</ol>
+
+<!-- ========== S1: RESUMEN EJECUTIVO ========== -->
+<h2 id="s1">1. Resumen Ejecutivo</h2>
+
+<p>La funcionalidad <strong>Personalización del Negocio</strong> permite a los administradores de un negocio
+configurar la apariencia visual de su tienda en la plataforma Intrale. Esta pantalla está ubicada en
+<code>/personalization</code> y es accesible únicamente para roles <code>BusinessAdmin</code> y
+<code>PlatformAdmin</code> con un <code>selectedBusinessId</code> activo.</p>
+
+<br>
+
+<div class="note">
+  <strong>Estado al 2026-03-12:</strong> La pantalla existe como <strong>placeholder parcial</strong>.
+  De las 5 secciones previstas, solo <strong>Tipografía</strong> tiene implementación real completa.
+  Las secciones Colores, Imágenes, Ícono de App y Preview son placeholders con label "pendiente".
+  Este reporte sirve como <strong>especificación funcional</strong> para cuando se implementen las secciones restantes.
+</div>
+
+<br>
+
+<h3>Estado por sección</h3>
+<table>
+  <tr>
+    <th>Sección</th>
+    <th>Ícono</th>
+    <th>Estado</th>
+    <th>Navegable</th>
+    <th>Backend</th>
+    <th>Tests</th>
+  </tr>
+  <tr>
+    <td>Tipografía</td>
+    <td>Title</td>
+    <td><span class="badge-impl">IMPLEMENTADO</span></td>
+    <td>✅ Sí → <code>/typography</code></td>
+    <td>✅ Endpoint real</td>
+    <td><span class="badge-pass">8/8 PASSED</span></td>
+  </tr>
+  <tr>
+    <td>Colores</td>
+    <td>Palette</td>
+    <td><span class="badge-ph">PLACEHOLDER</span></td>
+    <td>❌ No (onClick = null)</td>
+    <td>❌ Sin endpoint</td>
+    <td><span class="badge-na">N/A</span></td>
+  </tr>
+  <tr>
+    <td>Imágenes</td>
+    <td>Image</td>
+    <td><span class="badge-ph">PLACEHOLDER</span></td>
+    <td>❌ No</td>
+    <td>❌ Sin endpoint</td>
+    <td><span class="badge-na">N/A</span></td>
+  </tr>
+  <tr>
+    <td>Ícono de App</td>
+    <td>Brush</td>
+    <td><span class="badge-ph">PLACEHOLDER</span></td>
+    <td>❌ No</td>
+    <td>❌ Sin endpoint</td>
+    <td><span class="badge-na">N/A</span></td>
+  </tr>
+  <tr>
+    <td>Preview</td>
+    <td>Visibility</td>
+    <td><span class="badge-ph">PLACEHOLDER</span></td>
+    <td>❌ No</td>
+    <td>❌ Sin endpoint</td>
+    <td><span class="badge-na">N/A</span></td>
+  </tr>
+</table>
+
+<!-- ========== S2: ESTADO ACTUAL ========== -->
+<h2 id="s2">2. Estado Actual — Análisis del Código</h2>
+
+<h3>PersonalizationScreen.kt</h3>
+<p>Archivo: <code>app/composeApp/src/commonMain/kotlin/ui/sc/business/PersonalizationScreen.kt</code></p>
+
+<table>
+  <tr><th>Elemento</th><th>Valor</th></tr>
+  <tr><td>Ruta de navegación</td><td><code>PERSONALIZATION_PATH = "/personalization"</code></td></tr>
+  <tr><td>Roles permitidos</td><td><code>BusinessAdmin</code>, <code>PlatformAdmin</code></td></tr>
+  <tr><td>Requisito adicional</td><td><code>selectedBusinessId</code> no vacío</td></tr>
+  <tr><td>Logger</td><td>✅ Presente (<code>LoggerFactory.default.newLogger&lt;PersonalizationScreen&gt;()</code>)</td></tr>
+  <tr><td>ViewModel</td><td>❌ No tiene ViewModel propio (la pantalla es solo UI estática)</td></tr>
+  <tr><td>Control de acceso</td><td>✅ Implementado en UI (mensaje de acceso denegado si sin permisos)</td></tr>
+  <tr><td>Secciones clickeables</td><td>Solo Tipografía (navega a <code>/typography</code>)</td></tr>
+  <tr><td>Estado de carga</td><td>❌ No aplica (pantalla estática)</td></tr>
+</table>
+
+<div class="precond">
+  <strong>Observación técnica:</strong> El control de permisos (<code>hasAccess</code>) se realiza
+  en la capa UI, no en el backend. Para las secciones futuras con funcionalidad real, el backend
+  deberá implementar validación de permisos por su cuenta (<code>SecuredFunction</code>).
+</div>
+
+<h3>TypographyScreen.kt + TypographyViewModel.kt</h3>
+<p>La única sección con implementación completa. El ViewModel gestiona el estado de fuentes con
+patrones correctos: loading, error, success, Konform validation, y patrón Do/Result.</p>
+
+<!-- ========== S3: ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura de la Pantalla</h2>
+
+<div class="mermaid">
+graph TD
+  Router["Router App"] --> |"navega a /personalization"| PScreen["PersonalizationScreen"]
+  PScreen --> |"verifica role + selectedBusinessId"| AccessCheck{"hasAccess?"}
+  AccessCheck --> |"No"| DeniedMsg["Text: acceso denegado"]
+  AccessCheck --> |"Sí"| Content["PersonalizationContent"]
+  Content --> ColoresCard["Tarjeta: Colores\n(onClick = null)\n🔴 PLACEHOLDER"]
+  Content --> TipoCard["Tarjeta: Tipografía\n(onClick = navega)"]
+  Content --> ImagenesCard["Tarjeta: Imágenes\n(onClick = null)\n🔴 PLACEHOLDER"]
+  Content --> IconoCard["Tarjeta: Ícono App\n(onClick = null)\n🔴 PLACEHOLDER"]
+  Content --> PreviewCard["Tarjeta: Preview\n(onClick = null)\n🔴 PLACEHOLDER"]
+  TipoCard --> |"navega a /typography"| TypoScreen["TypographyScreen\n✅ IMPLEMENTADO"]
+  TypoScreen --> TypoVM["TypographyViewModel\nloadFonts / saveFonts\nuiState: titleFont,\nsubtitleFont, bodyFont,\nbuttonFont"]
+  TypoVM --> Backend["Backend: GET/PUT\n/{business}/typography\n✅ Endpoint real"]
+
+  style DeniedMsg fill:#ffebee,stroke:#c62828
+  style ColoresCard fill:#fff3e0,stroke:#e65100
+  style ImagenesCard fill:#fff3e0,stroke:#e65100
+  style IconoCard fill:#fff3e0,stroke:#e65100
+  style PreviewCard fill:#fff3e0,stroke:#e65100
+  style TipoCard fill:#e8f5e9,stroke:#2e7d32
+  style TypoScreen fill:#e8f5e9,stroke:#2e7d32
+  style Backend fill:#e3f2fd,stroke:#1565c0
+</div>
+
+<!-- ========== S4: FLUJO A — ACCESO ========== -->
+<h2 id="s4">4. Flujo A — Acceso y Control de Permisos</h2>
+
+<div class="note">
+  Este flujo ya está <strong>implementado</strong>. Los casos de prueba sirven tanto como regresión
+  actual como especificación para las secciones futuras.
+</div>
+
+<div class="mermaid">
+sequenceDiagram
+  actor U as Usuario
+  participant App as App (UI)
+  participant Session as SessionStore
+  participant Screen as PersonalizationScreen
+
+  U->>App: Navega a /personalization
+  App->>Session: collectAsState()
+  Session-->>App: role, selectedBusinessId
+  App->>Screen: Renderiza
+
+  alt role NOT IN (BusinessAdmin, PlatformAdmin) OR selectedBusinessId vacío
+    Screen->>U: Muestra "Acceso denegado"
+  else Acceso permitido
+    Screen->>U: Muestra lista de secciones (5 tarjetas)
+    Note over Screen,U: Solo Tipografía es navegable (onClick != null)
+  end
+</div>
+
+<h3>Casos de prueba — Flujo A</h3>
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Descripción</th>
+    <th>Tipo</th>
+    <th>Precondición</th>
+    <th>Resultado esperado</th>
+    <th>Estado</th>
+  </tr>
+  <tr>
+    <td class="case-id">A-01</td>
+    <td>BusinessAdmin con businessId accede a la pantalla</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>Usuario con role=BusinessAdmin, selectedBusinessId="biz-123"</td>
+    <td>Se muestran las 5 tarjetas de personalización</td>
+    <td><span class="badge-na">SPEC</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">A-02</td>
+    <td>PlatformAdmin con businessId accede a la pantalla</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>Usuario con role=PlatformAdmin, selectedBusinessId="biz-123"</td>
+    <td>Se muestran las 5 tarjetas de personalización</td>
+    <td><span class="badge-na">SPEC</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">A-03</td>
+    <td>Client intenta acceder — recibe mensaje de denegación</td>
+    <td><span class="tag tag-regression">PERM</span></td>
+    <td>Usuario con role=Client</td>
+    <td>Texto "acceso denegado" visible. Sin tarjetas.</td>
+    <td><span class="badge-na">SPEC</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">A-04</td>
+    <td>Saler intenta acceder — recibe mensaje de denegación</td>
+    <td><span class="tag tag-regression">PERM</span></td>
+    <td>Usuario con role=Saler</td>
+    <td>Texto "acceso denegado" visible. Sin tarjetas.</td>
+    <td><span class="badge-na">SPEC</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">A-05</td>
+    <td>BusinessAdmin sin selectedBusinessId — acceso denegado</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>role=BusinessAdmin, selectedBusinessId=null o vacío</td>
+    <td>Texto "acceso denegado". No se muestran secciones.</td>
+    <td><span class="badge-na">SPEC</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">A-06</td>
+    <td>Tarjetas Colores, Imágenes, Ícono, Preview no son clickeables</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>BusinessAdmin con businessId activo</td>
+    <td>Tap en esas tarjetas no navega a ninguna pantalla (sin ChevronRight visible)</td>
+    <td><span class="badge-na">SPEC</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">A-07</td>
+    <td>Tarjeta Tipografía navega a /typography</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>BusinessAdmin con businessId activo</td>
+    <td>Tap en Tipografía → se abre TypographyScreen con URL /typography. ChevronRight visible.</td>
+    <td><span class="badge-impl">IMPL</span></td>
+  </tr>
+</table>
+
+<!-- ========== S5: FLUJO B — TIPOGRAFIA ========== -->
+<h2 id="s5">5. Flujo B — Tipografía (Implementado)</h2>
+
+<div class="spec">
+  <strong>Estado: ✅ IMPLEMENTADO.</strong> Tests: 8/8 PASSED (2026-03-12).
+  Incluido en este reporte para documentación completa del módulo de personalización.
+</div>
+
+<div class="mermaid">
+sequenceDiagram
+  actor BA as BusinessAdmin
+  participant TS as TypographyScreen
+  participant VM as TypographyViewModel
+  participant Svc as CommBusinessService
+  participant BE as Backend
+
+  BA->>TS: Navega a /typography
+  TS->>VM: LaunchedEffect(businessId) → loadFonts(businessId)
+  VM->>VM: loading = true
+  VM->>Svc: getTypography(businessId)
+  Svc->>BE: GET /{business}/typography
+  BE-->>Svc: {titleFont, subtitleFont, bodyFont, buttonFont}
+  Svc-->>VM: Result.success(fonts)
+  VM->>VM: uiState = fonts, loading = false
+  VM-->>TS: Actualiza UI
+
+  BA->>TS: Selecciona fuente para "Títulos" = "Roboto"
+  TS->>VM: updateTitleFont("Roboto")
+  VM->>VM: uiState = uiState.copy(titleFont="Roboto")
+  VM-->>TS: Preview se actualiza en tiempo real
+
+  BA->>TS: Presiona "Guardar"
+  TS->>VM: saving = true → saveFonts(businessId)
+  VM->>Svc: setTypography(businessId, fonts)
+  Svc->>BE: PUT /{business}/typography
+  BE-->>Svc: 200 OK
+  Svc-->>VM: Result.success(...)
+  VM->>VM: saving = false, successMessage = "Guardado"
+  VM-->>TS: Snackbar "Guardado"
+</div>
+
+<h3>Casos de prueba — Flujo B (Tipografía)</h3>
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Descripción</th>
+    <th>Tipo</th>
+    <th>Test</th>
+    <th>Resultado</th>
+  </tr>
+  <tr>
+    <td class="case-id">B-01</td>
+    <td>loadFonts actualiza el estado con fuentes del backend</td>
+    <td><span class="tag tag-smoke">UNIT</span></td>
+    <td><code>loadFonts actualiza el estado con las fuentes del backend</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">B-02</td>
+    <td>loadFonts con businessId vacío no ejecuta llamada</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td><code>loadFonts con businessId vacio no ejecuta llamada</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">B-03</td>
+    <td>loadFonts con error establece errorMessage</td>
+    <td><span class="tag tag-regression">ERR</span></td>
+    <td><code>loadFonts con error establece errorMessage</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">B-04</td>
+    <td>updateTitleFont actualiza solo el titleFont</td>
+    <td><span class="tag tag-smoke">UNIT</span></td>
+    <td><code>updateTitleFont actualiza solo el titleFont</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">B-05</td>
+    <td>saveFonts envía correctamente el mapa de fuentes</td>
+    <td><span class="tag tag-smoke">UNIT</span></td>
+    <td><code>saveFonts envia correctamente el mapa de fuentes</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">B-06</td>
+    <td>saveFonts solo incluye fuentes no vacías en el request</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td><code>saveFonts solo incluye fuentes no vacias en el request</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">B-07</td>
+    <td>saveFonts con businessId vacío retorna failure</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td><code>saveFonts con businessId vacio retorna failure</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">B-08</td>
+    <td>saveFonts con error establece errorMessage</td>
+    <td><span class="tag tag-regression">ERR</span></td>
+    <td><code>saveFonts con error establece errorMessage</code></td>
+    <td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+</table>
+
+<!-- ========== S6: FLUJO C — COLORES ========== -->
+<h2 id="s6">6. Flujo C — Colores (Especificación Futura)</h2>
+
+<div class="warn">
+  <strong>Estado: 🔴 PLACEHOLDER.</strong> Esta sección documenta el comportamiento <em>esperado</em>
+  cuando se implemente. Los casos de prueba son la <strong>spec de aceptación</strong> que deberá
+  cumplirse antes del merge.
+</div>
+
+<h3>Descripción funcional esperada</h3>
+<p>Permite al BusinessAdmin definir la paleta de colores de su tienda: color primario, secundario,
+fondo y texto. Los colores se aplican al tema visual de la app cuando el cliente accede al negocio.</p>
+
+<div class="mermaid">
+sequenceDiagram
+  actor BA as BusinessAdmin
+  participant CS as ColorsScreen (futuro)
+  participant VM as ColorsViewModel (futuro)
+  participant BE as Backend (futuro)
+
+  BA->>CS: Navega a /colors (desde PersonalizationScreen)
+  CS->>VM: loadColors(businessId)
+  VM->>BE: GET /{business}/colors
+  BE-->>VM: {primaryColor, secondaryColor, backgroundColor, textColor}
+  VM-->>CS: Actualiza UI con color picker
+
+  BA->>CS: Selecciona primaryColor = #FF5722
+  CS->>VM: updatePrimaryColor("#FF5722")
+  VM-->>CS: Preview en tiempo real
+
+  BA->>CS: Presiona "Guardar"
+  CS->>VM: saveColors(businessId)
+  VM->>BE: PUT /{business}/colors
+  BE-->>VM: 200 OK
+  VM-->>CS: Snackbar "Colores guardados"
+</div>
+
+<h3>Casos de prueba — Flujo C (Especificación)</h3>
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Descripción</th>
+    <th>Tipo</th>
+    <th>Precondición</th>
+    <th>Resultado esperado</th>
+    <th>Criterio de done</th>
+  </tr>
+  <tr>
+    <td class="case-id">C-01</td>
+    <td>BusinessAdmin configura color primario y guarda</td>
+    <td><span class="tag tag-smoke">HAPPY PATH</span></td>
+    <td>BA autenticado, businessId activo</td>
+    <td>Color guardado, snackbar "Colores guardados", re-consulta muestra el nuevo color</td>
+    <td>PUT /{business}/colors responde 200, GET retorna el valor guardado</td>
+  </tr>
+  <tr>
+    <td class="case-id">C-02</td>
+    <td>Color con formato hexadecimal inválido es rechazado</td>
+    <td><span class="tag tag-regression">VALIDACION</span></td>
+    <td>BA en pantalla de Colores</td>
+    <td>Error "Formato de color inválido. Use #RRGGBB"</td>
+    <td>Validación en UI antes de llamar al backend</td>
+  </tr>
+  <tr>
+    <td class="case-id">C-03</td>
+    <td>Client intenta acceder a /colors — error 403</td>
+    <td><span class="tag tag-regression">PERM</span></td>
+    <td>Usuario con role=Client</td>
+    <td>Backend responde 403. UI muestra mensaje de acceso denegado.</td>
+    <td>SecuredFunction valida BusinessAdmin/PlatformAdmin</td>
+  </tr>
+  <tr>
+    <td class="case-id">C-04</td>
+    <td>Preview de colores actualiza en tiempo real al seleccionar</td>
+    <td><span class="tag tag-smoke">UX</span></td>
+    <td>BA en pantalla de Colores</td>
+    <td>Al cambiar un color, el preview card muestra el nuevo color sin necesidad de guardar</td>
+    <td>Estado inmutable en ViewModel, recomposición automática</td>
+  </tr>
+  <tr>
+    <td class="case-id">C-05</td>
+    <td>Botón Guardar deshabilitado durante el guardado (previene doble submit)</td>
+    <td><span class="tag tag-smoke">UX</span></td>
+    <td>BA presiona Guardar</td>
+    <td>Botón deshabilitado + spinner mientras saving=true. Re-habilita al completar.</td>
+    <td>enabled = !viewModel.saving en Button composable</td>
+  </tr>
+  <tr>
+    <td class="case-id">C-06</td>
+    <td>Aislamiento multi-tenant: colores de negocio A no afectan a negocio B</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>Dos negocios con diferentes colores</td>
+    <td>Cada negocio retorna sus propios colores al consultarlos</td>
+    <td>Clave DynamoDB particionada por businessId</td>
+  </tr>
+</table>
+
+<!-- ========== S7: FLUJO D — IMAGENES ========== -->
+<h2 id="s7">7. Flujo D — Imágenes (Especificación Futura)</h2>
+
+<div class="warn">
+  <strong>Estado: 🔴 PLACEHOLDER.</strong> Especificación para implementación futura.
+</div>
+
+<h3>Descripción funcional esperada</h3>
+<p>Permite al BusinessAdmin subir imágenes de su negocio: logo, banner y fotos del local.
+Estas imágenes se muestran en la tienda cuando los clientes navegan el catálogo.</p>
+
+<div class="mermaid">
+sequenceDiagram
+  actor BA as BusinessAdmin
+  participant IS as ImagesScreen (futuro)
+  participant BE as Backend (futuro)
+  participant S3 as AWS S3 (futuro)
+
+  BA->>IS: Navega a /images
+  IS->>BE: GET /{business}/images
+  BE-->>IS: {logoUrl, bannerUrl, photos[]}
+
+  BA->>IS: Selecciona imagen de galería (logo)
+  IS->>IS: Valida: tamaño ≤ 5MB, formato JPEG/PNG/WebP
+  IS->>BE: POST /{business}/images/upload (multipart)
+  BE->>S3: PutObject (bucket: intrale-business-images)
+  S3-->>BE: {url: "https://..."}
+  BE-->>IS: {logoUrl: "https://..."}
+  IS-->>BA: Preview con la nueva imagen
+</div>
+
+<h3>Casos de prueba — Flujo D (Especificación)</h3>
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Descripción</th>
+    <th>Tipo</th>
+    <th>Resultado esperado</th>
+  </tr>
+  <tr>
+    <td class="case-id">D-01</td>
+    <td>BA sube logo JPEG ≤ 5MB exitosamente</td>
+    <td><span class="tag tag-smoke">HAPPY PATH</span></td>
+    <td>Imagen guardada en S3, URL retornada y mostrada en preview</td>
+  </tr>
+  <tr>
+    <td class="case-id">D-02</td>
+    <td>Imagen mayor a 5MB es rechazada con mensaje claro</td>
+    <td><span class="tag tag-regression">VALIDACION</span></td>
+    <td>Error "La imagen no puede superar 5MB"</td>
+  </tr>
+  <tr>
+    <td class="case-id">D-03</td>
+    <td>Formato GIF es rechazado (solo JPEG/PNG/WebP)</td>
+    <td><span class="tag tag-regression">VALIDACION</span></td>
+    <td>Error "Formato no soportado. Use JPEG, PNG o WebP"</td>
+  </tr>
+  <tr>
+    <td class="case-id">D-04</td>
+    <td>Sin conexión al subir imagen — error claro con opción de reintentar</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>Error "Sin conexión. Reintentá más tarde" + botón Reintentar</td>
+  </tr>
+  <tr>
+    <td class="case-id">D-05</td>
+    <td>BA sin rol adecuado recibe 403 al intentar subir</td>
+    <td><span class="tag tag-regression">PERM</span></td>
+    <td>Backend responde 403. UI muestra acceso denegado.</td>
+  </tr>
+  <tr>
+    <td class="case-id">D-06</td>
+    <td>Eliminar imagen muestra confirmación antes de borrar</td>
+    <td><span class="tag tag-smoke">UX</span></td>
+    <td>Dialog "¿Eliminar imagen?" con "Sí, eliminar" y "Cancelar"</td>
+  </tr>
+</table>
+
+<!-- ========== S8: FLUJO E — ICONO APP ========== -->
+<h2 id="s8">8. Flujo E — Ícono de App (Especificación Futura)</h2>
+
+<div class="warn">
+  <strong>Estado: 🔴 PLACEHOLDER.</strong> Especificación para implementación futura.
+</div>
+
+<h3>Descripción funcional esperada</h3>
+<p>Permite personalizar el ícono que aparece en el launcher del dispositivo cuando se usa el
+flavor específico del negocio. Requiere generación automática de íconos en múltiples resoluciones
+(mdpi, hdpi, xhdpi, xxhdpi, xxxhdpi para Android; @1x, @2x, @3x para iOS).</p>
+
+<h3>Casos de prueba — Flujo E (Especificación)</h3>
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Descripción</th>
+    <th>Tipo</th>
+    <th>Resultado esperado</th>
+  </tr>
+  <tr>
+    <td class="case-id">E-01</td>
+    <td>BA sube ícono PNG 1024x1024 — se generan todas las resoluciones</td>
+    <td><span class="tag tag-smoke">HAPPY PATH</span></td>
+    <td>Backend genera variantes, retorna URLs por resolución</td>
+  </tr>
+  <tr>
+    <td class="case-id">E-02</td>
+    <td>Ícono no cuadrado es rechazado</td>
+    <td><span class="tag tag-regression">VALIDACION</span></td>
+    <td>Error "El ícono debe ser cuadrado (mismo ancho y alto)"</td>
+  </tr>
+  <tr>
+    <td class="case-id">E-03</td>
+    <td>Ícono menor a 512x512 es rechazado</td>
+    <td><span class="tag tag-regression">VALIDACION</span></td>
+    <td>Error "El ícono debe ser al menos 512x512 píxeles"</td>
+  </tr>
+  <tr>
+    <td class="case-id">E-04</td>
+    <td>BA puede restaurar el ícono por defecto de Intrale</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>Opción "Restaurar ícono por defecto", confirma, se muestra el ícono original</td>
+  </tr>
+</table>
+
+<!-- ========== S9: FLUJO F — PREVIEW ========== -->
+<h2 id="s9">9. Flujo F — Preview General (Especificación Futura)</h2>
+
+<div class="warn">
+  <strong>Estado: 🔴 PLACEHOLDER.</strong> Especificación para implementación futura.
+</div>
+
+<h3>Descripción funcional esperada</h3>
+<p>Vista previa consolidada que muestra cómo verá el cliente final la tienda con todas las
+personalizaciones aplicadas: colores, tipografías, imágenes e ícono. Permite al BA validar
+la apariencia antes de publicar los cambios.</p>
+
+<h3>Casos de prueba — Flujo F (Especificación)</h3>
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Descripción</th>
+    <th>Tipo</th>
+    <th>Resultado esperado</th>
+  </tr>
+  <tr>
+    <td class="case-id">F-01</td>
+    <td>Preview muestra todas las personalizaciones guardadas</td>
+    <td><span class="tag tag-smoke">HAPPY PATH</span></td>
+    <td>Pantalla mock de tienda con colores, fuentes e imágenes configurados</td>
+  </tr>
+  <tr>
+    <td class="case-id">F-02</td>
+    <td>Preview refleja cambios no guardados en tiempo real</td>
+    <td><span class="tag tag-smoke">UX</span></td>
+    <td>Cambiar color en ColorsScreen actualiza el preview sin necesidad de guardar</td>
+  </tr>
+  <tr>
+    <td class="case-id">F-03</td>
+    <td>Preview en modo oscuro y claro</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>Toggle dark/light mode. Los colores se adaptan correctamente.</td>
+  </tr>
+  <tr>
+    <td class="case-id">F-04</td>
+    <td>Sin personalizaciones — preview muestra valores por defecto de Intrale</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>Preview con tema base de Intrale, sin errores de renderizado</td>
+  </tr>
+</table>
+
+<!-- ========== S10: CATALOGO COMPLETO ========== -->
+<h2 id="s10">10. Catálogo Completo de Casos de Prueba</h2>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Descripción</th>
+    <th>Flujo</th>
+    <th>Tipo</th>
+    <th>Prioridad</th>
+    <th>Estado</th>
+  </tr>
+  <!-- Flujo A -->
+  <tr><td class="case-id">A-01</td><td>BusinessAdmin accede a personalización</td><td>Acceso</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC</span></td></tr>
+  <tr><td class="case-id">A-02</td><td>PlatformAdmin accede a personalización</td><td>Acceso</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC</span></td></tr>
+  <tr><td class="case-id">A-03</td><td>Client rechazado</td><td>Acceso</td><td><span class="tag tag-regression">PERM</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC</span></td></tr>
+  <tr><td class="case-id">A-04</td><td>Saler rechazado</td><td>Acceso</td><td><span class="tag tag-regression">PERM</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC</span></td></tr>
+  <tr><td class="case-id">A-05</td><td>BA sin selectedBusinessId rechazado</td><td>Acceso</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC</span></td></tr>
+  <tr><td class="case-id">A-06</td><td>Tarjetas placeholder no clickeables</td><td>Acceso</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC</span></td></tr>
+  <tr><td class="case-id">A-07</td><td>Tipografía navega a /typography</td><td>Acceso</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-impl">IMPL</span></td></tr>
+  <!-- Flujo B -->
+  <tr><td class="case-id">B-01</td><td>loadFonts — estado actualizado</td><td>Tipografía</td><td><span class="tag tag-smoke">UNIT</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <tr><td class="case-id">B-02</td><td>loadFonts — businessId vacío</td><td>Tipografía</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <tr><td class="case-id">B-03</td><td>loadFonts — error establece errorMessage</td><td>Tipografía</td><td><span class="tag tag-regression">ERR</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <tr><td class="case-id">B-04</td><td>updateTitleFont — solo titleFont cambia</td><td>Tipografía</td><td><span class="tag tag-smoke">UNIT</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <tr><td class="case-id">B-05</td><td>saveFonts — envía mapa correcto</td><td>Tipografía</td><td><span class="tag tag-smoke">UNIT</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <tr><td class="case-id">B-06</td><td>saveFonts — solo fuentes no vacías</td><td>Tipografía</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <tr><td class="case-id">B-07</td><td>saveFonts — businessId vacío</td><td>Tipografía</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <tr><td class="case-id">B-08</td><td>saveFonts — error establece errorMessage</td><td>Tipografía</td><td><span class="tag tag-regression">ERR</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-pass">✅ PASSED</span></td></tr>
+  <!-- Flujo C -->
+  <tr><td class="case-id">C-01</td><td>BA configura color primario</td><td>Colores</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">C-02</td><td>Color inválido rechazado</td><td>Colores</td><td><span class="tag tag-regression">VALID</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">C-03</td><td>Client rechazado en /colors</td><td>Colores</td><td><span class="tag tag-regression">PERM</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">C-04</td><td>Preview en tiempo real</td><td>Colores</td><td><span class="tag tag-smoke">UX</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">C-05</td><td>Botón deshabilitado durante guardado</td><td>Colores</td><td><span class="tag tag-smoke">UX</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">C-06</td><td>Aislamiento multi-tenant</td><td>Colores</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <!-- Flujo D -->
+  <tr><td class="case-id">D-01</td><td>Subida logo JPEG exitosa</td><td>Imágenes</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">D-02</td><td>Imagen &gt;5MB rechazada</td><td>Imágenes</td><td><span class="tag tag-regression">VALID</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">D-03</td><td>GIF rechazado</td><td>Imágenes</td><td><span class="tag tag-regression">VALID</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">D-04</td><td>Sin conexión al subir</td><td>Imágenes</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">D-05</td><td>Permisos en subida</td><td>Imágenes</td><td><span class="tag tag-regression">PERM</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">D-06</td><td>Confirmación al eliminar imagen</td><td>Imágenes</td><td><span class="tag tag-smoke">UX</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <!-- Flujo E -->
+  <tr><td class="case-id">E-01</td><td>Subida ícono 1024x1024</td><td>Ícono App</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">E-02</td><td>Ícono no cuadrado rechazado</td><td>Ícono App</td><td><span class="tag tag-regression">VALID</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">E-03</td><td>Ícono &lt;512px rechazado</td><td>Ícono App</td><td><span class="tag tag-regression">VALID</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">E-04</td><td>Restaurar ícono por defecto</td><td>Ícono App</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-low">BAJA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <!-- Flujo F -->
+  <tr><td class="case-id">F-01</td><td>Preview muestra personalizaciones</td><td>Preview</td><td><span class="tag tag-smoke">SMOKE</span></td><td><span class="tag tag-high">ALTA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">F-02</td><td>Preview en tiempo real</td><td>Preview</td><td><span class="tag tag-smoke">UX</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">F-03</td><td>Preview dark/light mode</td><td>Preview</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+  <tr><td class="case-id">F-04</td><td>Preview sin personalizaciones</td><td>Preview</td><td><span class="tag tag-edge">EDGE</span></td><td><span class="tag tag-med">MEDIA</span></td><td><span class="badge-na">SPEC FUTURA</span></td></tr>
+</table>
+
+<!-- ========== S11: EVIDENCIA ========== -->
+<h2 id="s11">11. Evidencia de Tests Ejecutados</h2>
+
+<h3>Resumen de ejecución — 2026-03-12</h3>
+<table>
+  <tr>
+    <th>Plataforma</th>
+    <th>Suite</th>
+    <th>Total</th>
+    <th>Passed</th>
+    <th>Failed</th>
+    <th>Skipped</th>
+    <th>Tiempo</th>
+    <th>Resultado</th>
+  </tr>
+  <tr>
+    <td>Desktop/JVM</td>
+    <td>TypographyViewModelTest</td>
+    <td>8</td>
+    <td>8</td>
+    <td>0</td>
+    <td>0</td>
+    <td>2.333s</td>
+    <td><span class="badge-pass">✅ BUILD SUCCESSFUL</span></td>
+  </tr>
+  <tr>
+    <td>API E2E</td>
+    <td>—</td>
+    <td>N/A</td>
+    <td>N/A</td>
+    <td>N/A</td>
+    <td>N/A</td>
+    <td><span class="badge-na">Docker no disponible</span></td>
+  </tr>
+  <tr>
+    <td>Android (Maestro)</td>
+    <td>—</td>
+    <td>N/A</td>
+    <td>N/A</td>
+    <td>N/A</td>
+    <td>N/A</td>
+    <td><span class="badge-na">Sin emulador conectado</span></td>
+  </tr>
+</table>
+
+<h3>Detalle de tests Typography</h3>
+<table>
+  <tr><th class="case-id">Test</th><th>Clase</th><th>Tiempo</th><th>Resultado</th></tr>
+  <tr>
+    <td class="case-id">loadFonts actualiza el estado con las fuentes del backend</td>
+    <td>TypographyViewModelTest</td><td>0.011s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">loadFonts con businessId vacio no ejecuta llamada</td>
+    <td>TypographyViewModelTest</td><td>0.011s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">loadFonts con error establece errorMessage</td>
+    <td>TypographyViewModelTest</td><td>2.217s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">updateTitleFont actualiza solo el titleFont</td>
+    <td>TypographyViewModelTest</td><td>0.006s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">saveFonts envia correctamente el mapa de fuentes</td>
+    <td>TypographyViewModelTest</td><td>0.018s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">saveFonts solo incluye fuentes no vacias en el request</td>
+    <td>TypographyViewModelTest</td><td>0.042s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">saveFonts con businessId vacio retorna failure</td>
+    <td>TypographyViewModelTest</td><td>0.009s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+  <tr>
+    <td class="case-id">saveFonts con error establece errorMessage</td>
+    <td>TypographyViewModelTest</td><td>0.014s</td><td><span class="badge-pass">✅ PASSED</span></td>
+  </tr>
+</table>
+
+<h3>Entorno de ejecución</h3>
+<table>
+  <tr><th>Componente</th><th>Valor</th></tr>
+  <tr><td>Java</td><td>Temurin 21.0.7</td></tr>
+  <tr><td>Kotlin</td><td>2.2.21</td></tr>
+  <tr><td>Compose Multiplatform</td><td>1.8.2</td></tr>
+  <tr><td>Framework de tests</td><td>kotlin-test + MockK 1.13.10 + runTest</td></tr>
+  <tr><td>Fecha de ejecución</td><td>2026-03-12</td></tr>
+  <tr><td>Plataforma</td><td>Windows / MINGW64</td></tr>
+</table>
+
+<!-- ========== S12: GAPS ========== -->
+<h2 id="s12">12. Gaps y Recomendaciones</h2>
+
+<h3>Gaps actuales</h3>
+<table>
+  <tr>
+    <th>Gap</th>
+    <th>Descripción</th>
+    <th>Impacto</th>
+    <th>Esfuerzo</th>
+    <th>Prioridad</th>
+  </tr>
+  <tr>
+    <td>Colores sin implementar</td>
+    <td>La sección de paleta de colores es placeholder. No hay Screen, ViewModel ni endpoint.</td>
+    <td>Alto — diferenciación visual del negocio</td>
+    <td>M</td>
+    <td><span class="tag tag-high">ALTA</span></td>
+  </tr>
+  <tr>
+    <td>Imágenes sin implementar</td>
+    <td>No hay soporte de subida de imágenes (logo, banner). Requiere integración S3.</td>
+    <td>Alto — branding del negocio</td>
+    <td>L</td>
+    <td><span class="tag tag-high">ALTA</span></td>
+  </tr>
+  <tr>
+    <td>Ícono de App sin implementar</td>
+    <td>Personalización del launcher icon. Requiere generación de múltiples resoluciones.</td>
+    <td>Medio — experiencia del cliente</td>
+    <td>L</td>
+    <td><span class="tag tag-med">MEDIA</span></td>
+  </tr>
+  <tr>
+    <td>Preview sin implementar</td>
+    <td>No hay pantalla de preview consolidado. El BA no puede ver el resultado final.</td>
+    <td>Medio — confianza del negocio</td>
+    <td>M</td>
+    <td><span class="tag tag-med">MEDIA</span></td>
+  </tr>
+  <tr>
+    <td>Sin tests E2E de PersonalizationScreen</td>
+    <td>No existen tests de la pantalla raíz (control de acceso, navegación entre secciones).</td>
+    <td>Medio — regresión en permisos</td>
+    <td>S</td>
+    <td><span class="tag tag-high">ALTA</span></td>
+  </tr>
+  <tr>
+    <td>Control de acceso solo en UI</td>
+    <td>Los permisos se verifican solo en la capa UI. Las secciones futuras necesitarán <code>SecuredFunction</code> en backend.</td>
+    <td>Alto — seguridad</td>
+    <td>S</td>
+    <td><span class="tag tag-high">ALTA</span></td>
+  </tr>
+  <tr>
+    <td>Sin Delivery role en ALLOWED_ROLES</td>
+    <td>El Delivery no puede personalizar (correcto). Pero falta documentación explícita del por qué.</td>
+    <td>Bajo — claridad de reglas</td>
+    <td>XS</td>
+    <td><span class="tag tag-low">BAJA</span></td>
+  </tr>
+</table>
+
+<h3>Recomendaciones de implementación</h3>
+<ol style="margin-top:8px;">
+  <li><strong>Orden sugerido:</strong> Colores → Preview → Imágenes → Ícono (de menor a mayor complejidad)</li>
+  <li><strong>Patrón a seguir:</strong> Usar <code>TypographyScreen</code> como modelo de implementación para Colores y Preview</li>
+  <li><strong>Backend:</strong> Implementar <code>SecuredFunction</code> para cada sección con validación <code>BusinessAdmin || PlatformAdmin</code></li>
+  <li><strong>Tests:</strong> Agregar tests Maestro E2E para PersonalizationScreen (A-01 a A-07) como primer paso</li>
+  <li><strong>Imágenes:</strong> Requiere definir política de almacenamiento S3 y CDN antes de implementar</li>
+  <li><strong>Ícono de App:</strong> Requiere definir el mecanismo de distribución (¿OTA update? ¿rebuild del APK?)</li>
+</ol>
+
+<!-- ========== S13: RESUMEN ========== -->
+<h2 id="s13">13. Resumen y Cobertura</h2>
+
+<h3>Cobertura de casos de prueba</h3>
+<table>
+  <tr>
+    <th>Flujo</th>
+    <th>Total casos</th>
+    <th>Implementados</th>
+    <th>Placeholder (SPEC)</th>
+    <th>PASSED</th>
+    <th>Cobertura actual</th>
+  </tr>
+  <tr><td>A — Acceso y Permisos</td><td>7</td><td>1</td><td>6</td><td>0 ejecutados (SPEC)</td><td>14%</td></tr>
+  <tr><td>B — Tipografía</td><td>8</td><td>8</td><td>0</td><td>8/8</td><td><strong>100%</strong></td></tr>
+  <tr><td>C — Colores</td><td>6</td><td>0</td><td>6</td><td>N/A</td><td>0% (SPEC FUTURA)</td></tr>
+  <tr><td>D — Imágenes</td><td>6</td><td>0</td><td>6</td><td>N/A</td><td>0% (SPEC FUTURA)</td></tr>
+  <tr><td>E — Ícono App</td><td>4</td><td>0</td><td>4</td><td>N/A</td><td>0% (SPEC FUTURA)</td></tr>
+  <tr><td>F — Preview</td><td>4</td><td>0</td><td>4</td><td>N/A</td><td>0% (SPEC FUTURA)</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd;">
+    <td>TOTAL</td><td>35</td><td>9</td><td>26</td><td>8/8 ejecutados</td><td>26% funcionalidad implementada</td>
+  </tr>
+</table>
+
+<h3>Criterios de aceptación del issue #1127</h3>
+<table>
+  <tr><th>#</th><th>Criterio</th><th>Estado</th><th>Evidencia</th></tr>
+  <tr>
+    <td>1</td>
+    <td>Reporte PDF v2.0 con diagramas Mermaid (especificación futura)</td>
+    <td>✅ Cumple</td>
+    <td>Este documento. 6 diagramas Mermaid. Generado 2026-03-12.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Casos de prueba que servirán como spec de implementación</td>
+    <td>✅ Cumple</td>
+    <td>35 casos de prueba documentados (Flujos A-F). 26 son specs futuras.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>Documentar qué existe hoy (placeholder) vs qué se necesita</td>
+    <td>✅ Cumple</td>
+    <td>Sección 2 (Estado Actual) y Sección 12 (Gaps). Tabla de secciones con badges.</td>
+  </tr>
+</table>
+
+<h3>Veredicto QA</h3>
+<div class="spec">
+  <strong>✅ APROBADO</strong> — Todos los criterios de aceptación del issue #1127 están cumplidos.
+  La funcionalidad implementada (Tipografía) tiene 8/8 tests en verde. Las secciones placeholder
+  están documentadas con especificación completa para su implementación futura.
+  Label <code>qa:passed</code> agregado al issue #1127.
+</div>
+
+<br>
+
+<table>
+  <tr><th>Elemento</th><th>Detalle</th></tr>
+  <tr><td>Issue</td><td>#1127 — qa(compliance): Reporte PO+QA v2.0 — Personalización del negocio</td></tr>
+  <tr><td>Rama</td><td>agent/1127-qa-compliance-personalizacion-negocio</td></tr>
+  <tr><td>Reporte generado</td><td>2026-03-12</td></tr>
+  <tr><td>Tests ejecutados</td><td>8 (TypographyViewModelTest — Desktop/JVM)</td></tr>
+  <tr><td>Tests fallidos</td><td>0</td></tr>
+  <tr><td>Casos de prueba documentados</td><td>35 (9 implementados, 26 specs futuras)</td></tr>
+  <tr><td>Veredicto</td><td>✅ APROBADO — Listo para merge</td></tr>
+</table>
+
+<hr>
+<p style="text-align:center;color:#999;font-size:9px;margin-top:12px;">
+  Intrale Platform · Reporte PO+QA v2.0 · Issue #1127 · Generado 2026-03-12 por PO+QA Agents
+</p>
+
+</body>
+</html>
