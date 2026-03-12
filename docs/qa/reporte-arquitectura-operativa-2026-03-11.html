@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Arquitectura Operativa — Intrale Platform</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; color: #333; line-height: 1.6; }
+    h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+    h2 { color: #34495e; margin-top: 30px; }
+    h3 { color: #7f8c8d; }
+    .box { border-left: 4px solid #3498db; padding: 15px; margin: 15px 0; background: #ecf0f1; }
+    .alert { border-left: 4px solid #e74c3c; padding: 15px; margin: 15px 0; background: #fadbd8; }
+    table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+    th { background: #3498db; color: white; padding: 10px; text-align: left; }
+    td { border: 1px solid #bdc3c7; padding: 10px; }
+    tr:nth-child(even) { background: #ecf0f1; }
+    code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }
+    .status-ok { color: #27ae60; }
+    .status-warn { color: #f39c12; }
+    .status-err { color: #e74c3c; }
+  </style>
+</head>
+<body>
+  <h1>Arquitectura Operativa — Intrale Platform</h1>
+  <p><strong>Documento generado:</strong> 2026-03-11 · <strong>Estado:</strong> Issue #1456 creado</p>
+
+  <div class="box">
+    <h2>Resumen Ejecutivo</h2>
+    <p>El sistema operativo de Intrale Platform gestiona:</p>
+    <ul>
+      <li><strong>52+ hooks</strong> registrados en events (Notification, Stop, PreToolUse, PostToolUse, PermissionRequest)</li>
+      <li><strong>50+ scripts</strong> en .claude/hooks/ para monitoreo, permisos, CI/CD, Telegram e integraciones</li>
+      <li><strong>Gestión de agentes:</strong> planificación automática, ejecución concurrente (max 3), monitoreo y cierre</li>
+      <li><strong>Sistema de permisos:</strong> auto-aprobación por severidad, aprobación remota via Telegram, auditoría</li>
+      <li><strong>Monitoreo operativo:</strong> health-check, activity logging, métricas de sprint, alertas por Telegram</li>
+    </ul>
+  </div>
+
+  <h2>Subsistemas Clave</h2>
+  <table>
+    <tr>
+      <th>Subsistema</th>
+      <th>Responsabilidad</th>
+      <th>Scripts Principales</th>
+      <th>Estado</th>
+    </tr>
+    <tr>
+      <td><strong>Hooks & Events</strong></td>
+      <td>Reacción a eventos de ejecución (parar, permiso, push, cierre)</td>
+      <td>branch-guard, permission-gate, post-git-push, agent-concurrency-check</td>
+      <td><span class="status-ok">✓ OK</span></td>
+    </tr>
+    <tr>
+      <td><strong>Permisos</strong></td>
+      <td>Autorización de herramientas, aprobación remota, auditoría</td>
+      <td>permission-approver, permission-tracker, permission-memory</td>
+      <td><span class="status-ok">✓ OK</span></td>
+    </tr>
+    <tr>
+      <td><strong>CI/CD Monitor</strong></td>
+      <td>Polling GitHub Actions, notificación de builds, auto-merge</td>
+      <td>ci-monitor-bg, post-git-push</td>
+      <td><span class="status-ok">✓ OK</span></td>
+    </tr>
+    <tr>
+      <td><strong>Telegram Commander</strong></td>
+      <td>Recepción de comandos remotos, notificaciones, heartbeat adaptativo</td>
+      <td>telegram-commander, heartbeat-manager, notify-telegram</td>
+      <td><span class="status-ok">✓ OK</span></td>
+    </tr>
+    <tr>
+      <td><strong>Agent Lifecycle</strong></td>
+      <td>Gestión de agentes, slots, concurrencia, watcher externo</td>
+      <td>agent-concurrency-check, agent-watcher, agent-monitor, scrum-monitor-bg</td>
+      <td><span class="status-ok">✓ OK</span></td>
+    </tr>
+    <tr>
+      <td><strong>Health & Diagnostics</strong></td>
+      <td>Verificación de entorno, logs, disco, procesos, reparación</td>
+      <td>ops-check, health-check, activity-logger</td>
+      <td><span class="status-ok">✓ OK</span></td>
+    </tr>
+  </table>
+
+  <h2>Ciclo de Vida de un Agente</h2>
+  <pre style="background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+PLANIFICACIÓN (Planner)
+      ↓
+CREACIÓN RAMA (/branch)
+      ↓
+EJECUCIÓN (Agent en worktree)
+      ↓
+GATES PRE-MERGE (tests, build, security, review)
+      ↓
+DELIVERY (commit + PR + merge)
+      ↓
+MONITOREO (activity log, metrics)
+      ↓
+CIERRE (scrum, cleanup)
+  </pre>
+
+  <h2>Problema Resuelto: Reinicio Infinito del Commander</h2>
+  <div class="alert">
+    <strong>Síntoma:</strong> telegram-commander se reinicia en loop infinito tras cleanup<br>
+    <strong>Causa raíz:</strong> Eliminación del lockfile durante limpieza<br>
+    <strong>Solución:</strong> Recreación automática del lockfile (.claude/hooks/telegram-commander.lock)<br>
+    <strong>Estado:</strong> <span class="status-ok">✓ Resuelto</span>
+  </div>
+
+  <h2>Inventario de Hooks (Ejemplo de lo que debe documentarse)</h2>
+  <table>
+    <tr>
+      <th>Evento</th>
+      <th>Hook</th>
+      <th>Propósito</th>
+      <th>Script Principal</th>
+    </tr>
+    <tr>
+      <td>Notification</td>
+      <td>notify-telegram</td>
+      <td>Enviar notificaciones a Telegram</td>
+      <td>notify-telegram.js</td>
+    </tr>
+    <tr>
+      <td>Stop</td>
+      <td>agent-concurrency-check</td>
+      <td>Promover agentes de queue, actualizar sprint-plan</td>
+      <td>agent-concurrency-check.js + agent-watcher.js</td>
+    </tr>
+    <tr>
+      <td>PreToolUse[Bash]</td>
+      <td>branch-guard</td>
+      <td>Bloquear git push en main</td>
+      <td>branch-guard.js</td>
+    </tr>
+    <tr>
+      <td>PostToolUse[Bash]</td>
+      <td>post-git-push</td>
+      <td>Lanzar CI monitor, notificar Telegram</td>
+      <td>post-git-push.js → ci-monitor-bg.js</td>
+    </tr>
+    <tr>
+      <td>PermissionRequest</td>
+      <td>permission-approver</td>
+      <td>Auto-aprobar o enviar a Telegram para decisión</td>
+      <td>permission-approver.js</td>
+    </tr>
+  </table>
+
+  <h2>Archivos de Estado del Sistema</h2>
+  <ul>
+    <li><code>.claude/activity-log.jsonl</code> — Registro de actividad en tiempo real (tareas, herramientas, eventos)</li>
+    <li><code>.claude/hooks/health-check-*.json</code> — Estado de salud de componentes</li>
+    <li><code>scripts/sprint-plan.json</code> — Plan del sprint actual (agentes, queue, completados)</li>
+    <li><code>.claude/hooks/telegram-config.json</code> — Configuración de Telegram (bot token, chat ID)</li>
+    <li><code>.claude/settings.json</code> — Registro completo de hooks y sus triggers</li>
+  </ul>
+
+  <h2>Próximos Pasos</h2>
+  <ul>
+    <li><strong>Issue #1456 creado:</strong> Documentación completa de arquitectura operativa</li>
+    <li><strong>Deliverables esperados:</strong>
+      <ul>
+        <li>docs/arquitectura-operativa.md (diagrama de flujo + mapeo de hooks)</li>
+        <li>docs/operativo/hooks-registry.md (inventario de 52+ hooks)</li>
+        <li>docs/operativo/monitoring-guide.md (guía de monitoreo)</li>
+        <li>docs/operativo/troubleshooting.md (árbol de decisión para incidentes)</li>
+      </ul>
+    </li>
+    <li><strong>Estimación:</strong> M (2-3 días)</li>
+    <li><strong>Prioridad:</strong> Alta (necesario para operación del sistema y onboarding de nuevos agentes)</li>
+  </ul>
+
+  <div class="box">
+    <h3>Referencias Técnicas</h3>
+    <ul>
+      <li>Settings: <code>.claude/settings.json</code> → hooks registry</li>
+      <li>Estado operativo: <code>.claude/hooks/health-check-*.json</code></li>
+      <li>Activity log: <code>.claude/activity-log.jsonl</code></li>
+      <li>Métricas sprint: <code>scripts/sprint-plan.json</code></li>
+      <li>Skills operativos: <code>/ops, /cleanup, /monitor, /branch, /delivery</code></li>
+      <li>Link al issue: https://github.com/intrale/platform/issues/1456</li>
+    </ul>
+  </div>
+
+  <hr>
+  <p><em>Generado por: Reinicio Operativo · Reporte de Arquitectura Operativa</em></p>
+</body>
+</html>
