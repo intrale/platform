@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Union a Negocio</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  .overlay-example { background: #111; color: #fff; border-radius: 4px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; margin: 6px 0; position: relative; }
+  .overlay-example .ov-id { color: #64b5f6; font-weight: bold; }
+  .overlay-example .ov-step { color: #81c784; }
+  .overlay-example .ov-result { color: #ffb74d; }
+  .overlay-example .ov-time { color: #bbb; position: absolute; right: 10px; top: 10px; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Union a Negocio (RequestJoinBusiness / ReviewJoinBusiness)</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
+    guiones de video y criterios de evidencia para el flujo de<br>
+    solicitud y revision de union de repartidores a negocios en Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-03-11</p>
+    <p><strong>Issue:</strong> #1126</p>
+    <p><strong>Generado por:</strong> PO + QA Agents</p>
+  </div>
+</div>
+
+<!-- ========== INDICE ========== -->
+<h2 id="toc">Indice</h2>
+<ol class="toc">
+  <li><a href="#s1">Resumen Ejecutivo</a></li>
+  <li><a href="#s2">Estandar de Evidencia en Video</a></li>
+  <li><a href="#s3">Arquitectura del Flujo</a></li>
+  <li><a href="#s4">Flujo A — Solicitar Union a Negocio (sin auto-accept)</a></li>
+  <li><a href="#s5">Flujo B — Solicitar Union a Negocio (con auto-accept)</a></li>
+  <li><a href="#s6">Flujo C — Revisar Solicitud: Aprobar</a></li>
+  <li><a href="#s7">Flujo D — Revisar Solicitud: Rechazar</a></li>
+  <li><a href="#s8">Flujos de Error y Casos de Borde</a></li>
+  <li><a href="#s9">Flujo Cross-App (Delivery app + Business app)</a></li>
+  <li><a href="#s10">Catalogo de Validaciones</a></li>
+  <li><a href="#s11">Resumen y Cobertura</a></li>
+  <li><a href="#s12">Gaps y Recomendaciones</a></li>
+</ol>
+
+<!-- ========== 1. RESUMEN ========== -->
+<h2 id="s1">1. Resumen Ejecutivo</h2>
+<p>La funcionalidad de Union a Negocio comprende <strong>2 flujos principales + variantes de estado</strong> que interactuan entre las apps Delivery y Business. Este reporte documenta <strong>28 casos de prueba</strong> con:</p>
+<ul>
+  <li>Diagramas de flujo Mermaid por cada flujo y sub-flujo</li>
+  <li>Guion de video paso a paso para cada caso de prueba</li>
+  <li>Criterios de evidencia visual que debe capturar el video</li>
+  <li>Narracion (texto/audio) de cada paso durante la grabacion</li>
+</ul>
+
+<table>
+  <tr><th>#</th><th>Flujo</th><th>App</th><th>Auth</th><th>Estado resultante</th><th>Casos</th></tr>
+  <tr><td>A</td><td>RequestJoinBusiness (sin auto-accept)</td><td>Delivery</td><td>JWT</td><td>PENDING</td><td>6</td></tr>
+  <tr><td>B</td><td>RequestJoinBusiness (con auto-accept)</td><td>Delivery</td><td>JWT</td><td>APPROVED</td><td>4</td></tr>
+  <tr><td>C</td><td>ReviewJoinBusiness — Aprobar</td><td>Business</td><td>JWT (BusinessAdmin)</td><td>APPROVED</td><td>5</td></tr>
+  <tr><td>D</td><td>ReviewJoinBusiness — Rechazar</td><td>Business</td><td>JWT (BusinessAdmin)</td><td>REJECTED</td><td>5</td></tr>
+  <tr><td>E</td><td>Casos de error y borde</td><td>Delivery + Business</td><td>Variable</td><td>Error</td><td>5</td></tr>
+  <tr><td>X</td><td>Flujo Cross-App completo</td><td>Delivery + Business</td><td>JWT ambas</td><td>PENDING→APPROVED</td><td>3</td></tr>
+  <tr style="font-weight:600;background:#e3f2fd"><td></td><td>TOTAL</td><td></td><td></td><td></td><td>28</td></tr>
+</table>
+
+<h3>1.1 Contexto de negocio</h3>
+<p>En Intrale, un repartidor (rol Delivery) debe estar asociado a un negocio para poder recibir ordenes. Existen dos caminos para esto:</p>
+<ul>
+  <li><strong>SignUpDelivery</strong>: El repartidor se registra directamente en el negocio (flujo separado)</li>
+  <li><strong>RequestJoinBusiness</strong>: Un repartidor ya autenticado solicita unirse a otro negocio</li>
+</ul>
+<p>El flujo de <strong>RequestJoinBusiness</strong> es el cubierto en este reporte. Permite a un repartidor ya registrado en el sistema solicitar unirse a un negocio adicional, y al BusinessAdmin aprobar o rechazar dicha solicitud.</p>
+
+<h3>1.2 Estados de la relacion Delivery-Negocio</h3>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> PENDING : requestJoinBusiness\n(autoAccept=false)
+  [*] --> APPROVED : requestJoinBusiness\n(autoAccept=true)
+  PENDING --> APPROVED : reviewJoinBusiness\n(decision=APPROVED)
+  PENDING --> REJECTED : reviewJoinBusiness\n(decision=REJECTED)
+  APPROVED --> [*] : Repartidor activo\nen el negocio
+  REJECTED --> [*] : Solicitud rechazada
+</pre>
+
+<!-- ========== 2. ESTANDAR DE VIDEO ========== -->
+<h2 id="s2">2. Estandar de Evidencia en Video</h2>
+
+<h3>2.1 Nomenclatura de archivos</h3>
+<div class="video-std">
+  <code>UN-{FLUJO}-{NNN}_{slug-descriptivo}.mp4</code><br>
+  Ejemplos:<br>
+  <code>UN-A-001_solicitud-exitosa-sin-autoacept.mp4</code><br>
+  <code>UN-C-002_aprobacion-exitosa-businessadmin.mp4</code><br>
+  <code>UN-X-001_flujo-completo-cross-app.mp4</code>
+</div>
+
+<h3>2.2 Estructura del video (4 fases obligatorias)</h3>
+<table>
+  <tr><th>Fase</th><th>Duracion</th><th>Contenido</th></tr>
+  <tr><td><strong>1. Titulo</strong></td><td>3-5 seg</td><td>Overlay con ID del caso, nombre completo, fecha y entorno</td></tr>
+  <tr><td><strong>2. Precondiciones</strong></td><td>3-5 seg</td><td>Mostrar/narrar el estado inicial requerido</td></tr>
+  <tr><td><strong>3. Ejecucion</strong></td><td>Variable</td><td>Cada paso narrado con overlay de numero de paso</td></tr>
+  <tr><td><strong>4. Verificacion</strong></td><td>5-10 seg</td><td>Evidencia explicita de CADA resultado esperado</td></tr>
+</table>
+
+<h3>2.3 Overlay de pantalla (formato obligatorio)</h3>
+<div class="overlay-example">
+  <span class="ov-id">UN-A-001</span> | Solicitud exitosa sin auto-accept<span class="ov-time">00:14</span><br>
+  <span class="ov-step">► Paso 3/4:</span> Ingresar nombre del negocio (labuena-pizza)<br>
+  <span class="ov-result">◉ Verificar: Spinner aparece en boton "Solicitar union"</span>
+</div>
+
+<h3>2.4 Requerimientos de evidencia por caso</h3>
+<div class="video-std">
+  <strong>Para CADA resultado esperado, el video DEBE mostrar:</strong>
+  <ol>
+    <li><strong>Pausa visual</strong> (2-3 seg): resultado claramente visible en pantalla</li>
+    <li><strong>Overlay de verificacion</strong>: <code>✓ VERIFICADO: [descripcion]</code> o <code>✗ FALLO: [descripcion]</code></li>
+    <li><strong>Screenshot automatico</strong>: captura del momento de verificacion</li>
+  </ol>
+</div>
+
+<!-- ========== 3. ARQUITECTURA ========== -->
+<h2 id="s3">3. Arquitectura del Flujo</h2>
+
+<h3>3.1 Diagrama de capas</h3>
+<pre class="mermaid">
+graph LR
+  UI_DEL["RequestJoinBusinessScreen\n(Delivery App)"] --> VM_DEL["RequestJoinBusinessViewModel\n(Estado + Konform)"]
+  VM_DEL --> DO_REQ["DoRequestJoinBusiness\n(logica negocio)"]
+  DO_REQ --> CL_REQ["ClientRequestJoinBusiness\n(HTTP)"]
+  CL_REQ --> BE_REQ["POST /{biz}/requestJoinBusiness\n(RequestJoinBusiness.kt)"]
+
+  UI_BIZ["ReviewJoinBusinessScreen\n(Business App)"] --> VM_BIZ["ReviewJoinBusinessViewModel\n(Estado + Konform)"]
+  VM_BIZ --> DO_REV["DoReviewJoinBusiness\n(logica negocio)"]
+  DO_REV --> CL_REV["ClientReviewJoinBusiness\n(HTTP)"]
+  CL_REV --> BE_REV["POST /{biz}/reviewJoinBusiness\n(ReviewJoinBusiness.kt)"]
+
+  BE_REQ --> COG["Amazon Cognito\n(getUser → email)"]
+  BE_REQ --> DDB_BIZ["DynamoDB: Business\n(autoAcceptDeliveries?)"]
+  BE_REQ --> DDB_PROF["DynamoDB: UserBusinessProfile\n(putItem)"]
+  BE_REV --> COG
+  BE_REV --> DDB_PROF
+</pre>
+
+<h3>3.2 Mapa de navegacion</h3>
+<pre class="mermaid">
+graph TD
+  DASH_DEL["Dashboard Delivery\n(App Delivery)"] -->|"Unirse a negocio"| RJB["/requestJoinBusiness\nRequestJoinBusinessScreen"]
+  RJB -->|"Exito (PENDING/APPROVED)"| DASH_DEL
+
+  DASH_BIZ["Dashboard Business\n(App Business)"] -->|"Revisar solicitudes"| RVJB["/reviewJoinBusiness\nReviewJoinBusinessScreen"]
+  RVJB -->|"Aprobar o rechazar"| RVJB
+
+  style RJB fill:#e8f5e9,stroke:#2e7d32
+  style RVJB fill:#fff3e0,stroke:#e65100
+  style DASH_DEL fill:#e3f2fd,stroke:#0d47a1
+  style DASH_BIZ fill:#fce4ec,stroke:#c62828
+</pre>
+
+<h3>3.3 Endpoints del backend</h3>
+<table>
+  <tr><th>Endpoint</th><th>Metodo</th><th>Auth</th><th>Funcion</th><th>App origen</th></tr>
+  <tr><td><code>/{biz}/requestJoinBusiness</code></td><td>POST</td><td>JWT (Delivery)</td><td>RequestJoinBusiness</td><td>Delivery</td></tr>
+  <tr><td><code>/{biz}/reviewJoinBusiness</code></td><td>POST</td><td>JWT (BusinessAdmin)</td><td>ReviewJoinBusiness</td><td>Business</td></tr>
+  <tr><td><code>/{biz}/assignProfile</code></td><td>POST</td><td>JWT (PlatformAdmin)</td><td>AssignProfile</td><td>Business (admin)</td></tr>
+</table>
+
+<h3>3.4 Modelo de datos: UserBusinessProfile</h3>
+<table>
+  <tr><th>Campo</th><th>Tipo</th><th>Descripcion</th></tr>
+  <tr><td>email</td><td>String</td><td>Email del repartidor (desde Cognito)</td></tr>
+  <tr><td>business</td><td>String</td><td>Slug/nombre del negocio</td></tr>
+  <tr><td>profile</td><td>String</td><td>Siempre "Delivery" en este flujo</td></tr>
+  <tr><td>state</td><td>BusinessState</td><td>PENDING / APPROVED / REJECTED</td></tr>
+  <tr><td>compositeKey</td><td>String</td><td>Clave PK en DynamoDB (email+business+profile)</td></tr>
+</table>
+
+<!-- ========== 4. FLUJO A ========== -->
+<h2 id="s4">4. Flujo A — Solicitar Union a Negocio (sin auto-accept)</h2>
+
+<h3>4.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Un repartidor autenticado en la app Delivery ingresa el slug del negocio al que quiere unirse. El backend verifica su identidad via Cognito, verifica que el negocio exista y tiene <code>autoAcceptDeliveries=false</code>, y crea el perfil en estado <strong>PENDING</strong>. El repartidor queda en espera de aprobacion del BusinessAdmin.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong>
+  <ul>
+    <li>App Delivery instalada y autenticada como repartidor (ej: <code>carlos.gomez@delivery.com</code>)</li>
+    <li>Negocio con slug <code>labuena-pizza</code> existe en estado APPROVED</li>
+    <li>El negocio tiene <code>autoAcceptDeliveries = false</code></li>
+    <li>No existe perfil Delivery para <code>carlos.gomez@delivery.com</code> en <code>labuena-pizza</code></li>
+  </ul>
+</div>
+
+<h3>4.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  A([Repartidor autenticado]) --> B["Navega a /requestJoinBusiness"]
+  B --> C["Ingresa negocio:\nlabuena-pizza"]
+  C --> D{isValid?}
+  D -->|"No: campo vacio"| E["Muestra error de validacion\nen campo Business"]
+  D -->|"Si"| F["POST /{biz}/requestJoinBusiness\n+ Bearer token"]
+  F --> G["Backend: getUser(accessToken)\n→ email del repartidor"]
+  G --> H{Email encontrado?}
+  H -->|"No"| I["ExceptionResponse:\nEmail not found → snackbar error"]
+  H -->|"Si"| J["tableBusiness.getItem(biz)"]
+  J --> K{Negocio existe?}
+  K -->|"No"| L["ExceptionResponse:\nBusiness not found → snackbar error"]
+  K -->|"Si"| M{autoAcceptDeliveries?}
+  M -->|"true"| N["state = APPROVED"]
+  M -->|"false"| O["state = PENDING"]
+  N --> P["tableProfiles.putItem(profile)"]
+  O --> P
+  P --> Q["RequestJoinBusinessResponse(state)"]
+  Q --> R["Snackbar: 'Solicitud enviada'\nLimpiar formulario"]
+
+  style A fill:#e8f5e9,stroke:#2e7d32
+  style R fill:#e8f5e9,stroke:#2e7d32
+  style E fill:#ffebee,stroke:#c62828
+  style I fill:#ffebee,stroke:#c62828
+  style L fill:#ffebee,stroke:#c62828
+</pre>
+
+<h3>4.3 Casos de prueba <span class="tag tag-qa">QA</span></h3>
+
+<table>
+  <tr><th>ID</th><th>Escenario</th><th>Precondicion</th><th>Datos de prueba</th><th>Pasos</th><th>Resultado esperado</th><th class="evidence-col">Evidencia video</th></tr>
+
+  <tr>
+    <td class="case-id">UN-A-001</td>
+    <td>Solicitud exitosa — negocio con auto-accept=false</td>
+    <td>Delivery autenticado, negocio existe, autoAcceptDeliveries=false, sin perfil previo</td>
+    <td>negocio: labuena-pizza<br>user: carlos.gomez@delivery.com</td>
+    <td>
+      1. Abrir pantalla /requestJoinBusiness<br>
+      2. Ingresar "labuena-pizza" en campo Negocio<br>
+      3. Tocar boton "Solicitar union"<br>
+      4. Esperar respuesta
+    </td>
+    <td>
+      - Spinner visible mientras carga<br>
+      - Snackbar: "Solicitud enviada"<br>
+      - Formulario se limpia<br>
+      - Estado en BD: PENDING
+    </td>
+    <td class="evidence-col">Screenshot snackbar<br>Screenshot BD (PENDING)</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-A-002</td>
+    <td>Validacion: campo negocio vacio</td>
+    <td>Delivery autenticado</td>
+    <td>negocio: (vacio)</td>
+    <td>
+      1. Abrir pantalla /requestJoinBusiness<br>
+      2. Dejar campo Negocio vacio<br>
+      3. Tocar boton "Solicitar union"
+    </td>
+    <td>
+      - No se hace llamada al backend<br>
+      - Campo Negocio muestra error de validacion<br>
+      - Boton permanece habilitado
+    </td>
+    <td class="evidence-col">Screenshot campo con error</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-A-003</td>
+    <td>Negocio inexistente</td>
+    <td>Delivery autenticado</td>
+    <td>negocio: negocio-que-no-existe-xyz</td>
+    <td>
+      1. Ingresar negocio que no existe<br>
+      2. Tocar boton "Solicitar union"
+    </td>
+    <td>
+      - Snackbar con mensaje de error<br>
+      - Formulario permanece con datos<br>
+      - Estado BD: sin cambios
+    </td>
+    <td class="evidence-col">Screenshot snackbar error</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-A-004</td>
+    <td>Sin autenticacion (token invalido)</td>
+    <td>Token JWT expirado o invalido</td>
+    <td>negocio: labuena-pizza<br>Authorization: token-invalido</td>
+    <td>
+      1. Simular token invalido<br>
+      2. Intentar solicitar union
+    </td>
+    <td>
+      - Respuesta de error de autorizacion<br>
+      - Snackbar con mensaje de acceso denegado<br>
+      - No se crea perfil en BD
+    </td>
+    <td class="evidence-col">Screenshot error auth</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-A-005</td>
+    <td>Prevencion de doble submit</td>
+    <td>Delivery autenticado, negocio existe</td>
+    <td>negocio: labuena-pizza</td>
+    <td>
+      1. Ingresar negocio valido<br>
+      2. Tocar boton "Solicitar union"<br>
+      3. Tocar nuevamente el boton mientras carga
+    </td>
+    <td>
+      - Boton deshabilitado durante loading<br>
+      - Solo una solicitud enviada al backend<br>
+      - Spinner visible
+    </td>
+    <td class="evidence-col">Video: boton deshabilitado durante carga</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-A-006</td>
+    <td>Solicitud duplicada (perfil ya existe)</td>
+    <td>Delivery ya tiene perfil (PENDING) en labuena-pizza</td>
+    <td>negocio: labuena-pizza<br>user: carlos.gomez@delivery.com</td>
+    <td>
+      1. Ingresar negocio donde ya hay perfil<br>
+      2. Tocar boton "Solicitar union"
+    </td>
+    <td>
+      - Backend sobrescribe con putItem (comportamiento actual)<br>
+      - O retorna error de duplicado (comportamiento esperado PO)<br>
+      - Snackbar informativo
+    </td>
+    <td class="evidence-col">Screenshot resultado<br>Screenshot estado BD</td>
+  </tr>
+
+</table>
+
+<div class="note">
+  <strong>Nota PO sobre UN-A-006:</strong> El backend actual usa <code>putItem</code> sin verificar duplicados, lo que sobrescribe un perfil existente. Este es un gap identificado. Se recomienda validar si ya existe un perfil antes de crear uno nuevo.
+</div>
+
+<!-- ========== 5. FLUJO B ========== -->
+<h2 id="s5">5. Flujo B — Solicitar Union a Negocio (con auto-accept)</h2>
+
+<h3>5.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Identico al Flujo A, pero el negocio tiene <code>autoAcceptDeliveries = true</code>. El repartidor es aprobado de forma automatica sin necesitar revision del BusinessAdmin. El estado resultante es directamente <strong>APPROVED</strong>.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong>
+  <ul>
+    <li>App Delivery instalada y autenticada</li>
+    <li>Negocio con slug <code>rapido-express</code> existe en estado APPROVED</li>
+    <li>El negocio tiene <code>autoAcceptDeliveries = true</code></li>
+  </ul>
+</div>
+
+<h3>5.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  A([Repartidor autenticado]) --> B["Ingresa negocio:\nrapido-express"]
+  B --> C["POST /{biz}/requestJoinBusiness"]
+  C --> D["Backend: autoAcceptDeliveries = true"]
+  D --> E["state = APPROVED\nputItem(profile)"]
+  E --> F["RequestJoinBusinessResponse(APPROVED)"]
+  F --> G["Snackbar: 'Solicitud enviada'\nstate.resultState = APPROVED"]
+  G --> H["Repartidor ya puede\nrecibir ordenes del negocio"]
+
+  style A fill:#e8f5e9,stroke:#2e7d32
+  style H fill:#c8e6c9,stroke:#388e3c
+</pre>
+
+<h3>5.3 Casos de prueba <span class="tag tag-qa">QA</span></h3>
+
+<table>
+  <tr><th>ID</th><th>Escenario</th><th>Precondicion</th><th>Datos de prueba</th><th>Pasos</th><th>Resultado esperado</th><th class="evidence-col">Evidencia video</th></tr>
+
+  <tr>
+    <td class="case-id">UN-B-001</td>
+    <td>Auto-aprobacion exitosa</td>
+    <td>Delivery autenticado, negocio con autoAcceptDeliveries=true</td>
+    <td>negocio: rapido-express<br>user: maria.ruiz@delivery.com</td>
+    <td>
+      1. Abrir /requestJoinBusiness<br>
+      2. Ingresar "rapido-express"<br>
+      3. Tocar "Solicitar union"
+    </td>
+    <td>
+      - Snackbar exitoso<br>
+      - state.resultState = "APPROVED"<br>
+      - BD: estado = APPROVED<br>
+      - Repartidor puede operar en el negocio
+    </td>
+    <td class="evidence-col">Screenshot snackbar<br>Screenshot BD APPROVED</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-B-002</td>
+    <td>Respuesta UI muestra estado APPROVED</td>
+    <td>Misma que UN-B-001</td>
+    <td>negocio: rapido-express</td>
+    <td>
+      1. Solicitar union<br>
+      2. Verificar que el ViewModel actualiza resultState
+    </td>
+    <td>
+      - vm.state.resultState = "APPROVED"<br>
+      - UI refleja el estado aprobado<br>
+      - No muestra "en revision"
+    </td>
+    <td class="evidence-col">Screenshot UI con resultState=APPROVED</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-B-003</td>
+    <td>Contraste: mismo negocio sin auto-accept retorna PENDING</td>
+    <td>Dos negocios: uno con auto-accept y uno sin</td>
+    <td>negocio1: labuena-pizza (auto-accept=false)<br>negocio2: rapido-express (auto-accept=true)</td>
+    <td>
+      1. Solicitar union a labuena-pizza → verificar PENDING<br>
+      2. Solicitar union a rapido-express → verificar APPROVED
+    </td>
+    <td>
+      - labuena-pizza: resultState=PENDING<br>
+      - rapido-express: resultState=APPROVED<br>
+      - Comportamiento diferenciado confirmado
+    </td>
+    <td class="evidence-col">Video comparativo dos solicitudes</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-B-004</td>
+    <td>Formulario se limpia despues de exito</td>
+    <td>Delivery autenticado, negocio con auto-accept</td>
+    <td>negocio: rapido-express</td>
+    <td>
+      1. Ingresar negocio<br>
+      2. Solicitar union exitosamente<br>
+      3. Verificar estado del formulario
+    </td>
+    <td>
+      - Campo Negocio queda vacio<br>
+      - initInputState() llamado<br>
+      - Listo para nueva solicitud
+    </td>
+    <td class="evidence-col">Screenshot formulario limpio</td>
+  </tr>
+
+</table>
+
+<!-- ========== 6. FLUJO C ========== -->
+<h2 id="s6">6. Flujo C — Revisar Solicitud: Aprobar</h2>
+
+<h3>6.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>El BusinessAdmin de un negocio ve las solicitudes pendientes de repartidores y decide aprobarlas. Ingresa el email del repartidor y toca "Aprobar". El backend verifica que el actor sea BusinessAdmin del negocio, busca el perfil PENDING del repartidor y lo cambia a <strong>APPROVED</strong>.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong>
+  <ul>
+    <li>App Business con usuario autenticado como BusinessAdmin de <code>labuena-pizza</code></li>
+    <li>Existe perfil Delivery PENDING para <code>carlos.gomez@delivery.com</code> en <code>labuena-pizza</code></li>
+  </ul>
+</div>
+
+<h3>6.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  A([BusinessAdmin autenticado]) --> B["Navega a /reviewJoinBusiness"]
+  B --> C["Ingresa email: carlos.gomez@delivery.com"]
+  C --> D{isValid? email formato}
+  D -->|"No"| E["Error: Correo invalido"]
+  D -->|"Si"| F["Toca boton 'Aprobar'"]
+  F --> G["POST /{biz}/reviewJoinBusiness\n{email, decision: APPROVED}"]
+  G --> H["Backend: validate email + decision"]
+  H --> I["requireApprovedProfile\n(BusinessAdmin del negocio)"]
+  I --> J{Es BusinessAdmin?}
+  J -->|"No"| K["UnauthorizedException → snackbar error"]
+  J -->|"Si"| L["tableProfiles.getItem(key)"]
+  L --> M{Solicitud existe?}
+  M -->|"No"| N["ExceptionResponse: Request not found"]
+  M -->|"Si"| O["existing.state = APPROVED\ntableProfiles.updateItem"]
+  O --> P["Response() 200 OK"]
+  P --> Q["Snackbar: 'Solicitud aprobada'\nLimpiar formulario"]
+
+  style A fill:#e8f5e9,stroke:#2e7d32
+  style Q fill:#e8f5e9,stroke:#2e7d32
+  style K fill:#ffebee,stroke:#c62828
+  style N fill:#ffebee,stroke:#c62828
+  style E fill:#ffebee,stroke:#c62828
+</pre>
+
+<h3>6.3 Casos de prueba <span class="tag tag-qa">QA</span></h3>
+
+<table>
+  <tr><th>ID</th><th>Escenario</th><th>Precondicion</th><th>Datos de prueba</th><th>Pasos</th><th>Resultado esperado</th><th class="evidence-col">Evidencia video</th></tr>
+
+  <tr>
+    <td class="case-id">UN-C-001</td>
+    <td>Aprobacion exitosa</td>
+    <td>BusinessAdmin autenticado, perfil PENDING existe</td>
+    <td>email: carlos.gomez@delivery.com<br>negocio: labuena-pizza</td>
+    <td>
+      1. Abrir /reviewJoinBusiness<br>
+      2. Ingresar email del repartidor<br>
+      3. Tocar "Aprobar"
+    </td>
+    <td>
+      - Spinner durante carga<br>
+      - Snackbar: mensaje de aprobado<br>
+      - Formulario limpio<br>
+      - BD: estado = APPROVED
+    </td>
+    <td class="evidence-col">Screenshot snackbar aprobado<br>Screenshot BD APPROVED</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-C-002</td>
+    <td>Validacion: email con formato invalido</td>
+    <td>BusinessAdmin autenticado</td>
+    <td>email: no-es-email</td>
+    <td>
+      1. Ingresar email invalido<br>
+      2. Tocar "Aprobar"
+    </td>
+    <td>
+      - No se llama al backend<br>
+      - Campo email muestra "Correo invalido"<br>
+      - Ambos botones permanecen disponibles
+    </td>
+    <td class="evidence-col">Screenshot campo con error</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-C-003</td>
+    <td>Aprobacion: usuario no es BusinessAdmin</td>
+    <td>Usuario autenticado como Delivery o Saler</td>
+    <td>email: otro@delivery.com</td>
+    <td>
+      1. Autenticarse como rol incorrecto<br>
+      2. Intentar aprobar solicitud
+    </td>
+    <td>
+      - UnauthorizedException del backend<br>
+      - Snackbar con error de autorizacion<br>
+      - BD sin cambios
+    </td>
+    <td class="evidence-col">Screenshot error unauthorized</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-C-004</td>
+    <td>Aprobacion: solicitud no encontrada</td>
+    <td>BusinessAdmin autenticado</td>
+    <td>email: noexiste@delivery.com</td>
+    <td>
+      1. Ingresar email de repartidor sin solicitud<br>
+      2. Tocar "Aprobar"
+    </td>
+    <td>
+      - ExceptionResponse: "Request not found"<br>
+      - Snackbar con error<br>
+      - BD sin cambios
+    </td>
+    <td class="evidence-col">Screenshot snackbar error "no encontrada"</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-C-005</td>
+    <td>Prevencion doble submit en aprobacion</td>
+    <td>BusinessAdmin autenticado, solicitud valida</td>
+    <td>email: carlos.gomez@delivery.com</td>
+    <td>
+      1. Ingresar email valido<br>
+      2. Tocar "Aprobar" rapidamente dos veces<br>
+    </td>
+    <td>
+      - Botones deshabilitados durante loading<br>
+      - Solo una llamada al backend<br>
+      - Un solo cambio de estado en BD
+    </td>
+    <td class="evidence-col">Video: botones deshabilitados al cargar</td>
+  </tr>
+
+</table>
+
+<!-- ========== 7. FLUJO D ========== -->
+<h2 id="s7">7. Flujo D — Revisar Solicitud: Rechazar</h2>
+
+<h3>7.1 Descripcion funcional <span class="tag tag-po">PO</span></h3>
+<p>Analogo al Flujo C pero el BusinessAdmin decide <strong>rechazar</strong> la solicitud. El estado del perfil cambia a <strong>REJECTED</strong>. El repartidor no puede operar en el negocio.</p>
+
+<div class="precond">
+  <strong>Precondiciones:</strong> Identicas al Flujo C.
+</div>
+
+<h3>7.2 Diagrama de flujo</h3>
+<pre class="mermaid">
+flowchart TD
+  A([BusinessAdmin]) --> B["Ingresa email: pending@delivery.com"]
+  B --> C["Toca boton 'Rechazar'"]
+  C --> D["POST /{biz}/reviewJoinBusiness\n{email, decision: REJECTED}"]
+  D --> E["Backend valida + verifica BusinessAdmin"]
+  E --> F["existing.state = REJECTED\ntableProfiles.updateItem"]
+  F --> G["Response() 200 OK"]
+  G --> H["Snackbar: mensaje de rechazado\nLimpiar formulario"]
+
+  style A fill:#e8f5e9,stroke:#2e7d32
+  style H fill:#fff3e0,stroke:#e65100
+</pre>
+
+<h3>7.3 Casos de prueba <span class="tag tag-qa">QA</span></h3>
+
+<table>
+  <tr><th>ID</th><th>Escenario</th><th>Precondicion</th><th>Datos de prueba</th><th>Pasos</th><th>Resultado esperado</th><th class="evidence-col">Evidencia video</th></tr>
+
+  <tr>
+    <td class="case-id">UN-D-001</td>
+    <td>Rechazo exitoso</td>
+    <td>BusinessAdmin autenticado, perfil PENDING existe</td>
+    <td>email: pedro.sanchez@delivery.com<br>negocio: labuena-pizza</td>
+    <td>
+      1. Abrir /reviewJoinBusiness<br>
+      2. Ingresar email del repartidor<br>
+      3. Tocar "Rechazar"
+    </td>
+    <td>
+      - Spinner durante carga<br>
+      - Snackbar: mensaje de rechazado<br>
+      - Formulario limpio<br>
+      - BD: estado = REJECTED
+    </td>
+    <td class="evidence-col">Screenshot snackbar rechazado<br>Screenshot BD REJECTED</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-D-002</td>
+    <td>Rechazo: decision case-insensitive</td>
+    <td>BusinessAdmin autenticado, solicitud PENDING</td>
+    <td>email: pedro.sanchez@delivery.com<br>decision: "rejected" (minuscula)</td>
+    <td>
+      1. Enviar decision en minuscula via API directa<br>
+      2. Verificar que el backend acepta
+    </td>
+    <td>
+      - Backend acepta "REJECTED" y "rejected" (uppercase en codigo)<br>
+      - BD: estado = REJECTED
+    </td>
+    <td class="evidence-col">Log de respuesta API</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-D-003</td>
+    <td>Decision invalida</td>
+    <td>BusinessAdmin autenticado</td>
+    <td>decision: "MAYBE"</td>
+    <td>
+      1. Enviar decision invalida via API directa<br>
+      2. Verificar respuesta de validacion
+    </td>
+    <td>
+      - RequestValidationException del backend<br>
+      - Mensaje: "Debe ser APPROVED o REJECTED"<br>
+      - BD sin cambios
+    </td>
+    <td class="evidence-col">Log respuesta error validacion</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-D-004</td>
+    <td>Rechazo: solicitud ya aprobada</td>
+    <td>Perfil ya en estado APPROVED</td>
+    <td>email: aprovado@delivery.com</td>
+    <td>
+      1. Intentar rechazar un perfil ya APPROVED
+    </td>
+    <td>
+      - Backend actualiza estado a REJECTED (comportamiento actual)<br>
+      - O retorna error de transicion invalida (comportamiento PO esperado)<br>
+      - Documentar comportamiento real
+    </td>
+    <td class="evidence-col">Screenshot resultado + estado BD</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-D-005</td>
+    <td>Feedback diferenciado Aprobar vs Rechazar</td>
+    <td>Dos solicitudes PENDING</td>
+    <td>email1: delivery1@test.com (aprobar)<br>email2: delivery2@test.com (rechazar)</td>
+    <td>
+      1. Aprobar delivery1 → capturar snackbar<br>
+      2. Rechazar delivery2 → capturar snackbar
+    </td>
+    <td>
+      - Snackbar de aprobacion != Snackbar de rechazo<br>
+      - Textos claramente diferenciados<br>
+      - Ambos mensajes visibles y comprensibles
+    </td>
+    <td class="evidence-col">Screenshots de ambos snackbars</td>
+  </tr>
+
+</table>
+
+<!-- ========== 8. FLUJOS DE ERROR ========== -->
+<h2 id="s8">8. Flujos de Error y Casos de Borde</h2>
+
+<h3>8.1 Diagrama de casos de error</h3>
+<pre class="mermaid">
+flowchart LR
+  REQ["requestJoinBusiness"] -->|"email no en Cognito"| E1["ExceptionResponse\nEmail not found"]
+  REQ -->|"business no existe en BD"| E2["ExceptionResponse\nBusiness not found"]
+  REQ -->|"token JWT invalido"| E3["401 Unauthorized\n(Cognito rechaza)"]
+
+  REV["reviewJoinBusiness"] -->|"email formato invalido"| E4["RequestValidationException\nCorreo invalido"]
+  REV -->|"decision invalida"| E5["RequestValidationException\nDebe ser APPROVED o REJECTED"]
+  REV -->|"no es BusinessAdmin"| E6["UnauthorizedException"]
+  REV -->|"solicitud no existe"| E7["ExceptionResponse\nRequest not found"]
+
+  style E1 fill:#ffebee,stroke:#c62828
+  style E2 fill:#ffebee,stroke:#c62828
+  style E3 fill:#ffebee,stroke:#c62828
+  style E4 fill:#ffebee,stroke:#c62828
+  style E5 fill:#ffebee,stroke:#c62828
+  style E6 fill:#ffebee,stroke:#c62828
+  style E7 fill:#ffebee,stroke:#c62828
+</pre>
+
+<h3>8.2 Casos de prueba de error <span class="tag tag-edge">EDGE</span></h3>
+
+<table>
+  <tr><th>ID</th><th>Escenario</th><th>Endpoint</th><th>Condicion de error</th><th>Resultado esperado</th><th class="evidence-col">Evidencia</th></tr>
+
+  <tr>
+    <td class="case-id">UN-E-001</td>
+    <td>RequestJoinBusiness: negocio REJECTED</td>
+    <td>requestJoinBusiness</td>
+    <td>Negocio existe pero tiene state=REJECTED</td>
+    <td>
+      - Backend: ¿permite unirse a negocio rechazado?<br>
+      - Comportamiento actual: crea perfil igualmente<br>
+      - PO: deberia rechazar la solicitud
+    </td>
+    <td class="evidence-col">Log respuesta + BD</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-E-002</td>
+    <td>RequestJoinBusiness: negocio PENDING</td>
+    <td>requestJoinBusiness</td>
+    <td>Negocio en estado PENDING (aun no aprobado)</td>
+    <td>
+      - Comportamiento actual: crea perfil igualmente<br>
+      - PO: deberia rechazar (negocio no APPROVED)<br>
+      - Documentar como gap
+    </td>
+    <td class="evidence-col">Log respuesta + BD</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-E-003</td>
+    <td>ReviewJoinBusiness: body JSON malformado</td>
+    <td>reviewJoinBusiness</td>
+    <td>textBody = "{email:}" (JSON invalido)</td>
+    <td>
+      - parseBody retorna null<br>
+      - RequestValidationException: "Request body not found"<br>
+      - HTTP 400
+    </td>
+    <td class="evidence-col">Log HTTP 400</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-E-004</td>
+    <td>Concurrencia: dos reviews simultaneas</td>
+    <td>reviewJoinBusiness</td>
+    <td>Dos BusinessAdmin aprueban/rechazan al mismo repartidor simultaneamente</td>
+    <td>
+      - El ultimo updateItem prevalece<br>
+      - No hay corrupcion de datos<br>
+      - Resultado determinista
+    </td>
+    <td class="evidence-col">Log de ambas peticiones</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-E-005</td>
+    <td>RequestJoinBusiness: repartidor sin email en Cognito</td>
+    <td>requestJoinBusiness</td>
+    <td>Usuario Cognito sin atributo email</td>
+    <td>
+      - ExceptionResponse: "Email not found"<br>
+      - HTTP 500 (ExceptionResponse)<br>
+      - No se crea perfil en BD
+    </td>
+    <td class="evidence-col">Log error Email not found</td>
+  </tr>
+
+</table>
+
+<!-- ========== 9. FLUJO CROSS-APP ========== -->
+<h2 id="s9">9. Flujo Cross-App (Delivery + Business)</h2>
+
+<h3>9.1 Descripcion del flujo completo</h3>
+<p>Este es el flujo end-to-end que involucra ambas apps: el repartidor solicita desde la app Delivery, y el BusinessAdmin revisa y decide desde la app Business.</p>
+
+<pre class="mermaid">
+sequenceDiagram
+  participant DEL as App Delivery<br>(carlos.gomez)
+  participant BE as Backend Ktor
+  participant DDB as DynamoDB
+  participant BIZ as App Business<br>(BusinessAdmin)
+
+  DEL->>BE: POST /labuena-pizza/requestJoinBusiness<br>[Authorization: JWT]
+  BE->>BE: getUser(accessToken) → carlos.gomez@delivery.com
+  BE->>DDB: getItem(Business: labuena-pizza)<br>autoAcceptDeliveries=false
+  BE->>DDB: putItem(UserBusinessProfile)<br>email=carlos.gomez, state=PENDING
+  BE-->>DEL: RequestJoinBusinessResponse(PENDING)
+  DEL->>DEL: Snackbar "Solicitud enviada"
+
+  Note over DEL,BIZ: Tiempo de espera (minutos/horas)
+
+  BIZ->>BIZ: BusinessAdmin abre /reviewJoinBusiness
+  BIZ->>BE: POST /labuena-pizza/reviewJoinBusiness<br>{email: carlos.gomez@delivery.com, decision: APPROVED}<br>[Authorization: JWT BusinessAdmin]
+  BE->>BE: requireApprovedProfile(BusinessAdmin)
+  BE->>DDB: getItem(UserBusinessProfile)<br>email=carlos.gomez, state=PENDING
+  BE->>DDB: updateItem(state=APPROVED)
+  BE-->>BIZ: Response() 200 OK
+  BIZ->>BIZ: Snackbar "Solicitud aprobada"
+
+  Note over DEL: Repartidor ahora puede<br>recibir ordenes de labuena-pizza
+</pre>
+
+<h3>9.2 Casos de prueba cross-app <span class="tag tag-regression">REGRESSION</span></h3>
+
+<table>
+  <tr><th>ID</th><th>Escenario</th><th>Apps involucradas</th><th>Pasos</th><th>Resultado esperado</th><th class="evidence-col">Evidencia video</th></tr>
+
+  <tr>
+    <td class="case-id">UN-X-001</td>
+    <td>Flujo completo: solicitud → aprobacion</td>
+    <td>Delivery + Business</td>
+    <td>
+      1. [Delivery] Autenticar como carlos.gomez@delivery.com<br>
+      2. [Delivery] Solicitar union a labuena-pizza → PENDING<br>
+      3. [Business] Autenticar como BusinessAdmin<br>
+      4. [Business] Aprobar solicitud de carlos.gomez<br>
+      5. [Delivery] Verificar acceso a ordenes del negocio
+    </td>
+    <td>
+      - Solicitud creada en PENDING<br>
+      - Perfil actualizado a APPROVED<br>
+      - Repartidor puede ver ordenes de labuena-pizza
+    </td>
+    <td class="evidence-col">Video completo cross-app<br>Screenshots intermedios</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-X-002</td>
+    <td>Flujo completo: solicitud → rechazo</td>
+    <td>Delivery + Business</td>
+    <td>
+      1. [Delivery] Solicitar union → PENDING<br>
+      2. [Business] Rechazar solicitud → REJECTED<br>
+      3. [Delivery] Verificar que no tiene acceso
+    </td>
+    <td>
+      - Perfil en REJECTED<br>
+      - Repartidor no puede recibir ordenes del negocio<br>
+      - UI de Delivery refleja el rechazo
+    </td>
+    <td class="evidence-col">Video cross-app rechazo</td>
+  </tr>
+
+  <tr>
+    <td class="case-id">UN-X-003</td>
+    <td>Flujo completo: auto-accept</td>
+    <td>Solo Delivery (aprobacion automatica)</td>
+    <td>
+      1. [Delivery] Solicitar union a rapido-express (auto-accept=true)<br>
+      2. Verificar estado inmediato = APPROVED<br>
+      3. Verificar acceso a ordenes
+    </td>
+    <td>
+      - Sin necesidad de accion del BusinessAdmin<br>
+      - Estado = APPROVED inmediatamente<br>
+      - Repartidor puede operar de inmediato
+    </td>
+    <td class="evidence-col">Video flujo auto-accept completo</td>
+  </tr>
+
+</table>
+
+<!-- ========== 10. CATALOGO DE VALIDACIONES ========== -->
+<h2 id="s10">10. Catalogo de Validaciones</h2>
+
+<h3>10.1 Validaciones en el frontend (ViewModel)</h3>
+<table>
+  <tr><th>ViewModel</th><th>Campo</th><th>Regla</th><th>Mensaje de error</th></tr>
+  <tr><td>RequestJoinBusinessViewModel</td><td>business</td><td>Required (no vacio)</td><td>Error de campo requerido</td></tr>
+  <tr><td>ReviewJoinBusinessViewModel</td><td>email</td><td>Required + pattern <code>.+@.+\..+</code></td><td>"Correo invalido"</td></tr>
+</table>
+
+<h3>10.2 Validaciones en el backend</h3>
+<table>
+  <tr><th>Funcion</th><th>Campo</th><th>Regla</th><th>Tipo de error</th></tr>
+  <tr><td>ReviewJoinBusiness</td><td>email</td><td>Required + EMAIL_REGEX</td><td>RequestValidationException</td></tr>
+  <tr><td>ReviewJoinBusiness</td><td>decision</td><td>Required + pattern APPROVED|REJECTED</td><td>RequestValidationException</td></tr>
+  <tr><td>RequestJoinBusiness</td><td>email (Cognito)</td><td>Debe existir atributo email en Cognito</td><td>ExceptionResponse</td></tr>
+  <tr><td>RequestJoinBusiness</td><td>business</td><td>Debe existir en DynamoDB</td><td>ExceptionResponse</td></tr>
+  <tr><td>ReviewJoinBusiness</td><td>actor</td><td>Debe ser BusinessAdmin APPROVED del negocio</td><td>UnauthorizedException</td></tr>
+  <tr><td>ReviewJoinBusiness</td><td>solicitud</td><td>Debe existir perfil Delivery en el negocio</td><td>ExceptionResponse</td></tr>
+</table>
+
+<h3>10.3 Datos de prueba recomendados</h3>
+<table>
+  <tr><th>Entidad</th><th>Campo</th><th>Valor sugerido</th><th>Proposito</th></tr>
+  <tr><td>Repartidor</td><td>email</td><td>carlos.gomez@delivery.com</td><td>Caso feliz solicitud</td></tr>
+  <tr><td>Repartidor 2</td><td>email</td><td>maria.ruiz@repartos.com</td><td>Auto-accept test</td></tr>
+  <tr><td>Repartidor 3</td><td>email</td><td>pedro.sanchez@correos.net</td><td>Caso de rechazo</td></tr>
+  <tr><td>Negocio sin auto-accept</td><td>slug</td><td>labuena-pizza</td><td>Flujo PENDING</td></tr>
+  <tr><td>Negocio con auto-accept</td><td>slug</td><td>rapido-express</td><td>Flujo APPROVED inmediato</td></tr>
+  <tr><td>BusinessAdmin</td><td>email</td><td>admin@labuena-pizza.com</td><td>Revisor de solicitudes</td></tr>
+</table>
+
+<!-- ========== 11. RESUMEN Y COBERTURA ========== -->
+<h2 id="s11">11. Resumen y Cobertura</h2>
+
+<h3>11.1 Cobertura de tests</h3>
+<table>
+  <tr><th>Capa</th><th>Archivo</th><th>Tests</th><th>Estado</th><th>Notas</th></tr>
+  <tr><td>Backend</td><td>RequestJoinBusinessTest.kt</td><td>2</td><td><span style="color:#e65100">⚠ Parcial</span></td><td>1 ignorado por bug DynamoDbTable</td></tr>
+  <tr><td>Backend</td><td>ReviewJoinBusinessTest.kt</td><td>1</td><td><span style="color:#e65100">⚠ Parcial</span></td><td>Solo aprobacion, falta rechazo</td></tr>
+  <tr><td>App (VM)</td><td>RequestJoinBusinessViewModelTest.kt</td><td>3</td><td><span style="color:#2e7d32">✓ Bueno</span></td><td>isValid, exito, error</td></tr>
+  <tr><td>App (VM)</td><td>ReviewJoinBusinessViewModelTest.kt</td><td>1</td><td><span style="color:#c62828">✗ Minimo</span></td><td>Solo email valido, falta approve/reject</td></tr>
+  <tr><td>E2E</td><td>—</td><td>0</td><td><span style="color:#c62828">✗ Sin cobertura</span></td><td>No existe test E2E para este flujo</td></tr>
+</table>
+
+<h3>11.2 Cobertura de criterios de aceptacion</h3>
+<table>
+  <tr><th>#</th><th>Criterio</th><th>Estado</th></tr>
+  <tr><td>1</td><td>Reporte PDF v2.0 con diagramas Mermaid</td><td>✓ Este documento</td></tr>
+  <tr><td>2</td><td>Casos: solicitar, aprobar, rechazar, duplicados</td><td>✓ UN-A-001..006, UN-C, UN-D, UN-E</td></tr>
+  <tr><td>3</td><td>Flujo cross-app documentado</td><td>✓ Seccion 9 + diagrama de secuencia</td></tr>
+</table>
+
+<h3>11.3 Matriz de riesgo</h3>
+<table>
+  <tr><th>Riesgo</th><th>Probabilidad</th><th>Impacto</th><th>Severidad</th></tr>
+  <tr><td>Solicitud duplicada sin validacion</td><td>Alta</td><td>Alto (sobrescribe perfil)</td><td class="tag tag-high">HIGH</td></tr>
+  <tr><td>Repartidor accede a negocio PENDING/REJECTED</td><td>Media</td><td>Alto (seguridad del negocio)</td><td class="tag tag-high">HIGH</td></tr>
+  <tr><td>Transicion de estado invalida (APPROVED→REJECTED)</td><td>Media</td><td>Medio</td><td class="tag tag-med">MED</td></tr>
+  <tr><td>Test ignorado en RequestJoinBusinessTest</td><td>Alta</td><td>Medio (deuda tecnica)</td><td class="tag tag-med">MED</td></tr>
+  <tr><td>ReviewJoinBusinessViewModelTest sin casos approve/reject</td><td>Alta</td><td>Bajo</td><td class="tag tag-low">LOW</td></tr>
+</table>
+
+<!-- ========== 12. GAPS Y RECOMENDACIONES ========== -->
+<h2 id="s12">12. Gaps y Recomendaciones</h2>
+
+<h3>12.1 Gaps de implementacion detectados</h3>
+<table>
+  <tr><th>#</th><th>Gap</th><th>Impacto</th><th>Recomendacion</th><th>Prioridad</th></tr>
+  <tr>
+    <td>G-1</td>
+    <td>Sin validacion de solicitud duplicada en RequestJoinBusiness</td>
+    <td>putItem sobrescribe perfil existente sin aviso</td>
+    <td>Verificar con getItem antes de putItem; retornar error si ya existe perfil PENDING/APPROVED</td>
+    <td class="tag tag-high">HIGH</td>
+  </tr>
+  <tr>
+    <td>G-2</td>
+    <td>Sin validacion de estado del negocio al solicitar union</td>
+    <td>Repartidores pueden unirse a negocios PENDING o REJECTED</td>
+    <td>Verificar businessData.state == APPROVED antes de continuar</td>
+    <td class="tag tag-high">HIGH</td>
+  </tr>
+  <tr>
+    <td>G-3</td>
+    <td>Test UN-A (solicitud exitosa) ignorado por bug DynamoDbTable</td>
+    <td>Cobertura real menor a la declarada</td>
+    <td>Refactorizar DummyRequestJoinTable para implementar getItem con Key correctamente</td>
+    <td class="tag tag-med">MED</td>
+  </tr>
+  <tr>
+    <td>G-4</td>
+    <td>ReviewJoinBusinessViewModel sin tests de approve/reject</td>
+    <td>Comportamiento de los dos botones no esta cubierto</td>
+    <td>Agregar tests: `approve actualiza estado`, `reject actualiza estado`, `error no modifica estado`</td>
+    <td class="tag tag-med">MED</td>
+  </tr>
+  <tr>
+    <td>G-5</td>
+    <td>Sin validacion de transicion de estado (APPROVED → REJECTED)</td>
+    <td>Un repartidor APPROVED puede ser rechazado retroactivamente</td>
+    <td>Agregar verificacion de estado actual antes de actualizar; solo permitir desde PENDING</td>
+    <td class="tag tag-med">MED</td>
+  </tr>
+  <tr>
+    <td>G-6</td>
+    <td>Sin notificacion al repartidor cuando su solicitud es revisada</td>
+    <td>UX: repartidor no sabe si fue aprobado o rechazado</td>
+    <td>Implementar notificaciones push cuando el estado cambia</td>
+    <td class="tag tag-low">LOW</td>
+  </tr>
+  <tr>
+    <td>G-7</td>
+    <td>ReviewJoinBusiness no verifica que el email corresponde a un perfil Delivery (cualquier email basta)</td>
+    <td>BusinessAdmin podria intentar "rechazar" a un email que no es repartidor</td>
+    <td>El profile=DELIVERY en la key ya limita esto, pero el error "Request not found" no es descriptivo</td>
+    <td class="tag tag-low">LOW</td>
+  </tr>
+</table>
+
+<h3>12.2 Recomendaciones de testing</h3>
+<ul>
+  <li><strong>Corto plazo</strong>: Reparar test ignorado UN-A (G-3) y agregar tests de approve/reject al ViewModel (G-4)</li>
+  <li><strong>Medio plazo</strong>: Agregar validacion de duplicados (G-1) y estado del negocio (G-2)</li>
+  <li><strong>Largo plazo</strong>: Implementar notificaciones push y test E2E del flujo cross-app completo</li>
+</ul>
+
+<h3>12.3 Escenarios de regresion obligatorios</h3>
+<p>Los siguientes casos DEBEN ejecutarse en cada release que toque el flujo de onboarding:</p>
+<ol>
+  <li>UN-A-001 — Solicitud exitosa sin auto-accept (smoke test)</li>
+  <li>UN-B-001 — Auto-aprobacion exitosa (smoke test)</li>
+  <li>UN-C-001 — Aprobacion por BusinessAdmin (smoke test)</li>
+  <li>UN-D-001 — Rechazo por BusinessAdmin (smoke test)</li>
+  <li>UN-X-001 — Flujo cross-app completo solicitud→aprobacion (regression)</li>
+</ol>
+
+<hr>
+<p style="color:#777;font-size:9px;text-align:center;">
+  Intrale Platform — Reporte Union a Negocio v2.0 — Issue #1126 — Generado: 2026-03-11 — PO + QA Agents
+</p>
+
+</body>
+</html>
