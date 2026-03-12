@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Entry y Onboarding del Cliente</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidades: ClientEntry y ClientOnboarding</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento exhaustivo con diagramas de flujo, casos de prueba,<br>
+    guiones de video y criterios de evidencia para la primera<br>
+    experiencia del cliente en la plataforma Intrale.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Issue:</strong> #1119</p>
+    <p><strong>Version:</strong> 2.0</p>
+    <p><strong>Fecha:</strong> 2026-03-11</p>
+    <p><strong>Generado por:</strong> PO + QA Agents</p>
+    <p><strong>Pantallas:</strong> ClientEntryScreen · ClientOnboardingScreen</p>
+    <p><strong>Rutas:</strong> /client/entry · /client/onboarding</p>
+  </div>
+</div>
+
+<!-- ========== TABLA DE CONTENIDOS ========== -->
+<h2 id="toc">Tabla de Contenidos</h2>
+<ul class="toc">
+  <li><a href="#contexto">1. Contexto de Negocio</a></li>
+  <li><a href="#arquitectura">2. Arquitectura de Pantallas</a></li>
+  <li><a href="#flujo-entry">3. Flujo ClientEntry</a></li>
+  <li><a href="#flujo-onboarding">4. Flujo ClientOnboarding</a></li>
+  <li><a href="#flujo-completo">5. Flujo Completo: Entry → Onboarding → Home</a></li>
+  <li><a href="#casos-entry">6. Casos de Prueba — ClientEntry</a></li>
+  <li><a href="#casos-onboarding">7. Casos de Prueba — ClientOnboarding</a></li>
+  <li><a href="#casos-integracion">8. Casos de Prueba — Integración</a></li>
+  <li><a href="#guion-video">9. Guión de Video</a></li>
+  <li><a href="#criterios-done">10. Criterios de Done</a></li>
+  <li><a href="#datos-prueba">11. Datos de Prueba</a></li>
+</ul>
+
+<!-- ========== CONTEXTO ========== -->
+<h2 id="contexto">1. Contexto de Negocio</h2>
+
+<p>
+  <strong>ClientEntry</strong> y <strong>ClientOnboarding</strong> representan la <em>primera impresión</em> del
+  cliente al abrir la app. Son el punto de entrada que determina si el usuario llega al home (si ya inició sesión),
+  al onboarding (si es nuevo), al flujo de registro/login (si no tiene sesión), o ve un mensaje de tienda inactiva.
+</p>
+
+<p style="margin-top:8px">La calidad de este flujo impacta directamente en la <strong>tasa de conversión</strong> de
+nuevos clientes y en la experiencia de retorno de clientes recurrentes.</p>
+
+<h3>Actores involucrados</h3>
+<table>
+  <tr><th>Actor</th><th>Escenario</th><th>Resultado esperado</th></tr>
+  <tr><td>Cliente nuevo (sin cuenta)</td><td>Primera apertura de la app</td><td>Ve pantalla Welcome → va a Onboarding → puede Registrarse o Iniciar sesión</td></tr>
+  <tr><td>Cliente recurrente (con sesión)</td><td>Reabre la app</td><td>Auto-login silencioso → directo a ClientHome sin fricción</td></tr>
+  <tr><td>Usuario BusinessAdmin/Saler</td><td>Abre app de negocio (APP_TYPE≠CLIENT)</td><td>Redirigido a HOME_PATH (flujo clásico)</td></tr>
+  <tr><td>Cliente en tienda inactiva</td><td>App con STORE_AVAILABLE=false</td><td>Ve mensaje de tienda no disponible con CTA deshabilitado</td></tr>
+</table>
+
+<h3>Reglas de negocio aplicables</h3>
+<ul>
+  <li><strong>APP_TYPE</strong>: La app tiene tres flavors (client, business, delivery). Solo el flavor <code>client</code> activa el flujo ClientEntry.</li>
+  <li><strong>STORE_AVAILABLE</strong>: Flag de BuildKonfig que habilita o deshabilita la tienda. Si false, el cliente ve pantalla de cierre temporal.</li>
+  <li><strong>Sesión previa</strong>: <code>ToDoCheckPreviousLogin</code> verifica si existe un token válido en storage. Si existe → auto-login sin pantalla de welcome.</li>
+  <li><strong>onboardingCompleted</strong>: Flag persistido en <code>CommKeyValueStorage</code>. Si true, el onboarding no se muestra nuevamente.</li>
+</ul>
+
+<!-- ========== ARQUITECTURA ========== -->
+<h2 id="arquitectura">2. Arquitectura de Pantallas</h2>
+
+<h3>ClientEntryScreen — <code>/client/entry</code></h3>
+<table>
+  <tr><th>Componente</th><th>Archivo</th><th>Responsabilidad</th></tr>
+  <tr><td>ClientEntryScreen</td><td><code>ui/sc/client/ClientEntryScreen.kt</code></td><td>Composable principal, orquesta estados de UI</td></tr>
+  <tr><td>ClientEntryViewModel</td><td><code>ui/sc/client/ClientEntryScreen.kt</code></td><td>Lógica de resolución del entry point (APP_TYPE, STORE_AVAILABLE, sesión previa)</td></tr>
+  <tr><td>ClientEntryState</td><td><code>ui/sc/client/ClientEntryScreen.kt</code></td><td>Estado inmutable: businessName, businessActive, status</td></tr>
+  <tr><td>ClientEntryLoading</td><td><code>ui/sc/client/ClientEntryScreen.kt</code></td><td>CircularProgressIndicator mientras se evalúa el entry</td></tr>
+  <tr><td>ClientWelcomeContent</td><td><code>ui/sc/client/ClientEntryScreen.kt</code></td><td>Pantalla de bienvenida con botones Registrarse/Iniciar sesión</td></tr>
+  <tr><td>ClientStoreUnavailable</td><td><code>ui/sc/client/ClientEntryScreen.kt</code></td><td>Pantalla de tienda no disponible con CTA deshabilitado</td></tr>
+</table>
+
+<h3>ClientOnboardingScreen — <code>/client/onboarding</code></h3>
+<table>
+  <tr><th>Componente</th><th>Archivo</th><th>Responsabilidad</th></tr>
+  <tr><td>ClientOnboardingScreen</td><td><code>ui/sc/client/ClientOnboardingScreen.kt</code></td><td>Composable principal, verifica si ya se completó el onboarding</td></tr>
+  <tr><td>ClientOnboardingViewModel</td><td><code>ui/sc/client/ClientOnboardingScreen.kt</code></td><td>Lógica de paginación y persistencia de onboardingCompleted</td></tr>
+  <tr><td>ClientOnboardingUIState</td><td><code>ui/sc/client/ClientOnboardingScreen.kt</code></td><td>Estado: currentPage, totalPages=4, completed</td></tr>
+  <tr><td>OnboardingPager</td><td><code>ui/sc/client/ClientOnboardingScreen.kt</code></td><td>HorizontalPager con 4 páginas y controles de navegación</td></tr>
+  <tr><td>OnboardingPage</td><td><code>ui/sc/client/ClientOnboardingScreen.kt</code></td><td>Renderiza cada página con título, descripción e ícono</td></tr>
+  <tr><td>PageIndicators</td><td><code>ui/sc/client/ClientOnboardingScreen.kt</code></td><td>Indicadores de posición (puntos animados)</td></tr>
+</table>
+
+<h3>Estados de ClientEntryStatus</h3>
+<table>
+  <tr><th>Estado</th><th>Condición de activación</th><th>UI mostrada</th></tr>
+  <tr><td><code>Loading</code></td><td>Estado inicial mientras se evalúa</td><td>CircularProgressIndicator centrado</td></tr>
+  <tr><td><code>Welcome</code></td><td>CLIENT + tienda activa + sin sesión</td><td>Nombre negocio + botones Registrarse/Iniciar sesión</td></tr>
+  <tr><td><code>NavigateClientHome</code></td><td>CLIENT + tienda activa + sesión válida</td><td>Navegación automática a /client/home</td></tr>
+  <tr><td><code>NavigateClassic</code></td><td>APP_TYPE ≠ CLIENT</td><td>Navegación automática a /home</td></tr>
+  <tr><td><code>StoreUnavailable</code></td><td>CLIENT + tienda inactiva</td><td>Mensaje de cierre con CTA Lock deshabilitado</td></tr>
+</table>
+
+<!-- ========== FLUJO ENTRY ========== -->
+<h2 id="flujo-entry">3. Flujo ClientEntry</h2>
+
+<div class="mermaid">
+flowchart TD
+    A([App abre]) --> B[ClientEntryScreen]
+    B --> C{Evaluando entry\nLaunchedEffect}
+    C --> D{APP_TYPE\n= CLIENT?}
+    D -- No --> E[NavigateClassic\nnavegar a HOME_PATH]
+    D -- Sí --> F{STORE_AVAILABLE\n= true?}
+    F -- No --> G[StoreUnavailable\nMensaje cierre temporal]
+    F -- Sí --> H[CheckPreviousLogin\nToDoCheckPreviousLogin]
+    H --> I{¿Token válido\nen storage?}
+    I -- Sí --> J[NavigateClientHome\nSessionStore = Client]
+    I -- No --> K[Welcome\nBotones Registro/Login]
+    K --> L[Usuario elige]
+    L --> M[Ir a /signup]
+    L --> N[Ir a /login]
+    J --> O([/client/home])
+    E --> P([/home])
+    G --> Q([Pantalla bloqueada])
+    M --> R([/signup])
+    N --> S([/login])
+
+    style B fill:#e3f2fd
+    style C fill:#fff8e1
+    style G fill:#ffebee
+    style K fill:#e8f5e9
+    style J fill:#e8f5e9
+</div>
+
+<h3>Estados de pantalla ClientEntry</h3>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Loading : LaunchedEffect(Unit)
+    Loading --> NavigateClassic : appType != CLIENT
+    Loading --> StoreUnavailable : !businessActive
+    Loading --> NavigateClientHome : hasPreviousSession = true
+    Loading --> Welcome : hasPreviousSession = false
+    NavigateClientHome --> [*] : navigate(/client/home)
+    NavigateClassic --> [*] : navigate(/home)
+    Welcome --> [*] : usuario navega a signup o login
+    StoreUnavailable --> [*] : pantalla terminal (sin acción)
+</div>
+
+<!-- ========== FLUJO ONBOARDING ========== -->
+<h2 id="flujo-onboarding">4. Flujo ClientOnboarding</h2>
+
+<div class="mermaid">
+flowchart TD
+    A([/client/onboarding]) --> B{onboardingCompleted\n= true?}
+    B -- Sí --> C[navigateClearingBackStack\n/client/entry]
+    B -- No --> D[OnboardingPager\n4 páginas]
+    D --> E[Página 1\nBienvenida\nsin ícono]
+    E --> F{Usuario}
+    F -- Siguiente --> G[Página 2\nDescubrí\nStorefront icon]
+    F -- Omitir --> Z
+    G --> H{Usuario}
+    H -- Siguiente --> I[Página 3\nPedí\nShoppingCart icon]
+    H -- Omitir --> Z
+    I --> J{Usuario}
+    J -- Siguiente --> K[Página 4\nEmpezá\nRocketLaunch icon]
+    J -- Omitir --> Z
+    K --> L[Botón: Empezar]
+    L --> Z[completeOnboarding\nstorage.onboardingCompleted = true\nstate.completed = true]
+    Z --> C
+
+    style D fill:#e3f2fd
+    style Z fill:#e8f5e9
+    style C fill:#fff8e1
+</div>
+
+<h3>Páginas del Onboarding</h3>
+<table>
+  <tr><th>#</th><th>Título (MessageKey)</th><th>Descripción (MessageKey)</th><th>Ícono</th><th>Controles</th></tr>
+  <tr><td>0</td><td>client_onboarding_welcome_title</td><td>client_onboarding_welcome_subtitle</td><td>Ninguno</td><td>Siguiente + Omitir</td></tr>
+  <tr><td>1</td><td>client_onboarding_discover_title</td><td>client_onboarding_discover_description</td><td>Storefront</td><td>Siguiente + Omitir</td></tr>
+  <tr><td>2</td><td>client_onboarding_order_title</td><td>client_onboarding_order_description</td><td>ShoppingCart</td><td>Siguiente + Omitir</td></tr>
+  <tr><td>3</td><td>client_onboarding_start_title</td><td>client_onboarding_start_description</td><td>RocketLaunch</td><td>Solo Empezar</td></tr>
+</table>
+
+<!-- ========== FLUJO COMPLETO ========== -->
+<h2 id="flujo-completo">5. Flujo Completo: Entry → Onboarding → Home</h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant App as App (inicio)
+    participant Entry as ClientEntryScreen
+    participant VM as ClientEntryViewModel
+    participant Login as ToDoCheckPreviousLogin
+    participant Onb as ClientOnboardingScreen
+    participant Home as ClientHomeScreen
+
+    App->>Entry: navegar a /client/entry
+    Entry->>VM: LaunchedEffect → resolveEntry()
+    VM->>VM: ¿APP_TYPE = CLIENT? → sí
+    VM->>VM: ¿STORE_AVAILABLE? → sí
+    VM->>Login: execute()
+    Login-->>VM: false (sin sesión)
+    VM-->>Entry: status = Welcome
+    Entry->>Entry: mostrar ClientWelcomeContent
+    Note over Entry: Usuario toca "Registrarse"
+    Entry->>Onb: navigate(/client/onboarding)
+    Onb->>Onb: ¿onboardingCompleted? → no
+    Onb->>Onb: mostrar OnboardingPager (4 páginas)
+    Note over Onb: Usuario avanza o hace skip
+    Onb->>Onb: completeOnboarding() → storage.onboardingCompleted=true
+    Onb->>Entry: navigateClearingBackStack(/client/entry)
+    Entry->>VM: resolveEntry()
+    VM->>Login: execute()
+    Login-->>VM: false (aún sin sesión post-registro)
+    VM-->>Entry: status = Welcome
+    Note over Entry: Usuario toca "Registrarse" → flow signup
+</div>
+
+<hr>
+
+<h3>Flujo de cliente recurrente (auto-login)</h3>
+<div class="mermaid">
+sequenceDiagram
+    participant App as App (inicio)
+    participant Entry as ClientEntryScreen
+    participant VM as ClientEntryViewModel
+    participant Login as ToDoCheckPreviousLogin
+    participant Session as SessionStore
+    participant Home as ClientHomeScreen
+
+    App->>Entry: navegar a /client/entry
+    Entry->>VM: resolveEntry()
+    VM->>Login: execute()
+    Login-->>VM: true (token válido en storage)
+    VM->>Session: updateRole(UserRole.Client)
+    VM-->>Entry: status = NavigateClientHome
+    Entry->>Home: navigate(/client/home) [automático]
+    Note over Home: Sin pantalla de bienvenida — experiencia fluida
+</div>
+
+<!-- ========== CASOS ENTRY ========== -->
+<h2 id="casos-entry">6. Casos de Prueba — ClientEntry</h2>
+
+<div class="note"><strong>Nota de configuración:</strong> Los casos que requieren APP_TYPE=CLIENT deben ejecutarse en el flavor <code>client</code> de la app Android o en la configuración de desktop con <code>AppRuntimeConfig.appType = AppType.CLIENT</code>.</div>
+
+<h3>Grupo A: Estado inicial y loading</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-A01</span></td>
+    <td>Loading spinner visible al iniciar</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=true</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir la app en pantalla limpia</li>
+        <li>Observar el estado inicial de /client/entry</li>
+      </ol>
+    </td>
+    <td>CircularProgressIndicator centrado en pantalla durante la evaluación del entry (mínimo 1 frame visible)</td>
+    <td>Screenshot del spinner</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-A02</span></td>
+    <td>Transición de loading a Welcome sin parpadeo</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-vid">VIDEO</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=true, sin sesión previa</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir la app</li>
+        <li>Observar la transición del spinner a la pantalla Welcome</li>
+      </ol>
+    </td>
+    <td>Transición fluida de Loading a Welcome sin pantalla en blanco intermedia</td>
+    <td>Video grabado con screenrecord</td>
+  </tr>
+</table>
+
+<h3>Grupo B: Pantalla Welcome (sin sesión)</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-B01</span></td>
+    <td>Pantalla Welcome muestra nombre del negocio</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=true, sin sesión</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir la app con las condiciones indicadas</li>
+        <li>Esperar a que cargue el estado Welcome</li>
+        <li>Verificar que el nombre del negocio aparece formateado (primera letra mayúscula)</li>
+      </ol>
+    </td>
+    <td>El nombre del negocio (BuildKonfig.BUSINESS) se muestra en headline con primera letra mayúscula</td>
+    <td>Screenshot pantalla Welcome completa</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-B02</span></td>
+    <td>Botón Registrarse navega a /signup</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=true, sin sesión</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir la app, esperar pantalla Welcome</li>
+        <li>Tocar el botón "Registrarse"</li>
+      </ol>
+    </td>
+    <td>Navegación a /signup (pantalla de registro)</td>
+    <td>Screenshot de /signup alcanzado desde Welcome</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-B03</span></td>
+    <td>Botón Iniciar sesión navega a /login</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=true, sin sesión</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir la app, esperar pantalla Welcome</li>
+        <li>Tocar el botón "Iniciar sesión"</li>
+      </ol>
+    </td>
+    <td>Navegación a /login (pantalla de login)</td>
+    <td>Screenshot de /login alcanzado desde Welcome</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-B04</span></td>
+    <td>Pantalla Welcome contiene texto informativo de cuenta</td>
+    <td><span class="tag tag-regression">REGRESIÓN</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=true, sin sesión</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir la app, esperar pantalla Welcome</li>
+        <li>Verificar que aparece el texto de client_entry_account_info</li>
+      </ol>
+    </td>
+    <td>Texto informativo visible debajo de los botones (client_entry_account_info)</td>
+    <td>Screenshot de pantalla Welcome completa con scroll</td>
+  </tr>
+</table>
+
+<h3>Grupo C: Auto-login (con sesión previa)</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-C01</span></td>
+    <td>Auto-login con sesión válida navega a /client/home</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span> <span class="tag tag-vid">VIDEO</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=true, token válido en CommKeyValueStorage</div>
+    </td>
+    <td>
+      <ol>
+        <li>Iniciar sesión en la app (primer login exitoso)</li>
+        <li>Cerrar y reabrir la app</li>
+        <li>Observar que no se muestra la pantalla Welcome</li>
+      </ol>
+    </td>
+    <td>La app navega directamente a /client/home sin mostrar la pantalla Welcome. SessionStore.role = Client.</td>
+    <td>Video del flujo completo de reapertura de app con auto-login</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-C02</span></td>
+    <td>SessionStore actualiza rol a Client en auto-login</td>
+    <td><span class="tag tag-regression">REGRESIÓN</span></td>
+    <td>
+      <div class="precond">Token válido en storage</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir la app con sesión previa</li>
+        <li>Verificar que el rol en SessionStore es Client</li>
+      </ol>
+    </td>
+    <td>SessionStore.role == UserRole.Client tras el auto-login</td>
+    <td>Log de app mostrando "Resultado sesión previa: true"</td>
+  </tr>
+</table>
+
+<h3>Grupo D: Tienda inactiva</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-D01</span></td>
+    <td>StoreUnavailable visible cuando STORE_AVAILABLE=false</td>
+    <td><span class="tag tag-high">HIGH</span></td>
+    <td>
+      <div class="precond">APP_TYPE=CLIENT, STORE_AVAILABLE=false (BuildKonfig)</div>
+    </td>
+    <td>
+      <ol>
+        <li>Configurar STORE_AVAILABLE=false en BuildKonfig</li>
+        <li>Abrir la app</li>
+        <li>Verificar la pantalla mostrada</li>
+      </ol>
+    </td>
+    <td>Pantalla ClientStoreUnavailable con: nombre del negocio, mensaje de cierre, botón con ícono Lock DESHABILITADO</td>
+    <td>Screenshot de pantalla StoreUnavailable con botón deshabilitado</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-D02</span></td>
+    <td>CTA en StoreUnavailable no es interactivo</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>
+      <div class="precond">STORE_AVAILABLE=false</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir app con tienda inactiva</li>
+        <li>Intentar tocar el botón de acción</li>
+      </ol>
+    </td>
+    <td>El botón no responde al toque (enabled=false), no hay navegación</td>
+    <td>Video mostrando tap sobre botón sin respuesta</td>
+  </tr>
+</table>
+
+<h3>Grupo E: Detección APP_TYPE</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-E01</span></td>
+    <td>APP_TYPE BUSINESS navega a /home (NavigateClassic)</td>
+    <td><span class="tag tag-regression">REGRESIÓN</span></td>
+    <td>
+      <div class="precond">APP_TYPE=BUSINESS (flavor business)</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir app con flavor business</li>
+        <li>Verificar destino de navegación desde el entry</li>
+      </ol>
+    </td>
+    <td>Navegación a /home sin mostrar pantalla Welcome ni StoreUnavailable</td>
+    <td>Log "Resolviendo entry con APP_TYPE=BUSINESS → NavigateClassic"</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CE-E02</span></td>
+    <td>APP_TYPE DELIVERY navega a /home (NavigateClassic)</td>
+    <td><span class="tag tag-regression">REGRESIÓN</span></td>
+    <td>
+      <div class="precond">APP_TYPE=DELIVERY (flavor delivery)</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir app con flavor delivery</li>
+        <li>Verificar destino de navegación</li>
+      </ol>
+    </td>
+    <td>Navegación a /home sin flujo cliente</td>
+    <td>Log del entry mostrando navegación a /home</td>
+  </tr>
+</table>
+
+<!-- ========== CASOS ONBOARDING ========== -->
+<h2 id="casos-onboarding">7. Casos de Prueba — ClientOnboarding</h2>
+
+<div class="note"><strong>Nota:</strong> El onboarding se accede navegando desde Welcome → "Registrarse" → después de signup → /client/onboarding. También puede accederse directamente para testing.</div>
+
+<h3>Grupo F: Navegación por páginas</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-F01</span></td>
+    <td>Pager muestra 4 páginas con contenido correcto</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>
+      <div class="precond">onboardingCompleted=false en storage</div>
+    </td>
+    <td>
+      <ol>
+        <li>Navegar a /client/onboarding</li>
+        <li>Avanzar por las 4 páginas con el botón "Siguiente"</li>
+        <li>Verificar contenido de cada página</li>
+      </ol>
+    </td>
+    <td>
+      <ul>
+        <li>Página 1: Título bienvenida, descripción, sin ícono, botones Siguiente + Omitir</li>
+        <li>Página 2: Ícono Storefront, título descubrí, botones Siguiente + Omitir</li>
+        <li>Página 3: Ícono ShoppingCart, título pedí, botones Siguiente + Omitir</li>
+        <li>Página 4: Ícono RocketLaunch, título empezá, solo botón Empezar</li>
+      </ul>
+    </td>
+    <td>Screenshots de las 4 páginas</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-F02</span></td>
+    <td>Indicadores de página (dots) reflejan posición actual</td>
+    <td><span class="tag tag-smoke">SMOKE</span></td>
+    <td>
+      <div class="precond">onboardingCompleted=false</div>
+    </td>
+    <td>
+      <ol>
+        <li>Navegar al onboarding</li>
+        <li>Observar los indicadores de punto en cada página</li>
+      </ol>
+    </td>
+    <td>El dot de la página activa es más grande (10dp) y color primario. Los inactivos son 8dp y onSurface con 30% alpha.</td>
+    <td>Screenshots de indicadores en páginas 1 y 3</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-F03</span></td>
+    <td>Swipe horizontal navega entre páginas</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-vid">VIDEO</span></td>
+    <td>
+      <div class="precond">onboardingCompleted=false</div>
+    </td>
+    <td>
+      <ol>
+        <li>Navegar al onboarding</li>
+        <li>Hacer swipe izquierda para avanzar a página 2</li>
+        <li>Hacer swipe derecha para volver a página 1</li>
+      </ol>
+    </td>
+    <td>HorizontalPager responde al swipe. Indicadores se actualizan. ViewModel recibe onPageChange.</td>
+    <td>Video del swipe entre páginas</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-F04</span></td>
+    <td>Botón Siguiente en página 4 NO aparece — solo Empezar</td>
+    <td><span class="tag tag-regression">REGRESIÓN</span></td>
+    <td>
+      <div class="precond">onboardingCompleted=false, navegar a página 4</div>
+    </td>
+    <td>
+      <ol>
+        <li>Avanzar hasta la última página (índice 3)</li>
+        <li>Verificar controles disponibles</li>
+      </ol>
+    </td>
+    <td>Solo aparece el botón "Empezar". No hay botón "Siguiente" ni "Omitir".</td>
+    <td>Screenshot de página 4 con solo botón Empezar</td>
+  </tr>
+</table>
+
+<h3>Grupo G: Skip y completar onboarding</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-G01</span></td>
+    <td>Skip desde página 1 completa onboarding y navega</td>
+    <td><span class="tag tag-high">HIGH</span> <span class="tag tag-vid">VIDEO</span></td>
+    <td>
+      <div class="precond">onboardingCompleted=false, en página 1 del onboarding</div>
+    </td>
+    <td>
+      <ol>
+        <li>Navegar al onboarding</li>
+        <li>Sin avanzar páginas, tocar "Omitir"</li>
+        <li>Verificar destino</li>
+      </ol>
+    </td>
+    <td>completeOnboarding() llamado. storage.onboardingCompleted=true. Navega a /client/entry con back stack limpio.</td>
+    <td>Video del skip desde página 1 con navegación final</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-G02</span></td>
+    <td>Skip desde página 2 completa onboarding</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>
+      <div class="precond">onboardingCompleted=false</div>
+    </td>
+    <td>
+      <ol>
+        <li>Avanzar a página 2</li>
+        <li>Tocar "Omitir"</li>
+      </ol>
+    </td>
+    <td>Misma lógica que CO-G01: completeOnboarding() y navega a entry.</td>
+    <td>Screenshot de storage.onboardingCompleted=true</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-G03</span></td>
+    <td>Empezar en página 4 completa onboarding y navega</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span></td>
+    <td>
+      <div class="precond">onboardingCompleted=false</div>
+    </td>
+    <td>
+      <ol>
+        <li>Avanzar por las 4 páginas hasta la última</li>
+        <li>Tocar "Empezar"</li>
+        <li>Verificar destino</li>
+      </ol>
+    </td>
+    <td>completeOnboarding() llamado. storage.onboardingCompleted=true. Navega a /client/entry.</td>
+    <td>Video del flujo completo onboarding 4 páginas + Empezar</td>
+  </tr>
+</table>
+
+<h3>Grupo H: Persistencia y segunda visita</h3>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-H01</span></td>
+    <td>Segunda apertura no muestra onboarding si ya se completó</td>
+    <td><span class="tag tag-high">HIGH</span> <span class="tag tag-regression">REGRESIÓN</span></td>
+    <td>
+      <div class="precond">storage.onboardingCompleted=true (tras completar en sesión anterior)</div>
+    </td>
+    <td>
+      <ol>
+        <li>Completar el onboarding en una primera sesión</li>
+        <li>Cerrar y reabrir la app</li>
+        <li>Navegar a /client/onboarding directamente</li>
+      </ol>
+    </td>
+    <td>La pantalla de onboarding redirige inmediatamente a /client/entry (navigateClearingBackStack). No muestra el pager.</td>
+    <td>Log "Onboarding ya completado, navegando a entry"</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-H02</span></td>
+    <td>onboardingCompleted persiste entre sesiones de app</td>
+    <td><span class="tag tag-high">HIGH</span></td>
+    <td>
+      <div class="precond">storage en CommKeyValueStorage persiste en disco/SharedPrefs</div>
+    </td>
+    <td>
+      <ol>
+        <li>Completar el onboarding</li>
+        <li>Forzar cierre de la app (kill process)</li>
+        <li>Reabrir la app</li>
+        <li>Verificar que no muestra el onboarding</li>
+      </ol>
+    </td>
+    <td>La flag onboardingCompleted=true sobrevive el kill del proceso. No se muestra el onboarding en la reapertura.</td>
+    <td>Video del kill + reapertura mostrando que no aparece el onboarding</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CO-H03</span></td>
+    <td>nextPage no avanza más allá de la última página</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>
+      <div class="precond">ViewModel con totalPages=4</div>
+    </td>
+    <td>
+      <ol>
+        <li>Llamar nextPage() 10 veces seguidas</li>
+        <li>Verificar el estado final de currentPage</li>
+      </ol>
+    </td>
+    <td>currentPage == totalPages - 1 == 3. No supera el límite.</td>
+    <td>Test unitario ClientOnboardingViewModelTest existente cubre este caso</td>
+  </tr>
+</table>
+
+<!-- ========== CASOS INTEGRACIÓN ========== -->
+<h2 id="casos-integracion">8. Casos de Prueba — Integración</h2>
+
+<div class="note"><strong>Nota:</strong> Estos casos verifican el flujo completo entre pantallas, incluyendo navegación y estado compartido.</div>
+
+<table>
+  <tr>
+    <th class="case-id">ID</th>
+    <th>Nombre</th>
+    <th>Tags</th>
+    <th>Precondición</th>
+    <th>Pasos</th>
+    <th>Resultado esperado</th>
+    <th class="evidence-col">Evidencia requerida</th>
+  </tr>
+  <tr>
+    <td><span class="case-id">CI-01</span></td>
+    <td>Flujo completo nuevo usuario: Entry → Welcome → Onboarding → Entry → Signup</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span> <span class="tag tag-vid">VIDEO</span></td>
+    <td>
+      <div class="precond">App limpia: sin sesión, onboardingCompleted=false, STORE_AVAILABLE=true, APP_TYPE=CLIENT</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir app → verificar Loading → Welcome</li>
+        <li>Tocar "Registrarse" → navega a /signup</li>
+        <li>Completar registro → sistema navega a /client/onboarding</li>
+        <li>Completar onboarding (o skip)</li>
+        <li>Verificar regreso a /client/entry con pantalla Welcome (sin sesión activa aún)</li>
+      </ol>
+    </td>
+    <td>
+      El flujo completo funciona sin errores. Back stack se limpia correctamente tras el onboarding. El usuario llega a /client/entry desde donde puede hacer login.
+    </td>
+    <td>Video del flujo completo (5-10 minutos)</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CI-02</span></td>
+    <td>Flujo cliente recurrente: Entry → auto-login → ClientHome</td>
+    <td><span class="tag tag-smoke">SMOKE</span> <span class="tag tag-high">HIGH</span> <span class="tag tag-vid">VIDEO</span></td>
+    <td>
+      <div class="precond">Token válido en storage, STORE_AVAILABLE=true, APP_TYPE=CLIENT</div>
+    </td>
+    <td>
+      <ol>
+        <li>Abrir app</li>
+        <li>Verificar que no aparece pantalla Welcome</li>
+        <li>Verificar navegación automática a /client/home</li>
+      </ol>
+    </td>
+    <td>La app navega directamente a /client/home. No hay pantalla de bienvenida. SessionStore.role=Client.</td>
+    <td>Video de reapertura mostrando auto-login</td>
+  </tr>
+  <tr>
+    <td><span class="case-id">CI-03</span></td>
+    <td>Botón Back desde onboarding no regresa al entry</td>
+    <td><span class="tag tag-edge">EDGE</span></td>
+    <td>
+      <div class="precond">Usuario en pantalla de onboarding (navegó desde signup)</div>
+    </td>
+    <td>
+      <ol>
+        <li>Completar registro y llegar al onboarding</li>
+        <li>Presionar botón Back del sistema</li>
+        <li>Verificar destino de navegación</li>
+      </ol>
+    </td>
+    <td>El back stack fue limpiado por navigateClearingBackStack. El botón back sale de la app o va al entry, no al signup.</td>
+    <td>Screenshot del estado de navegación tras Back</td>
+  </tr>
+</table>
+
+<!-- ========== GUION VIDEO ========== -->
+<h2 id="guion-video">9. Guión de Video</h2>
+
+<div class="video-std">
+  <strong>Estándar de video para todos los casos marcados con VIDEO:</strong><br>
+  Resolución mínima: 720p. FPS: 30. Overlay visible con: caso ID, paso actual, resultado esperado, timestamp.
+  Grabar con <code>screenrecord --bit-rate 4M --time-limit 60</code> en Android. Para desktop, usar OBS o la grabación de pantalla nativa.
+</div>
+
+<h3>Video 1: Flujo de nueva apertura (CE-A02 + CE-B01 + CE-B02)</h3>
+<div class="video-script">
+<strong>Duración estimada:</strong> 60 segundos<br>
+<strong>Casos cubiertos:</strong> CE-A02, CE-B01, CE-B02, CE-B03<br>
+<br>
+<strong>Guión:</strong><br>
+1. [0s] Pantalla negra (app cerrada)<br>
+2. [1s] Abrir la app — se muestra el launcher icon<br>
+3. [2s] Apparece CircularProgressIndicator (estado Loading) — CAPTURAR<br>
+4. [4s] Transición a pantalla Welcome con nombre del negocio — CAPTURAR<br>
+5. [5s] Mostrar botón "Registrarse" con ícono PersonAdd<br>
+6. [6s] Tocar "Registrarse" — verificar navegación a /signup — CAPTURAR<br>
+7. [8s] Presionar Back para volver a Welcome<br>
+8. [9s] Tocar "Iniciar sesión" — verificar navegación a /login — CAPTURAR<br>
+</div>
+
+<h3>Video 2: Auto-login cliente recurrente (CE-C01 + CI-02)</h3>
+<div class="video-script">
+<strong>Duración estimada:</strong> 30 segundos<br>
+<strong>Casos cubiertos:</strong> CE-C01, CI-02<br>
+<br>
+<strong>Guión:</strong><br>
+1. [0s] App con sesión válida en storage<br>
+2. [1s] Abrir la app<br>
+3. [2s] Spinner brevísimo (Loading)<br>
+4. [3s] Navegación directa a /client/home SIN pantalla Welcome — CAPTURAR<br>
+5. [5s] Verificar que el home del cliente está activo<br>
+</div>
+
+<h3>Video 3: Onboarding completo (CO-F01 + CO-F03 + CO-G03 + CI-01)</h3>
+<div class="video-script">
+<strong>Duración estimada:</strong> 90 segundos<br>
+<strong>Casos cubiertos:</strong> CO-F01, CO-F02, CO-F03, CO-G03<br>
+<br>
+<strong>Guión:</strong><br>
+1. [0s] En pantalla Welcome, tocar "Registrarse"<br>
+2. [3s] Completar signup básico<br>
+3. [15s] App navega a /client/onboarding — mostrar página 1 (sin ícono) — CAPTURAR<br>
+4. [17s] Mostrar indicadores de posición (1/4 activo)<br>
+5. [18s] Tocar "Siguiente" — swipe animado a página 2 (Storefront) — CAPTURAR<br>
+6. [21s] Tocar "Siguiente" — página 3 (ShoppingCart) — CAPTURAR<br>
+7. [24s] Tocar "Siguiente" — página 4 (RocketLaunch) — CAPTURAR<br>
+8. [27s] Verificar que NO hay botón Omitir — CAPTURAR<br>
+9. [28s] Tocar "Empezar" — CAPTURAR<br>
+10. [30s] App regresa a /client/entry → verificar que ahora puede hacer login<br>
+</div>
+
+<h3>Video 4: Skip desde página 1 (CO-G01)</h3>
+<div class="video-script">
+<strong>Duración estimada:</strong> 20 segundos<br>
+<strong>Casos cubiertos:</strong> CO-G01<br>
+<br>
+<strong>Guión:</strong><br>
+1. [0s] En pantalla de onboarding, página 1<br>
+2. [1s] Sin avanzar — tocar "Omitir"<br>
+3. [2s] Verificar que completeOnboarding() se llamó (log visible)<br>
+4. [3s] App regresa a /client/entry — CAPTURAR<br>
+5. [5s] Verificar back stack limpio (no se puede volver al onboarding)<br>
+</div>
+
+<h3>Video 5: Persistencia - no muestra onboarding en segunda apertura (CO-H02)</h3>
+<div class="video-script">
+<strong>Duración estimada:</strong> 30 segundos<br>
+<strong>Casos cubiertos:</strong> CO-H01, CO-H02<br>
+<br>
+<strong>Guión:</strong><br>
+1. [0s] Completar el onboarding (puede ser corte de video desde Video 3)<br>
+2. [5s] Forzar cierre de la app (via task manager o kill)<br>
+3. [8s] Reabrir la app<br>
+4. [10s] Verificar que NO aparece pantalla de onboarding — CAPTURAR<br>
+5. [12s] App va directamente a Entry (Welcome o auto-login) — CAPTURAR<br>
+</div>
+
+<h3>Video 6: Tienda inactiva (CE-D01 + CE-D02)</h3>
+<div class="video-script">
+<strong>Duración estimada:</strong> 20 segundos<br>
+<strong>Casos cubiertos:</strong> CE-D01, CE-D02<br>
+<br>
+<strong>Guión:</strong><br>
+1. [0s] App con STORE_AVAILABLE=false<br>
+2. [1s] Abrir la app<br>
+3. [3s] Pantalla StoreUnavailable visible — CAPTURAR<br>
+4. [5s] Intentar tocar el botón Lock — verificar que no responde — CAPTURAR<br>
+</div>
+
+<!-- ========== CRITERIOS DONE ========== -->
+<h2 id="criterios-done">10. Criterios de Done</h2>
+
+<h3>Criterios específicos del issue #1119</h3>
+<table>
+  <tr><th>#</th><th>Criterio</th><th>Verificación</th><th>Estado</th></tr>
+  <tr>
+    <td>1</td>
+    <td>Reporte PDF v2.0 con diagramas Mermaid generado</td>
+    <td>Archivo docs/qa/reporte-onboarding-cliente-flujos-y-casos.html + .pdf existentes</td>
+    <td>⬜</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Casos de prueba con guión de video documentados</td>
+    <td>Secciones 6, 7, 8 y 9 de este documento completas</td>
+    <td>⬜</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>Flujo completo Entry → Onboarding → Home documentado</td>
+    <td>Sección 5 de este documento, diagramas Mermaid correctos</td>
+    <td>⬜</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>Tests unitarios de ClientOnboardingViewModel existen y pasan</td>
+    <td>5 tests en ClientOnboardingViewModelTest.kt — todos PASS</td>
+    <td>⬜</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>ClientEntryScreen tiene tests de ViewModel</td>
+    <td>ClientEntryViewModelTest.kt con cobertura de resolveEntry()</td>
+    <td>⬜</td>
+  </tr>
+</table>
+
+<h3>Checklist estándar de calidad</h3>
+<table>
+  <tr><th>#</th><th>Criterio</th><th>Estado</th></tr>
+  <tr><td>1</td><td>Build completo pasa sin errores (./gradlew check)</td><td>⬜</td></tr>
+  <tr><td>2</td><td>Tests unitarios existentes pasan (ClientOnboardingViewModelTest)</td><td>⬜</td></tr>
+  <tr><td>3</td><td>No hay strings directos (sin Res.string.* ni stringResource() fuera de ResStrings)</td><td>⬜</td></tr>
+  <tr><td>4</td><td>Logger configurado en todas las clases nuevas/modificadas</td><td>⬜</td></tr>
+  <tr><td>5</td><td>Videos de evidencia grabados para casos marcados con VIDEO</td><td>⬜</td></tr>
+  <tr><td>6</td><td>PR asignado a leitolarreta con descripción completa y Closes #1119</td><td>⬜</td></tr>
+</table>
+
+<h3>Gaps identificados durante el análisis</h3>
+<div class="note">
+  <strong>Gap detectado:</strong> <code>ClientEntryScreen</code> no tiene tests unitarios de ViewModel (<code>ClientEntryViewModelTest.kt</code> no existe). La lógica de <code>resolveEntry()</code> contiene ramificaciones críticas (APP_TYPE, STORE_AVAILABLE, sesión previa) sin cobertura de tests.
+  <br><br>
+  <strong>Recomendación PO:</strong> Agregar tests para los 4 caminos de resolveEntry(): NavigateClassic, StoreUnavailable, NavigateClientHome, Welcome.
+</div>
+
+<!-- ========== DATOS DE PRUEBA ========== -->
+<h2 id="datos-prueba">11. Datos de Prueba</h2>
+
+<h3>Configuraciones de entorno</h3>
+<table>
+  <tr><th>Configuración</th><th>BuildKonfig.APP_TYPE</th><th>BuildKonfig.STORE_AVAILABLE</th><th>Storage.token</th><th>Storage.onboardingCompleted</th><th>Estado esperado</th></tr>
+  <tr><td>Nuevo cliente</td><td>CLIENT</td><td>true</td><td>null</td><td>false</td><td>Welcome</td></tr>
+  <tr><td>Cliente recurrente</td><td>CLIENT</td><td>true</td><td>"eyJhbG..."</td><td>true</td><td>NavigateClientHome</td></tr>
+  <tr><td>Tienda inactiva</td><td>CLIENT</td><td>false</td><td>null</td><td>false</td><td>StoreUnavailable</td></tr>
+  <tr><td>App de negocio</td><td>BUSINESS</td><td>N/A</td><td>N/A</td><td>N/A</td><td>NavigateClassic</td></tr>
+  <tr><td>App de delivery</td><td>DELIVERY</td><td>N/A</td><td>N/A</td><td>N/A</td><td>NavigateClassic</td></tr>
+</table>
+
+<h3>Datos de usuario para pruebas manuales</h3>
+<table>
+  <tr><th>Campo</th><th>Valor de prueba</th><th>Notas</th></tr>
+  <tr><td>Email</td><td>maria.gonzalez@gmail.com</td><td>Cliente nuevo sin cuenta</td></tr>
+  <tr><td>Email recurrente</td><td>carlos.lopez@hotmail.com</td><td>Ya tiene cuenta activa</td></tr>
+  <tr><td>Contraseña</td><td>IntraleTest2024!</td><td>Cumple política: mayúscula, número, especial</td></tr>
+  <tr><td>Nombre negocio</td><td>La Parrilla de Don Ramón</td><td>Con espacios y acentos (verificar formattedBusinessName)</td></tr>
+  <tr><td>Nombre negocio minúsculas</td><td>panaderia integral</td><td>Verifica capitalización automática en Entry</td></tr>
+</table>
+
+<h3>Dispositivos de prueba sugeridos</h3>
+<table>
+  <tr><th>Dispositivo</th><th>OS</th><th>Prioridad</th><th>Notas</th></tr>
+  <tr><td>Emulador Android API 30</td><td>Android 11</td><td>Alta</td><td>Caso base para todos los casos</td></tr>
+  <tr><td>Emulador Android API 34</td><td>Android 14</td><td>Media</td><td>Regresión con Material3 y predictive back</td></tr>
+  <tr><td>Desktop JVM</td><td>Windows / Linux</td><td>Baja</td><td>Verificar que el pager funciona con mouse</td></tr>
+</table>
+
+<hr>
+<p style="text-align:center;color:#999;font-size:9px;margin-top:20px;">
+  Reporte generado por PO + QA Agents · Intrale Platform · Issue #1119 · 2026-03-11 · v2.0
+</p>
+
+</body>
+</html>
