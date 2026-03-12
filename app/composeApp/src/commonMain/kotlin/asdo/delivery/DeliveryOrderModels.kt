@@ -7,7 +7,7 @@ import ext.delivery.DeliveryOrderStatusUpdateResponse
 import ext.delivery.DeliveryOrdersSummaryDTO
 
 enum class DeliveryOrderStatus {
-    PENDING, IN_PROGRESS, DELIVERED, UNKNOWN
+    PENDING, IN_PROGRESS, DELIVERED, NOT_DELIVERED, UNKNOWN
 }
 
 data class DeliveryOrder(
@@ -101,6 +101,7 @@ fun String.toDeliveryOrderStatus(): DeliveryOrderStatus = when (this.lowercase()
     "pending" -> DeliveryOrderStatus.PENDING
     "inprogress", "in_progress", "assigned" -> DeliveryOrderStatus.IN_PROGRESS
     "delivered" -> DeliveryOrderStatus.DELIVERED
+    "not_delivered", "notdelivered" -> DeliveryOrderStatus.NOT_DELIVERED
     else -> DeliveryOrderStatus.UNKNOWN
 }
 
@@ -108,6 +109,7 @@ fun DeliveryOrderStatus.toApiString(): String = when (this) {
     DeliveryOrderStatus.PENDING -> "pending"
     DeliveryOrderStatus.IN_PROGRESS -> "inprogress"
     DeliveryOrderStatus.DELIVERED -> "delivered"
+    DeliveryOrderStatus.NOT_DELIVERED -> "not_delivered"
     DeliveryOrderStatus.UNKNOWN -> "unknown"
 }
 
