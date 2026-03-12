@@ -15,6 +15,24 @@ const HEARTBEAT_STATE_FILE = path.join(HOOKS_DIR, 'heartbeat-state.json');
 const TG_CONFIG_FILE = path.join(HOOKS_DIR, 'telegram-config.json');
 const DEFAULT_SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
 
+// Resolver la raíz del repo principal (para leer roadmap.json desde el repo main, no desde un worktree)
+function resolveMainRepoRoot() {
+  const envRoot = process.env.CLAUDE_PROJECT_DIR || 'C:\\Workspaces\\Intrale\\platform';
+  try {
+    const { execSync } = require('child_process');
+    const out = execSync('git worktree list', {
+      encoding: 'utf8', cwd: envRoot, timeout: 5000, windowsHide: true
+    });
+    const firstLine = out.split('\n')[0] || '';
+    const match = firstLine.match(/^(.+?)\s+[0-9a-f]{5,}/);
+    if (match) return match[1].trim().replace(/\\/g, '/');
+  } catch (e) {}
+  return envRoot.replace(/\\/g, '/');
+}
+
+const MAIN_REPO_ROOT = resolveMainRepoRoot();
+const ROADMAP_FILE = path.join(MAIN_REPO_ROOT, 'scripts', 'roadmap.json');
+
 // Constantes del intervalo adaptativo
 const INTERVAL_STEP_MIN = 10;       // Minutos extra por cada ciclo inactivo
 const MAX_INTERVAL_MIN = 60;        // Cap máximo del intervalo
@@ -35,6 +53,22 @@ let reportIntervalMin = 10;
 let portRef = 3100;
 let collectDataFn = null;
 let takeScreenshotFn = null;
+
+// --- Horizonte del roadmap ---
+
+/**
+ * Lee roadmap.json y calcula el horizonte: número de sprints futuros planificados.
+ * Retorna null si no se puede leer el archivo (falla silenciosa).
+ */
+function readRoadmapHorizon() {
+  try {
+    if (!fs.existsSync(ROADMAP_FILE)) return null;
+    const roadmap = JSON.parse(fs.readFileSync(ROADMAP_FILE, 'utf8'));
+    if (!Array.isArray(roadmap.sprints)) return null;
+    const futureSprints = roadmap.sprints.filter(function(s) { return s.status !== 'done'; });
+    return futureSprints.length;
+  } catch { return null; }
+}
 
 // --- Estado persistente ---
 
@@ -214,8 +248,11 @@ async function sendHeartbeat() {
     const modeLabel = heartbeatMode === 'normal'
       ? ' (cada ' + heartbeatCurrentInterval + ' min)'
       : ' (cada ' + heartbeatCurrentInterval + ' min \u2014 sin actividad)';
+    const horizon = readRoadmapHorizon();
+    const horizonLine = horizon !== null ? '\n\ud83d\udcc5 Horizonte: ' + horizon + ' sprint' + (horizon !== 1 ? 's' : '') + ' planificado' + (horizon !== 1 ? 's' : '') : '';
     const caption = modeIcon + ' <b>Intrale Monitor \u2014 Heartbeat</b>' + modeLabel + '\n' +
-      new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+      new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }) +
+      horizonLine;
 
     if (takeScreenshotFn) {
       // 1. Intentar álbum top/bottom (split screenshot)

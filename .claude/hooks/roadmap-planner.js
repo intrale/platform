@@ -9,6 +9,9 @@
 //      c. Clasificar por prioridad y stream (bugs primero, balance de streams)
 //      d. Distribuir en sprints vacíos (7-10 issues por sprint)
 //      e. Escribir roadmap.json actualizado
+//   3. Detectar insuficiencia de backlog:
+//      a. Calcular issues_necesarios = sprints_vacios × MIN_ISSUES_PER_SPRINT
+//      b. Si backlog_disponible < issues_necesarios → notificar vía Telegram
 //
 // Reglas de distribución:
 //   - Bugs y bloqueantes → sprint más cercano
@@ -28,6 +31,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const https = require("https");
 const { execSync } = require("child_process");
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -51,6 +55,7 @@ const SCRIPTS_DIR  = path.join(REPO_ROOT, "scripts");
 const ROADMAP_FILE = path.join(SCRIPTS_DIR, "roadmap.json");
 const LOG_FILE     = path.join(HOOKS_DIR, "hook-debug.log");
 const GH_PATH      = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
+const TG_CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
 
 // ─── Constantes de distribución ───────────────────────────────────────────────
 
@@ -268,6 +273,98 @@ function distributeIntoSprint(candidates, targetMin, targetMax) {
     return [assigned, remaining];
 }
 
+// ─── Notificación Telegram ────────────────────────────────────────────────────
+
+/**
+ * Lee la configuración de Telegram desde telegram-config.json.
+ * Retorna { bot_token, chat_id } o null si no hay configuración.
+ */
+function readTelegramConfig() {
+    try {
+        return JSON.parse(fs.readFileSync(TG_CONFIG_FILE, "utf8"));
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Envía un mensaje de texto a Telegram (fire-and-forget, no bloquea).
+ * Falla silenciosamente para no interrumpir la distribución normal.
+ */
+function sendTelegramAlert(text) {
+    try {
+        const tg = readTelegramConfig();
+        if (!tg || !tg.bot_token || !tg.chat_id) {
+            log("WARN: Telegram no configurado — alerta omitida");
+            return;
+        }
+        const params = JSON.stringify({
+            chat_id: tg.chat_id,
+            text,
+            parse_mode: "HTML",
+            disable_web_page_preview: true
+        });
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + tg.bot_token + "/sendMessage",
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(params)
+            },
+            timeout: 10000
+        }, (res) => {
+            let body = "";
+            res.on("data", (c) => body += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(body);
+                    if (r.ok) log("Alerta Telegram enviada OK (msg_id=" + r.result.message_id + ")");
+                    else log("WARN: Telegram error: " + body.substring(0, 200));
+                } catch (e) { log("WARN: Telegram respuesta no-JSON: " + body.substring(0, 200)); }
+            });
+        });
+        req.on("error", (e) => log("WARN: Telegram req error: " + e.message));
+        req.write(params);
+        req.end();
+    } catch (e) {
+        log("WARN: Error enviando alerta Telegram: " + e.message);
+    }
+}
+
+/**
+ * Detecta si el backlog es insuficiente para cubrir los sprints vacíos.
+ * Si lo es, envía una alerta a Telegram.
+ *
+ * @param {number} emptySprints - Cantidad de sprints vacíos detectados
+ * @param {number} backlogAvailable - Issues disponibles en el backlog
+ * @returns {boolean} true si el backlog es insuficiente
+ */
+function detectAndNotifyInsufficientBacklog(emptySprints, backlogAvailable) {
+    const issuesNeeded = emptySprints * MIN_ISSUES_PER_SPRINT;
+    const isInsufficient = backlogAvailable < issuesNeeded;
+
+    log(
+        "Verificación de backlog: disponibles=" + backlogAvailable +
+        " necesarios=" + issuesNeeded + " (sprints_vacios=" + emptySprints +
+        " × " + MIN_ISSUES_PER_SPRINT + ")" +
+        (isInsufficient ? " — INSUFICIENTE" : " — OK")
+    );
+
+    if (isInsufficient) {
+        const deficit = issuesNeeded - backlogAvailable;
+        const alertText =
+            "⚠️ <b>Backlog insuficiente para 7 sprints</b>\n\n" +
+            "📋 Issues disponibles: <b>" + backlogAvailable + "</b>\n" +
+            "📋 Issues necesarios: <b>" + issuesNeeded + "</b> (" + emptySprints + " sprints × " + MIN_ISSUES_PER_SPRINT + ")\n" +
+            "📉 Déficit: <b>" + deficit + " issues</b>\n\n" +
+            "👉 Ejecutar <code>/planner proponer</code> para generar nuevas historias.";
+        sendTelegramAlert(alertText);
+    }
+
+    return isInsufficient;
+}
+
 // ─── Función principal ────────────────────────────────────────────────────────
 
 /**
@@ -281,7 +378,7 @@ function distributeIntoSprint(candidates, targetMin, targetMax) {
  * @param {object} opts
  * @param {boolean} [opts.dryRun=false] - Si true, no escribe roadmap.json
  * @param {number}  [opts.limit=200]    - Límite de issues a pedir a GitHub
- * @returns {{ filled: number, skipped: number, remaining: number, message: string }}
+ * @returns {{ filled: number, skipped: number, remaining: number, horizon: number, backlogInsufficient: boolean, message: string }}
  */
 function planRoadmap(opts) {
     opts = opts || {};
@@ -295,7 +392,7 @@ function planRoadmap(opts) {
     if (!roadmap || !Array.isArray(roadmap.sprints)) {
         const msg = "ERROR: No se pudo leer roadmap.json o no tiene sprints";
         log(msg);
-        return { filled: 0, skipped: 0, remaining: 0, message: msg };
+        return { filled: 0, skipped: 0, remaining: 0, horizon: 0, backlogInsufficient: false, message: msg };
     }
 
     // 2. Contar sprints futuros (status !== "done")
@@ -305,7 +402,7 @@ function planRoadmap(opts) {
     if (futureSprints.length >= MIN_HORIZON) {
         const msg = "OK: " + futureSprints.length + " sprints futuros — no se necesita replanificación (mínimo: " + MIN_HORIZON + ")";
         log(msg);
-        return { filled: 0, skipped: futureSprints.length, remaining: 0, message: msg };
+        return { filled: 0, skipped: futureSprints.length, remaining: 0, horizon: futureSprints.length, backlogInsufficient: false, message: msg };
     }
 
     // 3. Colectar todos los issue numbers ya asignados en algún sprint
@@ -325,12 +422,6 @@ function planRoadmap(opts) {
     const candidates = openIssues.filter(i => !assignedNumbers.has(i.number));
     log("Candidatos disponibles: " + candidates.length);
 
-    if (candidates.length === 0) {
-        const msg = "WARN: No hay issues disponibles en el backlog para distribuir";
-        log(msg);
-        return { filled: 0, skipped: 0, remaining: 0, message: msg };
-    }
-
     // 6. Ordenar candidatos por prioridad (mayor score = primero)
     candidates.sort((a, b) => scoreIssue(b) - scoreIssue(a));
 
@@ -340,10 +431,19 @@ function planRoadmap(opts) {
     );
     log("Sprints vacíos a llenar: " + emptySprints.length);
 
+    // Detectar insuficiencia de backlog (antes de distribuir, para alertar aunque no haya candidatos)
+    const backlogInsufficient = detectAndNotifyInsufficientBacklog(emptySprints.length, candidates.length);
+
+    if (candidates.length === 0) {
+        const msg = "WARN: No hay issues disponibles en el backlog para distribuir";
+        log(msg);
+        return { filled: 0, skipped: 0, remaining: 0, horizon: futureSprints.length, backlogInsufficient: true, message: msg };
+    }
+
     if (emptySprints.length === 0) {
         const msg = "INFO: No hay sprints vacíos — todos los sprints futuros ya tienen issues";
         log(msg);
-        return { filled: 0, skipped: futureSprints.length, remaining: candidates.length, message: msg };
+        return { filled: 0, skipped: futureSprints.length, remaining: candidates.length, horizon: futureSprints.length, backlogInsufficient, message: msg };
     }
 
     // 8. Distribuir candidatos en sprints vacíos (más cercano primero)
@@ -409,10 +509,12 @@ function planRoadmap(opts) {
     log(msg);
 
     return {
-        filled:    filledCount,
-        skipped:   emptySprints.length - filledCount,
-        remaining: pool.length,
-        message:   msg
+        filled:              filledCount,
+        skipped:             emptySprints.length - filledCount,
+        remaining:           pool.length,
+        horizon:             futureSprints.length,
+        backlogInsufficient: backlogInsufficient,
+        message:             msg
     };
 }
 
@@ -426,5 +528,9 @@ if (require.main === module) {
     const dryRun = process.argv.includes("--dry-run");
     const result = planRoadmap({ dryRun });
     console.log("\n[roadmap-planner] " + result.message);
+    console.log("[roadmap-planner] 📅 Horizonte: " + result.horizon + " sprints planificados");
+    if (result.backlogInsufficient) {
+        console.log("[roadmap-planner] ⚠️  Backlog insuficiente — ejecutar /planner proponer");
+    }
     process.exit(0);
 }
