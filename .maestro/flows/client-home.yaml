@@ -1,0 +1,68 @@
+appId: com.intrale.app.client
+---
+# Flujo: ClientHome — Home del cliente (catálogo y carrito)
+# Issue #1120 — QA Compliance Catálogo de Producto
+
+- launchApp:
+    clearState: true
+
+# Saltar onboarding si aparece
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 10000
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+# Esperar pantalla de bienvenida y hacer login
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 15000
+- tapOn:
+    text: "Ya tengo cuenta"
+
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
+
+- tapOn:
+    id: "field_Usuario"
+- inputText: "admin@intrale.com"
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "Admin1234!"
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Screenshot: Estado post-login (home del cliente)
+- takeScreenshot: client-home-loaded
+
+# Esperar que el home esté cargado con el banner
+- extendedWaitUntil:
+    visible:
+      text: "Ver catálogo"
+    timeout: 20000
+
+- assertVisible:
+    text: "Ver catálogo"
+    label: "Banner CTA visible en home"
+
+# Screenshot del banner CTA
+- takeScreenshot: client-home-banner
+
+# Navegar al catálogo via banner
+- tapOn:
+    text: "Ver catálogo"
+
+- waitForAnimationToEnd
+- takeScreenshot: client-home-navigate-to-catalog
+
+# Volver al home
+- pressKey: back
+- waitForAnimationToEnd
+- takeScreenshot: client-home-back-from-catalog
