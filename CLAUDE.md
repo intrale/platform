@@ -34,7 +34,9 @@ platform/
 ./gradlew :backend:run               # Levantar backend embebido
 ./gradlew :app:composeApp:run        # App escritorio (JVM)
 ./gradlew :app:composeApp:wasmJsBrowserDevelopmentRun  # App web (Wasm)
-./gradlew :app:composeApp:installDebug                 # App Android
+./gradlew :app:composeApp:installDebug                 # App Android (flavor client)
+./gradlew :app:composeApp:assembleBusinessDebug        # APK Intrale Negocios (APP_TYPE=BUSINESS)
+./gradlew :app:composeApp:assembleDeliveryDebug        # APK Intrale Repartos (APP_TYPE=DELIVERY)
 ./gradlew :users:shadowJar           # JAR para Lambda AWS
 ./gradlew verifyNoLegacyStrings      # Verificar strings legacy
 ./gradlew :app:composeApp:validateComposeResources     # Validar resource packs
