@@ -192,6 +192,9 @@ function escHtml(str) {
 let tgClient = null;
 try { tgClient = require("./telegram-client"); } catch (e) {}
 
+// Validación centralizada de completación (#1458)
+const { buildCompletedEntry, validateCompletionCriteria, MIN_DURATION_MINUTES } = require("./validation-utils");
+
 async function notify(text) {
     if (tgClient) {
         try { await tgClient.sendMessage(text); return; } catch (e) { log("tgClient error: " + e.message); }
@@ -402,23 +405,8 @@ async function updateProjectV2(issue, statusName) {
     }
 }
 
-// ─── buildCompletedEntry ──────────────────────────────────────────────────────
-
-function buildCompletedEntry(agente, resultado) {
-    return {
-        issue: agente.issue,
-        slug: agente.slug,
-        titulo: agente.titulo || "",
-        numero: agente.numero,
-        stream: agente.stream || "",
-        size: agente.size || "",
-        resultado: resultado,
-        duracion_min: 0,
-        issue_reabierto: null,
-        completado_at: new Date().toISOString(),
-        detectado_por: "agent-watcher"
-    };
-}
+// buildCompletedEntry: importado desde validation-utils (#1458)
+// La versión local fue eliminada — usar buildCompletedEntry(agente, null, resultado) desde el módulo compartido.
 
 // ─── Ciclo principal ──────────────────────────────────────────────────────────
 
@@ -474,17 +462,43 @@ async function runCycle() {
             freshPlan.agentes = (freshPlan.agentes || []).filter(a => a.issue !== ag.issue);
             planDirty = true;
 
-            if (prStatus.status === "merged" || prStatus.status === "open") {
-                // PR mergeada o abierta → completado (ok)
-                const entry = buildCompletedEntry(ag, "ok");
-                freshPlan._completed.push(entry);
-                log("Agente #" + ag.issue + " → _completed (PR " + prStatus.status + ")");
-
-                await updateProjectV2(ag.issue, "Done");
+            if (prStatus.status === "merged") {
+                // PR mergeada → validar criterios antes de marcar completado (#1458)
+                const entry = buildCompletedEntry(ag, null, "ok");
+                entry.detectado_por = "agent-watcher";
+                const validation = validateCompletionCriteria(entry.duracion_min, prStatus, branch);
+                if (validation.suspicious) {
+                    // Validación fallida → marcar como suspicious, NO promover de cola
+                    entry.resultado = "suspicious";
+                    entry.motivo = validation.reason;
+                    freshPlan._incomplete.push(entry);
+                    log("Agente #" + ag.issue + " → _incomplete SUSPICIOUS: " + validation.reason);
+                    await notify(
+                        "⚠️ <b>Agente #" + ag.issue + " SOSPECHOSO (watcher)</b>\n" +
+                        "PR mergeada pero validación fallida.\n" +
+                        "Motivo: " + escHtml(validation.reason) + "\n" +
+                        "<i>Acción requerida: revisar manualmente</i>"
+                    );
+                } else {
+                    freshPlan._completed.push(entry);
+                    log("Agente #" + ag.issue + " → _completed (PR merged, " + entry.duracion_min + " min)");
+                    await updateProjectV2(ag.issue, "Done");
+                    await notify(
+                        "✅ <b>Agente #" + ag.issue + " completado (watcher)</b>\n" +
+                        "PR mergeada · Slug: " + escHtml(ag.slug) + "\n" +
+                        "Duración: " + entry.duracion_min + " min\n" +
+                        "<i>Slot liberado · verificando cola...</i>"
+                    );
+                }
+            } else if (prStatus.status === "open") {
+                // PR abierta → mantener en agentes[] con status "waiting" (slot liberado) (#1458)
+                const waitingEntry = Object.assign({}, ag, { status: "waiting", resultado: "pending_review" });
+                freshPlan.agentes.push(waitingEntry);
+                log("Agente #" + ag.issue + " → agentes[waiting] (PR abierta — pendiente review)");
                 await notify(
-                    "✅ <b>Agente #" + ag.issue + " completado (watcher)</b>\n" +
-                    "PR: " + prStatus.status + " · Slug: " + escHtml(ag.slug) + "\n" +
-                    "<i>Slot liberado · verificando cola...</i>"
+                    "⏳ <b>Agente #" + ag.issue + " terminó — PR abierta (watcher)</b>\n" +
+                    "Rama: " + escHtml(branch) + "\n" +
+                    "Estado: pendiente de review · slot liberado"
                 );
             } else {
                 // Sin PR o cerrada sin merge → incompleto
@@ -493,7 +507,8 @@ async function runCycle() {
                     : prStatus.status === "closed_no_merge"
                         ? "PR cerrada sin merge"
                         : "Sin PR — el agente no completó /delivery";
-                const entry = buildCompletedEntry(ag, "failed");
+                const entry = buildCompletedEntry(ag, null, "failed");
+                entry.detectado_por = "agent-watcher";
                 entry.motivo = motivo;
                 freshPlan._incomplete.push(entry);
                 log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
