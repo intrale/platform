@@ -1,0 +1,75 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #736 — Confirmar entrega (DELIVERED)
+# Criterio: Desde "En camino al cliente" permitir marcar como "Entregado"
+# Prerrequisito: Usuario delivery logueado con un pedido en estado IN_PROGRESS
+
+- launchApp:
+    clearState: false
+
+- waitForAnimationToEnd
+
+# Esperar pantalla home de delivery
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 15000
+
+- takeScreenshot: 736-delivered-01-home
+
+# Navegar al primer pedido activo (tap en la card)
+- tapOn:
+    text: "En camino"
+    optional: true
+- waitForAnimationToEnd
+
+# Si no hay pedido "En camino", intentar con "En progreso"
+- tapOn:
+    text: "En progreso"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 736-delivered-02-detail
+
+# Verificar que estamos en la pantalla de detalle
+- assertVisible:
+    text: "Pedido"
+
+# Verificar que el botón "Marcar entregado" está visible
+- assertVisible:
+    text: "Marcar entregado"
+
+- takeScreenshot: 736-delivered-03-actions
+
+# Tocar "Marcar entregado"
+- tapOn:
+    text: "Marcar entregado"
+
+- waitForAnimationToEnd
+
+# Verificar que aparece el diálogo de confirmación
+- assertVisible:
+    text: "Confirmar entrega"
+
+- takeScreenshot: 736-delivered-04-dialog
+
+# Verificar que el diálogo tiene el botón de confirmación
+- assertVisible:
+    text: "Sí, entregar"
+
+# Verificar que el diálogo tiene el botón cancelar
+- assertVisible:
+    text: "Cancelar"
+
+# Confirmar la entrega
+- tapOn:
+    text: "Sí, entregar"
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 736-delivered-05-confirmed
+
+# Verificar el mensaje de confirmación (snackbar)
+- assertVisible:
+    text: "Estado actualizado"
+    optional: true

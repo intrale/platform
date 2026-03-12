@@ -1,0 +1,74 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #736 — No entregado sin motivo (validación de formulario)
+# Criterio: Si se marca "No entregado", debe solicitarse motivo
+# Prerrequisito: Usuario delivery logueado con un pedido en estado IN_PROGRESS
+
+- launchApp:
+    clearState: false
+
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 15000
+
+# Navegar al detalle del pedido
+- tapOn:
+    text: "En camino"
+    optional: true
+- waitForAnimationToEnd
+
+- tapOn:
+    text: "En progreso"
+    optional: true
+- waitForAnimationToEnd
+
+# Abrir bottom sheet de "No entregado"
+- tapOn:
+    text: "No pude entregar"
+
+- waitForAnimationToEnd
+
+- assertVisible:
+    text: "¿Por qué no pudiste entregar?"
+
+- takeScreenshot: 736-validation-01-sheet-open
+
+# Intentar confirmar SIN seleccionar motivo
+- tapOn:
+    text: "Sí, entregar"
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 736-validation-02-reason-error
+
+# Verificar que el bottom sheet sigue abierto (no se cerró)
+- assertVisible:
+    text: "¿Por qué no pudiste entregar?"
+
+# Verificar que se muestra el error de validación
+- assertVisible:
+    text: "Selecciona un motivo"
+
+- takeScreenshot: 736-validation-03-error-shown
+
+# Ahora seleccionar "Otro"
+- tapOn:
+    text: "Otro motivo"
+    optional: true
+
+- tapOn:
+    text: "Otro"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Intentar confirmar con "Otro" sin texto
+- tapOn:
+    text: "Sí, entregar"
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 736-validation-04-other-error

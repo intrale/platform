@@ -1,0 +1,81 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #736 — No entregado con motivo (NOT_DELIVERED)
+# Criterio: Desde "En camino al cliente" permitir marcar como "No entregado" con motivo
+# Prerrequisito: Usuario delivery logueado con un pedido en estado IN_PROGRESS
+
+- launchApp:
+    clearState: false
+
+- waitForAnimationToEnd
+
+# Esperar pantalla home de delivery
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 15000
+
+- takeScreenshot: 736-notdelivered-01-home
+
+# Navegar al primer pedido activo
+- tapOn:
+    text: "En camino"
+    optional: true
+- waitForAnimationToEnd
+
+- tapOn:
+    text: "En progreso"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 736-notdelivered-02-detail
+
+# Verificar pantalla de detalle
+- assertVisible:
+    text: "Pedido"
+
+# Verificar que el botón "No pude entregar" está visible (solo en estado IN_PROGRESS)
+- assertVisible:
+    text: "No pude entregar"
+
+- takeScreenshot: 736-notdelivered-03-actions
+
+# Tocar "No pude entregar"
+- tapOn:
+    text: "No pude entregar"
+
+- waitForAnimationToEnd
+
+# Verificar que aparece el bottom sheet con los motivos
+- assertVisible:
+    text: "¿Por qué no pudiste entregar?"
+
+- takeScreenshot: 736-notdelivered-04-sheet
+
+# Verificar que se muestran los motivos
+- assertVisible:
+    text: "Cliente ausente"
+
+- assertVisible:
+    text: "Dirección incorrecta"
+
+# Seleccionar motivo "Cliente ausente"
+- tapOn:
+    text: "Cliente ausente"
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 736-notdelivered-05-reason-selected
+
+# Confirmar
+- tapOn:
+    text: "Sí, entregar"
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 736-notdelivered-06-confirmed
+
+# Verificar el mensaje de éxito
+- assertVisible:
+    text: "Resultado de entrega registrado"
+    optional: true
