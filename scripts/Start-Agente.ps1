@@ -324,6 +324,40 @@ if ($Numero -eq "all") {
     Write-Host ">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)" -ForegroundColor Cyan
     Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
     Write-Host ">> Reporte post-sprint se generará automáticamente cuando terminen." -ForegroundColor Cyan
+
+    # Lanzar agent-watcher.js como proceso background (#1441)
+    # Monitorea worktrees externos y promueve automáticamente desde _queue[]
+    $WatcherScript = Join-Path $MainRepo ".claude\hooks\agent-watcher.js"
+    $WatcherPidFile = Join-Path $MainRepo ".claude\hooks\agent-watcher.pid"
+    $WatcherAlreadyRunning = $false
+
+    if (Test-Path $WatcherPidFile) {
+        try {
+            $existingPid = [int](Get-Content $WatcherPidFile -Raw).Trim()
+            $proc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+            if ($proc) {
+                Write-Host ">> Agent Watcher ya activo (PID $existingPid) — no se lanza otro" -ForegroundColor DarkGray
+                $WatcherAlreadyRunning = $true
+            }
+        } catch {
+            # PID file existe pero PID muerto — el watcher lo limpiará al arrancar
+        }
+    }
+
+    if (-not $WatcherAlreadyRunning -and (Test-Path $WatcherScript)) {
+        $watcherLogDir = Join-Path $PSScriptRoot 'logs'
+        if (-not (Test-Path $watcherLogDir)) { New-Item -ItemType Directory -Path $watcherLogDir -Force | Out-Null }
+        $watcherStdout = Join-Path $watcherLogDir "agent-watcher-stdout.log"
+        $watcherStderr = Join-Path $watcherLogDir "agent-watcher-stderr.log"
+
+        $watcherProc = Start-Process node -ArgumentList $WatcherScript -PassThru -WindowStyle Hidden -RedirectStandardOutput $watcherStdout -RedirectStandardError $watcherStderr
+
+        Write-Host ">> Agent Watcher lanzado en background (PID $($watcherProc.Id))" -ForegroundColor Cyan
+        Write-Host ">> Log stdout: $watcherStdout" -ForegroundColor DarkGray
+        Write-Host ">> Log stderr: $watcherStderr" -ForegroundColor DarkGray
+    } elseif (-not (Test-Path $WatcherScript)) {
+        Write-Host ">> WARN: agent-watcher.js no encontrado en: $WatcherScript" -ForegroundColor Yellow
+    }
 }
 else {
     $num = [int]$Numero
