@@ -70,6 +70,9 @@ let _onAllDone = null; // callback cuando todos los agentes terminan
 let tgClient;
 try { tgClient = require("./telegram-client"); } catch (e) { tgClient = null; }
 
+// Validación centralizada de completación (#1458)
+const { validateCompletionCriteria, checkPRStatusViaGh } = require("./validation-utils");
+
 let opsLearnings;
 try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
 
@@ -600,19 +603,43 @@ function promoteFromQueue(plan) {
 }
 
 /**
- * Mueve un agente del array activo a un array _completed.
- * Persiste los cambios en sprint-plan.json.
+ * Mueve un agente del array activo a _completed o _incomplete según validación (#1458).
+ * Antes de marcar como completado, verifica PR mergeada y duración mínima.
+ * Si la validación falla → marca como "suspicious" en _incomplete[] y NO promueve cola.
  */
 function moveToCompleted(plan, issueNumber) {
     if (!plan || !issueNumber) return;
     if (!Array.isArray(plan._completed)) plan._completed = [];
+    if (!Array.isArray(plan._incomplete)) plan._incomplete = [];
 
     const idx = (plan.agentes || []).findIndex(ag => ag.issue === issueNumber);
     if (idx === -1) return;
 
     const [finished] = plan.agentes.splice(idx, 1);
     finished.completed_at = new Date().toISOString();
-    plan._completed.push(finished);
+
+    // Validar PR antes de mover a _completed (#1458)
+    const branch = "agent/" + finished.issue + "-" + finished.slug;
+    let prStatus = { status: "unknown" };
+    try { prStatus = checkPRStatusViaGh(branch); } catch (e) {}
+
+    // Calcular duración desde started_at si está disponible
+    let duracion_min = 0;
+    if (finished.started_at) {
+        const started = new Date(finished.started_at).getTime();
+        if (started) duracion_min = Math.round((Date.now() - started) / 60000);
+    }
+
+    const validation = validateCompletionCriteria(duracion_min, prStatus, branch);
+    if (validation.suspicious) {
+        finished.resultado = "suspicious";
+        finished.motivo = validation.reason;
+        plan._incomplete.push(finished);
+        log("moveToCompleted: #" + issueNumber + " → _incomplete SUSPICIOUS: " + validation.reason);
+    } else {
+        plan._completed.push(finished);
+        log("moveToCompleted: #" + issueNumber + " → _completed (PR merged, " + duracion_min + " min)");
+    }
 
     try {
         fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");

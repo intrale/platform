@@ -25,6 +25,9 @@ const path = require("path");
 const https = require("https");
 const { execSync } = require("child_process");
 
+// Validación centralizada de completación (#1458)
+const { checkPRStatusViaGh } = require("./validation-utils");
+
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
 function resolveMainRepoRoot() {
@@ -314,13 +317,20 @@ function reconcileSprintPlan(plan, ghCmd) {
         // prStatus === "open" o "unknown": agente activo o no verificable — no actuar
     }
 
-    // b) _queue[] con issue cerrado en GitHub
+    // b) _queue[] con issue cerrado en GitHub — verificar PR antes de marcar completed (#1458)
     const queue = Array.isArray(plan._queue) ? [...plan._queue] : [];
     for (const q of queue) {
         const closed = checkIssueClosed(q.issue, ghCmd);
         if (closed === true) {
+            // Verificar si también hay PR mergeada — sin PR = "not_planned", no "ok"
+            const qBranch = "agent/" + q.issue + "-" + q.slug;
+            let qPrStatus = { status: "unknown" };
+            try { qPrStatus = checkPRStatusViaGh(qBranch); } catch (e) {}
+
             plan._queue = plan._queue.filter(i => i.issue !== q.issue);
             if (!Array.isArray(plan._completed)) plan._completed = [];
+
+            const resultado = qPrStatus.status === "merged" ? "ok" : "not_planned";
             plan._completed.push({
                 issue: q.issue,
                 slug: q.slug,
@@ -328,11 +338,12 @@ function reconcileSprintPlan(plan, ghCmd) {
                 numero: q.numero,
                 stream: q.stream,
                 size: q.size,
-                resultado: "ok",
+                resultado: resultado,
                 completado_at: now,
-                sync_source: "sprint-sync"
+                sync_source: "sprint-sync",
+                pr_status: qPrStatus.status
             });
-            changes.push("sprint-plan: #" + q.issue + " movido de _queue[] a _completed[] (issue cerrado en GitHub)");
+            changes.push("sprint-plan: #" + q.issue + " movido de _queue[] a _completed[] (issue cerrado, PR=" + qPrStatus.status + ", resultado=" + resultado + ")");
         }
     }
 
