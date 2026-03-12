@@ -363,6 +363,28 @@ Reportar resumen de consistencia:
 
 **En modo `sync`:** ejecutar `node /c/Workspaces/Intrale/platform/scripts/update-project-board.js` para auto-corregir las discrepancias detectadas.
 
+### 8. Horizonte de planificación
+
+Verificar cuántos sprints futuros tienen issues planificados en `roadmap.json`:
+
+```bash
+cat > /tmp/audit-horizon.js << 'EOF'
+const fs = require('fs');
+const roadmap = JSON.parse(fs.readFileSync('/c/Workspaces/Intrale/platform/scripts/roadmap.json', 'utf8'));
+const futuros = (roadmap.sprints || []).filter(s => s.status !== 'done').length;
+const salud = futuros >= 7 ? '🟢' : futuros >= 5 ? '🟡' : '🔴';
+console.log(JSON.stringify({ futuros, salud }));
+EOF
+node /tmp/audit-horizon.js
+```
+
+Incluir en el reporte:
+```
+### Horizonte de planificación
+- Sprints futuros con issues: N/7
+- Salud: 🟢 ≥7 | 🟡 5-6 | 🔴 <5
+```
+
 ### Formato de reporte
 
 ```
@@ -402,6 +424,10 @@ Reportar resumen de consistencia:
 | Timestamp | Issue | Acción | Estado |
 |-----------|-------|--------|--------|
 | [ISO] | #123  | close_issue_and_move_to_done | ✅ ok |
+
+### Horizonte de planificación
+- Sprints futuros con issues: N/7
+- Salud: 🟢 ≥7 | 🟡 5-6 | 🔴 <5
 
 ### Resumen
 - Total items en board: N
@@ -880,6 +906,35 @@ gh issue comment <NUMBER> --repo intrale/platform \
 
 Verificar que no queden issues en "In Progress" sin sprint activo asignado.
 
+### Paso C8b: Invocar roadmap-planner.js
+
+Después de cerrar el sprint y sincronizar el board, invocar `roadmap-planner.js` para mantener el horizonte de planificación automáticamente:
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/roadmap-planner.js 2>/dev/null
+```
+
+El script distribuye issues del backlog en sprints futuros vacíos cuando el horizonte cae por debajo de 7 sprints.
+
+Luego, leer `roadmap.json` para contar sprints futuros y calcular el estado del horizonte:
+
+```bash
+cat > /tmp/count-future-sprints.js << 'EOF'
+const fs = require('fs');
+const roadmap = JSON.parse(fs.readFileSync('/c/Workspaces/Intrale/platform/scripts/roadmap.json', 'utf8'));
+const futuros = (roadmap.sprints || []).filter(s => s.status !== 'done').length;
+const salud = futuros >= 7 ? '🟢' : futuros >= 5 ? '🟡' : '🔴';
+console.log(JSON.stringify({ futuros, salud }));
+EOF
+node /tmp/count-future-sprints.js
+```
+
+Registrar el resultado: **"Horizonte: N sprints planificados [🟢/🟡/🔴] (mínimo: 7)"**
+
+- 🟢 ≥7 sprints futuros — horizonte saludable
+- 🟡 5-6 sprints futuros — horizonte reducido
+- 🔴 <5 sprints futuros — horizonte crítico
+
 ### Paso C9: Generar reporte final de cierre
 
 ```bash
@@ -896,6 +951,7 @@ node /c/Workspaces/Intrale/platform/.claude/skills/scrum/health-report.js 2>/dev
 - **Historias completadas**: N/M (velocity: N)
 - **Issues redistribuidos**: N
 - **Backup roadmap**: scripts/roadmap.backup.json ✓
+- **Horizonte**: N sprints planificados [🟢/🟡/🔴] (mínimo: 7)
 - **Estado final**: Cerrado ✓
 
 ### Historias del sprint
