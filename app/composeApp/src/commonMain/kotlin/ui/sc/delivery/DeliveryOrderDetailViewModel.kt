@@ -17,13 +17,24 @@ import ui.sc.shared.ViewModel
 
 enum class DeliveryOrderDetailStatus { Idle, Loading, Loaded, Error }
 
+enum class NotDeliveredReason {
+    ABSENT, WRONG_ADDRESS, REJECTED, PAYMENT, OTHER
+}
+
 data class DeliveryOrderDetailUiState(
     val status: DeliveryOrderDetailStatus = DeliveryOrderDetailStatus.Idle,
     val detail: DeliveryOrderDetail? = null,
     val errorMessage: String? = null,
     val updatingStatus: Boolean = false,
     val statusUpdateSuccess: Boolean = false,
-    val statusUpdateError: String? = null
+    val statusUpdateError: String? = null,
+    val showDeliveredConfirmDialog: Boolean = false,
+    val showNotDeliveredSheet: Boolean = false,
+    val selectedNotDeliveredReason: NotDeliveredReason? = null,
+    val notDeliveredOtherText: String = "",
+    val notDeliveredReasonError: Boolean = false,
+    val notDeliveredOtherError: Boolean = false,
+    val notDeliveredSuccess: Boolean = false
 )
 
 class DeliveryOrderDetailViewModel(
@@ -68,10 +79,10 @@ class DeliveryOrderDetailViewModel(
             }
     }
 
-    suspend fun updateStatus(newStatus: DeliveryOrderStatus) {
+    suspend fun updateStatus(newStatus: DeliveryOrderStatus, reason: String? = null) {
         val orderId = state.detail?.id ?: return
         state = state.copy(updatingStatus = true, statusUpdateSuccess = false, statusUpdateError = null)
-        updateOrderStatus.execute(orderId, newStatus)
+        updateOrderStatus.execute(orderId, newStatus, reason)
             .onSuccess { result ->
                 logger.info { "Estado del pedido $orderId actualizado a ${result.newStatus}" }
                 state = state.copy(
@@ -90,7 +101,86 @@ class DeliveryOrderDetailViewModel(
             }
     }
 
+    fun showDeliveredConfirm() {
+        state = state.copy(showDeliveredConfirmDialog = true)
+    }
+
+    fun dismissDeliveredConfirm() {
+        state = state.copy(showDeliveredConfirmDialog = false)
+    }
+
+    suspend fun confirmDelivered() {
+        state = state.copy(showDeliveredConfirmDialog = false)
+        updateStatus(DeliveryOrderStatus.DELIVERED)
+    }
+
+    fun showNotDeliveredSheet() {
+        state = state.copy(
+            showNotDeliveredSheet = true,
+            selectedNotDeliveredReason = null,
+            notDeliveredOtherText = "",
+            notDeliveredReasonError = false,
+            notDeliveredOtherError = false
+        )
+    }
+
+    fun dismissNotDeliveredSheet() {
+        state = state.copy(showNotDeliveredSheet = false)
+    }
+
+    fun selectNotDeliveredReason(reason: NotDeliveredReason) {
+        state = state.copy(
+            selectedNotDeliveredReason = reason,
+            notDeliveredReasonError = false,
+            notDeliveredOtherError = false
+        )
+    }
+
+    fun updateNotDeliveredOtherText(text: String) {
+        state = state.copy(notDeliveredOtherText = text, notDeliveredOtherError = false)
+    }
+
+    suspend fun confirmNotDelivered() {
+        val reason = state.selectedNotDeliveredReason
+        if (reason == null) {
+            state = state.copy(notDeliveredReasonError = true)
+            return
+        }
+        if (reason == NotDeliveredReason.OTHER && state.notDeliveredOtherText.isBlank()) {
+            state = state.copy(notDeliveredOtherError = true)
+            return
+        }
+        val orderId = state.detail?.id ?: return
+        val reasonText = if (reason == NotDeliveredReason.OTHER) {
+            state.notDeliveredOtherText.trim()
+        } else {
+            reason.name.lowercase()
+        }
+        state = state.copy(showNotDeliveredSheet = false, notDeliveredSuccess = false, updatingStatus = true)
+        updateOrderStatus.execute(orderId, DeliveryOrderStatus.NOT_DELIVERED, reasonText)
+            .onSuccess { result ->
+                logger.info { "Pedido ${state.detail?.id} marcado como no entregado, motivo: $reasonText" }
+                state = state.copy(
+                    updatingStatus = false,
+                    notDeliveredSuccess = true,
+                    detail = state.detail?.copy(status = result.newStatus)
+                )
+            }
+            .onFailure { throwable ->
+                val deliveryError = throwable.toDeliveryException()
+                logger.error(throwable) { "Error al marcar pedido como no entregado" }
+                state = state.copy(
+                    updatingStatus = false,
+                    statusUpdateError = deliveryError.message ?: "Error al actualizar estado"
+                )
+            }
+    }
+
     fun clearStatusFeedback() {
-        state = state.copy(statusUpdateSuccess = false, statusUpdateError = null)
+        state = state.copy(
+            statusUpdateSuccess = false,
+            statusUpdateError = null,
+            notDeliveredSuccess = false
+        )
     }
 }

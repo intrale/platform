@@ -55,10 +55,11 @@ class DoUpdateDeliveryOrderStatus(
 
     override suspend fun execute(
         orderId: String,
-        newStatus: DeliveryOrderStatus
+        newStatus: DeliveryOrderStatus,
+        reason: String?
     ): Result<DeliveryOrderStatusUpdateResult> = runCatching {
         logger.info { "Actualizando estado del pedido $orderId a $newStatus" }
-        ordersService.updateOrderStatus(orderId, newStatus.toApiString())
+        ordersService.updateOrderStatus(orderId, newStatus.toApiString(), reason)
             .getOrThrow()
             .toDomain()
     }.recoverCatching { throwable ->

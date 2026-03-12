@@ -178,11 +178,6 @@ class DeliveryHomeScreen : Screen(DELIVERY_HOME_PATH) {
                                         viewModel.updateStatus(order.id, DeliveryOrderStatus.IN_PROGRESS)
                                     }
                                 },
-                                onMarkDelivered = {
-                                    coroutineScope.launch {
-                                        viewModel.updateStatus(order.id, DeliveryOrderStatus.DELIVERED)
-                                    }
-                                },
                                 isUpdating = state.updatingOrderId == order.id
                             )
                         }
@@ -456,5 +451,6 @@ internal fun orderStatusLabel(status: DeliveryOrderStatus): String = when (statu
     DeliveryOrderStatus.PENDING -> Txt(MessageKey.delivery_order_status_pending)
     DeliveryOrderStatus.IN_PROGRESS -> Txt(MessageKey.delivery_order_status_in_progress)
     DeliveryOrderStatus.DELIVERED -> Txt(MessageKey.delivery_order_status_delivered)
+    DeliveryOrderStatus.NOT_DELIVERED -> Txt(MessageKey.delivery_order_status_not_delivered)
     DeliveryOrderStatus.UNKNOWN -> ""
 }

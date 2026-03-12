@@ -32,7 +32,8 @@ data class DeliveryOrderDTO(
 data class DeliveryOrderStatusUpdateRequest(
     @SerialName("orderId")
     val orderId: String,
-    val status: String
+    val status: String,
+    val reason: String? = null
 )
 
 @Serializable

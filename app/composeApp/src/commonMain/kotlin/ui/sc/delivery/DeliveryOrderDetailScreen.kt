@@ -1,5 +1,6 @@
 package ui.sc.delivery
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,19 +14,27 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -71,10 +80,18 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
         }
 
         val successMessage = Txt(MessageKey.delivery_order_status_updated)
+        val notDeliveredSuccessMessage = Txt(MessageKey.delivery_order_not_delivered_success)
 
         LaunchedEffect(state.statusUpdateSuccess) {
             if (state.statusUpdateSuccess) {
                 snackbarHostState.showSnackbar(successMessage)
+                viewModel.clearStatusFeedback()
+            }
+        }
+
+        LaunchedEffect(state.notDeliveredSuccess) {
+            if (state.notDeliveredSuccess) {
+                snackbarHostState.showSnackbar(notDeliveredSuccessMessage)
                 viewModel.clearStatusFeedback()
             }
         }
@@ -88,9 +105,26 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
 
         val titleText = Txt(MessageKey.delivery_order_detail_title)
         val backLabel = Txt(MessageKey.delivery_order_detail_back)
-        val loadingText = Txt(MessageKey.delivery_order_detail_loading)
         val errorText = Txt(MessageKey.delivery_order_detail_error)
         val retryText = Txt(MessageKey.delivery_order_detail_retry)
+
+        if (state.showDeliveredConfirmDialog) {
+            DeliveredConfirmDialog(
+                orderLabel = state.detail?.label ?: "",
+                onConfirm = { coroutineScope.launch { viewModel.confirmDelivered() } },
+                onDismiss = { viewModel.dismissDeliveredConfirm() }
+            )
+        }
+
+        if (state.showNotDeliveredSheet) {
+            NotDeliveredBottomSheet(
+                state = state,
+                onReasonSelected = { viewModel.selectNotDeliveredReason(it) },
+                onOtherTextChanged = { viewModel.updateNotDeliveredOtherText(it) },
+                onConfirm = { coroutineScope.launch { viewModel.confirmNotDelivered() } },
+                onDismiss = { viewModel.dismissNotDeliveredSheet() }
+            )
+        }
 
         Scaffold(
             topBar = {
@@ -144,11 +178,8 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                                         viewModel.updateStatus(DeliveryOrderStatus.IN_PROGRESS)
                                     }
                                 },
-                                onMarkDelivered = {
-                                    coroutineScope.launch {
-                                        viewModel.updateStatus(DeliveryOrderStatus.DELIVERED)
-                                    }
-                                }
+                                onConfirmDelivered = { viewModel.showDeliveredConfirm() },
+                                onNotDelivered = { viewModel.showNotDeliveredSheet() }
                             )
                             BusinessSection(detail)
                             CustomerSection(detail)
@@ -172,7 +203,8 @@ private fun OrderStatusSection(
     detail: DeliveryOrderDetail,
     isUpdating: Boolean,
     onStartDelivery: () -> Unit,
-    onMarkDelivered: () -> Unit
+    onConfirmDelivered: () -> Unit,
+    onNotDelivered: () -> Unit
 ) {
     val sectionTitle = Txt(MessageKey.delivery_order_detail_section_status)
 
@@ -230,13 +262,148 @@ private fun OrderStatusSection(
                     DeliveryOrderStatus.IN_PROGRESS -> {
                         IntralePrimaryButton(
                             text = Txt(MessageKey.delivery_order_action_deliver),
-                            onClick = onMarkDelivered,
+                            onClick = onConfirmDelivered,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        OutlinedButton(
+                            onClick = onNotDelivered,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Text(text = Txt(MessageKey.delivery_order_action_not_delivered))
+                        }
                     }
-                    else -> { /* Sin acciones para DELIVERED y UNKNOWN */ }
+                    else -> { /* Sin acciones para DELIVERED, NOT_DELIVERED y UNKNOWN */ }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DeliveredConfirmDialog(
+    orderLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = Txt(MessageKey.delivery_order_confirm_title))
+        },
+        text = {
+            Text(
+                text = Txt(
+                    MessageKey.delivery_order_confirm_message,
+                    mapOf("label" to orderLabel)
+                )
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    text = Txt(MessageKey.delivery_order_confirm_yes),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = Txt(MessageKey.delivery_order_confirm_cancel))
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NotDeliveredBottomSheet(
+    state: DeliveryOrderDetailUiState,
+    onReasonSelected: (NotDeliveredReason) -> Unit,
+    onOtherTextChanged: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = MaterialTheme.spacing.x4)
+                .padding(bottom = MaterialTheme.spacing.x6),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            Text(
+                text = Txt(MessageKey.delivery_order_not_delivered_sheet_title),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            if (state.notDeliveredReasonError) {
+                Text(
+                    text = Txt(MessageKey.delivery_order_not_delivered_reason_required),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            val reasons = listOf(
+                NotDeliveredReason.ABSENT to Txt(MessageKey.delivery_order_not_delivered_reason_absent),
+                NotDeliveredReason.WRONG_ADDRESS to Txt(MessageKey.delivery_order_not_delivered_reason_wrong_address),
+                NotDeliveredReason.REJECTED to Txt(MessageKey.delivery_order_not_delivered_reason_rejected),
+                NotDeliveredReason.PAYMENT to Txt(MessageKey.delivery_order_not_delivered_reason_payment),
+                NotDeliveredReason.OTHER to Txt(MessageKey.delivery_order_not_delivered_reason_other)
+            )
+
+            reasons.forEach { (reason, label) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = state.selectedNotDeliveredReason == reason,
+                        onClick = { onReasonSelected(reason) }
+                    )
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            if (state.selectedNotDeliveredReason == NotDeliveredReason.OTHER) {
+                OutlinedTextField(
+                    value = state.notDeliveredOtherText,
+                    onValueChange = onOtherTextChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text(text = Txt(MessageKey.delivery_order_not_delivered_other_hint)) },
+                    isError = state.notDeliveredOtherError,
+                    supportingText = if (state.notDeliveredOtherError) {
+                        { Text(text = Txt(MessageKey.delivery_order_not_delivered_other_required)) }
+                    } else null,
+                    maxLines = 3
+                )
+            }
+
+            Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2))
+
+            IntralePrimaryButton(
+                text = Txt(MessageKey.delivery_order_confirm_yes),
+                onClick = onConfirm,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
