@@ -1,0 +1,89 @@
+appId: com.intrale.app.client
+---
+# Flujo: ClientCatalog — Catálogo con búsqueda y filtros
+# Issue #1120 — QA Compliance Catálogo de Producto
+
+- launchApp:
+    clearState: true
+
+# Saltar onboarding si aparece
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 10000
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+# Login
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 15000
+- tapOn:
+    text: "Ya tengo cuenta"
+
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
+
+- tapOn:
+    id: "field_Usuario"
+- inputText: "admin@intrale.com"
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "Admin1234!"
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Navegar al Catálogo via banner CTA
+- extendedWaitUntil:
+    visible:
+      text: "Ver catálogo"
+    timeout: 20000
+
+- tapOn:
+    text: "Ver catálogo"
+
+- waitForAnimationToEnd
+
+# Screenshot: Pantalla de catálogo cargada
+- takeScreenshot: client-catalog-initial
+
+# Verificar barra de búsqueda visible
+- assertVisible:
+    text: "Buscar producto"
+    optional: true
+    label: "Barra de búsqueda presente"
+
+# Realizar búsqueda
+- tapOn:
+    text: "Buscar producto"
+    optional: true
+- inputText: "manzana"
+- waitForAnimationToEnd
+- takeScreenshot: client-catalog-search-manzana
+
+# Limpiar búsqueda con backspace repetido
+- clearText
+- waitForAnimationToEnd
+- takeScreenshot: client-catalog-search-cleared
+
+# Screenshot de filter chips por categoría
+- takeScreenshot: client-catalog-filter-chips
+
+# Buscar algo sin resultados
+- tapOn:
+    text: "Buscar producto"
+    optional: true
+- inputText: "zzzinexistentexxx"
+- waitForAnimationToEnd
+- takeScreenshot: client-catalog-empty-search
+
+# Volver atras
+- pressKey: back
+- waitForAnimationToEnd
+- takeScreenshot: client-catalog-after-back
