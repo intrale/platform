@@ -1,7 +1,7 @@
 ---
 description: PO — Product Owner especialista en flujos de negocio, UX y criterios de aceptación
 user-invocable: true
-argument-hint: "[definir <area>|validar <issue>|acceptance <issue>|revisar-ux <pantalla>|gaps]"
+argument-hint: "[definir <area>|validar <issue>|acceptance <issue>|revisar-ux <pantalla>|revisar-videos <issue>|gaps]"
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, WebSearch, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
 ---
@@ -46,6 +46,7 @@ Al iniciar, parsear el primer argumento:
 | `validar <issue>` | Validar implementación | Sección "Modo: Validar" |
 | `acceptance <issue>` | Criterios de aceptación | Sección "Modo: Acceptance" |
 | `revisar-ux <pantalla>` | Revisar UX | Sección "Modo: Revisar UX" |
+| `revisar-videos <issue>` | Revisar evidencia QA | Sección "Modo: Revisar Videos" |
 | `dependencias <N,M,...>` | Análisis de dependencias | Sección "Modo: Dependencias" |
 | sin argumento / `gaps` | Gap analysis | Sección "Modo: Gaps" |
 
@@ -368,6 +369,138 @@ Para cada aspecto, evaluar en escala:
 
 ### Recomendaciones
 [Lista priorizada de mejoras]
+```
+
+---
+
+## Modo: Revisar Videos (`/po revisar-videos <issue>`)
+
+Valida que la evidencia de video generada por QA cumple los criterios de aceptación del issue.
+Este modo es el paso 10 del flujo operativo `docs/operativo/flujo-lanzar-sprint.md`.
+
+### Paso RV1: Leer el issue y sus criterios de aceptación
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue view <issue> --repo intrale/platform --json number,title,body,labels
+```
+
+Extraer del body los criterios de aceptación (checklist con `- [ ]` o sección "Criterios de aceptación").
+Si el issue no tiene criterios de aceptación explícitos, extraer los requisitos funcionales del body como criterios implícitos.
+
+### Paso RV2: Leer el reporte QA
+
+```bash
+cat qa/evidence/<issue>/qa-report.json
+```
+
+Si el archivo no existe:
+- Reportar: "No se encontró reporte QA en `qa/evidence/<issue>/qa-report.json`"
+- Veredicto automático: **REQUIERE CAMBIOS** — falta ejecutar QA con `/qa`
+- Detener el análisis y mostrar recomendación
+
+Si el archivo existe, extraer:
+- `scenarios`: lista de escenarios con `name`, `status` (`PASS`/`FAIL`), y `video`
+- `summary`: totales de passed/failed, videos generados, crashes
+- `verdict`: veredicto global del reporte QA
+
+### Paso RV3: Listar archivos de evidencia disponibles
+
+Usar Glob para listar todos los archivos en `qa/evidence/<issue>/`:
+
+```bash
+# Listar videos y screenshots disponibles
+ls qa/evidence/<issue>/
+```
+
+Separar:
+- **Videos** (`*.mp4`, `*.webm`, `*.mkv`) — evidencia principal
+- **Screenshots** (`*.png`, `*.jpg`) — evidencia complementaria
+- **Reporte** (`qa-report.json`) — ya leído en RV2
+
+### Paso RV4: Cruzar criterios con evidencia
+
+Para cada criterio de aceptación del issue, evaluar:
+
+1. ¿Existe al menos un escenario en `qa-report.json` que cubre este criterio?
+2. ¿El/los escenarios asociados tienen `status: PASS`?
+3. ¿Tienen video (`video` no es null ni vacío)?
+
+**Reglas de mapeo:**
+- Usar coincidencia semántica (no solo texto exacto): un criterio "login OK" puede mapearse al escenario "Inicio de sesión exitoso"
+- Si un criterio se puede mapear a múltiples escenarios, todos deben tener PASS
+- Si hay escenarios con FAIL aunque exista video, el criterio se marca como ❌ No cumple
+
+**Estados por criterio:**
+- ✅ **Cumple** — escenario PASS + video presente
+- ⚠️ **Parcial** — escenario PASS pero sin video, o múltiples escenarios y alguno falla
+- ❌ **No cumple** — escenario FAIL, o no existe escenario que cubra el criterio
+- ➖ **Sin evidencia** — no se encontró ningún escenario relacionado
+
+### Paso RV5: Determinar veredicto
+
+**APROBADO** si:
+- Todos los criterios de aceptación tienen estado ✅ Cumple
+- No hay crashes en `summary.crashes > 0`
+- No hay visual errors en `summary.visual_errors > 0` (si aplica)
+- El `verdict` del qa-report es `"APROBADO"`
+
+**REQUIERE CAMBIOS** si:
+- Al menos un criterio tiene estado ❌ No cumple o ➖ Sin evidencia
+- Hay crashes (`summary.crashes > 0`)
+- El `verdict` del qa-report es distinto de `"APROBADO"`
+
+### Paso RV6: Si REQUIERE CAMBIOS — proponer nuevas historias
+
+Para cada gap identificado (criterio sin evidencia o con falla), proponer una historia usando `/historia`:
+
+- Si falta evidencia de un criterio: proponer historia de tipo "qa" para cubrir ese escenario
+- Si hay un bug (FAIL): proponer historia de tipo "bug" para corregirlo
+- No crear las historias automáticamente — listar las propuestas para que el usuario decida
+
+### Paso RV7: Reporte
+
+```
+## Revisión PO — Evidencia E2E Issue #[N]
+
+### Issue: [título]
+**Labels:** [lista]
+**QA Report:** qa/evidence/[N]/qa-report.json
+**Fecha QA:** [date del reporte]
+**Entorno:** [device + os + app del reporte]
+
+### Criterios de Aceptación vs Evidencia
+
+| # | Criterio de Aceptación | Escenario QA | Video | Estado |
+|---|----------------------|--------------|-------|--------|
+| 1 | [criterio del issue] | [nombre escenario] | [video.mp4 o —] | ✅/⚠️/❌/➖ |
+| 2 | [criterio del issue] | — | — | ➖ Sin evidencia |
+
+### Resumen de evidencia
+
+| Métrica | Valor |
+|---------|-------|
+| Escenarios totales | N |
+| Pasaron | N |
+| Fallaron | N |
+| Videos generados | N |
+| Crashes | N |
+
+### Veredicto: APROBADO / REQUIERE CAMBIOS
+
+[Si APROBADO]:
+> Todos los criterios de aceptación tienen evidencia de video satisfactoria. El feature puede considerarse validado por el PO.
+
+[Si REQUIERE CAMBIOS]:
+### Gaps detectados y propuestas
+
+| Gap | Tipo | Historia propuesta |
+|-----|------|--------------------|
+| [criterio sin evidencia] | Sin QA | `/historia` — Agregar caso de prueba: [descripción] |
+| [escenario FAIL] | Bug | `/historia` — Corregir: [descripción del fallo] |
+
+### Próximos pasos
+1. [Acción concreta para resolver cada gap]
 ```
 
 ---
