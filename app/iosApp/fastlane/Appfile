@@ -1,0 +1,13 @@
+# Appfile — Configuración de app para fastlane
+# Los bundle IDs específicos por flavor se configuran en Fastfile.
+# Este archivo define los valores por defecto usados por fastlane cuando
+# se ejecuta sin especificar el flavor.
+
+# App ID por defecto (flavor client)
+app_identifier("com.intrale.app.client")
+
+# Team ID de Apple Developer (se sobreescribe con ENV["TEAM_ID"] en CI)
+team_id(ENV["TEAM_ID"] || "REEMPLAZAR_CON_TEAM_ID")
+
+# Usar App Store Connect API Key en lugar de Apple ID/contraseña
+# La key se configura via ENV vars en el Fastfile

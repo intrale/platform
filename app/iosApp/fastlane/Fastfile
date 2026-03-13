@@ -1,0 +1,107 @@
+# Fastfile — Intrale iOS Distribution
+# Lanes para distribuir los 3 flavors a TestFlight via App Store Connect API.
+#
+# Prerrequisitos:
+#   - Apple Developer Program activo
+#   - App Store Connect API Key generada
+#   - Secrets configurados en GitHub Actions (ver distribute-ios.yml)
+#
+# Uso local (requiere Mac con Xcode):
+#   bundle exec fastlane distribute_client
+#   bundle exec fastlane distribute_business
+#   bundle exec fastlane distribute_delivery
+
+default_platform(:ios)
+
+# Bundle IDs de los 3 flavors
+BUNDLE_IDS = {
+  client:   "com.intrale.app.client",
+  business: "com.intrale.app.business",
+  delivery: "com.intrale.app.delivery"
+}.freeze
+
+APP_NAMES = {
+  client:   "Intrale",
+  business: "Intrale Negocios",
+  delivery: "Intrale Repartos"
+}.freeze
+
+# Path al framework KMP generado por Gradle
+KMP_FRAMEWORK_PATH = "../../app/composeApp/build/bin/iosArm64/releaseFramework/ComposeApp.framework"
+
+platform :ios do
+
+  # Configuración de la API Key de App Store Connect (compartida entre lanes)
+  def app_store_connect_api_key
+    app_store_connect_api_key(
+      key_id:     ENV["APP_STORE_CONNECT_API_KEY_ID"],
+      issuer_id:  ENV["APP_STORE_CONNECT_API_ISSUER"],
+      key_content: ENV["APP_STORE_CONNECT_API_KEY_CONTENT"],
+      is_key_content_base64: true,
+      duration: 1200,
+      in_house: false
+    )
+  end
+
+  # --- Lanes de distribución ---
+
+  desc "Distribuir Intrale (client) a TestFlight"
+  lane :distribute_client do
+    distribute_flavor(:client)
+  end
+
+  desc "Distribuir Intrale Negocios (business) a TestFlight"
+  lane :distribute_business do
+    distribute_flavor(:business)
+  end
+
+  desc "Distribuir Intrale Repartos (delivery) a TestFlight"
+  lane :distribute_delivery do
+    distribute_flavor(:delivery)
+  end
+
+  # --- Lane privado compartido ---
+
+  private_lane :distribute_flavor do |options|
+    flavor     = options[:flavor]
+    bundle_id  = BUNDLE_IDS[flavor]
+    app_name   = APP_NAMES[flavor]
+    build_num  = ENV.fetch("BUILD_NUMBER", "1").to_i
+    notes      = ENV.fetch("RELEASE_NOTES", "Build de Friends & Family")
+
+    UI.message("Distribuyendo #{app_name} (#{bundle_id}) → TestFlight")
+    UI.message("Build number: #{build_num}")
+
+    api_key = app_store_connect_api_key
+
+    # Incrementar build number en el proyecto Xcode
+    increment_build_number(
+      build_number: build_num,
+      xcodeproj: "iosApp.xcodeproj"
+    )
+
+    # Compilar y archivar la app
+    gym(
+      scheme:               app_name,
+      configuration:        "Release",
+      export_method:        "app-store",
+      output_directory:     "./build",
+      output_name:          "#{flavor}.ipa",
+      xcargs:               "PRODUCT_BUNDLE_IDENTIFIER=#{bundle_id}",
+      clean:                true
+    )
+
+    # Subir el IPA a TestFlight
+    pilot(
+      api_key:              api_key,
+      app_identifier:       bundle_id,
+      ipa:                  "./build/#{flavor}.ipa",
+      changelog:            notes,
+      skip_waiting_for_build_processing: true,
+      distribute_external:  false
+    )
+
+    UI.success("#{app_name} subido a TestFlight exitosamente")
+  end
+
+end
