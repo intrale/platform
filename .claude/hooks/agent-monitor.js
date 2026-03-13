@@ -42,9 +42,11 @@ const METRICS_FILE = path.join(HOOKS_DIR, "agent-metrics.json");
 const PARTICIPATION_FILE = path.join(HOOKS_DIR, "agent-participation.json");
 
 // Lista canónica de todos los agentes que deben participar proactivamente en el pipeline
+// NOTA: /ios-dev y /desktop-dev están congelados en .claude/skills/_frozen/ (issue #1519)
+// Para reactivarlos: mover la carpeta de _frozen/ a .claude/skills/ y agregar al array.
 const ALL_PIPELINE_AGENTS = [
     "/ops", "/po", "/ux", "/guru",
-    "/backend-dev", "/android-dev", "/ios-dev", "/web-dev", "/desktop-dev",
+    "/backend-dev", "/android-dev", "/web-dev",
     "/tester", "/builder", "/security", "/qa", "/review",
     "/delivery", "/scrum", "/cleanup",
     "/planner", "/refinar", "/priorizar", "/historia"
