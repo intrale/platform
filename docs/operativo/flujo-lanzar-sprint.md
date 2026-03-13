@@ -142,11 +142,21 @@ flowchart TD
 
 El flujo tiene **3 gates de calidad** que generan loops de retrabajo:
 
-| Gate | Evaluador | Criterio | Si falla |
-|------|-----------|----------|----------|
-| Calidad de tests | QA | Tests cubren casos borde, nombres claros, red phase funciona | Volver a generar tests |
-| Calidad de código | QA | Patrones correctos, sin vulnerabilidades, strings OK | Volver a desarrollar |
-| Aceptación PO | Product Owner | Funcionalidad cumple criterios de aceptación | Proponer correcciones como nuevas historias |
+| Gate | Evaluador | Criterio | Si falla | Automatización |
+|------|-----------|----------|----------|----------------|
+| Calidad de tests | QA | Tests cubren casos borde, nombres claros, red phase funciona | Volver a generar tests | `/delivery` re-invoca el developer skill automáticamente (máx 2 reintentos) |
+| Calidad de código | QA | Patrones correctos, sin vulnerabilidades, strings OK | Volver a desarrollar | `/delivery` re-invoca el developer skill automáticamente (máx 2 reintentos) |
+| Aceptación PO | Product Owner | Funcionalidad cumple criterios de aceptación | Proponer correcciones como nuevas historias | Manual — el PO crea nuevas historias en el backlog |
+
+### Re-invocación automática de gates (implementada en `/delivery`)
+
+El skill `/delivery` orquesta los loops de calidad en el **Paso 3.6**:
+
+1. **Gate Review** (`/review`): si rechaza → re-invoca el developer skill con el feedback → re-corre `/review`. Máximo 2 reintentos.
+2. **Gate Tester** (`/tester`): si rechaza → re-invoca el developer skill con los fallos → re-corre `/tester`. Máximo 2 reintentos.
+3. Si después de 2 reintentos el gate sigue fallando → **escalar al usuario** y detener el delivery.
+
+El developer skill a re-invocar se detecta automáticamente del activity log (último developer skill usado) o puede pasarse explícitamente con `--dev-skill <nombre>` al invocar `/delivery`.
 
 ## Mapeo a skills del proyecto
 

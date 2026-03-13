@@ -1,8 +1,8 @@
 ---
 description: DeliveryManager — Commit + push + PR con convenciones Intrale en un solo comando
 user-invocable: true
-argument-hint: "<descripcion> [--issue <N>] [--draft] [--all] [--clean]"
-allowed-tools: Bash, Read, Glob, Grep, TaskCreate, TaskUpdate, TaskList
+argument-hint: "<descripcion> [--issue <N>] [--draft] [--all] [--clean] [--dev-skill <nombre>]"
+allowed-tools: Bash, Read, Glob, Grep, Skill, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
 ---
 
@@ -19,6 +19,7 @@ Sos veloz, confiable y siempre entregás en tiempo y forma.
 - `--draft` — Crear el PR como draft (opcional)
 - `--all` — Entregar todos los worktrees activos con branch `agent/*` o `codex/*` (ejecuta el flujo completo por cada uno)
 - `--clean` — Limpiar worktrees innecesarios (sin cambios reales, PRs mergeados/cerrados)
+- `--dev-skill <nombre>` — Skill de developer a re-invocar si un gate de calidad rechaza (opcional). Valores válidos: `backend-dev`, `android-dev`, `ios-dev`, `web-dev`, `desktop-dev`. Si no se pasa, se detecta automáticamente desde el activity log o se usa `backend-dev` por defecto.
 
 ## Pre-flight: Registrar tareas
 
@@ -136,6 +137,89 @@ find qa/build/test-results/test -name "*.xml" -mmin -120 2>/dev/null | head -5
 - Si hay resultados recientes: `QA E2E: tests ejecutados [fecha]`
 - Si no hay resultados: BLOQUEAR como antes (pedir `/qa` o confirmación del usuario)
 
+## Paso 3.6: Gate de tests con reintentos automáticos
+
+Este paso ejecuta `/tester` como gate de calidad **con lógica de reintentos** antes del commit.
+El gate `/review` se ejecuta más adelante (Paso 6.3), una vez que el PR está creado, ya que necesita un PR para funcionar.
+
+### 3.6.0: Detectar developer skill
+
+Determinar qué developer skill se usará para los reintentos en este y en el gate de review (Paso 6.3):
+
+1. Si se pasó `--dev-skill <nombre>`: usar ese valor directamente.
+2. Si no: leer el activity log para detectar el último developer skill utilizado en esta sesión:
+
+```bash
+cat > /tmp/detect-dev-skill.js << 'EOF'
+const fs = require('fs');
+const logFile = '/c/Workspaces/Intrale/platform/.claude/activity-log.jsonl';
+const DEV_SKILLS = ['backend-dev','android-dev','ios-dev','web-dev','desktop-dev'];
+try {
+    const lines = fs.readFileSync(logFile,'utf8').split('\n').filter(Boolean).reverse();
+    for (const line of lines) {
+        try {
+            const e = JSON.parse(line);
+            if (e.tool === 'Skill' && DEV_SKILLS.includes(e.target)) {
+                console.log(e.target);
+                process.exit(0);
+            }
+        } catch(err) {}
+    }
+} catch(err) {}
+console.log('backend-dev');
+EOF
+node /tmp/detect-dev-skill.js
+```
+
+Guardar el resultado como `DEV_SKILL` (variable en memoria para usar en este paso y en el Paso 6.3).
+
+### 3.6.1: Gate Tester con reintentos
+
+Variables de control: `TESTER_RETRIES=0`, `MAX_RETRIES=2`, `TESTER_VERDICT="PENDIENTE"`.
+
+**Loop:**
+
+```
+MIENTRAS TESTER_VERDICT != "APROBADO" Y TESTER_RETRIES <= MAX_RETRIES:
+
+  a. Invocar: Skill(skill="tester")
+     Analizar la salida completa.
+
+  b. Evaluar veredicto:
+     - Si la salida contiene "APROBADO" o "✅ APROBADO" o tests pasando sin errores:
+         TESTER_VERDICT = "APROBADO"
+         Continuar al Paso 3.5 (QA report check)
+
+     - Si la salida contiene "RECHAZADO" o "❌ RECHAZADO" o tests fallando:
+         TESTER_RETRIES++
+         Si TESTER_RETRIES > MAX_RETRIES:
+             ESCALAR AL USUARIO:
+             "⚠️ GATE /tester: Tests siguen fallando después de 2 reintentos.
+              Fallos detectados: <fallos_extraídos>
+              Acción requerida: revisar los tests manualmente y ejecutar /delivery de nuevo."
+             DETENER — NO continuar con el delivery.
+
+         Extraer el listado de tests fallidos / errores del output de /tester.
+         Invocar: Skill(skill="<DEV_SKILL>", args="fix failing tests (intento <TESTER_RETRIES>/2): <fallos_extraídos>")
+         Volver al inicio del loop.
+
+     - Si la salida NO contiene indicadores claros (fallo del skill):
+         Registrar warning: "No se pudo determinar veredicto de /tester — continuando."
+         Romper el loop y continuar (fail-open).
+```
+
+**Extracción de fallos:** Del output de `/tester`, extraer líneas que contengan "FAILED", "ERROR", o el bloque de tests fallidos. Si no se encuentra, usar los primeros 500 caracteres del output.
+
+### 3.6.2: Resumen de gate de tests
+
+```
+🔍 Gate de tests:
+  ✓ /tester  — APROBADO (reintentos: N/2)
+  → Developer skill usado: <DEV_SKILL>
+```
+
+Si el gate fue fail-open (sin veredicto claro), indicarlo con `⚠️`.
+
 ## Paso 4: Stage y commit
 
 Solo stagear archivos relevantes (NO usar `git add -A` a ciegas):
@@ -245,6 +329,58 @@ EOF
 ```
 
 Si se pasó `--draft`, agregar `--draft` al comando.
+
+## Paso 6.3: Gate de review con reintentos automáticos
+
+Este paso se ejecuta **después de crear el PR** (el skill `/review` necesita un PR existente).
+Usa `DEV_SKILL` detectado en el Paso 3.6.0.
+
+Variables de control: `REVIEW_RETRIES=0`, `MAX_RETRIES=2`, `REVIEW_VERDICT="PENDIENTE"`.
+
+**Loop:**
+
+```
+MIENTRAS REVIEW_VERDICT != "APROBADO" Y REVIEW_RETRIES <= MAX_RETRIES:
+
+  a. Invocar: Skill(skill="review", args="<PR_NUMBER>")
+     Analizar la salida completa.
+
+  b. Evaluar veredicto:
+     - Si la salida contiene "APROBADO" (ignorar mayúsculas/minúsculas):
+         REVIEW_VERDICT = "APROBADO"
+         Continuar al Paso 6.5 (merge)
+
+     - Si la salida contiene "RECHAZADO":
+         REVIEW_RETRIES++
+         Si REVIEW_RETRIES > MAX_RETRIES:
+             ESCALAR AL USUARIO:
+             "⚠️ GATE /review: Rechazado después de 2 reintentos.
+              Feedback del último rechazo: <feedback_extraído>
+              Acción requerida: revisar manualmente y ejecutar /delivery de nuevo."
+             DETENER — NO continuar con el merge.
+
+         Extraer el feedback del rechazo (el bloque "### Bloqueantes" del output de /review).
+         Invocar: Skill(skill="<DEV_SKILL>", args="fix review feedback (intento <REVIEW_RETRIES>/2): <feedback_extraído>")
+         Hacer push de los nuevos commits:
+             git push origin "$BRANCH"
+         Volver al inicio del loop (re-invocar /review sobre el mismo PR actualizado).
+
+     - Si la salida NO contiene ni "APROBADO" ni "RECHAZADO" (fallo del skill):
+         Registrar warning: "No se pudo determinar veredicto de /review — continuando al merge."
+         Romper el loop y continuar (fail-open).
+```
+
+**Extracción de feedback:** Extraer el bloque que sigue a "### Bloqueantes" o "Code Review — RECHAZADO" hasta el siguiente encabezado `##`. Si no se encuentra, usar los primeros 500 caracteres del output.
+
+**Nota:** En modo `--all`, este gate se aplica a cada worktree individualmente. Si el gate falla tras 2 reintentos, se registra como `ERROR` en el resumen del modo `--all` y se continúa con el siguiente worktree.
+
+**Resumen del gate:**
+
+```
+🔍 Gate de review:
+  ✓ /review  — APROBADO (reintentos: N/2)
+  → Developer skill usado: <DEV_SKILL>
+```
 
 ## Paso 6.5: Merge post-PR (OBLIGATORIO)
 
