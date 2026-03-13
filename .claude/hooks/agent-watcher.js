@@ -16,7 +16,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawn, execSync } = require("child_process");
+const { execFile, execSync } = require("child_process");
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -344,6 +344,20 @@ function generateDefaultPrompt(issue, slug) {
 
 // ─── Lanzar agente via Start-Agente.ps1 ──────────────────────────────────────
 
+// Candidatos de path absoluto para PowerShell — el proceso background puede no tener PATH completo (#1497)
+const PS_CANDIDATES = [
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe",
+];
+
+function findPowerShell() {
+    for (const candidate of PS_CANDIDATES) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    // Último recurso: confiar en PATH (puede fallar en background)
+    return "powershell.exe";
+}
+
 function launchAgent(agente) {
     try {
         if (!fs.existsSync(START_SCRIPT)) {
@@ -354,6 +368,7 @@ function launchAgent(agente) {
             agente.prompt = generateDefaultPrompt(agente.issue, agente.slug);
         }
 
+        const psExe = findPowerShell();
         const ps1 = START_SCRIPT.replace(/\//g, "\\");
         const args = ["-NonInteractive", "-File", ps1, String(agente.numero), "-Force"];
 
@@ -371,7 +386,15 @@ function launchAgent(agente) {
             log("WARN: No se pudo abrir logs de spawn: " + e.message);
         }
 
-        const child = spawn("powershell.exe", args, { detached: true, stdio, windowsHide: false });
+        log("Usando PowerShell: " + psExe);
+
+        // Usar execFile con path absoluto para evitar ENOENT en procesos background (#1497).
+        // spawn("powershell.exe") falla cuando el proceso no hereda PATH completo del sistema.
+        const child = execFile(psExe, args, {
+            detached: true,
+            stdio,
+            windowsHide: false,
+        });
         child.unref();
         if (logFd !== undefined) { try { fs.closeSync(logFd); } catch (e) {} }
         if (errFd !== undefined) { try { fs.closeSync(errFd); } catch (e) {} }
