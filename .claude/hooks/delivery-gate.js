@@ -184,9 +184,16 @@ function handleInput() {
 
         const missingGates = REQUIRED_GATES.filter(gate => !evidence[gate]);
 
+        // Verificar evidencia de video (soft gate — no bloquea, solo advierte en audit)
+        const videoEvidence = checkVideoEvidence(repoRoot, issueNumber);
+
         if (missingGates.length === 0) {
             // Todos los gates tienen evidencia — permitir PR
-            writeAuditLog(repoRoot, branch, issueNumber, "pass", "Todos los gates pasaron", evidence);
+            const auditDetails = { evidence, videoEvidence };
+            if (!videoEvidence.hasVideos) {
+                auditDetails.videoWarning = "Sin evidencia de video en qa/evidence/" + (issueNumber || "?") + "/ (solo aplica si hay flows Android/Maestro)";
+            }
+            writeAuditLog(repoRoot, branch, issueNumber, "pass", "Todos los gates pasaron", auditDetails);
             process.exit(0);
             return;
         }
@@ -222,6 +229,18 @@ function handleInput() {
         // Error inesperado — fail-open para no bloquear el flujo normal
         // En producción considerar fail-closed aquí
         process.exit(0);
+    }
+}
+
+function checkVideoEvidence(repoRoot, issueNumber) {
+    if (!issueNumber) return { hasVideos: false, count: 0 };
+    try {
+        const evidenceDir = path.join(repoRoot, "qa", "evidence", issueNumber);
+        if (!fs.existsSync(evidenceDir)) return { hasVideos: false, count: 0 };
+        const files = fs.readdirSync(evidenceDir).filter(f => f.endsWith(".mp4"));
+        return { hasVideos: files.length > 0, count: files.length };
+    } catch (e) {
+        return { hasVideos: false, count: 0 };
     }
 }
 
