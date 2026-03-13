@@ -1,7 +1,7 @@
 ---
 description: Planner — Planificación estratégica del proyecto — Gantt, dependencias, priorización y nuevas historias
 user-invocable: true
-argument-hint: "[planificar | sprint [N] [foco] | proponer | validar-tamaño <issue> | estado | <foco> [N]]"
+argument-hint: "[planificar | sprint [N] [foco] | proponer | validar-tamaño <issue> | split <issue> | estado | <foco> [N]]"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
 ---
@@ -20,6 +20,7 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 | `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 7, rango recomendado: 7-10) |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
 | `validar-tamaño <issue>` | Clasificar una historia como S/M/L/XL con criterios objetivos |
+| `split <issue>` | Dividir una historia L/XL en sub-historias, crearlas con `/historia` y lanzar `/po acceptance` para cada una |
 | `<foco> [N]` | **Atajo** — equivale a `sprint N <foco>` (ver tabla de focos abajo) |
 | sin argumento | Digest rápido: qué bloquea, qué está listo, qué sigue |
 
@@ -632,6 +633,175 @@ Indicar que no se debe continuar sin split.
 [Si S/M]: Historia lista para planificar e implementar.
 [Si L]: Evaluar split con /planner split #<N>.
 [Si XL]: Dividir obligatoriamente con /planner split #<N> antes de continuar.
+```
+
+---
+
+## Modo: `split`
+
+Divide una historia **L o XL** en sub-historias independientes y entregables.
+Crea cada una con `/historia` y lanza `/po acceptance` para cada sub-historia creada.
+Registra la relación padre→hijo en los issues de GitHub.
+
+Invocación: `/planner split <número-de-issue>`
+
+### Paso SP1: Setup
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
+GH_REPO="intrale/platform"
+```
+
+### Paso SP2: Leer y validar el issue padre
+
+```bash
+gh issue view <N> --repo $GH_REPO --json number,title,body,labels,state
+```
+
+**Validar que el issue está abierto y es L/XL.** Si el issue es S/M, informar al usuario:
+```
+ℹ️ Issue #<N> clasificado como [S/M] — no requiere split.
+Si igualmente querés dividirlo, confirmá con /planner split <N> --force
+```
+Si se pasa `--force` o el issue es L/XL: continuar.
+
+Invocar `/planner validar-tamaño <N>` para obtener la clasificación formal:
+- Si el resultado es S o M y no se pasó `--force`: detener y reportar.
+- Si L o XL: continuar al siguiente paso.
+
+### Paso SP3: Proponer el plan de split
+
+Analizar el body del issue y **descomponer en N sub-historias** (típicamente 2–5).
+
+**Criterios de descomposición:**
+1. **Por módulo**: separar backend de app, o módulos independientes (backend, users, app)
+2. **Por funcionalidad entregable**: cada sub-historia debe tener valor por sí misma
+3. **Por capa**: si el issue abarca UI + backend, separar en al menos 2 historias
+4. **Por flujo**: si hay múltiples flujos de usuario, uno por historia
+5. **Tamaño objetivo**: cada sub-historia debe quedar en S o M (no más de M)
+
+Para cada sub-historia propuesta, generar:
+```
+### Sub-historia [N/Total]: [Título]
+- **Módulo**: [backend / app / users / tools]
+- **Stream**: [A/B/C/D/E]
+- **Tamaño estimado**: [S/M]
+- **Justificación del split**: [Por qué esta porción es independiente y entregable]
+- **Depende de sub-historia**: [número si aplica, o "ninguna"]
+- **Descripción**: [Qué hace esta sub-historia en 2-3 oraciones]
+```
+
+Mostrar el plan completo y obtener confirmación antes de crear los issues.
+
+**Si el modo es autónomo** (invocado por otro agente o con flag `--auto`): crear directamente sin confirmación.
+
+### Paso SP4: Crear cada sub-historia con `/historia`
+
+Para cada sub-historia propuesta, invocar `/historia` con el body completo.
+
+El body de cada sub-historia DEBE incluir:
+1. La descripción técnica específica de la sub-porción
+2. La línea de referencia: `Parte de #<N>` (donde N es el número del issue padre)
+3. Los criterios de aceptación propios de esta sub-historia
+4. La sección de `## Notas técnicas` con detalles de implementación
+
+**Formato del argumento a `/historia`:**
+
+```
+<título de la sub-historia>
+
+Parte de #<N>.
+
+## Contexto
+<descripción del issue padre resumida> — esta historia abarca solo <módulo/capa/flujo específico>.
+
+## Cambios requeridos
+<lista de cambios específicos de esta sub-historia>
+
+## Criterios de aceptación
+<criterios verificables propios>
+
+## Notas técnicas
+<detalles de implementación>
+```
+
+Crear las sub-historias en orden de dependencia: primero las que no dependen de otras.
+
+**Pausa entre creaciones:** si el agente es interactivo, confirmar cada una antes de crear la siguiente. Si es `--auto`: crear todas sin pausa.
+
+### Paso SP5: Lanzar `/po acceptance` para cada sub-historia
+
+Por cada sub-historia creada exitosamente, invocar:
+```
+/po acceptance <número-del-nuevo-issue>
+```
+
+**Orden:** secuencial (una por vez), no en paralelo, para evitar saturar el contexto.
+
+Si `/po acceptance` retorna un veredicto con cambios requeridos, actualizar el issue de la sub-historia con los criterios mejorados antes de continuar.
+
+### Paso SP6: Registrar dependencias padre→hijo
+
+Para cada sub-historia creada, agregar un comentario al issue padre indicando la relación:
+
+```bash
+gh issue comment <PADRE> --repo $GH_REPO --body "Sub-historia creada: #<HIJO> — <título>"
+```
+
+Luego actualizar el body del issue padre para incluir la lista de sub-historias:
+
+```bash
+# Obtener body actual del padre
+PADRE_BODY=$(gh issue view <PADRE> --repo $GH_REPO --json body --jq '.body')
+
+# Agregar sección de sub-historias al final
+gh issue edit <PADRE> --repo $GH_REPO --body "$(cat <<'BODY_EOF'
+$PADRE_BODY
+
+---
+
+## Sub-historias
+
+Este issue fue dividido en las siguientes sub-historias:
+- [ ] #<HIJO1> — <título sub-historia 1>
+- [ ] #<HIJO2> — <título sub-historia 2>
+- [ ] #<HIJO3> — <título sub-historia 3> (si aplica)
+
+**Cerrar este issue cuando todas las sub-historias estén completadas.**
+BODY_EOF
+)"
+```
+
+Agregar label `split` al issue padre (si existe en el repo):
+```bash
+gh issue edit <PADRE> --repo $GH_REPO --add-label "split" 2>/dev/null || true
+```
+
+### Paso SP7: Reporte del split
+
+```
+## Split completado — Issue #[N]: [Título]
+
+### Clasificación
+Tamaño original: [L/XL] → Split en [N] sub-historias
+
+### Sub-historias creadas
+
+| # | Título | Issue | Módulo | Stream | Tamaño | /po acceptance |
+|---|--------|-------|--------|--------|--------|----------------|
+| 1 | [título] | #NNN | backend | A | M | ✅ Aprobado |
+| 2 | [título] | #NNN | app | B | S | ✅ Aprobado |
+| 3 | [título] | #NNN | app | C | S | ⚠️ Con observaciones |
+
+### Dependencias entre sub-historias
+- #NNN1 debe completarse antes que #NNN2 (comparte modelo de datos)
+- #NNN2 y #NNN3 pueden ejecutarse en paralelo
+
+### Próximos pasos
+1. Planificar las sub-historias en el sprint con `/planner sprint`
+2. Las sub-historias ya están en los backlogs correspondientes
+3. Cerrar el issue padre #[N] cuando todas estén Done
 ```
 
 ---

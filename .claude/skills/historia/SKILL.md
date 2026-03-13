@@ -242,12 +242,29 @@ Invocar `/po dependencias` para verificar dependencias bloqueantes:
 - DoR bloqueado (dependencia OPEN fuera del sprint) → agregar label `blocked`, mover a status "Blocked" en Project V2, reportar al usuario las dependencias bloqueantes
 - DoR bloqueado por seguridad → ya manejado en Paso 9
 
-### Paso 11: Detectar sub-tareas (opcional)
+### Paso 11: Evaluar tamaño y split obligatorio (gate)
 
-Si la historia es grande, sugerir al usuario dividirla en sub-tareas:
-- Identificar componentes independientes
-- Proponer issues separados para cada uno
-- Si el usuario acepta, crear cada sub-issue referenciando al principal
+**ESTE PASO ES OBLIGATORIO** — no omitir aunque el issue parezca pequeño.
+
+Invocar `/planner validar-tamaño <ISSUE_NUMBER>` para obtener la clasificación S/M/L/XL.
+
+**Acción según tamaño:**
+
+| Tamaño | Acción |
+|--------|--------|
+| **S** | ✅ Continuar al Paso 12 |
+| **M** | ✅ Continuar al Paso 12 |
+| **L** | ⚠️ Invocar automáticamente `/planner split <ISSUE_NUMBER>` |
+| **XL** | ⛔ Invocar automáticamente `/planner split <ISSUE_NUMBER>` — NO continuar sin dividir |
+
+**Si el tamaño es L o XL:**
+
+1. Invocar `/planner split <ISSUE_NUMBER>` con modo `--auto` para crear sub-historias automáticamente
+2. El split creará cada sub-historia con `/historia` y lanzará `/po acceptance` para cada una
+3. Al finalizar el split, registrar las sub-historias en el Paso 12
+4. El issue padre queda como épica — NO lanzar agente de implementación sobre él
+
+**Nota:** Si el agente que invocó `/historia` ya sabe que el issue es S/M (por haber llamado a `/planner validar-tamaño` previamente), puede pasar `--skip-size-check` para omitir este paso y evitar la doble validación.
 
 ### Paso 12: Reportar resultado
 
@@ -255,8 +272,10 @@ Mostrar:
 - Numero del issue creado con link
 - Labels asignados
 - Backlog destino
+- Tamaño clasificado (S/M/L/XL)
 - Estado del DoR (cumplido / bloqueado / bloqueo de seguridad)
-- Sub-tareas creadas (si las hubo)
+- Sub-historias creadas por el split (si aplica): lista de `#NNN — título` con estado de `/po acceptance`
+- Si fue split: indicar que el issue padre queda como épica
 
 ### Paso 10: Sincronizar roadmap.json
 
