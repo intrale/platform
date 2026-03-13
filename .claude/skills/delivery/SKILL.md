@@ -256,7 +256,13 @@ gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
 ```
 
 2. Según el resultado:
-   - **Merge exitoso**: reportar como `MERGED` y **limpiar worktree** (ver Paso 6.6).
+   - **Merge exitoso**: reportar como `MERGED`, **sincronizar roadmap.json** y **limpiar worktree** (ver Paso 6.6).
+
+     ```bash
+     # Sincronizar roadmap.json con el estado actual del sprint (best-effort)
+     node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+     ```
+
    - **Merge falla** (conflictos, checks requeridos, etc.):
      - Verificar CI checks: `gh pr checks "$PR_NUMBER" --repo intrale/platform`
      - Si los checks están **corriendo**: esperar hasta 60 segundos y reintentar una vez.

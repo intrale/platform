@@ -23,6 +23,55 @@ export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
 ```
 
+### Paso 1.5: Buscar duplicados
+
+Antes de crear el issue, verificar si ya existe uno similar en GitHub.
+
+**Extraer palabras clave del argumento** (palabras de 4+ caracteres, ignorar artículos/preposiciones):
+
+Por ejemplo, de `"Pantalla de perfil de usuario"` → `pantalla perfil usuario`
+
+**Ejecutar búsqueda en issues abiertos y cerrados:**
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+
+# Búsqueda en issues abiertos
+gh issue list --repo intrale/platform --state open \
+  --search "KEYWORD1 KEYWORD2 KEYWORD3" \
+  --json number,title,labels,state --limit 10
+
+# Búsqueda en issues cerrados (últimos 5)
+gh issue list --repo intrale/platform --state closed \
+  --search "KEYWORD1 KEYWORD2 KEYWORD3" \
+  --json number,title,labels,state --limit 5
+```
+
+**Estimar similitud para cada resultado encontrado:**
+
+Contar cuántas palabras clave del título propuesto aparecen en el título del issue encontrado:
+- ≥ 80% de palabras en común → **match alto** (probablemente duplicado)
+- 50–79% de palabras en común → **match medio** (posible duplicado)
+- < 50% de palabras en común → **match bajo** (probablemente distinto)
+
+**Mostrar resultados al usuario:**
+
+```
+Buscando duplicados para: "[descripción propuesta]"
+
+  #892 "Pantalla de perfil — datos personales" (OPEN, app:client) — 85% match
+  #1001 "Editar perfil de usuario" (CLOSED) — 70% match
+  #753 "Vista de usuario registrado" (OPEN, app:client) — 50% match
+
+¿Actualizar #892 en vez de crear una nueva historia? [S/n]
+```
+
+**Decisión:**
+
+- Si hay **match alto (≥ 80%) en issue OPEN**: preguntar al usuario si prefiere actualizar en vez de crear. Si dice **S** → invocar `/refinar <N>` y detener este flujo. Si dice **N** → continuar.
+- Si hay **match alto en issue CLOSED**: informar al usuario ("Existe un issue cerrado similar: #N") y preguntar si desea reabrirlo o crear uno nuevo.
+- Si **no hay matches altos** (o el usuario elige continuar): continuar con el siguiente paso sin interrupciones.
+
 ### Paso 2: Analizar el codebase
 
 Usa Read, Grep y Glob para:
@@ -132,20 +181,92 @@ node /c/Workspaces/Intrale/platform/.claude/hooks/add-to-project-status.js $ISSU
 - Requiere token con scope `project` (ya lo tiene el `gh` CLI configurado)
 - Retorna: `{status: "ok", itemId: "..."}` o error
 
-### Paso 8: Detectar sub-tareas (opcional)
+### Paso 8: Orquestación paralela de análisis
+
+Con el número del issue recién creado, lanzar los 3 skills de análisis simultáneamente.
+
+**IMPORTANTE: Invocar las 3 herramientas Skill en el MISMO mensaje (un único turno), NO en secuencia. El runtime los ejecuta en paralelo. Esperar a que los 3 retornen resultado antes de continuar al Paso 9.**
+
+Invocar simultáneamente:
+- Skill `/qa` con argumento `validate $ISSUE_NUMBER` → generar casos de prueba E2E
+- Skill `/security` con argumento `analyze #$ISSUE_NUMBER` → análisis OWASP y riesgos
+- Skill `/guru` con argumento `"Analizar impacto técnico del issue #$ISSUE_NUMBER en el codebase: módulos afectados, archivos a crear o modificar, dependencias técnicas"` → detalles técnicos
+
+**Convergencia:** los 3 deben completar antes de avanzar. Si alguno falla, indicarlo en su sección pero no bloquear el flujo (a menos que /security retorne riesgo ALTO con findings Critical).
+
+### Paso 9: Consolidar resultados en el issue body
+
+Con los 3 resultados disponibles, obtener el body original del issue y actualizarlo agregando las secciones de análisis:
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+
+# Obtener body original
+ORIGINAL_BODY=$(gh issue view $ISSUE_NUMBER --repo intrale/platform --json body --jq '.body')
+
+# Agregar secciones de análisis al final (después de ## Criterios de aceptacion)
+gh issue edit $ISSUE_NUMBER --repo intrale/platform --body "$(cat <<'BODY_EOF'
+$ORIGINAL_BODY
+
+---
+
+## Casos de Prueba (QA)
+
+[Resumen del resultado de /qa — lista de casos E2E generados, o "Análisis pendiente — [motivo]. Ejecutar: /qa validate $ISSUE_NUMBER"]
+
+## Análisis de Seguridad (OWASP)
+
+[Resumen del resultado de /security — veredicto (BAJO/MEDIO/ALTO RIESGO), categorías OWASP evaluadas, y puntos críticos, o "Análisis pendiente — [motivo]. Ejecutar: /security analyze #$ISSUE_NUMBER"]
+
+## Detalles Técnicos
+
+[Resumen del resultado de /guru — archivos afectados con rutas completas, clases involucradas, dependencias técnicas, o "Análisis pendiente — [motivo]. Ejecutar: /guru <tema>"]
+BODY_EOF
+)"
+```
+
+**Reglas de consolidación:**
+- Insertar las 3 secciones al final del body (o antes de `## Notas técnicas` si existe)
+- NO modificar ni sobreescribir las secciones preexistentes del issue
+- Si un skill falló: indicar en su sección el motivo y el comando para ejecutarlo manualmente
+- Si /security retornó riesgo ALTO con findings Critical: NO avanzar al Paso 10, reportar al usuario el bloqueo
+
+### Paso 10: Validar Definition of Ready con /po dependencias
+
+Invocar `/po dependencias` para verificar dependencias bloqueantes:
+- Si /guru detectó issues o módulos que este issue depende técnicamente → invocar como `/po dependencias $ISSUE_NUMBER,N,M` (incluyendo los issues relacionados)
+- Si no hay dependencias externas detectadas → invocar como `/po dependencias $ISSUE_NUMBER`
+
+**Resultado:**
+- DoR cumplido (sin bloqueos) → mover issue a status "Refined" en Project V2 (si no fue movido ya)
+- DoR bloqueado (dependencia OPEN fuera del sprint) → agregar label `blocked`, mover a status "Blocked" en Project V2, reportar al usuario las dependencias bloqueantes
+- DoR bloqueado por seguridad → ya manejado en Paso 9
+
+### Paso 11: Detectar sub-tareas (opcional)
 
 Si la historia es grande, sugerir al usuario dividirla en sub-tareas:
 - Identificar componentes independientes
 - Proponer issues separados para cada uno
 - Si el usuario acepta, crear cada sub-issue referenciando al principal
 
-### Paso 9: Reportar resultado
+### Paso 12: Reportar resultado
 
 Mostrar:
 - Numero del issue creado con link
 - Labels asignados
 - Backlog destino
+- Estado del DoR (cumplido / bloqueado / bloqueo de seguridad)
 - Sub-tareas creadas (si las hubo)
+
+### Paso 10: Sincronizar roadmap.json
+
+Después de crear el issue exitosamente, ejecutar sprint-sync.js para reflejar el nuevo issue en `scripts/roadmap.json`:
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+```
+
+Este paso es best-effort: si falla, no interrumpe el flujo. No reportar al usuario salvo error inesperado.
 
 ## Notas
 
