@@ -1,0 +1,2690 @@
+{
+  "ok": true,
+  "timestamp": "2026-03-10T14:02:43.460Z",
+  "issues": 49,
+  "duplicates": [
+    {
+      "issueA": {
+        "number": 726,
+        "title": "CSEC-001 – Integración básica con autenticación en dos pasos (2FA) para cliente",
+        "url": "https://github.com/intrale/platform/issues/726",
+        "status": "Backlog CLIENTE"
+      },
+      "issueB": {
+        "number": 742,
+        "title": "DSEC-001 – Integración básica con autenticación en dos pasos (2FA) para delivery",
+        "url": "https://github.com/intrale/platform/issues/742",
+        "status": "Backlog DELIVERY"
+      },
+      "scores": {
+        "titleScore": 0.64,
+        "objectiveScore": 0.76,
+        "composite": 0.71
+      },
+      "severity": "medium",
+      "recommendation": "Historias muy similares — revisar si se pueden agrupar"
+    }
+  ],
+  "contained": [
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 100,
+      "matchedCriteria": 4,
+      "recommendation": "Historia A casi completamente contenida en B — considerar eliminar A y ampliar B"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1099,
+        "title": "qa(video): App Negocio — registro y revisión de negocio con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1099",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1101,
+        "title": "qa(video): App Negocio — unión a negocio y personalización con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1101",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1102,
+        "title": "qa(video): App Delivery — home y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1102",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1093,
+        "title": "qa(video): Registros especializados — delivery, platform admin, saler con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1093",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1094,
+        "title": "qa(video): App Cliente — onboarding y home con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1094",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1095,
+        "title": "qa(video): App Cliente — catálogo, detalle de producto y carrito con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1095",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1096,
+        "title": "qa(video): App Cliente — perfil y direcciones con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1096",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1097,
+        "title": "qa(video): App Cliente — pedidos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1097",
+        "status": "Backlog CLIENTE",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1098,
+        "title": "qa(video): App Negocio — onboarding y dashboard con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1098",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    },
+    {
+      "contained": {
+        "number": 1103,
+        "title": "qa(video): App Delivery — perfil y detalle de pedido con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1103",
+        "status": "Backlog Tecnico",
+        "criteriaCount": 4
+      },
+      "container": {
+        "number": 1100,
+        "title": "qa(video): App Negocio — categorías y productos con evidencia en video",
+        "url": "https://github.com/intrale/platform/issues/1100",
+        "status": "Backlog NEGOCIO",
+        "criteriaCount": 4
+      },
+      "containmentRatio": 75,
+      "matchedCriteria": 3,
+      "recommendation": "Historia A mayormente cubierta por B — evaluar si conviene fusionar o mantener separadas"
+    }
+  ],
+  "recommendations": [
+    {
+      "type": "review",
+      "priority": "medium",
+      "issues": [
+        726,
+        742
+      ],
+      "action": "Revisar #726 y #742 para verificar solapamiento (similaridad: 71%)",
+      "detail": "Similaridad significativa — pueden abordar el mismo problema desde ángulos distintos o estar duplicados."
+    },
+    {
+      "type": "absorb",
+      "priority": "high",
+      "issues": [
+        1094,
+        1098
+      ],
+      "action": "Historia #1094 está 100% cubierta por #1098 — evaluar si conviene ampliar #1098 y cerrar #1094",
+      "detail": "4/4 criterios de aceptación de #1094 ya están en #1098."
+    },
+    {
+      "type": "absorb",
+      "priority": "high",
+      "issues": [
+        1099,
+        1101
+      ],
+      "action": "Historia #1099 está 100% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1099",
+      "detail": "4/4 criterios de aceptación de #1099 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "high",
+      "issues": [
+        1099,
+        1102
+      ],
+      "action": "Historia #1099 está 100% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1099",
+      "detail": "4/4 criterios de aceptación de #1099 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "high",
+      "issues": [
+        1099,
+        1103
+      ],
+      "action": "Historia #1099 está 100% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1099",
+      "detail": "4/4 criterios de aceptación de #1099 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "high",
+      "issues": [
+        1101,
+        1102
+      ],
+      "action": "Historia #1101 está 100% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1101",
+      "detail": "4/4 criterios de aceptación de #1101 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "high",
+      "issues": [
+        1101,
+        1103
+      ],
+      "action": "Historia #1101 está 100% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1101",
+      "detail": "4/4 criterios de aceptación de #1101 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "high",
+      "issues": [
+        1102,
+        1103
+      ],
+      "action": "Historia #1102 está 100% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1102",
+      "detail": "4/4 criterios de aceptación de #1102 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1094
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1094 — evaluar si conviene ampliar #1094 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1094."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1095
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1095 — evaluar si conviene ampliar #1095 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1095."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1096
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1096 — evaluar si conviene ampliar #1096 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1096."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1097
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1097 — evaluar si conviene ampliar #1097 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1097."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1098
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1098 — evaluar si conviene ampliar #1098 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1098."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1099
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1099 — evaluar si conviene ampliar #1099 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1099."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1100
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1100 — evaluar si conviene ampliar #1100 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1100."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1101
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1102
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1093,
+        1103
+      ],
+      "action": "Historia #1093 está 75% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1093",
+      "detail": "3/4 criterios de aceptación de #1093 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1095
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1095 — evaluar si conviene ampliar #1095 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1095."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1096
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1096 — evaluar si conviene ampliar #1096 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1096."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1097
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1097 — evaluar si conviene ampliar #1097 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1097."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1099
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1099 — evaluar si conviene ampliar #1099 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1099."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1100
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1100 — evaluar si conviene ampliar #1100 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1100."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1101
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1102
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1094,
+        1103
+      ],
+      "action": "Historia #1094 está 75% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1094",
+      "detail": "3/4 criterios de aceptación de #1094 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1096
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1096 — evaluar si conviene ampliar #1096 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1096."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1097
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1097 — evaluar si conviene ampliar #1097 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1097."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1098
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1098 — evaluar si conviene ampliar #1098 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1098."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1099
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1099 — evaluar si conviene ampliar #1099 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1099."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1100
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1100 — evaluar si conviene ampliar #1100 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1100."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1101
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1102
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1095,
+        1103
+      ],
+      "action": "Historia #1095 está 75% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1095",
+      "detail": "3/4 criterios de aceptación de #1095 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1096,
+        1097
+      ],
+      "action": "Historia #1096 está 75% cubierta por #1097 — evaluar si conviene ampliar #1097 y cerrar #1096",
+      "detail": "3/4 criterios de aceptación de #1096 ya están en #1097."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1096,
+        1098
+      ],
+      "action": "Historia #1096 está 75% cubierta por #1098 — evaluar si conviene ampliar #1098 y cerrar #1096",
+      "detail": "3/4 criterios de aceptación de #1096 ya están en #1098."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1096,
+        1099
+      ],
+      "action": "Historia #1096 está 75% cubierta por #1099 — evaluar si conviene ampliar #1099 y cerrar #1096",
+      "detail": "3/4 criterios de aceptación de #1096 ya están en #1099."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1096,
+        1100
+      ],
+      "action": "Historia #1096 está 75% cubierta por #1100 — evaluar si conviene ampliar #1100 y cerrar #1096",
+      "detail": "3/4 criterios de aceptación de #1096 ya están en #1100."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1096,
+        1101
+      ],
+      "action": "Historia #1096 está 75% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1096",
+      "detail": "3/4 criterios de aceptación de #1096 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1096,
+        1102
+      ],
+      "action": "Historia #1096 está 75% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1096",
+      "detail": "3/4 criterios de aceptación de #1096 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1096,
+        1103
+      ],
+      "action": "Historia #1096 está 75% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1096",
+      "detail": "3/4 criterios de aceptación de #1096 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1097,
+        1098
+      ],
+      "action": "Historia #1097 está 75% cubierta por #1098 — evaluar si conviene ampliar #1098 y cerrar #1097",
+      "detail": "3/4 criterios de aceptación de #1097 ya están en #1098."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1097,
+        1099
+      ],
+      "action": "Historia #1097 está 75% cubierta por #1099 — evaluar si conviene ampliar #1099 y cerrar #1097",
+      "detail": "3/4 criterios de aceptación de #1097 ya están en #1099."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1097,
+        1100
+      ],
+      "action": "Historia #1097 está 75% cubierta por #1100 — evaluar si conviene ampliar #1100 y cerrar #1097",
+      "detail": "3/4 criterios de aceptación de #1097 ya están en #1100."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1097,
+        1101
+      ],
+      "action": "Historia #1097 está 75% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1097",
+      "detail": "3/4 criterios de aceptación de #1097 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1097,
+        1102
+      ],
+      "action": "Historia #1097 está 75% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1097",
+      "detail": "3/4 criterios de aceptación de #1097 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1097,
+        1103
+      ],
+      "action": "Historia #1097 está 75% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1097",
+      "detail": "3/4 criterios de aceptación de #1097 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1098,
+        1099
+      ],
+      "action": "Historia #1098 está 75% cubierta por #1099 — evaluar si conviene ampliar #1099 y cerrar #1098",
+      "detail": "3/4 criterios de aceptación de #1098 ya están en #1099."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1098,
+        1100
+      ],
+      "action": "Historia #1098 está 75% cubierta por #1100 — evaluar si conviene ampliar #1100 y cerrar #1098",
+      "detail": "3/4 criterios de aceptación de #1098 ya están en #1100."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1098,
+        1101
+      ],
+      "action": "Historia #1098 está 75% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1098",
+      "detail": "3/4 criterios de aceptación de #1098 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1098,
+        1102
+      ],
+      "action": "Historia #1098 está 75% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1098",
+      "detail": "3/4 criterios de aceptación de #1098 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1098,
+        1103
+      ],
+      "action": "Historia #1098 está 75% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1098",
+      "detail": "3/4 criterios de aceptación de #1098 ya están en #1103."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1099,
+        1100
+      ],
+      "action": "Historia #1099 está 75% cubierta por #1100 — evaluar si conviene ampliar #1100 y cerrar #1099",
+      "detail": "3/4 criterios de aceptación de #1099 ya están en #1100."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1100,
+        1101
+      ],
+      "action": "Historia #1100 está 75% cubierta por #1101 — evaluar si conviene ampliar #1101 y cerrar #1100",
+      "detail": "3/4 criterios de aceptación de #1100 ya están en #1101."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1100,
+        1102
+      ],
+      "action": "Historia #1100 está 75% cubierta por #1102 — evaluar si conviene ampliar #1102 y cerrar #1100",
+      "detail": "3/4 criterios de aceptación de #1100 ya están en #1102."
+    },
+    {
+      "type": "absorb",
+      "priority": "medium",
+      "issues": [
+        1100,
+        1103
+      ],
+      "action": "Historia #1100 está 75% cubierta por #1103 — evaluar si conviene ampliar #1103 y cerrar #1100",
+      "detail": "3/4 criterios de aceptación de #1100 ya están en #1103."
+    }
+  ],
+  "summary": {
+    "totalIssues": 49,
+    "totalPairs": 1176,
+    "duplicatesDetected": 1,
+    "containedDetected": 110,
+    "recommendationsGenerated": 56,
+    "health": "critical"
+  }
+}

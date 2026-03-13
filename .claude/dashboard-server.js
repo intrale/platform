@@ -2672,11 +2672,32 @@ async function sendHeartbeat() {
   }
 }
 
+// --- Pre-launch: verificar si ya hay otra instancia corriendo (#1415) ---
+function checkExistingInstance() {
+  // 1. Verificar PID file
+  if (fs.existsSync(PID_FILE)) {
+    const existingPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
+    if (!isNaN(existingPid) && existingPid !== process.pid) {
+      try {
+        process.kill(existingPid, 0);
+        console.log("[dashboard-server] Instancia existente detectada (PID " + existingPid + "), abortando.");
+        process.exit(0);
+      } catch (e) {
+        // PID muerto — limpiar PID file stale y continuar
+        console.log("[dashboard-server] PID file stale (PID " + existingPid + " muerto), limpiando.");
+        try { fs.unlinkSync(PID_FILE); } catch {}
+      }
+    }
+  }
+}
+
+checkExistingInstance();
+
 // --- Start server ---
 const server = http.createServer(handleRequest);
 
 server.listen(PORT, () => {
-  console.log("[dashboard-server] Escuchando en http://localhost:" + PORT);
+  console.log("[dashboard-server] Escuchando en http://localhost:" + PORT + " (PID " + process.pid + ")");
   writePid();
 
   setInterval(broadcastSSE, SSE_INTERVAL_MS);
@@ -2693,7 +2714,7 @@ server.listen(PORT, () => {
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
-    console.log("[dashboard-server] Puerto " + PORT + " ya en uso, otro servidor corriendo.");
+    console.log("[dashboard-server] Puerto " + PORT + " ya en uso, otro servidor corriendo. Abortando.");
     process.exit(0);
   }
   console.error("[dashboard-server] Error:", err.message);

@@ -248,6 +248,7 @@ function markStaleSessions() {
 
 // --- Auto-inicio del dashboard web server + reporter ---
 const DASHBOARD_SERVER_PID_FILE = path.join(REPO_ROOT, ".claude", "tmp", "dashboard-server.pid");
+const DASHBOARD_LOCK_FILE = path.join(REPO_ROOT, ".claude", "tmp", "dashboard-server.lock");
 const REPORTER_PID_FILE = path.join(REPO_ROOT, ".claude", "tmp", "reporter.pid");
 const REPORTER_INTERVAL = (() => {
     try {
@@ -256,6 +257,9 @@ const REPORTER_INTERVAL = (() => {
         return isNaN(val) || val <= 0 ? 5 : val;
     } catch(e) { return 5; }
 })();
+
+// Lock file máximo 30s — si es más viejo, se considera stale y se puede sobreescribir
+const LOCK_MAX_AGE_MS = 30000;
 
 // El heartbeat de Telegram ahora está integrado en dashboard-server.js.
 // Este hook solo necesita asegurar que el dashboard server esté corriendo.
@@ -279,9 +283,34 @@ function ensureDashboardServerRunning() {
             return; // Server responde, no arrancar otro
         } catch(e) { /* server no responde, arrancar */ }
 
-        // 3. Arrancar dashboard-server.js
+        // 3. Lock file para prevenir race condition entre worktrees (#1415)
+        try {
+            const lockDir = path.dirname(DASHBOARD_LOCK_FILE);
+            if (!fs.existsSync(lockDir)) fs.mkdirSync(lockDir, { recursive: true });
+            // Si existe lock file reciente, otro worktree ya está lanzando → skip
+            if (fs.existsSync(DASHBOARD_LOCK_FILE)) {
+                const lockAge = Date.now() - fs.statSync(DASHBOARD_LOCK_FILE).mtimeMs;
+                if (lockAge < LOCK_MAX_AGE_MS) {
+                    return; // Otro proceso está lanzando el server
+                }
+                // Lock stale → eliminar y continuar
+                fs.unlinkSync(DASHBOARD_LOCK_FILE);
+            }
+            // Crear lock file con O_EXCL (falla si otro proceso lo creó entre el check y aquí)
+            const fd = fs.openSync(DASHBOARD_LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+            fs.writeSync(fd, String(process.pid));
+            fs.closeSync(fd);
+        } catch(e) {
+            // Otro worktree ganó la carrera → skip
+            return;
+        }
+
+        // 4. Arrancar dashboard-server.js
         const dashboardServer = path.join(REPO_ROOT, ".claude", "dashboard-server.js");
-        if (!fs.existsSync(dashboardServer)) return;
+        if (!fs.existsSync(dashboardServer)) {
+            try { fs.unlinkSync(DASHBOARD_LOCK_FILE); } catch(e) {}
+            return;
+        }
 
         const { spawn } = require("child_process");
         const child = spawn(process.execPath, [dashboardServer], {
@@ -292,6 +321,9 @@ function ensureDashboardServerRunning() {
         });
         child.on("error", () => {});
         child.unref();
+
+        // Lock file se limpia después de un breve delay para dar tiempo al server a arrancar
+        setTimeout(() => { try { fs.unlinkSync(DASHBOARD_LOCK_FILE); } catch(e) {} }, 5000);
     } catch(e) { /* no bloquear hook */ }
 }
 
