@@ -400,12 +400,52 @@ Esto ejecuta tanto los tests en `src/test/kotlin/` (regresión) como los generad
 
 ```bash
 # Verificar que hay emulador conectado
-adb devices | grep -v "List" | grep -v "^$" | head -1
+DEVICE=$(adb devices 2>/dev/null | grep -v "List" | grep -v "^$" | grep -v "offline" | head -1 | awk '{print $1}')
+echo "Dispositivo: ${DEVICE:-ninguno}"
 ```
 
-Si hay emulador:
+Si hay emulador, iniciar screenrecord ANTES de ejecutar los flows:
+
 ```bash
-maestro test qa/generated/maestro/ --format junit --output qa/recordings/maestro-validate-results.xml
+VIDEO_LOCAL=""
+if [ -n "$DEVICE" ]; then
+    VIDEO_DEVICE="/sdcard/maestro-validate-${ISSUE_NUM}.mp4"
+    mkdir -p qa/recordings
+    adb -s "$DEVICE" shell "screenrecord --size 720x1280 --bit-rate 2000000 $VIDEO_DEVICE" \
+        > qa/recordings/screenrecord-validate-${ISSUE_NUM}.log 2>&1 &
+    echo "Screenrecord iniciado en $DEVICE -> $VIDEO_DEVICE"
+    sleep 1
+fi
+```
+
+Ejecutar los flows Maestro:
+
+```bash
+MAESTRO_EXIT=0
+maestro test qa/generated/maestro/ \
+    --format junit \
+    --output qa/recordings/maestro-validate-results.xml \
+    2>&1 | tee qa/recordings/maestro-validate-${ISSUE_NUM}-output.log || MAESTRO_EXIT=$?
+```
+
+Detener screenrecord y extraer el video del dispositivo:
+
+```bash
+if [ -n "$DEVICE" ]; then
+    adb -s "$DEVICE" shell "pkill -INT screenrecord" 2>/dev/null || true
+    sleep 3
+    VIDEO_CANDIDATE="qa/recordings/maestro-validate-${ISSUE_NUM}.mp4"
+    if adb -s "$DEVICE" shell "test -s $VIDEO_DEVICE" 2>/dev/null; then
+        adb -s "$DEVICE" exec-out "cat $VIDEO_DEVICE" > "$VIDEO_CANDIDATE"
+        adb -s "$DEVICE" shell "rm $VIDEO_DEVICE" 2>/dev/null || true
+        if [ -s "$VIDEO_CANDIDATE" ]; then
+            VIDEO_LOCAL="$VIDEO_CANDIDATE"
+            echo "Video extraído: $VIDEO_LOCAL ($(du -h "$VIDEO_LOCAL" | cut -f1))"
+        fi
+    else
+        echo "Aviso: screenrecord no generó video (emulador sin soporte o test muy rápido)"
+    fi
+fi
 ```
 
 Si NO hay emulador: anotar en el reporte pero NO bloquear el veredicto.
@@ -425,8 +465,19 @@ cp -r qa/build/reports/tests/test/ qa/evidence/$ISSUE_NUM/api/ 2>/dev/null || tr
 cp qa/recordings/*-trace.zip qa/evidence/$ISSUE_NUM/ 2>/dev/null || true
 # Resultados Maestro
 cp qa/recordings/maestro-validate-results.xml qa/evidence/$ISSUE_NUM/ 2>/dev/null || true
-# Videos de Maestro
-cp -r qa/recordings/*.mp4 qa/evidence/$ISSUE_NUM/ 2>/dev/null || true
+# Videos de screenrecord (Android validate)
+EVIDENCE_VIDEOS=()
+if [ -n "$VIDEO_LOCAL" ] && [ -f "$VIDEO_LOCAL" ]; then
+    cp "$VIDEO_LOCAL" qa/evidence/$ISSUE_NUM/ 2>/dev/null && \
+        EVIDENCE_VIDEOS+=("qa/evidence/$ISSUE_NUM/$(basename "$VIDEO_LOCAL")")
+    echo "Video de evidencia: qa/evidence/$ISSUE_NUM/$(basename "$VIDEO_LOCAL")"
+fi
+# Otros mp4 existentes en recordings (shards de runs anteriores)
+for vf in qa/recordings/maestro-shard-*.mp4; do
+    [ -f "$vf" ] || continue
+    cp "$vf" qa/evidence/$ISSUE_NUM/ 2>/dev/null && \
+        EVIDENCE_VIDEOS+=("qa/evidence/$ISSUE_NUM/$(basename "$vf")")
+done
 ```
 
 Generar `qa/evidence/<issue>/qa-report.json` con la estructura:
@@ -452,7 +503,7 @@ Generar `qa/evidence/<issue>/qa-report.json` con la estructura:
   "pre_existing_tests": { "executed": 0, "passed": 0, "failed": 0 },
   "generated_tests": { "executed": 0, "passed": 0, "failed": 0 },
   "evidence": {
-    "videos": [],
+    "videos": ["qa/evidence/<issue>/maestro-validate-<issue>.mp4"],
     "traces": [],
     "html_report": "qa/evidence/<issue>/api/index.html"
   },
@@ -469,6 +520,34 @@ Generar `qa/evidence/<issue>/qa-report.json` con la estructura:
 - Rellenar `evidence` con las rutas reales de los artefactos copiados
 
 Usar `Write` tool para crear el `qa-report.json`.
+
+Al construir el JSON, poblar el array `evidence.videos` con los paths reales de `EVIDENCE_VIDEOS`.
+Si no hay videos (sin emulador Android o flujos sin dispositivo), usar array vacío `[]`.
+
+## Paso V7b: Enviar videos a Telegram
+
+Si existen videos en `qa/evidence/$ISSUE_NUM/`, enviarlos a Telegram junto con el resultado:
+
+```bash
+VIDEOS_LIST=$(ls qa/evidence/$ISSUE_NUM/*.mp4 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+if [ -n "$VIDEOS_LIST" ]; then
+    VERDICT_STR=$([ "$MAESTRO_EXIT" = "0" ] && echo "APROBADO" || echo "RECHAZADO")
+    GENERATED_PASSED=$(grep -o 'tests="[0-9]*"' qa/evidence/$ISSUE_NUM/maestro-validate-results.xml 2>/dev/null | head -1 | cut -d'"' -f2 || echo "0")
+    GENERATED_TOTAL="$GENERATED_PASSED"
+    echo "Enviando ${#EVIDENCE_VIDEOS[@]} video(s) a Telegram..."
+    node qa/scripts/qa-video-share.js \
+        --issue "$ISSUE_NUM" \
+        --videos "$VIDEOS_LIST" \
+        --verdict "$VERDICT_STR" \
+        --passed "${GENERATED_PASSED:-0}" \
+        --total "${GENERATED_TOTAL:-0}" \
+        2>&1 | tail -5 || echo "Aviso: envío a Telegram falló (no bloquea el resultado QA)"
+else
+    echo "Sin videos de evidencia (sin flows Android o emulador no disponible)"
+fi
+```
+
+Este paso es **best-effort**: si falla el envío a Telegram, continuar sin abortar el reporte.
 
 ## Paso V8: Reporte final
 
@@ -493,6 +572,7 @@ Usar `Write` tool para crear el `qa-report.json`.
 - Reporte: qa/evidence/<issue>/qa-report.json
 - HTML: qa/evidence/<issue>/api/index.html
 - Traces: qa/evidence/<issue>/*.zip
+- Videos: qa/evidence/<issue>/*.mp4 (o "sin videos" si no hubo flows Android)
 
 ### Veredicto
 [APROBADO: todos los criterios validados | RECHAZADO: detalle de fallos]
