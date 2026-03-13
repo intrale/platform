@@ -10,7 +10,7 @@
 | Naranja | **OPERATOR** | `/ops`, `/scrum`, `/planner` |
 | Verde | **DEVELOPER** | `/backend-dev`, `/android-dev`, `/ios-dev`, `/web-dev`, `/desktop-dev` |
 | Azul | **QA** | `/qa`, `/tester`, `/review` |
-| Rojo | **PRODUCT OWNER** | `/po`, `/historia` |
+| Rojo | **PRODUCT OWNER** | `/po`, `/doc nueva` |
 
 ## Diagrama de flujo
 
@@ -126,12 +126,12 @@ flowchart TD
 ### 11. Proponer Nuevas Historias — PRODUCT OWNER
 - A partir de lo revisado, identificar mejoras o nuevas funcionalidades
 - Crear issues con estructura completa
-- **Agentes**: `/po` + `/historia`
+- **Agentes**: `/po` + `/doc nueva`
 
 ### 12. Planificar — OPERATOR
 - Priorizar las nuevas historias propuestas
 - Asignar al backlog correspondiente (Técnico, Cliente, Negocio, Delivery)
-- **Agentes**: `/planner` + `/priorizar`
+- **Agentes**: `/planner` + `/doc priorizar`
 
 ### 13. Actualizar Roadmap — OPERATOR
 - Actualizar `scripts/roadmap.json` con el nuevo estado
@@ -172,6 +172,6 @@ El developer skill a re-invocar se detecta automáticamente del activity log (ú
 | Ejecutar QA E2E | `/qa` | — |
 | Generar Videos | `/qa` | — |
 | Revisar Videos | `/po` | — |
-| Proponer Historias | `/historia` | `/po` |
-| Planificar | `/planner` | `/priorizar` |
+| Proponer Historias | `/doc nueva` | `/po` |
+| Planificar | `/planner` | `/doc priorizar` |
 | Actualizar Roadmap | `/scrum` | `/planner` |

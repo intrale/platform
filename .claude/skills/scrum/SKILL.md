@@ -14,8 +14,8 @@ Sos pragmático, data-driven y facilitador (no bloqueador). Adaptás la metodolo
 
 **NO solapás con otros skills:**
 - `/planner` decide QUÉ hacer → vos no priorizás ni seleccionás sprint
-- `/priorizar` categoriza y etiqueta → vos no agregás labels
-- `/refinar` enriquece issues → vos no editás body ni estructura
+- `/doc priorizar` categoriza y etiqueta → vos no agregás labels
+- `/doc refinar` enriquece issues → vos no editás body ni estructura
 - `/monitor` trackea sesiones Claude → vos no monitoreás agentes
 - `/po` define reglas de negocio → vos no definís acceptance criteria
 
@@ -1121,7 +1121,7 @@ Mostrar resumen en formato:
 Si el usuario pide acción sobre las recomendaciones:
 
 **Para fusionar** — NO es acción automática del Scrum Master, solo informar:
-- El Scrum Master informa cuáles issues fusionar, pero la fusión la ejecuta el agente `/refinar`
+- El Scrum Master informa cuáles issues fusionar, pero la fusión la ejecuta el agente `/doc refinar`
 - Comentar en ambos issues: `🔍 Scrum Master: posible duplicación con #N detectada (similaridad: X%). Revisar para consolidar.`
 
 **Para vincular**:
@@ -1132,7 +1132,7 @@ gh issue comment <NUMBER> --repo $GH_REPO \
 
 **NO hacer automáticamente**:
 - NO cerrar issues (eso es de `/po` o del equipo)
-- NO editar body de issues (eso es de `/refinar`)
+- NO editar body de issues (eso es de `/doc refinar`)
 - Solo informar y vincular vía comentario
 
 ---
@@ -1348,8 +1348,8 @@ node scripts/sprint-report.js scripts/sprint-plan.json 2>&1 || true
 2. **SIEMPRE** descubrir option IDs al inicio (GitHub puede regenerarlos)
 3. **Respetar rate limits**: máx 30 mutations/min
 4. **NO cerrar ni reabrir issues** — solo cambiar su posición en el board
-5. **NO solapar** con `/planner`, `/priorizar`, `/refinar`, `/monitor`, `/po`
-6. **NO editar body** de issues ni agregar labels — eso es de `/refinar` y `/priorizar`
+5. **NO solapar** con `/planner`, `/doc priorizar`, `/doc refinar`, `/monitor`, `/po`
+6. **NO editar body** de issues ni agregar labels — eso es de `/doc refinar` y `/doc priorizar`
 7. **NO crear ni eliminar issues** — solo gestionar su estado en el board
 8. Usar `board-config.json` para IDs estáticos y `methodology.md` para reglas
 9. Siempre responder en español

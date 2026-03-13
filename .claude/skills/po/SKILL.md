@@ -452,7 +452,7 @@ Para cada criterio de aceptación del issue, evaluar:
 
 ### Paso RV6: Si REQUIERE CAMBIOS — proponer nuevas historias
 
-Para cada gap identificado (criterio sin evidencia o con falla), proponer una historia usando `/historia`:
+Para cada gap identificado (criterio sin evidencia o con falla), proponer una historia usando `/doc nueva`:
 
 - Si falta evidencia de un criterio: proponer historia de tipo "qa" para cubrir ese escenario
 - Si hay un bug (FAIL): proponer historia de tipo "bug" para corregirlo
@@ -496,8 +496,8 @@ Para cada gap identificado (criterio sin evidencia o con falla), proponer una hi
 
 | Gap | Tipo | Historia propuesta |
 |-----|------|--------------------|
-| [criterio sin evidencia] | Sin QA | `/historia` — Agregar caso de prueba: [descripción] |
-| [escenario FAIL] | Bug | `/historia` — Corregir: [descripción del fallo] |
+| [criterio sin evidencia] | Sin QA | /doc nueva` — Agregar caso de prueba: [descripción] |
+| [escenario FAIL] | Bug | /doc nueva` — Corregir: [descripción del fallo] |
 
 ### Próximos pasos
 1. [Acción concreta para resolver cada gap]

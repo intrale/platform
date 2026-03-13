@@ -7,10 +7,10 @@
 
 | Color (pizarra) | Rol | Skills/Agentes |
 |------------------|-----|----------------|
-| Naranja | **OPERATOR** | `/ops`, `/scrum`, `/planner`, `/refinar` |
+| Naranja | **OPERATOR** | `/ops`, `/scrum`, `/planner`, `/doc refinar` |
 | Verde | **DEVELOPER** | `/backend-dev`, `/android-dev`, `/guru` |
 | Azul / Rojo (QA) | **QA** | `/qa`, `/tester` |
-| Rojo | **PRODUCT OWNER** | `/po`, `/historia` |
+| Rojo | **PRODUCT OWNER** | `/po`, `/doc nueva` |
 | Verde (Security) | **SECURITY** | `/security` |
 
 ## Diagrama de flujo
@@ -80,13 +80,13 @@ flowchart TD
 ### 2a. Actualizar Historia — OPERATOR (si ya existe)
 - Actualizar el issue existente con nueva información
 - Preservar historial de cambios y comentarios
-- **Agente**: `/refinar`
+- **Agente**: `/doc refinar`
 
 ### 2b. Refinar — PRODUCT OWNER (si no existe, o después de actualizar)
 - Definir criterios de aceptación claros
 - Especificar flujos principales y alternativos
 - Detallar el valor de negocio y el usuario objetivo
-- **Agente**: `/po` + `/historia`
+- **Agente**: `/po` + `/doc nueva`
 
 ### 3. Validar Tamaño — OPERATOR
 - Evaluar si la historia es demasiado grande para un sprint
@@ -98,7 +98,7 @@ flowchart TD
 - Descomponer la historia en sub-historias independientes y entregables
 - Cada sub-historia debe tener valor por sí misma
 - Vuelve a Refinar para cada sub-historia
-- **Agentes**: `/planner` + `/historia`
+- **Agentes**: `/planner` + `/doc nueva`
 
 ### 5. Trabajo paralelo (cuando el tamaño está OK)
 
@@ -131,7 +131,7 @@ Tres actividades se ejecutan **en paralelo**:
 ### 7. Planificar — OPERATOR
 - Asignar la historia al backlog correcto (Técnico, Cliente, Negocio, Delivery)
 - Priorizar según impacto y esfuerzo
-- **Agentes**: `/planner` + `/priorizar`
+- **Agentes**: `/planner` + `/doc priorizar`
 
 ### 8. Actualizar Roadmap — OPERATOR
 - Reflejar la nueva historia en `scripts/roadmap.json`
@@ -151,13 +151,13 @@ Tres actividades se ejecutan **en paralelo**:
 | Paso | Skill principal | Skills de soporte |
 |------|----------------|-------------------|
 | Verificar existencia | `/doc` | — |
-| Actualizar historia | `/refinar` | — |
-| Refinar | `/po` | `/historia` |
+| Actualizar historia | `/doc refinar` | — |
+| Refinar | `/po` | `/doc nueva` |
 | Validar tamaño | `/planner` | — |
-| Partir historias | `/historia` | `/planner` |
+| Partir historias | `/doc nueva` | `/planner` |
 | Generar casos prueba | `/qa` | `/tester` |
 | Recomendaciones seguridad | `/security` | — |
 | Detalles técnicos | `/guru` | developer skills |
 | Validar dependencias | `/po` | — |
-| Planificar | `/planner` | `/priorizar` |
+| Planificar | `/planner` | `/doc priorizar` |
 | Actualizar roadmap | `/scrum` | `/planner` |

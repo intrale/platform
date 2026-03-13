@@ -136,9 +136,9 @@ Para verificar que los skills bajados a Haiku no degradan en calidad:
 
 | Check | Descripción |
 |-------|-------------|
-| `/historia "Agregar campo X"` | Debe crear issue con título, body completo (objetivo, contexto, cambios, criterios de aceptación), labels correctos, milestone asignado |
-| `/refinar 1244` | Debe aplicar estructura estándar al issue sin perder información del body original |
-| `/priorizar` | Debe categorizar issues sin labels y asignar `tipo:*` + `area:*` correctamente |
+| `/doc nueva "Agregar campo X"` | Debe crear issue con título, body completo (objetivo, contexto, cambios, criterios de aceptación), labels correctos, milestone asignado |
+| `/doc refinar 1244` | Debe aplicar estructura estándar al issue sin perder información del body original |
+| `/doc priorizar` | Debe categorizar issues sin labels y asignar `tipo:*` + `area:*` correctamente |
 | `/scrum audit` | Debe generar informe de salud del board con métricas cuantitativas |
 | `/doc nueva "descripción"` | Debe delegar correctamente a `/historia` y retornar issue creado |
 

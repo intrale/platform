@@ -13,7 +13,7 @@ Documento vivo. Actualizable via `/scrum mejoras`.
 
 | Columna | Significado | Quién mueve aquí |
 |---------|------------|-----------------|
-| Todo | Pendiente de inicio, priorizado | `/planner`, `/refinar`, manual |
+| Todo | Pendiente de inicio, priorizado | `/planner`, `/doc refinar`, manual |
 | In Progress | Alguien está trabajando activamente | Desarrollador, agente al iniciar |
 | Ready | Implementado, esperando review/QA | `/delivery` al crear PR |
 | Blocked | Bloqueado por dependencia externa o interna | Desarrollador, `/scrum sync` |
