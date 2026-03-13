@@ -1,6 +1,6 @@
 {
-  "updated_ts": "2026-03-11T16:36:59.117Z",
-  "updated_by": "scrum close",
+  "updated_ts": "2026-03-13T12:30:00.000Z",
+  "updated_by": "planner sprint",
   "horizon_sprints": 7,
   "sprints": [
     {
@@ -12,176 +12,74 @@
       "closed_at": "2026-03-11T15:14:27Z",
       "velocity": 11,
       "issues": [
-        {
-          "number": 1394,
-          "title": "fix(hooks): sesiones GC lifecycle",
-          "size": "M",
-          "stream": "E",
-          "status": "done",
-          "pr": 1397
-        },
-        {
-          "number": 1148,
-          "title": "[UX] Indicador fortaleza contraseñas",
-          "size": "S",
-          "stream": "B",
-          "status": "done",
-          "pr": 1398
-        },
-        {
-          "number": 1395,
-          "title": "feat(scrum): replanificación sprint close",
-          "size": "M",
-          "stream": "E",
-          "status": "done",
-          "pr": 1401
-        },
-        {
-          "number": 1390,
-          "title": "fix(monitor): sync dashboard Project V2",
-          "size": "M",
-          "stream": "E",
-          "status": "done",
-          "pr": 1400
-        },
-        {
-          "number": 1399,
-          "title": "fix(hooks): agent-concurrency launch fix",
-          "size": "M",
-          "stream": "E",
-          "status": "done",
-          "pr": 1402
-        },
-        {
-          "number": 1403,
-          "title": "bug(monitor): heartbeat fallback ASCII",
-          "size": "M",
-          "stream": "E",
-          "status": "done",
-          "pr": 1407
-        },
-        {
-          "number": 1404,
-          "title": "bug(monitor): permisos panel sync",
-          "size": "S",
-          "stream": "E",
-          "status": "done",
-          "pr": 1405
-        },
-        {
-          "number": 1383,
-          "title": "fix(monitor): activity-logger TodoWrite",
-          "size": "S",
-          "stream": "E",
-          "status": "done",
-          "pr": 1406
-        },
-        {
-          "number": 1380,
-          "title": "bug(monitor): heartbeat screenshots",
-          "size": "M",
-          "stream": "E",
-          "status": "done",
-          "pr": 1409
-        },
-        {
-          "number": 1145,
-          "title": "[UX] Pantalla dedicada cambio contraseña",
-          "size": "M",
-          "stream": "B",
-          "status": "done",
-          "pr": 1410
-        },
-        {
-          "number": 1396,
-          "title": "feat(monitor): heartbeat frecuencia adaptativa",
-          "size": "S",
-          "stream": "E",
-          "status": "done"
-        }
+        { "number": 1394, "title": "fix(hooks): sesiones GC lifecycle", "size": "M", "stream": "E", "status": "done", "pr": 1397 },
+        { "number": 1148, "title": "[UX] Indicador fortaleza contraseñas", "size": "S", "stream": "B", "status": "done", "pr": 1398 },
+        { "number": 1395, "title": "feat(scrum): replanificación sprint close", "size": "M", "stream": "E", "status": "done", "pr": 1401 },
+        { "number": 1390, "title": "fix(monitor): sync dashboard Project V2", "size": "M", "stream": "E", "status": "done", "pr": 1400 },
+        { "number": 1399, "title": "fix(hooks): agent-concurrency launch fix", "size": "M", "stream": "E", "status": "done", "pr": 1402 },
+        { "number": 1403, "title": "bug(monitor): heartbeat fallback ASCII", "size": "M", "stream": "E", "status": "done", "pr": 1407 },
+        { "number": 1404, "title": "bug(monitor): permisos panel sync", "size": "S", "stream": "E", "status": "done", "pr": 1405 },
+        { "number": 1383, "title": "fix(monitor): activity-logger TodoWrite", "size": "S", "stream": "E", "status": "done", "pr": 1406 },
+        { "number": 1380, "title": "bug(monitor): heartbeat screenshots", "size": "M", "stream": "E", "status": "done", "pr": 1409 },
+        { "number": 1145, "title": "[UX] Pantalla dedicada cambio contraseña", "size": "M", "stream": "B", "status": "done", "pr": 1410 },
+        { "number": 1396, "title": "feat(monitor): heartbeat frecuencia adaptativa", "size": "S", "stream": "E", "status": "done" }
       ]
     },
     {
       "id": "SPR-022",
-      "start": "2026-03-17",
-      "end": "2026-03-21",
-      "tema": "Pendiente de planificación",
-      "status": "planned",
+      "start": "2026-03-11",
+      "end": "2026-03-14",
+      "tema": "Monitor & infra — zombies, heartbeat unificado, roadmap-planner, sprint-sync, build variants, delivery",
+      "status": "done",
+      "closed_at": "2026-03-13T12:30:00Z",
+      "velocity": 22,
       "issues": [
-        {
-          "number": 1412,
-          "title": "bug(monitor): dashboard-server zombie heartbeats",
-          "size": "M",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1408,
-          "title": "bug(hooks): sesiones zombie en worktrees PID check",
-          "size": "M",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1413,
-          "title": "fix(monitor): ocultar CI/CD sin datos",
-          "size": "S",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1415,
-          "title": "fix(monitor): prevenir instancias zombie dashboard-server",
-          "size": "M",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1414,
-          "title": "fix(monitor): frecuencia adaptativa en dashboard-server",
-          "size": "M",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1416,
-          "title": "refactor(monitor): unificar heartbeat reporter",
-          "size": "L",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1417,
-          "title": "feat(monitor): sincronización automática sprint ↔ roadmap ↔ dashboard ↔ Telegram",
-          "size": "L",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1418,
-          "title": "fix(monitor): mejorar panel Flujo de Agentes — flechas enumeradas, layout, iconos",
-          "size": "M",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1419,
-          "title": "feat(monitor): persistencia y archivado de métricas de agentes entre sprints",
-          "size": "M",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "number": 1420,
-          "title": "feat(scrum): mantener roadmap 7-10 sprints planificados — proponer historias si faltan",
-          "size": "L",
-          "stream": "E",
-          "status": "planned"
-        }
+        { "number": 1412, "title": "bug(monitor): dashboard-server zombie heartbeats", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1408, "title": "bug(hooks): sesiones zombie en worktrees PID check", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1413, "title": "fix(monitor): ocultar CI/CD sin datos", "size": "S", "stream": "E", "status": "done" },
+        { "number": 1414, "title": "fix(monitor): frecuencia adaptativa en dashboard-server", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1416, "title": "refactor(monitor): unificar heartbeat reporter", "size": "L", "stream": "E", "status": "done" },
+        { "number": 1417, "title": "feat(monitor): sincronización automática sprint ↔ roadmap ↔ dashboard ↔ Telegram", "size": "L", "stream": "E", "status": "done" },
+        { "number": 1418, "title": "fix(monitor): mejorar panel Flujo de Agentes", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1419, "title": "feat(monitor): persistencia y archivado de métricas de agentes", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1420, "title": "feat(scrum): mantener roadmap 7-10 sprints planificados", "size": "L", "stream": "E", "status": "done" },
+        { "number": 1425, "title": "bug(hooks): agent promotion spawn fix", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1435, "title": "feat(scrum): roadmap-planner.js — distribución automática de backlog", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1436, "title": "feat(scrum): integrar roadmap-planner en /scrum close y audit", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1437, "title": "feat(scrum): detección de backlog insuficiente", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1441, "title": "feat(hooks): watcher externo para promoción desde _queue[]", "size": "M", "stream": "E", "status": "done" },
+        { "number": 1458, "title": "bug(hooks): validación de completación de agentes", "size": "M", "stream": "E", "status": "done", "pr": 1459 },
+        { "number": 601, "title": "feat(android): variante de build BUSINESS", "size": "M", "stream": "B", "status": "done", "pr": 1460 },
+        { "number": 736, "title": "feat(delivery): confirmación de entrega en detalle de pedido", "size": "M", "stream": "D", "status": "done", "pr": 1461 },
+        { "number": 1456, "title": "docs(operativo): Arquitectura completa del sistema operativo", "size": "S", "stream": "E", "status": "done", "pr": 1457 },
+        { "number": 1470, "title": "docs(operativo): Flujos operativos — crear historia y lanzar sprint", "size": "S", "stream": "E", "status": "done", "pr": 1471 }
+      ],
+      "carry_over": [
+        { "number": 1415, "title": "fix(monitor): prevenir instancias zombie dashboard-server", "size": "M", "stream": "E", "status": "open", "moved_to": "SPR-023" }
       ]
     },
     {
       "id": "SPR-023",
+      "start": "2026-03-17",
+      "end": "2026-03-21",
+      "tema": "Sprint de Orquestación — automatización de flujos operativos (crear historia + lanzar sprint)",
+      "status": "planned",
+      "issues": [
+        { "number": 1480, "title": "Modo /planner validar-tamaño para clasificar historias S/M/L/XL", "size": "S", "stream": "E", "status": "planned", "wave": 1 },
+        { "number": 1477, "title": "Búsqueda proactiva de duplicados al crear historia", "size": "S", "stream": "E", "status": "planned", "wave": 1 },
+        { "number": 1476, "title": "Actualización automática de roadmap.json al crear/cerrar historias", "size": "M", "stream": "E", "status": "planned", "wave": 1 },
+        { "number": 1472, "title": "Orquestación paralela QA+Security+Dev al crear historia", "size": "M", "stream": "E", "status": "planned", "wave": 2 },
+        { "number": 1478, "title": "Gate TDD: validar que tests se escribieron antes del código", "size": "M", "stream": "E", "status": "planned", "wave": 2 },
+        { "number": 1474, "title": "Generación automática de videos/screenrecord en QA E2E", "size": "L", "stream": "E", "status": "planned", "wave": 2 },
+        { "number": 1473, "title": "Auto-split de historias grandes con loop de refinamiento", "size": "M", "stream": "E", "status": "planned", "wave": 3, "depends_on": [1480] },
+        { "number": 1481, "title": "Invocar /po dependencias automáticamente en flujo de crear historia", "size": "S", "stream": "E", "status": "planned", "wave": 3 },
+        { "number": 1475, "title": "Modo /po revisar-videos para validar evidencia QA", "size": "M", "stream": "E", "status": "planned", "wave": 3, "depends_on": [1474] },
+        { "number": 1479, "title": "Re-invocación automática de skills al rechazar gates de calidad", "size": "L", "stream": "E", "status": "planned", "wave": 4 },
+        { "number": 1415, "title": "fix(monitor): prevenir instancias zombie dashboard-server", "size": "M", "stream": "E", "status": "planned", "wave": 4, "carry_over_from": "SPR-022" }
+      ]
+    },
+    {
+      "id": "SPR-024",
       "start": "2026-03-24",
       "end": "2026-03-28",
       "tema": "Pendiente de planificación",
@@ -189,15 +87,17 @@
       "issues": []
     },
     {
-      "id": "SPR-024",
+      "id": "SPR-025",
       "start": "2026-03-31",
       "end": "2026-04-04",
       "tema": "Pendiente de planificación",
       "status": "planned",
-      "issues": []
+      "issues": [
+        { "number": 1464, "title": "Distribución F&F Android: Firebase App Distribution para 3 flavors", "size": "M", "stream": "E", "status": "planned" }
+      ]
     },
     {
-      "id": "SPR-025",
+      "id": "SPR-026",
       "start": "2026-04-07",
       "end": "2026-04-11",
       "tema": "Pendiente de planificación",
@@ -205,7 +105,7 @@
       "issues": []
     },
     {
-      "id": "SPR-026",
+      "id": "SPR-027",
       "start": "2026-04-14",
       "end": "2026-04-18",
       "tema": "Pendiente de planificación",
@@ -213,17 +113,9 @@
       "issues": []
     },
     {
-      "id": "SPR-027",
+      "id": "SPR-028",
       "start": "2026-04-21",
       "end": "2026-04-25",
-      "tema": "Pendiente de planificación",
-      "status": "planned",
-      "issues": []
-    },
-    {
-      "id": "SPR-028",
-      "start": "2026-04-28",
-      "end": "2026-05-02",
       "tema": "Pendiente de planificación",
       "status": "planned",
       "issues": []
