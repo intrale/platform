@@ -4,6 +4,19 @@ user-invocable: true
 argument-hint: "<issue-o-tarea> [--plan] [--test]"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
+frozen: true
+frozen-since: 2026-03-13
+frozen-reason: Sin issues Desktop asignados en sprints recientes (SPR-025). Reactivar cuando haya trabajo Desktop específico.
+---
+
+> ⚠️ **SKILL CONGELADO** — Este skill está inactivo para reducir costos operativos.
+>
+> **Para reactivar:** mover este archivo a `.claude/skills/desktop-dev/SKILL.md`
+> (es decir, mover la carpeta `_frozen/desktop-dev/` de vuelta a `.claude/skills/desktop-dev/`)
+>
+> **Motivo de congelamiento:** Sin issues Desktop en sprints recientes (detectado en SPR-025).
+> **Congelado el:** 2026-03-13 · **Issue:** #1519
+
 ---
 
 # /desktop-dev — DesktopDev
