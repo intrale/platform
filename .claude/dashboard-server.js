@@ -1394,9 +1394,11 @@ function renderHTML(data, theme) {
     const tasksDone = tasks.filter(t => t.status === "completed").length;
     const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
     let tasksPct;
-    if (tasks.length > 0) {
+    if (forcedStatus === "done") {
+      tasksPct = 100;
+    } else if (tasks.length > 0) {
       tasksPct = Math.round((tasksDone / tasks.length) * 100);
-    } else if (agStatus === "done" || agStatus === "stale" || forcedStatus === "done") {
+    } else if (agStatus === "done" || agStatus === "stale") {
       tasksPct = 100;
     } else if (actionCount > 0) {
       const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
