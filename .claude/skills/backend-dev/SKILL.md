@@ -66,7 +66,46 @@ Antes de escribir código, diseñá la solución:
 
 Si se pasó `--plan`, reportar el plan y detenerse acá.
 
-## Paso 4: Implementar
+## Paso 4: Escribir tests primero (TDD — Red Phase)
+
+**OBLIGATORIO antes de escribir codigo de produccion.**
+
+### 4.1 Crear los archivos de test
+
+Con base en el plan del Paso 3, escribir los tests en `src/test/kotlin/ar/com/intrale/`:
+
+```kotlin
+class MiFunctionTest {
+
+    @Test
+    fun `execute retorna respuesta exitosa con datos validos`() = runBlocking {
+        val dynamoDB = mockk<DynamoDbClient>()
+        coEvery { dynamoDB.getItem(any()) } returns mockResponse
+        val function = MiFunction(dynamoDB)
+        val result = function.execute(miRequest)
+        assertEquals(HttpStatusCode.OK, result.statusCode)
+    }
+
+    @Test
+    fun `execute retorna error cuando datos son invalidos`() = runBlocking {
+        // test del caso de error
+    }
+}
+```
+
+### 4.2 Verificar que los tests FALLAN (Red Phase)
+
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
+  ./gradlew :backend:test 2>&1 | tail -30
+```
+
+**Esperado:** los tests deben FALLAR con errores de compilacion o de ejecucion (clases no existen aun).
+Si los tests pasan en este punto, revisar que esten probando la logica correcta (no son triviales).
+
+> Este paso garantiza que los tests son utiles: si ya pasaran sin implementacion, no prueban nada.
+
+## Paso 5: Implementar
 
 ### Arquitectura obligatoria
 
@@ -107,43 +146,33 @@ El `statusCode` SIEMPRE debe incluir valor numérico y descripción.
 - Cognito: `CognitoIdentityProviderClient` (SDK Kotlin 1.2.28)
 - Lambda: `LambdaRequestHandler`, deploy via `:users:shadowJar`
 
-## Paso 5: Tests
+## Paso 6: Verificar que los tests PASAN (TDD — Green Phase)
 
-Si se pasó `--test` o la tarea lo requiere:
-
-```kotlin
-class MiFunctionTest {
-
-    @Test
-    fun `execute retorna respuesta exitosa con datos válidos`() = runBlocking {
-        val dynamoDB = mockk<DynamoDbClient>()
-        coEvery { dynamoDB.getItem(any()) } returns mockResponse
-        val function = MiFunction(dynamoDB)
-        val result = function.execute(miRequest)
-        assertEquals(HttpStatusCode.OK, result.statusCode)
-    }
-}
-```
-
-### Convenciones
-- Framework: kotlin-test + MockK + `runBlocking`
-- Ubicación: `src/test/kotlin/ar/com/intrale/`
-- Nombres: backtick descriptivo en español
-- Fakes: `Fake[Interface]`
-
-## Paso 6: Verificar
+Despues de implementar el codigo de produccion, verificar que los tests pasan:
 
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :backend:build 2>&1 | tail -50
-
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
   ./gradlew :backend:test 2>&1 | tail -50
 ```
 
+**Esperado:** todos los tests deben PASAR. Si alguno falla, corregir la implementacion (no los tests).
+
+### Convenciones de tests
+- Framework: kotlin-test + MockK + `runBlocking`
+- Ubicacion: `src/test/kotlin/ar/com/intrale/`
+- Nombres: backtick descriptivo en espanol
+- Fakes: `Fake[Interface]`
+
+## Paso 7: Verificar build completo
+
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
+  ./gradlew :backend:build 2>&1 | tail -50
+```
+
 Si el build falla, leer el error, corregir y volver a intentar hasta que pase.
 
-## Paso 7: Reporte
+## Paso 8: Reporte
 
 ```
 ## BackendDev — Reporte de implementación
