@@ -501,23 +501,45 @@ async function runCycle() {
                     "Estado: pendiente de review · slot liberado"
                 );
             } else {
-                // Sin PR o cerrada sin merge → incompleto
-                const motivo = prStatus.status === "unknown"
-                    ? "No se pudo verificar PR (gh CLI falló)"
-                    : prStatus.status === "closed_no_merge"
-                        ? "PR cerrada sin merge"
-                        : "Sin PR — el agente no completó /delivery";
+                // Sin PR o cerrada sin merge
+                // Fix: si el agente nunca trabajó (sin worktree, sin sesión real),
+                // devolverlo a _queue en vez de _incomplete (#queue-cascade-fix)
+                const worktreePath = path.join(WORKTREES_PARENT, "platform.agent-" + ag.issue + "-" + ag.slug);
+                const hasWorktree = fs.existsSync(worktreePath);
                 const entry = buildCompletedEntry(ag, null, "failed");
-                entry.detectado_por = "agent-watcher";
-                entry.motivo = motivo;
-                freshPlan._incomplete.push(entry);
-                log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
+                const runtimeMin = entry.duracion_min || 0;
+                const neverWorked = !hasWorktree && runtimeMin < 2;
 
-                await notify(
-                    "⚠️ <b>Agente #" + ag.issue + " terminó sin PR (watcher)</b>\n" +
-                    "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
-                    "Motivo: " + escHtml(motivo)
-                );
+                if (neverWorked) {
+                    // Agente que nunca trabajó → devolver a _queue
+                    const queue = getQueue(freshPlan);
+                    delete ag.status;
+                    delete ag.waiting_since;
+                    delete ag.waiting_reason;
+                    queue.push(ag);
+                    setQueue(freshPlan, queue);
+                    log("Agente #" + ag.issue + " → devuelto a _queue (nunca trabajó: sin worktree, " + runtimeMin + " min)");
+                    await notify(
+                        "🔄 <b>Agente #" + ag.issue + " devuelto a cola (watcher)</b>\n" +
+                        "Sin worktree ni sesión real · Será relanzado cuando haya slot"
+                    );
+                } else {
+                    const motivo = prStatus.status === "unknown"
+                        ? "No se pudo verificar PR (gh CLI falló)"
+                        : prStatus.status === "closed_no_merge"
+                            ? "PR cerrada sin merge"
+                            : "Sin PR — el agente no completó /delivery";
+                    entry.detectado_por = "agent-watcher";
+                    entry.motivo = motivo;
+                    freshPlan._incomplete.push(entry);
+                    log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
+
+                    await notify(
+                        "⚠️ <b>Agente #" + ag.issue + " terminó sin PR (watcher)</b>\n" +
+                        "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
+                        "Motivo: " + escHtml(motivo)
+                    );
+                }
             }
         }
 
