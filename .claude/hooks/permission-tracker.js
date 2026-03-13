@@ -1,7 +1,7 @@
 // Auth v2 -- Permission Tracker Hook
 // PostToolUse hook: detecta tools aprobados (Bash, WebFetch, Skill) y los persiste en settings.local.json
 // Pure Node.js — sin dependencia de bash
-// Usa permission-utils.js para generación de patrones y persistencia (compartido con permission-approver.js)
+// Usa permission-utils.js para generación de patrones y persistencia (compartido con permission-gate.js)
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");

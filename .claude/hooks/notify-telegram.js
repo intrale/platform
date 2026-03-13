@@ -43,7 +43,7 @@ function abbreviate(str, max) {
 
 /**
  * Genera la sección de contexto del mensaje (agente, rama, issue, tarea activa).
- * Reutiliza la misma lógica que permission-approver.js.
+ * Reutiliza la misma lógica que permission-gate.js.
  */
 function formatContext(sessionId, repoRoot) {
     const ctx = readSessionContext(sessionId, repoRoot);

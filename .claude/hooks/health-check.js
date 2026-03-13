@@ -310,19 +310,19 @@ function _getPendingPermissions() {
     }
 }
 
-// ─── Check 2: permission-approver huérfanos ────────────────────────────────
+// ─── Check 2: permission-gate huérfanos ────────────────────────────────────
 
 function checkOrphanedApprovers() {
     const result = { ok: true, detail: "", fixed: 0 };
     try {
-        // Contar procesos permission-approver.js
+        // Contar procesos permission-gate.js
         const output = execSync('tasklist /FI "IMAGENAME eq node.exe" /FO CSV /NH 2>NUL', {
             encoding: "utf8", timeout: 5000, windowsHide: true
         });
 
         // Obtener PIDs de todos los node.exe
         const wmicOutput = execSync(
-            'wmic process where "name=\'node.exe\' and commandline like \'%permission-approver%\'" get ProcessId /FORMAT:LIST 2>NUL',
+            'wmic process where "name=\'node.exe\' and commandline like \'%permission-gate%\'" get ProcessId /FORMAT:LIST 2>NUL',
             { encoding: "utf8", timeout: 5000, windowsHide: true }
         );
 
@@ -418,7 +418,7 @@ function checkSettings() {
 function checkCriticalHooks() {
     const result = { ok: true, missing: [] };
     const critical = [
-        "permission-approver.js", "notify-telegram.js", "stop-notify.js",
+        "permission-gate.js", "notify-telegram.js", "stop-notify.js",
         "branch-guard.js", "activity-logger.js", "commander-launcher.js",
         "telegram-commander.js", "permission-tracker.js", "permission-utils.js",
         "telegram-config.json"

@@ -1,5 +1,5 @@
 // permission-utils.js — Utilidades compartidas para hooks de permisos
-// Usado por: permission-approver.js, permission-tracker.js
+// Usado por: permission-gate.js, permission-tracker.js
 // Issue #891: unificar generación de patrones y resolución de paths
 
 const fs = require("fs");

@@ -241,8 +241,8 @@ function checkHooks() {
             result.items.push({ name: "telegram-commander", status: "warn", detail: "error verificando: " + e.message });
         }
 
-        // Lockfiles stale de permission-approver
-        const approverLocks = ["permission-approver.lock", "reporter.pid"];
+        // Lockfiles stale de permission-gate
+        const approverLocks = ["reporter.pid"];
         for (const lockName of approverLocks) {
             const lockPath = path.join(HOOKS_DIR, lockName);
             if (fs.existsSync(lockPath)) {
@@ -407,7 +407,7 @@ function autoFix() {
 
     try {
         // 1. Limpiar lockfiles con PID muerto
-        const lockFiles = ["telegram-commander.lock", "reporter.pid", "permission-approver.lock"];
+        const lockFiles = ["telegram-commander.lock", "reporter.pid"];
         for (const lockName of lockFiles) {
             const lockPath = path.join(HOOKS_DIR, lockName);
             if (fs.existsSync(lockPath)) {

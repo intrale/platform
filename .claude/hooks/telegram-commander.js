@@ -2086,7 +2086,7 @@ async function executeClaudeQueued(prompt, extraArgs, options) {
 function executeClaude(prompt, extraArgs, options) {
     const opts = options || {};
     return new Promise((resolve) => {
-        // --permission-mode bypassPermissions evita que permission-approver.js
+        // --permission-mode bypassPermissions evita que permission-gate.js
         // active su propio getUpdates, lo cual causa 409 Conflict con nuestro polling.
         // Es seguro porque: tools restringidos via --allowedTools + prompts controlados.
         const args = ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions"].concat(extraArgs || []);

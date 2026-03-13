@@ -125,7 +125,7 @@ Formato de salida:
 Auth — Health Check
 
 Hooks:
-  ✅ permission-approver.js     (PermissionRequest)
+  ✅ permission-gate.js         (PreToolUse)
   ✅ notify-telegram.js         (Notification)
   ✅ stop-notify.js             (Stop)
   ✅ post-git-push.js           (PostToolUse[Bash])
