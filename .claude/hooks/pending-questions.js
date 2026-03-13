@@ -1,5 +1,5 @@
 // pending-questions.js — Persistencia de preguntas pendientes para Telegram
-// Usado por: permission-approver.js, ask-next-sprint.js, telegram-commander.js
+// Usado por: permission-gate.js, ask-next-sprint.js, telegram-commander.js
 //
 // Formato del archivo pending-questions.json:
 // {

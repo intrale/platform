@@ -146,7 +146,7 @@ Generar un dashboard box-drawing con los resultados. Formato:
 │ ⚠ Android AVD   snapshot qa-ready no encontrado                 │
 ├─ HOOKS ─────────────────────────────────────────────────────────┤
 │ ✓ branch-guard.js        PreToolUse[Bash]     · OK              │
-│ ✓ permission-approver.js PermissionRequest     · OK              │
+│ ✓ permission-gate.js     PreToolUse             · OK              │
 │ ✓ telegram-commander     activo (PID 12345)    · OK              │
 │ ✗ worktree-guard.js      registrado en settings · FALTA archivo │
 ├─ RECURSOS ──────────────────────────────────────────────────────┤

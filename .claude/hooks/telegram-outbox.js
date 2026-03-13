@@ -1,7 +1,7 @@
 // telegram-outbox.js — Message broker centralizado para Telegram (P-02)
 // Los procesos satelite escriben a telegram-outbox.jsonl via enqueue()
 // El Commander drena la cola cada 500ms con rate limiting
-// Excepción: permission-approver.js mantiene envío directo (time-critical)
+// Excepción: permission-gate.js mantiene envío directo (time-critical)
 // Pure Node.js — sin dependencias externas
 
 const fs = require("fs");
