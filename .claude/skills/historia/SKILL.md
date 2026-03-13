@@ -196,6 +196,16 @@ Mostrar:
 - Backlog destino
 - Sub-tareas creadas (si las hubo)
 
+### Paso 10: Sincronizar roadmap.json
+
+Después de crear el issue exitosamente, ejecutar sprint-sync.js para reflejar el nuevo issue en `scripts/roadmap.json`:
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+```
+
+Este paso es best-effort: si falla, no interrumpe el flujo. No reportar al usuario salvo error inesperado.
+
 ## Notas
 
 - `gh` CLI disponible en `/c/Workspaces/gh-cli/bin/` — usar `--json` y `--jq` para parsear JSON
