@@ -20,7 +20,7 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 | `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 7, rango recomendado: 7-10) |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
 | `validar-tamaño <issue>` | Clasificar una historia como S/M/L/XL con criterios objetivos |
-| `split <issue>` | Dividir una historia L/XL en sub-historias, crearlas con `/historia` y lanzar `/po acceptance` para cada una |
+| `split <issue>` | Dividir una historia L/XL en sub-historias, crearlas con `/doc nueva` y lanzar `/po acceptance` para cada una |
 | `<foco> [N]` | **Atajo** — equivale a `sprint N <foco>` (ver tabla de focos abajo) |
 | sin argumento | Digest rápido: qué bloquea, qué está listo, qué sigue |
 
@@ -640,7 +640,7 @@ Indicar que no se debe continuar sin split.
 ## Modo: `split`
 
 Divide una historia **L o XL** en sub-historias independientes y entregables.
-Crea cada una con `/historia` y lanza `/po acceptance` para cada sub-historia creada.
+Crea cada una con `/doc nueva` y lanza `/po acceptance` para cada sub-historia creada.
 Registra la relación padre→hijo en los issues de GitHub.
 
 Invocación: `/planner split <número-de-issue>`
@@ -696,9 +696,9 @@ Mostrar el plan completo y obtener confirmación antes de crear los issues.
 
 **Si el modo es autónomo** (invocado por otro agente o con flag `--auto`): crear directamente sin confirmación.
 
-### Paso SP4: Crear cada sub-historia con `/historia`
+### Paso SP4: Crear cada sub-historia con `/doc nueva`
 
-Para cada sub-historia propuesta, invocar `/historia` con el body completo.
+Para cada sub-historia propuesta, invocar `/doc nueva` con el body completo.
 
 El body de cada sub-historia DEBE incluir:
 1. La descripción técnica específica de la sub-porción
@@ -706,7 +706,7 @@ El body de cada sub-historia DEBE incluir:
 3. Los criterios de aceptación propios de esta sub-historia
 4. La sección de `## Notas técnicas` con detalles de implementación
 
-**Formato del argumento a `/historia`:**
+**Formato del argumento a `/doc nueva`:**
 
 ```
 <título de la sub-historia>
@@ -812,7 +812,7 @@ Identificar **gaps en el codebase** que aún no tienen issue:
 
 ### Fuentes de análisis
 1. **Arquitectura mapeada** (ver `../../memory/arquitectura.md`): qué módulos existen pero están incompletos
-2. **Issues existentes**: qué áreas del labels-guide no tienen cobertura (`../refinar/labels-guide.md`)
+2. **Issues existentes**: qué áreas del labels-guide no tienen cobertura (`../doc/labels-guide.md`)
 3. **PRs sin labels**: features implementadas por Codex sin issue padre visible
 4. **Patrones del codebase**: pantallas/flows que le faltan tests, endpoints sin implementar
 
@@ -892,9 +892,9 @@ Este script:
 #### Flujo posterior (manejado por telegram-commander.js)
 
 El usuario presiona botones en Telegram:
-- **✅ Crear**: se lanza `/historia` con el contexto completo de la propuesta
+- **✅ Crear**: se lanza `/doc nueva` con el contexto completo de la propuesta
 - **❌ Descartar**: se marca como descartada y se actualiza el mensaje
-- **✅ Crear todas**: se lanzan sesiones `/historia` para todas las pendientes
+- **✅ Crear todas**: se lanzan sesiones `/doc nueva` para todas las pendientes
 
 **No es necesario esperar la respuesta** — el commander maneja los callbacks de forma asíncrona.
 
@@ -909,7 +909,7 @@ gh issue create --repo $GH_REPO \
   --assignee leitolarreta
 ```
 
-Luego agregar al Project V2 siguiendo el patrón de `../refinar/api-patterns.md`.
+Luego agregar al Project V2 siguiendo el patrón de `../doc/api-patterns.md`.
 
 ---
 

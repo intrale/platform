@@ -199,7 +199,7 @@ Mientras los agentes trabajan, **4 sistemas monitorean en background**:
 | Agente A | Invoca a | Agente B | Propósito | Momento |
 |----------|----------|----------|-----------|---------|
 | **Planner** | → | `/po` (dependencias) | Validar orden de ejecución | Pre-sprint |
-| **Planner** | → | `/historia` | Crear nuevas historias si hay gaps | Pre-sprint |
+| **Planner** | → | `/doc nueva` | Crear nuevas historias si hay gaps | Pre-sprint |
 | **Any Agent** | → | `/branch` | Crear rama antes de trabajar | Inicio |
 | **Any Agent** | → | `/po` (acceptance) | Entender criterios del issue | Inicio |
 | **Any Agent** | → | `/guru` | Investigar patrones/libs | Cuando no sabe |

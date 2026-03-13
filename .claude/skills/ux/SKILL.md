@@ -485,7 +485,7 @@ Agrupar hallazgos en issues coherentes (no un issue por cada hallazgo):
 
 ### Paso E4: Crear issues
 
-Para cada issue agrupado, usar Skill `/historia` o crear directamente:
+Para cada issue agrupado, usar Skill `/doc nueva` o crear directamente:
 
 ```bash
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
@@ -553,7 +553,7 @@ El UX specialist trabaja en conjunto con el ecosistema de agentes:
 |--------|------------|
 | `/po` | UX aporta perspectiva de experiencia; PO aporta perspectiva de negocio. UX NO redefine reglas de negocio. |
 | `/qa` | UX define criterios de UX que QA debe verificar (loading, feedback, accesibilidad). |
-| `/historia` | UX puede crear historias de mejora UX via este skill. |
+| /doc nueva` | UX puede crear historias de mejora UX via este skill. |
 | `/review` | UX puede ser consultado en PRs que afecten UI. |
 | `/android-dev`, `/ios-dev`, `/web-dev`, `/desktop-dev` | UX propone, los devs implementan. UX NO escribe codigo. |
 

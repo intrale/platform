@@ -63,7 +63,7 @@ Los agentes tienen nombres propios para hacer el trabajo más ameno y distinguir
 **Personalidad**: Elocuente, bilingüe (español/inglés en código), estructurado.
 **Modelo**: `claude-sonnet-4-6` — Escribir bien requiere calidad. Haiku produce texto genérico.
 **Herramientas**: GitHub API, Read, Write.
-**Skills**: `/doc`, `/refinar`, `/historia`, `/priorizar`
+**Skills**: `/doc`, `/doc refinar`, `/doc nueva`, `/doc priorizar`
 
 ---
 
@@ -143,7 +143,7 @@ git push (Bash tool)
 - [x] Agente **Guru** (skill `/guru`)
 - [x] Agente **DeliveryManager** (skill `/delivery`)
 - [x] Agente **Tester** (skill `/tester`)
-- [x] Agente **Doc** (skill `/doc`, unificando `/historia`, `/refinar`, `/priorizar`)
+- [x] Agente **Doc** (skill `/doc`, unificando `/doc nueva`, `/doc refinar`, `/doc priorizar`)
 - [x] Agente **Planner** (skill `/planner` — planificación, sprint, propuestas, digest)
 - [x] Instalar `gh` CLI 2.86.0 y migrar todos los skills de `curl` a `gh`
 - [x] Mejorar MEMORY.md con patrones de arquitectura y debugging (completado con reporte de Guru)

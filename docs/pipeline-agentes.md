@@ -139,10 +139,10 @@ Para cada agente: fase(s) de intervención, trigger, output, veredicto.
 | `/branch` | Pre-F1 | Creación de historia | Crear rama `agent/<issue>-<slug>`, protección de main | **Indispensable** |
 | `/delivery` | Post-F3 | Fin de implementación | Commit + push + PR, merge | **Indispensable** |
 | `/planner` | Pre-sprint | Inicio de sprint | Sprint plan, Gantt, sprint-plan.json para agentes | **Indispensable** |
-| `/historia` | Ad-hoc | Creación de nueva historia | Issue GitHub con estructura completa | **Indispensable** |
-| `/doc` | Ad-hoc | Nuevo issue o refinamiento | Historia de usuario completa, criterios de aceptación | **Fusionable** con `/historia` — ambos crean/refinan issues. Evaluar unificación. |
-| `/refinar` | Ad-hoc | Triaje de issues sin labels | Etiquetar, organizar en backlogs, mover a Project V2 | **Fusionable** con `/priorizar` — ambos categorizan issues |
-| `/priorizar` | Ad-hoc | Triaje masivo | Categorizar, etiquetar y organizar issues en backlogs | **Fusionable** con `/refinar` |
+| `/doc nueva` | Ad-hoc | Creación de nueva historia | Issue GitHub con estructura completa | **Indispensable** |
+| `/doc` | Ad-hoc | Nuevo issue o refinamiento | Historia de usuario completa, criterios de aceptación | **Fusionable** con `/doc nueva` — ambos crean/refinan issues. Evaluar unificación. |
+| `/doc refinar` | Ad-hoc | Triaje de issues sin labels | Etiquetar, organizar en backlogs, mover a Project V2 | **Fusionable** con `/doc priorizar` — ambos categorizan issues |
+| `/doc priorizar` | Ad-hoc | Triaje masivo | Categorizar, etiquetar y organizar issues en backlogs | **Fusionable** con `/doc refinar` |
 | `/auth` | Transversal | PostToolUse automático | Auto-persistir permisos aprobados en approval-history.json | **Indispensable** |
 | `/monitor` | Ad-hoc | Invocación manual | Dashboard de semáforos multi-sesión, actividad en tiempo real | **Indispensable** |
 | `/cleanup` | Ad-hoc | Fin de sprint o mantenimiento | Limpiar logs, sesiones, worktrees, procesos temporales | **Indispensable** |
@@ -155,9 +155,9 @@ Para cada agente: fase(s) de intervención, trigger, output, veredicto.
 
 ### Resumen por veredicto
 
-**Indispensables (17):** `/po`, `/guru`, `/ux`, `/security`, `/tester`, `/review`, `/builder`, `/qa`, `/scrum`, `/ops`, `/branch`, `/delivery`, `/planner`, `/historia`, `/auth`, `/monitor`, `/cleanup`
+**Indispensables (17):** `/po`, `/guru`, `/ux`, `/security`, `/tester`, `/review`, `/builder`, `/qa`, `/scrum`, `/ops`, `/branch`, `/delivery`, `/planner`, `/doc nueva`, `/auth`, `/monitor`, `/cleanup`
 
-**Fusionables (6):** `/doc` + `/refinar` + `/priorizar` (posible unificación en un solo agente de triaje); `/backend-dev` + `/android-dev` + `/ios-dev` + `/web-dev` + `/desktop-dev` (evaluación: unificar como agente developer genérico con contexto de plataforma inyectado vía prompt enrichment del sprint-plan)
+**Fusionables (6):** `/doc` + `/doc refinar` + `/doc priorizar` (posible unificación en un solo agente de triaje); `/backend-dev` + `/android-dev` + `/ios-dev` + `/web-dev` + `/desktop-dev` (evaluación: unificar como agente developer genérico con contexto de plataforma inyectado vía prompt enrichment del sprint-plan)
 
 **Prescindibles (0):** Ningún agente es prescindible — todos tienen función diferenciada.
 

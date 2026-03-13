@@ -94,7 +94,7 @@ Al final de la lista:
 
 | Botón | Efecto |
 |-------|--------|
-| ✅ Crear | Lanza `/historia` para crear el issue en GitHub automáticamente |
+| ✅ Crear | Lanza `/doc nueva` para crear el issue en GitHub automáticamente |
 | ❌ Descartar | Rechaza la propuesta; no se crea issue |
 | ✅ Crear todas | Crea todas las propuestas pendientes en secuencia |
 
@@ -267,7 +267,7 @@ El `telegram-commander.js` procesa estos callbacks del flujo automático:
 
 | callback_data | Acción |
 |--------------|--------|
-| `create_proposal:N` | Lanza `/historia` para crear el issue N |
+| `create_proposal:N` | Lanza `/doc nueva` para crear el issue N |
 | `discard_proposal:N` | Descarta la propuesta N |
 | `create_all_proposals` | Crea todas las propuestas pendientes |
 | `launch_sprint` | Notifica al usuario que ejecute `Start-Agente.ps1 all` |
