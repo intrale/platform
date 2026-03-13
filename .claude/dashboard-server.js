@@ -2618,25 +2618,53 @@ const { startHeartbeat } = require("./hooks/heartbeat-manager.js");
 // --- Start server ---
 const server = http.createServer(handleRequest);
 
-server.listen(PORT, () => {
-  console.log("[dashboard-server] Escuchando en http://localhost:" + PORT);
-  writePid();
-
-  setInterval(broadcastSSE, SSE_INTERVAL_MS);
-  setInterval(checkSprintPlanFreshness, 1000); // Watcher freshness sprint-plan.json (#1434)
-  setInterval(checkAutoStop, 5 * 60 * 1000);
-
-  startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, port: PORT });
+// Pre-check: verificar si el puerto ya está en uso antes de intentar bind (#1415)
+// Esto previene instancias zombie desde worktrees de agentes.
+const net = require("net");
+let preCheckDone = false;
+const preCheckSocket = net.createConnection({ port: PORT, host: "localhost" });
+preCheckSocket.setTimeout(1000);
+preCheckSocket.on("connect", () => {
+  preCheckDone = true;
+  preCheckSocket.end();
+  console.log("[dashboard-server] Port " + PORT + " in use, exiting (otra instancia corriendo).");
+  process.exit(0);
+});
+preCheckSocket.on("error", () => {
+  if (preCheckDone) return;
+  preCheckDone = true;
+  // Puerto libre — continuar con startup normal
+  startServer();
+});
+preCheckSocket.on("timeout", () => {
+  if (preCheckDone) return;
+  preCheckDone = true;
+  preCheckSocket.destroy();
+  // Timeout → puerto libre — continuar
+  startServer();
 });
 
-server.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.log("[dashboard-server] Puerto " + PORT + " ya en uso, otro servidor corriendo.");
-    process.exit(0);
-  }
-  console.error("[dashboard-server] Error:", err.message);
-  process.exit(1);
-});
+function startServer() {
+  server.listen(PORT, () => {
+    console.log("[dashboard-server] Escuchando en http://localhost:" + PORT);
+    writePid();
+
+    setInterval(broadcastSSE, SSE_INTERVAL_MS);
+    setInterval(checkSprintPlanFreshness, 1000); // Watcher freshness sprint-plan.json (#1434)
+    setInterval(checkAutoStop, 5 * 60 * 1000);
+
+    startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, port: PORT });
+  });
+
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.log("[dashboard-server] Puerto " + PORT + " ya en uso, otro servidor corriendo.");
+      process.exit(0);
+    }
+    console.error("[dashboard-server] Error:", err.message);
+    process.exit(1);
+  });
+}
 
 process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 process.on("SIGINT", () => { cleanup(); process.exit(0); });
