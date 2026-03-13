@@ -443,6 +443,19 @@ Criterios de salud:
 - 🟡 Atención: 1-3 discrepancias, 1-2 huérfanos, o 3-5 stale
 - 🔴 Crítico: >3 discrepancias, >2 huérfanos, >5 stale, o WIP excedido
 
+### Sincronización de roadmap.json (al finalizar auditoría)
+
+Después de generar el reporte de auditoría, ejecutar sprint-sync.js para sincronizar `scripts/roadmap.json`:
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+```
+
+Reportar en el resumen:
+- Si hubo cambios → `✅ roadmap.json actualizado (N cambios)`
+- Si no hubo cambios → `✅ roadmap.json ya sincronizado`
+- Si falló → `⚠️ sprint-sync.js falló (no afecta la auditoría)`
+
 ---
 
 ## Modo: Sincronización (`/scrum sync`)
@@ -515,6 +528,19 @@ Luego setear el status apropiado según el estado del issue.
 ### Errores (si hubo)
 - [detalle de mutations que fallaron]
 ```
+
+### Sincronización de roadmap.json (al finalizar)
+
+Después de aplicar todas las correcciones al board, ejecutar sprint-sync.js para actualizar `scripts/roadmap.json`:
+
+```bash
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+```
+
+Reportar el resultado:
+- Si hubo cambios en roadmap.json → `✅ roadmap.json actualizado`
+- Si no hubo cambios → `✅ roadmap.json ya sincronizado`
+- Si falló → `⚠️ sprint-sync.js falló (no bloquea el resultado del sync)`
 
 ---
 
