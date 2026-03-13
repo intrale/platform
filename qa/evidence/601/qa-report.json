@@ -1,0 +1,86 @@
+{
+  "issue_number": 601,
+  "issue_title": "App de negocio como variante de build (APP_TYPE=BUSINESS)",
+  "branch": "agent/1463-incidente-prs-sin-qa",
+  "timestamp": "2026-03-13T00:00:00Z",
+  "qa_type": "retroactivo",
+  "acceptance_criteria": [
+    "Existe una variante de build que genera un APK APP_TYPE=BUSINESS claramente identificable (nombre e ícono diferenciados de la app cliente)",
+    "Desde el código común se puede consultar APP_TYPE y saber que está en modo BUSINESS",
+    "La app no muestra las pantallas de cliente (catálogo, carrito, etc.)",
+    "El pipeline tiene una tarea o comando claro para compilar este APK"
+  ],
+  "test_cases": [
+    {
+      "id": "tc-1",
+      "criterion": "Variante de build BUSINESS genera APK identificable",
+      "type": "build",
+      "verification": "assembleBusinessDebug BUILD SUCCESSFUL en 4m11s",
+      "evidence": "composeApp-business-debug.apk (applicationId: com.intrale.app.business)",
+      "result": "PASSED"
+    },
+    {
+      "id": "tc-2",
+      "criterion": "Nombre de app diferenciado: 'Intrale Negocios'",
+      "type": "static",
+      "verification": "src/business/res/values/strings.xml contiene app_name='Intrale Negocios'; build.gradle.kts configura manifestPlaceholders appName",
+      "result": "PASSED"
+    },
+    {
+      "id": "tc-3",
+      "criterion": "Ícono diferenciado (launcher icons propios)",
+      "type": "static",
+      "verification": "src/business/res/mipmap-*/ic_launcher.png presentes en todos los density buckets (hdpi, mdpi, xhdpi, xxhdpi, xxxhdpi) + anydpi-v26 adaptive icon",
+      "result": "PASSED"
+    },
+    {
+      "id": "tc-4",
+      "criterion": "APP_TYPE consultable como BUSINESS desde código",
+      "type": "static",
+      "verification": "AppType.kt: AppRuntimeConfig.isBusiness = (BuildKonfig.APP_TYPE == 'BUSINESS'); build.gradle.kts infiere 'BUSINESS' cuando task contiene 'business'",
+      "result": "PASSED"
+    },
+    {
+      "id": "tc-5",
+      "criterion": "App BUSINESS no muestra pantallas de cliente",
+      "type": "code-review",
+      "verification": "ClientEntryScreen.kt:79 - if (appType != AppType.CLIENT) { state = NavigateClassic } → redirige a HOME_PATH (login admin), omitiendo onboarding de cliente",
+      "result": "PASSED"
+    },
+    {
+      "id": "tc-6",
+      "criterion": "Comando claro para compilar APK BUSINESS",
+      "type": "build",
+      "verification": "./gradlew :app:composeApp:assembleBusinessDebug documentado en CLAUDE.md",
+      "result": "PASSED"
+    },
+    {
+      "id": "tc-7",
+      "criterion": "APK instalable en emulador",
+      "type": "android",
+      "verification": "adb install composeApp-business-debug.apk → Success; package com.intrale.app.business confirmado en emulator-5554",
+      "result": "PASSED"
+    }
+  ],
+  "pre_existing_tests": {
+    "executed": 0,
+    "passed": 0,
+    "failed": 0,
+    "note": "QA retroactivo — se verificaron criterios de aceptación directamente"
+  },
+  "generated_tests": {
+    "executed": 7,
+    "passed": 7,
+    "failed": 0
+  },
+  "evidence": {
+    "apk": "app/composeApp/build/outputs/apk/business/debug/composeApp-business-debug.apk",
+    "apk_metadata": "app/composeApp/build/outputs/apk/business/debug/output-metadata.json",
+    "launcher_icons": "app/composeApp/src/business/res/mipmap-*/",
+    "strings": "app/composeApp/src/business/res/values/strings.xml",
+    "app_type_code": "app/composeApp/src/commonMain/kotlin/ar/com/intrale/appconfig/AppType.kt",
+    "entry_routing": "app/composeApp/src/commonMain/kotlin/ui/sc/client/ClientEntryScreen.kt:79"
+  },
+  "verdict": "APROBADO",
+  "verdict_reason": "Todos los criterios de aceptación del issue #601 fueron verificados. El APK BUSINESS compila exitosamente, tiene nombre e ícono diferenciados ('Intrale Negocios'), APP_TYPE=BUSINESS es accesible en runtime, y la lógica de routing evita pantallas de cliente."
+}
