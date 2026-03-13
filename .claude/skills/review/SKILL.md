@@ -109,6 +109,41 @@ Si se agrego una nueva Function en backend:
 Si se agrego un nuevo servicio en app:
 - Verificar que esta registrado en `DIManager`
 
+### 4.9 Verificar TDD Compliance
+
+Analizar el historial de commits del branch para verificar que se siguio el patron TDD:
+
+```bash
+# Listar commits del branch con sus archivos (excluye merge commits)
+git log origin/main..HEAD --no-merges --name-only --pretty=format:"COMMIT:%H %s"
+```
+
+Para cada commit, clasificar los archivos en:
+- **Solo tests**: todos los archivos son `*Test.kt`, `*Tests.kt` o estan en carpetas `test/`
+- **Solo produccion**: ningun archivo es test
+- **Mixto**: mezcla de tests y produccion (anti-patron TDD)
+
+**Reglas de evaluacion:**
+
+1. Si el primer commit del branch contiene SOLO archivos de test → TDD seguido correctamente ✅
+2. Si el primer commit mezcla tests + produccion → advertencia TDD ⚠️
+3. Si no hay archivos de test en ningun commit → advertencia TDD ⚠️
+4. Si todos los commits son de produccion (sin ningun test) → advertencia TDD ⚠️
+
+**Incluir en el reporte:**
+
+```
+### TDD Compliance
+- [ ] Primer commit contiene solo archivos de test
+- [ ] Tests fueron escritos antes del codigo de produccion
+- [ ] Existe al menos un commit con solo archivos *Test.kt
+```
+
+Clasificar como:
+- ✅ **TDD OK** — primer commit es solo tests
+- ⚠️ **TDD WARNING** — tests y produccion mezclados o codigo primero (no impide merge salvo `--strict`)
+- ❌ **TDD FAIL** — no hay tests en ningun commit (reportar como BLOQUEANTE en `--strict`, WARNING en modo normal)
+
 ## Paso 5: Verificar tests existentes
 
 ```bash
