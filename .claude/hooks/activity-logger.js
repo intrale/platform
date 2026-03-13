@@ -337,10 +337,16 @@ function ensureReporterRunning() {
 
 function ensureDashboardServerRunning() {
     try {
+        const debugLog = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+        function logSkip(reason) {
+            try { fs.appendFileSync(debugLog, "[" + new Date().toISOString() + "] activity-logger: Dashboard server already running, skipping launch (" + reason + ")\n"); } catch(e) {}
+        }
+
         // 1. Verificar PID file del dashboard web server usando isPidAlive() (Windows-safe) (#1428)
         if (fs.existsSync(DASHBOARD_SERVER_PID_FILE)) {
             const pid = parseInt(fs.readFileSync(DASHBOARD_SERVER_PID_FILE, "utf8").trim(), 10);
             if (!isNaN(pid) && isPidAlive(pid)) {
+                logSkip("PID " + pid + " vivo");
                 return; // Proceso vivo — no arrancar otra instancia (#1412)
             }
             // PID muerto — limpiar PID file stale antes de continuar (#1428)
@@ -350,6 +356,7 @@ function ensureDashboardServerRunning() {
         // 2. HTTP health check: TCP connect check en puerto 3100 (#1428)
         try {
             execSync('node -e "const r=require(\'http\').get(\'http://localhost:3100/health\',{timeout:2000},s=>{process.exit(s.statusCode===200?0:1)});r.on(\'error\',()=>process.exit(1))"', { timeout: 4000, windowsHide: true, stdio: "ignore" });
+            logSkip("puerto 3100 responde");
             return; // Server responde, no arrancar otro
         } catch(e) { /* server no responde, arrancar */ }
 
