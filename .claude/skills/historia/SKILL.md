@@ -237,10 +237,56 @@ Invocar `/po dependencias` para verificar dependencias bloqueantes:
 - Si /guru detectó issues o módulos que este issue depende técnicamente → invocar como `/po dependencias $ISSUE_NUMBER,N,M` (incluyendo los issues relacionados)
 - Si no hay dependencias externas detectadas → invocar como `/po dependencias $ISSUE_NUMBER`
 
-**Resultado:**
-- DoR cumplido (sin bloqueos) → mover issue a status "Refined" en Project V2 (si no fue movido ya)
-- DoR bloqueado (dependencia OPEN fuera del sprint) → agregar label `blocked`, mover a status "Blocked" en Project V2, reportar al usuario las dependencias bloqueantes
-- DoR bloqueado por seguridad → ya manejado en Paso 9
+**Resultado según el análisis de dependencias:**
+
+**a) DoR cumplido (sin bloqueos):**
+- Mover issue a status "Refined" en Project V2 (si no fue movido ya)
+
+**b) DoR con dependencias OPEN no-bloqueantes:**
+- Continuar al Paso 11 (no se bloquea la planificación)
+- Agregar comentario de advertencia en el issue:
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue comment $ISSUE_NUMBER --repo intrale/platform \
+  --body "$(cat <<'EOF'
+⚠️ **Dependencias OPEN detectadas (no bloqueantes)**
+
+Las siguientes dependencias están abiertas pero no bloquean el desarrollo:
+
+[lista de dependencias OPEN no-bloqueantes con #número y título]
+
+La historia puede planificarse. Se recomienda revisar estas dependencias antes de iniciar el sprint.
+EOF
+)"
+```
+
+**c) DoR bloqueado (dependencia OPEN bloqueante fuera del sprint):**
+- Agregar label `blocked` al issue
+- Mover a status "Blocked" en Project V2
+- Reportar al usuario las dependencias bloqueantes
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue edit $ISSUE_NUMBER --repo intrale/platform --add-label "blocked"
+node /c/Workspaces/Intrale/platform/.claude/hooks/add-to-project-status.js $ISSUE_NUMBER "Blocked"
+gh issue comment $ISSUE_NUMBER --repo intrale/platform \
+  --body "$(cat <<'EOF'
+⛔ **Historia bloqueada — dependencias sin resolver**
+
+Las siguientes dependencias están abiertas y bloquean el desarrollo:
+
+[lista de dependencias bloqueantes con #número y título]
+
+La historia NO puede planificarse hasta que estas dependencias estén resueltas (CLOSED).
+Opciones:
+- (a) Incluir las dependencias en el mismo sprint
+- (b) Mover esta historia al siguiente sprint
+- (c) Implementar con stub y aceptar deuda técnica (documentar decisión)
+EOF
+)"
+```
+
+**d) DoR bloqueado por seguridad:**
+- Ya manejado en Paso 9 — no continuar si /security retornó riesgo ALTO con findings Critical
 
 ### Paso 11: Evaluar tamaño y split obligatorio (gate)
 
@@ -277,7 +323,7 @@ Mostrar:
 - Sub-historias creadas por el split (si aplica): lista de `#NNN — título` con estado de `/po acceptance`
 - Si fue split: indicar que el issue padre queda como épica
 
-### Paso 10: Sincronizar roadmap.json
+### Paso 13: Sincronizar roadmap.json
 
 Después de crear el issue exitosamente, ejecutar sprint-sync.js para reflejar el nuevo issue en `scripts/roadmap.json`:
 
