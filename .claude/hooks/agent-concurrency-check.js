@@ -901,20 +901,42 @@ async function processInput() {
                 "Estado: pendiente de review · slot liberado"
             );
         } else {
-            // Sin PR (none, closed_no_merge, unknown) → _incomplete con resultado "failed"
-            const motivo = prStatus.status === "unknown"
-                ? "No se pudo verificar PR (gh CLI falló)"
-                : "Sin PR — el agente no completó /delivery";
-            const incompleteEntry = buildCompletedEntry(finishingAgent, session, "failed");
-            incompleteEntry.motivo = motivo;
-            plan._incomplete.push(incompleteEntry);
-            log("Agente #" + finishingAgent.issue + " → _incomplete (sin PR): " + motivo);
-            await notify(
-                "⚠️ <b>Agente #" + finishingAgent.issue + " FALLIDO</b>\n" +
-                "Rama: " + escHtml(agentBranch) + "\n" +
-                "Motivo: " + escHtml(motivo) + "\n" +
-                "<i>Acción: revisar worktree y relanzar si es necesario</i>"
-            );
+            // Sin PR (none, closed_no_merge, unknown)
+            // Fix: si el agente nunca trabajó realmente (0 acciones, duración < 2 min),
+            // devolverlo a _queue en vez de mandarlo a _incomplete (#queue-cascade-fix)
+            const actionCount = session ? (session.action_count || 0) : 0;
+            const startedTs = session ? session.started_ts : null;
+            const runtimeMin = startedTs ? (Date.now() - startedTs) / 60000 : 0;
+            const neverWorked = actionCount < 5 && runtimeMin < 2;
+
+            if (neverWorked) {
+                // Agente que nunca trabajó → devolver a _queue (no penalizar)
+                const queue = getQueue(plan);
+                queue.push(finishingAgent);
+                setQueue(plan, queue);
+                log("Agente #" + finishingAgent.issue + " → devuelto a _queue (nunca trabajó: " + actionCount + " acciones, " + Math.round(runtimeMin) + " min)");
+                await notify(
+                    "🔄 <b>Agente #" + finishingAgent.issue + " devuelto a cola</b>\n" +
+                    "Rama: " + escHtml(agentBranch) + "\n" +
+                    "Motivo: sesión terminó sin trabajo real (" + actionCount + " acciones)\n" +
+                    "<i>Será relanzado cuando haya un slot disponible</i>"
+                );
+            } else {
+                const motivo = prStatus.status === "unknown"
+                    ? "No se pudo verificar PR (gh CLI falló)"
+                    : "Sin PR — el agente no completó /delivery";
+                const incompleteEntry = buildCompletedEntry(finishingAgent, session, "failed");
+                incompleteEntry.motivo = motivo;
+                if (!Array.isArray(plan._incomplete)) plan._incomplete = [];
+                plan._incomplete.push(incompleteEntry);
+                log("Agente #" + finishingAgent.issue + " → _incomplete (sin PR, " + actionCount + " acciones, " + Math.round(runtimeMin) + " min): " + motivo);
+                await notify(
+                    "⚠️ <b>Agente #" + finishingAgent.issue + " FALLIDO</b>\n" +
+                    "Rama: " + escHtml(agentBranch) + "\n" +
+                    "Motivo: " + escHtml(motivo) + "\n" +
+                    "<i>Acción: revisar worktree y relanzar si es necesario</i>"
+                );
+            }
         }
 
         // Actualizar Project V2: issue completado → Done
