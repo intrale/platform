@@ -64,6 +64,14 @@ find .kotlin/errors -name "*.log" 2>/dev/null | wc -l
 du -sh .kotlin/errors 2>/dev/null || echo "0 .kotlin/errors"
 ```
 
+**Rotación de logs de hooks** — ejecutar en modo dry-run para obtener estado:
+
+```bash
+node .claude/hooks/log-rotation.js --dry-run --verbose 2>/dev/null
+```
+
+Incluir los resultados de rotación en el dashboard de SCAN (sección LOGS).
+
 ### 1b. Sesiones
 
 Escribir script a /tmp y ejecutar:
@@ -286,7 +294,18 @@ Si se incluye `--run` o `--deep`, proceder con la limpieza:
 
 ### 3a. Logs
 
-**hook-debug.log** — recortar a ultimas 500 lineas:
+**Rotación automática** — ejecutar primero log-rotation.js para aplicar la política de retención configurada:
+
+```bash
+node .claude/hooks/log-rotation.js --verbose 2>/dev/null
+```
+
+Este comando:
+- Rota `hook-debug.log` y `agent-watcher.log` si superan 100 KB (→ archivo `.log.1`)
+- Archiva entradas antiguas de los 5 archivos JSONL si superan 200 entradas (→ `.archive.jsonl`)
+- Es idempotente: una segunda ejecución no rota si ya está dentro del límite
+
+**hook-debug.log** — recortar a ultimas 500 lineas (además de la rotación):
 ```bash
 cat > /tmp/trim-hooklog.js << 'EOF'
 const fs = require('fs');
