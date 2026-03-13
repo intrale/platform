@@ -1,7 +1,7 @@
 ---
 description: Planner — Planificación estratégica del proyecto — Gantt, dependencias, priorización y nuevas historias
 user-invocable: true
-argument-hint: "[planificar | sprint [N] [foco] | proponer | estado | <foco> [N]]"
+argument-hint: "[planificar | sprint [N] [foco] | proponer | validar-tamaño <issue> | estado | <foco> [N]]"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
 ---
@@ -19,6 +19,7 @@ Sugerís caminos, priorizás trabajo y maximizás la velocidad del equipo.
 | `planificar` | Plan completo: Gantt, dependencias, streams paralelos |
 | `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 7, rango recomendado: 7-10) |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
+| `validar-tamaño <issue>` | Clasificar una historia como S/M/L/XL con criterios objetivos |
 | `<foco> [N]` | **Atajo** — equivale a `sprint N <foco>` (ver tabla de focos abajo) |
 | sin argumento | Digest rápido: qué bloquea, qué está listo, qué sigue |
 
@@ -509,6 +510,129 @@ Consideraciones:
 - `Start-Agente.ps1` usa `Start-Process` internamente para abrir terminales, retorna rapido y no bloquea al planner
 - `powershell.exe -NonInteractive` evita que el script espere input del usuario
 - El watcher envia notificaciones Telegram al inicio y fin del monitoreo
+
+---
+
+## Modo: `validar-tamaño`
+
+Clasifica una historia de usuario como **S / M / L / XL** usando criterios objetivos.
+Si el tamaño resulta L o XL, advierte o bloquea y deriva a `/planner split`.
+
+Invocación: `/planner validar-tamaño <número-de-issue>`
+
+### Paso VT1: Setup
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
+GH_REPO="intrale/platform"
+```
+
+### Paso VT2: Leer el issue
+
+```bash
+gh issue view <N> --repo $GH_REPO --json number,title,body,labels
+```
+
+Extraer del body:
+- Título y descripción
+- Módulos mencionados (`backend/`, `users/`, `app/composeApp/`, `tools/`, `buildSrc/`)
+- Archivos mencionados (rutas `.kt`, `.js`, `.json`, `.md` explícitas)
+- Endpoints/funciones nuevos (palabras clave: "endpoint", "función", "API", "ruta", "SecuredFunction", "Function")
+- Pantallas nuevas (palabras clave: "pantalla", "screen", "Screen", "UI", "composable", "ViewModel")
+- Cambios en modelos de datos (palabras clave: "modelo", "data class", "enum", "DynamoDB", "tabla", "schema")
+- Dependencias externas (palabras clave: "Cognito", "DynamoDB", "Lambda", "S3", "API externa", "integración")
+- Criterios de aceptación (sección `## Criterios de aceptación` o `## Acceptance Criteria`)
+
+### Paso VT3: Contar criterios objetivos
+
+Calcular los siguientes conteos a partir del issue:
+
+**Módulos afectados** — contar los módulos distintos mencionados o inferibles:
+- `backend` (menciona backend, Ktor, endpoint, SecuredFunction, Lambda)
+- `users` (menciona users, perfil, Cognito, auth)
+- `app` (menciona app, composeApp, pantalla, screen, composable, ViewModel, Android, iOS, Desktop, Web)
+- `tools` (menciona KSP, processor, forbidden-strings, buildSrc)
+- Infra/cross-cutting (menciona CI/CD, Gradle, hooks, scripts, settings.json)
+
+**Archivos estimados** — estimación conservadora de archivos a crear o modificar:
+- Contar archivos explícitamente mencionados en el body
+- Si hay un nuevo endpoint backend: +2 archivos (Function/SecuredFunction + test)
+- Si hay una nueva pantalla app: +3 archivos (Screen + ViewModel + UIState/test)
+- Si hay cambio en modelo de datos: +1 archivo por modelo
+- Si hay cambio en DI/módulo Kodein: +1 archivo
+
+**Endpoints o pantallas nuevas** — contar los explícitos y los inferibles del body.
+
+**Dependencias externas** — contar servicios externos involucrados (Cognito, DynamoDB, Lambda, S3, APIs externas).
+
+### Paso VT4: Clasificar según tabla de criterios
+
+| Tamaño | Módulos afectados | Archivos estimados | Endpoints/Pantallas nuevas | Dependencias externas | Acción |
+|--------|-------------------|--------------------|----------------------------|-----------------------|--------|
+| **S** | 1 | 1–2 | 0–1 | 0 | ✅ Continuar |
+| **M** | 1–2 | 3–5 | 1–2 | 0–1 | ✅ Continuar |
+| **L** | 2–3 | 5–10 | 2–3 | 1–2 | ⚠️ Advertir — sugerir split |
+| **XL** | 3+ | 10+ | 3+ | 2+ | ⛔ Bloquear — derivar a split |
+
+**Reglas de clasificación:**
+- Usar el criterio que resulte en el tamaño **mayor** (regla del máximo)
+- Si 2 o más criterios caen en L/XL, el tamaño final es L/XL independientemente de los demás
+- En caso de duda entre dos tamaños, elegir el mayor (conservador)
+
+### Paso VT5: Acción según tamaño
+
+**Si S o M:**
+```
+✅ Historia de tamaño [S/M] — puede continuar al siguiente paso del flujo.
+```
+Mostrar el resumen de criterios y continuar.
+
+**Si L:**
+```
+⚠️ Historia de tamaño L — se recomienda evaluar split antes de implementar.
+Sugerencia: invocar /planner split #<N> para analizar cómo dividirla.
+Podés continuar sin split, pero el riesgo de bloquear slots durante mucho tiempo es alto.
+```
+No bloquear la ejecución, pero advertir claramente.
+
+**Si XL:**
+```
+⛔ Historia de tamaño XL — split obligatorio antes de continuar.
+Invocar: /planner split #<N>
+No se recomienda implementar esta historia sin dividirla primero.
+```
+Indicar que no se debe continuar sin split.
+
+### Paso VT6: Reporte de clasificación
+
+```
+## Validación de tamaño — Issue #[N]: [Título]
+
+### Criterios analizados
+
+| Criterio | Valor detectado | Umbral S | Umbral M | Umbral L | Umbral XL |
+|----------|-----------------|----------|----------|----------|-----------|
+| Módulos afectados | [N] | 1 | 1–2 | 2–3 | 3+ |
+| Archivos estimados | [N] | 1–2 | 3–5 | 5–10 | 10+ |
+| Endpoints/Pantallas | [N] | 0–1 | 1–2 | 2–3 | 3+ |
+| Dependencias externas | [N] | 0 | 0–1 | 1–2 | 2+ |
+
+### Módulos involucrados
+- [Lista de módulos detectados con justificación]
+
+### Archivos estimados
+- [Lista de archivos mencionados o inferidos]
+
+### Tamaño: [S / M / L / XL]
+
+[Acción según paso VT5]
+
+### Recomendación
+[Si S/M]: Historia lista para planificar e implementar.
+[Si L]: Evaluar split con /planner split #<N>.
+[Si XL]: Dividir obligatoriamente con /planner split #<N> antes de continuar.
+```
 
 ---
 
