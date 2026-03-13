@@ -146,6 +146,51 @@ Todas las respuestas de servicio deben incluir `statusCode` con valor numérico 
 - Asignar a: `leitolarreta`
 - NO auto-merge
 
+## Gate de QA obligatorio antes de merge (CRITICO)
+
+**NUNCA** mergear un PR a `main` sin completar el ciclo de validación:
+
+```
+QA E2E (/qa) → Tester cobertura (/tester) → PO acceptance (/po validar)
+```
+
+### Labels requeridos antes de merge
+
+| Label | Significado | Quién lo asigna |
+|-------|-------------|-----------------|
+| `qa:passed` | QA E2E ejecutado con evidencia de video | Agente /qa |
+| `qa:skipped` | Cambio puro de infra/hooks sin impacto en producto de usuario | Dev + justificación escrita |
+
+**NUNCA** mergear con label `qa:pending`.
+
+**NUNCA** marcar una tarea o issue como `completed` sin QA E2E + evidencia. Si falta validación → escalar a `/qa`, `/tester` y `/po` hasta resolución.
+
+### Tipos de issue y criterio QA
+
+| Tipo | Labels indicativos | Gate requerido |
+|------|--------------------|----------------|
+| Feature / Enhancement con UI | `app:client`, `app:business`, `app:delivery` | QA E2E con video obligatorio |
+| Feature backend (API/endpoint) | `area:backend` | QA E2E API obligatorio |
+| Bug con impacto en usuario | `bug` + cualquier `app:*` | QA E2E obligatorio |
+| Infra / hooks internos | `area:infra`, `tipo:infra` sin `app:*` | `qa:skipped` con justificación |
+| Documentación pura | `docs` | `qa:skipped` con justificación |
+
+### Protocolo cuando QA/Tester/PO encuentran defectos
+
+1. QA reporta defecto → issue `qa:failed`
+2. Developer corrige (`/backend-dev`, `/android-dev`, etc.)
+3. Re-ejecutar ciclo completo: QA → Tester → PO
+4. Solo cuando todos aprueban → `qa:passed` → merge
+
+### Verificación antes de /delivery
+
+Antes de invocar `/delivery`, el agente DEBE verificar:
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh pr view --json labels --jq '.labels[].name' | grep -E "qa:passed|qa:skipped"
+```
+Si no existe ninguno de los dos labels → **BLOQUEAR merge** y escalar a `/qa`.
+
 ## Protocolo de tareas (obligatorio en toda implementación)
 
 **Concurrencia de agentes:** máximo **3 agentes simultáneos** por sprint. El hook `agent-concurrency-check.js` (Stop event) valida el límite automáticamente y lanza el siguiente agente de la cola cuando se libera un slot.
