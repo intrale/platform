@@ -43,6 +43,9 @@ function callSyncRoadmapOnly(plan) {
     }
 }
 
+// Validación centralizada de completación (#1458)
+const { buildCompletedEntry: buildCompletedEntryShared, validateCompletionCriteria, MIN_DURATION_MINUTES } = require("./validation-utils");
+
 // Bug fix (#1266): Resolver el repo principal desde worktrees.
 // Cuando el hook se ejecuta en un worktree (agent/*), CLAUDE_PROJECT_DIR
 // puede apuntar al worktree vacío. Usamos git worktree list para encontrar
@@ -859,8 +862,26 @@ async function processInput() {
         if (!Array.isArray(plan._incomplete)) plan._incomplete = [];
 
         if (prStatus.status === "merged") {
-            // PR mergeada → _completed con resultado "ok"
+            // PR mergeada → validar criterios antes de marcar completado (#1458)
             const completedEntry = buildCompletedEntry(finishingAgent, session, "ok");
+            const validation = validateCompletionCriteria(completedEntry.duracion_min, prStatus, agentBranch);
+            if (validation.suspicious) {
+                // Validación fallida → suspicious en _incomplete[], NO promover cola
+                completedEntry.resultado = "suspicious";
+                completedEntry.motivo = validation.reason;
+                plan._incomplete.push(completedEntry);
+                log("Agente #" + finishingAgent.issue + " → _incomplete SUSPICIOUS: " + validation.reason);
+                await notify(
+                    "⚠️ <b>Agente #" + finishingAgent.issue + " SOSPECHOSO</b>\n" +
+                    "PR mergeada pero validación fallida.\n" +
+                    "Motivo: " + escHtml(validation.reason) + "\n" +
+                    "<i>Acción requerida: revisar y relanzar manualmente si es necesario</i>"
+                );
+                // Guardar sin promover de cola
+                callSyncRoadmapOnly(plan);
+                savePlan(plan);
+                return;
+            }
             plan._completed.push(completedEntry);
             log("Agente #" + finishingAgent.issue + " → _completed (PR mergeada, duracion=" + completedEntry.duracion_min + "m)");
             callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al completar agente

@@ -19,7 +19,7 @@ private val sampleDetail = DeliveryOrderDetail(
     label = "PUB-1",
     businessName = "Pizzeria Roma",
     neighborhood = "Centro",
-    status = DeliveryOrderStatus.PENDING,
+    status = DeliveryOrderStatus.IN_PROGRESS,
     eta = "12:00",
     distance = "2.5 km",
     address = "Av. Siempre Viva 742",
@@ -48,7 +48,16 @@ private class FakeUpdateOrderStatus(
         DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS)
     )
 ) : ToDoUpdateDeliveryOrderStatus {
-    override suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus): Result<DeliveryOrderStatusUpdateResult> = result
+    var lastReason: String? = null
+
+    override suspend fun execute(
+        orderId: String,
+        newStatus: DeliveryOrderStatus,
+        reason: String?
+    ): Result<DeliveryOrderStatusUpdateResult> {
+        lastReason = reason
+        return result
+    }
 }
 
 class DeliveryOrderDetailViewModelTest {
@@ -150,5 +159,137 @@ class DeliveryOrderDetailViewModelTest {
 
         assertFalse(viewModel.state.statusUpdateSuccess)
         assertNull(viewModel.state.statusUpdateError)
+    }
+
+    @Test
+    fun `showDeliveredConfirm abre dialogo de confirmacion`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus(
+                Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.DELIVERED))
+            )
+        )
+
+        viewModel.loadDetail()
+        viewModel.showDeliveredConfirm()
+
+        assertTrue(viewModel.state.showDeliveredConfirmDialog)
+    }
+
+    @Test
+    fun `confirmDelivered cierra dialogo y actualiza estado a DELIVERED`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus(
+                Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.DELIVERED))
+            )
+        )
+
+        viewModel.loadDetail()
+        viewModel.showDeliveredConfirm()
+        assertTrue(viewModel.state.showDeliveredConfirmDialog)
+
+        viewModel.confirmDelivered()
+
+        assertFalse(viewModel.state.showDeliveredConfirmDialog)
+        assertTrue(viewModel.state.statusUpdateSuccess)
+        assertEquals(DeliveryOrderStatus.DELIVERED, viewModel.state.detail?.status)
+    }
+
+    @Test
+    fun `dismissDeliveredConfirm cierra dialogo sin actualizar estado`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+        viewModel.showDeliveredConfirm()
+        viewModel.dismissDeliveredConfirm()
+
+        assertFalse(viewModel.state.showDeliveredConfirmDialog)
+        assertFalse(viewModel.state.statusUpdateSuccess)
+    }
+
+    @Test
+    fun `confirmNotDelivered con motivo ausente actualiza estado a NOT_DELIVERED`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.ABSENT)
+        viewModel.confirmNotDelivered()
+
+        assertFalse(viewModel.state.showNotDeliveredSheet)
+        assertTrue(viewModel.state.notDeliveredSuccess)
+        assertEquals(DeliveryOrderStatus.NOT_DELIVERED, viewModel.state.detail?.status)
+        assertEquals("absent", fakeUpdate.lastReason)
+    }
+
+    @Test
+    fun `confirmNotDelivered sin motivo seleccionado muestra error de validacion`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.confirmNotDelivered()
+
+        assertTrue(viewModel.state.notDeliveredReasonError)
+        assertTrue(viewModel.state.showNotDeliveredSheet)
+        assertFalse(viewModel.state.notDeliveredSuccess)
+    }
+
+    @Test
+    fun `confirmNotDelivered con motivo Otro sin texto muestra error de texto requerido`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.OTHER)
+        viewModel.confirmNotDelivered()
+
+        assertTrue(viewModel.state.notDeliveredOtherError)
+        assertFalse(viewModel.state.notDeliveredReasonError)
+        assertFalse(viewModel.state.notDeliveredSuccess)
+    }
+
+    @Test
+    fun `confirmNotDelivered con motivo Otro y texto envia texto como razon`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.OTHER)
+        viewModel.updateNotDeliveredOtherText("Perro agresivo en la puerta")
+        viewModel.confirmNotDelivered()
+
+        assertFalse(viewModel.state.notDeliveredOtherError)
+        assertTrue(viewModel.state.notDeliveredSuccess)
+        assertEquals("Perro agresivo en la puerta", fakeUpdate.lastReason)
     }
 }

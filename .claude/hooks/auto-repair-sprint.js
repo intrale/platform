@@ -11,6 +11,9 @@ const path = require("path");
 const https = require("https");
 const { execSync } = require("child_process");
 
+// Validación centralizada de completación (#1458)
+const { validateCompletionCriteria, checkPRStatusViaGh } = require("./validation-utils");
+
 const HOOKS_DIR = __dirname;
 const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HOOKS_DIR, "..", "..");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
@@ -245,15 +248,37 @@ function updateSprintPlan(issueNumber, newStatus) {
             }
         }
 
-        // Si el issue se cierra y está en agentes activos, moverlo a _completed
+        // Si el issue se cierra y está en agentes activos, validar PR antes de mover a _completed (#1458)
         if (newStatus === "done" && Array.isArray(plan.agentes)) {
             const idx = plan.agentes.findIndex(a => a.issue === issueNumber);
             if (idx !== -1) {
                 const agent = plan.agentes.splice(idx, 1)[0];
                 agent.status = "done";
                 agent.completed_at = new Date().toISOString();
-                if (!Array.isArray(plan._completed)) plan._completed = [];
-                plan._completed.push(agent);
+
+                // Verificar PR antes de marcar como completado
+                const branch = "agent/" + agent.issue + "-" + agent.slug;
+                let prStatus = { status: "unknown" };
+                try { prStatus = checkPRStatusViaGh(branch); } catch (e) {}
+
+                let duracion_min = 0;
+                if (agent.started_at) {
+                    const started = new Date(agent.started_at).getTime();
+                    if (started) duracion_min = Math.round((Date.now() - started) / 60000);
+                }
+
+                const validation = validateCompletionCriteria(duracion_min, prStatus, branch);
+                if (validation.suspicious) {
+                    // Validación fallida → marcar como suspicious en _incomplete[]
+                    agent.resultado = "suspicious";
+                    agent.motivo = "auto-repair: " + validation.reason;
+                    if (!Array.isArray(plan._incomplete)) plan._incomplete = [];
+                    plan._incomplete.push(agent);
+                    log("updateSprintPlan: #" + issueNumber + " → _incomplete SUSPICIOUS: " + validation.reason);
+                } else {
+                    if (!Array.isArray(plan._completed)) plan._completed = [];
+                    plan._completed.push(agent);
+                }
                 updated = true;
             }
         }

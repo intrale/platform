@@ -60,12 +60,13 @@ class DeliveryOrdersService(
 
     override suspend fun updateOrderStatus(
         orderId: String,
-        newStatus: String
+        newStatus: String,
+        reason: String?
     ): Result<DeliveryOrderStatusUpdateResponse> = runCatching {
         logger.info { "[Delivery][Orders] Actualizando estado del pedido $orderId a $newStatus" }
         val response = httpClient.put("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/orders/$orderId/status") {
             authorize()
-            setBody(DeliveryOrderStatusUpdateRequest(orderId = orderId, status = newStatus))
+            setBody(DeliveryOrderStatusUpdateRequest(orderId = orderId, status = newStatus, reason = reason))
         }
         response.toResult(DeliveryOrderStatusUpdateResponse.serializer())
     }.recoverCatching { throwable ->
