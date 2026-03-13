@@ -23,6 +23,69 @@ export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
 ```
 
+### Paso 1.5: Buscar duplicados
+
+Antes de crear el issue, verificar si ya existe uno similar en GitHub.
+
+**Extraer palabras clave del argumento** (palabras de 4+ caracteres, ignorar artículos/preposiciones):
+
+Por ejemplo, de `"Pantalla de perfil de usuario"` → `pantalla perfil usuario`
+
+**Ejecutar búsqueda en issues abiertos y cerrados:**
+
+Nota: `--search` busca automáticamente en título **y body** de los issues existentes.
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+
+# Búsqueda en issues abiertos por keywords (cubre título y body)
+gh issue list --repo intrale/platform --state open \
+  --search "KEYWORD1 KEYWORD2 KEYWORD3" \
+  --json number,title,labels,state --limit 10
+
+# Búsqueda en issues cerrados (últimos 5)
+gh issue list --repo intrale/platform --state closed \
+  --search "KEYWORD1 KEYWORD2 KEYWORD3" \
+  --json number,title,labels,state --limit 5
+
+# Búsqueda adicional por label de área (si se puede inferir del argumento):
+# - "cliente", "client", "consumidor" → --label "app:client"
+# - "negocio", "business", "comercio" → --label "app:business"
+# - "delivery", "repartidor" → --label "app:delivery"
+# - "área:", "backend", "infra" → --label "area:infra" (o el area:X correspondiente)
+# Ejecutar solo si se detectó un área:
+gh issue list --repo intrale/platform --state open \
+  --label "AREA_LABEL" \
+  --json number,title,labels,state --limit 10 2>/dev/null || true
+```
+
+Combinar y deduplicar los resultados de las tres búsquedas por número de issue antes de continuar.
+
+**Estimar similitud para cada resultado encontrado:**
+
+Contar cuántas palabras clave del título propuesto aparecen en el título del issue encontrado:
+- ≥ 80% de palabras en común → **match alto** (probablemente duplicado)
+- 50–79% de palabras en común → **match medio** (posible duplicado)
+- < 50% de palabras en común → **match bajo** (probablemente distinto)
+
+**Mostrar resultados al usuario:**
+
+```
+Buscando duplicados para: "[descripción propuesta]"
+
+  #892 "Pantalla de perfil — datos personales" (OPEN, app:client) — 85% match
+  #1001 "Editar perfil de usuario" (CLOSED) — 70% match
+  #753 "Vista de usuario registrado" (OPEN, app:client) — 50% match
+
+¿Actualizar #892 en vez de crear una nueva historia? [S/n]
+```
+
+**Decisión:**
+
+- Si hay **match alto (≥ 80%) en issue OPEN**: preguntar al usuario si prefiere actualizar en vez de crear. Si dice **S** → invocar `/refinar <N>` y detener este flujo. Si dice **N** → continuar.
+- Si hay **match alto en issue CLOSED**: informar al usuario ("Existe un issue cerrado similar: #N") y preguntar si desea reabrirlo o crear uno nuevo.
+- Si **no hay matches altos** (o el usuario elige continuar): continuar con el siguiente paso sin interrupciones.
+
 ### Paso 2: Analizar el codebase
 
 Usa Read, Grep y Glob para:

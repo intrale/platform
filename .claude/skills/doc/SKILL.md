@@ -73,14 +73,24 @@ gh pr list --repo intrale/platform --state open --json number,title,url,author
 
 ## Modo: `nueva <descripcion>`
 
-Seguí el flujo completo de `/historia`:
-1. Analizar codebase con Grep/Glob para entender contexto técnico
-2. Redactar issue con estructura estándar (ver `../refinar/issue-template.md`)
-3. Determinar labels (ver `../refinar/labels-guide.md`)
-4. Presentar al usuario para confirmación
-5. Crear en GitHub con `gh issue create`
-6. Agregar al Project V2
-7. Asignar a `leitolarreta`
+Seguí el flujo completo de `/historia`, incluyendo la búsqueda de duplicados:
+
+1. **Buscar duplicados** — antes de crear, buscar issues similares con `gh issue list --search` (cubre título y body):
+   - Extraer palabras clave de la descripción (palabras de 4+ caracteres)
+   - Búsqueda por keywords: `gh issue list --repo intrale/platform --state open --search "KEYWORD1 KEYWORD2" --json number,title,labels,state --limit 10`
+   - Búsqueda por label de área: si la descripción indica el área (cliente/negocio/delivery/infra), ejecutar también `gh issue list --repo intrale/platform --state open --label "AREA_LABEL" --json number,title,labels,state --limit 10`
+   - Combinar y deduplicar resultados por número de issue
+   - Estimar similitud: % de palabras clave del título propuesto que aparecen en cada resultado
+   - Si hay match ≥ 80% en issue OPEN: preguntar si actualizar en vez de crear. Si acepta → invocar `/refinar <N>` y detener. Si no → continuar.
+   - Si hay match ≥ 80% en issue CLOSED: informar y preguntar si reabrirlo o crear nuevo.
+   - Mostrar lista de coincidencias aunque sean medias (50–79%), para contexto del usuario.
+2. Analizar codebase con Grep/Glob para entender contexto técnico
+3. Redactar issue con estructura estándar (ver `../refinar/issue-template.md`)
+4. Determinar labels (ver `../refinar/labels-guide.md`)
+5. Presentar al usuario para confirmación
+6. Crear en GitHub con `gh issue create`
+7. Agregar al Project V2
+8. Asignar a `leitolarreta`
 
 ---
 
