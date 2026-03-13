@@ -89,6 +89,13 @@ Seguí el flujo completo de `/historia`, incluyendo la búsqueda de duplicados:
 6. Crear en GitHub con `gh issue create`
 7. Agregar al Project V2
 8. Asignar a `leitolarreta`
+9. Lanzar análisis paralelo: `/qa validate`, `/security analyze`, `/guru` (impacto técnico)
+10. Consolidar resultados de QA + Security + Guru en el body del issue
+11. **Invocar `/po dependencias $ISSUE_NUMBER` automáticamente** para validar Definition of Ready:
+    - Si todas las dependencias están resueltas (CLOSED) → continuar
+    - Si hay dependencias OPEN no-bloqueantes → agregar comentario ⚠️ en el issue y continuar
+    - Si hay dependencias OPEN bloqueantes → agregar label `blocked`, mover a "Blocked" en Project V2, reportar al usuario
+12. Evaluar tamaño con `/planner validar-tamaño` — si es L/XL invocar `/planner split`
 
 ---
 
