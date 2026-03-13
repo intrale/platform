@@ -116,6 +116,27 @@ function isPidAlive(pid) {
     }
 }
 
+/**
+ * Verifica si un PID corresponde a un proceso claude.exe o node.exe.
+ * Previene falsos positivos por reutilización de PIDs en Windows (#1499).
+ * En Windows los PIDs se reciclan rápidamente y un PID antiguo de un agente
+ * muerto puede ser reasignado a un proceso no relacionado (ej: OpenConsole.exe).
+ */
+function isClaudeProcess(pid) {
+    if (!pid) return false;
+    const numPid = parseInt(pid, 10);
+    if (!numPid) return false;
+    try {
+        const out = execSync(
+            'tasklist /FI "PID eq ' + numPid + '" /FO CSV /NH',
+            { timeout: 3000, windowsHide: true, encoding: "utf8" }
+        ).toLowerCase();
+        return out.includes("claude.exe") || out.includes("node.exe");
+    } catch (e) {
+        return false;
+    }
+}
+
 // ─── Helpers de plan ──────────────────────────────────────────────────────────
 
 function loadPlan() {
@@ -269,22 +290,62 @@ function loadSprintPids() {
 /**
  * Determina si un agente sigue vivo.
  * Métodos (en orden de prioridad):
- *  1. PID en sprint-pids.json → tasklist
- *  2. Sesión activa en .claude/sessions/ con status "active" + PID vivo
- *  3. Sin evidencia de actividad → asumir muerto (fail-safe para promover)
+ *  0. _pid en sprint-plan.json (co-ubicado con el agente, actualizado en cada relanzamiento)
+ *  1. PID file por agente: .claude/hooks/agent-<issue>.pid (#1499)
+ *  2. PID en sprint-pids.json → tasklist con verificación de nombre de proceso
+ *  3. Sesión activa en .claude/sessions/ con status "active" + PID vivo
+ *  4. Sin evidencia de actividad → asumir muerto (fail-safe para promover)
+ *
+ * La verificación de nombre de proceso (isClaudeProcess) previene falsos positivos
+ * causados por la reutilización de PIDs en Windows (#1499).
  */
 function isAgentAlive(agente) {
-    // Método 1: PID desde sprint-pids.json
+    // Método 0: _pid en el objeto agente (sprint-plan.json)
+    if (agente._pid) {
+        const isC = isClaudeProcess(agente._pid);
+        log("isAgentAlive #" + agente.issue + ": _pid " + agente._pid + " → " + (isC ? "vivo (claude/node)" : "muerto o PID reusado"));
+        if (isC) return true;
+        // _pid stale o reusado — continuar con siguientes métodos
+    }
+
+    // Método 1: PID file por agente (.claude/hooks/agent-<issue>.pid)
+    const agentPidFile = path.join(HOOKS_DIR, "agent-" + agente.issue + ".pid");
+    if (fs.existsSync(agentPidFile)) {
+        try {
+            const filePid = parseInt(fs.readFileSync(agentPidFile, "utf8").trim(), 10);
+            if (filePid) {
+                const isC = isClaudeProcess(filePid);
+                log("isAgentAlive #" + agente.issue + ": PID file " + filePid + " → " + (isC ? "vivo (claude/node)" : "muerto o PID reusado"));
+                if (isC) {
+                    agente._pid = filePid; // sincronizar _pid con valor actual
+                    return true;
+                }
+            }
+        } catch (e) { log("isAgentAlive #" + agente.issue + ": error leyendo PID file: " + e.message); }
+    }
+
+    // Método 2: PID desde sprint-pids.json con verificación de nombre de proceso
     const pids = loadSprintPids();
     const pidKey = "agente_" + agente.numero;
     const pid = pids[pidKey];
     if (pid) {
         const alive = isPidAlive(pid);
-        log("isAgentAlive #" + agente.issue + ": PID " + pid + " → " + (alive ? "vivo" : "muerto"));
-        return alive;
+        if (alive) {
+            const isC = isClaudeProcess(pid);
+            if (isC) {
+                log("isAgentAlive #" + agente.issue + ": PID " + pid + " → vivo (claude/node)");
+                agente._pid = pid; // sincronizar _pid para futuras consultas
+                return true;
+            }
+            // PID existe pero es otro proceso (Windows PID reuse) → falso positivo
+            log("isAgentAlive #" + agente.issue + ": PID " + pid + " vivo pero NO es claude/node (PID reusado) → muerto");
+            return false;
+        }
+        log("isAgentAlive #" + agente.issue + ": PID " + pid + " → muerto");
+        return false;
     }
 
-    // Método 2: sesión activa en .claude/sessions/
+    // Método 3: sesión activa en .claude/sessions/
     try {
         if (fs.existsSync(SESSIONS_DIR)) {
             const branch = "agent/" + agente.issue + "-" + agente.slug;
@@ -300,9 +361,13 @@ function isAgentAlive(agente) {
                     if (session.status === "active") {
                         const sessionPid = session.pid || session.claude_pid;
                         if (sessionPid) {
-                            const alive = isPidAlive(sessionPid);
-                            log("isAgentAlive #" + agente.issue + ": sesión activa, PID " + sessionPid + " → " + (alive ? "vivo" : "muerto"));
-                            return alive;
+                            const isC = isClaudeProcess(sessionPid);
+                            log("isAgentAlive #" + agente.issue + ": sesión activa, PID " + sessionPid + " → " + (isC ? "vivo (claude/node)" : "muerto o PID reusado"));
+                            if (isC) {
+                                agente._pid = sessionPid; // sincronizar _pid
+                                return true;
+                            }
+                            return false;
                         }
                         log("isAgentAlive #" + agente.issue + ": sesión activa sin PID → asumiendo vivo");
                         return true;
@@ -399,9 +464,25 @@ function launchAgent(agente) {
         if (logFd !== undefined) { try { fs.closeSync(logFd); } catch (e) {} }
         if (errFd !== undefined) { try { fs.closeSync(errFd); } catch (e) {} }
 
-        log("Agente #" + agente.issue + " lanzado (numero=" + agente.numero + ", PID hijo=" + child.pid + ")");
+        const childPid = child.pid;
+        log("Agente #" + agente.issue + " lanzado (numero=" + agente.numero + ", PID hijo=" + childPid + ")");
         log("  stdout → " + spawnLogPath);
-        return true;
+
+        // Guardar PID en el agente (sprint-plan.json) y en PID file por agente (#1499).
+        // El PID del PowerShell launcher se usa como referencia inicial; Start-Agente.ps1
+        // escribirá el PID real de claude.exe en sprint-pids.json cuando arranque.
+        if (childPid) {
+            agente._pid = childPid;
+            const agentPidFile = path.join(HOOKS_DIR, "agent-" + agente.issue + ".pid");
+            try {
+                fs.writeFileSync(agentPidFile, String(childPid), "utf8");
+                log("PID " + childPid + " guardado en " + path.basename(agentPidFile));
+            } catch (pidErr) {
+                log("WARN: No se pudo escribir PID file de agente: " + pidErr.message);
+            }
+        }
+
+        return childPid || true;
     } catch (e) {
         log("launchAgent error: " + e.message);
         return false;
@@ -484,6 +565,10 @@ async function runCycle() {
             // Remover del array agentes
             freshPlan.agentes = (freshPlan.agentes || []).filter(a => a.issue !== ag.issue);
             planDirty = true;
+
+            // Limpiar PID file del agente muerto (#1499)
+            const deadAgentPidFile = path.join(HOOKS_DIR, "agent-" + ag.issue + ".pid");
+            try { if (fs.existsSync(deadAgentPidFile)) fs.unlinkSync(deadAgentPidFile); } catch (e) {}
 
             if (prStatus.status === "merged") {
                 // PR mergeada → validar criterios antes de marcar completado (#1458)
@@ -586,14 +671,11 @@ async function runCycle() {
                 freshPlan.agentes.push(nextAgent);
             }
 
-            savePlan(freshPlan);
-            planDirty = false;
-            log("Plan guardado con " + toPromote.length + " agente(s) promovido(s)");
-
-            // Lanzar cada agente promovido
+            // Lanzar cada agente promovido y capturar PIDs antes de guardar el plan.
+            // Guardar DESPUÉS del lanzamiento para persistir _pid en sprint-plan.json (#1499).
             for (const nextAgent of toPromote) {
                 await updateProjectV2(nextAgent.issue, "In Progress");
-                const launched = launchAgent(nextAgent);
+                const launched = launchAgent(nextAgent); // también actualiza nextAgent._pid
                 const newCount = (freshPlan.agentes || []).filter(ag => ag.status !== "waiting").length;
 
                 await notify(launched
@@ -608,6 +690,11 @@ async function runCycle() {
                     )
                 );
             }
+
+            // Guardar plan después de lanzar para incluir _pid de cada agente (#1499)
+            savePlan(freshPlan);
+            planDirty = false;
+            log("Plan guardado con " + toPromote.length + " agente(s) promovido(s) (incluye _pid)");
         } else if (planDirty) {
             // Solo guardar si hubo cambios (agentes removidos) aunque no haya promoción
             savePlan(freshPlan);
