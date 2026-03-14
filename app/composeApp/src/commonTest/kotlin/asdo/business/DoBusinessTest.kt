@@ -429,3 +429,50 @@ class DoGetProductTest {
 }
 
 // endregion
+
+// region DoGetBusinessOrders
+
+class FakeCommGetBusinessOrdersService(
+    private val result: Result<List<ext.business.BusinessOrderDTO>>
+) : ext.business.CommGetBusinessOrdersService {
+    override suspend fun listOrders(businessId: String) = result
+}
+
+class DoGetBusinessOrdersTest {
+
+    @Test
+    fun `execute retorna lista de pedidos cuando el servicio responde con éxito`() = runTest {
+        val dtos = listOf(
+            ext.business.BusinessOrderDTO(id = "1", shortCode = "ABC123", clientEmail = "c@test.com", status = "PENDING", total = 1500.0, createdAt = "2026-03-14T15:00:00Z")
+        )
+        val sut = DoGetBusinessOrders(FakeCommGetBusinessOrdersService(Result.success(dtos)))
+
+        val result = sut.execute("pizzeria")
+
+        assertTrue(result.isSuccess)
+        assertEquals(1, result.getOrThrow().size)
+        assertEquals("ABC123", result.getOrThrow().first().shortCode)
+        assertEquals(BusinessOrderStatus.PENDING, result.getOrThrow().first().status)
+    }
+
+    @Test
+    fun `execute retorna lista vacía cuando no hay pedidos`() = runTest {
+        val sut = DoGetBusinessOrders(FakeCommGetBusinessOrdersService(Result.success(emptyList())))
+
+        val result = sut.execute("pizzeria")
+
+        assertTrue(result.isSuccess)
+        assertTrue(result.getOrThrow().isEmpty())
+    }
+
+    @Test
+    fun `execute retorna fallo cuando el servicio falla`() = runTest {
+        val sut = DoGetBusinessOrders(FakeCommGetBusinessOrdersService(Result.failure(RuntimeException("Error de red"))))
+
+        val result = sut.execute("pizzeria")
+
+        assertTrue(result.isFailure)
+    }
+}
+
+// endregion
