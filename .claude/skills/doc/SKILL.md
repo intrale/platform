@@ -288,7 +288,7 @@ Mostrar:
 ### Paso 13: Sincronizar roadmap.json
 
 ```bash
-node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js sync --force 2>/dev/null
 ```
 
 (best-effort: si falla, no interrumpe el flujo)

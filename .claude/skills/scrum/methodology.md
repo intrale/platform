@@ -82,7 +82,7 @@ Todo → Done             (no se puede completar sin haber trabajado — salvo d
 ### Automáticas (detectadas por auditoría)
 
 Las siguientes reglas son ejecutadas automáticamente por `/scrum audit` mediante
-`scrum-auto-corrections.js`. Las correcciones se aplican sin intervención manual
+`scrum-validator.js`. Las correcciones se aplican sin intervención manual
 y se comentan en cada issue con el patrón:
 `🔄 Scrum Master: movido de [anterior] → [nuevo]. Razón: [razón]. Detectado: [timestamp]`
 
@@ -104,7 +104,7 @@ y se comentan en cada issue con el patrón:
 - Columnas consideradas "Backlog": `Todo`, `Refined`, `Backlog Tecnico`, `Backlog CLIENTE`,
   `Backlog NEGOCIO`, `Backlog DELIVERY`.
 - Patrón de comentario en el issue: `🔄 Scrum Master: movido de [anterior] → [nuevo]. Razón: [razón]. _Detección automática: [timestamp]_`
-- Script de correcciones: `.claude/hooks/scrum-auto-corrections.js`
+- Script de correcciones: `.claude/hooks/scrum-validator.js`
 
 #### Otras reglas (detectadas, corregidas en modo sync)
 
@@ -122,5 +122,5 @@ y se comentan en cada issue con el patrón:
 
 | Fecha | Cambio | Razón |
 |-------|--------|-------|
-| 2026-03-09 | Agregar sección "Reglas de coherencia estado → columna" + alinear con `scrum-auto-corrections.js` | Issue #1301 — auditoría con auto-correcciones |
+| 2026-03-09 | Agregar sección "Reglas de coherencia estado → columna" + alinear con `scrum-validator.js` | Issue #1301 — auditoría con auto-correcciones |
 | 2026-03-02 | Versión inicial | Creación del skill /scrum |

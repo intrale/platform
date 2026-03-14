@@ -401,7 +401,7 @@
 ├─ Acción F3: Agent "done" en sprint-plan pero "In Progress" en Project V2
 │  │
 │  └─ Causa: Agent terminó pero Project V2 no se actualizó
-│     1. Ejecutar: node .claude/hooks/scrum-auto-corrections.js --repair-status
+│     1. Ejecutar: node .claude/hooks/scrum-validator.js --repair-status
 │     2. Esperar 30s
 │     3. Verificar: /scrum audit
 │     4. Si no se repara: Actualizar manualmente
@@ -414,14 +414,14 @@
 │        - Si plan es correcto: Actualizar Project V2 manualmente
 │        - Si Project V2 es correcto: Actualizar plan
 │     2. Sincronizar:
-│        node .claude/hooks/sprint-sync.js --force-sync
+│        node .claude/hooks/sprint-manager.js --force-sync
 │     3. Verificar: /scrum audit
 │
 └─ Acción F5: Otro tipo de inconsistencia
    │
    └─ Acción:
       1. Leer error completo: /scrum audit
-      2. Ver si es auto-reparable: node .claude/hooks/scrum-auto-corrections.js
+      2. Ver si es auto-reparable: node .claude/hooks/scrum-validator.js
       3. Si no: Invocar /guru (investigar problema específico)
       4. Considerar: Cierre de sprint y replanificación
 ```

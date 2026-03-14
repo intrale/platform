@@ -328,7 +328,7 @@ Mostrar:
 Después de crear el issue exitosamente, ejecutar sprint-sync.js para reflejar el nuevo issue en `scripts/roadmap.json`:
 
 ```bash
-node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js sync --force 2>/dev/null
 ```
 
 Este paso es best-effort: si falla, no interrumpe el flujo. No reportar al usuario salvo error inesperado.
