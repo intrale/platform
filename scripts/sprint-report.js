@@ -773,6 +773,15 @@ async function main() {
     execSafe(`node "${path.join(__dirname, "evaluate-and-release.js")}" "${planPath}"`, { timeout: 60000 });
     log("--- evaluate-and-release.js completado ---");
 
+    // Paso 3: Generar reporte de costos del sprint (fail-open)
+    const costReportScript = path.join(__dirname, "cost-report.js");
+    if (fs.existsSync(costReportScript)) {
+        log("--- Iniciando cost-report.js ---");
+        const sprintFlag = plan.sprint_id ? `--sprint ${plan.sprint_id}` : "";
+        execSafe(`node "${costReportScript}" --telegram ${sprintFlag}`, { timeout: 120000 });
+        log("--- cost-report.js completado ---");
+    }
+
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     log(`=== sprint-report.js completado en ${elapsed}s ===`);
 }
