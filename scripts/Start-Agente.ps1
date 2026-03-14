@@ -102,6 +102,68 @@ try {
     Write-Host ">> OPS: Check no disponible (fail-open)" -ForegroundColor DarkGray
 }
 
+# --- Pre-sprint cleanup de worktrees huérfanos ---
+# Los worktrees de sprints anteriores se acumulan y saturan git,
+# causando que los agentes no puedan arrancar (SPR-028 incident 2026-03-14)
+function Invoke-WorktreeCleanup {
+    $parentDir = Split-Path $MainRepo -Parent
+    $baseName  = Split-Path $MainRepo -Leaf
+    $siblings  = @(Get-ChildItem -Path $parentDir -Directory -Filter "$baseName.agent-*" -ErrorAction SilentlyContinue)
+
+    if ($siblings.Count -eq 0) {
+        Write-Host ">> Cleanup: sin worktrees huérfanos" -ForegroundColor Green
+        return
+    }
+
+    # Obtener slugs de agentes del sprint actual para no eliminarlos
+    $currentSlugs = @()
+    foreach ($a in $Plan.agentes) { $currentSlugs += "agent-$($a.issue)-$($a.slug)" }
+    foreach ($q in $Plan._queue)  { $currentSlugs += "agent-$($q.issue)-$($q.slug)" }
+
+    $removed = 0
+    $kept    = 0
+
+    foreach ($wt in $siblings) {
+        $suffix = $wt.Name -replace "^$([regex]::Escape($baseName))\.", ""
+
+        if ($currentSlugs -contains $suffix) {
+            $kept++
+            continue
+        }
+
+        try {
+            $junctionPath = Join-Path $wt.FullName ".claude"
+            if (Test-Path $junctionPath) {
+                cmd /c rmdir "$junctionPath" 2>$null
+            }
+
+            Push-Location $MainRepo
+            git worktree remove $wt.FullName --force 2>$null
+            Pop-Location
+
+            if (Test-Path $wt.FullName) {
+                Remove-Item $wt.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+
+            $removed++
+        } catch {
+            Write-Host ">> Cleanup: no se pudo eliminar $($wt.Name): $_" -ForegroundColor Yellow
+        }
+    }
+
+    Push-Location $MainRepo
+    git worktree prune 2>$null
+    Pop-Location
+
+    if ($removed -gt 0) {
+        Write-Host ">> Cleanup: $removed worktree(s) huérfano(s) eliminado(s) ($kept del sprint actual conservados)" -ForegroundColor Green
+    } elseif ($siblings.Count -gt 0) {
+        Write-Host ">> Cleanup: $($siblings.Count) worktree(s) encontrados, todos del sprint actual" -ForegroundColor Green
+    }
+}
+
+Invoke-WorktreeCleanup
+
 # Pre-registrar confianza del worktree en Claude Code para evitar dialogo interactivo de trust
 function PreRegister-Trust {
     param([string]$AbsPath)
@@ -285,10 +347,20 @@ function Start-UnAgente {
                "  Get-Content '$promptFile' -Raw | claude -p --dangerously-skip-permissions; " +
                "  `$exitCode = `$LASTEXITCODE; " +
                "  Write-Host ''; " +
-               "  Write-Host ('  claude finalizo (exit ' + `$exitCode + ')') -ForegroundColor Yellow; " +
+               "  if (`$exitCode -ne 0) { " +
+               "    Write-Host ('  ERROR: claude finalizo con exit code ' + `$exitCode) -ForegroundColor Red; " +
+               "    Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
+               "    Start-Sleep -Seconds 30; " +
+               "  } else { " +
+               "    Write-Host ('  claude finalizo (exit ' + `$exitCode + ')') -ForegroundColor Yellow; " +
+               "    Start-Sleep -Seconds 3; " +
+               "  } " +
+               "} catch { " +
+               "  Write-Host ('  EXCEPTION: ' + `$_.Exception.Message) -ForegroundColor Red; " +
+               "  Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
+               "  Start-Sleep -Seconds 30; " +
                "} finally { " +
                "  Stop-Transcript -ErrorAction SilentlyContinue | Out-Null; " +
-               "  Start-Sleep -Seconds 3; " +
                "  exit " +
                "}"
 
