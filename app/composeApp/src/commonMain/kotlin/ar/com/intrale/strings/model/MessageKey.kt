@@ -92,6 +92,7 @@ enum class MessageKey {
     product_form_available,
     product_form_out_of_stock,
     product_form_stock_quantity,
+    product_form_stock_helper,
     business_products_out_of_stock,
     client_product_out_of_stock,
     dashboard_menu_request_join_business,

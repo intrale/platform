@@ -240,6 +240,22 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="business/fonts") {
         singleton { BusinessFontsFunction(instance(), instance(), instance(), instance(), instance()) }
     }
+
+    bind<ProductRepository> {
+        singleton { ProductRepository() }
+    }
+
+    bind<CategoryRepository> {
+        singleton { CategoryRepository() }
+    }
+
+    bind<Function> (tag="business/products") {
+        singleton { BusinessProducts(instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/categories") {
+        singleton { BusinessCategories(instance(), instance(), instance(), instance(), instance()) }
+    }
 }
 
 private fun Config.stringValue(path: String): String = getValue(path).unwrapped().toString()
