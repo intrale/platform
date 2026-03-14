@@ -98,16 +98,6 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/ensure-permissions.js",
-            "timeout": 3000
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -132,7 +122,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-tracker.js",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-tool-orchestrator.js",
             "timeout": 10000
           },
           {
@@ -149,16 +139,6 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/health-check.js",
             "timeout": 15000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/agent-progress.js",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/session-gc.js",
-            "timeout": 5000
           }
         ]
       }
