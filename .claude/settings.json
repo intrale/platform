@@ -40,6 +40,11 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/pr-cleanup.js",
             "timeout": 120000
+          },
+          {
+            "type": "command",
+            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/auto-review-bg.js",
+            "timeout": 120000
           }
         ]
       }
