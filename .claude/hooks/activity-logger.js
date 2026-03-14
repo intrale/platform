@@ -660,6 +660,16 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
             session.tokens_output = (session.tokens_output || 0) + (Number(usage.output_tokens) || 0);
         }
 
+        // Estimación de tokens por proxy (#1518): tokens_estimated = (duracion_seg * 15) + (tool_count * 500)
+        // Calibrar contra dashboard de Anthropic. Se usa cuando tokens reales no están disponibles.
+        try {
+            const startedMs = new Date(session.started_ts || ts).getTime();
+            const nowMs = new Date(ts).getTime();
+            const duracionSeg = Math.max(0, Math.round((nowMs - startedMs) / 1000));
+            const toolCount = session.action_count || 0;
+            session.tokens_estimated = (duracionSeg * 15) + (toolCount * 500);
+        } catch(e) { /* no bloquear hook */ }
+
         fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");
     } catch(e) { /* no bloquear hook por error de sesion */ }
 }
