@@ -105,6 +105,69 @@ const SKILL_TO_AGENT = {
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
   "/security": "Security",
 };
+
+// Normalizar nombres de skills/agentes a un nodo canónico (#1542)
+// Remueve "/", lowercase, mapea alias → "PO", "/po", "Po" → "/po"
+const SKILL_ALIASES = {
+  "po": "/po", "PO": "/po", "Po": "/po",
+  "qa": "/qa", "QA": "/qa", "Qa": "/qa",
+  "doc": "/doc", "Doc": "/doc",
+  "ux": "/ux", "UX": "/ux",
+  "ops": "/ops", "Ops": "/ops",
+  "guru": "/guru", "Guru": "/guru",
+  "scrum": "/scrum", "Scrum": "/scrum",
+  "planner": "/planner", "Planner": "/planner",
+  "delivery": "/delivery", "Delivery": "/delivery",
+  "tester": "/tester", "Tester": "/tester",
+  "monitor": "/monitor", "Monitor": "/monitor",
+  "builder": "/builder", "Builder": "/builder",
+  "review": "/review", "Review": "/review",
+  "auth": "/auth", "Auth": "/auth",
+  "branch": "/branch", "Branch": "/branch",
+  "security": "/security", "Security": "/security",
+  "backend-dev": "/backend-dev", "android-dev": "/android-dev",
+  "ios-dev": "/ios-dev", "web-dev": "/web-dev", "desktop-dev": "/desktop-dev",
+};
+function normalizeSkillName(name) {
+  if (!name) return name;
+  const trimmed = name.trim();
+  // Si ya está en alias map, devolver canónico
+  if (SKILL_ALIASES[trimmed]) return SKILL_ALIASES[trimmed];
+  // Intentar con lowercase
+  const lc = trimmed.toLowerCase();
+  if (SKILL_ALIASES[lc]) return SKILL_ALIASES[lc];
+  // Si empieza con /, normalizar a lowercase
+  if (trimmed.startsWith("/")) return "/" + lc.substring(1);
+  // Si no tiene /, intentar con /
+  const withSlash = "/" + lc;
+  if (SKILL_TO_AGENT[withSlash]) return withSlash;
+  // Devolver original si no se puede normalizar
+  return trimmed;
+}
+
+// Cargar iconos de robots para agentes raíz (#1544)
+const ROBOTS_DIR = path.join(ICONS_DIR, "robots");
+const ROBOT_ICONS = [];
+for (let i = 1; i <= 10; i++) {
+  const svgPath = path.join(ROBOTS_DIR, "robot" + i + ".svg");
+  try {
+    if (fs.existsSync(svgPath)) {
+      ROBOT_ICONS.push(fs.readFileSync(svgPath, "utf8"));
+    } else {
+      ROBOT_ICONS.push("");
+    }
+  } catch { ROBOT_ICONS.push(""); }
+}
+// Función para obtener SVG inline del robot asignado a un agente raíz
+// robot_id = (agente.numero - 1) % 10 + 1
+function getRobotSvgInline(agentNumber) {
+  if (!agentNumber || agentNumber < 1) return "";
+  const idx = ((agentNumber - 1) % 10);
+  const svg = ROBOT_ICONS[idx] || "";
+  if (!svg) return "";
+  // Ajustar viewBox para inline rendering y añadir width/height
+  return svg.replace(/<svg /, '<svg width="28" height="28" ').replace(/width="800px"/, '').replace(/height="800px"/, '');
+}
 // Case-insensitive lookup for AGENT_ICON_MAP
 const _ICON_MAP_LC = {};
 for (const k of Object.keys(AGENT_ICON_MAP)) _ICON_MAP_LC[k.toLowerCase()] = AGENT_ICON_MAP[k];
@@ -203,6 +266,15 @@ function formatIssueLink(issueNumber) {
   const url = `https://github.com/intrale/platform/issues/${num}`;
   const displayText = `#${num}`;
   return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="issue-link">${escHtml(displayText)}</a>`;
+}
+
+// Convierte referencias #NNNN en texto ya escapado a links clickeables (#1422)
+function linkifyIssueRefs(text) {
+  if (!text) return text;
+  return text.replace(/#(\d{3,5})\b/g, function(match, num) {
+    const url = 'https://github.com/intrale/platform/issues/' + num;
+    return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="issue-link">#' + num + '</a>';
+  });
 }
 
 // --- Data Collection ---
@@ -434,20 +506,24 @@ function collectData() {
   }
 
   // Aggregate agent transitions from all sessions for flow graph
+  // Normalizar nombres para evitar nodos duplicados (#1542)
   const agentTransitions = [];
   const agentNodes = new Set();
   for (const s of sessions) {
     if (Array.isArray(s.agent_transitions)) {
       for (const t of s.agent_transitions) {
-        agentTransitions.push({ ...t, _session: s.id });
-        agentNodes.add(t.from);
-        agentNodes.add(t.to);
+        const normFrom = AGENT_MAP_DASHBOARD[normalizeSkillName(t.from)] || t.from;
+        const normTo = AGENT_MAP_DASHBOARD[normalizeSkillName(t.to)] || t.to;
+        agentTransitions.push({ ...t, from: normFrom, to: normTo, _session: s.id });
+        agentNodes.add(normFrom);
+        agentNodes.add(normTo);
       }
     }
     // Also add agents from skills_invoked
     if (Array.isArray(s.skills_invoked)) {
       for (const sk of s.skills_invoked) {
-        const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
+        const norm = normalizeSkillName(sk);
+        const mapped = AGENT_MAP_DASHBOARD[norm] || norm.replace(/^\//, "");
         agentNodes.add(mapped);
       }
     }
@@ -833,7 +909,8 @@ function formatMinutes(ms) {
 }
 
 // --- BUILD FLOW GRAPH SVG (force-directed organic layout) ---
-function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS) {
+// sprintPlan: para asignar robot icons a agentes raíz (#1544)
+function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS, sprintPlan) {
   const nodes = Array.isArray(agentNodes) ? [...new Set(agentNodes)] : [];
   const transitions = Array.isArray(agentTransitions) ? agentTransitions : [];
 
@@ -845,6 +922,24 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   const activeAgents = new Set();
   const doneAgents = new Set();
   const sessionsList = Array.isArray(sessions) ? sessions : [];
+
+  // Agentes raíz del sprint: asignar robot icon por numero (#1544)
+  // Solo agentes con terminal propia (los del sprint-plan, no sub-agentes como /po, /tester, /qa)
+  const rootAgentRobots = {}; // agentName → robotNumber
+  const subAgentNames = new Set(["PO", "Tester", "QA", "UX Specialist", "Scrum Master", "Guru", "Monitor", "Review", "Builder", "DeliveryManager", "Auth", "Branch", "Ops", "Security", "Doc"]);
+  if (sprintPlan && Array.isArray(sprintPlan.agentes)) {
+    for (const ag of sprintPlan.agentes) {
+      // Buscar la sesión correspondiente para obtener el agent_name
+      const matchSession = sessionsList.find(s => {
+        const m = (s.branch || "").match(/(\d+)/);
+        return m && m[1] === String(ag.issue);
+      });
+      const agName = matchSession ? matchSession.agent_name : null;
+      if (agName && !subAgentNames.has(agName)) {
+        rootAgentRobots[agName] = ag.numero;
+      }
+    }
+  }
   for (const s of sessionsList) {
     if (s.agent_name) {
       if (s._status === "active" || s.status === "active") activeAgents.add(s.agent_name);
@@ -1070,6 +1165,19 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       }
     } else if (isDone && !isActive) {
       svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
+    }
+    // Robot icon para agentes raíz (#1544)
+    if (rootAgentRobots[name]) {
+      const robotSvg = getRobotSvgInline(rootAgentRobots[name]);
+      if (robotSvg) {
+        const robotSize = 14;
+        const robotX = pos.x + nodeR - robotSize / 2;
+        const robotY = pos.y - nodeR - robotSize / 2 + 4;
+        // Renderizar como foreignObject para SVG inline dentro de SVG
+        svg += `<foreignObject x="${robotX.toFixed(1)}" y="${robotY.toFixed(1)}" width="${robotSize}" height="${robotSize}" style="overflow:visible;pointer-events:none;">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:${robotSize}px;height:${robotSize}px;">${robotSvg.replace(/width="[^"]*"/, 'width="' + robotSize + '"').replace(/height="[^"]*"/, 'height="' + robotSize + '"')}</div>
+        </foreignObject>`;
+      }
     }
     // Label below node
     const shortName = name.length > 12 ? name.substring(0, 10) + "\u2026" : name;
@@ -1432,7 +1540,7 @@ function renderHTML(data, theme) {
     return `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
       <div style="display:flex;align-items:center;gap:8px;width:100%;">
         <span class="exec-issue" style="min-width:52px;">${formatIssueLink(ag.issue)}</span>
-        <span class="exec-slug" style="flex:1;">${escHtml(ag.slug || "")}</span>
+        <span class="exec-slug" style="flex:1;">${linkifyIssueRefs(escHtml(ag.titulo || ag.slug || ""))}</span>
         <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
         <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
       </div>
@@ -1530,7 +1638,7 @@ function renderHTML(data, theme) {
       ejecutionHtml += `<div class="exec-card">
         <div class="exec-card-avatar" style="background:${gradient};">${icon}</div>
         <div class="exec-card-info">
-          <div class="exec-card-name">${escHtml(s.agent_name || "Agente")} <span style="color:var(--text-muted);font-weight:400;">${escHtml(s.branch || "")}</span></div>
+          <div class="exec-card-name">${escHtml(s.agent_name || "Agente")} <span style="color:var(--text-muted);font-weight:400;">${linkifyIssueRefs(escHtml(s.branch || ""))}</span></div>
           <div class="exec-bar" style="margin-top:4px;"><div class="exec-bar-fill" style="width:${pct}%;background:${statusColor};"></div></div>
           <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${done}/${tasks.length} tareas · ${s.action_count || 0} acc · ${formatDuration(s.started_ts)}</div>
         </div>
@@ -1590,7 +1698,7 @@ function renderHTML(data, theme) {
               : '<span class="agent-status" style="background:' + statusColor + '20;color:' + statusColor + ';border-color:' + statusColor + '40;">' + statusLabel + idleInfo + '</span>'
             }
           </div>
-          <div class="agent-meta">${branchDisplay} &middot; ${s.action_count || 0} acc &middot; ${duration}</div>
+          <div class="agent-meta">${linkifyIssueRefs(branchDisplay)} &middot; ${s.action_count || 0} acc &middot; ${duration}</div>
           <div class="agent-action"><div class="dot" style="background:${isBlocked ? 'var(--red)' : statusColor};${isBlocked ? 'animation:pulse-red 1.5s infinite;' : ''}"></div>${lastAction}</div>
         </div>
       </div>`;
@@ -1599,8 +1707,8 @@ function renderHTML(data, theme) {
     agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
   }
 
-  // --- FLOW TREE (ASCII tree layout) ---
-  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS);
+  // --- FLOW TREE (grafo de flujo con force-directed layout) ---
+  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS, data.sprintPlan);
 
   // --- GANTT ROADMAP (#1382) ---
   const ganttHtml = buildGanttChart(data.roadmap);
@@ -1616,7 +1724,7 @@ function renderHTML(data, theme) {
       <div class="feed-icon" style="filter:grayscale(1) brightness(1.5);">&#9888;&#65039;</div>
       <div class="feed-body">
         <span class="feed-agent">${escHtml(b.blockedAgent)}</span>
-        <span class="feed-reason">${escHtml(b.reason)} (${waitTime})</span>
+        <span class="feed-reason">${linkifyIssueRefs(escHtml(b.reason))} (${waitTime})</span>
       </div>
     </div>`;
   }
@@ -1657,7 +1765,7 @@ function renderHTML(data, theme) {
       <div class="feed-body">
         <span class="feed-agent">${escHtml(agentName)}</span>
         <span class="feed-tool">${toolLabel}${g.count > 1 ? ' x' + g.count : ''}</span>
-        <span class="feed-target">${escHtml(targetText)}</span>
+        <span class="feed-target">${linkifyIssueRefs(escHtml(targetText))}</span>
       </div>
     </div>`;
   }
@@ -1737,7 +1845,7 @@ function renderHTML(data, theme) {
     else { statusIcon = "&#10003;"; statusLabel = "OK"; statusClass = "perm-auto"; }
 
     const toolName = (q.action_data && q.action_data.tool_name) || "???";
-    const msgShort = escHtml((q.message || "").replace(/<[^>]*>/g, "").substring(0, 50));
+    const msgShort = linkifyIssueRefs(escHtml((q.message || "").replace(/<[^>]*>/g, "").substring(0, 50)));
     const age = formatAge(q.timestamp);
     const severity = q._severity || "???";
     const agentName = q._agent || "";
@@ -1791,12 +1899,12 @@ function renderHTML(data, theme) {
     const iconColor = isOk ? "var(--green)" : isFail ? "var(--red)" : "var(--yellow)";
     ciHtml += `<div class="ci-row">
       <div class="ci-icon ${iconClass}" style="color:${iconColor}">${icon}</div>
-      <div class="ci-text"><strong>${escHtml(r.headBranch)}</strong> &middot; ${escHtml((r.displayTitle || "").substring(0, 50))}</div>
+      <div class="ci-text"><strong>${linkifyIssueRefs(escHtml(r.headBranch))}</strong> &middot; ${linkifyIssueRefs(escHtml((r.displayTitle || "").substring(0, 50)))}</div>
       <div class="ci-time">${formatAge(r.createdAt)}</div>
     </div>`;
   }
   if (data.ciRuns.length === 0) {
-    ciHtml = '<div class="empty-state">Sin datos CI</div>';
+    ciHtml = '<div class="empty-state">Sin ejecuciones recientes &mdash; los workflows de GitHub Actions aparecer&aacute;n aqu&iacute;</div>';
   }
 
   // --- AGENT METRICS TABLE (#1226, #1419) ---
@@ -1907,7 +2015,7 @@ function renderHTML(data, theme) {
   for (const a of data.alerts) {
     const color = a.type === "critical" ? "var(--red)" : a.type === "warning" ? "var(--yellow)" : "var(--blue)";
     const icon = a.type === "critical" ? "&#128680;" : a.type === "warning" ? "&#9888;&#65039;" : "&#8505;&#65039;";
-    alertsHtml += `<div class="alert-item" style="border-left-color:${color};">${icon} ${escHtml(a.message)}</div>`;
+    alertsHtml += `<div class="alert-item" style="border-left-color:${color};">${icon} ${linkifyIssueRefs(escHtml(a.message))}</div>`;
   }
 
   return `<!DOCTYPE html>
@@ -2231,11 +2339,11 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
-    <!-- CI (solo si hay datos) -->
-    ${data.ciRuns.length > 0 ? `<div class="panel" style="margin-bottom:16px;" data-panel="ci">
-      <div class="panel-title">CI / CD</div>
+    <!-- CI / CD -->
+    <div class="panel" style="margin-bottom:16px;" data-panel="ci">
+      <div class="panel-title">CI / CD <span class="chip ${data.ciStatus === 'ok' ? 'chip-green' : data.ciStatus === 'fail' ? 'chip-red' : 'chip-yellow'}">${data.ciRuns.length > 0 ? data.ciRuns.length + ' ejecuciones' : 'GitHub Actions'}</span></div>
       ${ciHtml}
-    </div>` : ''}
+    </div>
 
   </div>
 
@@ -2265,7 +2373,7 @@ function renderHTML(data, theme) {
       });
     });
 
-    // SSE auto-refresh
+    // SSE auto-refresh con polling parcial para actividad en vivo (#1212)
     if (!location.search.includes('nosse=1')) {
       var lastUpdate = Date.now();
       var evtSource = new EventSource('/events');
@@ -2275,7 +2383,13 @@ function renderHTML(data, theme) {
         if (data.reload) location.reload();
       };
       evtSource.onerror = function() {
-        document.getElementById('update-time').textContent = 'Desconectado...';
+        document.getElementById('update-time').textContent = 'Desconectado... reconectando';
+        // Reconectar después de 5s si EventSource se desconecta
+        setTimeout(function() {
+          if (evtSource.readyState === EventSource.CLOSED) {
+            evtSource = new EventSource('/events');
+          }
+        }, 5000);
       };
       setInterval(function() {
         var secs = Math.floor((Date.now() - lastUpdate) / 1000);
