@@ -1,0 +1,132 @@
+name: Distribución Web — AWS S3 + CloudFront (Wasm)
+
+# Distribuye la app Web/Wasm a AWS S3 + CloudFront para Friends & Family.
+#
+# PRERREQUISITOS (ver docs/web-distribution-guide.md):
+#   - S3 bucket `intrale-web-staging` creado en us-east-1
+#   - CloudFront Distribution apuntando al bucket
+#   - Secrets configurados en GitHub:
+#     - AWS_S3_BUCKET_WEB        — nombre del bucket S3
+#     - AWS_CLOUDFRONT_DISTRIBUTION_ID — ID de la distribución CloudFront
+#     - AWS_ACCESS_KEY_ID        — reutilizado del stack AWS existente
+#     - AWS_SECRET_ACCESS_KEY    — reutilizado del stack AWS existente
+#     - TELEGRAM_BOT_TOKEN       — reutilizado de otros workflows
+#     - TELEGRAM_CHAT_ID         — reutilizado de otros workflows
+#
+# FLUJO:
+#   - push a main O workflow_dispatch manual
+#   - checkout → Java 21 → wasmJsBrowserProductionWebpack
+#   - aws s3 sync → cloudfront invalidation
+#   - notificación Telegram con URL de la app
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Notas de release (visible en notificación Telegram)'
+        required: false
+        default: 'Build automático de Friends & Family'
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy — Web/Wasm → S3 + CloudFront
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build Web/Wasm (production)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:composeApp:wasmJsBrowserProductionWebpack \
+            -x compileTestKotlinIosX64 \
+            -x compileTestKotlinIosSimulatorArm64 \
+            -x compileTestKotlinIosArm64
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Deploy a S3
+        run: |
+          aws s3 sync \
+            app/composeApp/build/dist/wasmJs/productionExecutable/ \
+            s3://${{ secrets.AWS_S3_BUCKET_WEB }}/ \
+            --delete \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+      - name: Invalidar caché CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"
+
+  notify:
+    name: Notificar resultado
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Obtener URL CloudFront para notificación
+        id: cloudfront
+        if: needs.build-and-deploy.result == 'success'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          DOMAIN=$(aws cloudfront get-distribution \
+            --id ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }} \
+            --query 'Distribution.DomainName' \
+            --output text)
+          echo "url=https://${DOMAIN}" >> $GITHUB_OUTPUT
+
+      - name: Notificar por Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
+            MESSAGE="✅ Web/Wasm — Deploy exitoso — Build #${{ github.run_number }}
+
+          🌐 App disponible en:
+          ${{ steps.cloudfront.outputs.url }}
+
+          Abrí el link en cualquier browser. No requiere instalación.
+          ${{ github.event.inputs.release_notes || github.event.head_commit.message }}
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          else
+            MESSAGE="❌ Web/Wasm — Deploy fallido — Build #${{ github.run_number }}
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MESSAGE}"
