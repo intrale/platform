@@ -172,6 +172,11 @@ function flushMetrics(sessionId) {
             ? (tokensInput || 0) + (tokensOutput || 0)
             : null;
 
+        // Estimación de tokens por proxy (#1518): tokens_estimated = (duracion_seg * 15) + (tool_count * 500)
+        // Calibrar contra dashboard de Anthropic. Se usa cuando tokens reales no están disponibles.
+        const duracionSeg = Math.max(0, Math.round((endMs - startMs) / 1000));
+        const tokensEstimated = (duracionSeg * 15) + (totalToolCalls * 500);
+
         const entry = {
             id: shortId,
             sprint_id: getActiveSprintId(),
@@ -189,6 +194,7 @@ function flushMetrics(sessionId) {
             tokens_input: tokensInput,
             tokens_output: tokensOutput,
             tokens_total: tokensTotal,
+            tokens_estimated: tokensEstimated,
         };
 
         // Append-only: leer el archivo existente y agregar el nuevo registro.

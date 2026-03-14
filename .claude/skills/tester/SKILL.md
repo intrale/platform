@@ -88,7 +88,7 @@ Reportar:
 - Cobertura si fue solicitada (líneas, branches)
 - Módulos verificados
 
-### Si hay fallos (escalar modelo mentalmente a Sonnet para análisis)
+### Si hay fallos
 
 Para cada test fallido:
 1. Leer el stack trace completo
