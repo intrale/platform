@@ -150,6 +150,8 @@ jobs:
             -PAPP_TYPE=BUSINESS \
             -x compileTestKotlinIosX64 \
             -x compileTestKotlinIosSimulatorArm64
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
 
       - name: Instalar certificado y provisioning profile
         env:
@@ -223,6 +225,8 @@ jobs:
             -PAPP_TYPE=DELIVERY \
             -x compileTestKotlinIosX64 \
             -x compileTestKotlinIosSimulatorArm64
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
 
       - name: Instalar certificado y provisioning profile
         env:

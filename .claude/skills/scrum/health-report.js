@@ -333,7 +333,7 @@ async function generateReport(diagnosis, repairResult) {
 // CLI
 if (require.main === module) {
     const { runHealthCheck } = require(path.join(REPO_ROOT, ".claude", "hooks", "health-check-sprint"));
-    const { runAutoRepair } = require(path.join(REPO_ROOT, ".claude", "hooks", "auto-repair-sprint"));
+    const { runAutoRepair } = require(path.join(REPO_ROOT, ".claude", "hooks", "sprint-manager"));
 
     runHealthCheck().then(async diagnosis => {
         let repairResult = null;
