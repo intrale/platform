@@ -334,100 +334,23 @@ function Start-UnAgente {
     $promptFile = Join-Path $logDir "prompt_$($Agente.numero).txt"
     Set-Content -Path $promptFile -Value $prompt -Encoding UTF8 -NoNewline
 
-    # try/finally garantiza que la terminal se cierre aunque claude crashee o muera inesperadamente (#1350)
-    # #1541: Reemplazamos Start-Transcript por stream-json + parseo en tiempo real.
-    # Start-Transcript captura stdout pero no lo renderiza en la terminal con claude -p,
-    # dejando la ventana del agente en blanco. Con --output-format stream-json parseamos
-    # cada evento JSON y mostramos actividad (tool calls, mensajes, resultados) en tiempo real,
-    # mientras escribimos el stream completo al log para no perder informacion.
-    $command = "try { " +
-               "  Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; " +
-               "  Set-Location '$wtDirResolved'; " +
-               "  `$header = @(" +
-               "    ''," +
-               "    '  Agente $($Agente.numero) - issue #$issue ($slug)'," +
-               "    '  Branch: $branch'," +
-               "    '  Log: $logFile'," +
-               "    ''" +
-               "  ) -join [Environment]::NewLine; " +
-               "  Write-Host `$header -ForegroundColor Cyan; " +
-               "  `$header | Out-File -FilePath '$logFile' -Encoding utf8 -Force; " +
-               "  `$promptContent = Get-Content '$promptFile' -Raw; " +
-               "  `$process = New-Object System.Diagnostics.Process; " +
-               "  `$process.StartInfo.FileName = 'claude'; " +
-               "  `$process.StartInfo.Arguments = '-p --dangerously-skip-permissions --output-format stream-json'; " +
-               "  `$process.StartInfo.UseShellExecute = `$false; " +
-               "  `$process.StartInfo.RedirectStandardInput = `$true; " +
-               "  `$process.StartInfo.RedirectStandardOutput = `$true; " +
-               "  `$process.StartInfo.RedirectStandardError = `$true; " +
-               "  `$process.StartInfo.CreateNoWindow = `$false; " +
-               "  `$process.StartInfo.WorkingDirectory = '$wtDirResolved'; " +
-               "  `$process.Start() | Out-Null; " +
-               "  `$process.StandardInput.Write(`$promptContent); " +
-               "  `$process.StandardInput.Close(); " +
-               "  `$toolCount = 0; " +
-               "  `$msgCount = 0; " +
-               "  while (-not `$process.StandardOutput.EndOfStream) { " +
-               "    `$line = `$process.StandardOutput.ReadLine(); " +
-               "    if (-not `$line) { continue } " +
-               "    `$line | Out-File -FilePath '$logFile' -Encoding utf8 -Append; " +
-               "    try { " +
-               "      `$evt = `$line | ConvertFrom-Json -ErrorAction Stop; " +
-               "      if (`$evt.type -eq 'assistant' -and `$evt.message.content) { " +
-               "        foreach (`$block in `$evt.message.content) { " +
-               "          if (`$block.type -eq 'tool_use') { " +
-               "            `$toolCount++; " +
-               "            `$toolName = `$block.name; " +
-               "            `$snippet = ''; " +
-               "            if (`$block.input.command) { `$snippet = `$block.input.command.Substring(0, [Math]::Min(80, `$block.input.command.Length)) } " +
-               "            elseif (`$block.input.pattern) { `$snippet = `$block.input.pattern } " +
-               "            elseif (`$block.input.file_path) { `$snippet = `$block.input.file_path } " +
-               "            elseif (`$block.input.description) { `$snippet = `$block.input.description.Substring(0, [Math]::Min(80, `$block.input.description.Length)) } " +
-               "            Write-Host (""  [`$toolCount] `$toolName"" + $(if(`$snippet){': '+`$snippet}else{''})) -ForegroundColor Yellow; " +
-               "          } elseif (`$block.type -eq 'text' -and `$block.text) { " +
-               "            `$msgCount++; " +
-               "            `$preview = `$block.text.Substring(0, [Math]::Min(120, `$block.text.Length)); " +
-               "            if (`$block.text.Length -gt 120) { `$preview += '...' } " +
-               "            Write-Host ""  > `$preview"" -ForegroundColor Gray; " +
-               "          } " +
-               "        } " +
-               "      } elseif (`$evt.type -eq 'result') { " +
-               "        Write-Host ''; " +
-               "        Write-Host '  === RESULTADO ===' -ForegroundColor Green; " +
-               "        if (`$evt.result) { " +
-               "          `$resultText = `$evt.result; " +
-               "          `$lines = `$resultText -split [Environment]::NewLine; " +
-               "          foreach (`$l in `$lines[0..([Math]::Min(19, `$lines.Count-1))]) { Write-Host ""  `$l"" -ForegroundColor White } " +
-               "          if (`$lines.Count -gt 20) { Write-Host '  ... (truncado)' -ForegroundColor DarkGray } " +
-               "        } " +
-               "      } " +
-               "    } catch { } " +
-               "  } " +
-               "  `$stderrOutput = `$process.StandardError.ReadToEnd(); " +
-               "  if (`$stderrOutput) { `$stderrOutput | Out-File -FilePath '$logFile' -Encoding utf8 -Append } " +
-               "  `$process.WaitForExit(); " +
-               "  `$exitCode = `$process.ExitCode; " +
-               "  Write-Host ''; " +
-               "  Write-Host ""  Resumen: `$toolCount tool calls, `$msgCount mensajes"" -ForegroundColor Cyan; " +
-               "  if (`$exitCode -ne 0) { " +
-               "    Write-Host ('  ERROR: claude finalizo con exit code ' + `$exitCode) -ForegroundColor Red; " +
-               "    Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
-               "    Start-Sleep -Seconds 30; " +
-               "  } else { " +
-               "    Write-Host ('  claude finalizo (exit ' + `$exitCode + ')') -ForegroundColor Yellow; " +
-               "    Start-Sleep -Seconds 3; " +
-               "  } " +
-               "} catch { " +
-               "  `$_ | Out-File -FilePath '$logFile' -Encoding utf8 -Append; " +
-               "  Write-Host ('  EXCEPTION: ' + `$_.Exception.Message) -ForegroundColor Red; " +
-               "  Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
-               "  Start-Sleep -Seconds 30; " +
-               "} finally { " +
-               "  exit " +
-               "}"
+    # #1541: Lanzar Run-AgentStream.ps1 como script separado.
+    # Evita el infierno de escaping de PowerShell al construir $command inline.
+    # Run-AgentStream.ps1 parsea stream-json y muestra actividad en tiempo real.
+    $streamScript = Join-Path $PSScriptRoot "Run-AgentStream.ps1"
 
     Write-Host ">> Abriendo terminal con claude..."
-    $proc = Start-Process powershell -ArgumentList "-Command", $command -PassThru
+    $proc = Start-Process powershell -ArgumentList (
+        "-ExecutionPolicy", "Bypass",
+        "-File", $streamScript,
+        "-WorkDir", $wtDirResolved,
+        "-PromptFile", $promptFile,
+        "-LogFile", $logFile,
+        "-AgentNum", $Agente.numero,
+        "-Issue", $issue,
+        "-Slug", $slug,
+        "-Branch", $branch
+    ) -PassThru
 
     # Guardar PID en sprint-pids.json
     $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
@@ -491,39 +414,9 @@ if ($Numero -eq "all") {
     Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
     Write-Host ">> Reporte post-sprint se generará automáticamente cuando terminen." -ForegroundColor Cyan
 
-    # Lanzar agent-watcher.js como proceso background (#1441)
-    # Monitorea worktrees externos y promueve automáticamente desde _queue[]
-    $WatcherScript = Join-Path $MainRepo ".claude\hooks\agent-watcher.js"
-    $WatcherPidFile = Join-Path $MainRepo ".claude\hooks\agent-watcher.pid"
-    $WatcherAlreadyRunning = $false
-
-    if (Test-Path $WatcherPidFile) {
-        try {
-            $existingPid = [int](Get-Content $WatcherPidFile -Raw).Trim()
-            $proc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-            if ($proc) {
-                Write-Host ">> Agent Watcher ya activo (PID $existingPid) — no se lanza otro" -ForegroundColor DarkGray
-                $WatcherAlreadyRunning = $true
-            }
-        } catch {
-            # PID file existe pero PID muerto — el watcher lo limpiará al arrancar
-        }
-    }
-
-    if (-not $WatcherAlreadyRunning -and (Test-Path $WatcherScript)) {
-        $watcherLogDir = Join-Path $PSScriptRoot 'logs'
-        if (-not (Test-Path $watcherLogDir)) { New-Item -ItemType Directory -Path $watcherLogDir -Force | Out-Null }
-        $watcherStdout = Join-Path $watcherLogDir "agent-watcher-stdout.log"
-        $watcherStderr = Join-Path $watcherLogDir "agent-watcher-stderr.log"
-
-        $watcherProc = Start-Process node -ArgumentList $WatcherScript -PassThru -WindowStyle Hidden -RedirectStandardOutput $watcherStdout -RedirectStandardError $watcherStderr
-
-        Write-Host ">> Agent Watcher lanzado en background (PID $($watcherProc.Id))" -ForegroundColor Cyan
-        Write-Host ">> Log stdout: $watcherStdout" -ForegroundColor DarkGray
-        Write-Host ">> Log stderr: $watcherStderr" -ForegroundColor DarkGray
-    } elseif (-not (Test-Path $WatcherScript)) {
-        Write-Host ">> WARN: agent-watcher.js no encontrado en: $WatcherScript" -ForegroundColor Yellow
-    }
+    # Agent Watcher DESHABILITADO — destruye agentes al evaluar PRs demasiado rápido (#1551)
+    # TODO: reimplementar con grace period mínimo de 10 min antes de evaluar
+    Write-Host ">> Agent Watcher deshabilitado (bug #1551 — evalúa PRs antes de que los agentes trabajen)" -ForegroundColor DarkGray
 }
 else {
     $num = [int]$Numero

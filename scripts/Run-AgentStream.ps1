@@ -1,0 +1,177 @@
+<#
+.SYNOPSIS
+    Ejecuta claude en modo stream-json y muestra actividad en tiempo real.
+.DESCRIPTION
+    Script auxiliar lanzado por Start-Agente.ps1 en cada terminal de agente.
+    Parsea el stream JSON de claude y muestra tool calls, mensajes y resultado
+    con colores diferenciados, mientras loguea todo al archivo de log.
+.PARAMETER WorkDir
+    Directorio de trabajo (worktree del agente).
+.PARAMETER PromptFile
+    Ruta al archivo con el prompt para claude.
+.PARAMETER LogFile
+    Ruta al archivo de log.
+.PARAMETER AgentNum
+    Numero del agente (1, 2, 3...).
+.PARAMETER Issue
+    Numero del issue de GitHub.
+.PARAMETER Slug
+    Slug del agente (ej: onboarding-negocio).
+.PARAMETER Branch
+    Nombre de la rama git.
+#>
+param(
+    [Parameter(Mandatory)] [string]$WorkDir,
+    [Parameter(Mandatory)] [string]$PromptFile,
+    [Parameter(Mandatory)] [string]$LogFile,
+    [Parameter(Mandatory)] [int]$AgentNum,
+    [Parameter(Mandatory)] [int]$Issue,
+    [Parameter(Mandatory)] [string]$Slug,
+    [Parameter(Mandatory)] [string]$Branch
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# Titulo de ventana identificable
+$host.UI.RawUI.WindowTitle = "Agente $AgentNum - #$Issue ($Slug)"
+
+# Limpiar variable que interfiere con claude
+Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue
+
+# Posicionarse en el worktree
+Set-Location $WorkDir
+
+# Header
+$header = @(
+    "",
+    "  Agente $AgentNum - issue #$Issue ($Slug)",
+    "  Branch: $Branch",
+    "  Log: $LogFile",
+    ""
+) -join [Environment]::NewLine
+Write-Host $header -ForegroundColor Cyan
+
+# Inicializar log
+$header | Out-File -FilePath $LogFile -Encoding utf8 -Force
+
+try {
+    # Leer prompt
+    $promptContent = Get-Content $PromptFile -Raw
+
+    # Crear proceso claude con stream-json
+    # System.Diagnostics.Process no resuelve .ps1 wrappers del PATH — usar .cmd
+    $claudePath = Join-Path $env:APPDATA "npm\claude.cmd"
+    if (-not (Test-Path $claudePath)) {
+        # Fallback: buscar en PATH
+        $claudePath = (Get-Command claude -ErrorAction SilentlyContinue).Source
+        if (-not $claudePath) { throw "claude no encontrado en PATH ni en npm global" }
+    }
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo.FileName = $claudePath
+    $process.StartInfo.Arguments = "-p --dangerously-skip-permissions --output-format stream-json --verbose"
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.RedirectStandardInput = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $process.StartInfo.CreateNoWindow = $false
+    $process.StartInfo.WorkingDirectory = $WorkDir
+    $process.Start() | Out-Null
+
+    # Enviar prompt y cerrar stdin
+    $process.StandardInput.Write($promptContent)
+    $process.StandardInput.Close()
+
+    $toolCount = 0
+    $msgCount = 0
+
+    # Leer stream linea por linea
+    while (-not $process.StandardOutput.EndOfStream) {
+        $line = $process.StandardOutput.ReadLine()
+        if (-not $line) { continue }
+
+        # Loguear linea cruda
+        $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
+
+        try {
+            $evt = $line | ConvertFrom-Json -ErrorAction Stop
+
+            if ($evt.type -eq "assistant" -and $evt.message -and $evt.message.content) {
+                foreach ($block in @($evt.message.content)) {
+                    if ($block.type -eq "tool_use") {
+                        $toolCount++
+                        $toolName = $block.name
+                        $snippet = ""
+
+                        if ($block.input.command) {
+                            $snippet = $block.input.command
+                            if ($snippet.Length -gt 80) { $snippet = $snippet.Substring(0, 80) }
+                        }
+                        elseif ($block.input.pattern) { $snippet = $block.input.pattern }
+                        elseif ($block.input.file_path) { $snippet = $block.input.file_path }
+                        elseif ($block.input.description) {
+                            $snippet = $block.input.description
+                            if ($snippet.Length -gt 80) { $snippet = $snippet.Substring(0, 80) }
+                        }
+
+                        $label = "  [$toolCount] $toolName"
+                        if ($snippet) { $label += ": $snippet" }
+                        Write-Host $label -ForegroundColor Yellow
+                    }
+                    elseif ($block.type -eq "text" -and $block.text) {
+                        $msgCount++
+                        $preview = $block.text
+                        if ($preview.Length -gt 120) { $preview = $preview.Substring(0, 120) + "..." }
+                        Write-Host "  > $preview" -ForegroundColor Gray
+                    }
+                }
+            }
+            elseif ($evt.type -eq "result") {
+                Write-Host ""
+                Write-Host "  === RESULTADO ===" -ForegroundColor Green
+                if ($evt.result) {
+                    $lines = $evt.result -split [Environment]::NewLine
+                    $maxLines = [Math]::Min(19, $lines.Count - 1)
+                    foreach ($l in $lines[0..$maxLines]) {
+                        Write-Host "  $l" -ForegroundColor White
+                    }
+                    if ($lines.Count -gt 20) {
+                        Write-Host "  ... (truncado)" -ForegroundColor DarkGray
+                    }
+                }
+            }
+        }
+        catch {
+            # Linea no es JSON valido — ignorar
+        }
+    }
+
+    # Leer stderr
+    $stderrOutput = $process.StandardError.ReadToEnd()
+    if ($stderrOutput) {
+        $stderrOutput | Out-File -FilePath $LogFile -Encoding utf8 -Append
+        Write-Host "  STDERR: $stderrOutput" -ForegroundColor DarkYellow
+    }
+
+    $process.WaitForExit()
+    $exitCode = $process.ExitCode
+
+    Write-Host ""
+    Write-Host "  Resumen: $toolCount tool calls, $msgCount mensajes" -ForegroundColor Cyan
+
+    if ($exitCode -ne 0) {
+        Write-Host "  ERROR: claude finalizo con exit code $exitCode" -ForegroundColor Red
+        Write-Host "  La terminal se cerrara en 30 segundos..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 30
+    }
+    else {
+        Write-Host "  claude finalizo (exit $exitCode)" -ForegroundColor Yellow
+        Start-Sleep -Seconds 3
+    }
+}
+catch {
+    $_ | Out-String | Out-File -FilePath $LogFile -Encoding utf8 -Append
+    Write-Host "  EXCEPTION: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  La terminal se cerrara en 30 segundos..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 30
+}
