@@ -324,7 +324,7 @@ function Start-UnAgente {
 
     # Abrir nueva terminal PowerShell con claude ejecutando
     # La terminal se cierra automaticamente al terminar claude (sin -NoExit)
-    # Output se loguea a scripts/logs/agente_N.log via Start-Transcript
+    # Output se loguea a scripts/logs/agente_N.log via stream-json parsing (#1541)
     $logDir = Join-Path $PSScriptRoot 'logs'
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     $logFile = Join-Path $logDir "agente_$($Agente.numero).log"
@@ -335,18 +335,80 @@ function Start-UnAgente {
     Set-Content -Path $promptFile -Value $prompt -Encoding UTF8 -NoNewline
 
     # try/finally garantiza que la terminal se cierre aunque claude crashee o muera inesperadamente (#1350)
+    # #1541: Reemplazamos Start-Transcript por stream-json + parseo en tiempo real.
+    # Start-Transcript captura stdout pero no lo renderiza en la terminal con claude -p,
+    # dejando la ventana del agente en blanco. Con --output-format stream-json parseamos
+    # cada evento JSON y mostramos actividad (tool calls, mensajes, resultados) en tiempo real,
+    # mientras escribimos el stream completo al log para no perder informacion.
     $command = "try { " +
-               "  Start-Transcript -Path '$logFile' -Force | Out-Null; " +
                "  Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; " +
                "  Set-Location '$wtDirResolved'; " +
+               "  `$header = @(" +
+               "    ''," +
+               "    '  Agente $($Agente.numero) - issue #$issue ($slug)'," +
+               "    '  Branch: $branch'," +
+               "    '  Log: $logFile'," +
+               "    ''" +
+               "  ) -join [Environment]::NewLine; " +
+               "  Write-Host `$header -ForegroundColor Cyan; " +
+               "  `$header | Out-File -FilePath '$logFile' -Encoding utf8 -Force; " +
+               "  `$promptContent = Get-Content '$promptFile' -Raw; " +
+               "  `$process = New-Object System.Diagnostics.Process; " +
+               "  `$process.StartInfo.FileName = 'claude'; " +
+               "  `$process.StartInfo.Arguments = '-p --dangerously-skip-permissions --output-format stream-json'; " +
+               "  `$process.StartInfo.UseShellExecute = `$false; " +
+               "  `$process.StartInfo.RedirectStandardInput = `$true; " +
+               "  `$process.StartInfo.RedirectStandardOutput = `$true; " +
+               "  `$process.StartInfo.RedirectStandardError = `$true; " +
+               "  `$process.StartInfo.CreateNoWindow = `$false; " +
+               "  `$process.StartInfo.WorkingDirectory = '$wtDirResolved'; " +
+               "  `$process.Start() | Out-Null; " +
+               "  `$process.StandardInput.Write(`$promptContent); " +
+               "  `$process.StandardInput.Close(); " +
+               "  `$toolCount = 0; " +
+               "  `$msgCount = 0; " +
+               "  while (-not `$process.StandardOutput.EndOfStream) { " +
+               "    `$line = `$process.StandardOutput.ReadLine(); " +
+               "    if (-not `$line) { continue } " +
+               "    `$line | Out-File -FilePath '$logFile' -Encoding utf8 -Append; " +
+               "    try { " +
+               "      `$evt = `$line | ConvertFrom-Json -ErrorAction Stop; " +
+               "      if (`$evt.type -eq 'assistant' -and `$evt.message.content) { " +
+               "        foreach (`$block in `$evt.message.content) { " +
+               "          if (`$block.type -eq 'tool_use') { " +
+               "            `$toolCount++; " +
+               "            `$toolName = `$block.name; " +
+               "            `$snippet = ''; " +
+               "            if (`$block.input.command) { `$snippet = `$block.input.command.Substring(0, [Math]::Min(80, `$block.input.command.Length)) } " +
+               "            elseif (`$block.input.pattern) { `$snippet = `$block.input.pattern } " +
+               "            elseif (`$block.input.file_path) { `$snippet = `$block.input.file_path } " +
+               "            elseif (`$block.input.description) { `$snippet = `$block.input.description.Substring(0, [Math]::Min(80, `$block.input.description.Length)) } " +
+               "            Write-Host (""  [`$toolCount] `$toolName"" + $(if(`$snippet){': '+`$snippet}else{''})) -ForegroundColor Yellow; " +
+               "          } elseif (`$block.type -eq 'text' -and `$block.text) { " +
+               "            `$msgCount++; " +
+               "            `$preview = `$block.text.Substring(0, [Math]::Min(120, `$block.text.Length)); " +
+               "            if (`$block.text.Length -gt 120) { `$preview += '...' } " +
+               "            Write-Host ""  > `$preview"" -ForegroundColor Gray; " +
+               "          } " +
+               "        } " +
+               "      } elseif (`$evt.type -eq 'result') { " +
+               "        Write-Host ''; " +
+               "        Write-Host '  === RESULTADO ===' -ForegroundColor Green; " +
+               "        if (`$evt.result) { " +
+               "          `$resultText = `$evt.result; " +
+               "          `$lines = `$resultText -split [Environment]::NewLine; " +
+               "          foreach (`$l in `$lines[0..([Math]::Min(19, `$lines.Count-1))]) { Write-Host ""  `$l"" -ForegroundColor White } " +
+               "          if (`$lines.Count -gt 20) { Write-Host '  ... (truncado)' -ForegroundColor DarkGray } " +
+               "        } " +
+               "      } " +
+               "    } catch { } " +
+               "  } " +
+               "  `$stderrOutput = `$process.StandardError.ReadToEnd(); " +
+               "  if (`$stderrOutput) { `$stderrOutput | Out-File -FilePath '$logFile' -Encoding utf8 -Append } " +
+               "  `$process.WaitForExit(); " +
+               "  `$exitCode = `$process.ExitCode; " +
                "  Write-Host ''; " +
-               "  Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; " +
-               "  Write-Host '  Branch: $branch' -ForegroundColor Cyan; " +
-               "  Write-Host '  Log: $logFile' -ForegroundColor DarkGray; " +
-               "  Write-Host ''; " +
-               "  Get-Content '$promptFile' -Raw | claude -p --dangerously-skip-permissions; " +
-               "  `$exitCode = `$LASTEXITCODE; " +
-               "  Write-Host ''; " +
+               "  Write-Host ""  Resumen: `$toolCount tool calls, `$msgCount mensajes"" -ForegroundColor Cyan; " +
                "  if (`$exitCode -ne 0) { " +
                "    Write-Host ('  ERROR: claude finalizo con exit code ' + `$exitCode) -ForegroundColor Red; " +
                "    Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
@@ -356,11 +418,11 @@ function Start-UnAgente {
                "    Start-Sleep -Seconds 3; " +
                "  } " +
                "} catch { " +
+               "  `$_ | Out-File -FilePath '$logFile' -Encoding utf8 -Append; " +
                "  Write-Host ('  EXCEPTION: ' + `$_.Exception.Message) -ForegroundColor Red; " +
                "  Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
                "  Start-Sleep -Seconds 30; " +
                "} finally { " +
-               "  Stop-Transcript -ErrorAction SilentlyContinue | Out-Null; " +
                "  exit " +
                "}"
 
