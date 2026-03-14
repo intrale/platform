@@ -305,6 +305,38 @@ function Start-UnAgente {
     $pidsData | Add-Member -NotePropertyName "agente_$($Agente.numero)" -NotePropertyValue $proc.Id -Force
     $pidsData | ConvertTo-Json | Set-Content $pidsFile
 
+    # #1522: Escribir _pid, _launched_at y status=active en sprint-plan.json
+    # Esto confirma que el agente realmente se lanzó (reconciliación atómica)
+    try {
+        $freshPlan = Get-Content $PlanFile -Raw | ConvertFrom-Json
+        $targetAgent = $freshPlan.agentes | Where-Object { $_.issue -eq $issue }
+        if ($targetAgent) {
+            # Actualizar campos de liveness
+            if ($targetAgent.PSObject.Properties.Match('status').Count) {
+                $targetAgent.status = 'active'
+            } else {
+                $targetAgent | Add-Member -NotePropertyName 'status' -NotePropertyValue 'active' -Force
+            }
+            if ($targetAgent.PSObject.Properties.Match('_pid').Count) {
+                $targetAgent._pid = $proc.Id
+            } else {
+                $targetAgent | Add-Member -NotePropertyName '_pid' -NotePropertyValue $proc.Id -Force
+            }
+            $launchedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            if ($targetAgent.PSObject.Properties.Match('_launched_at').Count) {
+                $targetAgent._launched_at = $launchedAt
+            } else {
+                $targetAgent | Add-Member -NotePropertyName '_launched_at' -NotePropertyValue $launchedAt -Force
+            }
+            $freshPlan | ConvertTo-Json -Depth 10 | Set-Content $PlanFile
+            Write-Host ">> sprint-plan.json actualizado: status=active, _pid=$($proc.Id)" -ForegroundColor Green
+        } else {
+            Write-Host ">> WARN: Agente issue #$issue no encontrado en sprint-plan.json para actualizar _pid" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host ">> WARN: No se pudo actualizar sprint-plan.json con _pid: $_" -ForegroundColor Yellow
+    }
+
     Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal (PID $($proc.Id))" -ForegroundColor Green
 }
 

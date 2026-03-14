@@ -826,6 +826,11 @@ async function processInput() {
                 const maxNumero = (plan.agentes || []).reduce((m, ag) => Math.max(m, ag.numero || 0), 0);
                 nextAgente.numero = maxNumero + 1;
                 if (!nextAgente.prompt) nextAgente.prompt = generateDefaultPrompt(nextAgente.issue, nextAgente.slug);
+                // #1522: marcar como promoted (no active) hasta que Start-Agente.ps1 confirme
+                nextAgente.status = "promoted";
+                nextAgente._promoted_at = new Date().toISOString();
+                nextAgente._pid = null;
+                nextAgente._retry_count = 0;
                 plan.agentes = (plan.agentes || []).concat([nextAgente]);
                 setQueue(plan, newQueue);
                 callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al promover
@@ -998,13 +1003,19 @@ async function processInput() {
                 nextAgente.prompt = generateDefaultPrompt(nextAgente.issue, nextAgente.slug);
             }
 
+            // #1522: marcar como promoted (no active) hasta que Start-Agente.ps1 confirme
+            nextAgente.status = "promoted";
+            nextAgente._promoted_at = new Date().toISOString();
+            nextAgente._pid = null;
+            nextAgente._retry_count = 0;
+
             // Mover de cola a agentes
             plan.agentes.push(nextAgente);
             setQueue(plan, newQueue);
             callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al promover de cola
 
             savePlan(plan);
-            log("Movido issue #" + nextAgente.issue + " de cola a agentes (número " + nextAgente.numero + ")");
+            log("Movido issue #" + nextAgente.issue + " de cola a agentes (número " + nextAgente.numero + ", status=promoted)");
 
             // Actualizar Project V2: issue promovido → In Progress
             await updateProjectV2(nextAgente.issue, "In Progress");
