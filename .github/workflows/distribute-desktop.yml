@@ -1,0 +1,206 @@
+name: Distribución Desktop — GitHub Releases (MSI + Deb)
+
+# Distribuye la app Desktop/JVM a GitHub Releases para testers F&F.
+#
+# PRERREQUISITOS (ver docs/desktop-testers-guide.md):
+#   - Repositorio con permisos de escritura para GitHub Actions (contents: write)
+#   - Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+#   - No requiere setup adicional — usa el GITHUB_TOKEN nativo
+#
+# FLUJO:
+#   - push a main O workflow_dispatch manual → builds paralelos MSI (Windows) + Deb (Linux)
+#   - se crea/actualiza un GitHub Release con los instaladores como assets
+#   - release marcado como prerelease: true (F&F, no producción)
+#   - notificación Telegram con link directo al release
+#
+# PLATAFORMAS:
+#   - Windows: MSI generado con packageMsi (windows-latest runner)
+#   - Linux:   Deb generado con packageDeb (ubuntu-latest runner)
+#   - macOS:   Dmg requiere runner macOS (no incluido — agregar si se tiene runner)
+#
+# REFERENCIA: docs/distribution-strategy.md secciones 2.3, 6 (checklist Desktop)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Notas de release (visibles en GitHub Releases)'
+        required: false
+        default: 'Build automático Friends & Family'
+
+jobs:
+  build-msi:
+    name: Build MSI (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build MSI
+        run: |
+          ./gradlew :app:composeApp:packageMsi `
+            -x compileTestKotlinIosX64 `
+            -x compileTestKotlinIosSimulatorArm64 `
+            -x compileProductionExecutableKotlinWasmJs `
+            -x wasmJsBrowserProductionWebpack
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-msi
+          path: app/composeApp/build/compose/binaries/main/msi/*.msi
+          retention-days: 1
+
+  build-deb:
+    name: Build Deb (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build Deb
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:composeApp:packageDeb \
+            -x compileTestKotlinIosX64 \
+            -x compileTestKotlinIosSimulatorArm64 \
+            -x compileProductionExecutableKotlinWasmJs \
+            -x wasmJsBrowserProductionWebpack
+
+      - name: Upload Deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-deb
+          path: app/composeApp/build/compose/binaries/main/deb/*.deb
+          retention-days: 1
+
+  create-release:
+    name: Crear GitHub Release
+    needs: [ build-msi, build-deb ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_url: ${{ steps.release.outputs.url }}
+    steps:
+      - name: Descargar MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-msi
+          path: dist/
+
+      - name: Descargar Deb
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-deb
+          path: dist/
+
+      - name: Crear GitHub Release y subir assets
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-ff-${{ github.run_number }}
+          name: "Desktop F&F Build #${{ github.run_number }}"
+          body: |
+            ## Intrale Desktop — Build #${{ github.run_number }}
+
+            ${{ github.event.inputs.release_notes || github.event.head_commit.message }}
+
+            ### Instaladores disponibles
+
+            | Plataforma | Archivo | Instrucciones |
+            |------------|---------|---------------|
+            | Windows    | `.msi`  | Doble click → instalar → buscar "ar.com.intrale" en el menú inicio |
+            | Linux      | `.deb`  | `sudo dpkg -i *.deb` → ejecutar `ar.com.intrale` |
+
+            ### Notas
+            - Build de prueba para testers Friends & Family
+            - No incluye auto-actualización — descargar esta página manualmente en cada nueva versión
+            - Reportar problemas en los issues del repositorio
+
+            ---
+            *Commit: `${{ github.sha }}`*
+          files: dist/*
+          prerelease: true
+          generate_release_notes: false
+
+  notify:
+    name: Notificar resultado
+    needs: [ build-msi, build-deb, create-release ]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Determinar estatus
+        id: status
+        run: |
+          if [ "${{ needs.create-release.result }}" = "success" ]; then
+            echo "icon=✅" >> $GITHUB_OUTPUT
+            echo "text=exitosa" >> $GITHUB_OUTPUT
+          elif [ "${{ needs.build-msi.result }}" = "failure" ] || [ "${{ needs.build-deb.result }}" = "failure" ]; then
+            echo "icon=❌" >> $GITHUB_OUTPUT
+            echo "text=fallida (error en build)" >> $GITHUB_OUTPUT
+          else
+            echo "icon=❌" >> $GITHUB_OUTPUT
+            echo "text=fallida" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notificar por Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/desktop-ff-${{ github.run_number }}"
+
+          MESSAGE="${{ steps.status.outputs.icon }} Desktop F&F — Build #${{ github.run_number }} ${{ steps.status.outputs.text }}
+
+          🖥️ Windows: instalador MSI disponible
+          🐧 Linux: paquete Deb disponible
+
+          📥 Descargar: ${RELEASE_URL}
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MESSAGE}"
