@@ -165,7 +165,7 @@ async function runCheck() {
 
         if (autoRepairInconsistencias.length > 0) {
             try {
-                const { runAutoRepair } = require("./auto-repair-sprint");
+                const { runAutoRepair } = require("./sprint-manager");
                 repairResult = await runAutoRepair(
                     { inconsistencias: autoRepairInconsistencias },
                     { dryRun: false, onlyTypes: AUTO_REPAIR_TYPES }

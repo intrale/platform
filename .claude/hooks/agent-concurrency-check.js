@@ -24,7 +24,7 @@ let _sprintSyncAcc = null;
 function getSprintSyncAcc() {
     if (_sprintSyncAcc !== null) return _sprintSyncAcc;
     try {
-        _sprintSyncAcc = require("./sprint-sync");
+        _sprintSyncAcc = require("./sprint-manager");
     } catch (e) {
         _sprintSyncAcc = { syncRoadmapOnly: () => {} };
     }

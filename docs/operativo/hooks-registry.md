@@ -44,7 +44,7 @@
 ### agent-concurrency-check.js ⭐⭐⭐ CRÍTICO
 - **Propósito:** Promocionar siguiente agente de _queue[] si hay capacidad
 - **Scripts invocados:**
-  - sprint-sync.js (sincronizar roadmap con GitHub)
+  - sprint-manager.js (sincronizar roadmap con GitHub)
   - Start-Agente.ps1 (lanzar siguiente agente si hay)
   - notify-telegram.js (notificar promoción)
 - **Estado que toca:**
@@ -66,7 +66,7 @@
 - **Propósito:** Auditar salud del sprint (Project V2 sincronizado, issues correctas)
 - **Scripts invocados:**
   - health-check-sprint.js (ejecutar auditoría)
-  - scrum-auto-corrections.js (auto-reparar inconsistencias menores)
+  - scrum-validator.js (auto-reparar inconsistencias menores)
   - notify-telegram.js (alerta si hay problemas)
 - **Estado que toca:**
   - `scripts/sprint-plan.json` — lectura/escritura de estado
@@ -304,7 +304,7 @@
 
 ```
 agent-concurrency-check.js
-  ├─→ sprint-sync.js (sincronizar roadmap)
+  ├─→ sprint-manager.js (sincronizar roadmap)
   ├─→ Start-Agente.ps1 (lanzar siguiente)
   └─→ notify-telegram.js (notificar)
 
@@ -315,7 +315,7 @@ post-git-push.js
 
 scrum-monitor-bg.js
   ├─→ health-check-sprint.js (ejecutar auditoría)
-  ├─→ scrum-auto-corrections.js (auto-reparar)
+  ├─→ scrum-validator.js (auto-reparar)
   └─→ notify-telegram.js (alerta crítica)
 
 ci-monitor-bg.js

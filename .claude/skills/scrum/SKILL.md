@@ -190,7 +190,7 @@ Ejecutar Paso 0 completo, luego:
 Ejecutar el script de corrección automática integrado en el audit:
 
 ```bash
-node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-auto-corrections.js --auto --report 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-validator.js corrections --auto --report 2>/dev/null
 ```
 
 Flags disponibles:
@@ -222,7 +222,7 @@ _Detección automática: [ISO timestamp]_
 
 El script está disponible también como módulo Node.js (`require`):
 ```javascript
-const { runAutoCorrections, formatAuditSection } = require('./scrum-auto-corrections');
+const { runAutoCorrections, formatAuditSection } = require('./scrum-validator');
 const result = await runAutoCorrections({ dryRun: false, generateReport: true });
 ```
 
@@ -445,16 +445,16 @@ Criterios de salud:
 
 ### Sincronización de roadmap.json (al finalizar auditoría)
 
-Después de generar el reporte de auditoría, ejecutar sprint-sync.js para sincronizar `scripts/roadmap.json`:
+Después de generar el reporte de auditoría, ejecutar sprint-manager.js para sincronizar `scripts/roadmap.json`:
 
 ```bash
-node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js sync --force 2>/dev/null
 ```
 
 Reportar en el resumen:
 - Si hubo cambios → `✅ roadmap.json actualizado (N cambios)`
 - Si no hubo cambios → `✅ roadmap.json ya sincronizado`
-- Si falló → `⚠️ sprint-sync.js falló (no afecta la auditoría)`
+- Si falló → `⚠️ sprint-manager.js falló (no afecta la auditoría)`
 
 ---
 
@@ -531,16 +531,16 @@ Luego setear el status apropiado según el estado del issue.
 
 ### Sincronización de roadmap.json (al finalizar)
 
-Después de aplicar todas las correcciones al board, ejecutar sprint-sync.js para actualizar `scripts/roadmap.json`:
+Después de aplicar todas las correcciones al board, ejecutar sprint-manager.js para actualizar `scripts/roadmap.json`:
 
 ```bash
-node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js sync --force 2>/dev/null
 ```
 
 Reportar el resultado:
 - Si hubo cambios en roadmap.json → `✅ roadmap.json actualizado`
 - Si no hubo cambios → `✅ roadmap.json ya sincronizado`
-- Si falló → `⚠️ sprint-sync.js falló (no bloquea el resultado del sync)`
+- Si falló → `⚠️ sprint-manager.js falló (no bloquea el resultado del sync)`
 
 ---
 
@@ -666,7 +666,7 @@ Mostrar las inconsistencias encontradas con severidad y acción propuesta:
 
 **Con `--auto`**: ejecutar sin confirmación
 ```bash
-node /c/Workspaces/Intrale/platform/.claude/hooks/auto-repair-sprint.js --auto 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js repair --auto 2>/dev/null
 ```
 
 **Con `--confirm`** o sin argumentos: mostrar diagnóstico y solicitar confirmación al usuario antes de ejecutar.
@@ -724,7 +724,7 @@ Extraer: `sprint_id`, lista de issues, fechas del sprint.
 
 ```bash
 node /c/Workspaces/Intrale/platform/.claude/hooks/health-check-sprint.js 2>/dev/null
-node /c/Workspaces/Intrale/platform/.claude/hooks/auto-repair-sprint.js --auto 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js repair --auto 2>/dev/null
 ```
 
 ### Paso C2b: Backup de roadmap.json ANTES de cualquier modificación
@@ -892,7 +892,7 @@ Archivar las métricas de sesiones del sprint en `.claude/hooks/metrics-archive/
 cat > /tmp/archive-sprint-metrics.js << 'EOF'
 const path = require('path');
 const REPO_ROOT = '/c/Workspaces/Intrale/platform';
-const sprintSync = require(path.join(REPO_ROOT, '.claude', 'hooks', 'sprint-sync.js'));
+const sprintSync = require(path.join(REPO_ROOT, '.claude', 'hooks', 'sprint-manager.js'));
 const fs = require('fs');
 const plan = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'sprint-plan.json'), 'utf8'));
 const result = sprintSync.archiveSprintMetrics(plan);
@@ -1055,7 +1055,7 @@ Audita el backlog del Project V2 buscando:
 ### Paso CON1: Ejecutar script de auditoría
 
 ```bash
-node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-consistency-check.js --report --alert 2>/dev/null
+node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-validator.js consistency --report --alert 2>/dev/null
 ```
 
 Flags disponibles:

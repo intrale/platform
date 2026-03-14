@@ -19,7 +19,7 @@ let _sprintSyncPic = null;
 function getSprintSyncPic() {
     if (_sprintSyncPic !== null) return _sprintSyncPic;
     try {
-        _sprintSyncPic = require("./sprint-sync");
+        _sprintSyncPic = require("./sprint-manager");
     } catch (e) {
         _sprintSyncPic = null;
     }

@@ -205,7 +205,7 @@ describe("P-24: auto-repair-sprint.js — existencia y lógica de reparación", 
 
     it("dry-run en runAutoRepair devuelve { ok: true, ok_count: N } con status dry_run", async () => {
         // Test de integración local: crear un diagnóstico mock y correr dry-run
-        const { runAutoRepair } = require(path.join(HOOKS_DIR, "auto-repair-sprint.js"));
+        const { runAutoRepair } = require(path.join(HOOKS_DIR, "sprint-manager.js"));
 
         const fakeDiagnosis = {
             inconsistencias: [

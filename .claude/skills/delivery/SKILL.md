@@ -396,7 +396,7 @@ gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
 
      ```bash
      # Sincronizar roadmap.json con el estado actual del sprint (best-effort)
-     node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-sync.js --force 2>/dev/null
+     node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js sync --force 2>/dev/null
      ```
 
    - **Merge falla** (conflictos, checks requeridos, etc.):
