@@ -31,6 +31,65 @@ const PROJECT_DIR = process.argv[4] || process.env.CLAUDE_PROJECT_DIR || "C:\\Wo
 // Arg 5 opcional: session file path para actualizar waiting_state
 const SESSION_FILE = process.argv[5] || null;
 
+// Patrones de error conocidos y sus sugerencias de fix
+const ERROR_PATTERNS = [
+    {
+        pattern: /e:\s.+\.kt:\d+:\d+[\s\S]{0,200}?unresolved reference[:\s]+(\w+)/i,
+        category: "Referencia no resuelta",
+        suggest: (m) => `Agregar import o definición de \`${m[1]}\``
+    },
+    {
+        pattern: /e:\s.+\.kt:\d+:\d+[\s\S]{0,200}?type mismatch[:\s]+found[:\s]+(.+?)\s+required[:\s]+(.+?)(?:\n|$)/i,
+        category: "Type mismatch",
+        suggest: (m) => `Verificar conversión entre \`${m[1].trim()}\` y \`${m[2].trim()}\``
+    },
+    {
+        pattern: /e:\s.+\.kt:\d+:\d+.+overload resolution ambiguity/i,
+        category: "Ambigüedad de overload",
+        suggest: () => "Especificar tipos explícitamente para resolver la ambigüedad"
+    },
+    {
+        pattern: /task ':(.+?)' execution failed/i,
+        category: "Task Gradle fallida",
+        suggest: (m) => `Revisar la tarea Gradle \`${m[1]}\` en detalle`
+    },
+    {
+        pattern: /compilation error|compil[ea]tion failed/i,
+        category: "Error de compilación",
+        suggest: () => "Revisar errores de compilación Kotlin en el log completo"
+    },
+    {
+        pattern: /test[s]? failed|(\d+) test[s]? failed/i,
+        category: "Tests fallidos",
+        suggest: (m) => m[1] ? `${m[1]} test(s) fallaron — ejecutar \`./gradlew check\` localmente` : "Tests fallaron — ejecutar `./gradlew check` localmente"
+    },
+    {
+        pattern: /out of memory|java\.lang\.outofmemoryerror/i,
+        category: "Out of Memory",
+        suggest: () => "Aumentar heap de Gradle en `gradle.properties`: `org.gradle.jvmargs=-Xmx4g`"
+    },
+    {
+        pattern: /permission denied|access is denied/i,
+        category: "Permiso denegado",
+        suggest: () => "Verificar permisos de archivos o secretos de CI"
+    },
+    {
+        pattern: /dependency resolution failed|could not resolve/i,
+        category: "Dependencia no resuelta",
+        suggest: () => "Verificar versiones en `libs.versions.toml` y conectividad a Maven Central"
+    },
+    {
+        pattern: /forbidden strings|verifynolegacystrings/i,
+        category: "Strings prohibidos",
+        suggest: () => "Usar `resString(...)` en lugar de `stringResource(...)` o `Res.string.*`"
+    },
+    {
+        pattern: /lint.*error|android lint/i,
+        category: "Android Lint",
+        suggest: () => "Ejecutar `./gradlew lint` localmente y corregir errores reportados"
+    }
+];
+
 const LOG_FILE = path.join(PROJECT_DIR, ".claude", "hooks", "hook-debug.log");
 const MAX_POLLS = 40;            // ~20 minutos maximo
 const GH_REPO = "intrale/platform";
@@ -80,6 +139,241 @@ function ghApiGet(apiPath, token) {
         req.on("error", (e) => reject(e));
         req.end();
     });
+}
+
+// GET con seguimiento de redirect (para logs de GitHub Actions que devuelven 302)
+function ghApiGetText(url, token, maxRedirects) {
+    maxRedirects = maxRedirects === undefined ? 3 : maxRedirects;
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(url);
+        const options = {
+            hostname: parsedUrl.hostname,
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: "GET",
+            headers: {
+                "Authorization": "token " + token,
+                "User-Agent": "intrale-ci-monitor",
+                "Accept": "application/vnd.github+json"
+            },
+            timeout: 15000
+        };
+        const req = https.request(options, (res) => {
+            if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {
+                if (maxRedirects <= 0) return reject(new Error("Demasiados redirects"));
+                // Seguir redirect sin Authorization header (S3 pre-signed URLs no lo admiten)
+                const redirectUrl = res.headers.location;
+                res.resume();
+                ghApiGetTextRaw(redirectUrl, maxRedirects - 1).then(resolve).catch(reject);
+                return;
+            }
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => resolve(d));
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout logs")); });
+        req.on("error", (e) => reject(e));
+        req.end();
+    });
+}
+
+// GET raw (sin Authorization) para seguir redirects S3
+function ghApiGetTextRaw(url, maxRedirects) {
+    maxRedirects = maxRedirects === undefined ? 2 : maxRedirects;
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(url);
+        const options = {
+            hostname: parsedUrl.hostname,
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: "GET",
+            headers: { "User-Agent": "intrale-ci-monitor" },
+            timeout: 20000
+        };
+        const req = https.request(options, (res) => {
+            if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {
+                if (maxRedirects <= 0) return reject(new Error("Demasiados redirects raw"));
+                res.resume();
+                ghApiGetTextRaw(res.headers.location, maxRedirects - 1).then(resolve).catch(reject);
+                return;
+            }
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => resolve(d));
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout raw")); });
+        req.on("error", (e) => reject(e));
+        req.end();
+    });
+}
+
+// POST a la API de GitHub (para comentarios en PRs)
+function ghApiPost(apiPath, token, body) {
+    return new Promise((resolve, reject) => {
+        const postData = JSON.stringify(body);
+        const req = https.request({
+            hostname: "api.github.com",
+            path: apiPath,
+            method: "POST",
+            headers: {
+                "Authorization": "token " + token,
+                "User-Agent": "intrale-ci-monitor",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(postData)
+            },
+            timeout: 10000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try { resolve(JSON.parse(d)); } catch(e) { resolve({}); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout post")); });
+        req.on("error", (e) => reject(e));
+        req.write(postData);
+        req.end();
+    });
+}
+
+// Encuentra el PR abierto asociado a la rama
+async function findPRForBranch(branch, token) {
+    try {
+        const data = await ghApiGet(
+            "/repos/" + GH_REPO + "/pulls?head=intrale:" + encodeURIComponent(branch) + "&state=open&per_page=5",
+            token
+        );
+        if (Array.isArray(data) && data.length > 0) {
+            return data[0].number;
+        }
+    } catch (e) {
+        log("Error buscando PR para " + branch + ": " + e.message);
+    }
+    return null;
+}
+
+// Descarga los logs de los jobs fallidos de un run
+async function downloadFailedJobLogs(runId, token) {
+    try {
+        const jobsData = await ghApiGet(
+            "/repos/" + GH_REPO + "/actions/runs/" + runId + "/jobs?per_page=20",
+            token
+        );
+        const jobs = jobsData.jobs || [];
+        const failedJobs = jobs.filter(j => j.conclusion === "failure" || j.conclusion === "cancelled");
+        if (failedJobs.length === 0) {
+            // Si no hay jobs específicamente fallidos, tomar todos
+            const allFailed = jobs.filter(j => j.conclusion !== "success" && j.conclusion !== "skipped");
+            if (allFailed.length === 0) return { logs: "", jobName: "CI" };
+            failedJobs.push(...allFailed.slice(0, 2));
+        }
+
+        let combinedLog = "";
+        for (const job of failedJobs.slice(0, 2)) {
+            try {
+                const logUrl = "https://api.github.com/repos/" + GH_REPO + "/actions/jobs/" + job.id + "/logs";
+                const logText = await ghApiGetText(logUrl, token);
+                combinedLog += "\n--- Job: " + job.name + " ---\n" + logText;
+            } catch (e) {
+                log("Error descargando log del job " + job.id + ": " + e.message);
+            }
+        }
+        return { logs: combinedLog, jobName: failedJobs[0].name || "CI" };
+    } catch (e) {
+        log("Error descargando logs: " + e.message);
+        return { logs: "", jobName: "CI" };
+    }
+}
+
+// Analiza el log y extrae errores relevantes con sugerencias de fix
+function analyzeLog(logText) {
+    if (!logText || logText.length === 0) {
+        return { errors: [], diagnosis: "No se pudo descargar el log del CI.", suggestions: [] };
+    }
+
+    // Truncar a las últimas 8000 chars (donde suelen estar los errores)
+    const logTail = logText.length > 8000 ? logText.slice(-8000) : logText;
+
+    const errors = [];
+    const suggestions = [];
+    const matched = new Set();
+
+    for (const ep of ERROR_PATTERNS) {
+        const match = logTail.match(ep.pattern);
+        if (match && !matched.has(ep.category)) {
+            matched.add(ep.category);
+            errors.push(ep.category);
+            suggestions.push(ep.suggest(match));
+        }
+    }
+
+    // Extraer líneas de error Kotlin específicas (e: path.kt:line:col: mensaje)
+    const kotlinErrors = [];
+    const ktErrorPattern = /^(?:.*?)(e: .+\.kt:\d+:\d+.+)$/gm;
+    let m;
+    while ((m = ktErrorPattern.exec(logTail)) !== null && kotlinErrors.length < 5) {
+        const line = m[1].trim();
+        if (!kotlinErrors.includes(line)) kotlinErrors.push(line);
+    }
+
+    // Extraer líneas FAILED de Gradle
+    const gradleErrors = [];
+    const gradlePattern = /^(?:.*?)(FAILED|> Task .+ FAILED|BUILD FAILED.*)$/gm;
+    while ((m = gradlePattern.exec(logTail)) !== null && gradleErrors.length < 3) {
+        const line = m[1].trim();
+        if (!gradleErrors.includes(line)) gradleErrors.push(line);
+    }
+
+    return {
+        errors,
+        kotlinErrors,
+        gradleErrors,
+        suggestions,
+        diagnosis: errors.length > 0 ? errors.join(", ") : "Fallo sin patrón conocido"
+    };
+}
+
+// Postea un comentario en el PR con el diagnóstico
+async function postPRComment(prNumber, runId, runUrl, analysis) {
+    const token = getGitHubToken();
+    if (!token || !prNumber) return;
+
+    const { errors, kotlinErrors, gradleErrors, suggestions, diagnosis } = analysis;
+
+    let body = "## 🤖 Auto-builder: Diagnóstico de CI Failure\n\n";
+    body += "**Diagnóstico:** " + diagnosis + "\n\n";
+
+    if (gradleErrors.length > 0) {
+        body += "### ❌ Errores Gradle\n```\n" + gradleErrors.join("\n") + "\n```\n\n";
+    }
+
+    if (kotlinErrors.length > 0) {
+        body += "### 🔴 Errores Kotlin\n```\n" + kotlinErrors.join("\n") + "\n```\n\n";
+    }
+
+    if (suggestions.length > 0) {
+        body += "### 💡 Sugerencias de Fix\n";
+        for (const s of suggestions) {
+            body += "- " + s + "\n";
+        }
+        body += "\n";
+    }
+
+    body += "### 📋 Próximos pasos\n";
+    body += "1. Revisar el [log completo en GitHub Actions](" + runUrl + ")\n";
+    body += "2. Corregir los errores indicados y hacer push\n";
+    body += "3. CI se re-ejecutará automáticamente\n\n";
+    body += "_Generado automáticamente por `ci-monitor-bg.js` · Run ID: " + runId + "_";
+
+    try {
+        await ghApiPost(
+            "/repos/" + GH_REPO + "/issues/" + prNumber + "/comments",
+            token,
+            { body }
+        );
+        log("Comentario de diagnóstico posteado en PR #" + prNumber);
+    } catch (e) {
+        log("Error posteando comentario en PR #" + prNumber + ": " + e.message);
+    }
 }
 
 // P-09: Envío via telegram-client.js con fallback inline
@@ -245,20 +539,57 @@ async function main() {
                 });
 
                 log("CI completado: " + conclusion + " — notificando");
-                // P-15: Registrar CI fallido en ops-learnings
-                if (conclusion !== "success" && opsLearnings) {
+
+                // Auto-builder: analizar y comentar en PR cuando CI falla (#1517)
+                if (conclusion !== "success") {
                     try {
-                        opsLearnings.recordLearning({
-                            source: "ci-monitor",
-                            category: "ci_failure",
-                            severity: "high",
-                            symptom: "CI fallido: " + conclusion + " en " + BRANCH,
-                            root_cause: "Workflow conclusion: " + conclusion,
-                            affected: ["ci-monitor-bg.js"],
-                            auto_detected: true
-                        });
-                    } catch (e) {}
+                        log("Auto-builder: descargando logs de CI fallido...");
+                        const { logs, jobName } = await downloadFailedJobLogs(runId, token);
+                        const analysis = analyzeLog(logs);
+                        log("Auto-builder: diagnóstico: " + analysis.diagnosis);
+
+                        const prNumber = await findPRForBranch(BRANCH, token);
+                        if (prNumber) {
+                            log("Auto-builder: PR #" + prNumber + " encontrado — posteando diagnóstico");
+                            await postPRComment(prNumber, runId, runUrl, analysis);
+
+                            // Agregar diagnóstico al mensaje de Telegram
+                            if (analysis.errors.length > 0) {
+                                msg += "\n\n<b>Diagnóstico:</b> " + analysis.errors.join(", ");
+                            }
+                            if (analysis.suggestions.length > 0) {
+                                msg += "\n<b>Sugerencia:</b> " + analysis.suggestions[0];
+                            }
+                            msg += "\n<i>Diagnóstico completo en PR #" + prNumber + "</i>";
+                        } else {
+                            log("Auto-builder: no se encontró PR abierto para " + BRANCH);
+                            if (analysis.errors.length > 0) {
+                                msg += "\n\n<b>Diagnóstico:</b> " + analysis.errors.join(", ");
+                            }
+                            if (analysis.suggestions.length > 0) {
+                                msg += "\n<b>Sugerencia:</b> " + analysis.suggestions[0];
+                            }
+                        }
+                    } catch (e) {
+                        log("Auto-builder: error en análisis: " + e.message);
+                    }
+
+                    // P-15: Registrar CI fallido en ops-learnings
+                    if (opsLearnings) {
+                        try {
+                            opsLearnings.recordLearning({
+                                source: "ci-monitor",
+                                category: "ci_failure",
+                                severity: "high",
+                                symptom: "CI fallido: " + conclusion + " en " + BRANCH,
+                                root_cause: "Workflow conclusion: " + conclusion,
+                                affected: ["ci-monitor-bg.js"],
+                                auto_detected: true
+                            });
+                        } catch (e) {}
+                    }
                 }
+
                 await sendTelegram(msg);
                 process.exit(0);
             }
