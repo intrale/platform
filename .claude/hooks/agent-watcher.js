@@ -51,6 +51,7 @@ const POLL_INTERVAL_MS = parseInt(process.env.WATCHER_POLL_INTERVAL || "60000", 
 const LOCK_TIMEOUT_MS = 8000;
 const LOCK_RETRY_MS = 300;
 const DEFAULT_CONCURRENCY_LIMIT = 3;
+const MAX_RETRIES = 3; // Límite de reintentos para agentes que nunca trabajaron (#1498)
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -619,18 +620,38 @@ async function runCycle() {
                 const neverWorked = !hasWorktree && runtimeMin < 2;
 
                 if (neverWorked) {
-                    // Agente que nunca trabajó → devolver a _queue
-                    const queue = getQueue(freshPlan);
-                    delete ag.status;
-                    delete ag.waiting_since;
-                    delete ag.waiting_reason;
-                    queue.push(ag);
-                    setQueue(freshPlan, queue);
-                    log("Agente #" + ag.issue + " → devuelto a _queue (nunca trabajó: sin worktree, " + runtimeMin + " min)");
-                    await notify(
-                        "🔄 <b>Agente #" + ag.issue + " devuelto a cola (watcher)</b>\n" +
-                        "Sin worktree ni sesión real · Será relanzado cuando haya slot"
-                    );
+                    // Agente que nunca trabajó → verificar límite de reintentos (#1498)
+                    const retryCount = (ag._retry_count || 0) + 1;
+
+                    if (retryCount >= MAX_RETRIES) {
+                        // Excedió reintentos → _incomplete definitivo
+                        entry.detectado_por = "agent-watcher";
+                        entry.motivo = "Excedió " + MAX_RETRIES + " reintentos desde watcher (nunca trabajó)";
+                        entry._retry_count = retryCount;
+                        freshPlan._incomplete.push(entry);
+                        log("Agente #" + ag.issue + " → _incomplete DEFINITIVO: excedió " + MAX_RETRIES + " reintentos (nunca trabajó)");
+                        await notify(
+                            "🚫 <b>Agente #" + ag.issue + " descartado (watcher)</b>\n" +
+                            "Excedió " + MAX_RETRIES + " reintentos sin trabajar.\n" +
+                            "Slug: " + escHtml(ag.slug) + "\n" +
+                            "<i>Acción: revisar issue manualmente y relanzar si es necesario</i>"
+                        );
+                    } else {
+                        // Aún tiene reintentos → devolver a _queue con contador
+                        const queue = getQueue(freshPlan);
+                        delete ag.status;
+                        delete ag.waiting_since;
+                        delete ag.waiting_reason;
+                        ag._retry_count = retryCount;
+                        queue.push(ag);
+                        setQueue(freshPlan, queue);
+                        log("Agente #" + ag.issue + " → devuelto a _queue (reintento " + retryCount + "/" + MAX_RETRIES + ", sin worktree, " + runtimeMin + " min)");
+                        await notify(
+                            "🔄 <b>Agente #" + ag.issue + " devuelto a cola (watcher)</b>\n" +
+                            "Reintento " + retryCount + "/" + MAX_RETRIES + " · Sin worktree ni sesión real\n" +
+                            "<i>Será relanzado cuando haya slot</i>"
+                        );
+                    }
                 } else {
                     const motivo = prStatus.status === "unknown"
                         ? "No se pudo verificar PR (gh CLI falló)"
