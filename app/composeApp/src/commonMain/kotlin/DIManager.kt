@@ -78,6 +78,8 @@ import asdo.business.ToDoUpdateCategory
 import asdo.business.ToDoUpdateProduct
 import asdo.business.ToGetBusinesses
 import asdo.business.ToGetBusinessDashboardSummary
+import asdo.business.ToGetBusinessOrders
+import asdo.business.DoGetBusinessOrders
 import asdo.business.ToGetProduct
 import asdo.business.ToGetBusinessProducts
 import asdo.signup.DoRegisterSaler
@@ -117,6 +119,8 @@ import ext.delivery.DeliveryOrdersService
 import ext.delivery.DeliveryStateService
 import ext.business.ClientFontsService
 import ext.business.CommFontsService
+import ext.business.ClientGetBusinessOrdersService
+import ext.business.CommGetBusinessOrdersService
 import ext.business.ClientGetBusinessDashboardSummaryService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientCategoryService
@@ -174,6 +178,7 @@ import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.BusinessOnboardingScreen
+import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.DashboardScreen
 import ui.sc.business.PersonalizationScreen
 import ui.sc.business.TypographyScreen
@@ -245,6 +250,7 @@ public const val REGISTER_NEW_BUSINESS = "registerNewBusiness"
 public const val REQUEST_JOIN_BUSINESS = "requestJoinBusiness"
 public const val REVIEW_JOIN_BUSINESS = "reviewJoinBusiness"
 public const val PERSONALIZATION = "personalization"
+public const val BUSINESS_ORDERS = "businessOrders"
 public const val BUSINESS_PRODUCTS = "businessProducts"
 public const val BUSINESS_PRODUCT_FORM = "businessProductForm"
 public const val BUSINESS_CATEGORIES = "businessCategories"
@@ -322,6 +328,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommRequestJoinBusinessService> { ClientRequestJoinBusinessService(instance()) }
     bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
     bindSingleton<CommGetBusinessDashboardSummaryService> { ClientGetBusinessDashboardSummaryService(instance(), instance()) }
+    bindSingleton<CommGetBusinessOrdersService> { ClientGetBusinessOrdersService(instance(), instance()) }
     bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
     bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
     bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
@@ -329,6 +336,7 @@ private val businessModule = DI.Module("business") {
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
+    bindSingleton<ToGetBusinessOrders> { DoGetBusinessOrders(instance()) }
     bindSingleton<ToDoListProducts> { DoListProducts(instance()) }
     bindSingleton<ToDoListCategories> { DoListCategories(instance()) }
     bindSingleton<ToDoCreateProduct> { DoCreateProduct(instance()) }
@@ -412,6 +420,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = REQUEST_JOIN_BUSINESS) { RequestJoinBusinessScreen() }
     bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
     bindSingleton(tag = PERSONALIZATION) { PersonalizationScreen() }
+    bindSingleton(tag = BUSINESS_ORDERS) { BusinessOrdersScreen() }
     bindSingleton(tag = BUSINESS_PRODUCTS) { ProductListScreen() }
     bindSingleton(tag = BUSINESS_PRODUCT_FORM) { ProductFormScreen() }
     bindSingleton(tag = BUSINESS_CATEGORIES) { CategoryListScreen() }
@@ -485,6 +494,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = REVIEW_JOIN_BUSINESS))
                     add(instance(tag = PERSONALIZATION))
                     add(instance(tag = TYPOGRAPHY_FONTS))
+                    add(instance(tag = BUSINESS_ORDERS))
                     add(instance(tag = BUSINESS_PRODUCTS))
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))

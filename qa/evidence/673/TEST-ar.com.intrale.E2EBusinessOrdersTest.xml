@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="ar.com.intrale.E2EBusinessOrdersTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-03-14T16:37:01.283Z" hostname="DESKTOP-TOTQAUE" time="1.133">
+  <properties/>
+  <testcase name="sin autenticación retorna 401" classname="ar.com.intrale.E2EBusinessOrdersTest" time="0.694"/>
+  <testcase name="listar pedidos del negocio con pedidos existentes" classname="ar.com.intrale.E2EBusinessOrdersTest" time="0.282"/>
+  <testcase name="listar pedidos vacíos del negocio" classname="ar.com.intrale.E2EBusinessOrdersTest" time="0.157"/>
+  <system-out><![CDATA[2026-03-14 13:37:01.956 [DefaultDispatcher-worker-4 @call-context#138] INFO  ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
+2026-03-14 13:37:01.958 [DefaultDispatcher-worker-4 @call-context#138] INFO  ktor.test - Application started in 0.004 seconds.
+2026-03-14 13:37:01.960 [DefaultDispatcher-worker-1 @coroutine#140] INFO  ktor.test - Responding at http://localhost:80
+2026-03-14 13:37:01.960 [DefaultDispatcher-worker-1 @coroutine#140] INFO  ktor.test - Responding at https://localhost:443
+2026-03-14 13:37:01.961 [DefaultDispatcher-worker-4 @request#138] INFO  ar.com.intrale.e2e - config.businesses: [pizzeria, intrale]
+2026-03-14 13:37:01.963 [DefaultDispatcher-worker-4 @request#138] INFO  ar.com.intrale.e2e - >>> Registered functions count: 0
+2026-03-14 13:37:01.963 [DefaultDispatcher-worker-4 @request#138] INFO  ar.com.intrale.e2e - Injecting Function business/orders for path business/orders and method GET.
+2026-03-14 13:37:01.970 [DefaultDispatcher-worker-4 @request#138] WARN  ar.com.intrale.e2e - Token invalido: Token faltante
+2026-03-14 13:37:02.240 [DefaultDispatcher-worker-1 @call-context#146] INFO  ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
+2026-03-14 13:37:02.244 [DefaultDispatcher-worker-1 @call-context#146] INFO  ktor.test - Application started in 0.006 seconds.
+2026-03-14 13:37:02.245 [DefaultDispatcher-worker-4 @coroutine#148] INFO  ktor.test - Responding at http://localhost:80
+2026-03-14 13:37:02.246 [DefaultDispatcher-worker-4 @coroutine#148] INFO  ktor.test - Responding at https://localhost:443
+2026-03-14 13:37:02.247 [DefaultDispatcher-worker-1 @request#146] INFO  ar.com.intrale.e2e - config.businesses: [pizzeria, intrale]
+2026-03-14 13:37:02.248 [DefaultDispatcher-worker-1 @request#146] INFO  ar.com.intrale.e2e - >>> Registered functions count: 0
+2026-03-14 13:37:02.248 [DefaultDispatcher-worker-1 @request#146] INFO  ar.com.intrale.e2e - Injecting Function business/orders for path business/orders and method GET.
+2026-03-14 13:37:02.251 [DefaultDispatcher-worker-1 @request#146] INFO  ar.com.intrale.e2e - Listando pedidos del negocio pizzeria
+2026-03-14 13:37:02.379 [DefaultDispatcher-worker-5 @call-context#154] INFO  ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
+2026-03-14 13:37:02.381 [DefaultDispatcher-worker-5 @call-context#154] INFO  ktor.test - Application started in 0.003 seconds.
+2026-03-14 13:37:02.382 [DefaultDispatcher-worker-3 @coroutine#156] INFO  ktor.test - Responding at http://localhost:80
+2026-03-14 13:37:02.383 [DefaultDispatcher-worker-3 @coroutine#156] INFO  ktor.test - Responding at https://localhost:443
+2026-03-14 13:37:02.384 [DefaultDispatcher-worker-5 @request#154] INFO  ar.com.intrale.e2e - config.businesses: [pizzeria, intrale]
+2026-03-14 13:37:02.385 [DefaultDispatcher-worker-5 @request#154] INFO  ar.com.intrale.e2e - >>> Registered functions count: 0
+2026-03-14 13:37:02.386 [DefaultDispatcher-worker-5 @request#154] INFO  ar.com.intrale.e2e - Injecting Function business/orders for path business/orders and method GET.
+2026-03-14 13:37:02.388 [DefaultDispatcher-worker-5 @request#154] INFO  ar.com.intrale.e2e - Listando pedidos del negocio pizzeria
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
