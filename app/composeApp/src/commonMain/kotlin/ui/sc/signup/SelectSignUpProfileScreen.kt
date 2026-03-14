@@ -2,19 +2,29 @@ package ui.sc.signup
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DirectionsBike
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import org.kodein.log.LoggerFactory
@@ -30,6 +40,7 @@ private data class SignUpProfile(
     val description: MessageKey,
     val cta: MessageKey,
     val path: String,
+    val icon: ImageVector,
 )
 
 class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH) {
@@ -50,12 +61,14 @@ class SelectSignUpProfileScreen : Screen(SELECT_SIGNUP_PROFILE_PATH) {
                 description = MessageKey.signup_platform_admin_description,
                 cta = MessageKey.signup_platform_admin,
                 path = SIGNUP_PLATFORM_ADMIN_PATH,
+                icon = Icons.Filled.Storefront,
             ),
             SignUpProfile(
                 title = MessageKey.signup_delivery_title,
                 description = MessageKey.signup_delivery_description,
                 cta = MessageKey.signup_delivery,
                 path = SIGNUP_DELIVERY_PATH,
+                icon = Icons.Filled.DirectionsBike,
             ),
         )
 
@@ -105,10 +118,29 @@ private fun SignUpProfileCard(
                 .padding(MaterialTheme.spacing.x3),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
         ) {
-            Text(
-                text = Txt(profile.title),
-                style = MaterialTheme.typography.titleMedium
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                    tonalElevation = 0.dp
+                ) {
+                    Icon(
+                        imageVector = profile.icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .padding(MaterialTheme.spacing.x1_5)
+                            .size(MaterialTheme.spacing.x3)
+                    )
+                }
+                Text(
+                    text = Txt(profile.title),
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
             Text(
                 text = Txt(profile.description),
                 style = MaterialTheme.typography.bodyMedium,
