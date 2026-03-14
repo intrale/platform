@@ -1,5 +1,5 @@
 // agent-watcher.js — Watcher externo para promoción automática de agentes
-// desde _queue[] cuando agentes en worktrees terminan (#1441)
+// desde _queue[] cuando agentes en worktrees terminan (#1441, #1522)
 //
 // Problema que resuelve:
 //   agent-concurrency-check.js solo se dispara cuando el hook Stop corre en el
@@ -7,11 +7,16 @@
 //   termina, su Stop hook no ve los otros agentes ni puede promover de _queue[].
 //   Este watcher corre independientemente, monitorea todos los agentes y actúa.
 //
+// #1522 — Reconciliación atómica:
+//   Cada ciclo verifica agentes en status="promoted" sin _pid por más de 60s.
+//   Si detecta uno, lo relanza (max 3 reintentos). Si falla, lo mueve a _incomplete.
+//   Esto elimina los "agentes fantasma" que aparecen en el plan pero nunca arrancaron.
+//
 // Ejecución: node agent-watcher.js (proceso background)
 // Lanzado por: Start-Agente.ps1 all
 // Lock file: .claude/hooks/agent-watcher.pid
 // Log: .claude/hooks/agent-watcher.log
-// Configuración: WATCHER_POLL_INTERVAL (ms, default 60000)
+// Configuración: WATCHER_POLL_INTERVAL (ms, default 120000)
 "use strict";
 
 const fs = require("fs");
@@ -47,7 +52,7 @@ const START_SCRIPT = path.join(SCRIPTS_DIR, "Start-Agente.ps1");
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 const WORKTREES_PARENT = path.dirname(REPO_ROOT);
 
-const POLL_INTERVAL_MS = parseInt(process.env.WATCHER_POLL_INTERVAL || "60000", 10);
+const POLL_INTERVAL_MS = parseInt(process.env.WATCHER_POLL_INTERVAL || "120000", 10); // #1522: 2 min para reconciliación
 const LOCK_TIMEOUT_MS = 8000;
 const LOCK_RETRY_MS = 300;
 const DEFAULT_CONCURRENCY_LIMIT = 3;
@@ -672,7 +677,74 @@ async function runCycle() {
             }
         }
 
-        // 4. Contar slots disponibles y promover desde cola
+        // 4. Reconciliation: detectar agentes "promoted" sin _pid por >60s (#1522)
+        const PROMOTED_TIMEOUT_MS = 60 * 1000; // 60 segundos
+        const MAX_RETRY_COUNT = 3;
+        const promotedAgents = (freshPlan.agentes || []).filter(ag => ag.status === "promoted" && !ag._pid);
+
+        for (const ag of promotedAgents) {
+            const promotedAt = ag._promoted_at ? new Date(ag._promoted_at).getTime() : 0;
+            const elapsedMs = Date.now() - promotedAt;
+
+            if (elapsedMs < PROMOTED_TIMEOUT_MS) {
+                log("Agente #" + ag.issue + " promoted hace " + Math.round(elapsedMs / 1000) + "s — esperando (timeout: " + (PROMOTED_TIMEOUT_MS / 1000) + "s)");
+                continue;
+            }
+
+            const retryCount = ag._retry_count || 0;
+
+            if (retryCount >= MAX_RETRY_COUNT) {
+                // Máximo de reintentos alcanzado → mover a _incomplete
+                freshPlan.agentes = (freshPlan.agentes || []).filter(a => a.issue !== ag.issue);
+                const entry = buildCompletedEntry(ag, null, "failed");
+                entry.detectado_por = "agent-watcher-reconciliation";
+                entry.motivo = "Promoted sin lanzamiento exitoso tras " + MAX_RETRY_COUNT + " reintentos";
+                freshPlan._incomplete.push(entry);
+                planDirty = true;
+
+                log("Agente #" + ag.issue + " → _incomplete (promoted sin _pid, " + MAX_RETRY_COUNT + " reintentos agotados)");
+                await notify(
+                    "🔴 <b>Agente #" + ag.issue + " falló al lanzar (reconciliación)</b>\n" +
+                    "Promoted sin terminal real tras " + MAX_RETRY_COUNT + " reintentos.\n" +
+                    "Slug: " + escHtml(ag.slug) + "\n" +
+                    "<i>Movido a _incomplete. Intervención manual requerida.</i>"
+                );
+                continue;
+            }
+
+            // Reintento: relanzar con Start-Agente.ps1
+            ag._retry_count = retryCount + 1;
+            ag._promoted_at = new Date().toISOString(); // reset timer para siguiente intento
+            planDirty = true;
+
+            log("Reconciliación: agente #" + ag.issue + " promoted sin _pid por " + Math.round(elapsedMs / 1000) + "s — reintento " + ag._retry_count + "/" + MAX_RETRY_COUNT);
+            savePlan(freshPlan);
+            planDirty = false;
+
+            const launched = launchAgent(ag);
+            await notify(
+                "🔄 <b>Reconciliación: relanzando agente #" + ag.issue + "</b>\n" +
+                "Promoted sin terminal detectado (" + Math.round(elapsedMs / 1000) + "s).\n" +
+                "Reintento: " + ag._retry_count + "/" + MAX_RETRY_COUNT + "\n" +
+                "Resultado: " + (launched ? "spawn exitoso" : "spawn fallido") + "\n" +
+                "Slug: " + escHtml(ag.slug)
+            );
+        }
+
+        // 4b. Verificar agentes "active" con _pid muerto (#1522)
+        const activeWithPid = (freshPlan.agentes || []).filter(ag => ag.status === "active" && ag._pid);
+        for (const ag of activeWithPid) {
+            if (!isPidAlive(ag._pid)) {
+                log("Agente #" + ag.issue + " status=active pero _pid=" + ag._pid + " muerto — marcando para evaluación normal");
+                // Dejar que la lógica existente de isAgentAlive lo maneje en el paso 3
+                // Solo limpiar el _pid inválido para que no bloquee detección
+                ag._pid = null;
+                planDirty = true;
+            }
+        }
+
+        // 5. Contar slots disponibles y promover desde cola
+        // Excluir "promoted" del conteo de slots libres — ya ocupan slot (#1522)
         const afterCount = (freshPlan.agentes || []).filter(ag => ag.status !== "waiting").length;
         const queue = getQueue(freshPlan);
         const slotsLibres = concurrencyLimit - afterCount;
@@ -689,6 +761,11 @@ async function runCycle() {
                 const maxNumero = (freshPlan.agentes || []).reduce((m, a) => Math.max(m, a.numero || 0), 0);
                 nextAgent.numero = maxNumero + 1;
                 if (!nextAgent.prompt) nextAgent.prompt = generateDefaultPrompt(nextAgent.issue, nextAgent.slug);
+                // #1522: marcar como promoted hasta que Start-Agente.ps1 confirme con _pid
+                nextAgent.status = "promoted";
+                nextAgent._promoted_at = new Date().toISOString();
+                nextAgent._pid = null;
+                nextAgent._retry_count = 0;
                 freshPlan.agentes.push(nextAgent);
             }
 
