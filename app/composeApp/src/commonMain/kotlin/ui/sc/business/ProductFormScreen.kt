@@ -14,11 +14,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -48,6 +56,8 @@ import ui.sc.shared.callService
 import ui.session.SessionStore
 import ui.th.spacing
 
+private val UNIT_OPTIONS = listOf("kg", "g", "unidad", "docena", "litro", "ml", "porcion")
+
 class ProductFormScreen(
     private val editorStore: ProductEditorStore = ProductEditorStore
 ) : Screen(BUSINESS_PRODUCT_FORM_PATH) {
@@ -59,6 +69,7 @@ class ProductFormScreen(
         ScreenContent()
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun ScreenContent(viewModel: ProductFormViewModel = viewModel { ProductFormViewModel() }) {
         val sessionState by SessionStore.sessionState.collectAsState()
@@ -66,6 +77,7 @@ class ProductFormScreen(
         val snackbarHostState = remember { SnackbarHostState() }
         val coroutineScope = rememberCoroutineScope()
         var showDeleteDialog by remember { mutableStateOf(false) }
+        var unitExpanded by remember { mutableStateOf(false) }
 
         val businessId = sessionState.selectedBusinessId
         val productSavedMessage = Txt(MessageKey.product_form_saved)
@@ -77,6 +89,7 @@ class ProductFormScreen(
         val deleteConfirmAccept = Txt(MessageKey.product_form_delete_confirm_accept)
         val deleteConfirmCancel = Txt(MessageKey.product_form_delete_confirm_cancel)
         val refreshCategoriesLabel = Txt(MessageKey.business_categories_retry)
+        val stockHelperText = Txt(MessageKey.product_form_stock_helper)
 
         LaunchedEffect(draft) {
             viewModel.applyDraft(draft)
@@ -135,19 +148,54 @@ class ProductFormScreen(
                     onValueChange = { viewModel.uiState = viewModel.uiState.copy(shortDescription = it) }
                 )
 
+                // Precio con prefijo $ para indicar moneda
                 TextField(
                     label = MessageKey.product_form_base_price,
                     value = viewModel.uiState.basePrice,
                     state = viewModel.inputsStates[ProductFormUiState::basePrice.name]!!,
-                    onValueChange = { viewModel.uiState = viewModel.uiState.copy(basePrice = it) }
+                    onValueChange = { viewModel.uiState = viewModel.uiState.copy(basePrice = it) },
+                    leadingIcon = { Text("$", style = MaterialTheme.typography.bodyLarge) }
                 )
 
-                TextField(
-                    label = MessageKey.product_form_unit,
-                    value = viewModel.uiState.unit,
-                    state = viewModel.inputsStates[ProductFormUiState::unit.name]!!,
-                    onValueChange = { viewModel.uiState = viewModel.uiState.copy(unit = it) }
-                )
+                // Unidad como dropdown con opciones predefinidas
+                ExposedDropdownMenuBox(
+                    expanded = unitExpanded,
+                    onExpandedChange = { unitExpanded = it },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = viewModel.uiState.unit,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = {
+                            Text(
+                                Txt(MessageKey.product_form_unit),
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = unitExpanded) },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
+                    )
+                    ExposedDropdownMenu(
+                        expanded = unitExpanded,
+                        onDismissRequest = { unitExpanded = false }
+                    ) {
+                        UNIT_OPTIONS.forEach { unit ->
+                            DropdownMenuItem(
+                                text = { Text(unit, style = MaterialTheme.typography.bodyLarge) },
+                                onClick = {
+                                    viewModel.uiState = viewModel.uiState.copy(unit = unit)
+                                    unitExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
 
                 CategorySelector(
                     categories = viewModel.categories,
@@ -171,6 +219,7 @@ class ProductFormScreen(
 
                 StockQuantityField(
                     value = viewModel.uiState.stockQuantity,
+                    helperText = stockHelperText,
                     onValueChange = viewModel::updateStockQuantity
                 )
 
@@ -230,14 +279,24 @@ class ProductFormScreen(
                     }
                 )
 
+                // Botón de eliminar con estilo destructivo (error color)
                 if (viewModel.mode == ProductFormMode.Edit) {
-                    IntralePrimaryButton(
-                        text = Txt(MessageKey.product_form_delete),
-                        leadingIcon = Icons.Default.Delete,
-                        iconContentDescription = Txt(MessageKey.product_form_delete),
+                    Button(
+                        onClick = { showDeleteDialog = true },
                         enabled = !viewModel.loading,
-                        onClick = { showDeleteDialog = true }
-                    )
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = Txt(MessageKey.product_form_delete)
+                        )
+                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                        Text(Txt(MessageKey.product_form_delete))
+                    }
                 }
             }
         }
@@ -248,22 +307,29 @@ class ProductFormScreen(
                 title = { Text(deleteConfirmTitle) },
                 text = { Text(deleteConfirmMessage) },
                 confirmButton = {
-                    TextButton(onClick = {
-                        showDeleteDialog = false
-                        callService(
-                            coroutineScope = coroutineScope,
-                            snackbarHostState = snackbarHostState,
-                            setLoading = { viewModel.loading = it },
-                            serviceCall = { viewModel.delete(businessId) },
-                            onSuccess = {
-                                editorStore.clear()
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(productDeletedMessage)
+                    // Botón de confirmación de eliminación con estilo destructivo
+                    Button(
+                        onClick = {
+                            showDeleteDialog = false
+                            callService(
+                                coroutineScope = coroutineScope,
+                                snackbarHostState = snackbarHostState,
+                                setLoading = { viewModel.loading = it },
+                                serviceCall = { viewModel.delete(businessId) },
+                                onSuccess = {
+                                    editorStore.clear()
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(productDeletedMessage)
+                                    }
+                                    navigate(BUSINESS_PRODUCTS_PATH)
                                 }
-                                navigate(BUSINESS_PRODUCTS_PATH)
-                            }
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
                         )
-                    }) {
+                    ) {
                         Text(deleteConfirmAccept)
                     }
                 },
@@ -422,6 +488,7 @@ private fun AvailabilitySelector(
 @Composable
 private fun StockQuantityField(
     value: String,
+    helperText: String,
     onValueChange: (String) -> Unit
 ) {
     OutlinedTextField(
@@ -435,6 +502,13 @@ private fun StockQuantityField(
             Text(
                 Txt(MessageKey.product_form_stock_quantity),
                 style = MaterialTheme.typography.labelMedium
+            )
+        },
+        supportingText = {
+            Text(
+                text = helperText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         },
         singleLine = true,

@@ -89,6 +89,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.product_form_available to "Available",
     MessageKey.product_form_out_of_stock to "Out of stock",
     MessageKey.product_form_stock_quantity to "Stock quantity",
+    MessageKey.product_form_stock_helper to "Leave empty for unlimited stock",
     MessageKey.business_products_out_of_stock to "Out of stock",
     MessageKey.client_product_out_of_stock to "Out of stock",
     MessageKey.business_categories_title to "Categories",

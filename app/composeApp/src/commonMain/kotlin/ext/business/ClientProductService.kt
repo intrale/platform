@@ -86,10 +86,10 @@ class ClientProductService(
         }
 
     private fun productsUrl(businessId: String): String =
-        "${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/business/$businessId/products"
+        "${BuildKonfig.BASE_URL}$businessId/business/products"
 
     private fun productUrl(businessId: String, productId: String): String =
-        "${productsUrl(businessId)}/$productId"
+        "${BuildKonfig.BASE_URL}$businessId/business/products/$productId"
 
     private suspend fun HttpResponse.toProduct(): ProductDTO {
         val bodyText = bodyAsText()
