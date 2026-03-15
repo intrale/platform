@@ -498,9 +498,31 @@ if ($Numero -eq "all") {
     Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
     Write-Host ">> Reporte post-sprint se generará automáticamente cuando terminen." -ForegroundColor Cyan
 
-    # Agent Watcher DESHABILITADO — destruye agentes al evaluar PRs demasiado rápido (#1551)
-    # TODO: reimplementar con grace period mínimo de 10 min antes de evaluar
-    Write-Host ">> Agent Watcher deshabilitado (bug #1551 — evalúa PRs antes de que los agentes trabajen)" -ForegroundColor DarkGray
+    # Lanzar Agent Watcher en background — reactivado con grace period de 15 min (#1553)
+    $watcherScript = Join-Path $MainRepo ".claude\hooks\agent-watcher.js"
+    if (Test-Path $watcherScript) {
+        $watcherPidFile = Join-Path $MainRepo ".claude\hooks\agent-watcher.pid"
+        $watcherRunning = $false
+        if (Test-Path $watcherPidFile) {
+            try {
+                $existingWatcherPid = [int](Get-Content $watcherPidFile -Raw -ErrorAction SilentlyContinue)
+                $watcherProc = Get-Process -Id $existingWatcherPid -ErrorAction SilentlyContinue
+                if ($watcherProc) { $watcherRunning = $true }
+            } catch {}
+        }
+        if (-not $watcherRunning) {
+            $watcherLog = Join-Path $MainRepo ".claude\hooks\agent-watcher.log"
+            Start-Process node -ArgumentList $watcherScript `
+                -WorkingDirectory $MainRepo `
+                -RedirectStandardOutput $watcherLog `
+                -WindowStyle Hidden
+            Write-Host ">> Agent Watcher iniciado (grace period: 15 min — fix #1553)" -ForegroundColor Green
+        } else {
+            Write-Host ">> Agent Watcher ya activo (PID $existingWatcherPid)" -ForegroundColor Green
+        }
+    } else {
+        Write-Host ">> Agent Watcher no encontrado: $watcherScript" -ForegroundColor Yellow
+    }
 }
 else {
     $num = [int]$Numero
