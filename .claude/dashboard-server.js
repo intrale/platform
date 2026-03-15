@@ -320,9 +320,9 @@ function collectData() {
   // CI status via gh
   let ciRuns = [];
   try {
-    const ghPath = "/c/Workspaces/gh-cli/bin/gh.exe";
-    if (fs.existsSync(ghPath.replace(/\//g, "\\"))) {
-      const raw = execSync(ghPath + ' run list --limit 5 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 10000, windowsHide: true }).toString().trim();
+    const ghPath = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
+    if (fs.existsSync(ghPath)) {
+      const raw = execSync('"' + ghPath + '" run list --limit 5 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 15000, windowsHide: true }).toString().trim();
       ciRuns = JSON.parse(raw || "[]");
     }
   } catch {}
@@ -1539,16 +1539,15 @@ function renderHTML(data, theme) {
     </div>`;
   }
 
+  // Calcular sprintPct antes de los bloques que lo usan
+  let sprintPct = 0;
+  const completedCount = spCompleted.length;
+  const agentesTotal = (data.sprintPlan && data.sprintPlan.total_stories) || allSprintAgentes.length || 1;
   if (data.sprintPlan && allSprintAgentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
     const sprintId = data.sprintPlan.sprint_id || null;
     const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
     const isFinalizado = sprintEstado === "finalizado";
-    const agentesTotal = data.sprintPlan.total_stories || allSprintAgentes.length;
-    const completedCount = spCompleted.length;
-
-    // Progreso del sprint: completados / total_stories
-    let sprintPct;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
     const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
     if (sprintTasksTotal > 0) {
@@ -1692,6 +1691,157 @@ function renderHTML(data, theme) {
   }
   if (visibleSessions.length === 0) {
     agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
+  }
+
+  // --- UNIFIED AGENT CARDS (combina sprint execution + session info) ---
+  let unifiedAgentsHtml = "";
+  if (data.sprintPlan && allSprintAgentes.length > 0) {
+    const sprintId = data.sprintPlan.sprint_id || "Sprint";
+    const sprintTema = data.sprintPlan.tema || "";
+    const sprintPctColor = sprintPct >= 80 ? "var(--green)" : sprintPct >= 40 ? "#fbbf24" : "var(--text-muted)";
+    unifiedAgentsHtml += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+      <span style="font-size:14px;font-weight:700;color:var(--white);">${escHtml(sprintId)}</span>
+      <span style="font-size:13px;font-weight:700;color:${sprintPctColor};">${sprintPct}%</span>
+      <span style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(sprintTema)}</span>
+      <span style="font-size:10px;color:var(--text-dim);">${spCompleted.length}/${allSprintAgentes.length} completados</span>
+    </div>`;
+
+    // Renderizar secciones: en ejecución, en cola, completados
+    const sections = [
+      { items: spAgentes, label: "EN EJECUCI\u00D3N", color: "var(--accent-green)", icon: "&#9654;" },
+      { items: spQueue, label: "EN COLA", color: "#fbbf24", icon: "&#9711;" },
+      { items: spCompleted, label: "COMPLETADOS", color: "var(--text-muted)", icon: "&#10003;" }
+    ];
+
+    for (const sec of sections) {
+      if (sec.items.length === 0) continue;
+      unifiedAgentsHtml += `<div style="padding:4px 0 6px;font-size:10px;font-weight:600;color:${sec.color};letter-spacing:.04em;">${sec.icon} ${sec.label} (${sec.items.length})</div>`;
+      unifiedAgentsHtml += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;margin-bottom:12px;">`;
+
+      for (const ag of sec.items) {
+        const matchSession = data.sprintSessions.find(s => {
+          const m = (s.branch || "").match(/(\d+)/);
+          return m && m[1] === String(ag.issue);
+        });
+        const agStatus = sec.label.includes("COLA") ? "pending" : sec.label.includes("COMPLETADO") ? "done" : (matchSession ? matchSession._status : "pending");
+        const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
+        const statusLabel = STATUS_LABELS[agStatus] || agStatus;
+        const agentName = matchSession ? (matchSession.agent_name || "Agente") : "Agente " + ag.numero;
+        const icon = AGENT_ICONS[agentName] || agentIconHtml(agentName);
+        const gradient = AGENT_GRADIENTS[agentName] || AGENT_GRADIENTS["Claude"];
+        const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+        const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+        const lastAction = matchSession && matchSession.last_tool ? (escHtml(matchSession.last_tool) + ": " + escHtml((matchSession.last_target || "").substring(0, 40))) : "";
+        const tasks = matchSession ? (matchSession.current_tasks || []) : [];
+        const tasksDone = tasks.filter(t => t.status === "completed").length;
+        const tasksInProg = tasks.filter(t => t.status === "in_progress").length;
+
+        // Barra de progreso
+        const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+        let pct = agStatus === "done" ? 100 : tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
+
+        const isBlocked = matchSession && blockedPids.has(matchSession.id);
+        const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+
+        unifiedAgentsHtml += `
+          <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid ${statusColor};">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+              <div class="agent-avatar" style="background:${gradient};width:36px;height:36px;min-width:36px;">${icon}</div>
+              <div style="flex:1;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="font-weight:700;color:var(--white);font-size:13px;">${escHtml(agentName)}</span>
+                  <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${statusColor}20;color:${statusColor};font-weight:600;">${isBlocked ? '&#128721; Bloqueado' : statusLabel}</span>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);">${formatIssueLink(ag.issue)} &middot; ${escHtml(ag.slug || "")} &middot; <span class="chip chip-blue" style="font-size:9px;padding:1px 4px;">${escHtml(ag.size || "?")}</span></div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${pct}%;background:${barColor};"></div></div>
+              <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${pct}%</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
+              <span>${actionCount} acc${duration ? ' &middot; ' + duration : ''}</span>
+              ${lastAction ? '<span>' + lastAction + '</span>' : ''}
+            </div>${tasks.length > 0 ? `
+            <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
+              ${tasks.map(t => {
+                const checked = t.status === "completed";
+                const inProg = t.status === "in_progress";
+                const checkColor = checked ? "var(--green)" : inProg ? "#fbbf24" : "var(--text-muted)";
+                const checkIcon = checked ? "&#9745;" : inProg ? "&#9654;" : "&#9744;";
+                const textStyle = checked ? "text-decoration:line-through;opacity:0.6;" : inProg ? "color:#fbbf24;font-weight:600;" : "";
+                return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;color:var(--text-dim);">' +
+                  '<span style="color:' + checkColor + ';font-size:13px;">' + checkIcon + '</span>' +
+                  '<span style="' + textStyle + '">' + escHtml(t.subject || t.name || "Tarea") + '</span></div>';
+              }).join("")}
+            </div>` : ""}
+          </div>`;
+      }
+      unifiedAgentsHtml += `</div>`;
+    }
+  } else {
+    unifiedAgentsHtml = '<div class="empty-state">Sin sprint activo</div>';
+  }
+
+  // Sesiones standalone (fuera del sprint)
+  const sprintIssueNums = new Set(allSprintAgentes.map(a => String(a.issue)));
+  const standaloneSessions = visibleSessions.filter(s => {
+    const m = (s.branch || "").match(/(\d+)/);
+    const issueNum = m ? m[1] : null;
+    return s.branch && s.branch.startsWith("agent/") && (!issueNum || !sprintIssueNums.has(issueNum));
+  });
+  if (standaloneSessions.length > 0) {
+    unifiedAgentsHtml += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--surface3);">
+      <div style="font-size:10px;font-weight:600;color:#a78bfa;letter-spacing:.04em;margin-bottom:8px;">&#9881; FUERA DEL SPRINT (${standaloneSessions.length})</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;">`;
+    for (const s of standaloneSessions) {
+      const icon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
+      const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
+      const statusColor = STATUS_COLORS[s._status] || "#555872";
+      const statusLabel = STATUS_LABELS[s._status] || s._status;
+      const branchMatch = (s.branch || "").match(/(\d+)/);
+      const issueNum = branchMatch ? branchMatch[1] : null;
+      const actionCount = s.action_count || 0;
+      const duration = formatDuration(s.started_ts);
+      const lastAction = s.last_tool ? (escHtml(s.last_tool) + ": " + escHtml((s.last_target || "").substring(0, 40))) : "";
+      const tasks = s.current_tasks || [];
+      const tasksDone = tasks.filter(t => t.status === "completed").length;
+
+      unifiedAgentsHtml += `
+        <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid #a78bfa;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <div class="agent-avatar" style="background:${gradient};width:36px;height:36px;min-width:36px;">${icon}</div>
+            <div style="flex:1;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-weight:700;color:var(--white);font-size:13px;">${escHtml(s.agent_name || "Agente")}</span>
+                <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${statusColor}20;color:${statusColor};font-weight:600;">${statusLabel}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);">${issueNum ? formatIssueLink(issueNum) + ' &middot; ' : ''}${escHtml(s.branch || "")}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0}%;background:${statusColor};"></div></div>
+            <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
+            <span>${actionCount} acc &middot; ${duration}</span>
+            ${lastAction ? '<span>' + lastAction + '</span>' : ''}
+          </div>${tasks.length > 0 ? `
+          <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
+            ${tasks.map(t => {
+              const checked = t.status === "completed";
+              const inProg = t.status === "in_progress";
+              const checkColor = checked ? "var(--green)" : inProg ? "#fbbf24" : "var(--text-muted)";
+              const checkIcon = checked ? "&#9745;" : inProg ? "&#9654;" : "&#9744;";
+              const textStyle = checked ? "text-decoration:line-through;opacity:0.6;" : inProg ? "color:#fbbf24;font-weight:600;" : "";
+              return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;color:var(--text-dim);">' +
+                '<span style="color:' + checkColor + ';font-size:13px;">' + checkIcon + '</span>' +
+                '<span style="' + textStyle + '">' + escHtml(t.subject || t.name || "Tarea") + '</span></div>';
+            }).join("")}
+          </div>` : ""}
+        </div>`;
+    }
+    unifiedAgentsHtml += `</div></div>`;
   }
 
   // --- FLOW TREE (force-directed layout) ---
@@ -1912,9 +2062,12 @@ function renderHTML(data, theme) {
     const iconClass = isOk ? "ci-ok" : isFail ? "ci-fail" : "ci-run";
     const icon = isOk ? "&#10003;" : isFail ? "&#10007;" : "&#9203;";
     const iconColor = isOk ? "var(--green)" : isFail ? "var(--red)" : "var(--yellow)";
+    const branchIssue = (r.headBranch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+    const issueLink = branchIssue ? formatIssueLink(branchIssue[1]) + " &middot; " : "";
+    const runUrl = r.databaseId ? "https://github.com/intrale/platform/actions/runs/" + r.databaseId : null;
     ciHtml += `<div class="ci-row">
       <div class="ci-icon ${iconClass}" style="color:${iconColor}">${icon}</div>
-      <div class="ci-text"><strong>${escHtml(r.headBranch)}</strong> &middot; ${escHtml((r.displayTitle || "").substring(0, 50))}</div>
+      <div class="ci-text">${issueLink}${runUrl ? '<a href="' + runUrl + '" target="_blank" rel="noopener noreferrer" style="color:var(--white);text-decoration:none;font-weight:700;">' + escHtml(r.headBranch) + '</a>' : '<strong>' + escHtml(r.headBranch) + '</strong>'} &middot; ${linkifyIssueRefs(escHtml((r.displayTitle || "").substring(0, 60)))}</div>
       <div class="ci-time">${formatAge(r.createdAt)}</div>
     </div>`;
   }
@@ -2270,49 +2423,39 @@ function renderHTML(data, theme) {
     <!-- Alerts -->
     ${data.alerts.length > 0 ? '<div class="alerts-panel">' + alertsHtml + '</div>' : ''}
 
-    <!-- KPI Row -->
+    <!-- KPI Row (clickeable → scroll al panel) -->
     <div class="kpi-row">
-      <div class="kpi kpi-green">
+      <a href="#" onclick="document.querySelector('[data-panel=exec]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-green" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:var(--green)">${data.activeSessions}</div>
         <div class="kl">Agentes activos</div>
         <div class="kt" style="color:var(--green)">${data.idleSessions > 0 ? data.idleSessions + ' idle' : 'Todos trabajando'}</div>
-      </div>
-      <div class="kpi kpi-blue">
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=activity]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-blue" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:var(--blue)">${permTotal}</div>
         <div class="kl">Permisos</div>
         <div class="kt" style="color:${permStats.pending > 0 ? 'var(--yellow)' : 'var(--green)'}">${permStats.pending > 0 ? permStats.pending + ' pendiente(s)' : permStats.auto + ' auto'}</div>
-      </div>
-      <div class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : data.ciStatus === 'unknown' ? 'kpi-blue' : 'kpi-orange'}">
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=ci]').scrollIntoView({behavior:'smooth'});return false;" class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : data.ciStatus === 'unknown' ? 'kpi-blue' : 'kpi-orange'}" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : data.ciStatus === 'unknown' ? 'var(--text-muted)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? '&#10003;' : data.ciStatus === 'fail' ? '&#10007;' : data.ciStatus === 'unknown' ? '&#8212;' : '&#9203;'}</div>
         <div class="kl">CI / CD</div>
         <div class="kt" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : data.ciStatus === 'unknown' ? 'var(--text-muted)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? 'Build OK' : data.ciStatus === 'fail' ? 'Build FAIL' : data.ciStatus === 'unknown' ? 'Sin ejecuciones recientes' : 'En curso...'}</div>
-      </div>
-      <div class="kpi kpi-orange">
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=sessions]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-orange" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:var(--orange)">${data.totalActions}</div>
         <div class="kl">Acciones hoy</div>
         <div class="kt" style="color:var(--orange)">${data.velocity[0] || 0} esta hora</div>
-      </div>
-      <div class="kpi kpi-purple">
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=metrics]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-purple" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:${data.alerts.length > 0 ? 'var(--red)' : 'var(--green)'}">${data.alerts.length}</div>
         <div class="kl">Alertas</div>
         <div class="kt" style="color:${data.alerts.length > 0 ? 'var(--red)' : 'var(--green)'}">${data.alerts.length > 0 ? data.alerts.length + ' activa(s)' : 'Todo limpio'}</div>
-      </div>
+      </a>
     </div>
 
-    <!-- Ejecución + Agents -->
-    <div class="grid-2col" data-panel="exec">
-      <div class="panel">
-        <div class="panel-title">Ejecuci&oacute;n <span class="chip chip-green">${sprintProgress}% completado</span></div>
-        <div class="tasks-progress-bar">
-          <div class="tasks-progress-fill" style="width:${sprintProgress}%; background: var(--gradient-green);"></div>
-        </div>
-        ${ejecutionHtml}
-      </div>
-      <div>
-        <div style="font-size:12px;font-weight:700;color:var(--white);margin-bottom:10px;">Agentes</div>
-        ${agentsHtml}
-      </div>
-    </div>
+    <!-- Ejecución & Agentes (tarjetas unificadas, ancho completo) -->
+    <div class="panel" data-panel="exec" style="margin-bottom:16px;">
+      <div class="panel-title">Ejecuci&oacute;n &amp; Agentes</div>
+      ${unifiedAgentsHtml}
 
     <!-- Fila 1: Flujo de agentes (ancho completo) #1378 -->
     <div class="grid-flow" data-panel="sessions">
@@ -2323,7 +2466,7 @@ function renderHTML(data, theme) {
     </div>
 
     <!-- Fila 2: Actividad en vivo | Permisos #1378 -->
-    <div class="grid-activity">
+    <div class="grid-activity" data-panel="activity">
       <div class="feed-panel" id="activity-feed">
         <div class="panel-title">Actividad en vivo <span class="chip ${data.blockingRelations.length > 0 ? 'chip-red' : 'chip-green'}">${data.blockingRelations.length > 0 ? data.blockingRelations.length + ' bloq.' : 'Sin bloqueos'}</span></div>
         ${feedHtml}
@@ -2654,12 +2797,11 @@ async function takeScreenshotSections(width) {
       const selectors = [
         { id: "kpis",               sel: ".kpi-row" },
         { id: "ejecucion",          sel: "[data-panel='exec']" },
-        { id: "sesiones",           sel: "[data-panel='sessions']" },
-        { id: "metricas",           sel: "[data-panel='metrics']" },
-        { id: "flujo",              sel: "[data-panel='flow']" },
-        { id: "actividad",          sel: "[data-panel='activity']" },
-        { id: "permisos",           sel: "[data-panel='permissions']" },
-        { id: "agentes-metricas",   sel: "[data-panel='agent-metrics']" },
+        { id: "flujo",              sel: "[data-panel='sessions']" },
+        { id: "actividad",          sel: "[data-panel='activity'] .feed-panel" },
+        { id: "permisos",           sel: "[data-panel='activity'] .panel:last-child" },
+        { id: "uso-agentes",        sel: "[data-panel='metrics'] > .panel:first-child" },
+        { id: "metricas-agentes",   sel: "[data-panel='metrics'] > .panel:last-child" },
         { id: "roadmap",            sel: "[data-panel='roadmap']" },
         { id: "ci",                 sel: "[data-panel='ci']" },
       ];
@@ -2838,7 +2980,7 @@ function startServer() {
     setInterval(checkSprintPlanFreshness, 1000); // Watcher freshness sprint-plan.json (#1434)
     setInterval(checkAutoStop, 5 * 60 * 1000);
 
-    startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, port: PORT });
+    startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, takeScreenshotSectionsFn: takeScreenshotSections, port: PORT });
   });
 
   server.on("error", (err) => {
