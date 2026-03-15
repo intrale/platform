@@ -16,21 +16,48 @@
     Si se indica, elimina el worktree existente y lo recrea desde el ultimo commit de origin/main.
     Usado por agent-concurrency-check.js al promover agentes de la cola (#1399).
 
+.PARAMETER Delay
+    Segundos de espera entre lanzamientos de agentes consecutivos (default: 120).
+    Solo aplica cuando Numero es "all". El primer agente siempre se lanza inmediatamente.
+    Permite que el rate limit de la API de Claude se recupere entre agentes.
+
+.PARAMETER NoDelay
+    Si se indica, lanza todos los agentes simultaneamente sin delay entre ellos.
+    Advertencia: riesgo de rate limit con 3+ agentes simultaneos.
+    Incompatible con -Delay.
+
 .EXAMPLE
     .\Start-Agente.ps1 1
     .\Start-Agente.ps1 1 -Force
     .\Start-Agente.ps1 all
     .\Start-Agente.ps1 all -SkipMerge
+    .\Start-Agente.ps1 all -Delay 180
+    .\Start-Agente.ps1 all -NoDelay
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$Numero,
     [switch]$SkipMerge,
-    [switch]$Force
+    [switch]$Force,
+    [int]$Delay = 120,
+    [switch]$NoDelay
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# --- Validar parámetros de delay ---
+if ($PSBoundParameters.ContainsKey('Delay') -and $NoDelay) {
+    Write-Error "No se puede usar -Delay y -NoDelay simultaneamente."
+    exit 1
+}
+if ($Delay -lt 0) {
+    Write-Host ">> WARN: Delay invalido ($Delay). Usando default: 120" -ForegroundColor Yellow
+    $Delay = 120
+} elseif ($Delay -eq 0 -and -not $NoDelay) {
+    Write-Host ">> WARN: Delay debe ser mayor a 0 segundos. Usando default: 120" -ForegroundColor Yellow
+    $Delay = 120
+}
 
 # --- Paths ---
 $GitWt    = "C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Packages\max-sixty.worktrunk_Microsoft.Winget.Source_8wekyb3d8bbwe\git-wt.exe"
@@ -325,7 +352,7 @@ function Start-UnAgente {
                     if ($proc) {
                         Write-Host ">> WARN: Agente $($Agente.numero) (PID $existingPid) ya esta activo en $wtDir — skip" -ForegroundColor Yellow
                         Write-Host ">> Para forzar relanzamiento, terminar el proceso primero." -ForegroundColor DarkGray
-                        return
+                        return $null
                     }
                 }
             } catch {
@@ -387,7 +414,7 @@ function Start-UnAgente {
                 } catch {
                     Write-Host ">> WARN: No se pudo eliminar $claudeDst — archivos bloqueados: $_" -ForegroundColor Yellow
                     Write-Host ">> Abortando relanzamiento para evitar estado parcial." -ForegroundColor Yellow
-                    return
+                    return $null
                 }
             }
         }
@@ -479,6 +506,65 @@ function Start-UnAgente {
     }
 
     Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal (PID $($proc.Id))" -ForegroundColor Green
+    return $proc
+}
+
+# --- Retry ante rate limit (#1556) ---
+# Lanza un agente y detecta si muere rapidamente por rate limit.
+# Si se detecta rate limit, espera RetryDelay segundos y reintenta hasta MaxRetries veces.
+# Solo reintenta ante rate limit — otros errores no se reintentan.
+function Start-UnAgenteConRetry {
+    param(
+        [Parameter(Mandatory)] $Agente,
+        [int]$MaxRetries = 3,
+        [int]$RetryDelay = 300,
+        [int]$ProbeDelay = 20
+    )
+
+    $attempt = 0
+    while ($attempt -lt $MaxRetries) {
+        $attempt++
+        $proc = Start-UnAgente -Agente $Agente
+
+        if (-not $proc) {
+            # Early return de Start-UnAgente (agente ya activo o error de setup)
+            return $null
+        }
+
+        # Esperar brevemente para detectar fallo rapido por rate limit
+        Write-Host ">> Verificando estabilidad del agente $($Agente.numero) (${ProbeDelay}s)..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ProbeDelay
+
+        if (-not $proc.HasExited) {
+            # Proceso sigue corriendo — lanzamiento exitoso
+            return $proc
+        }
+
+        # Proceso termino prematuramente — revisar si fue por rate limit
+        $logFile = Join-Path $PSScriptRoot "logs\agente_$($Agente.numero).log"
+        $isRateLimit = $false
+        if (Test-Path $logFile) {
+            $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if ($logContent -match 'rate.?limit|hit.?your.?limit|You have hit|Claude.ai/api') {
+                $isRateLimit = $true
+            }
+        }
+
+        if (-not $isRateLimit) {
+            Write-Host ">> Agente $($Agente.numero) termino (no es rate limit). Sin retry." -ForegroundColor DarkGray
+            return $proc
+        }
+
+        if ($attempt -ge $MaxRetries) {
+            Write-Host ">> Agente $($Agente.numero) fallo tras $MaxRetries intento(s) por rate limit." -ForegroundColor Red
+            return $null
+        }
+
+        Write-Host ">> Rate limit detectado en agente $($Agente.numero) (intento $attempt/$MaxRetries). Esperando ${RetryDelay}s..." -ForegroundColor Yellow
+        Start-Sleep -Seconds $RetryDelay
+    }
+
+    return $null
 }
 
 # --- Ejecutar ---
@@ -489,40 +575,45 @@ function Start-UnAgente {
 # Para snapshot on-demand: usar /monitor. Para web: http://localhost:3100
 if ($Numero -eq "all") {
     Write-Host ">> Lanzando TODOS los agentes del plan ($($Plan.agentes.Count))..." -ForegroundColor Magenta
-    foreach ($agente in $Plan.agentes) {
-        Start-UnAgente -Agente $agente
+    if ($NoDelay) {
+        Write-Host ">> -NoDelay: Lanzamiento simultaneo (riesgo de rate limit con 3+ agentes)" -ForegroundColor Yellow
+    } else {
+        Write-Host ">> Delay entre agentes: ${Delay}s (usar -NoDelay para lanzamiento simultaneo, -Delay N para personalizar)" -ForegroundColor Cyan
     }
+
+    $agentesLanzados = 0
+    $resultados = [ordered]@{}
+
+    foreach ($agente in $Plan.agentes) {
+        if ($agentesLanzados -gt 0 -and -not $NoDelay) {
+            Write-Host ""
+            Write-Host ">> Esperando ${Delay}s antes de lanzar agente $($agente.numero)/$($Plan.agentes.Count)..." -ForegroundColor Yellow
+            Start-Sleep -Seconds $Delay
+        }
+
+        $proc = Start-UnAgenteConRetry -Agente $agente
+        if ($proc) {
+            $resultados["agente_$($agente.numero)"] = "OK (PID $($proc.Id))"
+        } else {
+            $resultados["agente_$($agente.numero)"] = "FALLO"
+        }
+        $agentesLanzados++
+    }
+
     Write-Host ""
-    Write-Host ">> Todos los agentes lanzados." -ForegroundColor Green
+    Write-Host ">> Todos los agentes procesados. Resumen:" -ForegroundColor Green
+    foreach ($key in $resultados.Keys) {
+        $estado = $resultados[$key]
+        $color = if ($estado -like "OK*") { "Green" } else { "Red" }
+        Write-Host ">>   $key : $estado" -ForegroundColor $color
+    }
     Write-Host ">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)" -ForegroundColor Cyan
     Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
-    Write-Host ">> Reporte post-sprint se generará automáticamente cuando terminen." -ForegroundColor Cyan
+    Write-Host ">> Reporte post-sprint se generara automaticamente cuando terminen." -ForegroundColor Cyan
 
-    # Lanzar Agent Watcher en background — reactivado con grace period de 15 min (#1553)
-    $watcherScript = Join-Path $MainRepo ".claude\hooks\agent-watcher.js"
-    if (Test-Path $watcherScript) {
-        $watcherPidFile = Join-Path $MainRepo ".claude\hooks\agent-watcher.pid"
-        $watcherRunning = $false
-        if (Test-Path $watcherPidFile) {
-            try {
-                $existingWatcherPid = [int](Get-Content $watcherPidFile -Raw -ErrorAction SilentlyContinue)
-                $watcherProc = Get-Process -Id $existingWatcherPid -ErrorAction SilentlyContinue
-                if ($watcherProc) { $watcherRunning = $true }
-            } catch {}
-        }
-        if (-not $watcherRunning) {
-            $watcherLog = Join-Path $MainRepo ".claude\hooks\agent-watcher.log"
-            Start-Process node -ArgumentList $watcherScript `
-                -WorkingDirectory $MainRepo `
-                -RedirectStandardOutput $watcherLog `
-                -WindowStyle Hidden
-            Write-Host ">> Agent Watcher iniciado (grace period: 15 min — fix #1553)" -ForegroundColor Green
-        } else {
-            Write-Host ">> Agent Watcher ya activo (PID $existingWatcherPid)" -ForegroundColor Green
-        }
-    } else {
-        Write-Host ">> Agent Watcher no encontrado: $watcherScript" -ForegroundColor Yellow
-    }
+    # Agent Watcher DESHABILITADO — destruye agentes al evaluar PRs demasiado rápido (#1551)
+    # TODO: reimplementar con grace period mínimo de 10 min antes de evaluar
+    Write-Host ">> Agent Watcher deshabilitado (bug #1551 — evalua PRs antes de que los agentes trabajen)" -ForegroundColor DarkGray
 }
 else {
     $num = [int]$Numero
