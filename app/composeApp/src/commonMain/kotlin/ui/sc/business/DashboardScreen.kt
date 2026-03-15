@@ -169,7 +169,7 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                             mapOf("count" to summary.pendingOrders.toString())
                         ),
                         actionLabel = Txt(MessageKey.dashboard_card_orders_cta),
-                        onClick = { navigate(DELIVERY_DASHBOARD_PATH) }
+                        onClick = { navigate(BUSINESS_ORDERS_PATH) }
                     )
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_delivery_title),

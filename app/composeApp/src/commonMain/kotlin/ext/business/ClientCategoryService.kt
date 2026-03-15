@@ -83,10 +83,10 @@ class ClientCategoryService(
         }
 
     private fun categoriesUrl(businessId: String): String =
-        "${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/business/$businessId/categories"
+        "${BuildKonfig.BASE_URL}$businessId/business/categories"
 
     private fun categoryUrl(businessId: String, categoryId: String): String =
-        "${categoriesUrl(businessId)}/$categoryId"
+        "${BuildKonfig.BASE_URL}$businessId/business/categories/$categoryId"
 
     private suspend fun HttpResponse.toCategory(): CategoryDTO {
         val bodyText = bodyAsText()

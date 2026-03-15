@@ -105,6 +105,7 @@ try {
 # --- Pre-sprint cleanup de worktrees huérfanos ---
 # Los worktrees de sprints anteriores se acumulan y saturan git,
 # causando que los agentes no puedan arrancar (SPR-028 incident 2026-03-14)
+# Mejorado en #1555: manejo robusto de junctions + limpieza de ramas remotas
 function Invoke-WorktreeCleanup {
     $parentDir = Split-Path $MainRepo -Parent
     $baseName  = Split-Path $MainRepo -Leaf
@@ -122,38 +123,106 @@ function Invoke-WorktreeCleanup {
 
     $removed = 0
     $kept    = 0
+    $orphanBranches = @()
 
     foreach ($wt in $siblings) {
         $suffix = $wt.Name -replace "^$([regex]::Escape($baseName))\.", ""
+
+        # Validar formato de sufijo para evitar path traversal (#1555 security)
+        if ($suffix -notmatch '^agent-\d+-[a-z0-9-]+$') {
+            Write-Host ">> Cleanup: nombre inesperado, ignorado: $($wt.Name)" -ForegroundColor Yellow
+            continue
+        }
 
         if ($currentSlugs -contains $suffix) {
             $kept++
             continue
         }
 
+        # Extraer nombre de rama para limpieza remota posterior
+        $branchName = $suffix -replace '^agent-', 'agent/'
+        $orphanBranches += $branchName
+
         try {
+            # Paso 1: Eliminar junction/reparse point .claude/ con cmd /c rmdir
+            # CRITICO: Remove-Item no puede borrar directorios que contienen junctions,
+            # porque intenta descender recursivamente y falla con "El directorio no está vacío"
             $junctionPath = Join-Path $wt.FullName ".claude"
             if (Test-Path $junctionPath) {
-                cmd /c rmdir "$junctionPath" 2>$null
+                $item = Get-Item $junctionPath -Force -ErrorAction SilentlyContinue
+                if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                    # Es junction/symlink — usar cmd /c rmdir que solo desvincula sin borrar el target
+                    cmd /c rmdir "$junctionPath" 2>$null
+                    Write-Host ">>   Junction .claude/ desvinculada en $($wt.Name)" -ForegroundColor DarkGray
+                } else {
+                    # Directorio real — eliminar normalmente
+                    Remove-Item $junctionPath -Recurse -Force -ErrorAction SilentlyContinue
+                }
             }
 
+            # Paso 2: git worktree remove --force (desregistra del tracking de git)
             Push-Location $MainRepo
-            git worktree remove $wt.FullName --force 2>$null
-            Pop-Location
+            try {
+                git worktree remove $wt.FullName --force 2>$null
+            } finally {
+                Pop-Location
+            }
 
+            # Paso 3: Fallback — si el directorio persiste, forzar eliminación
             if (Test-Path $wt.FullName) {
-                Remove-Item $wt.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item $wt.FullName -Recurse -Force -ErrorAction Stop
             }
 
             $removed++
+            Write-Host ">>   Eliminado: $($wt.Name)" -ForegroundColor DarkGray
         } catch {
-            Write-Host ">> Cleanup: no se pudo eliminar $($wt.Name): $_" -ForegroundColor Yellow
+            # Último recurso: intentar eliminar archivos individualmente
+            try {
+                if (Test-Path $wt.FullName) {
+                    Get-ChildItem $wt.FullName -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending | Remove-Item -Force -ErrorAction SilentlyContinue
+                    Remove-Item $wt.FullName -Recurse -Force -ErrorAction Stop
+                    $removed++
+                    Write-Host ">>   Eliminado (fallback): $($wt.Name)" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host ">> Cleanup: no se pudo eliminar $($wt.Name): $_" -ForegroundColor Yellow
+            }
         }
     }
 
+    # Paso 4: Podar referencias de worktrees eliminados del tracking de git
     Push-Location $MainRepo
-    git worktree prune 2>$null
-    Pop-Location
+    try {
+        git worktree prune 2>$null
+    } finally {
+        Pop-Location
+    }
+
+    # Paso 5: Limpiar ramas remotas huérfanas correspondientes
+    if ($orphanBranches.Count -gt 0) {
+        $deletedBranches = 0
+        Push-Location $MainRepo
+        try {
+            # Obtener lista de ramas remotas una sola vez
+            $remoteBranches = @(git branch -r 2>$null | ForEach-Object { $_.Trim() })
+            foreach ($branch in $orphanBranches) {
+                if ($remoteBranches -contains "origin/$branch") {
+                    try {
+                        git push origin --delete $branch 2>$null
+                        $deletedBranches++
+                        Write-Host ">>   Rama remota eliminada: $branch" -ForegroundColor DarkGray
+                    } catch {
+                        Write-Host ">>   No se pudo eliminar rama remota $branch" -ForegroundColor DarkGray
+                    }
+                }
+            }
+        } finally {
+            Pop-Location
+        }
+        if ($deletedBranches -gt 0) {
+            Write-Host ">> Cleanup: $deletedBranches rama(s) remota(s) huérfana(s) eliminada(s)" -ForegroundColor Green
+        }
+    }
 
     if ($removed -gt 0) {
         Write-Host ">> Cleanup: $removed worktree(s) huérfano(s) eliminado(s) ($kept del sprint actual conservados)" -ForegroundColor Green
@@ -202,13 +271,30 @@ function Start-UnAgente {
 
     # -Force (#1399): eliminar worktree existente y recrear desde origin/main actual
     # Usado para agentes promovidos de la cola — evita trabajar desde commit viejo
+    # Mejorado en #1555: eliminar junction .claude/ antes de git worktree remove
     if ($wtExists -and $Force) {
         Write-Host ">> -Force activado: eliminando worktree existente para recrear desde origin/main..." -ForegroundColor Yellow
-        Push-Location $MainRepo
         try {
-            # Quitar registro del worktree en git
-            git worktree remove "$wtDir" --force 2>$null
-            # Si el directorio sigue existiendo (race condition o fallo silencioso), eliminar
+            # Paso 1: Eliminar junction .claude/ primero (causa "directorio no vacío")
+            $junctionPath = Join-Path $wtDir ".claude"
+            if (Test-Path $junctionPath) {
+                $item = Get-Item $junctionPath -Force -ErrorAction SilentlyContinue
+                if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                    cmd /c rmdir "$junctionPath" 2>$null
+                } else {
+                    Remove-Item $junctionPath -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+
+            # Paso 2: git worktree remove --force
+            Push-Location $MainRepo
+            try {
+                git worktree remove "$wtDir" --force 2>$null
+            } finally {
+                Pop-Location
+            }
+
+            # Paso 3: Fallback si el directorio persiste
             if (Test-Path $wtDir) {
                 Remove-Item $wtDir -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -216,8 +302,6 @@ function Start-UnAgente {
         } catch {
             Write-Host ">> WARN: No se pudo eliminar worktree anterior: $_" -ForegroundColor Yellow
             Write-Host ">> Continuando con worktree existente (puede estar desactualizado)." -ForegroundColor DarkGray
-        } finally {
-            Pop-Location
         }
         # Marcar como no-existente para que el bloque de creación lo recree
         if (-not (Test-Path $wtDir)) { $wtExists = $false }
@@ -324,7 +408,7 @@ function Start-UnAgente {
 
     # Abrir nueva terminal PowerShell con claude ejecutando
     # La terminal se cierra automaticamente al terminar claude (sin -NoExit)
-    # Output se loguea a scripts/logs/agente_N.log via Start-Transcript
+    # Output se loguea a scripts/logs/agente_N.log via stream-json parsing (#1541)
     $logDir = Join-Path $PSScriptRoot 'logs'
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     $logFile = Join-Path $logDir "agente_$($Agente.numero).log"
@@ -334,38 +418,23 @@ function Start-UnAgente {
     $promptFile = Join-Path $logDir "prompt_$($Agente.numero).txt"
     Set-Content -Path $promptFile -Value $prompt -Encoding UTF8 -NoNewline
 
-    # try/finally garantiza que la terminal se cierre aunque claude crashee o muera inesperadamente (#1350)
-    $command = "try { " +
-               "  Start-Transcript -Path '$logFile' -Force | Out-Null; " +
-               "  Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; " +
-               "  Set-Location '$wtDirResolved'; " +
-               "  Write-Host ''; " +
-               "  Write-Host '  Agente $($Agente.numero) - issue #$issue ($slug)' -ForegroundColor Cyan; " +
-               "  Write-Host '  Branch: $branch' -ForegroundColor Cyan; " +
-               "  Write-Host '  Log: $logFile' -ForegroundColor DarkGray; " +
-               "  Write-Host ''; " +
-               "  Get-Content '$promptFile' -Raw | claude -p --dangerously-skip-permissions; " +
-               "  `$exitCode = `$LASTEXITCODE; " +
-               "  Write-Host ''; " +
-               "  if (`$exitCode -ne 0) { " +
-               "    Write-Host ('  ERROR: claude finalizo con exit code ' + `$exitCode) -ForegroundColor Red; " +
-               "    Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
-               "    Start-Sleep -Seconds 30; " +
-               "  } else { " +
-               "    Write-Host ('  claude finalizo (exit ' + `$exitCode + ')') -ForegroundColor Yellow; " +
-               "    Start-Sleep -Seconds 3; " +
-               "  } " +
-               "} catch { " +
-               "  Write-Host ('  EXCEPTION: ' + `$_.Exception.Message) -ForegroundColor Red; " +
-               "  Write-Host '  La terminal se cerrara en 30 segundos...' -ForegroundColor Yellow; " +
-               "  Start-Sleep -Seconds 30; " +
-               "} finally { " +
-               "  Stop-Transcript -ErrorAction SilentlyContinue | Out-Null; " +
-               "  exit " +
-               "}"
+    # #1541: Lanzar Run-AgentStream.ps1 como script separado.
+    # Evita el infierno de escaping de PowerShell al construir $command inline.
+    # Run-AgentStream.ps1 parsea stream-json y muestra actividad en tiempo real.
+    $streamScript = Join-Path $PSScriptRoot "Run-AgentStream.ps1"
 
     Write-Host ">> Abriendo terminal con claude..."
-    $proc = Start-Process powershell -ArgumentList "-Command", $command -PassThru
+    $proc = Start-Process powershell -ArgumentList (
+        "-ExecutionPolicy", "Bypass",
+        "-File", $streamScript,
+        "-WorkDir", $wtDirResolved,
+        "-PromptFile", $promptFile,
+        "-LogFile", $logFile,
+        "-AgentNum", $Agente.numero,
+        "-Issue", $issue,
+        "-Slug", $slug,
+        "-Branch", $branch
+    ) -PassThru
 
     # Guardar PID en sprint-pids.json
     $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
@@ -429,39 +498,9 @@ if ($Numero -eq "all") {
     Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
     Write-Host ">> Reporte post-sprint se generará automáticamente cuando terminen." -ForegroundColor Cyan
 
-    # Lanzar agent-watcher.js como proceso background (#1441)
-    # Monitorea worktrees externos y promueve automáticamente desde _queue[]
-    $WatcherScript = Join-Path $MainRepo ".claude\hooks\agent-watcher.js"
-    $WatcherPidFile = Join-Path $MainRepo ".claude\hooks\agent-watcher.pid"
-    $WatcherAlreadyRunning = $false
-
-    if (Test-Path $WatcherPidFile) {
-        try {
-            $existingPid = [int](Get-Content $WatcherPidFile -Raw).Trim()
-            $proc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-            if ($proc) {
-                Write-Host ">> Agent Watcher ya activo (PID $existingPid) — no se lanza otro" -ForegroundColor DarkGray
-                $WatcherAlreadyRunning = $true
-            }
-        } catch {
-            # PID file existe pero PID muerto — el watcher lo limpiará al arrancar
-        }
-    }
-
-    if (-not $WatcherAlreadyRunning -and (Test-Path $WatcherScript)) {
-        $watcherLogDir = Join-Path $PSScriptRoot 'logs'
-        if (-not (Test-Path $watcherLogDir)) { New-Item -ItemType Directory -Path $watcherLogDir -Force | Out-Null }
-        $watcherStdout = Join-Path $watcherLogDir "agent-watcher-stdout.log"
-        $watcherStderr = Join-Path $watcherLogDir "agent-watcher-stderr.log"
-
-        $watcherProc = Start-Process node -ArgumentList $WatcherScript -PassThru -WindowStyle Hidden -RedirectStandardOutput $watcherStdout -RedirectStandardError $watcherStderr
-
-        Write-Host ">> Agent Watcher lanzado en background (PID $($watcherProc.Id))" -ForegroundColor Cyan
-        Write-Host ">> Log stdout: $watcherStdout" -ForegroundColor DarkGray
-        Write-Host ">> Log stderr: $watcherStderr" -ForegroundColor DarkGray
-    } elseif (-not (Test-Path $WatcherScript)) {
-        Write-Host ">> WARN: agent-watcher.js no encontrado en: $WatcherScript" -ForegroundColor Yellow
-    }
+    # Agent Watcher DESHABILITADO — destruye agentes al evaluar PRs demasiado rápido (#1551)
+    # TODO: reimplementar con grace period mínimo de 10 min antes de evaluar
+    Write-Host ">> Agent Watcher deshabilitado (bug #1551 — evalúa PRs antes de que los agentes trabajen)" -ForegroundColor DarkGray
 }
 else {
     $num = [int]$Numero

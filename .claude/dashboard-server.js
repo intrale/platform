@@ -95,6 +95,25 @@ const CLAUDE_ICONS = [
 ].filter(Boolean);
 if (CLAUDE_ICONS.length > 0) AGENT_ICON_MAP["Claude"] = CLAUDE_ICONS[0];
 
+// Iconos de robots para agentes raíz del sprint (#1544)
+// Carga robot1.svg a robot10.svg como SVG inline (data URI)
+const ROBOT_ICONS = {};
+for (let i = 1; i <= 10; i++) {
+  ROBOT_ICONS[i] = loadIconDataUri("robots/robot" + i + ".svg");
+}
+
+// Leer SVG raw para inline rendering en nodos del grafo (#1544)
+function loadRobotSvgInline(robotId) {
+  try {
+    const filePath = path.join(ICONS_DIR, "robots", "robot" + robotId + ".svg");
+    return fs.readFileSync(filePath, "utf8");
+  } catch { return ""; }
+}
+const ROBOT_SVGS_INLINE = {};
+for (let i = 1; i <= 10; i++) {
+  ROBOT_SVGS_INLINE[i] = loadRobotSvgInline(i);
+}
+
 // Skill-name → canonical agent name mapping
 const SKILL_TO_AGENT = {
   "/guru": "Guru", "/doc": "Doc", "/historia": "Doc", "/refinar": "Doc", "/priorizar": "Doc",
@@ -228,13 +247,14 @@ function collectData() {
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
-  // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed)
+  // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed + _incomplete)
   // para retener sesiones activas y evitar que se clasifiquen como zombie.
   const sprintIssueSet = new Set(
     sprintPlan ? [
       ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
       ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
       ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
+      ...(Array.isArray(sprintPlan._incomplete) ? sprintPlan._incomplete : []),
     ].map(a => String(a.issue)) : []
   );
 
@@ -300,9 +320,9 @@ function collectData() {
   // CI status via gh
   let ciRuns = [];
   try {
-    const ghPath = "/c/Workspaces/gh-cli/bin/gh.exe";
-    if (fs.existsSync(ghPath.replace(/\//g, "\\"))) {
-      const raw = execSync(ghPath + ' run list --limit 5 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 10000, windowsHide: true }).toString().trim();
+    const ghPath = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
+    if (fs.existsSync(ghPath)) {
+      const raw = execSync('"' + ghPath + '" run list --limit 5 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 15000, windowsHide: true }).toString().trim();
       ciRuns = JSON.parse(raw || "[]");
     }
   } catch {}
@@ -558,6 +578,28 @@ const AGENT_MAP_DASHBOARD = {
   "/ios-dev": "iOSDev", "/web-dev": "WebDev", "/desktop-dev": "DesktopDev",
   "/branch": "Branch",
 };
+
+// Normalizar nombres de skill/agente a nombre canónico (#1542)
+// "PO", "/po", "Po" → "PO"; "tester", "/tester", "Tester" → "Tester"
+function normalizeSkillName(name) {
+  if (!name) return "Claude";
+  const raw = String(name).trim();
+  if (!raw) return "Claude";
+  // Buscar en SKILL_TO_AGENT (con y sin slash)
+  const clean = raw.replace(/^\/+/, "").toLowerCase();
+  const slashVersion = "/" + clean;
+  if (SKILL_TO_AGENT[slashVersion]) return SKILL_TO_AGENT[slashVersion];
+  if (AGENT_MAP_DASHBOARD[slashVersion]) return AGENT_MAP_DASHBOARD[slashVersion];
+  // Coincidencia case-insensitive contra nombres canónicos
+  for (const val of Object.values(SKILL_TO_AGENT)) {
+    if (val.toLowerCase() === clean) return val;
+  }
+  // Coincidencia case-insensitive contra AGENT_ICON_MAP keys
+  for (const key of Object.keys(AGENT_ICON_MAP)) {
+    if (key.toLowerCase() === clean) return key;
+  }
+  return raw;
+}
 
 function groupActivities(activities, limit) {
   if (activities.length === 0) return [];
@@ -925,8 +967,16 @@ function assignRobotIcons(sprintAgents) {
 }
 
 // --- BUILD FLOW GRAPH SVG (force-directed organic layout) ---
-function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS) {
-  const nodes = Array.isArray(agentNodes) ? [...new Set(agentNodes)] : [];
+// rootAgentRobotMap: { canonicalName -> robotId } para asignar icono robot a agentes raíz (#1544)
+function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap) {
+  const robotMap = rootAgentRobotMap || {};
+  // Deduplicar nodos normalizados (#1542)
+  const rawNodes = Array.isArray(agentNodes) ? agentNodes : [];
+  const nodeSet = new Set();
+  for (const n of rawNodes) {
+    nodeSet.add(normalizeSkillName(n));
+  }
+  const nodes = [...nodeSet];
   const transitions = Array.isArray(agentTransitions) ? agentTransitions : [];
 
   if (nodes.length === 0) {
@@ -978,16 +1028,20 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // --- Force-directed layout (simplified, deterministic) ---
-  const nodeR = 22;
-  const svgW = 600;
-  const svgH = 500;
+  const nodeR = 42;
+  // Escalar SVG según cantidad de nodos para que nunca se amontone
+  const baseSize = 1200;
+  const scaleFactor = Math.max(1, nodes.length / 8);
+  const svgW = Math.round(baseSize * Math.max(1, scaleFactor * 0.9));
+  const svgH = Math.round(baseSize * Math.max(0.7, scaleFactor * 0.65));
   const cx = svgW / 2, cy = svgH / 2;
 
   // Initialize positions: spread nodes using golden angle for good distribution
   const positions = {};
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const spreadRadius = Math.min(svgW, svgH) * 0.35;
   nodes.forEach((name, i) => {
-    const r = 70 + Math.sqrt(i) * 55;
+    const r = spreadRadius * 0.3 + Math.sqrt(i) * spreadRadius * 0.25;
     const angle = i * goldenAngle;
     positions[name] = {
       x: cx + r * Math.cos(angle),
@@ -1003,41 +1057,41 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     neighbors[e.to].add(e.from);
   }
 
-  // Run force simulation (80 iterations for better convergence)
-  const padding = nodeR + 24;
-  for (let iter = 0; iter < 80; iter++) {
-    const alpha = 0.3 * (1 - iter / 80);
+  // Run force simulation (120 iterations for better convergence)
+  const padding = nodeR + 40;
+  for (let iter = 0; iter < 120; iter++) {
+    const alpha = 0.4 * (1 - iter / 120);
 
     for (const a of nodes) {
       let fx = 0, fy = 0;
       const pa = positions[a];
 
-      // Repulsion between all pairs (stronger to avoid clustering)
+      // Repulsion between all pairs (much stronger)
       for (const b of nodes) {
         if (a === b) continue;
         const pb = positions[b];
         let dx = pa.x - pb.x, dy = pa.y - pb.y;
         let dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 1) { dx = 0.5; dy = 0.3; dist = 1; }
-        const repulse = 5000 / (dist * dist);
+        const repulse = 25000 / (dist * dist);
         fx += (dx / dist) * repulse;
         fy += (dy / dist) * repulse;
       }
 
-      // Attraction along edges (larger ideal distance)
+      // Attraction along edges (large ideal distance)
       for (const b of neighbors[a]) {
         const pb = positions[b];
         const dx = pb.x - pa.x, dy = pb.y - pa.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const ideal = 130;
-        const attract = (dist - ideal) * 0.05;
+        const ideal = 250;
+        const attract = (dist - ideal) * 0.04;
         fx += (dx / Math.max(dist, 1)) * attract;
         fy += (dy / Math.max(dist, 1)) * attract;
       }
 
-      // Gravity toward center (reduced to avoid clustering)
-      fx += (cx - pa.x) * 0.002;
-      fy += (cy - pa.y) * 0.002;
+      // Gravity toward center (very light)
+      fx += (cx - pa.x) * 0.001;
+      fy += (cy - pa.y) * 0.001;
 
       pa.x += fx * alpha;
       pa.y += fy * alpha;
@@ -1048,9 +1102,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Post-layout: ensure minimum separation (2.5 × nodeR) between all nodes
-  const minDist = nodeR * 2.5;
-  for (let pass = 0; pass < 10; pass++) {
+  // Post-layout: ensure minimum separation (4 × nodeR) between all nodes
+  const minDist = nodeR * 4;
+  for (let pass = 0; pass < 20; pass++) {
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const pa = positions[nodes[i]];
@@ -1071,11 +1125,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
   // Build SVG
   let svg = `<defs>
-    <marker id="flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="var(--text-muted)" opacity="0.6"/>
+    <marker id="flow-arrow" markerWidth="14" markerHeight="10" refX="13" refY="5" orient="auto">
+      <polygon points="0 0, 14 5, 0 10" fill="#60a5fa" opacity="0.85"/>
     </marker>
-    <marker id="flow-arrow-recent" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
-      <polygon points="0 0, 9 3.5, 0 7" fill="#f59e0b" opacity="0.9"/>
+    <marker id="flow-arrow-recent" markerWidth="14" markerHeight="10" refX="13" refY="5" orient="auto">
+      <polygon points="0 0, 14 5, 0 10" fill="#f59e0b" opacity="0.9"/>
     </marker>
     <filter id="node-glow"><feGaussianBlur stdDeviation="4" result="coloredBlur"/>
       <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
@@ -1087,6 +1141,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
         <feFuncB type="linear" slope="1.5" intercept="0.2"/>
       </feComponentTransfer>
     </filter>
+    <style>
+      @keyframes flow-dash { to { stroke-dashoffset: 0; } }
+      .flow-edge { stroke-dasharray: 8 6; stroke-dashoffset: 28; animation: flow-dash 1.2s linear infinite; }
+      .flow-edge-recent { stroke-dasharray: 12 6; stroke-dashoffset: 36; animation: flow-dash 0.8s linear infinite; }
+    </style>
   </defs>`;
 
   // Draw edges as curved arrows with sequential labels and issue reference
@@ -1104,7 +1163,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const y2 = to.y - uy * (nodeR + 8);
     // Check if reverse edge exists → increase curve to avoid overlap
     const reverseKey = e.to + "->" + e.from;
-    const curveMult = edgeSet.has(reverseKey) ? 0.25 : 0.12;
+    const curveMult = edgeSet.has(reverseKey) ? 0.35 : 0.18;
     const midX = (x1 + x2) / 2;
     const midY = (y1 + y2) / 2;
     const cpx = midX + (-(y2 - y1) * curveMult);
@@ -1114,20 +1173,13 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const bMidY = 0.25 * y1 + 0.5 * cpy + 0.25 * y2;
 
     const isRecent = e.isRecent;
-    const strokeColor = isRecent ? "#f59e0b" : "var(--text-muted)";
-    const strokeWidth = isRecent ? "3" : "1.5";
-    const strokeOpacity = isRecent ? "0.85" : "0.45";
+    const strokeColor = isRecent ? "#f59e0b" : "#60a5fa";
+    const strokeWidth = isRecent ? "4" : "3";
+    const strokeOpacity = isRecent ? "0.9" : "0.7";
     const arrowMarker = isRecent ? "url(#flow-arrow-recent)" : "url(#flow-arrow)";
 
-    svg += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
-
-    // Label: sequential number + issue (if available)
-    const label = e.issueNum ? `${e.seq} #${e.issueNum}` : `${e.seq}`;
-    const labelBg = isRecent ? "rgba(245,158,11,0.18)" : "rgba(17,17,27,0.7)";
-    const labelColor = isRecent ? "#fbbf24" : "var(--text-dim)";
-    const labelW = e.issueNum ? 40 : 16;
-    svg += `<rect x="${(bMidX - labelW / 2).toFixed(1)}" y="${(bMidY - 7).toFixed(1)}" width="${labelW}" height="13" rx="3" fill="${labelBg}"/>`;
-    svg += `<text x="${bMidX.toFixed(1)}" y="${(bMidY + 4).toFixed(1)}" text-anchor="middle" font-size="7.5" font-weight="600" fill="${labelColor}" style="pointer-events:none;">${escHtml(label)}</text>`;
+    const edgeClass = isRecent ? "flow-edge-recent" : "flow-edge";
+    svg += `<path class="${edgeClass}" d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
   }
 
   // Draw nodes
@@ -1137,40 +1189,63 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const pos = positions[name];
     if (!pos) continue;
     const color = (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
-    // Resolve icon data URI for SVG <image> — case/skill-insensitive
-    const iconUrl = resolveIconUri(name);
+    // Resolve icon: usar robot SVG para agentes raíz (#1544)
+    // Primero intentar robotMap (sprint-plan), luego patrón "Agente N"
+    let robotId = robotMap[name];
+    if (!robotId) {
+      const agentMatch = name.match(/^Agente\s+(\d+)$/i);
+      if (agentMatch) robotId = ((parseInt(agentMatch[1], 10) - 1) % 10) + 1;
+    }
+    const hasRobot = robotId && ROBOT_ICONS[robotId];
+    const iconUrl = hasRobot ? ROBOT_ICONS[robotId] : resolveIconUri(name);
     const isActive = activeAgents.has(name);
     const isDone = doneAgents.has(name);
     const opacity = (!isActive && !isDone) ? "0.35" : "1";
     const filterAttr = isActive ? 'filter="url(#node-glow)"' : '';
+    // Nodo raíz con robot tiene radio ligeramente mayor
+    const effectiveR = hasRobot ? nodeR + 4 : nodeR;
+    const effectiveImgSize = hasRobot ? effectiveR * 1.6 : imgSize;
 
     svg += `<g class="flow-node" data-agent="${escHtml(name)}" style="cursor:pointer;opacity:${opacity};" ${filterAttr}>`;
     // Fondo más opaco para garantizar contraste del icono sobre fondo oscuro
-    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${nodeR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="2.5"`;
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"`;
     if (isActive) {
       svg += `><animate attributeName="stroke-opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/></circle>`;
     } else {
       svg += `/>`;
     }
     // Círculo de color semitransparente detrás del icono para contraste
-    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${(nodeR - 3).toFixed(1)}" fill="${color}" fill-opacity="0.30"/>`;
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${(effectiveR - 3).toFixed(1)}" fill="${color}" fill-opacity="${hasRobot ? '0.15' : '0.30'}"/>`;
     // Icon: filter brighten para garantizar visibilidad sobre fondo oscuro
     if (iconUrl) {
-      svg += `<image href="${iconUrl}" x="${(pos.x - imgSize / 2).toFixed(1)}" y="${(pos.y - imgSize / 2).toFixed(1)}" width="${imgSize.toFixed(0)}" height="${imgSize.toFixed(0)}" style="pointer-events:none;" filter="url(#icon-brighten)"/>`;
+      svg += `<image href="${iconUrl}" x="${(pos.x - effectiveImgSize / 2).toFixed(1)}" y="${(pos.y - effectiveImgSize / 2).toFixed(1)}" width="${effectiveImgSize.toFixed(0)}" height="${effectiveImgSize.toFixed(0)}" style="pointer-events:none;" filter="url(#icon-brighten)"/>`;
       if (isDone && !isActive) {
-        svg += `<circle cx="${(pos.x + imgSize/2 - 2).toFixed(1)}" cy="${(pos.y - imgSize/2 + 2).toFixed(1)}" r="5" fill="${color}"/>`;
-        svg += `<text x="${(pos.x + imgSize/2 - 2).toFixed(1)}" y="${(pos.y - imgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="7" fill="white">&#10003;</text>`;
+        svg += `<circle cx="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" cy="${(pos.y - effectiveImgSize/2 + 2).toFixed(1)}" r="5" fill="${color}"/>`;
+        svg += `<text x="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" y="${(pos.y - effectiveImgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="7" fill="white">&#10003;</text>`;
       }
     } else if (isDone && !isActive) {
       svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
     }
-    // Label below node
-    const shortName = name.length > 12 ? name.substring(0, 10) + "\u2026" : name;
-    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + nodeR + 14).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)" font-weight="600">${escHtml(shortName)}</text>`;
+    // Badge de robot ID para agentes raíz (#1544)
+    if (hasRobot) {
+      svg += `<circle cx="${(pos.x + effectiveR - 3).toFixed(1)}" cy="${(pos.y - effectiveR + 3).toFixed(1)}" r="8" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
+      svg += `<text x="${(pos.x + effectiveR - 3).toFixed(1)}" y="${(pos.y - effectiveR + 6.5).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="white">${robotId}</text>`;
+    }
+    // Label below node — nombre completo sin truncar
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 22).toFixed(1)}" text-anchor="middle" font-size="18" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
+    // Issue number debajo del nombre para agentes raíz
+    if (hasRobot) {
+      const agentSession = sessionsList.find(s => s.agent_name === name);
+      const branchMatch = agentSession ? (agentSession.branch || "").match(/(\d+)/) : null;
+      if (branchMatch) {
+        const issueUrl = "https://github.com/intrale/platform/issues/" + branchMatch[1];
+        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 40).toFixed(1)}" text-anchor="middle" font-size="15" fill="#60a5fa" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${branchMatch[1]}</text></a>`;
+      }
+    }
     svg += `</g>`;
   }
 
-  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-height:${svgH}px;">${svg}</svg>`;
+  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;">${svg}</svg>`;
 }
 
 // --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
@@ -1417,9 +1492,17 @@ function renderHTML(data, theme) {
 
   // Agent icons — resolves any name (case/skill-insensitive) to <img> tag
   function agentIconHtml(name) {
+    // Para agentes raíz "Agente N", usar robot SVG igual que en el flujo
+    const agentMatch = (name || "").match(/^Agente\s+(\d+)$/i);
+    if (agentMatch) {
+      const rId = ((parseInt(agentMatch[1], 10) - 1) % 10) + 1;
+      if (ROBOT_ICONS[rId]) {
+        return '<img src="' + ROBOT_ICONS[rId] + '" width="20" height="20" style="vertical-align:middle;margin-right:2px;border-radius:50%;" alt="' + escHtml(name) + '">';
+      }
+    }
     const uri = resolveIconUri(name);
     return uri
-      ? '<img src="' + uri + '" width="16" height="16" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name || "") + '">'
+      ? '<img src="' + uri + '" width="20" height="20" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name || "") + '">'
       : "&#129302;";
   }
   const AGENT_ICONS = {};
@@ -1549,16 +1632,15 @@ function renderHTML(data, theme) {
     </div>`;
   }
 
+  // Calcular sprintPct antes de los bloques que lo usan
+  let sprintPct = 0;
+  const completedCount = spCompleted.length;
+  const agentesTotal = (data.sprintPlan && data.sprintPlan.total_stories) || allSprintAgentes.length || 1;
   if (data.sprintPlan && allSprintAgentes.length > 0) {
     const spDate = data.sprintPlan.fecha || "";
     const sprintId = data.sprintPlan.sprint_id || null;
     const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
     const isFinalizado = sprintEstado === "finalizado";
-    const agentesTotal = data.sprintPlan.total_stories || allSprintAgentes.length;
-    const completedCount = spCompleted.length;
-
-    // Progreso del sprint: completados / total_stories
-    let sprintPct;
     const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
     const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
     if (sprintTasksTotal > 0) {
@@ -1704,8 +1786,181 @@ function renderHTML(data, theme) {
     agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
   }
 
-  // --- FLOW TREE (ASCII tree layout) ---
-  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS);
+  // --- UNIFIED AGENT CARDS (combina sprint execution + session info) ---
+  let unifiedAgentsHtml = "";
+  if (data.sprintPlan && allSprintAgentes.length > 0) {
+    const sprintId = data.sprintPlan.sprint_id || "Sprint";
+    const sprintTema = data.sprintPlan.tema || "";
+    const sprintPctColor = sprintPct >= 80 ? "var(--green)" : sprintPct >= 40 ? "#fbbf24" : "var(--text-muted)";
+    unifiedAgentsHtml += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+      <span style="font-size:14px;font-weight:700;color:var(--white);">${escHtml(sprintId)}</span>
+      <span style="font-size:13px;font-weight:700;color:${sprintPctColor};">${sprintPct}%</span>
+      <span style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(sprintTema)}</span>
+      <span style="font-size:10px;color:var(--text-dim);">${spCompleted.length}/${allSprintAgentes.length} completados</span>
+    </div>`;
+
+    // Renderizar secciones: en ejecución, en cola, completados
+    const sections = [
+      { items: spAgentes, label: "EN EJECUCI\u00D3N", color: "var(--accent-green)", icon: "&#9654;" },
+      { items: spQueue, label: "EN COLA", color: "#fbbf24", icon: "&#9711;" },
+      { items: spCompleted, label: "COMPLETADOS", color: "var(--text-muted)", icon: "&#10003;" }
+    ];
+
+    for (const sec of sections) {
+      if (sec.items.length === 0) continue;
+      unifiedAgentsHtml += `<div style="padding:4px 0 6px;font-size:10px;font-weight:600;color:${sec.color};letter-spacing:.04em;">${sec.icon} ${sec.label} (${sec.items.length})</div>`;
+      unifiedAgentsHtml += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;margin-bottom:12px;">`;
+
+      for (const ag of sec.items) {
+        const matchSession = data.sprintSessions.find(s => {
+          const m = (s.branch || "").match(/(\d+)/);
+          return m && m[1] === String(ag.issue);
+        });
+        const agStatus = sec.label.includes("COLA") ? "pending" : sec.label.includes("COMPLETADO") ? "done" : (matchSession ? matchSession._status : "pending");
+        const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
+        const statusLabel = STATUS_LABELS[agStatus] || agStatus;
+        const agentName = matchSession ? (matchSession.agent_name || "Agente") : "Agente " + ag.numero;
+        const icon = AGENT_ICONS[agentName] || agentIconHtml(agentName);
+        const gradient = AGENT_GRADIENTS[agentName] || AGENT_GRADIENTS["Claude"];
+        const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+        const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+        const lastAction = matchSession && matchSession.last_tool ? (escHtml(matchSession.last_tool) + ": " + escHtml((matchSession.last_target || "").substring(0, 40))) : "";
+        const tasks = matchSession ? (matchSession.current_tasks || []) : [];
+        const tasksDone = tasks.filter(t => t.status === "completed").length;
+        const tasksInProg = tasks.filter(t => t.status === "in_progress").length;
+
+        // Barra de progreso
+        const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+        let pct = agStatus === "done" ? 100 : tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
+
+        const isBlocked = matchSession && blockedPids.has(matchSession.id);
+        const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+
+        unifiedAgentsHtml += `
+          <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid ${statusColor};">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+              <div class="agent-avatar" style="background:${gradient};width:36px;height:36px;min-width:36px;">${icon}</div>
+              <div style="flex:1;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="font-weight:700;color:var(--white);font-size:13px;">${escHtml(agentName)}</span>
+                  <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${statusColor}20;color:${statusColor};font-weight:600;">${isBlocked ? '&#128721; Bloqueado' : statusLabel}</span>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);">${formatIssueLink(ag.issue)} &middot; ${escHtml(ag.slug || "")} &middot; <span class="chip chip-blue" style="font-size:9px;padding:1px 4px;">${escHtml(ag.size || "?")}</span></div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${pct}%;background:${barColor};"></div></div>
+              <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${pct}%</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
+              <span>${actionCount} acc${duration ? ' &middot; ' + duration : ''}</span>
+              ${lastAction ? '<span>' + lastAction + '</span>' : ''}
+            </div>${tasks.length > 0 ? `
+            <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
+              ${tasks.map(t => {
+                const checked = t.status === "completed";
+                const inProg = t.status === "in_progress";
+                const checkColor = checked ? "var(--green)" : inProg ? "#fbbf24" : "var(--text-muted)";
+                const checkIcon = checked ? "&#9745;" : inProg ? "&#9654;" : "&#9744;";
+                const textStyle = checked ? "text-decoration:line-through;opacity:0.6;" : inProg ? "color:#fbbf24;font-weight:600;" : "";
+                return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;color:var(--text-dim);">' +
+                  '<span style="color:' + checkColor + ';font-size:13px;">' + checkIcon + '</span>' +
+                  '<span style="' + textStyle + '">' + escHtml(t.subject || t.name || "Tarea") + '</span></div>';
+              }).join("")}
+            </div>` : ""}
+          </div>`;
+      }
+      unifiedAgentsHtml += `</div>`;
+    }
+  } else {
+    unifiedAgentsHtml = '<div class="empty-state">Sin sprint activo</div>';
+  }
+
+  // Sesiones standalone (fuera del sprint)
+  const sprintIssueNums = new Set(allSprintAgentes.map(a => String(a.issue)));
+  const standaloneSessions = visibleSessions.filter(s => {
+    const m = (s.branch || "").match(/(\d+)/);
+    const issueNum = m ? m[1] : null;
+    return s.branch && s.branch.startsWith("agent/") && (!issueNum || !sprintIssueNums.has(issueNum));
+  });
+  if (standaloneSessions.length > 0) {
+    unifiedAgentsHtml += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--surface3);">
+      <div style="font-size:10px;font-weight:600;color:#a78bfa;letter-spacing:.04em;margin-bottom:8px;">&#9881; FUERA DEL SPRINT (${standaloneSessions.length})</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;">`;
+    for (const s of standaloneSessions) {
+      const icon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
+      const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
+      const statusColor = STATUS_COLORS[s._status] || "#555872";
+      const statusLabel = STATUS_LABELS[s._status] || s._status;
+      const branchMatch = (s.branch || "").match(/(\d+)/);
+      const issueNum = branchMatch ? branchMatch[1] : null;
+      const actionCount = s.action_count || 0;
+      const duration = formatDuration(s.started_ts);
+      const lastAction = s.last_tool ? (escHtml(s.last_tool) + ": " + escHtml((s.last_target || "").substring(0, 40))) : "";
+      const tasks = s.current_tasks || [];
+      const tasksDone = tasks.filter(t => t.status === "completed").length;
+
+      unifiedAgentsHtml += `
+        <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid #a78bfa;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <div class="agent-avatar" style="background:${gradient};width:36px;height:36px;min-width:36px;">${icon}</div>
+            <div style="flex:1;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-weight:700;color:var(--white);font-size:13px;">${escHtml(s.agent_name || "Agente")}</span>
+                <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${statusColor}20;color:${statusColor};font-weight:600;">${statusLabel}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);">${issueNum ? formatIssueLink(issueNum) + ' &middot; ' : ''}${escHtml(s.branch || "")}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0}%;background:${statusColor};"></div></div>
+            <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
+            <span>${actionCount} acc &middot; ${duration}</span>
+            ${lastAction ? '<span>' + lastAction + '</span>' : ''}
+          </div>${tasks.length > 0 ? `
+          <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
+            ${tasks.map(t => {
+              const checked = t.status === "completed";
+              const inProg = t.status === "in_progress";
+              const checkColor = checked ? "var(--green)" : inProg ? "#fbbf24" : "var(--text-muted)";
+              const checkIcon = checked ? "&#9745;" : inProg ? "&#9654;" : "&#9744;";
+              const textStyle = checked ? "text-decoration:line-through;opacity:0.6;" : inProg ? "color:#fbbf24;font-weight:600;" : "";
+              return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;color:var(--text-dim);">' +
+                '<span style="color:' + checkColor + ';font-size:13px;">' + checkIcon + '</span>' +
+                '<span style="' + textStyle + '">' + escHtml(t.subject || t.name || "Tarea") + '</span></div>';
+            }).join("")}
+          </div>` : ""}
+        </div>`;
+    }
+    unifiedAgentsHtml += `</div></div>`;
+  }
+
+  // --- FLOW TREE (force-directed layout) ---
+  // Construir mapa de agentes raíz → robotId desde sprint-plan.json (#1544)
+  const rootAgentRobotMap = {};
+  if (data.sprintPlan) {
+    // Incluir agentes activos + completados + incompletos para asignar robots
+    const allAgents = [
+      ...(Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : []),
+      ...(Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : []),
+      ...(Array.isArray(data.sprintPlan._incomplete) ? data.sprintPlan._incomplete : []),
+      ...(Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : [])
+    ];
+    for (const ag of allAgents) {
+      // Buscar sesión para obtener agent_name canónico
+      const matchSession = data.sprintSessions.find(s => {
+        const m = (s.branch || "").match(/(\d+)/);
+        return m && m[1] === String(ag.issue);
+      });
+      if (matchSession && matchSession.agent_name) {
+        const robotId = ((ag.numero - 1) % 10) + 1;
+        rootAgentRobotMap[normalizeSkillName(matchSession.agent_name)] = robotId;
+      }
+    }
+  }
+  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap);
 
   // --- GANTT ROADMAP (#1382) ---
   const ganttHtml = buildGanttChart(data.roadmap);
@@ -1729,12 +1984,17 @@ function renderHTML(data, theme) {
     const time = g.ts ? new Date(g.ts).toLocaleTimeString("es-AR", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "??:??";
     let agentName = g.session || "?";
     let agentIcon = "&#129302;";
-    for (const s of data.sessions) {
-      if (s.id === g.session) {
-        agentName = s.agent_name || "Agente (" + s.id + ")";
-        agentIcon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
-        break;
-      }
+    // Buscar en sesiones activas primero, luego en disco para sesiones done
+    let matchedSession = data.sessions.find(s => s.id === g.session);
+    if (!matchedSession && g.session) {
+      try {
+        const sFile = path.join(SESSIONS_DIR, g.session + ".json");
+        if (fs.existsSync(sFile)) matchedSession = readJson(sFile);
+      } catch {}
+    }
+    if (matchedSession) {
+      agentName = matchedSession.agent_name || "Agente (" + g.session + ")";
+      agentIcon = AGENT_ICONS[matchedSession.agent_name] || agentIconHtml(matchedSession.agent_name);
     }
     const toolLabel = escHtml(g.tool || "");
     let targetText;
@@ -1895,9 +2155,12 @@ function renderHTML(data, theme) {
     const iconClass = isOk ? "ci-ok" : isFail ? "ci-fail" : "ci-run";
     const icon = isOk ? "&#10003;" : isFail ? "&#10007;" : "&#9203;";
     const iconColor = isOk ? "var(--green)" : isFail ? "var(--red)" : "var(--yellow)";
+    const branchIssue = (r.headBranch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+    const issueLink = branchIssue ? formatIssueLink(branchIssue[1]) + " &middot; " : "";
+    const runUrl = r.databaseId ? "https://github.com/intrale/platform/actions/runs/" + r.databaseId : null;
     ciHtml += `<div class="ci-row">
       <div class="ci-icon ${iconClass}" style="color:${iconColor}">${icon}</div>
-      <div class="ci-text"><strong>${escHtml(r.headBranch)}</strong> &middot; ${escHtml((r.displayTitle || "").substring(0, 50))}</div>
+      <div class="ci-text">${issueLink}${runUrl ? '<a href="' + runUrl + '" target="_blank" rel="noopener noreferrer" style="color:var(--white);text-decoration:none;font-weight:700;">' + escHtml(r.headBranch) + '</a>' : '<strong>' + escHtml(r.headBranch) + '</strong>'} &middot; ${linkifyIssueRefs(escHtml((r.displayTitle || "").substring(0, 60)))}</div>
       <div class="ci-time">${formatAge(r.createdAt)}</div>
     </div>`;
   }
@@ -2253,49 +2516,39 @@ function renderHTML(data, theme) {
     <!-- Alerts -->
     ${data.alerts.length > 0 ? '<div class="alerts-panel">' + alertsHtml + '</div>' : ''}
 
-    <!-- KPI Row -->
+    <!-- KPI Row (clickeable → scroll al panel) -->
     <div class="kpi-row">
-      <div class="kpi kpi-green">
+      <a href="#" onclick="document.querySelector('[data-panel=exec]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-green" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:var(--green)">${data.activeSessions}</div>
         <div class="kl">Agentes activos</div>
         <div class="kt" style="color:var(--green)">${data.idleSessions > 0 ? data.idleSessions + ' idle' : 'Todos trabajando'}</div>
-      </div>
-      <div class="kpi kpi-blue">
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=activity]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-blue" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:var(--blue)">${permTotal}</div>
         <div class="kl">Permisos</div>
         <div class="kt" style="color:${permStats.pending > 0 ? 'var(--yellow)' : 'var(--green)'}">${permStats.pending > 0 ? permStats.pending + ' pendiente(s)' : permStats.auto + ' auto'}</div>
-      </div>
-      ${data.ciStatus !== 'unknown' ? `<div class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : 'kpi-orange'}">
-        <div class="kv" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? '&#10003;' : data.ciStatus === 'fail' ? '&#10007;' : '&#9203;'}</div>
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=ci]').scrollIntoView({behavior:'smooth'});return false;" class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : data.ciStatus === 'unknown' ? 'kpi-blue' : 'kpi-orange'}" style="text-decoration:none;cursor:pointer;">
+        <div class="kv" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : data.ciStatus === 'unknown' ? 'var(--text-muted)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? '&#10003;' : data.ciStatus === 'fail' ? '&#10007;' : data.ciStatus === 'unknown' ? '&#8212;' : '&#9203;'}</div>
         <div class="kl">CI / CD</div>
-        <div class="kt" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? 'Build OK' : data.ciStatus === 'fail' ? 'Build FAIL' : 'En curso...'}</div>
-      </div>` : ''}
-      <div class="kpi kpi-orange">
+        <div class="kt" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : data.ciStatus === 'unknown' ? 'var(--text-muted)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? 'Build OK' : data.ciStatus === 'fail' ? 'Build FAIL' : data.ciStatus === 'unknown' ? 'Sin ejecuciones recientes' : 'En curso...'}</div>
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=sessions]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-orange" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:var(--orange)">${data.totalActions}</div>
         <div class="kl">Acciones hoy</div>
         <div class="kt" style="color:var(--orange)">${data.velocity[0] || 0} esta hora</div>
-      </div>
-      <div class="kpi kpi-purple">
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=metrics]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-purple" style="text-decoration:none;cursor:pointer;">
         <div class="kv" style="color:${data.alerts.length > 0 ? 'var(--red)' : 'var(--green)'}">${data.alerts.length}</div>
         <div class="kl">Alertas</div>
         <div class="kt" style="color:${data.alerts.length > 0 ? 'var(--red)' : 'var(--green)'}">${data.alerts.length > 0 ? data.alerts.length + ' activa(s)' : 'Todo limpio'}</div>
-      </div>
+      </a>
     </div>
 
-    <!-- Ejecución + Agents -->
-    <div class="grid-2col" data-panel="exec">
-      <div class="panel">
-        <div class="panel-title">Ejecuci&oacute;n <span class="chip chip-green">${sprintProgress}% completado</span></div>
-        <div class="tasks-progress-bar">
-          <div class="tasks-progress-fill" style="width:${sprintProgress}%; background: var(--gradient-green);"></div>
-        </div>
-        ${ejecutionHtml}
-      </div>
-      <div>
-        <div style="font-size:12px;font-weight:700;color:var(--white);margin-bottom:10px;">Agentes</div>
-        ${agentsHtml}
-      </div>
-    </div>
+    <!-- Ejecución & Agentes (tarjetas unificadas, ancho completo) -->
+    <div class="panel" data-panel="exec" style="margin-bottom:16px;">
+      <div class="panel-title">Ejecuci&oacute;n &amp; Agentes</div>
+      ${unifiedAgentsHtml}
 
     <!-- Fila 1: Flujo de agentes (ancho completo) #1378 -->
     <div class="grid-flow" data-panel="sessions">
@@ -2306,7 +2559,7 @@ function renderHTML(data, theme) {
     </div>
 
     <!-- Fila 2: Actividad en vivo | Permisos #1378 -->
-    <div class="grid-activity">
+    <div class="grid-activity" data-panel="activity">
       <div class="feed-panel" id="activity-feed">
         <div class="panel-title">Actividad en vivo <span class="chip ${data.blockingRelations.length > 0 ? 'chip-red' : 'chip-green'}">${data.blockingRelations.length > 0 ? data.blockingRelations.length + ' bloq.' : 'Sin bloqueos'}</span></div>
         ${feedHtml}
@@ -2339,7 +2592,7 @@ function renderHTML(data, theme) {
 
     <!-- CI/CD — siempre visible (#1413) -->
     <div class="panel" style="margin-bottom:16px;" data-panel="ci">
-      <div class="panel-title">CI / CD</div>
+      <div class="panel-title">CI / CD <span class="chip ${data.ciStatus === 'ok' ? 'chip-green' : data.ciStatus === 'fail' ? 'chip-red' : 'chip-blue'}">${data.ciRuns.length} ejecuciones</span></div>
       ${ciHtml}
     </div>
 
@@ -2371,17 +2624,32 @@ function renderHTML(data, theme) {
       });
     });
 
-    // SSE auto-refresh
+    // SSE auto-refresh con polling real-time (#1212)
     if (!location.search.includes('nosse=1')) {
       var lastUpdate = Date.now();
+      var lastReload = Date.now();
       var evtSource = new EventSource('/events');
       evtSource.onmessage = function(event) {
         lastUpdate = Date.now();
         var data = JSON.parse(event.data);
-        if (data.reload) location.reload();
+        // Actualizar KPIs en vivo sin recargar la página
+        if (data.activeSessions !== undefined) {
+          var kpis = document.querySelectorAll('.kv');
+          if (kpis[0]) kpis[0].textContent = data.activeSessions;
+        }
+        // Recargar página completa cada 30s para refrescar todos los paneles
+        if (data.reload && (Date.now() - lastReload > 30000)) {
+          lastReload = Date.now();
+          location.reload();
+        }
       };
       evtSource.onerror = function() {
         document.getElementById('update-time').textContent = 'Desconectado...';
+        // Reconectar automáticamente después de 5s
+        setTimeout(function() {
+          evtSource.close();
+          evtSource = new EventSource('/events');
+        }, 5000);
       };
       setInterval(function() {
         var secs = Math.floor((Date.now() - lastUpdate) / 1000);
@@ -2536,6 +2804,33 @@ function handleRequest(req, res) {
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end("Sections screenshot error: " + err.message);
     });
+  } else if (pathname === "/api/activity") {
+    // Endpoint liviano para polling de actividad en vivo (#1212)
+    // Retorna tool calls, skill invocations y progreso de agentes
+    const data = collectData();
+    const activityPayload = {
+      ts: data.timestamp,
+      activeSessions: data.activeSessions,
+      totalActions: data.totalActions,
+      pendingPermissions: data.pendingQuestions.length,
+      groupedActivities: (data.groupedActivities || []).slice(0, 10).map(g => ({
+        tool: g.tool,
+        target: (g.target || "").substring(0, 80),
+        session: g.session,
+        count: g.count,
+        ts: g.ts,
+      })),
+      agentProgress: data.sessions.filter(s => s._status === "active").map(s => ({
+        id: s.id,
+        agent: s.agent_name || "Agente",
+        lastTool: s.last_tool,
+        lastTarget: (s.last_target || "").substring(0, 60),
+        actions: s.action_count,
+        skillsInvoked: s.skills_invoked || [],
+      })),
+    };
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+    res.end(JSON.stringify(activityPayload));
   } else if (pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", uptime: process.uptime(), port: PORT }));
@@ -2613,24 +2908,21 @@ async function takeScreenshotSections(width) {
 
     const sectionData = await page.evaluate(() => {
       const selectors = [
-        { id: "kpis",               sel: ".kpi-row" },
-        { id: "ejecucion",          sel: "[data-panel='exec']" },
-        { id: "sesiones",           sel: "[data-panel='sessions']" },
-        { id: "metricas",           sel: "[data-panel='metrics']" },
-        { id: "flujo",              sel: "[data-panel='flow']" },
-        { id: "actividad",          sel: "[data-panel='activity']" },
-        { id: "permisos",           sel: "[data-panel='permissions']" },
-        { id: "agentes-metricas",   sel: "[data-panel='agent-metrics']" },
-        { id: "roadmap",            sel: "[data-panel='roadmap']" },
-        { id: "ci",                 sel: "[data-panel='ci']" },
+        { id: "kpis",               sel: ".kpi-row",                                  w: 0 },
+        { id: "ejecucion",          sel: "[data-panel='exec']",                       w: 0 },
+        { id: "flujo",              sel: "[data-panel='sessions']",                   w: 0 },
+        { id: "actividad",          sel: "[data-panel='activity'] .feed-panel",       w: 0 },
+        { id: "permisos",           sel: "[data-panel='activity'] .panel:last-child", w: 0 },
+        { id: "uso-agentes",        sel: "[data-panel='metrics'] > .panel:first-child", w: 0 },
+        { id: "metricas-agentes",   sel: "[data-panel='metrics'] > .panel:last-child",  w: 0 },
+        { id: "roadmap",            sel: "[data-panel='roadmap']",                    w: 1200 },
+        { id: "ci",                 sel: "[data-panel='ci']",                         w: 0 },
       ];
       return selectors.map(function(s) {
         var el = document.querySelector(s.sel);
-        if (!el) return { id: s.id, found: false };
+        if (!el) return { id: s.id, found: false, customWidth: s.w };
         var r = el.getBoundingClientRect();
-        // Ignorar paneles vacíos o sin altura visible
-        if (r.height < 20 || r.width < 20) return { id: s.id, found: true, visible: false, rect: { h: r.height, w: r.width } };
-        // Redondear a enteros (Puppeteer clip requiere enteros) y corregir offset de scroll
+        if (r.height < 20 || r.width < 20) return { id: s.id, found: true, visible: false, rect: { h: r.height, w: r.width }, customWidth: s.w };
         return {
           id: s.id,
           found: true,
@@ -2639,6 +2931,7 @@ async function takeScreenshotSections(width) {
           y: Math.max(0, Math.round(r.y + window.scrollY)),
           width: Math.round(r.width),
           height: Math.round(r.height),
+          customWidth: s.w,
         };
       });
     });
@@ -2654,22 +2947,54 @@ async function takeScreenshotSections(width) {
     const results = [];
     for (const section of found) {
       try {
-        // Bounds check: el clip no puede superar el alto total de la página
-        const clampedHeight = Math.min(section.height, Math.max(1, pageHeight - section.y));
+        const needsWider = section.customWidth && section.customWidth > width;
+
+        // Si la sección necesita más ancho, re-renderizar con viewport más ancho
+        if (needsWider) {
+          await page.setViewport({ width: section.customWidth, height: 2400 });
+          await page.reload({ waitUntil: "load", timeout: 15000 });
+          await new Promise(r => setTimeout(r, 2000));
+          // Re-obtener bounds con el nuevo viewport
+          const newRect = await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { x: Math.max(0, Math.round(r.x)), y: Math.max(0, Math.round(r.y + window.scrollY)), width: Math.round(r.width), height: Math.round(r.height) };
+          }, "[data-panel='" + section.id + "']");
+          if (newRect) {
+            section.x = newRect.x;
+            section.y = newRect.y;
+            section.width = newRect.width;
+            section.height = newRect.height;
+          }
+        }
+
+        // Bounds check: el clip no puede superar el alto total de la página ni 1200px max
+        const currentPageHeight = needsWider ? await page.evaluate(() => document.body.scrollHeight) : pageHeight;
+        const clampedHeight = Math.min(section.height, Math.max(1, currentPageHeight - section.y), 1200);
         if (clampedHeight < 20) {
           console.log("[dashboard-server] Sección " + section.id + " clampedHeight=" + clampedHeight + " < 20 — omitida");
+          if (needsWider) { await page.setViewport({ width, height: 2400 }); await page.reload({ waitUntil: "load", timeout: 15000 }); await new Promise(r => setTimeout(r, 2000)); }
           continue;
         }
 
+        const captureWidth = needsWider ? section.customWidth : Math.min(section.width, width);
         const buf = await page.screenshot({
           type: "png",
           clip: {
             x: section.x,
             y: section.y,
-            width: Math.min(section.width, width),
+            width: captureWidth,
             height: clampedHeight,
           },
         });
+
+        // Restaurar viewport original si se cambió
+        if (needsWider) {
+          await page.setViewport({ width, height: 2400 });
+          await page.reload({ waitUntil: "load", timeout: 15000 });
+          await new Promise(r => setTimeout(r, 2000));
+        }
         // Solo incluir si la imagen tiene contenido real (> 5KB)
         if (buf.length > 5000) {
           results.push({ id: section.id, image: buf.toString("base64") });
@@ -2690,9 +3015,29 @@ async function takeScreenshotSections(width) {
 }
 
 // --- SSE Broadcaster ---
+// Envía datos parciales de actividad para actualización en vivo (#1212)
+// El cliente recibe: reload (para refrescar HTML completo) + actividad + KPIs
 function broadcastSSE() {
   const data = collectData();
-  const msg = JSON.stringify({ reload: true, ts: data.timestamp });
+  const msg = JSON.stringify({
+    reload: true,
+    ts: data.timestamp,
+    // Datos parciales para actualización en vivo (#1212)
+    activeSessions: data.activeSessions,
+    idleSessions: data.idleSessions,
+    totalActions: data.totalActions,
+    ciStatus: data.ciStatus,
+    alertCount: data.alerts.length,
+    pendingPermissions: data.pendingQuestions.length,
+    // Últimas 5 actividades para feed en vivo
+    recentActivity: (data.groupedActivities || []).slice(0, 5).map(g => ({
+      tool: g.tool,
+      target: (g.target || "").substring(0, 60),
+      session: g.session,
+      count: g.count,
+      ts: g.ts,
+    })),
+  });
   for (const client of sseClients) {
     if (client.alive) {
       try { client.res.write("data: " + msg + "\n\n"); } catch { client.alive = false; sseClients.delete(client); }
@@ -2779,7 +3124,7 @@ function startServer() {
     setInterval(checkSprintPlanFreshness, 1000); // Watcher freshness sprint-plan.json (#1434)
     setInterval(checkAutoStop, 5 * 60 * 1000);
 
-    startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, port: PORT });
+    startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, takeScreenshotSectionsFn: takeScreenshotSections, port: PORT });
   });
 
   server.on("error", (err) => {

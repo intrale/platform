@@ -210,14 +210,16 @@ export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n' | git credential fi
 node /c/Workspaces/Intrale/platform/.claude/hooks/add-to-project-status.js $ISSUE_NUMBER "$BACKLOG"
 ```
 
-### Paso 8: Análisis paralelo
+### Paso 8: Análisis paralelo (refinamiento + UX)
 
-Con el número del issue recién creado, lanzar simultáneamente (en el MISMO mensaje):
+Con el número del issue recién creado, lanzar simultáneamente (en el MISMO mensaje, todos en paralelo):
+- `/po acceptance $ISSUE_NUMBER` → criterios de aceptación y dependencias (SIEMPRE)
+- `/ux analyze #$ISSUE_NUMBER` → análisis UX de pantallas, flujos y accesibilidad (si el issue toca `ui/` o tiene label `app:*`)
 - `/qa validate $ISSUE_NUMBER` → casos de prueba E2E
 - `/security analyze #$ISSUE_NUMBER` → análisis OWASP y riesgos
 - `/guru "Analizar impacto técnico del issue #$ISSUE_NUMBER en el codebase: módulos afectados, archivos a crear o modificar, dependencias técnicas"`
 
-**Convergencia:** esperar los 3 antes de continuar. Si alguno falla, indicarlo pero no bloquear (excepto si /security retorna riesgo ALTO con findings Critical).
+**Convergencia:** esperar todos antes de continuar. Si alguno falla, indicarlo pero no bloquear (excepto si /security retorna riesgo ALTO con findings Critical).
 
 ### Paso 9: Consolidar resultados en el issue body
 
@@ -228,6 +230,14 @@ gh issue edit $ISSUE_NUMBER --repo intrale/platform --body "$(cat <<'BODY_EOF'
 $ORIGINAL_BODY
 
 ---
+
+## Criterios de Aceptación (PO)
+
+[Resumen del resultado de /po — criterios BDD, dependencias detectadas]
+
+## Análisis UX
+
+[Resumen del resultado de /ux — si aplica: pantallas, flujos, accesibilidad. Si no aplica: "N/A — issue sin impacto en UI"]
 
 ## Casos de Prueba (QA)
 
@@ -245,7 +255,7 @@ BODY_EOF
 ```
 
 **Reglas:**
-- Insertar las 3 secciones al final del body
+- Insertar las 5 secciones al final del body (PO siempre, UX si aplica, QA, Security, Guru)
 - NO modificar ni sobreescribir secciones preexistentes
 - Si un skill falló: indicar motivo y comando para ejecutarlo manualmente
 - Si /security retornó riesgo ALTO con findings Critical: NO avanzar al Paso 10, reportar al usuario

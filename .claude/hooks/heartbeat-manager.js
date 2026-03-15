@@ -34,12 +34,12 @@ const MAIN_REPO_ROOT = resolveMainRepoRoot();
 const ROADMAP_FILE = path.join(MAIN_REPO_ROOT, 'scripts', 'roadmap.json');
 
 // Constantes del intervalo adaptativo
-const INTERVAL_STEP_MIN = 10;       // Minutos extra por cada ciclo inactivo
-const MAX_INTERVAL_MIN = 60;        // Cap máximo del intervalo
+const INTERVAL_STEP_MIN = 15;       // +15 min por cada ciclo sin actividad
+const MAX_INTERVAL_MIN = 180;       // Cap máximo: 3 horas
 const ACTIVITY_THRESHOLD_MIN = 15;  // Umbral de actividad en minutos
 
 // Estado interno del módulo (mutable entre ciclos)
-let heartbeatCurrentInterval = 10;
+let heartbeatCurrentInterval = 15;
 let heartbeatConsecutiveIdle = 0;
 let heartbeatMode = 'normal';       // "normal" | "idle"
 let heartbeatSkipCount = 0;
@@ -49,10 +49,11 @@ let heartbeatTimer = null;
 // Configuración inyectada por el caller en startHeartbeat()
 let tgConfig = { bot_token: '', chat_id: '' };
 let sessionsDir = DEFAULT_SESSIONS_DIR;
-let reportIntervalMin = 10;
+let reportIntervalMin = 15;
 let portRef = 3100;
 let collectDataFn = null;
 let takeScreenshotFn = null;
+let takeScreenshotSectionsFn = null;
 
 // --- Horizonte del roadmap ---
 
@@ -230,6 +231,48 @@ function sendTelegramMediaGroup(photos, caption, silent) {
   });
 }
 
+// Enviar álbum con media descriptors personalizados (captions por foto)
+function sendTelegramMediaGroupRaw(photos, media, silent) {
+  if (!tgConfig.bot_token || !tgConfig.chat_id) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const boundary = '----FormBoundary' + Date.now().toString(36);
+    let parts = [];
+    parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n' + tgConfig.chat_id + '\r\n'));
+    parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="media"\r\n\r\n' + JSON.stringify(media) + '\r\n'));
+    if (silent) {
+      parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="disable_notification"\r\n\r\ntrue\r\n'));
+    }
+    photos.forEach((buf, i) => {
+      parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="photo' + i + '"; filename="photo' + i + '.png"\r\nContent-Type: image/png\r\n\r\n'));
+      parts.push(buf);
+      parts.push(Buffer.from('\r\n'));
+    });
+    parts.push(Buffer.from('--' + boundary + '--\r\n'));
+    const payload = Buffer.concat(parts);
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: '/bot' + tgConfig.bot_token + '/sendMediaGroup',
+      method: 'POST',
+      headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'Content-Length': payload.length },
+      timeout: 30000
+    }, (res) => {
+      let d = '';
+      res.on('data', (c) => d += c);
+      res.on('end', () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) resolve(r);
+          else { console.log('[heartbeat] MediaGroup error: ' + d.substring(0, 200)); reject(new Error(d)); }
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 // Validar que un buffer es un PNG real (magic bytes: 89 50 4E 47 0D 0A 1A 0A)
 function isPngValid(buf) {
   if (!buf || buf.length < 8) return false;
@@ -250,40 +293,73 @@ async function sendHeartbeat() {
       : ' (cada ' + heartbeatCurrentInterval + ' min \u2014 sin actividad)';
     const horizon = readRoadmapHorizon();
     const horizonLine = horizon !== null ? '\n\ud83d\udcc5 Horizonte: ' + horizon + ' sprint' + (horizon !== 1 ? 's' : '') + ' planificado' + (horizon !== 1 ? 's' : '') : '';
+    const sprintId = (data.sprintPlan && data.sprintPlan.sprint_id) || null;
+    const sprintTema = (data.sprintPlan && data.sprintPlan.tema) || '';
+    const sprintLine = sprintId ? '\n\ud83c\udfc3 <b>' + sprintId + '</b>: ' + sprintTema : '';
+    const agentsLine = '\n\ud83e\udd16 ' + (data.activeSessions || 0) + ' agente(s) activo(s)' + (data.idleSessions > 0 ? ' \u00b7 ' + data.idleSessions + ' idle' : '');
     const caption = modeIcon + ' <b>Intrale Monitor \u2014 Heartbeat</b>' + modeLabel + '\n' +
       new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }) +
-      horizonLine;
+      sprintLine + agentsLine + horizonLine;
 
-    if (takeScreenshotFn) {
-      // 1. Intentar álbum top/bottom (split screenshot)
-      try {
-        console.log('[heartbeat] Intentando álbum top/bottom (600x800)...');
-        const parts = await takeScreenshotFn(600, 800, { split: true });
-        if (Array.isArray(parts) && isPngValid(parts[0]) && parts[0].length > 1000 &&
-            isPngValid(parts[1]) && parts[1].length > 1000) {
-          await sendTelegramMediaGroup(parts, caption, true);
-          console.log('[heartbeat] Álbum enviado OK (top=' + parts[0].length + 'b bottom=' + parts[1].length + 'b)');
-          heartbeatSkipCount = 0;
-          return;
+    if (takeScreenshotSectionsFn || takeScreenshotFn) {
+      // 1. Intentar álbum por secciones del dashboard (9 imágenes max)
+      if (takeScreenshotSectionsFn) {
+        try {
+          console.log('[heartbeat] Capturando secciones del dashboard...');
+          const sections = await takeScreenshotSectionsFn(600);
+          const validSections = sections.filter(s => s.image && Buffer.from(s.image, 'base64').length > 500);
+          if (validSections.length > 0) {
+            // Telegram permite max 10 fotos por álbum — enviar en lotes
+            const sectionLabels = {
+              kpis: '\ud83d\udcca <b>KPIs</b> — Agentes, permisos, CI/CD, acciones, alertas',
+              ejecucion: '\ud83d\ude80 <b>Ejecuci\u00f3n & Agentes</b> — Estado del sprint activo',
+              flujo: '\ud83d\udd00 <b>Flujo de Agentes</b> — Interacciones entre agentes',
+              actividad: '\u26a1 <b>Actividad en Vivo</b> — \u00daltimas acciones de agentes',
+              permisos: '\ud83d\udd10 <b>Permisos</b> — Solicitudes auto/aprobadas/rechazadas',
+              'uso-agentes': '\ud83d\udcca <b>Uso de Agentes</b> — Invocaciones de skills',
+              'metricas-agentes': '\ud83d\udcc8 <b>M\u00e9tricas de Agentes</b> — Sesiones y duraci\u00f3n',
+              roadmap: '\ud83d\uddfa\ufe0f <b>Roadmap</b> — Planificaci\u00f3n de sprints',
+              ci: '\u2699\ufe0f <b>CI/CD</b> — Estado de GitHub Actions'
+            };
+            const photos = validSections.map(s => Buffer.from(s.image, 'base64'));
+            const captions = validSections.map((s, i) => i === 0 ? caption : (sectionLabels[s.id] || s.id));
+
+            // Enviar en lotes de max 10
+            for (let i = 0; i < photos.length; i += 10) {
+              const batch = photos.slice(i, i + 10);
+              const batchCaptions = captions.slice(i, i + 10);
+              // sendMediaGroup con captions individuales
+              const media = batch.map((_, j) => ({
+                type: 'photo',
+                media: 'attach://photo' + j,
+                ...(batchCaptions[j] ? { caption: batchCaptions[j], parse_mode: 'HTML' } : {})
+              }));
+              await sendTelegramMediaGroupRaw(batch, media, true);
+            }
+            console.log('[heartbeat] ' + validSections.length + ' secciones enviadas: [' + validSections.map(s => s.id).join(', ') + ']');
+            heartbeatSkipCount = 0;
+            return;
+          }
+          console.log('[heartbeat] Secciones vacías — fallback a screenshot único');
+        } catch (e) {
+          console.log('[heartbeat] Secciones fallidas: ' + e.message + ' — fallback');
         }
-        console.log('[heartbeat] Álbum inválido — top=' + (parts ? parts[0].length : 0) + 'b bottom=' + (parts ? parts[1].length : 0) + 'b');
-      } catch (e) {
-        console.log('[heartbeat] Álbum fallido: ' + e.message);
       }
 
-      // 2. Intentar screenshot único
-      try {
-        console.log('[heartbeat] Intentando screenshot único (600x800)...');
-        const screenshot = await takeScreenshotFn(600, 800);
-        if (screenshot && isPngValid(screenshot) && screenshot.length > 1000) {
-          await sendTelegramPhoto(screenshot, caption, true);
-          console.log('[heartbeat] Screenshot único enviado OK (' + screenshot.length + 'b)');
-          heartbeatSkipCount = 0;
-          return;
+      // 2. Fallback: screenshot único
+      if (takeScreenshotFn) {
+        try {
+          console.log('[heartbeat] Intentando screenshot único (600x800)...');
+          const screenshot = await takeScreenshotFn(600, 800);
+          if (screenshot && isPngValid(screenshot) && screenshot.length > 1000) {
+            await sendTelegramPhoto(screenshot, caption, true);
+            console.log('[heartbeat] Screenshot único enviado OK (' + screenshot.length + 'b)');
+            heartbeatSkipCount = 0;
+            return;
+          }
+        } catch (e) {
+          console.log('[heartbeat] Screenshot único fallido: ' + e.message);
         }
-        console.log('[heartbeat] Screenshot único inválido — ' + (screenshot ? screenshot.length : 0) + 'b, isPng=' + (screenshot ? isPngValid(screenshot) : false));
-      } catch (e) {
-        console.log('[heartbeat] Screenshot único fallido: ' + e.message);
       }
     }
 
@@ -365,6 +441,7 @@ function startHeartbeat(opts) {
   portRef = opts.port || 3100;
   collectDataFn = opts.collectDataFn || null;
   takeScreenshotFn = opts.takeScreenshotFn || null;
+  takeScreenshotSectionsFn = opts.takeScreenshotSectionsFn || null;
 
   if (!tgConfig.bot_token || reportIntervalMin <= 0) {
     console.log('[heartbeat] Desactivado (bot_token=' + !!tgConfig.bot_token + ' interval=' + reportIntervalMin + ')');

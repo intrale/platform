@@ -15,6 +15,15 @@ class ClientOrderRepository {
     fun getOrder(business: String, email: String, orderId: String): ClientOrderPayload? =
         orders[key(business, email)]?.firstOrNull { it.id == orderId }?.copy()
 
+    fun listAllOrdersForBusiness(business: String): List<BusinessOrderItem> =
+        orders.entries
+            .filter { (k, _) -> k.startsWith("${business.lowercase()}#") }
+            .flatMap { (k, list) ->
+                val clientEmail = k.substringAfter("#")
+                list.map { order -> BusinessOrderItem(clientEmail = clientEmail, order = order.copy()) }
+            }
+            .sortedByDescending { it.order.createdAt }
+
     fun createOrder(business: String, email: String, payload: ClientOrderPayload): ClientOrderPayload {
         val now = Instant.now().toString()
         val created = payload.copy(
