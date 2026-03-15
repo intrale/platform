@@ -416,6 +416,26 @@ function reconcileRoadmap(plan, roadmap) {
         roadmap.updated_by = "sprint-sync";
     }
 
+    // Mantener exactamente 5 sprints: 1 done + actual + 3 futuros
+    // Eliminar sprints done antiguos si hay más de 1
+    const doneCount = roadmap.sprints.filter(s => s.status === "done").length;
+    if (doneCount > 1) {
+        // Mantener solo el último done
+        const doneSprs = roadmap.sprints.filter(s => s.status === "done");
+        const latestDone = doneSprs[doneSprs.length - 1];
+        const removed = roadmap.sprints.filter(s => s.status === "done" && s.id !== latestDone.id);
+        if (removed.length > 0) {
+            roadmap.sprints = roadmap.sprints.filter(s => s.status !== "done" || s.id === latestDone.id);
+            roadmap.updated_ts = new Date().toISOString();
+            roadmap.updated_by = "sprint-sync";
+            for (const r of removed) {
+                changes.push("roadmap: sprint " + r.id + " archivado (mantener 5 sprints)");
+            }
+            log("Roadmap: archivados " + removed.length + " sprint(s) done antiguos");
+        }
+    }
+    roadmap.horizon_sprints = 5;
+
     return changes;
 }
 
