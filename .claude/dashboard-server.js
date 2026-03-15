@@ -946,16 +946,20 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // --- Force-directed layout (simplified, deterministic) ---
-  const nodeR = 28;
-  const svgW = 900;
-  const svgH = 650;
+  const nodeR = 42;
+  // Escalar SVG según cantidad de nodos para que nunca se amontone
+  const baseSize = 1200;
+  const scaleFactor = Math.max(1, nodes.length / 8);
+  const svgW = Math.round(baseSize * Math.max(1, scaleFactor * 0.9));
+  const svgH = Math.round(baseSize * Math.max(0.7, scaleFactor * 0.65));
   const cx = svgW / 2, cy = svgH / 2;
 
   // Initialize positions: spread nodes using golden angle for good distribution
   const positions = {};
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const spreadRadius = Math.min(svgW, svgH) * 0.35;
   nodes.forEach((name, i) => {
-    const r = 90 + Math.sqrt(i) * 70;
+    const r = spreadRadius * 0.3 + Math.sqrt(i) * spreadRadius * 0.25;
     const angle = i * goldenAngle;
     positions[name] = {
       x: cx + r * Math.cos(angle),
@@ -971,41 +975,41 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     neighbors[e.to].add(e.from);
   }
 
-  // Run force simulation (80 iterations for better convergence)
-  const padding = nodeR + 24;
-  for (let iter = 0; iter < 80; iter++) {
-    const alpha = 0.3 * (1 - iter / 80);
+  // Run force simulation (120 iterations for better convergence)
+  const padding = nodeR + 40;
+  for (let iter = 0; iter < 120; iter++) {
+    const alpha = 0.4 * (1 - iter / 120);
 
     for (const a of nodes) {
       let fx = 0, fy = 0;
       const pa = positions[a];
 
-      // Repulsion between all pairs (stronger to avoid clustering)
+      // Repulsion between all pairs (much stronger)
       for (const b of nodes) {
         if (a === b) continue;
         const pb = positions[b];
         let dx = pa.x - pb.x, dy = pa.y - pb.y;
         let dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 1) { dx = 0.5; dy = 0.3; dist = 1; }
-        const repulse = 5000 / (dist * dist);
+        const repulse = 25000 / (dist * dist);
         fx += (dx / dist) * repulse;
         fy += (dy / dist) * repulse;
       }
 
-      // Attraction along edges (larger ideal distance)
+      // Attraction along edges (large ideal distance)
       for (const b of neighbors[a]) {
         const pb = positions[b];
         const dx = pb.x - pa.x, dy = pb.y - pa.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const ideal = 170;
-        const attract = (dist - ideal) * 0.05;
+        const ideal = 250;
+        const attract = (dist - ideal) * 0.04;
         fx += (dx / Math.max(dist, 1)) * attract;
         fy += (dy / Math.max(dist, 1)) * attract;
       }
 
-      // Gravity toward center (reduced to avoid clustering)
-      fx += (cx - pa.x) * 0.002;
-      fy += (cy - pa.y) * 0.002;
+      // Gravity toward center (very light)
+      fx += (cx - pa.x) * 0.001;
+      fy += (cy - pa.y) * 0.001;
 
       pa.x += fx * alpha;
       pa.y += fy * alpha;
@@ -1016,9 +1020,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Post-layout: ensure minimum separation (2.5 × nodeR) between all nodes
-  const minDist = nodeR * 2.5;
-  for (let pass = 0; pass < 10; pass++) {
+  // Post-layout: ensure minimum separation (4 × nodeR) between all nodes
+  const minDist = nodeR * 4;
+  for (let pass = 0; pass < 20; pass++) {
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const pa = positions[nodes[i]];
@@ -1039,11 +1043,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
   // Build SVG
   let svg = `<defs>
-    <marker id="flow-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
-      <polygon points="0 0, 10 4, 0 8" fill="#60a5fa" opacity="0.85"/>
+    <marker id="flow-arrow" markerWidth="14" markerHeight="10" refX="13" refY="5" orient="auto">
+      <polygon points="0 0, 14 5, 0 10" fill="#60a5fa" opacity="0.85"/>
     </marker>
-    <marker id="flow-arrow-recent" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
-      <polygon points="0 0, 12 4.5, 0 9" fill="#f59e0b" opacity="0.9"/>
+    <marker id="flow-arrow-recent" markerWidth="14" markerHeight="10" refX="13" refY="5" orient="auto">
+      <polygon points="0 0, 14 5, 0 10" fill="#f59e0b" opacity="0.9"/>
     </marker>
     <filter id="node-glow"><feGaussianBlur stdDeviation="4" result="coloredBlur"/>
       <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
@@ -1077,7 +1081,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const y2 = to.y - uy * (nodeR + 8);
     // Check if reverse edge exists → increase curve to avoid overlap
     const reverseKey = e.to + "->" + e.from;
-    const curveMult = edgeSet.has(reverseKey) ? 0.25 : 0.12;
+    const curveMult = edgeSet.has(reverseKey) ? 0.35 : 0.18;
     const midX = (x1 + x2) / 2;
     const midY = (y1 + y2) / 2;
     const cpx = midX + (-(y2 - y1) * curveMult);
@@ -1094,28 +1098,6 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
     const edgeClass = isRecent ? "flow-edge-recent" : "flow-edge";
     svg += `<path class="${edgeClass}" d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
-
-    // Label: solo issue number, posicionado al costado de la flecha sin superponerse
-    if (e.issueNum) {
-      const label = `#${e.issueNum}`;
-      const labelBg = isRecent ? "rgba(245,158,11,0.22)" : "rgba(17,17,27,0.75)";
-      const labelColor = isRecent ? "#fbbf24" : "var(--text-dim)";
-      // Tangente de la curva en t=0.5: derivada del Bézier cuadrático
-      const tangX = (x2 - x1);
-      const tangY = (y2 - y1);
-      const tangLen = Math.sqrt(tangX * tangX + tangY * tangY) || 1;
-      // Perpendicular normalizada (siempre hacia el mismo lado que el control point)
-      let perpX = -tangY / tangLen;
-      let perpY = tangX / tangLen;
-      // Asegurar que el label va hacia el mismo lado que la curva
-      const cpSide = (cpx - midX) * perpX + (cpy - midY) * perpY;
-      if (cpSide < 0) { perpX = -perpX; perpY = -perpY; }
-      const offsetDist = 30;
-      const lx = bMidX + perpX * offsetDist;
-      const ly = bMidY + perpY * offsetDist;
-      svg += `<rect x="${(lx - 24).toFixed(1)}" y="${(ly - 9).toFixed(1)}" width="48" height="18" rx="4" fill="${labelBg}"/>`;
-      svg += `<text x="${lx.toFixed(1)}" y="${(ly + 5).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="${labelColor}" style="pointer-events:none;">${escHtml(label)}</text>`;
-    }
   }
 
   // Draw nodes
@@ -1144,7 +1126,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
     svg += `<g class="flow-node" data-agent="${escHtml(name)}" style="cursor:pointer;opacity:${opacity};" ${filterAttr}>`;
     // Fondo más opaco para garantizar contraste del icono sobre fondo oscuro
-    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '3' : '2.5'}"`;
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"`;
     if (isActive) {
       svg += `><animate attributeName="stroke-opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/></circle>`;
     } else {
@@ -1168,7 +1150,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       svg += `<text x="${(pos.x + effectiveR - 3).toFixed(1)}" y="${(pos.y - effectiveR + 6.5).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="white">${robotId}</text>`;
     }
     // Label below node — nombre completo sin truncar
-    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 18).toFixed(1)}" text-anchor="middle" font-size="13" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 22).toFixed(1)}" text-anchor="middle" font-size="18" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
+    // Issue number debajo del nombre para agentes raíz
+    if (hasRobot) {
+      const agentSession = sessionsList.find(s => s.agent_name === name);
+      const branchMatch = agentSession ? (agentSession.branch || "").match(/(\d+)/) : null;
+      if (branchMatch) {
+        svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 40).toFixed(1)}" text-anchor="middle" font-size="15" fill="#60a5fa" font-weight="500">#${branchMatch[1]}</text>`;
+      }
+    }
     svg += `</g>`;
   }
 
@@ -1419,9 +1409,17 @@ function renderHTML(data, theme) {
 
   // Agent icons — resolves any name (case/skill-insensitive) to <img> tag
   function agentIconHtml(name) {
+    // Para agentes raíz "Agente N", usar robot SVG igual que en el flujo
+    const agentMatch = (name || "").match(/^Agente\s+(\d+)$/i);
+    if (agentMatch) {
+      const rId = ((parseInt(agentMatch[1], 10) - 1) % 10) + 1;
+      if (ROBOT_ICONS[rId]) {
+        return '<img src="' + ROBOT_ICONS[rId] + '" width="20" height="20" style="vertical-align:middle;margin-right:2px;border-radius:50%;" alt="' + escHtml(name) + '">';
+      }
+    }
     const uri = resolveIconUri(name);
     return uri
-      ? '<img src="' + uri + '" width="16" height="16" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name || "") + '">'
+      ? '<img src="' + uri + '" width="20" height="20" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name || "") + '">'
       : "&#129302;";
   }
   const AGENT_ICONS = {};
@@ -1741,12 +1739,17 @@ function renderHTML(data, theme) {
     const time = g.ts ? new Date(g.ts).toLocaleTimeString("es-AR", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "??:??";
     let agentName = g.session || "?";
     let agentIcon = "&#129302;";
-    for (const s of data.sessions) {
-      if (s.id === g.session) {
-        agentName = s.agent_name || "Agente (" + s.id + ")";
-        agentIcon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
-        break;
-      }
+    // Buscar en sesiones activas primero, luego en disco para sesiones done
+    let matchedSession = data.sessions.find(s => s.id === g.session);
+    if (!matchedSession && g.session) {
+      try {
+        const sFile = path.join(SESSIONS_DIR, g.session + ".json");
+        if (fs.existsSync(sFile)) matchedSession = readJson(sFile);
+      } catch {}
+    }
+    if (matchedSession) {
+      agentName = matchedSession.agent_name || "Agente (" + g.session + ")";
+      agentIcon = AGENT_ICONS[matchedSession.agent_name] || agentIconHtml(matchedSession.agent_name);
     }
     const toolLabel = escHtml(g.tool || "");
     let targetText;
