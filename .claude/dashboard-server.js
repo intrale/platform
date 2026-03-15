@@ -1157,7 +1157,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       const agentSession = sessionsList.find(s => s.agent_name === name);
       const branchMatch = agentSession ? (agentSession.branch || "").match(/(\d+)/) : null;
       if (branchMatch) {
-        svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 40).toFixed(1)}" text-anchor="middle" font-size="15" fill="#60a5fa" font-weight="500">#${branchMatch[1]}</text>`;
+        const issueUrl = "https://github.com/intrale/platform/issues/" + branchMatch[1];
+        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 40).toFixed(1)}" text-anchor="middle" font-size="15" fill="#60a5fa" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${branchMatch[1]}</text></a>`;
       }
     }
     svg += `</g>`;
