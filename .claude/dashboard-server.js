@@ -1040,7 +1040,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   // Build SVG
   let svg = `<defs>
     <marker id="flow-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
-      <polygon points="0 0, 10 4, 0 8" fill="var(--text-muted)" opacity="0.6"/>
+      <polygon points="0 0, 10 4, 0 8" fill="#60a5fa" opacity="0.85"/>
     </marker>
     <marker id="flow-arrow-recent" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
       <polygon points="0 0, 12 4.5, 0 9" fill="#f59e0b" opacity="0.9"/>
@@ -1087,21 +1087,35 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const bMidY = 0.25 * y1 + 0.5 * cpy + 0.25 * y2;
 
     const isRecent = e.isRecent;
-    const strokeColor = isRecent ? "#f59e0b" : "var(--text-muted)";
-    const strokeWidth = isRecent ? "3" : "1.5";
-    const strokeOpacity = isRecent ? "0.85" : "0.45";
+    const strokeColor = isRecent ? "#f59e0b" : "#60a5fa";
+    const strokeWidth = isRecent ? "4" : "3";
+    const strokeOpacity = isRecent ? "0.9" : "0.7";
     const arrowMarker = isRecent ? "url(#flow-arrow-recent)" : "url(#flow-arrow)";
 
     const edgeClass = isRecent ? "flow-edge-recent" : "flow-edge";
     svg += `<path class="${edgeClass}" d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
 
-    // Label: sequential number + issue (if available)
-    const label = e.issueNum ? `${e.seq} #${e.issueNum}` : `${e.seq}`;
-    const labelBg = isRecent ? "rgba(245,158,11,0.22)" : "rgba(17,17,27,0.75)";
-    const labelColor = isRecent ? "#fbbf24" : "var(--text-dim)";
-    const labelW = e.issueNum ? 56 : 24;
-    svg += `<rect x="${(bMidX - labelW / 2).toFixed(1)}" y="${(bMidY - 9).toFixed(1)}" width="${labelW}" height="18" rx="4" fill="${labelBg}"/>`;
-    svg += `<text x="${bMidX.toFixed(1)}" y="${(bMidY + 5).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="${labelColor}" style="pointer-events:none;">${escHtml(label)}</text>`;
+    // Label: solo issue number, posicionado al costado de la flecha sin superponerse
+    if (e.issueNum) {
+      const label = `#${e.issueNum}`;
+      const labelBg = isRecent ? "rgba(245,158,11,0.22)" : "rgba(17,17,27,0.75)";
+      const labelColor = isRecent ? "#fbbf24" : "var(--text-dim)";
+      // Tangente de la curva en t=0.5: derivada del Bézier cuadrático
+      const tangX = (x2 - x1);
+      const tangY = (y2 - y1);
+      const tangLen = Math.sqrt(tangX * tangX + tangY * tangY) || 1;
+      // Perpendicular normalizada (siempre hacia el mismo lado que el control point)
+      let perpX = -tangY / tangLen;
+      let perpY = tangX / tangLen;
+      // Asegurar que el label va hacia el mismo lado que la curva
+      const cpSide = (cpx - midX) * perpX + (cpy - midY) * perpY;
+      if (cpSide < 0) { perpX = -perpX; perpY = -perpY; }
+      const offsetDist = 30;
+      const lx = bMidX + perpX * offsetDist;
+      const ly = bMidY + perpY * offsetDist;
+      svg += `<rect x="${(lx - 24).toFixed(1)}" y="${(ly - 9).toFixed(1)}" width="48" height="18" rx="4" fill="${labelBg}"/>`;
+      svg += `<text x="${lx.toFixed(1)}" y="${(ly + 5).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="${labelColor}" style="pointer-events:none;">${escHtml(label)}</text>`;
+    }
   }
 
   // Draw nodes
@@ -1111,8 +1125,13 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const pos = positions[name];
     if (!pos) continue;
     const color = (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
-    // Resolve icon: usar robot SVG inline para agentes raíz (#1544)
-    const robotId = robotMap[name];
+    // Resolve icon: usar robot SVG para agentes raíz (#1544)
+    // Primero intentar robotMap (sprint-plan), luego patrón "Agente N"
+    let robotId = robotMap[name];
+    if (!robotId) {
+      const agentMatch = name.match(/^Agente\s+(\d+)$/i);
+      if (agentMatch) robotId = ((parseInt(agentMatch[1], 10) - 1) % 10) + 1;
+    }
     const hasRobot = robotId && ROBOT_ICONS[robotId];
     const iconUrl = hasRobot ? ROBOT_ICONS[robotId] : resolveIconUri(name);
     const isActive = activeAgents.has(name);
@@ -1678,8 +1697,15 @@ function renderHTML(data, theme) {
   // --- FLOW TREE (force-directed layout) ---
   // Construir mapa de agentes raíz → robotId desde sprint-plan.json (#1544)
   const rootAgentRobotMap = {};
-  if (data.sprintPlan && Array.isArray(data.sprintPlan.agentes)) {
-    for (const ag of data.sprintPlan.agentes) {
+  if (data.sprintPlan) {
+    // Incluir agentes activos + completados + incompletos para asignar robots
+    const allAgents = [
+      ...(Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : []),
+      ...(Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : []),
+      ...(Array.isArray(data.sprintPlan._incomplete) ? data.sprintPlan._incomplete : []),
+      ...(Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : [])
+    ];
+    for (const ag of allAgents) {
       // Buscar sesión para obtener agent_name canónico
       const matchSession = data.sprintSessions.find(s => {
         const m = (s.branch || "").match(/(\d+)/);
