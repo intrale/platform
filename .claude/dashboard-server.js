@@ -946,16 +946,16 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // --- Force-directed layout (simplified, deterministic) ---
-  const nodeR = 22;
-  const svgW = 600;
-  const svgH = 500;
+  const nodeR = 28;
+  const svgW = 900;
+  const svgH = 650;
   const cx = svgW / 2, cy = svgH / 2;
 
   // Initialize positions: spread nodes using golden angle for good distribution
   const positions = {};
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   nodes.forEach((name, i) => {
-    const r = 70 + Math.sqrt(i) * 55;
+    const r = 90 + Math.sqrt(i) * 70;
     const angle = i * goldenAngle;
     positions[name] = {
       x: cx + r * Math.cos(angle),
@@ -997,7 +997,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
         const pb = positions[b];
         const dx = pb.x - pa.x, dy = pb.y - pa.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const ideal = 130;
+        const ideal = 170;
         const attract = (dist - ideal) * 0.05;
         fx += (dx / Math.max(dist, 1)) * attract;
         fy += (dy / Math.max(dist, 1)) * attract;
@@ -1039,11 +1039,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
   // Build SVG
   let svg = `<defs>
-    <marker id="flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="var(--text-muted)" opacity="0.6"/>
+    <marker id="flow-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="var(--text-muted)" opacity="0.6"/>
     </marker>
-    <marker id="flow-arrow-recent" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
-      <polygon points="0 0, 9 3.5, 0 7" fill="#f59e0b" opacity="0.9"/>
+    <marker id="flow-arrow-recent" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <polygon points="0 0, 12 4.5, 0 9" fill="#f59e0b" opacity="0.9"/>
     </marker>
     <filter id="node-glow"><feGaussianBlur stdDeviation="4" result="coloredBlur"/>
       <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
@@ -1055,6 +1055,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
         <feFuncB type="linear" slope="1.5" intercept="0.2"/>
       </feComponentTransfer>
     </filter>
+    <style>
+      @keyframes flow-dash { to { stroke-dashoffset: 0; } }
+      .flow-edge { stroke-dasharray: 8 6; stroke-dashoffset: 28; animation: flow-dash 1.2s linear infinite; }
+      .flow-edge-recent { stroke-dasharray: 12 6; stroke-dashoffset: 36; animation: flow-dash 0.8s linear infinite; }
+    </style>
   </defs>`;
 
   // Draw edges as curved arrows with sequential labels and issue reference
@@ -1087,15 +1092,16 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const strokeOpacity = isRecent ? "0.85" : "0.45";
     const arrowMarker = isRecent ? "url(#flow-arrow-recent)" : "url(#flow-arrow)";
 
-    svg += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
+    const edgeClass = isRecent ? "flow-edge-recent" : "flow-edge";
+    svg += `<path class="${edgeClass}" d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
 
     // Label: sequential number + issue (if available)
     const label = e.issueNum ? `${e.seq} #${e.issueNum}` : `${e.seq}`;
-    const labelBg = isRecent ? "rgba(245,158,11,0.18)" : "rgba(17,17,27,0.7)";
+    const labelBg = isRecent ? "rgba(245,158,11,0.22)" : "rgba(17,17,27,0.75)";
     const labelColor = isRecent ? "#fbbf24" : "var(--text-dim)";
-    const labelW = e.issueNum ? 40 : 16;
-    svg += `<rect x="${(bMidX - labelW / 2).toFixed(1)}" y="${(bMidY - 7).toFixed(1)}" width="${labelW}" height="13" rx="3" fill="${labelBg}"/>`;
-    svg += `<text x="${bMidX.toFixed(1)}" y="${(bMidY + 4).toFixed(1)}" text-anchor="middle" font-size="7.5" font-weight="600" fill="${labelColor}" style="pointer-events:none;">${escHtml(label)}</text>`;
+    const labelW = e.issueNum ? 56 : 24;
+    svg += `<rect x="${(bMidX - labelW / 2).toFixed(1)}" y="${(bMidY - 9).toFixed(1)}" width="${labelW}" height="18" rx="4" fill="${labelBg}"/>`;
+    svg += `<text x="${bMidX.toFixed(1)}" y="${(bMidY + 5).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="${labelColor}" style="pointer-events:none;">${escHtml(label)}</text>`;
   }
 
   // Draw nodes
@@ -1142,13 +1148,12 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       svg += `<circle cx="${(pos.x + effectiveR - 3).toFixed(1)}" cy="${(pos.y - effectiveR + 3).toFixed(1)}" r="8" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
       svg += `<text x="${(pos.x + effectiveR - 3).toFixed(1)}" y="${(pos.y - effectiveR + 6.5).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="white">${robotId}</text>`;
     }
-    // Label below node
-    const shortName = name.length > 12 ? name.substring(0, 10) + "\u2026" : name;
-    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 14).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)" font-weight="600">${escHtml(shortName)}</text>`;
+    // Label below node — nombre completo sin truncar
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 18).toFixed(1)}" text-anchor="middle" font-size="13" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
     svg += `</g>`;
   }
 
-  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-height:${svgH}px;">${svg}</svg>`;
+  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;">${svg}</svg>`;
 }
 
 // --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
