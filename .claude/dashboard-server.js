@@ -2795,23 +2795,21 @@ async function takeScreenshotSections(width) {
 
     const sectionData = await page.evaluate(() => {
       const selectors = [
-        { id: "kpis",               sel: ".kpi-row" },
-        { id: "ejecucion",          sel: "[data-panel='exec']" },
-        { id: "flujo",              sel: "[data-panel='sessions']" },
-        { id: "actividad",          sel: "[data-panel='activity'] .feed-panel" },
-        { id: "permisos",           sel: "[data-panel='activity'] .panel:last-child" },
-        { id: "uso-agentes",        sel: "[data-panel='metrics'] > .panel:first-child" },
-        { id: "metricas-agentes",   sel: "[data-panel='metrics'] > .panel:last-child" },
-        { id: "roadmap",            sel: "[data-panel='roadmap']" },
-        { id: "ci",                 sel: "[data-panel='ci']" },
+        { id: "kpis",               sel: ".kpi-row",                                  w: 0 },
+        { id: "ejecucion",          sel: "[data-panel='exec']",                       w: 0 },
+        { id: "flujo",              sel: "[data-panel='sessions']",                   w: 0 },
+        { id: "actividad",          sel: "[data-panel='activity'] .feed-panel",       w: 0 },
+        { id: "permisos",           sel: "[data-panel='activity'] .panel:last-child", w: 0 },
+        { id: "uso-agentes",        sel: "[data-panel='metrics'] > .panel:first-child", w: 0 },
+        { id: "metricas-agentes",   sel: "[data-panel='metrics'] > .panel:last-child",  w: 0 },
+        { id: "roadmap",            sel: "[data-panel='roadmap']",                    w: 1200 },
+        { id: "ci",                 sel: "[data-panel='ci']",                         w: 0 },
       ];
       return selectors.map(function(s) {
         var el = document.querySelector(s.sel);
-        if (!el) return { id: s.id, found: false };
+        if (!el) return { id: s.id, found: false, customWidth: s.w };
         var r = el.getBoundingClientRect();
-        // Ignorar paneles vacíos o sin altura visible
-        if (r.height < 20 || r.width < 20) return { id: s.id, found: true, visible: false, rect: { h: r.height, w: r.width } };
-        // Redondear a enteros (Puppeteer clip requiere enteros) y corregir offset de scroll
+        if (r.height < 20 || r.width < 20) return { id: s.id, found: true, visible: false, rect: { h: r.height, w: r.width }, customWidth: s.w };
         return {
           id: s.id,
           found: true,
@@ -2820,6 +2818,7 @@ async function takeScreenshotSections(width) {
           y: Math.max(0, Math.round(r.y + window.scrollY)),
           width: Math.round(r.width),
           height: Math.round(r.height),
+          customWidth: s.w,
         };
       });
     });
@@ -2835,22 +2834,54 @@ async function takeScreenshotSections(width) {
     const results = [];
     for (const section of found) {
       try {
-        // Bounds check: el clip no puede superar el alto total de la página
-        const clampedHeight = Math.min(section.height, Math.max(1, pageHeight - section.y));
+        const needsWider = section.customWidth && section.customWidth > width;
+
+        // Si la sección necesita más ancho, re-renderizar con viewport más ancho
+        if (needsWider) {
+          await page.setViewport({ width: section.customWidth, height: 2400 });
+          await page.reload({ waitUntil: "load", timeout: 15000 });
+          await new Promise(r => setTimeout(r, 2000));
+          // Re-obtener bounds con el nuevo viewport
+          const newRect = await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { x: Math.max(0, Math.round(r.x)), y: Math.max(0, Math.round(r.y + window.scrollY)), width: Math.round(r.width), height: Math.round(r.height) };
+          }, "[data-panel='" + section.id + "']");
+          if (newRect) {
+            section.x = newRect.x;
+            section.y = newRect.y;
+            section.width = newRect.width;
+            section.height = newRect.height;
+          }
+        }
+
+        // Bounds check: el clip no puede superar el alto total de la página ni 1200px max
+        const currentPageHeight = needsWider ? await page.evaluate(() => document.body.scrollHeight) : pageHeight;
+        const clampedHeight = Math.min(section.height, Math.max(1, currentPageHeight - section.y), 1200);
         if (clampedHeight < 20) {
           console.log("[dashboard-server] Sección " + section.id + " clampedHeight=" + clampedHeight + " < 20 — omitida");
+          if (needsWider) { await page.setViewport({ width, height: 2400 }); await page.reload({ waitUntil: "load", timeout: 15000 }); await new Promise(r => setTimeout(r, 2000)); }
           continue;
         }
 
+        const captureWidth = needsWider ? section.customWidth : Math.min(section.width, width);
         const buf = await page.screenshot({
           type: "png",
           clip: {
             x: section.x,
             y: section.y,
-            width: Math.min(section.width, width),
+            width: captureWidth,
             height: clampedHeight,
           },
         });
+
+        // Restaurar viewport original si se cambió
+        if (needsWider) {
+          await page.setViewport({ width, height: 2400 });
+          await page.reload({ waitUntil: "load", timeout: 15000 });
+          await new Promise(r => setTimeout(r, 2000));
+        }
         // Solo incluir si la imagen tiene contenido real (> 5KB)
         if (buf.length > 5000) {
           results.push({ id: section.id, image: buf.toString("base64") });

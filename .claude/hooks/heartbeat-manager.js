@@ -34,12 +34,12 @@ const MAIN_REPO_ROOT = resolveMainRepoRoot();
 const ROADMAP_FILE = path.join(MAIN_REPO_ROOT, 'scripts', 'roadmap.json');
 
 // Constantes del intervalo adaptativo
-const INTERVAL_STEP_MIN = 10;       // Minutos extra por cada ciclo inactivo
-const MAX_INTERVAL_MIN = 60;        // Cap máximo del intervalo
+const INTERVAL_STEP_MIN = 15;       // +15 min por cada ciclo sin actividad
+const MAX_INTERVAL_MIN = 180;       // Cap máximo: 3 horas
 const ACTIVITY_THRESHOLD_MIN = 15;  // Umbral de actividad en minutos
 
 // Estado interno del módulo (mutable entre ciclos)
-let heartbeatCurrentInterval = 10;
+let heartbeatCurrentInterval = 15;
 let heartbeatConsecutiveIdle = 0;
 let heartbeatMode = 'normal';       // "normal" | "idle"
 let heartbeatSkipCount = 0;
@@ -49,7 +49,7 @@ let heartbeatTimer = null;
 // Configuración inyectada por el caller en startHeartbeat()
 let tgConfig = { bot_token: '', chat_id: '' };
 let sessionsDir = DEFAULT_SESSIONS_DIR;
-let reportIntervalMin = 10;
+let reportIntervalMin = 15;
 let portRef = 3100;
 let collectDataFn = null;
 let takeScreenshotFn = null;
@@ -293,9 +293,13 @@ async function sendHeartbeat() {
       : ' (cada ' + heartbeatCurrentInterval + ' min \u2014 sin actividad)';
     const horizon = readRoadmapHorizon();
     const horizonLine = horizon !== null ? '\n\ud83d\udcc5 Horizonte: ' + horizon + ' sprint' + (horizon !== 1 ? 's' : '') + ' planificado' + (horizon !== 1 ? 's' : '') : '';
+    const sprintId = (data.sprintPlan && data.sprintPlan.sprint_id) || null;
+    const sprintTema = (data.sprintPlan && data.sprintPlan.tema) || '';
+    const sprintLine = sprintId ? '\n\ud83c\udfc3 <b>' + sprintId + '</b>: ' + sprintTema : '';
+    const agentsLine = '\n\ud83e\udd16 ' + (data.activeSessions || 0) + ' agente(s) activo(s)' + (data.idleSessions > 0 ? ' \u00b7 ' + data.idleSessions + ' idle' : '');
     const caption = modeIcon + ' <b>Intrale Monitor \u2014 Heartbeat</b>' + modeLabel + '\n' +
       new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }) +
-      horizonLine;
+      sprintLine + agentsLine + horizonLine;
 
     if (takeScreenshotSectionsFn || takeScreenshotFn) {
       // 1. Intentar álbum por secciones del dashboard (9 imágenes max)
@@ -307,10 +311,15 @@ async function sendHeartbeat() {
           if (validSections.length > 0) {
             // Telegram permite max 10 fotos por álbum — enviar en lotes
             const sectionLabels = {
-              kpis: 'KPIs', ejecucion: 'Ejecucion & Agentes', flujo: 'Flujo de Agentes',
-              actividad: 'Actividad en Vivo', permisos: 'Permisos',
-              'uso-agentes': 'Uso de Agentes', 'metricas-agentes': 'Metricas de Agentes',
-              roadmap: 'Roadmap', ci: 'CI/CD'
+              kpis: '\ud83d\udcca <b>KPIs</b> — Agentes, permisos, CI/CD, acciones, alertas',
+              ejecucion: '\ud83d\ude80 <b>Ejecuci\u00f3n & Agentes</b> — Estado del sprint activo',
+              flujo: '\ud83d\udd00 <b>Flujo de Agentes</b> — Interacciones entre agentes',
+              actividad: '\u26a1 <b>Actividad en Vivo</b> — \u00daltimas acciones de agentes',
+              permisos: '\ud83d\udd10 <b>Permisos</b> — Solicitudes auto/aprobadas/rechazadas',
+              'uso-agentes': '\ud83d\udcca <b>Uso de Agentes</b> — Invocaciones de skills',
+              'metricas-agentes': '\ud83d\udcc8 <b>M\u00e9tricas de Agentes</b> — Sesiones y duraci\u00f3n',
+              roadmap: '\ud83d\uddfa\ufe0f <b>Roadmap</b> — Planificaci\u00f3n de sprints',
+              ci: '\u2699\ufe0f <b>CI/CD</b> — Estado de GitHub Actions'
             };
             const photos = validSections.map(s => Buffer.from(s.image, 'base64'));
             const captions = validSections.map((s, i) => i === 0 ? caption : (sectionLabels[s.id] || s.id));
