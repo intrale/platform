@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
+<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+	 viewBox="0 0 512.01 512.01" xml:space="preserve">
+<rect x="139.754" y="18.145" transform="matrix(-0.462 -0.8869 0.8869 -0.462 218.115 201.9963)" style="fill:#B5E45F;" width="61.143" height="33.392"/>
+<rect x="324.998" y="4.255" transform="matrix(-0.8869 -0.462 0.462 -0.8869 628.6475 223.5738)" style="fill:#7DBB4E;" width="33.392" height="61.143"/>
+<rect x="180.697" y="431.47" style="fill:#92E5EA;" width="33.391" height="66.326"/>
+<rect x="297.922" y="431.47" style="fill:#79BBBC;" width="33.391" height="66.326"/>
+<rect x="239.309" y="431.47" style="fill:#92E5EA;" width="33.391" height="80.54"/>
+<rect x="256.005" y="431.47" style="fill:#79BBBC;" width="16.696" height="80.54"/>
+<path style="fill:#D7D7D7;" d="M417.047,204.029H94.963v-16.696c0-88.793,72.243-161.031,161.042-161.031
+	S417.047,98.54,417.047,187.333V204.029z"/>
+<path style="fill:#B0B0B0;" d="M417.047,204.029H256.005c0,0,0-141.324,0-177.726c88.799,0,161.042,72.238,161.042,161.031V204.029z
+	"/>
+<circle style="fill:#8B8B8B;" cx="216.96" cy="128.277" r="23.689"/>
+<circle style="fill:#6F6F6F;" cx="295.051" cy="128.277" r="23.689"/>
+<rect x="94.959" y="187.335" style="fill:#B5E45F;" width="322.081" height="232.415"/>
+<rect x="256.005" y="187.335" style="fill:#7DBB4E;" width="161.046" height="232.415"/>
+<path style="fill:#F0C838;" d="M256.005,315.088c-25.814,0-46.815-21-46.815-46.812c0-25.811,21.001-46.812,46.815-46.812
+	s46.815,21,46.815,46.812S281.819,315.088,256.005,315.088z"/>
+<path style="fill:#E79C25;" d="M256.005,315.088v-93.625c25.814,0,46.815,21,46.815,46.812S281.819,315.088,256.005,315.088z"/>
+<rect x="180.697" y="344.442" style="fill:#ECECED;" width="150.628" height="75.309"/>
+<rect x="256.005" y="344.442" style="fill:#D7D7D7;" width="75.309" height="75.309"/>
+<path style="fill:#ECECED;" d="M256.005,254.855c-7.402,0-13.423,6.02-13.423,13.421s6.022,13.421,13.423,13.421
+	s13.423-6.02,13.423-13.421C269.428,260.876,263.407,254.855,256.005,254.855z"/>
+<path style="fill:#D7D7D7;" d="M256.005,254.855v26.842c7.402,0,13.423-6.02,13.423-13.421
+	C269.428,260.876,263.407,254.855,256.005,254.855z"/>
+</svg>
