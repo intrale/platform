@@ -856,8 +856,36 @@ async function processInput() {
 
         // ── Verificar PR del agente que terminó (#1399) ──────────────────────
         const agentBranch = session.branch || ("agent/" + finishingAgent.issue + "-" + finishingAgent.slug);
-        const prStatus = checkPRStatus(agentBranch);
+        let prStatus = checkPRStatus(agentBranch);
         log("PR check para " + agentBranch + ": " + prStatus.status);
+
+        // (#1552) Si la PR fue mergeada, verificar que fue DESPUÉS del lanzamiento
+        // para evitar falsos positivos con PRs de sprints anteriores
+        if (prStatus.status === "merged" && finishingAgent._launched_at) {
+            const launchedAtMs = new Date(finishingAgent._launched_at).getTime();
+            try {
+                const { execSync: es } = require("child_process");
+                const ghCandidates = ["C:\\Workspaces\\gh-cli\\bin\\gh.exe", "gh"];
+                let ghCmd = null;
+                for (const c of ghCandidates) {
+                    try { es('"' + c + '" --version', { encoding: "utf8", timeout: 3000, windowsHide: true }); ghCmd = c; break; } catch (e) {}
+                }
+                if (ghCmd) {
+                    const cmd = '"' + ghCmd + '" pr list --repo intrale/platform --head "' + agentBranch + '" --state merged --json mergedAt';
+                    const out = es(cmd, { encoding: "utf8", timeout: 10000, windowsHide: true });
+                    const prs = JSON.parse(out || "[]");
+                    if (Array.isArray(prs) && prs.length > 0 && prs[0].mergedAt) {
+                        const mergedAtMs = new Date(prs[0].mergedAt).getTime();
+                        if (mergedAtMs < launchedAtMs) {
+                            log("PR de " + agentBranch + " fue mergeada ANTES del lanzamiento (" + prs[0].mergedAt + " < " + finishingAgent._launched_at + ") — tratando como 'none'");
+                            prStatus = { status: "none" };
+                        }
+                    }
+                }
+            } catch (e) {
+                log("Error verificando timestamp de merge: " + e.message);
+            }
+        }
 
         // Remover al agente que terminó del array agentes
         plan.agentes = (plan.agentes || []).filter(ag => ag.issue !== finishingAgent.issue);
