@@ -53,6 +53,7 @@ const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 const WORKTREES_PARENT = path.dirname(REPO_ROOT);
 
 const POLL_INTERVAL_MS = parseInt(process.env.WATCHER_POLL_INTERVAL || "120000", 10); // #1522: 2 min para reconciliación
+const GRACE_PERIOD_MIN = parseInt(process.env.WATCHER_GRACE_PERIOD_MIN || "15", 10); // #1553: grace period antes de evaluar PR
 const LOCK_TIMEOUT_MS = 8000;
 const LOCK_RETRY_MS = 300;
 const DEFAULT_CONCURRENCY_LIMIT = 3;
@@ -562,6 +563,20 @@ async function runCycle() {
             }
 
             if (alive) continue;
+
+            // #1553: Grace period — no evaluar agentes lanzados hace menos de GRACE_PERIOD_MIN minutos.
+            // Evita falsos "failed" cuando el agente aún no tuvo tiempo de crear la PR.
+            if (ag._launched_at) {
+                const launchedAtMs = new Date(ag._launched_at).getTime();
+                if (!isNaN(launchedAtMs)) {
+                    const elapsedMin = (Date.now() - launchedAtMs) / 60000;
+                    if (elapsedMin < GRACE_PERIOD_MIN) {
+                        log("Agente #" + ag.issue + ": PID muerto pero dentro de grace period (" +
+                            Math.round(elapsedMin * 10) / 10 + "/" + GRACE_PERIOD_MIN + " min) — skip");
+                        continue;
+                    }
+                }
+            }
 
             // Agente muerto: verificar PR
             const branch = "agent/" + ag.issue + "-" + ag.slug;
