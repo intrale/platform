@@ -247,13 +247,14 @@ function collectData() {
   // Sprint plan (leído antes para decidir qué sesiones retener)
   let sprintPlan = null;
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
-  // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed)
+  // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed + _incomplete)
   // para retener sesiones activas y evitar que se clasifiquen como zombie.
   const sprintIssueSet = new Set(
     sprintPlan ? [
       ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
       ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
       ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
+      ...(Array.isArray(sprintPlan._incomplete) ? sprintPlan._incomplete : []),
     ].map(a => String(a.issue)) : []
   );
 
