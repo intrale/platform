@@ -57,6 +57,26 @@ const REPO_BASE        = path.basename(REPO_ROOT);
 
 const SYNC_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos de throttle
 const LOCK_MAX_AGE_MS  = 60 * 1000;     // Lock expirado si tiene >1 minuto
+const GRACE_PERIOD_MS  = 15 * 60 * 1000; // 15 minutos de gracia post-lanzamiento
+
+// ─── Verificación de PID vivo ──────────────────────────────────────────────────
+
+/**
+ * Verifica si el proceso con el PID dado está vivo en Windows.
+ * Retorna true si está vivo, false si está muerto o si no se puede verificar.
+ */
+function isAgentPidAlive(pid) {
+    if (!pid) return false;
+    try {
+        const out = execSync(
+            "tasklist /FI \"PID eq " + parseInt(pid, 10) + "\" /NH",
+            { encoding: "utf8", timeout: 3000, windowsHide: true }
+        );
+        return out.indexOf("No tasks") === -1 && out.trim().length > 0;
+    } catch (e) {
+        try { process.kill(parseInt(pid, 10), 0); return true; } catch (ke) { return ke.code === "EPERM"; }
+    }
+}
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -200,6 +220,25 @@ function checkIssueClosed(issueNumber, ghCmd) {
 }
 
 /**
+ * Retorna el timestamp (ms) de merge de la PR más reciente para una rama.
+ * Retorna null si no hay PR mergeada o error.
+ */
+function getMergedPRTimestamp(branch, ghCmd) {
+    if (!ghCmd) return null;
+    try {
+        const cmd = `"${ghCmd}" pr list --repo intrale/platform --head "${branch}" --state merged --json mergedAt`;
+        const out = execSync(cmd, { encoding: "utf8", timeout: 10000, windowsHide: true });
+        const prs = JSON.parse(out || "[]");
+        if (Array.isArray(prs) && prs.length > 0 && prs[0].mergedAt) {
+            return new Date(prs[0].mergedAt).getTime();
+        }
+    } catch (e) {
+        log("getMergedPRTimestamp error para " + branch + ": " + e.message);
+    }
+    return null;
+}
+
+/**
  * Verifica el número de PR mergeado de una rama (para registrar en _completed).
  */
 function getMergedPRNumber(branch, ghCmd) {
@@ -264,16 +303,31 @@ function reconcileSprintPlan(plan, ghCmd) {
 
     const now = new Date().toISOString();
 
-    // a) agentes[]: verificar TODOS contra GitHub
+    // a) agentes[]: verificar contra GitHub (con grace period)
     const agentes = Array.isArray(plan.agentes) ? [...plan.agentes] : [];
+    const nowMs = Date.now();
 
     for (const ag of agentes) {
+        // GRACE PERIOD (#1552): no tocar agentes lanzados hace menos de 15 minutos
+        const launchedAt = ag._launched_at ? new Date(ag._launched_at).getTime() : 0;
+        if (launchedAt && (nowMs - launchedAt) < GRACE_PERIOD_MS) {
+            log("Agente #" + ag.issue + " en grace period (" + Math.round((nowMs - launchedAt) / 60000) + "min < 15min) — skip");
+            continue;
+        }
+
         const branch = "agent/" + ag.issue + "-" + ag.slug;
         const prStatus = checkPRStatus(branch, ghCmd);
         log("Agente #" + ag.issue + " (status=" + (ag.status || "?") + ") branch=" + branch + " → PR=" + prStatus);
 
         if (prStatus === "merged") {
-            // PR mergeada → mover a _completed[] con resultado "ok"
+            // Verificar que la PR fue mergeada DESPUÉS del lanzamiento (#1552)
+            const prMergedAt = getMergedPRTimestamp(branch, ghCmd);
+            if (launchedAt && prMergedAt && prMergedAt < launchedAt) {
+                log("Agente #" + ag.issue + " — PR mergeada ANTES del lanzamiento (PR=" + new Date(prMergedAt).toISOString() + " < launched=" + ag._launched_at + ") — ignorando PR vieja");
+                continue;
+            }
+
+            // PR mergeada post-lanzamiento → mover a _completed[] con resultado "ok"
             plan.agentes = plan.agentes.filter(a => a.issue !== ag.issue);
             if (!Array.isArray(plan._completed)) plan._completed = [];
             const prNum = getMergedPRNumber(branch, ghCmd);
@@ -292,7 +346,13 @@ function reconcileSprintPlan(plan, ghCmd) {
             changes.push("sprint-plan: #" + ag.issue + " movido de agentes[] a _completed[] (PR mergeada)");
 
         } else if (prStatus === "closed_no_merge") {
-            // PR cerrada sin merge → mover a _completed[] con resultado "failed"
+            // PR cerrada sin merge → verificar PID antes de mover a _incomplete (#1552)
+            // Si el agente tiene PID vivo, puede estar relanzado o en proceso de reintento
+            const pidAlive = isAgentPidAlive(ag._pid);
+            if (pidAlive) {
+                log("Agente #" + ag.issue + " — PR cerrada sin merge pero PID " + ag._pid + " vivo — skip (agente puede estar reintentando)");
+                continue;
+            }
             plan.agentes = plan.agentes.filter(a => a.issue !== ag.issue);
             if (!Array.isArray(plan._completed)) plan._completed = [];
             plan._completed.push({
@@ -309,7 +369,13 @@ function reconcileSprintPlan(plan, ghCmd) {
             changes.push("sprint-plan: #" + ag.issue + " movido de agentes[] a _completed[] (PR cerrada sin merge)");
 
         } else if (prStatus === "none") {
-            // Sin PR: detectar si la sesión ya terminó (worktree desaparecido)
+            // Sin PR: detectar si la sesión ya terminó (worktree desaparecido y PID muerto)
+            // (#1552): NO alertar si el PID del agente está vivo — puede estar trabajando
+            const pidAlive = isAgentPidAlive(ag._pid);
+            if (pidAlive) {
+                log("Agente #" + ag.issue + " — sin PR pero PID " + ag._pid + " vivo — skip (agente activo)");
+                continue;
+            }
             if (!worktreeExists(ag)) {
                 changes.push("alerta: #" + ag.issue + " sesión terminada sin PR (worktree " + path.basename(getWorktreePath(ag)) + " no encontrado)");
             }
@@ -317,35 +383,11 @@ function reconcileSprintPlan(plan, ghCmd) {
         // prStatus === "open" o "unknown": agente activo o no verificable — no actuar
     }
 
-    // b) _queue[] con issue cerrado en GitHub — verificar PR antes de marcar completed (#1458)
-    const queue = Array.isArray(plan._queue) ? [...plan._queue] : [];
-    for (const q of queue) {
-        const closed = checkIssueClosed(q.issue, ghCmd);
-        if (closed === true) {
-            // Verificar si también hay PR mergeada — sin PR = "not_planned", no "ok"
-            const qBranch = "agent/" + q.issue + "-" + q.slug;
-            let qPrStatus = { status: "unknown" };
-            try { qPrStatus = checkPRStatusViaGh(qBranch); } catch (e) {}
-
-            plan._queue = plan._queue.filter(i => i.issue !== q.issue);
-            if (!Array.isArray(plan._completed)) plan._completed = [];
-
-            const resultado = qPrStatus.status === "merged" ? "ok" : "not_planned";
-            plan._completed.push({
-                issue: q.issue,
-                slug: q.slug,
-                titulo: q.titulo,
-                numero: q.numero,
-                stream: q.stream,
-                size: q.size,
-                resultado: resultado,
-                completado_at: now,
-                sync_source: "sprint-sync",
-                pr_status: qPrStatus.status
-            });
-            changes.push("sprint-plan: #" + q.issue + " movido de _queue[] a _completed[] (issue cerrado, PR=" + qPrStatus.status + ", resultado=" + resultado + ")");
-        }
-    }
+    // b) _queue[]: NO tocar (#1552)
+    // Los items en cola NO deben verificarse contra GitHub. No tienen agente lanzado,
+    // no tienen rama, no tienen PR. Solo se mueven cuando son promovidos a agentes[].
+    // El bug anterior movía items de cola a _completed si el issue estaba cerrado en GitHub
+    // (posiblemente de un sprint anterior), destruyendo el plan del sprint actual.
 
     return changes;
 }
