@@ -105,6 +105,7 @@ try {
 # --- Pre-sprint cleanup de worktrees huérfanos ---
 # Los worktrees de sprints anteriores se acumulan y saturan git,
 # causando que los agentes no puedan arrancar (SPR-028 incident 2026-03-14)
+# Mejorado en #1555: manejo robusto de junctions + limpieza de ramas remotas
 function Invoke-WorktreeCleanup {
     $parentDir = Split-Path $MainRepo -Parent
     $baseName  = Split-Path $MainRepo -Leaf
@@ -122,38 +123,106 @@ function Invoke-WorktreeCleanup {
 
     $removed = 0
     $kept    = 0
+    $orphanBranches = @()
 
     foreach ($wt in $siblings) {
         $suffix = $wt.Name -replace "^$([regex]::Escape($baseName))\.", ""
+
+        # Validar formato de sufijo para evitar path traversal (#1555 security)
+        if ($suffix -notmatch '^agent-\d+-[a-z0-9-]+$') {
+            Write-Host ">> Cleanup: nombre inesperado, ignorado: $($wt.Name)" -ForegroundColor Yellow
+            continue
+        }
 
         if ($currentSlugs -contains $suffix) {
             $kept++
             continue
         }
 
+        # Extraer nombre de rama para limpieza remota posterior
+        $branchName = $suffix -replace '^agent-', 'agent/'
+        $orphanBranches += $branchName
+
         try {
+            # Paso 1: Eliminar junction/reparse point .claude/ con cmd /c rmdir
+            # CRITICO: Remove-Item no puede borrar directorios que contienen junctions,
+            # porque intenta descender recursivamente y falla con "El directorio no está vacío"
             $junctionPath = Join-Path $wt.FullName ".claude"
             if (Test-Path $junctionPath) {
-                cmd /c rmdir "$junctionPath" 2>$null
+                $item = Get-Item $junctionPath -Force -ErrorAction SilentlyContinue
+                if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                    # Es junction/symlink — usar cmd /c rmdir que solo desvincula sin borrar el target
+                    cmd /c rmdir "$junctionPath" 2>$null
+                    Write-Host ">>   Junction .claude/ desvinculada en $($wt.Name)" -ForegroundColor DarkGray
+                } else {
+                    # Directorio real — eliminar normalmente
+                    Remove-Item $junctionPath -Recurse -Force -ErrorAction SilentlyContinue
+                }
             }
 
+            # Paso 2: git worktree remove --force (desregistra del tracking de git)
             Push-Location $MainRepo
-            git worktree remove $wt.FullName --force 2>$null
-            Pop-Location
+            try {
+                git worktree remove $wt.FullName --force 2>$null
+            } finally {
+                Pop-Location
+            }
 
+            # Paso 3: Fallback — si el directorio persiste, forzar eliminación
             if (Test-Path $wt.FullName) {
-                Remove-Item $wt.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item $wt.FullName -Recurse -Force -ErrorAction Stop
             }
 
             $removed++
+            Write-Host ">>   Eliminado: $($wt.Name)" -ForegroundColor DarkGray
         } catch {
-            Write-Host ">> Cleanup: no se pudo eliminar $($wt.Name): $_" -ForegroundColor Yellow
+            # Último recurso: intentar eliminar archivos individualmente
+            try {
+                if (Test-Path $wt.FullName) {
+                    Get-ChildItem $wt.FullName -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending | Remove-Item -Force -ErrorAction SilentlyContinue
+                    Remove-Item $wt.FullName -Recurse -Force -ErrorAction Stop
+                    $removed++
+                    Write-Host ">>   Eliminado (fallback): $($wt.Name)" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host ">> Cleanup: no se pudo eliminar $($wt.Name): $_" -ForegroundColor Yellow
+            }
         }
     }
 
+    # Paso 4: Podar referencias de worktrees eliminados del tracking de git
     Push-Location $MainRepo
-    git worktree prune 2>$null
-    Pop-Location
+    try {
+        git worktree prune 2>$null
+    } finally {
+        Pop-Location
+    }
+
+    # Paso 5: Limpiar ramas remotas huérfanas correspondientes
+    if ($orphanBranches.Count -gt 0) {
+        $deletedBranches = 0
+        Push-Location $MainRepo
+        try {
+            # Obtener lista de ramas remotas una sola vez
+            $remoteBranches = @(git branch -r 2>$null | ForEach-Object { $_.Trim() })
+            foreach ($branch in $orphanBranches) {
+                if ($remoteBranches -contains "origin/$branch") {
+                    try {
+                        git push origin --delete $branch 2>$null
+                        $deletedBranches++
+                        Write-Host ">>   Rama remota eliminada: $branch" -ForegroundColor DarkGray
+                    } catch {
+                        Write-Host ">>   No se pudo eliminar rama remota $branch" -ForegroundColor DarkGray
+                    }
+                }
+            }
+        } finally {
+            Pop-Location
+        }
+        if ($deletedBranches -gt 0) {
+            Write-Host ">> Cleanup: $deletedBranches rama(s) remota(s) huérfana(s) eliminada(s)" -ForegroundColor Green
+        }
+    }
 
     if ($removed -gt 0) {
         Write-Host ">> Cleanup: $removed worktree(s) huérfano(s) eliminado(s) ($kept del sprint actual conservados)" -ForegroundColor Green
@@ -202,13 +271,30 @@ function Start-UnAgente {
 
     # -Force (#1399): eliminar worktree existente y recrear desde origin/main actual
     # Usado para agentes promovidos de la cola — evita trabajar desde commit viejo
+    # Mejorado en #1555: eliminar junction .claude/ antes de git worktree remove
     if ($wtExists -and $Force) {
         Write-Host ">> -Force activado: eliminando worktree existente para recrear desde origin/main..." -ForegroundColor Yellow
-        Push-Location $MainRepo
         try {
-            # Quitar registro del worktree en git
-            git worktree remove "$wtDir" --force 2>$null
-            # Si el directorio sigue existiendo (race condition o fallo silencioso), eliminar
+            # Paso 1: Eliminar junction .claude/ primero (causa "directorio no vacío")
+            $junctionPath = Join-Path $wtDir ".claude"
+            if (Test-Path $junctionPath) {
+                $item = Get-Item $junctionPath -Force -ErrorAction SilentlyContinue
+                if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                    cmd /c rmdir "$junctionPath" 2>$null
+                } else {
+                    Remove-Item $junctionPath -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+
+            # Paso 2: git worktree remove --force
+            Push-Location $MainRepo
+            try {
+                git worktree remove "$wtDir" --force 2>$null
+            } finally {
+                Pop-Location
+            }
+
+            # Paso 3: Fallback si el directorio persiste
             if (Test-Path $wtDir) {
                 Remove-Item $wtDir -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -216,8 +302,6 @@ function Start-UnAgente {
         } catch {
             Write-Host ">> WARN: No se pudo eliminar worktree anterior: $_" -ForegroundColor Yellow
             Write-Host ">> Continuando con worktree existente (puede estar desactualizado)." -ForegroundColor DarkGray
-        } finally {
-            Pop-Location
         }
         # Marcar como no-existente para que el bloque de creación lo recree
         if (-not (Test-Path $wtDir)) { $wtExists = $false }
