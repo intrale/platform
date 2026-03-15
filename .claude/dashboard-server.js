@@ -480,7 +480,8 @@ function collectData() {
     // Also add agents from skills_invoked
     if (Array.isArray(s.skills_invoked)) {
       for (const sk of s.skills_invoked) {
-        agentNodes.add(normalizeSkillName(sk));
+        const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
+        agentNodes.add(normalizeSkillName(mapped));
       }
     }
     // Add session agent itself
@@ -886,6 +887,85 @@ function formatMinutes(ms) {
   return rem > 0 ? hrs + 'h ' + rem + 'm' : hrs + 'h';
 }
 
+// --- Normalize skill/agent name to canonical form (#1542) ---
+// Alias map: variantes comunes → nombre canónico en AGENT_ICON_MAP / AGENT_COLORS
+const SKILL_NAME_ALIASES = {
+  // Slash-command forms
+  "/guru": "Guru", "/doc": "Doc", "/historia": "Doc", "/refinar": "Doc", "/priorizar": "Doc",
+  "/planner": "Planner", "/delivery": "DeliveryManager", "/tester": "Tester",
+  "/monitor": "Monitor", "/builder": "Builder", "/review": "Review", "/qa": "QA",
+  "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
+  "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
+  "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
+  "/security": "Security",
+  // Lowercase canonical
+  "guru": "Guru", "doc": "Doc", "planner": "Planner", "deliverymanager": "DeliveryManager",
+  "tester": "Tester", "monitor": "Monitor", "builder": "Builder", "review": "Review",
+  "qa": "QA", "auth": "Auth", "ux specialist": "UX Specialist", "scrum master": "Scrum Master",
+  "po": "PO", "backenddev": "BackendDev", "androiddev": "AndroidDev", "iosdev": "iOSDev",
+  "webdev": "WebDev", "desktopdev": "DesktopDev", "ops": "Ops", "branch": "Branch",
+  "security": "Security", "claude": "Claude",
+  // Hyphenated / spaced variants
+  "backend-dev": "BackendDev", "android-dev": "AndroidDev", "ios-dev": "iOSDev",
+  "web-dev": "WebDev", "desktop-dev": "DesktopDev",
+  "delivery": "DeliveryManager", "delivery-manager": "DeliveryManager",
+  "ux": "UX Specialist", "scrum": "Scrum Master",
+  // Doc sub-skills
+  "historia": "Doc", "refinar": "Doc", "priorizar": "Doc",
+  "doc (historia)": "Doc", "doc (refinar)": "Doc", "doc (priorizar)": "Doc",
+};
+
+function normalizeSkillName(name) {
+  if (!name) return "";
+  // Direct match in canonical keys (AGENT_ICON_MAP)
+  if (AGENT_ICON_MAP[name]) return name;
+  // Alias lookup (case-insensitive)
+  const lc = name.toLowerCase().trim();
+  if (SKILL_NAME_ALIASES[lc]) return SKILL_NAME_ALIASES[lc];
+  // Try with leading slash
+  if (SKILL_NAME_ALIASES["/" + lc]) return SKILL_NAME_ALIASES["/" + lc];
+  // Fallback: return original (best effort)
+  return name;
+}
+
+// --- Assign robot SVG icons to root sprint agents (#1544) ---
+// Solo agentes raíz (los del sprint-plan.json), no sub-agentes invocados por ellos.
+const ROBOT_SVGS_DIR = path.join(ICONS_DIR, "robots");
+let _robotSvgFiles = null;
+
+function loadRobotSvgFiles() {
+  if (_robotSvgFiles !== null) return _robotSvgFiles;
+  try {
+    _robotSvgFiles = fs.readdirSync(ROBOT_SVGS_DIR)
+      .filter(f => f.endsWith(".svg"))
+      .sort()
+      .map(f => {
+        const buf = fs.readFileSync(path.join(ROBOT_SVGS_DIR, f));
+        return "data:image/svg+xml;base64," + buf.toString("base64");
+      });
+  } catch {
+    _robotSvgFiles = [];
+  }
+  return _robotSvgFiles;
+}
+
+function assignRobotIcons(sprintAgents) {
+  const robots = loadRobotSvgFiles();
+  if (robots.length === 0 || !Array.isArray(sprintAgents)) return {};
+  const result = {};
+  for (let i = 0; i < sprintAgents.length; i++) {
+    const ag = sprintAgents[i];
+    // Resolver nombre canónico del agente raíz
+    const canonical = normalizeSkillName(
+      ag.agent_name || AGENT_MAP_DASHBOARD["/" + ag.skill] || ag.skill || ""
+    );
+    if (canonical && !result[canonical]) {
+      result[canonical] = robots[i % robots.length];
+    }
+  }
+  return result;
+}
+
 // --- BUILD FLOW GRAPH SVG (force-directed organic layout) ---
 // rootAgentRobotMap: { canonicalName -> robotId } para asignar icono robot a agentes raíz (#1544)
 function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap) {
@@ -903,18 +983,19 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     return '<div class="empty-state">Sin flujo de agentes registrado</div>';
   }
 
-  // Determine active/done agents from sessions
+  // Determine active/done agents from sessions (con normalización #1542)
   const activeAgents = new Set();
   const doneAgents = new Set();
   const sessionsList = Array.isArray(sessions) ? sessions : [];
   for (const s of sessionsList) {
     if (s.agent_name) {
-      if (s._status === "active" || s.status === "active") activeAgents.add(s.agent_name);
-      if (s._status === "done" || s.status === "done") doneAgents.add(s.agent_name);
+      const norm = normalizeSkillName(s.agent_name);
+      if (s._status === "active" || s.status === "active") activeAgents.add(norm);
+      if (s._status === "done" || s.status === "done") doneAgents.add(norm);
     }
     if (Array.isArray(s.skills_invoked)) {
       for (const sk of s.skills_invoked) {
-        const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
+        const mapped = normalizeSkillName(AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, ""));
         if (!activeAgents.has(mapped)) doneAgents.add(mapped);
       }
     }
@@ -1428,6 +1509,15 @@ function renderHTML(data, theme) {
   for (const name of Object.keys(AGENT_ICON_MAP)) AGENT_ICONS[name] = agentIconHtml(name);
   for (const [skill, agent] of Object.entries(SKILL_TO_AGENT)) AGENT_ICONS[skill] = agentIconHtml(agent);
 
+  // Robot icons para agentes raíz del sprint (#1544)
+  const sprintAgentsList = data.sprintPlan && Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : [];
+  const robotIconMap = assignRobotIcons(sprintAgentsList);
+  // Generar HTML para robot icons y mergear (prioridad sobre default solo en grafo)
+  const ROBOT_ICON_HTML = {};
+  for (const [name, uri] of Object.entries(robotIconMap)) {
+    ROBOT_ICON_HTML[name] = '<img src="' + uri + '" width="18" height="18" style="vertical-align:middle;margin-right:2px;border-radius:50%;" alt="' + escHtml(name) + '">';
+  }
+
   const AGENT_GRADIENTS = {
     "Guru": "linear-gradient(135deg, #6366f1, #a78bfa)",
     "Doc": "linear-gradient(135deg, #8b5cf6, #a78bfa)",
@@ -1524,9 +1614,12 @@ function renderHTML(data, theme) {
     const ciLinkHtml = safeRunUrl
       ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">&#9654; CI</a>`
       : "";
+    // Robot icon para agente raíz del sprint (#1544)
+    const agCanonical = normalizeSkillName(ag.agent_name || AGENT_MAP_DASHBOARD["/" + ag.skill] || ag.skill || "");
+    const robotHtml = ROBOT_ICON_HTML[agCanonical] || "";
     return `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
       <div style="display:flex;align-items:center;gap:8px;width:100%;">
-        <span class="exec-issue" style="min-width:52px;">${formatIssueLink(ag.issue)}</span>
+        ${robotHtml}<span class="exec-issue" style="min-width:52px;">${formatIssueLink(ag.issue)}</span>
         <span class="exec-slug" style="flex:1;">${linkifyIssueRefs(escHtml(ag.slug || ""))}</span>
         <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
         <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
@@ -2072,7 +2165,7 @@ function renderHTML(data, theme) {
     </div>`;
   }
   if (data.ciRuns.length === 0) {
-    ciHtml = '<div class="empty-state">Sin ejecuciones recientes</div>';
+    ciHtml = '<div class="empty-state">Sin ejecuciones recientes de CI/CD</div>';
   }
 
   // --- AGENT METRICS TABLE (#1226, #1419) ---
@@ -2497,7 +2590,7 @@ function renderHTML(data, theme) {
       </div>
     </div>
 
-    <!-- CI / CD (#1413) — siempre visible, muestra estado real de GitHub Actions -->
+    <!-- CI/CD — siempre visible (#1413) -->
     <div class="panel" style="margin-bottom:16px;" data-panel="ci">
       <div class="panel-title">CI / CD <span class="chip ${data.ciStatus === 'ok' ? 'chip-green' : data.ciStatus === 'fail' ? 'chip-red' : 'chip-blue'}">${data.ciRuns.length} ejecuciones</span></div>
       ${ciHtml}
@@ -2659,6 +2752,26 @@ function handleRequest(req, res) {
       agentMetrics: data.agentMetrics,
       agentNodes: data.agentNodes,
       agentTransitions: data.agentTransitions,
+    });
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+    res.end(json);
+  } else if (pathname === "/api/activity") {
+    // Endpoint de actividad en vivo (#1212) — polling ligero para feeds externos
+    const data = collectData();
+    const since = url.searchParams.get("since");
+    let filtered = data.groupedActivities;
+    if (since) {
+      const sinceMs = new Date(since).getTime();
+      if (!isNaN(sinceMs)) {
+        filtered = filtered.filter(g => new Date(g.lastTs || g.ts).getTime() > sinceMs);
+      }
+    }
+    const json = JSON.stringify({
+      timestamp: data.timestamp,
+      activities: filtered.slice(0, 50),
+      activeSessions: data.activeSessions,
+      alerts: data.alerts,
+      pendingQuestionsCount: data.pendingQuestions.length,
     });
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
     res.end(json);
