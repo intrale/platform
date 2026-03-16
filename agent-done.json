@@ -1,1 +1,7 @@
-{"summary": "limpiar archivos de prueba del pipeline", "pr_title": "chore: limpiar archivos de prueba del pipeline", "pr_body": "Elimina archivos temporales de validacion. Closes #1614", "commit_type": "chore", "files_changed": ["docs/pipeline-test.md", "docs/auto-delivery-test.md", "agent-done.json"]}
+{
+  "summary": "README para scripts/pipeline",
+  "pr_title": "docs: README para scripts/pipeline",
+  "pr_body": "Documenta el pipeline de eficiencia. Closes #1615",
+  "commit_type": "docs",
+  "files_changed": ["scripts/pipeline/README.md"]
+}
