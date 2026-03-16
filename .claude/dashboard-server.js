@@ -86,6 +86,10 @@ const AGENT_ICON_MAP = {
   "Ops": loadIconDataUri("ops.png"),
   "Branch": loadIconDataUri("branch.png"),
   "Security": loadIconDataUri("security.png"),
+  "Cleanup": loadIconDataUri("clean.svg"),
+  "Perf": loadIconDataUri("perf.png"),
+  "Cost": loadIconDataUri("cost.png"),
+  "Hotfix": loadIconDataUri("hotfix.png"),
 };
 const CLAUDE_ICONS = [
   loadIconDataUri("claude-1.svg"),
@@ -122,7 +126,7 @@ const SKILL_TO_AGENT = {
   "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
-  "/security": "Security",
+  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost", "/hotfix": "Hotfix",
 };
 // Case-insensitive lookup for AGENT_ICON_MAP
 const _ICON_MAP_LC = {};
@@ -911,13 +915,14 @@ const SKILL_NAME_ALIASES = {
   "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
-  "/security": "Security",
+  "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost", "/hotfix": "Hotfix",
   // Lowercase canonical
   "guru": "Guru", "doc": "Doc", "planner": "Planner", "deliverymanager": "DeliveryManager",
   "tester": "Tester", "monitor": "Monitor", "builder": "Builder", "review": "Review",
   "qa": "QA", "auth": "Auth", "ux specialist": "UX Specialist", "scrum master": "Scrum Master",
   "po": "PO", "backenddev": "BackendDev", "androiddev": "AndroidDev", "iosdev": "iOSDev",
   "webdev": "WebDev", "desktopdev": "DesktopDev", "ops": "Ops", "branch": "Branch",
+  "cleanup": "Cleanup", "perf": "Perf", "cost": "Cost", "hotfix": "Hotfix",
   "security": "Security", "claude": "Claude",
   // Hyphenated / spaced variants
   "backend-dev": "BackendDev", "android-dev": "AndroidDev", "ios-dev": "iOSDev",
@@ -986,10 +991,40 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     return '<div class="empty-state">Sin flujo de agentes registrado</div>';
   }
 
+  // Renombrar nodos "Claude" a "Agente #NNN" si hay info del sprint (#1598)
+  // El nodo "Claude" genérico no aporta información — mejor mostrar el agente concreto
+  const sessionsList = Array.isArray(sessions) ? sessions : [];
+  const claudeRenames = {};
+  const claudeIdx = nodes.indexOf("Claude");
+  if (claudeIdx !== -1) {
+    // Buscar la sesión que generó la transición "Claude" para obtener el issue/branch
+    for (const s of sessionsList) {
+      if (Array.isArray(s.agent_transitions)) {
+        for (const t of s.agent_transitions) {
+          if (t.from === "Claude" || t.to === "Claude") {
+            const branchMatch = (s.branch || "").match(/(?:agent|codex)\/(\d+)/);
+            if (branchMatch) {
+              const issueNum = branchMatch[1];
+              const newName = "Agente #" + issueNum;
+              claudeRenames["Claude"] = newName;
+              nodes[claudeIdx] = newName;
+              // Renombrar en transiciones también
+              for (const e of transitions) {
+                if (e.from === "Claude") e.from = newName;
+                if (e.to === "Claude") e.to = newName;
+              }
+              break;
+            }
+          }
+        }
+      }
+      if (claudeRenames["Claude"]) break;
+    }
+  }
+
   // Determine active/done agents from sessions (con normalización #1542)
   const activeAgents = new Set();
   const doneAgents = new Set();
-  const sessionsList = Array.isArray(sessions) ? sessions : [];
   for (const s of sessionsList) {
     if (s.agent_name) {
       const norm = normalizeSkillName(s.agent_name);
@@ -1069,24 +1104,24 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       let fx = 0, fy = 0;
       const pa = positions[a];
 
-      // Repulsion between all pairs (much stronger)
+      // Repulsion between all pairs (stronger to avoid overlaps)
       for (const b of nodes) {
         if (a === b) continue;
         const pb = positions[b];
         let dx = pa.x - pb.x, dy = pa.y - pb.y;
         let dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 1) { dx = 0.5; dy = 0.3; dist = 1; }
-        const repulse = 25000 / (dist * dist);
+        const repulse = 45000 / (dist * dist);
         fx += (dx / dist) * repulse;
         fy += (dy / dist) * repulse;
       }
 
-      // Attraction along edges (large ideal distance)
+      // Attraction along edges (larger ideal distance to prevent label overlap)
       for (const b of neighbors[a]) {
         const pb = positions[b];
         const dx = pb.x - pa.x, dy = pb.y - pa.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const ideal = 250;
+        const ideal = 320;
         const attract = (dist - ideal) * 0.04;
         fx += (dx / Math.max(dist, 1)) * attract;
         fy += (dy / Math.max(dist, 1)) * attract;
@@ -1105,8 +1140,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Post-layout: ensure minimum separation (4 × nodeR) between all nodes
-  const minDist = nodeR * 4;
+  // Post-layout: ensure minimum separation (5 × nodeR) between all nodes to avoid label overlap
+  const minDist = nodeR * 5;
   for (let pass = 0; pass < 20; pass++) {
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
@@ -1166,7 +1201,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const y2 = to.y - uy * (nodeR + 8);
     // Check if reverse edge exists → increase curve to avoid overlap
     const reverseKey = e.to + "->" + e.from;
-    const curveMult = edgeSet.has(reverseKey) ? 0.35 : 0.18;
+    const curveMult = edgeSet.has(reverseKey) ? 0.40 : 0.22;
     const midX = (x1 + x2) / 2;
     const midY = (y1 + y2) / 2;
     const cpx = midX + (-(y2 - y1) * curveMult);
@@ -1550,7 +1585,9 @@ function renderHTML(data, theme) {
     "Auth": "#cbd5e1", "PO": "#38bdf8", "UX Specialist": "#f472b6",
     "Scrum Master": "#2dd4bf", "Ops": "#e7e5e4",
     "BackendDev": "#f87171", "AndroidDev": "#4ade80", "WebDev": "#60a5fa",
-    "Branch": "#84cc16", "Claude": "#9399b2",
+    "Branch": "#84cc16", "Cleanup": "#78716c", "Security": "#ef4444",
+    "Perf": "#eab308", "Cost": "#06b6d4", "Hotfix": "#dc2626",
+    "Claude": "#9399b2",
   };
 
   const STATUS_COLORS = { active: "#34d399", idle: "#fbbf24", done: "#6C7086", stale: "#555872" };
