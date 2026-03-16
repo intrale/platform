@@ -1,199 +1,64 @@
 {
-  "updated_ts": "2026-03-15T20:00:00.000Z",
+  "updated_ts": "2026-03-16T21:00:00.000Z",
   "updated_by": "planner",
   "horizon_sprints": 5,
   "sprints": [
     {
-      "id": "SPR-030",
-      "start": "2026-03-14",
-      "end": "2026-03-14",
-      "tema": "Sprint de estabilización — carry-over de bugs monitor + permisos + QA pipeline",
+      "id": "SPR-035",
+      "tema": "Sprint limpieza + docs pipeline",
       "status": "done",
-      "closed_at": "2026-03-14T18:00:00Z",
-      "velocity": 7,
-      "issues": [
-        {
-          "number": 1537,
-          "title": "Validar distribución Android Firebase post-configuración de secrets",
-          "size": "S",
-          "stream": "E",
-          "status": "done"
-        },
-        {
-          "number": 1552,
-          "title": "sprint-sync y agent-concurrency destruyen agentes activos",
-          "size": "M",
-          "stream": "E",
-          "status": "done"
-        },
-        {
-          "number": 1553,
-          "title": "agent-watcher necesita grace period antes de evaluar PRs",
-          "size": "M",
-          "stream": "E",
-          "status": "done"
-        },
-        {
-          "number": 1556,
-          "title": "estrategia de rate limit para lanzamiento escalonado de agentes",
-          "size": "S",
-          "stream": "E",
-          "status": "done"
-        }
+      "stories": [
+        { "issue": 1614, "title": "Limpiar archivos de prueba", "effort": "simple", "stream": "E", "status": "done" },
+        { "issue": 1615, "title": "README para scripts/pipeline", "effort": "simple", "stream": "E", "status": "done" }
       ]
     },
     {
-      "id": "SPR-031",
-      "start": "2026-03-17",
-      "end": "2026-03-21",
-      "tema": "Sprint de estabilización — pipeline de agentes + bugs pendientes",
-      "status": "active",
-      "issues": [
-        {
-          "number": 1404,
-          "title": "bug panel PERMISOS no se actualiza con solicitudes recientes",
-          "size": "S",
-          "stream": "E",
-          "status": "open",
-          "carry_over_from": "SPR-030"
-        },
-        {
-          "number": 1497,
-          "title": "bug(hooks): agent-watcher launchAgent() falla con ENOENT en background",
-          "size": "M",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1498,
-          "title": "bug(hooks): agent-watcher sin límite de reintentos — loop infinito",
-          "size": "S",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1499,
-          "title": "bug(hooks): agent-watcher usa PID stale para verificar agentes vivos",
-          "size": "M",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1463,
-          "title": "Incidente: PRs mergeados a main sin QA E2E",
-          "size": "M",
-          "stream": "E",
-          "status": "open"
-        }
-      ]
-    },
-    {
-      "id": "SPR-032",
-      "start": "2026-03-24",
-      "end": "2026-03-28",
-      "tema": "Sprint SDD Fase 1+2 — OpenAPI specs + Gherkin en issues + carry-over distribución",
+      "id": "SPR-036",
+      "tema": "Sprint infra — completar pipeline + inicio features negocio",
       "status": "planned",
-      "issues": [
-        {
-          "number": 1578,
-          "title": "feat(sdd): Spec OpenAPI 3.1 para endpoints existentes del backend",
-          "size": "M",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1579,
-          "title": "feat(sdd): Task Gradle validateOpenApi — consistencia spec ↔ código",
-          "size": "M",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1581,
-          "title": "feat(sdd): Template de issue con escenarios Gherkin obligatorios",
-          "size": "S",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1582,
-          "title": "feat(sdd): /tester genera tests automáticos desde escenarios Gherkin",
-          "size": "M",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1464,
-          "title": "Distribución F&F Android: Firebase App Distribution para 3 flavors",
-          "size": "M",
-          "stream": "E",
-          "status": "open",
-          "carry_over_from": "SPR-024"
-        },
-        {
-          "number": 1465,
-          "title": "Distribución F&F iOS: TestFlight para 3 flavors via App Store Connect",
-          "size": "M",
-          "stream": "E",
-          "status": "open",
-          "carry_over_from": "SPR-024"
-        }
+      "stories": [
+        { "issue": 1618, "title": "Propagar GH_TOKEN a auto-delivery", "effort": "simple", "stream": "E", "status": "planned" },
+        { "issue": 603, "title": "Home/dashboard app negocio", "effort": "medio", "stream": "C", "status": "planned" },
+        { "issue": 610, "title": "Dashboard administración negocio", "effort": "medio", "stream": "C", "status": "planned" },
+        { "issue": 613, "title": "Publicación de productos hacia app cliente", "effort": "medio", "stream": "C", "status": "planned" },
+        { "issue": 677, "title": "Config datos básicos del negocio", "effort": "simple", "stream": "C", "status": "planned" }
       ]
     },
     {
-      "id": "SPR-033",
-      "start": "2026-03-31",
-      "end": "2026-04-04",
-      "tema": "Sprint SDD Fase 3+4 — UI specs + agentes SDD-aware + distribución restante",
+      "id": "SPR-037",
+      "tema": "Sprint negocio — pedidos y delivery",
       "status": "planned",
-      "issues": [
-        {
-          "number": 1580,
-          "title": "feat(sdd): Módulo shared/ con DTOs compartidos frontend-backend",
-          "size": "L",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1583,
-          "title": "feat(sdd): Specs de navegación y UIState para flujos de la app",
-          "size": "M",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1584,
-          "title": "feat(sdd): Skills SDD-aware — actualizar agentes para consumir/producir specs",
-          "size": "L",
-          "stream": "E",
-          "status": "open"
-        },
-        {
-          "number": 1466,
-          "title": "Distribución F&F Desktop/JVM: GitHub Releases privado con instaladores",
-          "size": "M",
-          "stream": "E",
-          "status": "open",
-          "carry_over_from": "SPR-024"
-        },
-        {
-          "number": 1467,
-          "title": "Distribución F&F Web/Wasm: AWS S3 + CloudFront con URL protegida",
-          "size": "M",
-          "stream": "E",
-          "status": "open",
-          "carry_over_from": "SPR-024"
-        }
+      "stories": [
+        { "issue": 674, "title": "Detalle de pedido y estado", "effort": "medio", "stream": "C", "status": "planned" },
+        { "issue": 675, "title": "Gestión de repartidores", "effort": "medio", "stream": "C", "status": "planned" },
+        { "issue": 676, "title": "Asignación de pedidos a repartidores", "effort": "medio", "stream": "C", "status": "planned" },
+        { "issue": 678, "title": "Config horarios y zonas de entrega", "effort": "medio", "stream": "C", "status": "planned" },
+        { "issue": 679, "title": "Config medios de pago", "effort": "simple", "stream": "C", "status": "planned" }
       ]
     },
     {
-      "id": "SPR-034",
-      "start": "2026-04-07",
-      "end": "2026-04-11",
-      "tema": "Sprint de producto — features de negocio post-SDD",
+      "id": "SPR-038",
+      "tema": "Sprint cliente — carrito y pedidos",
       "status": "planned",
-      "issues": []
+      "stories": [
+        { "issue": 717, "title": "Visualización del carrito", "effort": "medio", "stream": "B", "status": "planned" },
+        { "issue": 718, "title": "Confirmación de pedido y checkout", "effort": "medio", "stream": "B", "status": "planned" },
+        { "issue": 720, "title": "Selección medio de pago", "effort": "medio", "stream": "B", "status": "planned" },
+        { "issue": 721, "title": "Listado de pedidos del cliente", "effort": "medio", "stream": "B", "status": "planned" },
+        { "issue": 722, "title": "Detalle y seguimiento de pedido", "effort": "medio", "stream": "B", "status": "planned" }
+      ]
+    },
+    {
+      "id": "SPR-039",
+      "tema": "Sprint delivery — app repartidores",
+      "status": "planned",
+      "stories": [
+        { "issue": 732, "title": "Listado de pedidos disponibles", "effort": "medio", "stream": "D", "status": "planned" },
+        { "issue": 734, "title": "Flujo estados de entrega", "effort": "medio", "stream": "D", "status": "planned" },
+        { "issue": 735, "title": "Placeholder ubicación y mapa", "effort": "medio", "stream": "D", "status": "planned" },
+        { "issue": 737, "title": "Historial de pedidos", "effort": "medio", "stream": "D", "status": "planned" },
+        { "issue": 740, "title": "Notificaciones de pedidos", "effort": "medio", "stream": "D", "status": "planned" }
+      ]
     }
-  ],
-  "deferred": []
+  ]
 }
