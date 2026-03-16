@@ -450,7 +450,10 @@ function Start-UnAgente {
     # Run-AgentStream.ps1 parsea stream-json y muestra actividad en tiempo real.
     $streamScript = Join-Path $PSScriptRoot "Run-AgentStream.ps1"
 
-    Write-Host ">> Abriendo terminal con claude..."
+    # Leer modelo del plan (default: sonnet)
+    $agentModel = if ($Agente.PSObject.Properties["model"] -and $Agente.model) { $Agente.model } else { "sonnet" }
+
+    Write-Host ">> Abriendo terminal con claude (modelo: $agentModel)..."
     $proc = Start-Process powershell -ArgumentList (
         "-ExecutionPolicy", "Bypass",
         "-File", $streamScript,
@@ -460,7 +463,8 @@ function Start-UnAgente {
         "-AgentNum", $Agente.numero,
         "-Issue", $issue,
         "-Slug", $slug,
-        "-Branch", $branch
+        "-Branch", $branch,
+        "-Model", $agentModel
     ) -PassThru
 
     # Guardar PID en sprint-pids.json

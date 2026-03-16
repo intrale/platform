@@ -673,21 +673,48 @@ async function runCycle() {
                         );
                     }
                 } else {
-                    const motivo = prStatus.status === "unknown"
-                        ? "No se pudo verificar PR (gh CLI falló)"
-                        : prStatus.status === "closed_no_merge"
-                            ? "PR cerrada sin merge"
-                            : "Sin PR — el agente no completó /delivery";
-                    entry.detectado_por = "agent-watcher";
-                    entry.motivo = motivo;
-                    freshPlan._incomplete.push(entry);
-                    log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
+                    // Fix: verificar si el issue ya fue cerrado en GitHub antes de marcar como failed
+                    // Un issue cerrado indica trabajo exitoso por otra vía (PR mergeada manualmente, etc.)
+                    let issueAlreadyClosed = false;
+                    try {
+                        const issueState = execSync(
+                            GH + " issue view " + ag.issue + " --repo intrale/platform --json state --jq .state",
+                            { encoding: "utf8", timeout: 15000 }
+                        ).trim();
+                        issueAlreadyClosed = (issueState === "CLOSED");
+                    } catch (e) {
+                        log("WARN: No se pudo verificar estado del issue #" + ag.issue + ": " + e.message);
+                    }
 
-                    await notify(
-                        "⚠️ <b>Agente #" + ag.issue + " terminó sin PR (watcher)</b>\n" +
-                        "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
-                        "Motivo: " + escHtml(motivo)
-                    );
+                    if (issueAlreadyClosed) {
+                        // Issue cerrado → completado exitosamente por otra vía
+                        const successEntry = buildCompletedEntry(ag, null, "completed");
+                        successEntry.detectado_por = "agent-watcher";
+                        successEntry.motivo = "Issue cerrado en GitHub — trabajo exitoso";
+                        freshPlan._completed.push(successEntry);
+                        log("Agente #" + ag.issue + " → _completed (issue cerrado en GitHub)");
+                        await notify(
+                            "✅ <b>Agente #" + ag.issue + " completado (watcher)</b>\n" +
+                            "Issue cerrado en GitHub — trabajo exitoso\n" +
+                            "Slug: " + escHtml(ag.slug)
+                        );
+                    } else {
+                        const motivo = prStatus.status === "unknown"
+                            ? "No se pudo verificar PR (gh CLI falló)"
+                            : prStatus.status === "closed_no_merge"
+                                ? "PR cerrada sin merge"
+                                : "Sin PR — el agente no completó /delivery";
+                        entry.detectado_por = "agent-watcher";
+                        entry.motivo = motivo;
+                        freshPlan._incomplete.push(entry);
+                        log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
+
+                        await notify(
+                            "⚠️ <b>Agente #" + ag.issue + " terminó sin PR (watcher)</b>\n" +
+                            "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
+                            "Motivo: " + escHtml(motivo)
+                        );
+                    }
                 }
             }
         }
