@@ -266,6 +266,21 @@ async function main() {
     }
 
     // ─── Mode: scripts → ejecutar post-pipeline ──────────────────────────
+    // Obtener GH_TOKEN para auto-delivery
+    if (!process.env.GH_TOKEN) {
+        try {
+            const token = execSync('printf "protocol=https\\nhost=github.com\\n" | git credential fill 2>/dev/null | grep "^password=" | cut -d= -f2',
+                { encoding: "utf8", timeout: 10000, windowsHide: true, shell: true }).trim();
+            if (token && token.length > 10) process.env.GH_TOKEN = token;
+        } catch (e) { /* fallthrough */ }
+        if (!process.env.GH_TOKEN) {
+            try {
+                const token = execSync("gh auth token", { encoding: "utf8", timeout: 5000, windowsHide: true,
+                    env: { ...process.env, PATH: "/c/Workspaces/gh-cli/bin:" + process.env.PATH } }).trim();
+                if (token && token.length > 10) process.env.GH_TOKEN = token;
+            } catch (e) { /* fallthrough */ }
+        }
+    }
     log("=== Post-Claude Pipeline ===");
     const postResult = runPostPipeline(config, claudeResult);
 

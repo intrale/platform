@@ -386,14 +386,16 @@ function Start-UnAgente {
                 git branch -D $branch 2>$null
             }
 
-            # Crear worktree con git nativo (mas confiable que git-wt)
+            # Crear worktree con git nativo (ruta relativa para compatibilidad)
+            $wtRelPath = "../platform.agent-$issue-$slug"
             Write-Host ">> Creando worktree: $branch"
-            $wtResult = git worktree add $wtDir -b $branch origin/main 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host ">> WARN: git worktree add fallo: $wtResult" -ForegroundColor Yellow
-                # Fallback: intentar con git-wt si git nativo falla
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            git worktree add $wtRelPath -b $branch origin/main 2>$null
+            $ErrorActionPreference = $prevEAP
+            if (-not (Test-Path (Join-Path $wtDir ".git"))) {
+                Write-Host ">> WARN: git worktree add no creo .git valido, intentando con git-wt..." -ForegroundColor Yellow
                 if (Test-Path $GitWt) {
-                    Write-Host ">> Intentando con git-wt..."
                     & $GitWt switch --create $branch
                 }
             }
