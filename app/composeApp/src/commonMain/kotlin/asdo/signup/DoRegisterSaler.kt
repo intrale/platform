@@ -2,7 +2,7 @@ package asdo.signup
 
 import ext.storage.CommKeyValueStorage
 import ext.signup.CommRegisterSalerService
-import ext.auth.ExceptionResponse
+import ar.com.intrale.shared.ExceptionResponse
 
 class DoRegisterSaler(
     private val service: CommRegisterSalerService,

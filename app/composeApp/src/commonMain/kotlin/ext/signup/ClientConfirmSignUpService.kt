@@ -8,11 +8,12 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import ext.auth.ExceptionResponse
-import ext.auth.toExceptionResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.ConfirmSignUpRequest
+import ar.com.intrale.shared.auth.ConfirmSignUpResponse
 
 class ClientConfirmSignUpService(private val httpClient: HttpClient) : CommConfirmSignUpService {
     @OptIn(InternalAPI::class)
@@ -36,9 +37,3 @@ class ClientConfirmSignUpService(private val httpClient: HttpClient) : CommConfi
         }
     }
 }
-
-@Serializable
-data class ConfirmSignUpRequest(val email: String, val code: String)
-
-@Serializable
-data class ConfirmSignUpResponse(val statusCode: StatusCodeDTO)

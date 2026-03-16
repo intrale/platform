@@ -1,8 +1,8 @@
 package ui.sc.client
 
 import asdo.business.ToGetProduct
-import ext.business.ProductDTO
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductStatus
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

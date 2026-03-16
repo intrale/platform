@@ -9,9 +9,11 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
 import kotlinx.serialization.json.Json
-import ext.auth.ExceptionResponse
-import ext.auth.toExceptionResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.SignUpRequest
+import ar.com.intrale.shared.auth.SignUpResponse
 
 class ClientSignUpPlatformAdminService(private val httpClient: HttpClient) : CommSignUpPlatformAdminService {
     @OptIn(InternalAPI::class)

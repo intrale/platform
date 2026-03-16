@@ -1,8 +1,8 @@
 package asdo.client
 
-import ext.client.ClientOrderDTO
-import ext.client.ClientOrderDetailDTO
-import ext.client.ClientOrderItemDTO
+import ar.com.intrale.shared.client.ClientOrderDTO
+import ar.com.intrale.shared.client.ClientOrderDetailDTO
+import ar.com.intrale.shared.client.ClientOrderItemDTO
 
 enum class ClientOrderStatus {
     PENDING, CONFIRMED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED, UNKNOWN
@@ -65,10 +65,10 @@ fun String.toClientOrderStatus(): ClientOrderStatus = when (this.uppercase()) {
 fun ClientOrderDTO.toDomain(): ClientOrder = ClientOrder(
     id = id.orEmpty(),
     publicId = publicId,
-    shortCode = shortCode,
+    shortCode = shortCode.orEmpty(),
     businessName = businessName,
     status = status.toClientOrderStatus(),
-    createdAt = createdAt,
+    createdAt = createdAt.orEmpty(),
     promisedAt = promisedAt,
     total = total,
     itemCount = itemCount

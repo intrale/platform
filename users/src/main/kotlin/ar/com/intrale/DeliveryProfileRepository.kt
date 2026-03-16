@@ -41,7 +41,7 @@ class DeliveryProfileRepository {
     }
 
     fun getAvailability(business: String, email: String): DeliveryAvailabilityPayload {
-        return availability.getOrDefault(key(business, email), DeliveryAvailabilityPayload())
+        return availability.getOrDefault(key(business, email), DeliveryAvailabilityPayload(timezone = "UTC"))
     }
 
     fun updateAvailability(

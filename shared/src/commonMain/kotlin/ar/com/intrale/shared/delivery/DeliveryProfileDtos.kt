@@ -1,4 +1,4 @@
-package ext.delivery
+package ar.com.intrale.shared.delivery
 
 import kotlinx.serialization.Serializable
 
@@ -28,6 +28,11 @@ data class DeliveryZoneDTO(
 data class DeliveryProfileResponse(
     val profile: DeliveryProfileDTO? = null,
     val zones: List<DeliveryZoneDTO> = emptyList()
+)
+
+@Serializable
+data class DeliveryProfileUpdateRequest(
+    val profile: DeliveryProfileDTO? = null
 )
 
 @Serializable

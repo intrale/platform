@@ -44,7 +44,7 @@ class SignInRequestTest {
     @Test
     fun `toString refleja los valores`() {
         val req = SignInRequest("user@test.com", "pass", "newpass", "John", "Doe")
-        val esperado = "SignInRequest(email=user@test.com, password=pass, newPassword=newpass, name=John, familyName=Doe)"
+        val esperado = "LoginRequest(email=user@test.com, password=pass, newPassword=newpass, name=John, familyName=Doe)"
         assertEquals(esperado, req.toString())
     }
 }

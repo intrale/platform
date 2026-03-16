@@ -2,9 +2,9 @@ package asdo.auth
 
 import ext.storage.CommKeyValueStorage
 import ext.auth.CommLoginService
-import ext.auth.ExceptionResponse
-import ext.auth.LoginResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.auth.LoginResponse
+import ar.com.intrale.shared.StatusCodeDTO
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import kotlin.Result

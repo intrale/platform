@@ -1,7 +1,20 @@
 package asdo.business
 
-import ext.business.*
-import ext.dto.*
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.business.*
+import ext.business.BusinessExceptionResponse
+import ext.business.CommCategoryService
+import ext.business.CommFontsService
+import ext.business.CommGetBusinessDashboardSummaryService
+import ext.business.CommGetBusinessOrdersService
+import ext.business.CommGetBusinessProductsService
+import ext.business.CommProductService
+import ext.business.CommRegisterBusinessService
+import ext.business.CommRequestJoinBusinessService
+import ext.business.CommReviewBusinessRegistrationService
+import ext.business.CommReviewJoinBusinessService
+import ext.business.CommSearchBusinessesService
+import ext.business.toBusinessException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -433,8 +446,8 @@ class DoGetProductTest {
 // region DoGetBusinessOrders
 
 class FakeCommGetBusinessOrdersService(
-    private val result: Result<List<ext.business.BusinessOrderDTO>>
-) : ext.business.CommGetBusinessOrdersService {
+    private val result: Result<List<BusinessOrderDTO>>
+) : CommGetBusinessOrdersService {
     override suspend fun listOrders(businessId: String) = result
 }
 
@@ -443,7 +456,7 @@ class DoGetBusinessOrdersTest {
     @Test
     fun `execute retorna lista de pedidos cuando el servicio responde con éxito`() = runTest {
         val dtos = listOf(
-            ext.business.BusinessOrderDTO(id = "1", shortCode = "ABC123", clientEmail = "c@test.com", status = "PENDING", total = 1500.0, createdAt = "2026-03-14T15:00:00Z")
+            BusinessOrderDTO(id = "1", shortCode = "ABC123", clientEmail = "c@test.com", status = "PENDING", total = 1500.0, createdAt = "2026-03-14T15:00:00Z")
         )
         val sut = DoGetBusinessOrders(FakeCommGetBusinessOrdersService(Result.success(dtos)))
 

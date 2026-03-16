@@ -1,10 +1,10 @@
 package asdo.delivery
 
-import ext.delivery.DeliveryAvailabilityDTO
-import ext.delivery.DeliveryAvailabilitySlotDTO
-import ext.delivery.DeliveryProfileDTO
-import ext.delivery.DeliveryVehicleDTO
-import ext.delivery.DeliveryZoneDTO
+import ar.com.intrale.shared.delivery.DeliveryAvailabilityDTO
+import ar.com.intrale.shared.delivery.DeliveryAvailabilitySlotDTO
+import ar.com.intrale.shared.delivery.DeliveryProfileDTO
+import ar.com.intrale.shared.delivery.DeliveryVehicleDTO
+import ar.com.intrale.shared.delivery.DeliveryZoneDTO
 import kotlinx.datetime.DayOfWeek
 
 data class DeliveryProfile(

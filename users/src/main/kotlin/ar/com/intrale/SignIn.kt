@@ -89,7 +89,7 @@ class SignIn(
                             clientId = config.awsCognitoClientId
                             challengeResponses = mapOf(
                                 "USERNAME" to body.email,
-                                "NEW_PASSWORD" to body.newPassword
+                                "NEW_PASSWORD" to body.newPassword!!
                             )
                             session = authResponse.session
                         })
@@ -121,7 +121,7 @@ class SignIn(
                             authFlow = AdminNoSrpAuth
                             clientId = config.awsCognitoClientId
                             userPoolId = config.awsCognitoUserPoolId
-                            authParameters = mapOf("USERNAME" to body.email, "PASSWORD" to body.newPassword)
+                            authParameters = mapOf("USERNAME" to body.email, "PASSWORD" to body.newPassword!!)
                         })
 
                 }

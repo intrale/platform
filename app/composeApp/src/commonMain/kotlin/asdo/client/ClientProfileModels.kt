@@ -1,8 +1,8 @@
 package asdo.client
 
-import ext.client.ClientAddressDTO
-import ext.client.ClientPreferencesDTO
-import ext.client.ClientProfileDTO
+import ar.com.intrale.shared.client.ClientAddressDTO
+import ar.com.intrale.shared.client.ClientPreferencesDTO
+import ar.com.intrale.shared.client.ClientProfileDTO
 import ext.storage.model.ClientProfileCache
 
 data class ClientProfile(

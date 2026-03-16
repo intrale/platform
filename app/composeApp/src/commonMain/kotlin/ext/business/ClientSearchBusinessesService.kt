@@ -8,13 +8,13 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import ext.auth.ExceptionResponse
-import ext.auth.toExceptionResponse
-import ext.dto.SearchBusinessesResponse
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.business.SearchBusinessesRequest
+import ar.com.intrale.shared.business.SearchBusinessesResponse
 
 class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSearchBusinessesService {
 
@@ -48,11 +48,3 @@ class ClientSearchBusinessesService(private val httpClient: HttpClient) : CommSe
         }
     }
 }
-
-@Serializable
-data class SearchBusinessesRequest(
-    val query: String = "",
-    val status: String? = null,
-    val limit: Int? = null,
-    val lastKey: String? = null
-)

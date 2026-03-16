@@ -1,6 +1,6 @@
 package asdo.business
 
-import ext.business.BusinessOrderDTO
+import ar.com.intrale.shared.business.BusinessOrderDTO
 
 enum class BusinessOrderStatus {
     PENDING, CONFIRMED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED, UNKNOWN

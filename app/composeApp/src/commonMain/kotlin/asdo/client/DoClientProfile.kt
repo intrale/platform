@@ -1,7 +1,7 @@
 package asdo.client
 
-import ext.client.ClientPreferencesDTO
-import ext.client.ClientProfileDTO
+import ar.com.intrale.shared.client.ClientPreferencesDTO
+import ar.com.intrale.shared.client.ClientProfileDTO
 import ext.client.CommClientAddressesService
 import ext.client.CommClientProfileService
 import ext.client.toClientException

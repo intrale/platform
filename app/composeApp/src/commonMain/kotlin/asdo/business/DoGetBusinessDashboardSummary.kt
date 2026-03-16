@@ -1,7 +1,7 @@
 package asdo.business
 
 import ext.business.CommGetBusinessDashboardSummaryService
-import ext.dto.BusinessDashboardSummaryDTO
+import ar.com.intrale.shared.business.BusinessDashboardSummaryDTO
 
 class DoGetBusinessDashboardSummary(
     private val service: CommGetBusinessDashboardSummaryService

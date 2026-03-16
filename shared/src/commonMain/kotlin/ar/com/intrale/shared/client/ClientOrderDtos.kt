@@ -1,18 +1,33 @@
-package ext.client
+package ar.com.intrale.shared.client
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.serialization.Serializable
+
+@Serializable
+data class ClientOrderItemDTO(
+    val id: String? = null,
+    val productId: String = "",
+    val productName: String = "",
+    val name: String = "",
+    val quantity: Int = 0,
+    val unitPrice: Double = 0.0,
+    val subtotal: Double = 0.0
+)
 
 @Serializable
 data class ClientOrderDTO(
     val id: String? = null,
     val publicId: String = "",
-    val shortCode: String = "",
+    val shortCode: String? = null,
     val businessName: String = "",
     val status: String = "",
-    val createdAt: String = "",
-    val promisedAt: String? = null,
+    val items: List<ClientOrderItemDTO> = emptyList(),
     val total: Double = 0.0,
+    val deliveryAddress: ClientAddressDTO? = null,
+    val notes: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
+    val promisedAt: String? = null,
     val itemCount: Int = 0
 )
 
@@ -32,15 +47,6 @@ data class ClientOrderDetailDTO(
 )
 
 @Serializable
-data class ClientOrderItemDTO(
-    val id: String? = null,
-    val name: String = "",
-    val quantity: Int = 0,
-    val unitPrice: Double = 0.0,
-    val subtotal: Double = 0.0
-)
-
-@Serializable
 data class ClientOrdersResponse(
     val statusCode: StatusCodeDTO? = null,
     val orders: List<ClientOrderDTO>? = null
@@ -50,4 +56,9 @@ data class ClientOrdersResponse(
 data class ClientOrderDetailResponse(
     val statusCode: StatusCodeDTO? = null,
     val order: ClientOrderDetailDTO? = null
+)
+
+@Serializable
+data class ClientOrderRequest(
+    val orderId: String? = null
 )

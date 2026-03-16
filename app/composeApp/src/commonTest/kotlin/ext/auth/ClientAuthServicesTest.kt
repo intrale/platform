@@ -1,6 +1,12 @@
 package ext.auth
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.auth.ChangePasswordResponse
+import ar.com.intrale.shared.auth.LoginResponse
+import ar.com.intrale.shared.auth.PasswordRecoveryResponse
+import ar.com.intrale.shared.auth.TwoFactorSetupResponse
+import ar.com.intrale.shared.auth.TwoFactorVerifyResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond

@@ -6,7 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.business.ToDoGetFonts
 import asdo.business.ToDoUpdateFonts
-import ext.business.FontsRequest
+import ar.com.intrale.shared.business.FontsRequest
 import io.konform.validation.Validation
 import org.kodein.di.direct
 import org.kodein.di.instance

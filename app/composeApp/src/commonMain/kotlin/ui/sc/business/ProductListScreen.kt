@@ -40,8 +40,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
-import ext.business.CategoryDTO
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.ProductStatus
 import kotlinx.coroutines.launch
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen

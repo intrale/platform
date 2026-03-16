@@ -9,9 +9,12 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.ChangePasswordRequest
+import ar.com.intrale.shared.auth.ChangePasswordResponse
 
 class ClientChangePasswordService(private val httpClient: HttpClient) : CommChangePasswordService {
     @OptIn(InternalAPI::class)
@@ -35,9 +38,3 @@ class ClientChangePasswordService(private val httpClient: HttpClient) : CommChan
         }
     }
 }
-
-@Serializable
-data class ChangePasswordRequest(val oldPassword: String, val newPassword: String)
-
-@Serializable
-data class ChangePasswordResponse(val statusCode: StatusCodeDTO)

@@ -4,33 +4,6 @@ import io.ktor.http.HttpStatusCode
 import java.time.Instant
 import java.util.UUID
 
-data class ClientProfilePayload(
-    val id: String? = null,
-    val fullName: String = "",
-    val email: String = "",
-    val phone: String? = null,
-    val defaultAddressId: String? = null
-)
-
-data class ClientPreferencesPayload(
-    val language: String = "es"
-)
-
-data class ClientAddressPayload(
-    val id: String? = null,
-    val label: String = "",
-    val street: String = "",
-    val number: String = "",
-    val reference: String? = null,
-    val city: String = "",
-    val state: String? = null,
-    val postalCode: String? = null,
-    val country: String? = null,
-    val isDefault: Boolean = false,
-    val createdAt: String? = null,
-    val updatedAt: String? = null
-)
-
 data class ClientProfileResponse(
     val profile: ClientProfilePayload? = null,
     val preferences: ClientPreferencesPayload? = null,
@@ -46,11 +19,6 @@ data class ClientAddressListResponse(
     val addresses: List<ClientAddressPayload> = emptyList(),
     val status: HttpStatusCode = HttpStatusCode.OK
 ) : Response(statusCode = status)
-
-data class ClientProfileUpdateRequest(
-    val profile: ClientProfilePayload? = null,
-    val preferences: ClientPreferencesPayload? = null
-)
 
 data class ClientProfileRecord(
     var profile: ClientProfilePayload = ClientProfilePayload(),

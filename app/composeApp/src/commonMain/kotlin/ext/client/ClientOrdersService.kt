@@ -1,7 +1,11 @@
 package ext.client
 
 import ar.com.intrale.BuildKonfig
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.client.ClientOrderDTO
+import ar.com.intrale.shared.client.ClientOrderDetailDTO
+import ar.com.intrale.shared.client.ClientOrderDetailResponse
+import ar.com.intrale.shared.client.ClientOrdersResponse
 import ext.storage.CommKeyValueStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get

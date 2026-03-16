@@ -11,10 +11,10 @@ import asdo.business.ToDoDeleteProduct
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoUpdateProduct
 import asdo.business.ToDoListCategories
-import ext.business.CategoryDTO
-import ext.business.ProductDTO
-import ext.business.ProductRequest
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductRequest
+import ar.com.intrale.shared.business.ProductStatus
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import io.konform.validation.jsonschema.pattern

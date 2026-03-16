@@ -1,10 +1,10 @@
 package ext.business
 
 import ar.com.intrale.BuildKonfig
-import ext.auth.ExceptionResponse
-import ext.auth.toExceptionResponse
-import ext.dto.BusinessDashboardSummaryDTO
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.business.BusinessDashboardSummaryDTO
 import ext.storage.CommKeyValueStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get

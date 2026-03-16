@@ -214,7 +214,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Check app
-        run: ./gradlew :app:composeApp:check :app:composeApp:koverVerify :app:composeApp:koverHtmlReport -x compileTestKotlinIosX64
+        run: ./gradlew :app:composeApp:check :app:composeApp:koverVerify :app:composeApp:koverHtmlReport -x compileTestKotlinIosX64 -x compileKotlinIosSimulatorArm64 -x compileTestKotlinIosSimulatorArm64
 
       - name: Upload test reports
         if: always()

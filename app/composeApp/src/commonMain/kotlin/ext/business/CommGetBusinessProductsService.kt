@@ -1,6 +1,6 @@
 package ext.business
 
-import ext.dto.BusinessProductsResponse
+import ar.com.intrale.shared.business.BusinessProductsResponse
 
 interface CommGetBusinessProductsService {
     suspend fun execute(

@@ -1,7 +1,7 @@
 package asdo.business
 
 import ext.business.CommSearchBusinessesService
-import ext.dto.SearchBusinessesResponse
+import ar.com.intrale.shared.business.SearchBusinessesResponse
 
 class DoGetBusinesses(private val service: CommSearchBusinessesService) : ToGetBusinesses {
     override suspend fun execute(

@@ -1,7 +1,7 @@
 package asdo.signup
 
 import ext.signup.CommSignUpDeliveryService
-import ext.auth.ExceptionResponse
+import ar.com.intrale.shared.ExceptionResponse
 
 class DoSignUpDelivery(private val service: CommSignUpDeliveryService) : ToDoSignUpDelivery {
     override suspend fun execute(business: String, email: String): Result<DoSignUpResult> {

@@ -1,5 +1,8 @@
 package ext.business
 
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.CategoryRequest
+
 interface CommCategoryService {
     suspend fun listCategories(businessId: String): Result<List<CategoryDTO>>
     suspend fun createCategory(

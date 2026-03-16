@@ -1,5 +1,8 @@
 package ext.delivery
 
+import ar.com.intrale.shared.delivery.DeliveryOrderDTO
+import ar.com.intrale.shared.delivery.DeliveryOrderStatusUpdateResponse
+import ar.com.intrale.shared.delivery.DeliveryOrdersSummaryDTO
 import kotlinx.datetime.LocalDate
 
 interface CommDeliveryOrdersService {
@@ -7,5 +10,5 @@ interface CommDeliveryOrdersService {
     suspend fun fetchActiveOrders(): Result<List<DeliveryOrderDTO>>
     suspend fun fetchAvailableOrders(): Result<List<DeliveryOrderDTO>>
     suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String? = null): Result<DeliveryOrderStatusUpdateResponse>
-    suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDetailDTO>
+    suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDTO>
 }

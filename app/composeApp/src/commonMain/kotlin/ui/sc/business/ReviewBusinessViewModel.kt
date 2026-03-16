@@ -6,7 +6,7 @@ import asdo.business.ToGetBusinesses
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import ext.dto.BusinessDTO
+import ar.com.intrale.shared.business.BusinessDTO
 import io.konform.validation.Validation
 import org.kodein.di.direct
 import org.kodein.di.instance

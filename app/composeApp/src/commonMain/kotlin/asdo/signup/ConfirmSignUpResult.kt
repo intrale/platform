@@ -1,7 +1,7 @@
 package asdo.signup
 
-import ext.signup.ConfirmSignUpResponse
-import ext.auth.ExceptionResponse
+import ar.com.intrale.shared.auth.ConfirmSignUpResponse
+import ar.com.intrale.shared.ExceptionResponse
 
 data class ConfirmSignUpStatusCode(val value: Int, val description: String?)
 

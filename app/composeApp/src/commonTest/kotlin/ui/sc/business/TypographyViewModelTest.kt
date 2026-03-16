@@ -2,8 +2,8 @@ package ui.sc.business
 
 import asdo.business.ToDoGetFonts
 import asdo.business.ToDoUpdateFonts
-import ext.business.FontsDTO
-import ext.business.FontsRequest
+import ar.com.intrale.shared.business.FontsDTO
+import ar.com.intrale.shared.business.FontsRequest
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

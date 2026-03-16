@@ -1,6 +1,6 @@
 package asdo.business
 
-import ext.business.RegisterBusinessResponse
+import ar.com.intrale.shared.business.RegisterBusinessResponse
 
 interface ToDoRegisterBusiness {
     suspend fun execute(name: String, emailAdmin: String, description: String): Result<RegisterBusinessResponse>

@@ -1,6 +1,6 @@
 package ext.business
 
-import ext.dto.BusinessDashboardSummaryDTO
+import ar.com.intrale.shared.business.BusinessDashboardSummaryDTO
 
 interface CommGetBusinessDashboardSummaryService {
     suspend fun execute(businessId: String): Result<BusinessDashboardSummaryDTO>

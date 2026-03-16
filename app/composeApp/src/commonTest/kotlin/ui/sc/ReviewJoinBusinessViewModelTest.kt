@@ -1,8 +1,8 @@
 package ui.sc
 
 import asdo.business.ToDoReviewJoinBusiness
-import ext.business.ReviewJoinBusinessResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.business.ReviewJoinBusinessResponse
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue

@@ -9,8 +9,8 @@ import ar.com.intrale.strings.resolveMessage
 import asdo.business.ToDoCreateCategory
 import asdo.business.ToDoDeleteCategory
 import asdo.business.ToDoUpdateCategory
-import ext.business.CategoryDTO
-import ext.business.CategoryRequest
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.CategoryRequest
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
 import org.kodein.di.direct

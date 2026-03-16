@@ -1,9 +1,9 @@
 package asdo.client
 
 import ext.client.ClientExceptionResponse
-import ext.client.ClientOrderDTO
-import ext.client.ClientOrderDetailDTO
-import ext.client.ClientOrderItemDTO
+import ar.com.intrale.shared.client.ClientOrderDTO
+import ar.com.intrale.shared.client.ClientOrderDetailDTO
+import ar.com.intrale.shared.client.ClientOrderItemDTO
 import ext.client.CommClientOrdersService
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test

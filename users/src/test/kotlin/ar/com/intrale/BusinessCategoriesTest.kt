@@ -108,7 +108,7 @@ class BusinessCategoriesTest {
         assertNotNull(response.category)
         assertEquals("Carnes", response.category!!.name)
         assertEquals("la-carne", response.category!!.businessId)
-        assertTrue(response.category!!.id.isNotEmpty())
+        assertTrue(response.category!!.id!!.isNotEmpty())
     }
 
     @Test

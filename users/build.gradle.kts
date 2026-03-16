@@ -25,6 +25,7 @@ application {
 
 dependencies {
     implementation(project(":backend"))
+    implementation(project(":shared"))
 
     implementation(libs.ktor.server.core)
     implementation(libs.logback.classic)
