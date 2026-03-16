@@ -72,6 +72,17 @@ function main() {
     emitTransition(prevRole, "Security");
     emitSkillInvoked("security");
 
+    // Verificar que el workDir es un repo git valido
+    try {
+        execSync("git status", { cwd: workDir, timeout: 5000, windowsHide: true, stdio: "pipe" });
+    } catch (e) {
+        console.log("[security-scan] Skip: workDir no es un repo git valido");
+        if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
+        emitGateResult("security", "pass", { skippedReason: "not a git repo" });
+        emitTransition("Security", nextRole);
+        process.exit(0);
+    }
+
     console.log("[security-scan] Escaneando diff por vulnerabilidades...");
 
     if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
