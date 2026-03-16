@@ -448,7 +448,10 @@ function Start-UnAgente {
     # #1541: Lanzar Run-AgentStream.ps1 como script separado.
     # Evita el infierno de escaping de PowerShell al construir $command inline.
     # Run-AgentStream.ps1 parsea stream-json y muestra actividad en tiempo real.
-    $streamScript = Join-Path $PSScriptRoot "Run-AgentStream.ps1"
+    # Siempre usar Run-AgentStream.ps1 del repo principal (no del worktree)
+    # para que los scripts del pipeline estén siempre actualizados
+    $mainRepoScripts = "C:\Workspaces\Intrale\platform\scripts"
+    $streamScript = Join-Path $mainRepoScripts "Run-AgentStream.ps1"
 
     # Leer modelo del plan (default: sonnet)
     $agentModel = if ($Agente.PSObject.Properties["model"] -and $Agente.model) { $Agente.model } else { "sonnet" }

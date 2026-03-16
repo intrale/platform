@@ -72,9 +72,18 @@ setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } ca
 
 function getBranch() {
     try {
-        return execSync("git branch --show-current", { cwd: WORKTREE_ROOT, timeout: 3000, windowsHide: true })
+        const branch = execSync("git branch --show-current", { cwd: WORKTREE_ROOT, timeout: 3000, windowsHide: true })
             .toString().trim();
-    } catch(e) { return "unknown"; }
+        if (branch && branch !== "") return branch;
+    } catch(e) { /* fallthrough */ }
+    // Fallback: inferir branch del nombre del directorio del worktree
+    // platform.agent-1584-sdd-aware-skills → agent/1584-sdd-aware-skills
+    try {
+        const dirName = path.basename(WORKTREE_ROOT);
+        const match = dirName.match(/\.(?:agent|codex)-(\d+-.*)/);
+        if (match) return (dirName.includes(".agent-") ? "agent/" : "codex/") + match[1];
+    } catch(e) { /* fallthrough */ }
+    return "unknown";
 }
 
 function handleInput() {
