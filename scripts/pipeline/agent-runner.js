@@ -105,6 +105,7 @@ function runClaude(config) {
             },
             stdio: ["pipe", "pipe", "pipe"],
             windowsHide: false,
+            shell: true, // Necesario en Windows para ejecutar .cmd
         });
 
         // Enviar prompt

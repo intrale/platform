@@ -68,9 +68,26 @@ function main() {
     emitTransition(prevRole, "Tester");
     emitSkillInvoked("tester");
 
-    console.log("[run-tests] Ejecutando ./gradlew check...");
-
     if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
+
+    // Skip tests si el diff no toca codigo fuente
+    try {
+        const diff = execSync("git diff origin/main...HEAD --name-only", {
+            cwd: workDir, encoding: "utf8", timeout: 10000, windowsHide: true,
+        }).trim();
+        const codeFiles = diff.split("\n").filter(f =>
+            /\.(kt|kts|java|gradle)$/.test(f) && !f.startsWith(".claude/"));
+        if (codeFiles.length === 0) {
+            console.log("[run-tests] Skip: diff no contiene codigo fuente (" + diff.split("\n").length + " archivos, solo docs/config)");
+            const skipResult = { status: "pass", total: 0, passed: 0, failed: 0, skipped: 0, time: 0, failures: [], xmlFiles: 0, buildExitCode: 0, skippedReason: "no source code in diff" };
+            fs.writeFileSync(path.join(LOGS_DIR, "test-result.json"), JSON.stringify(skipResult, null, 2), "utf8");
+            emitGateResult("tester", "pass", skipResult);
+            emitTransition("Tester", nextRole);
+            process.exit(0);
+        }
+    } catch (e) { /* continuar con tests si falla la deteccion */ }
+
+    console.log("[run-tests] Ejecutando ./gradlew check...");
 
     // Ejecutar tests
     let buildOutput = "";
