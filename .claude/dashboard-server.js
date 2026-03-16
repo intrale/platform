@@ -1460,8 +1460,15 @@ function buildGanttChart(roadmap) {
   const allIssues = [];
   for (let si = 0; si < sprints.length; si++) {
     const spr = sprints[si];
-    for (const iss of (spr.issues || [])) {
-      allIssues.push({ ...iss, _sprintIdx: si, _sprintId: spr.id });
+    for (const iss of (spr.stories || spr.issues || [])) {
+      // Normalizar campos: roadmap usa issue/effort, chart espera number/size
+      const normalized = { ...iss };
+      if (!normalized.number && normalized.issue) normalized.number = normalized.issue;
+      if (!normalized.size && normalized.effort) {
+        const effortMap = { "simple": "S", "medio": "M", "grande": "L" };
+        normalized.size = effortMap[normalized.effort] || "M";
+      }
+      allIssues.push({ ...normalized, _sprintIdx: si, _sprintId: spr.id });
     }
   }
 
