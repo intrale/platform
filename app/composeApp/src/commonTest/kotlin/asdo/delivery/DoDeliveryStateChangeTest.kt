@@ -2,7 +2,7 @@ package asdo.delivery
 
 import ext.delivery.CommDeliveryStateService
 import ext.delivery.DeliveryExceptionResponse
-import ext.delivery.DeliveryStateChangeResponse
+import ar.com.intrale.shared.delivery.DeliveryStateChangeResponse
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

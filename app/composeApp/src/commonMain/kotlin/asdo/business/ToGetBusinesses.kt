@@ -1,6 +1,6 @@
 package asdo.business
 
-import ext.dto.SearchBusinessesResponse
+import ar.com.intrale.shared.business.SearchBusinessesResponse
 
 interface ToGetBusinesses {
     suspend fun execute(

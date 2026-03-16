@@ -1,9 +1,9 @@
 package asdo.signup
 
-import ext.auth.ExceptionResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
 import ext.signup.CommConfirmSignUpService
-import ext.signup.ConfirmSignUpResponse
+import ar.com.intrale.shared.auth.ConfirmSignUpResponse
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

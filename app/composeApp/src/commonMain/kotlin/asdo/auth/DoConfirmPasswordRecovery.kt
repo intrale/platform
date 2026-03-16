@@ -1,9 +1,9 @@
 package asdo.auth
 
 import ext.auth.CommPasswordRecoveryService
-import ext.auth.ExceptionResponse
-import ext.auth.PasswordRecoveryResponse
-import ext.auth.toExceptionResponse
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.auth.PasswordRecoveryResponse
+import ar.com.intrale.shared.toExceptionResponse
 
 class DoConfirmPasswordRecovery(private val service: CommPasswordRecoveryService) : ToDoConfirmPasswordRecovery {
     override suspend fun execute(email: String, code: String, password: String): Result<DoConfirmPasswordRecoveryResult> {

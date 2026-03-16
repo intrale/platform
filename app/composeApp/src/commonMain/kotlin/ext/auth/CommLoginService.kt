@@ -1,5 +1,7 @@
 package ext.auth
 
+import ar.com.intrale.shared.auth.LoginResponse
+
 interface CommLoginService {
     suspend fun execute(
         user: String,

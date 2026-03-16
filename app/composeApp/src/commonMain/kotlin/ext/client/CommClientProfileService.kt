@@ -1,5 +1,10 @@
 package ext.client
 
+import ar.com.intrale.shared.client.ClientAddressDTO
+import ar.com.intrale.shared.client.ClientPreferencesDTO
+import ar.com.intrale.shared.client.ClientProfileDTO
+import ar.com.intrale.shared.client.ClientProfileResponse
+
 interface CommClientProfileService {
     suspend fun fetchProfile(): Result<ClientProfileResponse>
     suspend fun updateProfile(

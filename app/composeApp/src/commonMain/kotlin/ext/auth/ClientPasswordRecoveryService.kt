@@ -8,9 +8,13 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.PasswordRecoveryRequest
+import ar.com.intrale.shared.auth.ConfirmPasswordRecoveryRequest
+import ar.com.intrale.shared.auth.PasswordRecoveryResponse
 
 class ClientPasswordRecoveryService(private val httpClient: HttpClient) : CommPasswordRecoveryService {
     @OptIn(InternalAPI::class)
@@ -53,12 +57,3 @@ class ClientPasswordRecoveryService(private val httpClient: HttpClient) : CommPa
         }
     }
 }
-
-@Serializable
-data class PasswordRecoveryRequest(val email: String)
-
-@Serializable
-data class ConfirmPasswordRecoveryRequest(val email: String, val code: String, val password: String)
-
-@Serializable
-data class PasswordRecoveryResponse(val statusCode: StatusCodeDTO)

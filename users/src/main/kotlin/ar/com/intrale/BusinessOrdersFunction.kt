@@ -9,16 +9,6 @@ data class BusinessOrderItem(
     val order: ClientOrderPayload
 )
 
-data class BusinessOrderPayload(
-    val id: String = "",
-    val shortCode: String? = null,
-    val clientEmail: String = "",
-    val status: String = "PENDING",
-    val total: Double = 0.0,
-    val createdAt: String? = null,
-    val updatedAt: String? = null
-)
-
 data class BusinessOrderListResponse(
     val orders: List<BusinessOrderPayload> = emptyList(),
     val status: HttpStatusCode = HttpStatusCode.OK
@@ -45,7 +35,7 @@ class BusinessOrdersFunction(
                 val items = repository.listAllOrdersForBusiness(business)
                 val payloads = items.map { item ->
                     BusinessOrderPayload(
-                        id = item.order.id,
+                        id = item.order.id ?: "",
                         shortCode = item.order.shortCode,
                         clientEmail = item.clientEmail,
                         status = item.order.status.uppercase(),

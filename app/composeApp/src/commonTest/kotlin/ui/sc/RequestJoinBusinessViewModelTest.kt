@@ -1,7 +1,7 @@
 package ui.sc
 
 import asdo.business.ToDoRequestJoinBusiness
-import ext.business.RequestJoinBusinessResponse
+import ar.com.intrale.shared.business.RequestJoinBusinessResponse
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend

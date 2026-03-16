@@ -1,6 +1,6 @@
 package ext.delivery
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 

@@ -2,7 +2,7 @@ package asdo.business
 
 import ext.storage.CommKeyValueStorage
 import ext.business.CommReviewBusinessRegistrationService
-import ext.business.ReviewBusinessRegistrationResponse
+import ar.com.intrale.shared.business.ReviewBusinessRegistrationResponse
 
 class DoReviewBusinessRegistration(
     private val service: CommReviewBusinessRegistrationService,

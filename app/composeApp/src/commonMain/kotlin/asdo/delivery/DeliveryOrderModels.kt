@@ -1,10 +1,9 @@
 package asdo.delivery
 
-import ext.delivery.DeliveryOrderDTO
-import ext.delivery.DeliveryOrderDetailDTO
-import ext.delivery.DeliveryOrderItemDTO
-import ext.delivery.DeliveryOrderStatusUpdateResponse
-import ext.delivery.DeliveryOrdersSummaryDTO
+import ar.com.intrale.shared.delivery.DeliveryOrderDTO
+import ar.com.intrale.shared.delivery.DeliveryOrderItemDTO
+import ar.com.intrale.shared.delivery.DeliveryOrderStatusUpdateResponse
+import ar.com.intrale.shared.delivery.DeliveryOrdersSummaryDTO
 
 enum class DeliveryOrderStatus {
     PENDING, IN_PROGRESS, DELIVERED, NOT_DELIVERED, UNKNOWN
@@ -65,7 +64,7 @@ fun DeliveryOrderDTO.toDomain(): DeliveryOrder = DeliveryOrder(
     eta = eta ?: promisedAt
 )
 
-fun DeliveryOrderDetailDTO.toDomain(): DeliveryOrderDetail = DeliveryOrderDetail(
+fun DeliveryOrderDTO.toDetailDomain(): DeliveryOrderDetail = DeliveryOrderDetail(
     id = id,
     label = publicId ?: shortCode ?: id,
     businessName = businessName,

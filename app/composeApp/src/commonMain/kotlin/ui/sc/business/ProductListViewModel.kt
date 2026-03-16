@@ -6,9 +6,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoListCategories
-import ext.business.CategoryDTO
-import ext.business.ProductDTO
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductStatus
 import io.konform.validation.Validation
 import org.kodein.di.direct
 import org.kodein.di.instance

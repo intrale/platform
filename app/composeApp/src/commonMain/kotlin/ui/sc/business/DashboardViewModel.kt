@@ -7,7 +7,7 @@ import androidx.compose.runtime.setValue
 import asdo.auth.ToDoResetLoginCache
 import asdo.business.ToGetBusinesses
 import asdo.business.ToGetBusinessDashboardSummary
-import ext.dto.BusinessDashboardSummaryDTO
+import ar.com.intrale.shared.business.BusinessDashboardSummaryDTO
 import io.konform.validation.Validation
 import org.kodein.di.direct
 import org.kodein.di.instance

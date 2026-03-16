@@ -1,7 +1,12 @@
 package asdo.client
 
-import ext.client.*
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.client.*
+import ext.client.CommClientProfileService
+import ext.client.CommClientAddressesService
+import ext.client.CommClientOrdersService
+import ext.client.ClientExceptionResponse
+import ext.client.toClientException
+import ar.com.intrale.shared.StatusCodeDTO
 import ext.storage.CommKeyValueStorage
 import ext.storage.model.ClientProfileCache
 import kotlinx.coroutines.test.runTest

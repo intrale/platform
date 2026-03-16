@@ -1,6 +1,6 @@
 package ui.sc.business
 
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.ProductStatus
 
 data class ProductDraft(
     val id: String? = null,

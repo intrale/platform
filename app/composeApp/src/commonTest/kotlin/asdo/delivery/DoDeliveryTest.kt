@@ -1,6 +1,12 @@
 package asdo.delivery
 
-import ext.delivery.*
+import ar.com.intrale.shared.delivery.*
+import ext.delivery.CommDeliveryProfileService
+import ext.delivery.CommDeliveryOrdersService
+import ext.delivery.CommDeliveryAvailabilityService
+import ext.delivery.CommDeliveryStateService
+import ext.delivery.DeliveryExceptionResponse
+import ext.delivery.toDeliveryException
 import kotlinx.coroutines.test.runTest
 import kotlinx.datetime.LocalDate
 import kotlin.test.Test
@@ -161,7 +167,7 @@ private val sampleOrderDTOs = listOf(
 
 private val sampleSummaryDTO = DeliveryOrdersSummaryDTO(pending = 3, inProgress = 2, delivered = 5)
 
-private val sampleOrderDetailDTO = DeliveryOrderDetailDTO(
+private val sampleOrderDetailDTO = DeliveryOrderDTO(
     id = "o1",
     publicId = "PUB-1",
     businessName = "Pizzeria",
@@ -189,7 +195,7 @@ private class FakeDeliveryOrdersService(
     private val updateStatusResult: Result<DeliveryOrderStatusUpdateResponse> = Result.success(
         DeliveryOrderStatusUpdateResponse(orderId = "o1", status = "inprogress")
     ),
-    private val orderDetailResult: Result<DeliveryOrderDetailDTO> = Result.success(sampleOrderDetailDTO)
+    private val orderDetailResult: Result<DeliveryOrderDTO> = Result.success(sampleOrderDetailDTO)
 ) : CommDeliveryOrdersService {
     override suspend fun fetchActiveOrders() = activeResult
     override suspend fun fetchSummary(date: LocalDate) = summaryResult

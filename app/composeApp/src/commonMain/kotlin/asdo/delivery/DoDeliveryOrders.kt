@@ -76,7 +76,7 @@ class DoGetDeliveryOrderDetail(
 
     override suspend fun execute(orderId: String): Result<DeliveryOrderDetail> = runCatching {
         logger.info { "Obteniendo detalle del pedido $orderId" }
-        ordersService.fetchOrderDetail(orderId).getOrThrow().toDomain()
+        ordersService.fetchOrderDetail(orderId).getOrThrow().toDetailDomain()
     }.recoverCatching { throwable ->
         logger.error(throwable) { "Fallo al obtener detalle del pedido $orderId" }
         throw throwable.toDeliveryException()

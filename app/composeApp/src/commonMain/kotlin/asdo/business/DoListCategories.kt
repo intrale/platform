@@ -1,7 +1,7 @@
 package asdo.business
 
-import ext.business.CategoryDTO
-import ext.business.CategoryRequest
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.CategoryRequest
 import ext.business.CommCategoryService
 
 class DoListCategories(

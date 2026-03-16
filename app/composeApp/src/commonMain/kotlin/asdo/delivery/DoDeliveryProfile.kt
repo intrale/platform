@@ -1,7 +1,7 @@
 package asdo.delivery
 
 import ext.delivery.CommDeliveryProfileService
-import ext.delivery.DeliveryProfileDTO
+import ar.com.intrale.shared.delivery.DeliveryProfileDTO
 import ext.delivery.toDeliveryException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger

@@ -2,7 +2,7 @@ package ui.sc.business
 
 import asdo.business.ToDoDeleteCategory
 import asdo.business.ToDoListCategories
-import ext.business.CategoryDTO
+import ar.com.intrale.shared.business.CategoryDTO
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend

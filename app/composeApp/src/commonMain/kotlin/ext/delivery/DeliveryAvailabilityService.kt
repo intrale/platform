@@ -1,7 +1,8 @@
 package ext.delivery
 
 import ar.com.intrale.BuildKonfig
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.delivery.DeliveryAvailabilityDTO
 import ext.storage.CommKeyValueStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get

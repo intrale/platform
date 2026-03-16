@@ -27,6 +27,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "platform"
 
+include(":shared")
 include(":app")
 include(":app:composeApp")
 include(":backend")

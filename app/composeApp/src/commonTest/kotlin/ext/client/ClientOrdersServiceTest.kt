@@ -1,6 +1,6 @@
 package ext.client
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
 import ext.storage.CommKeyValueStorage
 import ext.storage.model.ClientProfileCache
 import io.ktor.client.HttpClient

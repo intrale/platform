@@ -6,7 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.business.ToDoDeleteCategory
 import asdo.business.ToDoListCategories
-import ext.business.CategoryDTO
+import ar.com.intrale.shared.business.CategoryDTO
 import io.konform.validation.Validation
 import org.kodein.di.direct
 import org.kodein.di.instance

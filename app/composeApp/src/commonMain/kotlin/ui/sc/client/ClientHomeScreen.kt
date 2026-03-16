@@ -54,7 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.ProductStatus
 import kotlinx.coroutines.launch
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory

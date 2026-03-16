@@ -11,8 +11,10 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.isSuccess
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.Serializable
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.LoginRequest
+import ar.com.intrale.shared.auth.LoginResponse
 
 class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
 
@@ -52,23 +54,3 @@ class ClientLoginService(val httpClient: HttpClient) : CommLoginService {
         }
     }
 }
-
-@Serializable
-data class LoginRequest(
-    val email: String,
-    val password: String,
-    val newPassword: String? = null,
-    val name: String? = null,
-    val familyName: String? = null
-)
-
-@Serializable
-data class LoginResponse(val statusCode: StatusCodeDTO, val idToken: String, val accessToken: String, val refreshToken: String)
-
-@Serializable
-data class ExceptionResponse(val statusCode: StatusCodeDTO, override val message: String? = null): Throwable(message)
-
-fun Exception.toExceptionResponse(): ExceptionResponse = ExceptionResponse(
-        statusCode = StatusCodeDTO(500, "Internal Server Error"),
-        message = this.message ?: "An unexpected error occurred"
-    )
