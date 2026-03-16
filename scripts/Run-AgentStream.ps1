@@ -157,8 +157,23 @@ try {
     $process.WaitForExit()
     $exitCode = $process.ExitCode
 
+    # Diagnostico de muerte: registrar causa en el log
+    $deathDiag = @{
+        timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        agent = $AgentNum
+        issue = $Issue
+        slug = $Slug
+        model = $Model
+        exitCode = $exitCode
+        toolCalls = $toolCount
+        messages = $msgCount
+        hasStderr = [bool]$stderrOutput
+    }
+    $diagJson = $deathDiag | ConvertTo-Json -Compress
+    "DEATH_DIAG: $diagJson" | Out-File -FilePath $LogFile -Encoding utf8 -Append
+
     Write-Host ""
-    Write-Host "  Resumen: $toolCount tool calls, $msgCount mensajes" -ForegroundColor Cyan
+    Write-Host "  Resumen: $toolCount tool calls, $msgCount mensajes, modelo: $Model" -ForegroundColor Cyan
 
     if ($exitCode -ne 0) {
         Write-Host "  ERROR: claude finalizo con exit code $exitCode" -ForegroundColor Red
@@ -171,6 +186,15 @@ try {
     }
 }
 catch {
+    # Diagnostico de excepcion
+    $errorDiag = @{
+        timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        agent = $AgentNum
+        issue = $Issue
+        type = "EXCEPTION"
+        message = $_.Exception.Message
+    }
+    ($errorDiag | ConvertTo-Json -Compress) | Out-File -FilePath $LogFile -Encoding utf8 -Append
     $_ | Out-String | Out-File -FilePath $LogFile -Encoding utf8 -Append
     Write-Host "  EXCEPTION: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "  La terminal se cerrara en 30 segundos..." -ForegroundColor Yellow
