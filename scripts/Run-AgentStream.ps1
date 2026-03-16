@@ -68,7 +68,9 @@ try {
         } catch { }
     }
 
-    $agentRunnerPath = Join-Path $PSScriptRoot "pipeline\agent-runner.js"
+    # Siempre usar scripts del repo principal (no del worktree) para tener la version mas reciente
+    $mainRepoScripts = "C:\Workspaces\Intrale\platform\scripts"
+    $agentRunnerPath = Join-Path $mainRepoScripts "pipeline\agent-runner.js"
     $useRunner = ($pipelineMode -ne "skills") -and (Test-Path $agentRunnerPath)
 
     if ($useRunner) {
