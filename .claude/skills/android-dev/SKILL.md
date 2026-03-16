@@ -67,34 +67,61 @@ Archivos clave:
 - `app/composeApp/src/commonMain/kotlin/ar/com/intrale/DIManager.kt` — DI del app
 - `app/composeApp/build.gradle.kts` — Config de build, flavors, dependencias
 
-## Paso 2.5: Consultar UI Specs (OBLIGATORIO)
+## Paso 0: Leer specs SDD (OBLIGATORIO)
 
-Antes de planificar, leer la spec YAML del flujo afectado en `docs/specs/`:
+Antes de planificar, leer las specs del flujo afectado. Verificar en este orden:
+
+### 0.1 UI Specs — navegación y UIState
+
+Buscar primero en `docs/ui-specs/` (specs generadas por el sprint SDD):
+
+```bash
+ls docs/ui-specs/ 2>/dev/null || echo "Sin ui-specs generadas aún"
+```
+
+Si existen specs en `docs/ui-specs/`, leerlas:
+
+```bash
+cat docs/ui-specs/<flow>.yaml
+```
+
+Si no, buscar en `docs/specs/` (specs legacy):
 
 ```bash
 ls docs/specs/
 # login.yaml | signup.yaml | profile.yaml | addresses.yaml | README.yaml
-```
-
-```bash
 cat docs/specs/<flow>.yaml
 ```
 
-Las specs definen la **fuente de verdad** para:
+Las specs de UI definen la **fuente de verdad** para:
 - **Rutas** y screen classes existentes
 - **Campos de UIState** con tipos, defaults y validaciones
 - **Transiciones** de navegación (on_success, on_error, links)
 - **Invariantes** que no se pueden violar
 - **Registros DI** esperados
 
+### 0.2 OpenAPI spec — contrato de API
+
+Leer `docs/api/openapi.yaml` para identificar los endpoints que la pantalla consume:
+
+```bash
+grep -A 20 "/<endpoint-relevante>" docs/api/openapi.yaml
+```
+
+Esto define:
+- **Campos del request body** a enviar desde el `CommService`
+- **Campos de la response** a mapear al `DoXxxResult`
+- **Códigos de error** que el `DoXxx` debe manejar (400, 401, 403, 404)
+
 **Reglas:**
-- Si el flujo a implementar tiene spec → respetar campos, validaciones y transiciones definidas
-- Si se agrega un screen/field nuevo → actualizar la spec como parte del mismo PR
-- Si no existe spec para el flujo → consultar `docs/specs/README.yaml` para convenciones y crear una nueva
+- Si el flujo tiene spec UI → respetar campos, validaciones y transiciones definidas
+- Si la pantalla consume un endpoint → implementar `CommService` acorde al schema OpenAPI
+- Si se agrega un screen/field nuevo → actualizar la spec UI como parte del mismo PR
+- Si no existe spec para el flujo → consultar `docs/specs/README.yaml` para convenciones y crear una nueva en `docs/ui-specs/`
 
 ## Paso 3: Planificar la solución
 
-1. **Contrastar con spec**: verificar que el plan respeta los campos, rutas e invariantes de la spec
+1. **Contrastar con specs (Paso 0)**: verificar que el plan respeta campos de UIState, rutas de navegación e invariantes de la spec UI; y que el CommService usa los campos exactos del schema OpenAPI
 2. **Determinar capas afectadas**: ext → asdo → ViewModel → Screen → DIManager
 3. **Verificar** si es Android-only o commonMain (preferir commonMain)
 4. **Diseñar** el UI state como data class: `[Feature]UIState`
@@ -297,7 +324,8 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
 - NUNCA importar `kotlin.io.encoding.Base64` en capa UI
 - NUNCA escribir lógica de negocio en la Screen
 - NUNCA commitear — eso lo hace `/delivery`
-- NUNCA ignorar las UI specs de `docs/specs/*.yaml` — si el flujo tiene spec, respetarla
+- NUNCA ignorar las UI specs de `docs/ui-specs/` o `docs/specs/` — si el flujo tiene spec, respetarla
+- NUNCA mapear campos del CommService sin verificar el schema en `docs/api/openapi.yaml`
 
 ### Cuándo escalar
 - Cambios en backend → BackendDev

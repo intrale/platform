@@ -135,6 +135,23 @@ Referencia de arquitectura:
 - `backend/src/main/kotlin/` — Backend Ktor
 - `users/src/main/kotlin/` — Extensión de usuarios
 
+### Paso 2.5: Consultar specs SDD disponibles
+
+Si el issue toca endpoints de API o pantallas de UI, verificar qué specs existen:
+
+```bash
+# Buscar endpoint en OpenAPI spec
+grep -n "/<keyword>" docs/api/openapi.yaml 2>/dev/null | head -10
+
+# Listar UI specs disponibles
+ls docs/ui-specs/ 2>/dev/null || ls docs/specs/ 2>/dev/null | head -10
+```
+
+Si existe spec del endpoint/flujo:
+- Incluir referencia en el issue: `**Spec API:** \`docs/api/openapi.yaml#<path>\`` o `**Spec UI:** \`docs/ui-specs/<flow>.yaml\``
+- Los criterios de aceptación deben ser consistentes con los schemas de la spec
+- Si la historia requiere un endpoint nuevo → indicar que debe crearse la entrada en la spec
+
 ### Paso 3: Redactar el issue
 
 Usar la plantilla de `./issue-template.md`:
@@ -145,6 +162,11 @@ Usar la plantilla de `./issue-template.md`:
 
 ## Contexto
 [Antecedentes, comportamiento actual, dependencias]
+
+## Specs de referencia (SDD)
+- **Spec API:** `docs/api/openapi.yaml` — endpoint `/<business>/<path>` (si aplica)
+- **Spec UI:** `docs/ui-specs/<flow>.yaml` o `docs/specs/<flow>.yaml` (si aplica)
+- N/A si es infra o tarea sin impacto en API/UI
 
 ## Cambios requeridos
 1. **[Módulo/Capa]** — Descripción
@@ -163,6 +185,7 @@ Reglas:
 - Evitar referencias vagas
 - Redacción técnica, clara y accionable en español
 - Incluir pruebas si aplica
+- **Specs SDD obligatorias:** incluir sección "Specs de referencia" con links a spec API y/o UI si el issue toca endpoints o pantallas. Si no aplica, indicar "N/A".
 - **Escenarios Gherkin obligatorios:** mínimo 2 (happy path + caso de error). Usar la sección "Escenarios Gherkin" de `./issue-template.md`. Agregar más según complejidad (permisos, edge cases, transiciones de estado).
 
 ### Paso 4: Determinar labels
@@ -331,6 +354,17 @@ Referencia de arquitectura:
 - `ui/` — Interfaz: `cp/` componentes, `ro/` router, `sc/` pantallas+ViewModels, `th/` tema
 - `backend/` — Funciones Ktor: `Function` / `SecuredFunction`
 
+### Paso 2.5: Verificar specs SDD disponibles
+
+Si el issue toca endpoints o pantallas, verificar si existen specs:
+
+```bash
+grep -n "/<keyword-del-issue>" docs/api/openapi.yaml 2>/dev/null | head -10
+ls docs/ui-specs/ 2>/dev/null || ls docs/specs/ 2>/dev/null | head -10
+```
+
+Si existen specs → agregar o actualizar la sección "Specs de referencia" en el body del issue.
+
 ### Paso 3: Redactar el body refinado
 
 Usar la plantilla de `./issue-template.md`. Reglas:
@@ -338,6 +372,7 @@ Usar la plantilla de `./issue-template.md`. Reglas:
 - Evitar referencias vagas
 - Incluir pruebas si aplica
 - Redacción técnica, clara y accionable en español
+- **Specs SDD:** si el issue toca endpoints o UI, agregar sección `## Specs de referencia` con links a `docs/api/openapi.yaml` y/o `docs/ui-specs/<flow>.yaml`. Si no aplica, indicar "N/A".
 - **Escenarios Gherkin obligatorios:** si el issue no tiene sección "Escenarios Gherkin", agregarla con mínimo 2 escenarios (happy path + caso de error). Usar la plantilla de `./issue-template.md`.
 
 ### Paso 4: Determinar labels

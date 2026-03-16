@@ -237,6 +237,26 @@ Si TODOS los cambios son docs/config/infra:
 - Generar `qa-report.json` con `verdict: "APROBADO"` y `verdict_reason: "Sin cambios funcionales — solo docs/config/infra"`
 - Saltar a Paso V7 directamente
 
+## Paso V2.5: Leer spec OpenAPI para los endpoints afectados
+
+Antes de generar tests, leer la spec OpenAPI para obtener los contratos exactos:
+
+```bash
+# Listar endpoints en la spec
+grep -n "^\s\{2\}/" docs/api/openapi.yaml 2>/dev/null | head -30
+
+# Leer el schema del endpoint afectado
+grep -A 50 "/<endpoint-del-issue>" docs/api/openapi.yaml 2>/dev/null | head -60
+```
+
+Usar la spec para:
+- **Request fields obligatorios y opcionales**: alimentar los bodies de prueba
+- **Response schema 200/201**: generar assertions sobre los campos de la respuesta (no solo el status code)
+- **Response schema 400/401/403**: verificar estructura del error response
+- **Security `BearerAuth`**: determinar si el endpoint requiere token → incluir test "sin token → 401"
+
+Si `docs/api/openapi.yaml` no existe o el endpoint no está documentado, generar igualmente los tests mínimos (happy path + 400 + 401) e indicar en el reporte que la spec está desactualizada.
+
 ## Paso V3: Generar tests API (si hay cambios backend/users)
 
 Crear directorio y tests en `qa/generated/api/`:
@@ -245,7 +265,10 @@ Crear directorio y tests en `qa/generated/api/`:
 mkdir -p qa/generated/api
 ```
 
-Para cada endpoint modificado/agregado en el diff, generar un archivo Kotlin siguiendo el patrón de `ApiSignInE2ETest.kt`:
+Para cada endpoint modificado/agregado en el diff, generar un archivo Kotlin siguiendo el patrón de `ApiSignInE2ETest.kt`. Usar los schemas del Paso V2.5 para:
+- Construir body con los campos reales de la spec (no inventar campos)
+- Assertar campos de la response según el schema (ej: `assertTrue(body.has("publicId"))`)
+- Documentar en comentario el schema fuente: `// Schema: docs/api/openapi.yaml#/paths/...`
 
 **Patrón del test generado:**
 ```kotlin
@@ -324,6 +347,20 @@ class Api<Endpoint>ValidateE2ETest : QATestBase() {
 - Si el endpoint es `SecuredFunction` (requiere JWT): incluir test de "sin token"
 
 ## Paso V4: Generar flows Maestro (si hay cambios UI app)
+
+Antes de generar los flows, leer la spec de navegación del flujo afectado:
+
+```bash
+# Buscar spec del flujo en ui-specs/ o specs/
+ls docs/ui-specs/ 2>/dev/null | grep -i "<keyword>"
+ls docs/specs/ 2>/dev/null | grep -i "<keyword>"
+cat docs/ui-specs/<flow>.yaml 2>/dev/null || cat docs/specs/<flow>.yaml 2>/dev/null | head -50
+```
+
+Usar la spec UI para:
+- **Rutas de navegación**: seguir el flujo definido en `on_success`/`on_error` de la spec
+- **testIds de componentes**: los `id:` de la spec → usar como `id:` en Maestro
+- **Campos del formulario**: nombres exactos de los campos según el UIState de la spec
 
 Crear directorio y flows en `qa/generated/maestro/`:
 

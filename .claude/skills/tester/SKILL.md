@@ -164,6 +164,20 @@ Parsear la sección Gherkin del body. Identificar cada bloque `Escenario:` con s
 - `Then` → `Entonces`
 - `And` → `Y`
 
+### Paso G1.5: Consultar spec OpenAPI (si el issue toca endpoints)
+
+Si el issue menciona endpoints de API, leer la spec para tener el contrato exacto al generar los tests:
+
+```bash
+# Buscar el endpoint del issue en la spec
+grep -A 30 "/<endpoint-relevante>" docs/api/openapi.yaml 2>/dev/null | head -40
+```
+
+Usar la spec para:
+- **Request schema**: tipos exactos de los campos del body (evitar asumir tipos)
+- **Response schemas**: campos esperados en 200/201, mensajes en 400/401/403
+- **Security**: si el endpoint requiere `BearerAuth` → agregar setup de token en el Arrange del test
+
 ### Paso G2: Determinar módulo y clase target
 
 Analizar el issue para determinar:
