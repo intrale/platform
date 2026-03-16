@@ -1016,34 +1016,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     return '<div class="empty-state">Sin flujo de agentes registrado</div>';
   }
 
-  // Renombrar nodos "Claude" a "Agente #NNN" si hay info del sprint (#1598)
-  // El nodo "Claude" genérico no aporta información — mejor mostrar el agente concreto
+  // Renombrar nodos "Claude" a "Main" — es el agente principal (esta sesión)
+  // Los "Agente N" del sprint son entidades diferentes (worktrees independientes)
   const sessionsList = Array.isArray(sessions) ? sessions : [];
-  const claudeRenames = {};
   const claudeIdx = nodes.indexOf("Claude");
   if (claudeIdx !== -1) {
-    // Buscar la sesión que generó la transición "Claude" para obtener el issue/branch
-    for (const s of sessionsList) {
-      if (Array.isArray(s.agent_transitions)) {
-        for (const t of s.agent_transitions) {
-          if (t.from === "Claude" || t.to === "Claude") {
-            const branchMatch = (s.branch || "").match(/(?:agent|codex)\/(\d+)/);
-            if (branchMatch) {
-              const issueNum = branchMatch[1];
-              const newName = "Agente #" + issueNum;
-              claudeRenames["Claude"] = newName;
-              nodes[claudeIdx] = newName;
-              // Renombrar en transiciones también
-              for (const e of transitions) {
-                if (e.from === "Claude") e.from = newName;
-                if (e.to === "Claude") e.to = newName;
-              }
-              break;
-            }
-          }
-        }
-      }
-      if (claudeRenames["Claude"]) break;
+    nodes[claudeIdx] = "Main";
+    for (const e of transitions) {
+      if (e.from === "Claude") e.from = "Main";
+      if (e.to === "Claude") e.to = "Main";
     }
   }
 
