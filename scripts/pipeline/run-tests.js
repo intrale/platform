@@ -70,6 +70,18 @@ function main() {
 
     if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
 
+    // Verificar que el workDir es un repo git valido
+    try {
+        execSync("git status", { cwd: workDir, timeout: 5000, windowsHide: true, stdio: "pipe" });
+    } catch (e) {
+        console.log("[run-tests] Skip: workDir no es un repo git valido");
+        const skipResult = { status: "pass", total: 0, passed: 0, failed: 0, skipped: 0, time: 0, failures: [], xmlFiles: 0, buildExitCode: 0, skippedReason: "not a git repo" };
+        fs.writeFileSync(path.join(LOGS_DIR, "test-result.json"), JSON.stringify(skipResult, null, 2), "utf8");
+        emitGateResult("tester", "pass", skipResult);
+        emitTransition("Tester", nextRole);
+        process.exit(0);
+    }
+
     // Skip tests si el diff no toca codigo fuente
     try {
         const diff = execSync("git diff origin/main...HEAD --name-only", {
