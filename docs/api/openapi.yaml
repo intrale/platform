@@ -1,0 +1,2982 @@
+openapi: "3.1.0"
+
+info:
+  title: Intrale Platform API
+  version: "1.0.0"
+  description: |
+    API REST del backend Intrale Platform.
+
+    ## Arquitectura de routing
+
+    El backend utiliza un patrón de routing dinámico basado en Ktor + Kodein DI:
+
+    ```
+    /{business}/{function...}
+    ```
+
+    - `{business}`: nombre del negocio registrado (ej: `intrale`, `mitienda`)
+    - `{function...}`: tag Kodein de la función (ej: `signin`, `client/profile`, `business/products`)
+
+    Cada combinación `{business}/{function}` se resuelve a una instancia de `Function`
+    o `SecuredFunction` registrada en el módulo Kodein.
+
+    ## Autenticación
+
+    Los endpoints marcados con 🔒 requieren un JWT válido emitido por AWS Cognito:
+
+    ```
+    Authorization: Bearer <idToken>
+    ```
+
+    El token se obtiene en `POST /{business}/signin`.
+
+    ## Roles
+
+    | Rol | Descripción |
+    |-----|-------------|
+    | `PlatformAdmin` | Administrador de la plataforma |
+    | `BusinessAdmin` | Administrador de un negocio |
+    | `Saler` | Vendedor del negocio |
+    | `Delivery` | Repartidor del negocio |
+    | `Client` | Cliente (DEFAULT) |
+
+  contact:
+    name: Intrale Platform
+    url: https://github.com/intrale/platform
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.intrale.ar
+    description: Producción
+
+  - url: http://localhost:8080
+    description: Desarrollo local
+
+tags:
+  - name: health
+    description: Estado del servicio
+  - name: auth
+    description: Autenticación y registro de usuarios
+  - name: 2fa
+    description: Autenticación de dos factores (TOTP)
+  - name: business
+    description: Gestión de negocios
+  - name: client
+    description: Perfil, direcciones y pedidos del cliente
+  - name: delivery
+    description: Perfil, disponibilidad y pedidos del repartidor
+  - name: business-admin
+    description: Administración de productos, categorías y pedidos del negocio
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Token JWT emitido por AWS Cognito.
+        Se obtiene en `POST /{business}/signin` como campo `idToken`.
+
+  schemas:
+
+    # ─── Errores comunes ───────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      description: Respuesta de error genérica
+      properties:
+        message:
+          type: string
+          description: Descripción del error
+          example: "El campo email debe tener formato de email"
+      required:
+        - message
+
+    # ─── Health ────────────────────────────────────────────────────────
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [UP]
+          example: UP
+      required:
+        - status
+
+    # ─── Auth ──────────────────────────────────────────────────────────
+    SignUpRequest:
+      type: object
+      description: Request para registrar un usuario (cliente, admin, repartidor)
+      properties:
+        email:
+          type: string
+          format: email
+          description: Email del usuario. Debe tener formato válido (.+@.+\..+)
+          example: maria.garcia@ejemplo.com
+      required:
+        - email
+
+    SignInRequest:
+      type: object
+      description: |
+        Request para iniciar sesión. Si Cognito devuelve el desafío
+        `NEW_PASSWORD_REQUIRED`, se deben incluir `newPassword`, `name` y `familyName`.
+      properties:
+        email:
+          type: string
+          format: email
+          example: juan.perez@ejemplo.com
+        password:
+          type: string
+          format: password
+          example: "MiPass123!"
+        newPassword:
+          type: string
+          format: password
+          description: Solo requerido en primer login (desafío NEW_PASSWORD_REQUIRED)
+          example: "NuevaMiPass456!"
+        name:
+          type: string
+          description: Solo requerido en primer login
+          example: Juan
+        familyName:
+          type: string
+          description: Solo requerido en primer login
+          example: Pérez
+      required:
+        - email
+        - password
+
+    SignInResponse:
+      type: object
+      description: Tokens JWT de Cognito
+      properties:
+        idToken:
+          type: string
+          description: Token de identidad (usar como Bearer en Authorization)
+          example: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+        accessToken:
+          type: string
+          description: Token de acceso a recursos AWS
+          example: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+        refreshToken:
+          type: string
+          description: Token para renovar el idToken
+          example: "eyJjdHkiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIiwiYWxnIjoiUlNBLU9BRVAifQ..."
+      required:
+        - idToken
+        - accessToken
+        - refreshToken
+
+    PasswordRecoveryRequest:
+      type: object
+      description: Inicia el flujo de recuperación de contraseña. Cognito envía un código al email.
+      properties:
+        email:
+          type: string
+          format: email
+          example: usuario@ejemplo.com
+      required:
+        - email
+
+    ConfirmPasswordRecoveryRequest:
+      type: object
+      description: Confirma la recuperación con el código recibido por email
+      properties:
+        email:
+          type: string
+          format: email
+          example: usuario@ejemplo.com
+        code:
+          type: string
+          description: Código enviado por Cognito al email
+          example: "123456"
+        password:
+          type: string
+          format: password
+          description: Nueva contraseña
+          example: "NuevaPass789!"
+      required:
+        - email
+        - code
+        - password
+
+    ConfirmSignUpRequest:
+      type: object
+      description: Confirma el registro con el código de verificación de Cognito
+      properties:
+        email:
+          type: string
+          format: email
+          example: nuevo@ejemplo.com
+        code:
+          type: string
+          example: "654321"
+      required:
+        - email
+        - code
+
+    ChangePasswordRequest:
+      type: object
+      description: 🔒 Cambia la contraseña del usuario autenticado
+      properties:
+        oldPassword:
+          type: string
+          format: password
+          example: "ViejaPass123!"
+        newPassword:
+          type: string
+          format: password
+          example: "NuevaPass456!"
+      required:
+        - oldPassword
+        - newPassword
+
+    Profile:
+      type: object
+      description: Perfil/rol del usuario dentro de un negocio
+      properties:
+        name:
+          type: string
+          description: Nombre del perfil
+          enum: [PlatformAdmin, BusinessAdmin, Saler, Delivery, DEFAULT]
+          example: BusinessAdmin
+      required:
+        - name
+
+    ProfilesResponse:
+      type: object
+      description: Lista de perfiles del usuario autenticado en el negocio
+      properties:
+        profiles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Profile'
+          example:
+            - name: BusinessAdmin
+
+    # ─── 2FA ───────────────────────────────────────────────────────────
+    TwoFactorSetupResponse:
+      type: object
+      description: URI para configurar TOTP en un autenticador (Google Authenticator, Authy, etc.)
+      properties:
+        otpAuthUri:
+          type: string
+          description: URI otpauth://totp/... para escanear con QR
+          example: "otpauth://totp/Intrale:juan@ejemplo.com?secret=BASE32SECRET&issuer=Intrale&algorithm=SHA1&digits=6&period=30"
+      required:
+        - otpAuthUri
+
+    TwoFactorVerifyRequest:
+      type: object
+      description: Código TOTP de 6 dígitos para verificar 2FA
+      properties:
+        code:
+          type: string
+          minLength: 6
+          maxLength: 6
+          pattern: "^[0-9]{6}$"
+          example: "123456"
+      required:
+        - code
+
+    # ─── Business Management ───────────────────────────────────────────
+    RegisterBusinessRequest:
+      type: object
+      description: Registra un nuevo negocio. Estado inicial PENDING hasta aprobación de PlatformAdmin.
+      properties:
+        name:
+          type: string
+          minLength: 7
+          description: Nombre del negocio (mínimo 7 caracteres)
+          example: "Almacén Don José"
+        emailAdmin:
+          type: string
+          format: email
+          description: Email del administrador del negocio
+          example: admin@almacentito.com
+        description:
+          type: string
+          description: Descripción del negocio
+          example: "Almacén familiar con productos de la región"
+        autoAcceptDeliveries:
+          type: boolean
+          description: Si true, los repartidores se aprueban automáticamente
+          default: false
+      required:
+        - name
+        - emailAdmin
+        - description
+
+    BusinessDTO:
+      type: object
+      description: Datos de un negocio registrado
+      properties:
+        businessId:
+          type: string
+          description: ID interno del negocio
+          example: "biz-001"
+        publicId:
+          type: string
+          description: Slug público del negocio (generado del nombre)
+          example: "almacen-don-jose"
+        name:
+          type: string
+          example: "Almacén Don José"
+        description:
+          type: string
+          example: "Almacén familiar con productos de la región"
+        emailAdmin:
+          type: string
+          format: email
+          example: admin@almacentito.com
+        autoAcceptDeliveries:
+          type: boolean
+          example: false
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+          example: APPROVED
+      required:
+        - businessId
+        - publicId
+        - name
+        - description
+        - emailAdmin
+        - autoAcceptDeliveries
+        - status
+
+    SearchBusinessesRequest:
+      type: object
+      description: Filtros para búsqueda paginada de negocios
+      properties:
+        query:
+          type: string
+          description: Texto de búsqueda (insensible a mayúsculas)
+          default: ""
+          example: "almacen"
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+          description: Filtrar por estado
+          example: APPROVED
+        limit:
+          type: integer
+          description: Máximo de resultados a retornar
+          example: 20
+        lastKey:
+          type: string
+          description: Nombre del último negocio para paginación (cursor)
+          example: "Almacén Don José"
+
+    SearchBusinessesResponse:
+      type: object
+      properties:
+        businesses:
+          type: array
+          items:
+            $ref: '#/components/schemas/BusinessDTO'
+        lastKey:
+          type:
+            - string
+            - "null"
+          description: Cursor para la próxima página. null si no hay más resultados.
+          example: "Minimarket Rosario"
+
+    ReviewBusinessRegistrationRequest:
+      type: object
+      description: 🔒 PlatformAdmin aprueba o rechaza un negocio (requiere 2FA)
+      properties:
+        publicId:
+          type: string
+          description: ID público del negocio a revisar
+          example: "almacen-don-jose"
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED]
+          description: Decisión sobre el negocio
+          example: APPROVED
+        twoFactorCode:
+          type: string
+          minLength: 6
+          maxLength: 6
+          pattern: "^[0-9]{6}$"
+          description: Código TOTP del PlatformAdmin para autorizar la operación
+          example: "789012"
+      required:
+        - publicId
+        - decision
+        - twoFactorCode
+
+    RegisterSalerRequest:
+      type: object
+      description: 🔒 BusinessAdmin registra un Saler en su negocio
+      properties:
+        email:
+          type: string
+          format: email
+          example: vendedor@almacentito.com
+      required:
+        - email
+
+    AssignProfileRequest:
+      type: object
+      description: 🔒 PlatformAdmin asigna un perfil a un usuario (APPROVED inmediato)
+      properties:
+        email:
+          type: string
+          format: email
+          example: operador@intrale.ar
+        profile:
+          type: string
+          enum: [PlatformAdmin, BusinessAdmin, Saler, Delivery, DEFAULT]
+          example: BusinessAdmin
+      required:
+        - email
+        - profile
+
+    RequestJoinBusinessRequest:
+      type: object
+      description: 🔒 Repartidor autenticado solicita unirse a un negocio
+      properties:
+        placeholder:
+          type:
+            - string
+            - "null"
+          description: Sin uso actualmente. El negocio se toma del path {business}.
+
+    RequestJoinBusinessResponse:
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+          description: |
+            Estado resultante de la solicitud.
+            - APPROVED si el negocio tiene autoAcceptDeliveries=true
+            - PENDING si requiere aprobación manual
+          example: PENDING
+
+    ReviewJoinBusinessRequest:
+      type: object
+      description: 🔒 BusinessAdmin aprueba o rechaza la solicitud de un repartidor
+      properties:
+        email:
+          type: string
+          format: email
+          description: Email del repartidor a revisar
+          example: repartidor@ejemplo.com
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED]
+          example: APPROVED
+      required:
+        - email
+        - decision
+
+    ConfigAutoAcceptDeliveriesRequest:
+      type: object
+      description: 🔒 BusinessAdmin configura la aceptación automática de repartidores
+      properties:
+        autoAcceptDeliveries:
+          type: boolean
+          example: true
+      required:
+        - autoAcceptDeliveries
+
+    # ─── Client ────────────────────────────────────────────────────────
+    ClientProfilePayload:
+      type: object
+      properties:
+        id:
+          type:
+            - string
+            - "null"
+          example: "juan@ejemplo.com"
+        fullName:
+          type: string
+          example: "Juan Carlos Pérez"
+        email:
+          type: string
+          format: email
+          example: juan@ejemplo.com
+        phone:
+          type:
+            - string
+            - "null"
+          example: "+54 9 11 1234-5678"
+        defaultAddressId:
+          type:
+            - string
+            - "null"
+          example: "addr-uuid-001"
+      required:
+        - fullName
+        - email
+
+    ClientPreferencesPayload:
+      type: object
+      properties:
+        language:
+          type: string
+          description: Código de idioma preferido
+          default: "es"
+          example: "es"
+
+    ClientProfileUpdateRequest:
+      type: object
+      description: Actualiza perfil y preferencias del cliente
+      properties:
+        profile:
+          $ref: '#/components/schemas/ClientProfilePayload'
+        preferences:
+          $ref: '#/components/schemas/ClientPreferencesPayload'
+
+    ClientProfileResponse:
+      type: object
+      properties:
+        profile:
+          $ref: '#/components/schemas/ClientProfilePayload'
+        preferences:
+          $ref: '#/components/schemas/ClientPreferencesPayload'
+
+    ClientAddressPayload:
+      type: object
+      description: Dirección de entrega del cliente
+      properties:
+        id:
+          type:
+            - string
+            - "null"
+          description: UUID de la dirección
+          example: "addr-uuid-001"
+        label:
+          type: string
+          description: Etiqueta descriptiva (ej. "Casa", "Trabajo")
+          example: "Casa"
+        street:
+          type: string
+          example: "Av. Rivadavia"
+        number:
+          type: string
+          example: "1234"
+        reference:
+          type:
+            - string
+            - "null"
+          description: Punto de referencia adicional
+          example: "Entre Uruguay y Callao"
+        city:
+          type: string
+          example: "Buenos Aires"
+        state:
+          type:
+            - string
+            - "null"
+          example: "Ciudad Autónoma de Buenos Aires"
+        postalCode:
+          type:
+            - string
+            - "null"
+          example: "C1033AAJ"
+        country:
+          type:
+            - string
+            - "null"
+          example: "AR"
+        isDefault:
+          type: boolean
+          description: Si true, es la dirección de entrega predeterminada
+          example: true
+        createdAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: "2026-01-15T10:30:00Z"
+        updatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: "2026-03-01T14:20:00Z"
+      required:
+        - label
+        - street
+        - number
+        - city
+        - isDefault
+
+    ClientAddressResponse:
+      type: object
+      properties:
+        address:
+          $ref: '#/components/schemas/ClientAddressPayload'
+
+    ClientAddressListResponse:
+      type: object
+      properties:
+        addresses:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientAddressPayload'
+
+    ClientOrderItemPayload:
+      type: object
+      properties:
+        productId:
+          type: string
+          example: "prod-uuid-001"
+        productName:
+          type: string
+          example: "Harina 000 1kg"
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        unitPrice:
+          type: number
+          format: double
+          example: 850.00
+        subtotal:
+          type: number
+          format: double
+          example: 1700.00
+      required:
+        - productId
+        - productName
+        - quantity
+        - unitPrice
+        - subtotal
+
+    ClientOrderPayload:
+      type: object
+      description: Pedido del cliente
+      properties:
+        id:
+          type: string
+          example: "order-uuid-001"
+        shortCode:
+          type:
+            - string
+            - "null"
+          description: |
+            Código de 6 caracteres para identificación rápida.
+            Alfabeto: BCDFGHJKLMNPQRSTVWXYZ23456789 (sin vocales ni caracteres confusos)
+          example: "B3KDFG"
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED]
+          example: CONFIRMED
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientOrderItemPayload'
+        total:
+          type: number
+          format: double
+          example: 2500.00
+        deliveryAddress:
+          $ref: '#/components/schemas/ClientAddressPayload'
+        notes:
+          type:
+            - string
+            - "null"
+          description: Notas adicionales del cliente
+          example: "Sin cebolla por favor"
+        createdAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: "2026-03-10T09:00:00Z"
+        updatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: "2026-03-10T09:15:00Z"
+      required:
+        - id
+        - status
+        - items
+        - total
+
+    ClientOrderListResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientOrderPayload'
+
+    ClientOrderDetailResponse:
+      type: object
+      properties:
+        order:
+          $ref: '#/components/schemas/ClientOrderPayload'
+
+    # ─── Delivery ──────────────────────────────────────────────────────
+    DeliveryVehiclePayload:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Tipo de vehículo (ej. moto, bici, auto)
+          example: "moto"
+        model:
+          type: string
+          example: "Honda Wave 110"
+        plate:
+          type:
+            - string
+            - "null"
+          example: "AB123CD"
+      required:
+        - type
+        - model
+
+    DeliveryZonePayload:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "zone-001"
+        name:
+          type: string
+          example: "Zona Norte"
+        description:
+          type:
+            - string
+            - "null"
+          example: "Palermo, Belgrano, Colegiales"
+      required:
+        - id
+        - name
+
+    DeliveryProfilePayload:
+      type: object
+      properties:
+        fullName:
+          type: string
+          example: "Carlos Rodríguez"
+        email:
+          type: string
+          format: email
+          example: carlos@repartidores.com
+        phone:
+          type:
+            - string
+            - "null"
+          example: "+54 9 11 9876-5432"
+        vehicle:
+          $ref: '#/components/schemas/DeliveryVehiclePayload'
+      required:
+        - fullName
+        - email
+        - vehicle
+
+    DeliveryProfileUpdateRequest:
+      type: object
+      properties:
+        profile:
+          $ref: '#/components/schemas/DeliveryProfilePayload'
+
+    DeliveryProfileResponse:
+      type: object
+      properties:
+        profile:
+          $ref: '#/components/schemas/DeliveryProfilePayload'
+        zones:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryZonePayload'
+
+    DeliveryAvailabilitySlotPayload:
+      type: object
+      description: Slot de disponibilidad para un día de la semana
+      properties:
+        dayOfWeek:
+          type: string
+          enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+          example: monday
+        mode:
+          type: string
+          enum: [BLOCK, CUSTOM]
+          description: |
+            - BLOCK: bloque predefinido (MORNING/AFTERNOON/NIGHT)
+            - CUSTOM: horario personalizado con start y end
+          example: BLOCK
+        block:
+          type:
+            - string
+            - "null"
+          enum: [MORNING, AFTERNOON, NIGHT, null]
+          description: |
+            Requerido si mode=BLOCK.
+            - MORNING: 06:00 - 12:00
+            - AFTERNOON: 12:00 - 18:00
+            - NIGHT: 18:00 - 23:00
+          example: MORNING
+        start:
+          type:
+            - string
+            - "null"
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+          description: Requerido si mode=CUSTOM. Formato HH:MM
+          example: "09:00"
+        end:
+          type:
+            - string
+            - "null"
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+          description: Requerido si mode=CUSTOM. Debe ser mayor que start.
+          example: "17:00"
+      required:
+        - dayOfWeek
+        - mode
+
+    DeliveryAvailabilityPayload:
+      type: object
+      description: Disponibilidad horaria del repartidor
+      properties:
+        timezone:
+          type: string
+          description: Timezone del repartidor. Requerido y no puede ser vacío.
+          example: "America/Argentina/Buenos_Aires"
+        slots:
+          type: array
+          minItems: 1
+          description: Al menos un slot activo es requerido
+          items:
+            $ref: '#/components/schemas/DeliveryAvailabilitySlotPayload'
+      required:
+        - timezone
+        - slots
+
+    DeliveryAvailabilityResponse:
+      type: object
+      properties:
+        timezone:
+          type: string
+          example: "America/Argentina/Buenos_Aires"
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryAvailabilitySlotPayload'
+
+    DeliveryOrderItemPayload:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "Harina 000 1kg"
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        notes:
+          type:
+            - string
+            - "null"
+          example: "Sin tacc"
+      required:
+        - name
+        - quantity
+
+    DeliveryOrderPayload:
+      type: object
+      description: Pedido visible para el repartidor
+      properties:
+        id:
+          type: string
+          example: "order-uuid-001"
+        publicId:
+          type:
+            - string
+            - "null"
+          example: "pub-uuid-001"
+        shortCode:
+          type:
+            - string
+            - "null"
+          example: "K7MDRV"
+        businessName:
+          type: string
+          example: "Almacén Don José"
+        neighborhood:
+          type: string
+          description: Barrio de entrega
+          example: "Palermo"
+        status:
+          type: string
+          enum: [pending, in_progress, picked_up, in_transit, arriving, delivered]
+          example: pending
+        promisedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: Hora prometida de entrega
+          example: "2026-03-16T13:00:00Z"
+        eta:
+          type:
+            - string
+            - "null"
+          description: Tiempo estimado de llegada
+          example: "20 min"
+        distance:
+          type:
+            - string
+            - "null"
+          description: Distancia estimada al destino
+          example: "3.2 km"
+        address:
+          type:
+            - string
+            - "null"
+          description: Dirección de entrega formateada
+          example: "Av. Rivadavia 1234, Buenos Aires"
+        addressNotes:
+          type:
+            - string
+            - "null"
+          example: "3er piso, departamento B"
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryOrderItemPayload'
+        notes:
+          type:
+            - string
+            - "null"
+          example: "Llamar al timbre 3B"
+        customerName:
+          type:
+            - string
+            - "null"
+          example: "María García"
+        customerPhone:
+          type:
+            - string
+            - "null"
+          example: "+54 9 11 5555-1234"
+        paymentMethod:
+          type:
+            - string
+            - "null"
+          example: "efectivo"
+        collectOnDelivery:
+          type:
+            - boolean
+            - "null"
+          description: Si true, el repartidor cobra al cliente al entregar
+          example: true
+        assignedTo:
+          type:
+            - string
+            - "null"
+          description: Email del repartidor asignado
+          example: "carlos@repartidores.com"
+        createdAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        updatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+      required:
+        - id
+        - businessName
+        - neighborhood
+        - status
+        - items
+
+    DeliveryOrdersSummaryResponse:
+      type: object
+      description: Resumen de pedidos del repartidor en el negocio
+      properties:
+        pending:
+          type: integer
+          description: Pedidos sin asignar
+          example: 5
+        inProgress:
+          type: integer
+          description: Pedidos asignados al repartidor actualmente en curso
+          example: 2
+        delivered:
+          type: integer
+          description: Pedidos entregados hoy
+          example: 8
+      required:
+        - pending
+        - inProgress
+        - delivered
+
+    DeliveryOrderListResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryOrderPayload'
+
+    DeliveryOrderDetailResponse:
+      type: object
+      description: Detalle completo de un pedido para el repartidor
+      allOf:
+        - $ref: '#/components/schemas/DeliveryOrderPayload'
+
+    DeliveryOrderStatusUpdateRequest:
+      type: object
+      description: Actualiza el status de un pedido (campo status)
+      properties:
+        orderId:
+          type: string
+          example: "order-uuid-001"
+        status:
+          type: string
+          enum: [pending, in_progress, picked_up, in_transit, arriving, delivered]
+          example: in_progress
+      required:
+        - orderId
+        - status
+
+    DeliveryOrderStatusUpdateResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+          example: "order-uuid-001"
+        status:
+          type: string
+          example: in_progress
+        message:
+          type:
+            - string
+            - "null"
+          example: "Status actualizado correctamente"
+      required:
+        - orderId
+        - status
+
+    DeliveryStateChangeRequest:
+      type: object
+      description: Cambia el estado de entrega de un pedido (campo state)
+      properties:
+        orderId:
+          type: string
+          example: "order-uuid-001"
+        state:
+          type: string
+          enum: [PENDING, PICKED_UP, IN_TRANSIT, DELIVERED, CANCELLED]
+          example: PICKED_UP
+      required:
+        - orderId
+        - state
+
+    DeliveryStateChangeResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+          example: "order-uuid-001"
+        state:
+          type: string
+          example: PICKED_UP
+        message:
+          type:
+            - string
+            - "null"
+          example: "Estado de entrega actualizado correctamente"
+      required:
+        - orderId
+        - state
+
+    # ─── Business Admin ────────────────────────────────────────────────
+    BusinessFontsRequest:
+      type: object
+      description: 🔒 Configura las fuentes tipográficas del negocio (solo BusinessAdmin)
+      properties:
+        fonts:
+          type: object
+          description: |
+            Mapa de tipo de elemento → nombre de fuente.
+            Claves permitidas: title, subtitle, body, button
+          additionalProperties:
+            type: string
+          example:
+            title: "Roboto Bold"
+            subtitle: "Roboto Medium"
+            body: "Roboto Regular"
+            button: "Roboto Bold"
+
+    BusinessFontsResponse:
+      type: object
+      properties:
+        fonts:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            title: "Roboto Bold"
+            body: "Roboto Regular"
+
+    ProductRequest:
+      type: object
+      description: 🔒 Crea o actualiza un producto (BusinessAdmin o Saler)
+      properties:
+        name:
+          type: string
+          description: Nombre del producto (requerido, no vacío)
+          example: "Harina 000 1kg"
+        shortDescription:
+          type:
+            - string
+            - "null"
+          example: "Harina de trigo 000 - ideal para pastas"
+        basePrice:
+          type: number
+          format: double
+          description: Precio base en ARS (debe ser mayor a 0)
+          example: 850.00
+        unit:
+          type: string
+          description: Unidad de medida
+          example: "kg"
+        categoryId:
+          type: string
+          description: ID de la categoría a la que pertenece
+          example: "cat-uuid-001"
+        status:
+          type:
+            - string
+            - "null"
+          enum: [DRAFT, PUBLISHED, null]
+          description: Estado del producto. Default DRAFT si no se especifica.
+          example: PUBLISHED
+        isAvailable:
+          type: boolean
+          description: Si el producto está disponible para venta
+          default: true
+          example: true
+        stockQuantity:
+          type:
+            - integer
+            - "null"
+          description: Cantidad en stock. null significa sin control de stock.
+          example: 100
+      required:
+        - name
+        - basePrice
+        - unit
+        - categoryId
+
+    ProductPayload:
+      type: object
+      description: Datos completos de un producto
+      properties:
+        id:
+          type: string
+          example: "prod-uuid-001"
+        businessId:
+          type: string
+          example: "almacen-don-jose"
+        name:
+          type: string
+          example: "Harina 000 1kg"
+        shortDescription:
+          type:
+            - string
+            - "null"
+          example: "Harina de trigo 000"
+        basePrice:
+          type: number
+          format: double
+          example: 850.00
+        unit:
+          type: string
+          example: "kg"
+        categoryId:
+          type: string
+          example: "cat-uuid-001"
+        status:
+          type: string
+          enum: [DRAFT, PUBLISHED]
+          example: PUBLISHED
+        isAvailable:
+          type: boolean
+          example: true
+        stockQuantity:
+          type:
+            - integer
+            - "null"
+          example: 100
+      required:
+        - id
+        - businessId
+        - name
+        - basePrice
+        - unit
+        - categoryId
+        - status
+        - isAvailable
+
+    ProductResponse:
+      type: object
+      properties:
+        product:
+          $ref: '#/components/schemas/ProductPayload'
+
+    ProductListResponse:
+      type: object
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductPayload'
+
+    CategoryRequest:
+      type: object
+      description: 🔒 Crea o actualiza una categoría (BusinessAdmin o Saler)
+      properties:
+        name:
+          type: string
+          description: Nombre de la categoría (requerido, no vacío)
+          example: "Lácteos"
+        description:
+          type:
+            - string
+            - "null"
+          example: "Leche, yogur, quesos y derivados"
+      required:
+        - name
+
+    CategoryPayload:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "cat-uuid-001"
+        businessId:
+          type: string
+          example: "almacen-don-jose"
+        name:
+          type: string
+          example: "Lácteos"
+        description:
+          type:
+            - string
+            - "null"
+          example: "Leche, yogur, quesos y derivados"
+      required:
+        - id
+        - businessId
+        - name
+
+    CategoryResponse:
+      type: object
+      properties:
+        category:
+          $ref: '#/components/schemas/CategoryPayload'
+
+    CategoryListResponse:
+      type: object
+      properties:
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryPayload'
+
+    BusinessOrderPayload:
+      type: object
+      description: Vista resumida de un pedido para el negocio
+      properties:
+        id:
+          type: string
+          example: "order-uuid-001"
+        shortCode:
+          type:
+            - string
+            - "null"
+          example: "B3KDFG"
+        clientEmail:
+          type: string
+          format: email
+          description: Email del cliente que realizó el pedido
+          example: cliente@ejemplo.com
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED]
+          example: CONFIRMED
+        total:
+          type: number
+          format: double
+          example: 2500.00
+        createdAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: "2026-03-10T09:00:00Z"
+        updatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: "2026-03-10T09:30:00Z"
+      required:
+        - id
+        - clientEmail
+        - status
+        - total
+
+    BusinessOrderListResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/BusinessOrderPayload'
+
+  # ─── Responses reutilizables ──────────────────────────────────────
+  responses:
+    OK:
+      description: Operación exitosa
+      content:
+        application/json:
+          schema:
+            type: object
+
+    Created:
+      description: Recurso creado exitosamente
+      content:
+        application/json:
+          schema:
+            type: object
+
+    NoContent:
+      description: Operación exitosa sin contenido de respuesta
+
+    BadRequest:
+      description: Error de validación en el request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            message: "El campo email debe tener formato de email. Valor actual: 'noesmail'"
+
+    Unauthorized:
+      description: Token JWT inválido, expirado o ausente
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            message: "Token inválido"
+
+    Forbidden:
+      description: El usuario no tiene el perfil requerido para esta operación
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            message: "Acceso denegado"
+
+    NotFound:
+      description: El recurso no fue encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            message: "Order not found"
+
+    InternalServerError:
+      description: Error interno del servidor
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            message: "Internal Server Error"
+
+  parameters:
+    businessParam:
+      name: business
+      in: path
+      required: true
+      description: |
+        Nombre del negocio registrado en la plataforma.
+        Determina el contexto de seguridad y datos para todas las operaciones.
+        El usuario autenticado debe tener un perfil APPROVED en este negocio.
+      schema:
+        type: string
+        example: intrale
+
+    addressIdParam:
+      name: addressId
+      in: path
+      required: true
+      description: UUID de la dirección del cliente
+      schema:
+        type: string
+        example: "addr-uuid-001"
+
+    orderIdParam:
+      name: orderId
+      in: path
+      required: true
+      description: UUID del pedido
+      schema:
+        type: string
+        example: "order-uuid-001"
+
+    productIdParam:
+      name: productId
+      in: path
+      required: true
+      description: UUID del producto
+      schema:
+        type: string
+        example: "prod-uuid-001"
+
+    categoryIdParam:
+      name: categoryId
+      in: path
+      required: true
+      description: UUID de la categoría
+      schema:
+        type: string
+        example: "cat-uuid-001"
+
+# ═══════════════════════════════════════════════════════════════════════
+# PATHS
+# ═══════════════════════════════════════════════════════════════════════
+paths:
+
+  # ─── Health ─────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [health]
+      summary: Estado del servicio
+      description: Endpoint de health-check. No requiere autenticación.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Servicio activo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: UP
+
+  # ─── Auth Público ────────────────────────────────────────────────────
+  /{business}/signup:
+    post:
+      tags: [auth]
+      summary: Registro de cliente (DEFAULT)
+      description: |
+        Registra un nuevo usuario con perfil DEFAULT (cliente).
+        - Crea el usuario en AWS Cognito si no existe
+        - Crea el perfil `UserBusinessProfile` con estado APPROVED
+        - Si el usuario ya existe en Cognito, omite la creación y continúa
+      operationId: signUp
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignUpRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/signupPlatformAdmin:
+    post:
+      tags: [auth]
+      summary: Registro de PlatformAdmin
+      description: |
+        Registra un nuevo usuario con perfil PlatformAdmin.
+        Comportamiento idéntico a `/signup` pero con perfil `PlatformAdmin`.
+        Solo debería usarse en bootstrapping inicial de la plataforma.
+      operationId: signUpPlatformAdmin
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignUpRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/signupDelivery:
+    post:
+      tags: [auth]
+      summary: Registro de repartidor (Delivery)
+      description: |
+        Registra un nuevo usuario con perfil Delivery.
+        - Estado inicial: PENDING (requiere aprobación de BusinessAdmin)
+        - No puede haber duplicados: la combinación email + business + Delivery debe ser única
+      operationId: signUpDelivery
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignUpRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/signin:
+    post:
+      tags: [auth]
+      summary: Inicio de sesión
+      description: |
+        Autentica al usuario contra AWS Cognito y retorna tokens JWT.
+
+        **Flujo primer login:** Si Cognito responde con desafío `NEW_PASSWORD_REQUIRED`,
+        se deben incluir `newPassword`, `name` y `familyName` en el mismo request.
+
+        El usuario debe tener un perfil con estado APPROVED en el negocio `{business}`.
+      operationId: signIn
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInRequest'
+      responses:
+        "200":
+          description: Login exitoso. Usar `idToken` como Bearer en Authorization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/validate:
+    post:
+      tags: [auth]
+      summary: Valida un token JWT
+      description: |
+        Valida si el token JWT provisto en el body es válido contra Cognito.
+        Útil para verificar sesiones activas desde el cliente.
+      operationId: validate
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: El token puede proveerse en el body o en el header Authorization
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/recovery:
+    post:
+      tags: [auth]
+      summary: Inicia recuperación de contraseña
+      description: |
+        Solicita a Cognito el envío de un código de recuperación al email del usuario.
+        El código recibido se usa en `POST /{business}/confirm`.
+      operationId: passwordRecovery
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordRecoveryRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/confirm:
+    post:
+      tags: [auth]
+      summary: Confirma la recuperación de contraseña
+      description: |
+        Completa el flujo de recuperación usando el código recibido por email y la nueva contraseña.
+      operationId: confirmPasswordRecovery
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmPasswordRecoveryRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/confirmSignUp:
+    post:
+      tags: [auth]
+      summary: Confirma el registro con código de verificación
+      description: |
+        Confirma la cuenta del usuario usando el código de verificación enviado por Cognito.
+      operationId: confirmSignUp
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmSignUpRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Auth Secured ────────────────────────────────────────────────────
+  /{business}/changePassword:
+    post:
+      tags: [auth]
+      summary: Cambia la contraseña 🔒
+      description: Cambia la contraseña del usuario autenticado.
+      operationId: changePassword
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/profiles:
+    get:
+      tags: [auth]
+      summary: Lista perfiles del usuario autenticado 🔒
+      description: |
+        Retorna la lista de perfiles (roles) del usuario autenticado en el negocio `{business}`.
+        Solo retorna perfiles con estado APPROVED.
+      operationId: getProfiles
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de perfiles del usuario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfilesResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── 2FA ─────────────────────────────────────────────────────────────
+  /{business}/2fasetup:
+    post:
+      tags: [2fa]
+      summary: Configura 2FA (TOTP) 🔒
+      description: |
+        Genera un secreto TOTP y retorna la URI `otpauth://totp/...` para escanear
+        con Google Authenticator, Authy u otro autenticador compatible.
+
+        El algoritmo es SHA1, 6 dígitos, período de 30 segundos.
+      operationId: twoFactorSetup
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: URI TOTP generada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFactorSetupResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/2faverify:
+    post:
+      tags: [2fa]
+      summary: Verifica un código 2FA (TOTP) 🔒
+      description: |
+        Verifica el código TOTP de 6 dígitos generado por el autenticador.
+        Usado para autorizar operaciones sensibles como la aprobación de negocios.
+      operationId: twoFactorVerify
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TwoFactorVerifyRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Business Management ─────────────────────────────────────────────
+  /{business}/registerBusiness:
+    post:
+      tags: [business]
+      summary: Registra un nuevo negocio 🔒
+      description: |
+        Cualquier usuario autenticado puede registrar un negocio.
+        El negocio inicia en estado PENDING y debe ser aprobado por un PlatformAdmin
+        usando `POST /{business}/reviewBusiness` con verificación 2FA.
+
+        El `publicId` se genera como slug del nombre. Si hay colisión → slug + UUID.
+      operationId: registerBusiness
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterBusinessRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/reviewBusiness:
+    post:
+      tags: [business]
+      summary: Aprueba o rechaza un negocio 🔒 (PlatformAdmin)
+      description: |
+        Solo ejecutable por PlatformAdmin. Requiere verificación 2FA (`twoFactorCode`).
+
+        - Si `decision=APPROVED`: se crea el usuario BusinessAdmin en Cognito (si no existe)
+          y se le asigna el perfil en el negocio con estado APPROVED.
+        - Si `decision=REJECTED`: el negocio queda en estado REJECTED.
+      operationId: reviewBusinessRegistration
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewBusinessRegistrationRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/registerSaler:
+    post:
+      tags: [business]
+      summary: Registra un Saler en el negocio 🔒 (BusinessAdmin)
+      description: |
+        Solo ejecutable por BusinessAdmin.
+        - Crea el usuario en Cognito si no existe
+        - Asigna perfil Saler con estado APPROVED inmediato
+        - No puede haber duplicados: email + business + Saler deben ser únicos
+      operationId: registerSaler
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterSalerRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/assignProfile:
+    post:
+      tags: [business]
+      summary: Asigna un perfil a un usuario 🔒 (PlatformAdmin)
+      description: |
+        Solo ejecutable por PlatformAdmin.
+        Asigna cualquier perfil al usuario indicado con estado APPROVED inmediato.
+      operationId: assignProfile
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignProfileRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/searchBusinesses:
+    post:
+      tags: [business]
+      summary: Búsqueda paginada de negocios
+      description: |
+        Lista negocios registrados en la plataforma con filtros opcionales.
+        La paginación se maneja con el cursor `lastKey` (nombre del último negocio retornado).
+      operationId: searchBusinesses
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchBusinessesRequest'
+      responses:
+        "200":
+          description: Lista paginada de negocios
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchBusinessesResponse'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/requestJoinBusiness:
+    post:
+      tags: [business]
+      summary: Solicita unirse al negocio como repartidor 🔒
+      description: |
+        El repartidor autenticado solicita unirse al negocio `{business}`.
+
+        El resultado depende de la configuración del negocio:
+        - Si `autoAcceptDeliveries=true`: estado APPROVED inmediato
+        - Si `autoAcceptDeliveries=false`: estado PENDING → espera aprobación de BusinessAdmin
+      operationId: requestJoinBusiness
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestJoinBusinessRequest'
+      responses:
+        "200":
+          description: Estado de la solicitud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestJoinBusinessResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/reviewJoinBusiness:
+    post:
+      tags: [business]
+      summary: Aprueba o rechaza solicitud de repartidor 🔒 (BusinessAdmin)
+      description: |
+        Solo ejecutable por BusinessAdmin.
+        Revisa la solicitud de un repartidor para unirse al negocio.
+      operationId: reviewJoinBusiness
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewJoinBusinessRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/configAutoAcceptDeliveries:
+    post:
+      tags: [business]
+      summary: Configura aceptación automática de repartidores 🔒 (BusinessAdmin)
+      description: |
+        Solo ejecutable por BusinessAdmin.
+        Si `autoAcceptDeliveries=true`, las futuras solicitudes de repartidores
+        se aprueban automáticamente sin intervención manual.
+      operationId: configAutoAcceptDeliveries
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigAutoAcceptDeliveriesRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/OK'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Client: Perfil ──────────────────────────────────────────────────
+  /{business}/client/profile:
+    get:
+      tags: [client]
+      summary: Obtiene el perfil del cliente 🔒
+      description: |
+        Retorna el perfil y preferencias del cliente autenticado en el negocio.
+        El email se extrae del claim `email` del JWT (o del subject como fallback).
+      operationId: getClientProfile
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Perfil del cliente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientProfileResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [client]
+      summary: Actualiza el perfil del cliente 🔒
+      description: Actualiza nombre, teléfono, dirección por defecto e idioma del cliente.
+      operationId: updateClientProfile
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientProfileUpdateRequest'
+      responses:
+        "200":
+          description: Perfil actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientProfileResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Client: Direcciones ─────────────────────────────────────────────
+  /{business}/client/addresses:
+    get:
+      tags: [client]
+      summary: Lista las direcciones del cliente 🔒
+      operationId: listClientAddresses
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de direcciones
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientAddressListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [client]
+      summary: Crea una nueva dirección 🔒
+      description: |
+        Crea una nueva dirección de entrega para el cliente.
+        Si `isDefault=true`, la nueva dirección se convierte en la predeterminada.
+      operationId: createClientAddress
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientAddressPayload'
+      responses:
+        "201":
+          description: Dirección creada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientAddressResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/client/addresses/{addressId}:
+    put:
+      tags: [client]
+      summary: Actualiza una dirección 🔒
+      operationId: updateClientAddress
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/addressIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientAddressPayload'
+      responses:
+        "200":
+          description: Dirección actualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientAddressResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [client]
+      summary: Elimina una dirección 🔒
+      operationId: deleteClientAddress
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/addressIdParam'
+      responses:
+        "204":
+          $ref: '#/components/responses/NoContent'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/client/addresses/{addressId}/default:
+    put:
+      tags: [client]
+      summary: Marca una dirección como predeterminada 🔒
+      description: |
+        Establece la dirección indicada como predeterminada del cliente.
+        Solo puede haber una dirección predeterminada a la vez.
+      operationId: setDefaultClientAddress
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/addressIdParam'
+      responses:
+        "200":
+          description: Dirección marcada como predeterminada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientAddressResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Client: Pedidos ─────────────────────────────────────────────────
+  /{business}/client/orders:
+    get:
+      tags: [client]
+      summary: Lista los pedidos del cliente 🔒
+      description: |
+        Retorna todos los pedidos del cliente autenticado en el negocio `{business}`.
+        El cliente solo puede ver sus propias órdenes.
+      operationId: listClientOrders
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de pedidos del cliente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientOrderListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/client/order-detail/{orderId}:
+    get:
+      tags: [client]
+      summary: Detalle de un pedido del cliente 🔒
+      description: |
+        Retorna el detalle completo de un pedido específico.
+        El cliente solo puede consultar sus propias órdenes.
+      operationId: getClientOrderDetail
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/orderIdParam'
+      responses:
+        "200":
+          description: Detalle del pedido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientOrderDetailResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Delivery: Perfil ────────────────────────────────────────────────
+  /{business}/delivery/profile:
+    get:
+      tags: [delivery]
+      summary: Obtiene el perfil del repartidor 🔒
+      description: |
+        Retorna el perfil del repartidor autenticado incluyendo
+        datos del vehículo y zonas de cobertura asignadas.
+      operationId: getDeliveryProfile
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Perfil del repartidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryProfileResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [delivery]
+      summary: Actualiza el perfil del repartidor 🔒
+      operationId: updateDeliveryProfile
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryProfileUpdateRequest'
+      responses:
+        "200":
+          description: Perfil actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryProfileResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Delivery: Disponibilidad ────────────────────────────────────────
+  /{business}/delivery/profile/availability:
+    get:
+      tags: [delivery]
+      summary: Obtiene la disponibilidad horaria del repartidor 🔒
+      description: |
+        Retorna el horario de disponibilidad del repartidor autenticado.
+        Si no hay disponibilidad configurada, retorna un payload vacío.
+      operationId: getDeliveryAvailability
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Disponibilidad horaria del repartidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryAvailabilityResponse'
+              example:
+                timezone: "America/Argentina/Buenos_Aires"
+                slots:
+                  - dayOfWeek: monday
+                    mode: BLOCK
+                    block: MORNING
+                  - dayOfWeek: friday
+                    mode: CUSTOM
+                    start: "14:00"
+                    end: "20:00"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [delivery]
+      summary: Actualiza la disponibilidad horaria del repartidor 🔒
+      description: |
+        Actualiza el horario de disponibilidad del repartidor.
+
+        **Validaciones:**
+        - `timezone` requerido y no vacío
+        - Al menos un slot activo
+        - `dayOfWeek`: monday a sunday (case-insensitive)
+        - Si `mode=BLOCK`: `block` debe ser MORNING, AFTERNOON o NIGHT
+        - Si `mode=CUSTOM`: `start` y `end` requeridos en formato HH:MM, `end` > `start`
+      operationId: updateDeliveryAvailability
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryAvailabilityPayload'
+            example:
+              timezone: "America/Argentina/Buenos_Aires"
+              slots:
+                - dayOfWeek: monday
+                  mode: BLOCK
+                  block: MORNING
+                - dayOfWeek: wednesday
+                  mode: CUSTOM
+                  start: "09:00"
+                  end: "17:00"
+      responses:
+        "200":
+          description: Disponibilidad actualizada y normalizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryAvailabilityResponse'
+        "400":
+          description: Error de validación
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "día inválido: lunes; bloque inválido para tuesday"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Delivery: Pedidos ───────────────────────────────────────────────
+  /{business}/delivery/orders/summary:
+    get:
+      tags: [delivery]
+      summary: Resumen de pedidos del repartidor 🔒
+      description: |
+        Retorna conteos agregados de pedidos del repartidor en el negocio:
+        - `pending`: pedidos sin asignar disponibles
+        - `inProgress`: pedidos activos asignados al repartidor
+        - `delivered`: pedidos entregados hoy
+      operationId: getDeliveryOrdersSummary
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Resumen de pedidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryOrdersSummaryResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/delivery/orders/active:
+    get:
+      tags: [delivery]
+      summary: Pedidos activos del repartidor 🔒
+      description: |
+        Lista los pedidos asignados al repartidor autenticado que están en curso.
+        Estados: picked_up, in_transit, arriving.
+      operationId: getDeliveryOrdersActive
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de pedidos activos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryOrderListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/delivery/orders/available:
+    get:
+      tags: [delivery]
+      summary: Pedidos disponibles para tomar 🔒
+      description: |
+        Lista los pedidos sin repartidor asignado (estado pending) disponibles en el negocio.
+      operationId: getDeliveryOrdersAvailable
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de pedidos disponibles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryOrderListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/delivery/orders/{orderId}:
+    get:
+      tags: [delivery]
+      summary: Detalle de un pedido (repartidor) 🔒
+      description: |
+        Retorna el detalle completo de un pedido específico.
+        El repartidor puede consultar cualquier pedido del negocio.
+      operationId: getDeliveryOrderDetail
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/orderIdParam'
+      responses:
+        "200":
+          description: Detalle del pedido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryOrderDetailResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/delivery/orders/{orderId}/status:
+    put:
+      tags: [delivery]
+      summary: Actualiza el status de un pedido 🔒
+      description: |
+        Actualiza el campo `status` del pedido de delivery.
+        Estados válidos: pending → in_progress → picked_up → in_transit → arriving → delivered
+      operationId: updateDeliveryOrderStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/orderIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryOrderStatusUpdateRequest'
+      responses:
+        "200":
+          description: Status actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryOrderStatusUpdateResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/delivery/orders/{orderId}/state:
+    put:
+      tags: [delivery]
+      summary: Cambia el estado de entrega de un pedido 🔒
+      description: |
+        Actualiza el estado de entrega (`state`) del pedido.
+        Transiciones: PENDING → PICKED_UP → IN_TRANSIT → DELIVERED (o CANCELLED)
+      operationId: updateDeliveryOrderState
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/orderIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryStateChangeRequest'
+      responses:
+        "200":
+          description: Estado de entrega actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryStateChangeResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Business Admin: Fonts ───────────────────────────────────────────
+  /{business}/business/fonts:
+    get:
+      tags: [business-admin]
+      summary: Obtiene las fuentes del negocio 🔒 (BusinessAdmin)
+      description: |
+        Retorna el mapa de fuentes tipográficas configuradas para el negocio.
+        Si no hay fuentes configuradas, retorna un mapa vacío.
+      operationId: getBusinessFonts
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Mapa de fuentes del negocio
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessFontsResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [business-admin]
+      summary: Actualiza las fuentes del negocio 🔒 (BusinessAdmin)
+      description: |
+        Configura las fuentes tipográficas del negocio.
+        Solo BusinessAdmin puede ejecutar esta operación.
+
+        **Claves válidas:** `title`, `subtitle`, `body`, `button`
+        Cualquier otra clave retorna 400.
+      operationId: updateBusinessFonts
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessFontsRequest'
+      responses:
+        "200":
+          description: Fuentes actualizadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessFontsResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Business Admin: Productos ───────────────────────────────────────
+  /{business}/business/products:
+    get:
+      tags: [business-admin]
+      summary: Lista productos del negocio 🔒 (BusinessAdmin / Saler)
+      description: Retorna todos los productos registrados en el negocio.
+      operationId: listBusinessProducts
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de productos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [business-admin]
+      summary: Crea un nuevo producto 🔒 (BusinessAdmin / Saler)
+      description: |
+        Crea un nuevo producto en el negocio.
+        - Estado por defecto: DRAFT (no visible para clientes)
+        - `basePrice` debe ser mayor a 0
+        - `name` no puede estar vacío
+      operationId: createBusinessProduct
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductRequest'
+      responses:
+        "201":
+          description: Producto creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/business/products/{productId}:
+    get:
+      tags: [business-admin]
+      summary: Obtiene un producto por ID 🔒 (BusinessAdmin / Saler)
+      operationId: getBusinessProduct
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/productIdParam'
+      responses:
+        "200":
+          description: Producto encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [business-admin]
+      summary: Actualiza un producto 🔒 (BusinessAdmin / Saler)
+      operationId: updateBusinessProduct
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/productIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductRequest'
+      responses:
+        "200":
+          description: Producto actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [business-admin]
+      summary: Elimina un producto 🔒 (BusinessAdmin / Saler)
+      operationId: deleteBusinessProduct
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/productIdParam'
+      responses:
+        "204":
+          $ref: '#/components/responses/NoContent'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Business Admin: Categorías ──────────────────────────────────────
+  /{business}/business/categories:
+    get:
+      tags: [business-admin]
+      summary: Lista categorías del negocio 🔒 (BusinessAdmin / Saler)
+      operationId: listBusinessCategories
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de categorías
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [business-admin]
+      summary: Crea una nueva categoría 🔒 (BusinessAdmin / Saler)
+      operationId: createBusinessCategory
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+      responses:
+        "201":
+          description: Categoría creada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /{business}/business/categories/{categoryId}:
+    get:
+      tags: [business-admin]
+      summary: Obtiene una categoría por ID 🔒 (BusinessAdmin / Saler)
+      operationId: getBusinessCategory
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/categoryIdParam'
+      responses:
+        "200":
+          description: Categoría encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [business-admin]
+      summary: Actualiza una categoría 🔒 (BusinessAdmin / Saler)
+      operationId: updateBusinessCategory
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/categoryIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+      responses:
+        "200":
+          description: Categoría actualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [business-admin]
+      summary: Elimina una categoría 🔒 (BusinessAdmin / Saler)
+      operationId: deleteBusinessCategory
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+        - $ref: '#/components/parameters/categoryIdParam'
+      responses:
+        "204":
+          $ref: '#/components/responses/NoContent'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Business Admin: Pedidos ─────────────────────────────────────────
+  /{business}/business/orders:
+    get:
+      tags: [business-admin]
+      summary: Lista todos los pedidos del negocio 🔒
+      description: |
+        Retorna la lista resumida de todos los pedidos recibidos en el negocio.
+        Visible para usuarios con JWT válido en el negocio.
+      operationId: listBusinessOrders
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/businessParam'
+      responses:
+        "200":
+          description: Lista de pedidos del negocio
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessOrderListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ─── Ruta estática de disponibilidad ────────────────────────────────
+  /delivery/profile/availability:
+    get:
+      tags: [delivery]
+      summary: Disponibilidad del repartidor (ruta estática) 🔒
+      description: |
+        Ruta estática alternativa para consultar la disponibilidad del repartidor.
+        El repartidor se identifica por el token Bearer.
+        Esta ruta NO requiere `{business}` en el path.
+      operationId: getDeliveryAvailabilityStatic
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Disponibilidad horaria
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryAvailabilityPayload'
+        "401":
+          description: Token Bearer ausente o inválido
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Token Bearer requerido"
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [delivery]
+      summary: Actualiza disponibilidad del repartidor (ruta estática) 🔒
+      description: |
+        Ruta estática para actualizar la disponibilidad del repartidor.
+        El repartidor se identifica por el token Bearer.
+        Esta ruta NO requiere `{business}` en el path.
+      operationId: updateDeliveryAvailabilityStatic
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryAvailabilityPayload'
+      responses:
+        "200":
+          description: Disponibilidad actualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryAvailabilityPayload'
+        "400":
+          description: Error de validación
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "al menos un día debe estar activo; bloque inválido para monday"
+        "401":
+          description: Token Bearer ausente o inválido
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Token Bearer requerido"
+        "500":
+          $ref: '#/components/responses/InternalServerError'
