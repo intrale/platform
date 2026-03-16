@@ -303,7 +303,15 @@ function collectData() {
         const status = getSessionStatus(s);
         const elapsed = now - new Date(s.last_activity_ts).getTime();
         const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
-        const isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
+        let isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
+        // Fallback: detectar sprint session por modified_files path (worktrees con branch "unknown")
+        if (!isSprintSession && Array.isArray(s.modified_files) && s.modified_files.length > 0) {
+          for (const issueNum of sprintIssueSet) {
+            if (s.modified_files.some(f => f.includes("agent-" + issueNum + "-") || f.includes("codex-" + issueNum + "-"))) {
+              isSprintSession = true; break;
+            }
+          }
+        }
         if (!isSprintSession) {
           // Zombie: status active pero sin actividad >30min → omitir (stale se muestra igual)
           if (s.status === "active" && elapsed > ZOMBIE_THRESHOLD_MS) continue;
@@ -1084,11 +1092,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
   // --- Force-directed layout (optimized for separation) ---
   const nodeR = 56;
-  // Escalar SVG según cantidad de nodos — generoso para evitar amontonamiento
-  const baseSize = 1200;
-  const scaleFactor = Math.max(1, nodes.length / 6);
-  const svgW = Math.round(baseSize * Math.max(1.2, scaleFactor * 1.1));
-  const svgH = Math.round(baseSize * Math.max(0.9, scaleFactor * 0.85));
+  // SVG compacto — nodos más densos para que se vean grandes en el panel
+  const baseSize = 800;
+  const scaleFactor = Math.max(1, nodes.length / 8);
+  const svgW = Math.round(baseSize * Math.max(1, scaleFactor * 0.85));
+  const svgH = Math.round(baseSize * Math.max(0.8, scaleFactor * 0.7));
   const cx = svgW / 2, cy = svgH / 2;
 
   // Initialize positions: spread nodes in a circle with generous radius
@@ -1300,7 +1308,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     svg += `</g>`;
   }
 
-  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;">${svg}</svg>`;
+  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;min-height:500px;height:auto;">${svg}</svg>`;
 }
 
 // --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
