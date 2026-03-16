@@ -23,7 +23,23 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 
-const PENDING_FILE = path.join(__dirname, "pending-questions.json");
+// Resolver siempre al repo principal (no al worktree) para centralizar permisos (#1404)
+function resolveMainHooksDir() {
+    try {
+        const { execSync } = require("child_process");
+        const output = execSync("git worktree list", {
+            encoding: "utf8", cwd: __dirname, timeout: 5000, windowsHide: true
+        });
+        const firstLine = output.split("\n")[0] || "";
+        const match = firstLine.match(/^(.+?)\s+[0-9a-f]{5,}/);
+        if (match) {
+            const mainPath = match[1].trim().replace(/^\/([a-z])\//, "$1:\\").replace(/\//g, "\\");
+            return path.join(mainPath, ".claude", "hooks");
+        }
+    } catch (e) {}
+    return __dirname;
+}
+const PENDING_FILE = path.join(resolveMainHooksDir(), "pending-questions.json");
 const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h — limpiar automáticamente
 const LOAD_RETRY_COUNT = 3;
 const LOAD_RETRY_DELAY_MS = 50;
