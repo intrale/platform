@@ -1066,7 +1066,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // --- Force-directed layout (optimized for separation) ---
-  const nodeR = 42;
+  const nodeR = 56;
   // Escalar SVG según cantidad de nodos — generoso para evitar amontonamiento
   const baseSize = 1200;
   const scaleFactor = Math.max(1, nodes.length / 6);
