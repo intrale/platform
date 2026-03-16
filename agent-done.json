@@ -1,1 +1,1 @@
-{"summary": "validar auto-delivery end-to-end", "pr_title": "test: validar auto-delivery end-to-end", "pr_body": "Pipeline completo validado. Closes #1611", "commit_type": "test", "files_changed": ["docs/auto-delivery-test.md"]}
+{"summary": "limpiar archivos de prueba del pipeline", "pr_title": "chore: limpiar archivos de prueba del pipeline", "pr_body": "Elimina archivos temporales de validacion. Closes #1614", "commit_type": "chore", "files_changed": ["docs/pipeline-test.md", "docs/auto-delivery-test.md", "agent-done.json"]}
