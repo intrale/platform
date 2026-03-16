@@ -163,6 +163,7 @@ Reglas:
 - Evitar referencias vagas
 - Redacción técnica, clara y accionable en español
 - Incluir pruebas si aplica
+- **Escenarios Gherkin obligatorios:** mínimo 2 (happy path + caso de error). Usar la sección "Escenarios Gherkin" de `./issue-template.md`. Agregar más según complejidad (permisos, edge cases, transiciones de estado).
 
 ### Paso 4: Determinar labels
 
@@ -337,6 +338,7 @@ Usar la plantilla de `./issue-template.md`. Reglas:
 - Evitar referencias vagas
 - Incluir pruebas si aplica
 - Redacción técnica, clara y accionable en español
+- **Escenarios Gherkin obligatorios:** si el issue no tiene sección "Escenarios Gherkin", agregarla con mínimo 2 escenarios (happy path + caso de error). Usar la plantilla de `./issue-template.md`.
 
 ### Paso 4: Determinar labels
 

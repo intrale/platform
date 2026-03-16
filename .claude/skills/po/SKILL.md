@@ -158,6 +158,7 @@ Leer los archivos modificados con Read tool. Para cada cambio, evaluar:
 3. **¿Los permisos están verificados?** — ¿Quién puede hacer qué?
 4. **¿Las transiciones de estado son válidas?** — ¿Se validan las ilegales?
 5. **¿Los edge cases están cubiertos?** — Duplicados, vacíos, concurrencia
+6. **¿Tiene escenarios Gherkin?** — El issue DEBE tener sección "Escenarios Gherkin" con mínimo 2 escenarios (happy path + caso de error). Si falta → **REQUIERE CAMBIOS** automáticamente.
 
 ### Paso V4: Generar test cases para QA
 
@@ -188,6 +189,16 @@ Para cada criterio de aceptación, generar un test case concreto que QA pueda ej
 | Regla | Cumple | Nota |
 |-------|--------|------|
 | [regla de business-rules.md] | ✅/❌ | [detalle] |
+
+### Escenarios Gherkin
+| Verificación | Estado | Detalle |
+|-------------|--------|---------|
+| Sección "Escenarios Gherkin" presente | ✅/❌ | [existe o falta en el issue] |
+| Mínimo 2 escenarios (happy path + error) | ✅/❌ | [cantidad encontrada] |
+| Escenarios autocontenidos y con datos reales | ✅/⚠️/❌ | [calidad de los escenarios] |
+
+> **Si falta la sección o tiene menos de 2 escenarios → veredicto automático: REQUIERE CAMBIOS.**
+> Indicar al usuario que ejecute `/doc refinar <N>` para agregar los escenarios faltantes.
 
 ### Test cases para QA
 [Lista de test cases generados]
