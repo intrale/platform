@@ -1065,22 +1065,21 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // --- Force-directed layout (simplified, deterministic) ---
+  // --- Force-directed layout (optimized for separation) ---
   const nodeR = 42;
-  // Escalar SVG según cantidad de nodos para que nunca se amontone
+  // Escalar SVG según cantidad de nodos — generoso para evitar amontonamiento
   const baseSize = 1200;
-  const scaleFactor = Math.max(1, nodes.length / 8);
-  const svgW = Math.round(baseSize * Math.max(1, scaleFactor * 0.9));
-  const svgH = Math.round(baseSize * Math.max(0.7, scaleFactor * 0.65));
+  const scaleFactor = Math.max(1, nodes.length / 6);
+  const svgW = Math.round(baseSize * Math.max(1.2, scaleFactor * 1.1));
+  const svgH = Math.round(baseSize * Math.max(0.9, scaleFactor * 0.85));
   const cx = svgW / 2, cy = svgH / 2;
 
-  // Initialize positions: spread nodes using golden angle for good distribution
+  // Initialize positions: spread nodes in a circle with generous radius
   const positions = {};
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-  const spreadRadius = Math.min(svgW, svgH) * 0.35;
+  const spreadRadius = Math.min(svgW, svgH) * 0.38;
   nodes.forEach((name, i) => {
-    const r = spreadRadius * 0.3 + Math.sqrt(i) * spreadRadius * 0.25;
-    const angle = i * goldenAngle;
+    const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2;
+    const r = spreadRadius * (0.6 + 0.4 * (i % 2)); // alternating rings
     positions[name] = {
       x: cx + r * Math.cos(angle),
       y: cy + r * Math.sin(angle),
@@ -1095,34 +1094,34 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     neighbors[e.to].add(e.from);
   }
 
-  // Run force simulation (120 iterations for better convergence)
-  const padding = nodeR + 40;
-  for (let iter = 0; iter < 120; iter++) {
-    const alpha = 0.4 * (1 - iter / 120);
+  // Run force simulation (200 iterations for well-separated layout)
+  const padding = nodeR + 60;
+  for (let iter = 0; iter < 200; iter++) {
+    const alpha = 0.5 * (1 - iter / 200);
 
     for (const a of nodes) {
       let fx = 0, fy = 0;
       const pa = positions[a];
 
-      // Repulsion between all pairs (stronger to avoid overlaps)
+      // Strong repulsion between ALL pairs — prevents any overlap
       for (const b of nodes) {
         if (a === b) continue;
         const pb = positions[b];
         let dx = pa.x - pb.x, dy = pa.y - pb.y;
         let dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 1) { dx = 0.5; dy = 0.3; dist = 1; }
-        const repulse = 45000 / (dist * dist);
+        const repulse = 80000 / (dist * dist);
         fx += (dx / dist) * repulse;
         fy += (dy / dist) * repulse;
       }
 
-      // Attraction along edges (larger ideal distance to prevent label overlap)
+      // Attraction along edges — large ideal distance for label clearance
       for (const b of neighbors[a]) {
         const pb = positions[b];
         const dx = pb.x - pa.x, dy = pb.y - pa.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const ideal = 320;
-        const attract = (dist - ideal) * 0.04;
+        const ideal = 400;
+        const attract = (dist - ideal) * 0.03;
         fx += (dx / Math.max(dist, 1)) * attract;
         fy += (dy / Math.max(dist, 1)) * attract;
       }
@@ -1140,9 +1139,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Post-layout: ensure minimum separation (5 × nodeR) between all nodes to avoid label overlap
-  const minDist = nodeR * 5;
-  for (let pass = 0; pass < 20; pass++) {
+  // Post-layout: ensure minimum separation (7 × nodeR) between all nodes — includes labels
+  const minDist = nodeR * 7;
+  for (let pass = 0; pass < 40; pass++) {
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const pa = positions[nodes[i]];
@@ -1238,7 +1237,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const iconUrl = hasRobot ? ROBOT_ICONS[robotId] : resolveIconUri(name);
     const isActive = activeAgents.has(name);
     const isDone = doneAgents.has(name);
-    const opacity = (!isActive && !isDone) ? "0.35" : "1";
+    // Todos los nodos con transiciones se muestran al 100% — no grisar nodos participantes
+    const opacity = "1";
     const filterAttr = isActive ? 'filter="url(#node-glow)"' : '';
     // Nodo raíz con robot tiene radio ligeramente mayor
     const effectiveR = hasRobot ? nodeR + 4 : nodeR;
@@ -1650,6 +1650,30 @@ function renderHTML(data, theme) {
       : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
       : `${actionCount} acciones · ${tasksPct}%`;
     const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+    // Estimado de tiempo restante basado en tamaño y progreso
+    let etaHtml = "";
+    if (agStatus === "active" && matchSession && matchSession.started_ts) {
+      const sizeMinutes = { S: 15, M: 45, L: 90, XL: 180 };
+      const expectedMin = sizeMinutes[ag.size] || 45;
+      const elapsedMin = Math.round((Date.now() - new Date(matchSession.started_ts).getTime()) / 60000);
+      const progress = tasksPct / 100;
+      let remainMin;
+      if (progress > 0.1) {
+        // Extrapolación basada en progreso real
+        const totalEstimated = elapsedMin / progress;
+        remainMin = Math.max(0, Math.round(totalEstimated - elapsedMin));
+      } else {
+        // Sin progreso suficiente — usar estimado por tamaño
+        remainMin = Math.max(0, expectedMin - elapsedMin);
+      }
+      if (remainMin > 0) {
+        etaHtml = remainMin < 60
+          ? " · ~" + remainMin + "min restante"
+          : " · ~" + Math.round(remainMin / 60) + "h " + (remainMin % 60) + "min restante";
+      } else {
+        etaHtml = " · deberia finalizar pronto";
+      }
+    }
     const safeRunUrl = wb && wb.run_url && /^https:\/\/github\.com\//.test(wb.run_url) ? wb.run_url : null;
     const ciLinkHtml = safeRunUrl
       ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">&#9654; CI</a>`
@@ -1668,7 +1692,7 @@ function renderHTML(data, theme) {
         <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${isWaiting ? waitingBarColor : barColor};${isWaiting ? 'animation:pulse 1.5s infinite alternate;' : ''}"></div></div>
         <span style="font-size:11px;color:${isWaiting ? '#fbbf24' : statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
       </div>
-      <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${ciLinkHtml}</div>
+      <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${etaHtml}${ciLinkHtml}</div>
     </div>`;
   }
 
