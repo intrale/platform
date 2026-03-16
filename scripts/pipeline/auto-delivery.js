@@ -21,13 +21,21 @@ function safeExec(cmd, opts) {
 }
 
 function setupGhAuth() {
+    process.env.PATH = "/c/Workspaces/gh-cli/bin:" + process.env.PATH;
+    // Intentar múltiples métodos para obtener GH token
+    if (process.env.GH_TOKEN) return; // ya seteado por el caller
     try {
-        const token = exec('printf "protocol=https\\nhost=github.com\\n" | git credential fill 2>/dev/null | sed -n "s/^password=//p"');
-        process.env.GH_TOKEN = token;
-        process.env.PATH = "/c/Workspaces/gh-cli/bin:" + process.env.PATH;
-    } catch (e) {
-        console.error("[auto-delivery] No se pudo obtener GH token");
-    }
+        // Método 1: git credential fill via script temporal
+        const script = 'printf "protocol=https\\nhost=github.com\\n" | git credential fill 2>/dev/null | grep "^password=" | cut -d= -f2';
+        const token = exec(script, { shell: true }).trim();
+        if (token && token.length > 10) { process.env.GH_TOKEN = token; return; }
+    } catch (e) { /* fallthrough */ }
+    try {
+        // Método 2: gh auth token
+        const token = exec("gh auth token", { timeout: 5000 }).trim();
+        if (token && token.length > 10) { process.env.GH_TOKEN = token; return; }
+    } catch (e) { /* fallthrough */ }
+    console.error("[auto-delivery] No se pudo obtener GH token — PR creation may fail");
 }
 
 function getAgentDone(workDir) {
