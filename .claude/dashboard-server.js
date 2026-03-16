@@ -1317,11 +1317,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   // Convertir path a SVG con esquinas redondeadas
   function pathToSvg(pts, fromPos, toPos) {
     if (!pts || pts.length < 2) {
-      // Fallback: línea recta
       return "M" + fromPos.x.toFixed(1) + "," + fromPos.y.toFixed(1) + " L" + toPos.x.toFixed(1) + "," + toPos.y.toFixed(1);
     }
     const simple = simplifyPath(pts);
-    // Reemplazar primer y último punto con las posiciones reales (borde del nodo)
     simple[0] = { ...fromPos };
     simple[simple.length - 1] = { ...toPos };
 
