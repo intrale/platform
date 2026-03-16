@@ -347,6 +347,7 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
   "tema": "Sprint general — mix de prioridades",
   "estado": "activo",
   "concurrency_limit": 3,
+  "pipeline_mode": "scripts",
   "total_stories": 7,
   "agentes": [
     {
@@ -439,11 +440,23 @@ Reglas de otros campos:
 - `size`: S/M/L/XL segun estimacion de esfuerzo
 - El archivo NO se commitea (esta en .gitignore)
 
-### Template de prompt enriquecido con pipeline de agentes (USAR SIEMPRE)
+### Template de prompt — dos modos según `pipeline_mode`
 
-El campo `prompt` de cada agente DEBE incluir las siguientes instrucciones de pipeline. Adaptar `#NNN` al numero de issue real.
+El campo `pipeline_mode` en `sprint-plan.json` controla qué template de prompt se usa:
 
-El template implementa **6 fases** que cubren el ciclo completo con participación de TODOS los agentes especializados:
+- **`"scripts"`** (default): Prompt reducido. Pre-flight, tests, security, build y delivery los ejecuta `agent-runner.js` como scripts Node.js (0 tokens). Claude solo hace análisis + implementación + review.
+- **`"skills"`**: Prompt completo legacy. Claude invoca todos los skills internamente.
+- **`"hybrid"`**: Pre-flight como script, post-Claude como skills (transición gradual).
+
+#### Template SCRIPTS (pipeline_mode: "scripts") — PREFERIDO
+
+```
+Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo intrale/platform. Invocar /po para revisar criterios de aceptación del issue #NNN. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Implementación especializada según keywords del issue — Si el issue menciona backend, API, Lambda, Ktor, DynamoDB, Cognito, o toca archivos en backend/ o users/: invocar /backend-dev. Si el issue menciona Android, androidMain, flavor, APK, Compose Android: invocar /android-dev. Si el issue menciona iOS, iosMain, Swift, ComposeUIViewController: invocar /ios-dev. Si el issue menciona Web, Wasm, wasmJsMain, browser, PWA: invocar /web-dev. Si el issue menciona Desktop, desktopMain, JVM Desktop, Swing, Window: invocar /desktop-dev. Completar los cambios descritos en el body del issue. Invocar /review para validar el diff. Si el issue toca archivos ui/ y NO tiene label tipo:infra: invocar /ux para validar UX del resultado. Al terminar, escribir un archivo agent-done.json en el directorio raiz del worktree con: {summary, pr_title, pr_body, commit_type, files_changed}. NOTA: /ops, /tester, /security, /builder, /delivery y /cleanup son ejecutados automaticamente por agent-runner.js fuera de esta sesion — NO invocarlos.
+```
+
+**Diferencia clave vs legacy:** Se eliminan `/ops`, `/tester`, `/builder`, `/security`, `/delivery`, `/cleanup` del prompt. Esto ahorra ~23K tokens por sesión. Los roles siguen apareciendo en el dashboard porque `agent-runner.js` emite transiciones via `emit-transition.js`.
+
+#### Template SKILLS (pipeline_mode: "skills") — LEGACY
 
 ```
 Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo intrale/platform. Al iniciar: invocar /ops para verificar estado del entorno. Invocar /po para revisar criterios de aceptación del issue #NNN. Si el issue toca archivos ui/: invocar /ux para análisis de pantallas afectadas. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Implementación especializada según keywords del issue — Si el issue menciona backend, API, Lambda, Ktor, DynamoDB, Cognito, o toca archivos en backend/ o users/: invocar /backend-dev. Si el issue menciona Android, androidMain, flavor, APK, Compose Android: invocar /android-dev. Si el issue menciona iOS, iosMain, Swift, ComposeUIViewController: invocar /ios-dev. Si el issue menciona Web, Wasm, wasmJsMain, browser, PWA: invocar /web-dev. Si el issue menciona Desktop, desktopMain, JVM Desktop, Swing, Window: invocar /desktop-dev. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /builder para validar que el build no está roto. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: invocar /review para validar el diff. Si el issue toca archivos ui/ y NO tiene label tipo:infra: invocar /ux para validar UX del resultado e invocar /qa para tests E2E de la UI afectada. QA E2E y UX omitidos si label tipo:infra — afecta hooks y pipeline de agentes, no UI de la app. Usar /delivery para commit+PR al terminar. Closes #NNN. Si este es el último issue del sprint (verificar leyendo scripts/sprint-plan.json y comparando con issues en estado Done en el Project V2): invocar /scrum para generar métricas del sprint. Invocar /cleanup para limpiar worktrees, logs y procesos.

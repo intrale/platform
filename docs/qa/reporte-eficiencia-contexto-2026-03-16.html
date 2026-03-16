@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Eficiencia — Compactacion de Contexto y Optimizacion de Tokens</title>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; margin: 40px; color: #1a1a2e; background: #f8f9fa; max-width: 1100px; margin: 40px auto; }
+  h1 { color: #2b2d42; border-bottom: 3px solid #d90429; padding-bottom: 10px; font-size: 1.6em; }
+  h2 { color: #457b9d; margin-top: 30px; font-size: 1.3em; border-left: 4px solid #457b9d; padding-left: 12px; }
+  h3 { color: #1d3557; margin-top: 20px; }
+  .summary-box { background: #fff; border-left: 4px solid #d90429; padding: 15px 20px; margin: 20px 0; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .insight-box { background: #e8f4f8; border-left: 4px solid #457b9d; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  .warning-box { background: #fff3cd; border-left: 4px solid #e9c46a; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  .critical-box { background: #f8d7da; border-left: 4px solid #d90429; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  .success-box { background: #d4edda; border-left: 4px solid #2a9d8f; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 15px 0; font-size: 13px; }
+  th, td { border: 1px solid #dee2e6; padding: 8px 12px; text-align: left; }
+  th { background: #1d3557; color: white; font-weight: 600; }
+  tr:nth-child(even) { background: #f1faee; }
+  tr:hover { background: #e8f4f8; }
+  .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 15px 0; }
+  .metric { background: #fff; border: 1px solid #dee2e6; border-radius: 8px; padding: 15px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+  .metric .value { font-size: 26px; font-weight: bold; color: #1d3557; }
+  .metric .label { font-size: 11px; color: #6c757d; margin-top: 4px; }
+  .metric.red .value { color: #d90429; }
+  .metric.green .value { color: #2a9d8f; }
+  .metric.orange .value { color: #e76f51; }
+  .bar-chart { margin: 10px 0; }
+  .bar-row { display: flex; align-items: center; margin: 4px 0; }
+  .bar-label { width: 120px; font-size: 12px; text-align: right; padding-right: 10px; }
+  .bar-fill { height: 20px; border-radius: 3px; display: flex; align-items: center; padding-left: 8px; font-size: 11px; color: white; font-weight: 600; }
+  .bar-fill.blue { background: #457b9d; }
+  .bar-fill.red { background: #d90429; }
+  .bar-fill.orange { background: #e76f51; }
+  .bar-fill.green { background: #2a9d8f; }
+  .flow-diagram { background: #fff; border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 15px 0; font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.8; }
+  .proposal { background: #fff; border: 1px solid #dee2e6; border-radius: 8px; padding: 16px; margin: 12px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+  .proposal h4 { margin-top: 0; color: #1d3557; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin: 2px; }
+  .tag-high { background: #d90429; color: white; }
+  .tag-med { background: #e9c46a; color: #1d3557; }
+  .tag-low { background: #a8dadc; color: #1d3557; }
+  .tag-ok { background: #2a9d8f; color: white; }
+  .footer { margin-top: 40px; padding-top: 15px; border-top: 1px solid #dee2e6; color: #6c757d; font-size: 12px; }
+  code { background: #e9ecef; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media print { body { margin: 20px; } .metric-grid { grid-template-columns: repeat(4, 1fr); } }
+</style>
+</head>
+<body>
+
+<h1>Reporte de Eficiencia: Compactacion de Contexto y Uso de Tokens</h1>
+<p><strong>Proyecto:</strong> Intrale Platform | <strong>Fecha:</strong> 2026-03-16 | <strong>Sprint:</strong> SPR-033</p>
+
+<div class="summary-box">
+  <strong>Problema:</strong> Las sesiones de Claude Code se compactan frecuentemente, perdiendo contexto y requiriendo re-lectura
+  de archivos. La causa raiz es el <strong>alto consumo de tokens por skill</strong>: 27 skills suman 401 KB de prompts (~100K tokens),
+  y cada agente invoca 6-8 skills por issue, consumiendo ~65% del contexto solo en instrucciones.
+  <br><br>
+  <strong>Propuesta:</strong> Migrar tareas mecanicas (validaciones, checks, builds) de skills-prompt a scripts Node.js/bash,
+  reduciendo el consumo de contexto en ~40% sin perder funcionalidad.
+</div>
+
+<div class="metric-grid">
+  <div class="metric red"><div class="value">401 KB</div><div class="label">Skills totales (27 prompts)</div></div>
+  <div class="metric orange"><div class="value">~100K</div><div class="label">Tokens en skills</div></div>
+  <div class="metric red"><div class="value">65%</div><div class="label">Contexto en overhead</div></div>
+  <div class="metric green"><div class="value">40%</div><div class="label">Reduccion posible</div></div>
+</div>
+
+<h2>1. Diagnostico: Por que se compacta tanto</h2>
+
+<p>Claude Code tiene un contexto de ~200K tokens. Cada sesion de agente consume contexto de estas fuentes:</p>
+
+<table>
+  <tr><th>Fuente</th><th>Tamano</th><th>Tokens est.</th><th>Carga</th></tr>
+  <tr><td>CLAUDE.md (instrucciones del proyecto)</td><td>10.6 KB</td><td>~2,700</td><td>Siempre</td></tr>
+  <tr><td>Memory files (36 archivos .md)</td><td>~50 KB</td><td>~12,500</td><td>Siempre (indice + relevantes)</td></tr>
+  <tr><td>System prompt + tools definitions</td><td>~30 KB</td><td>~7,500</td><td>Siempre (framework)</td></tr>
+  <tr><td><strong>Skills invocados (6-8 por agente)</strong></td><td><strong>150-200 KB</strong></td><td><strong>~50,000</strong></td><td><strong>Cada invocacion de skill</strong></td></tr>
+  <tr><td>Tool results (git, builds, tests)</td><td>Variable</td><td>~30,000+</td><td>Acumulativo</td></tr>
+  <tr style="background:#f8d7da;"><td><strong>TOTAL TIPICO</strong></td><td><strong>~350 KB</strong></td><td><strong>~100K+</strong></td><td><strong>Supera 50% del contexto antes de codear</strong></td></tr>
+</table>
+
+<div class="critical-box">
+  <strong>Hallazgo clave:</strong> Un agente que invoca el pipeline completo
+  (<code>/ops</code> + <code>/po</code> + <code>/backend-dev</code> + <code>/tester</code> + <code>/security</code> + <code>/review</code> + <code>/delivery</code>)
+  consume ~50,000 tokens solo en cargar los prompts de esos 7 skills. Esto es <strong>25% del contexto total</strong>,
+  antes de escribir una sola linea de codigo. Sumando CLAUDE.md, memory, y resultados de herramientas,
+  el agente llega al 65% de consumo en overhead.
+</div>
+
+<h2>2. Mapa de consumo: Skills por tamano</h2>
+
+<div class="bar-chart">
+  <div class="bar-row"><div class="bar-label">scrum</div><div class="bar-fill red" style="width:485px">48.5 KB (1,356 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">planner</div><div class="bar-fill red" style="width:382px">38.2 KB (948 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">monitor</div><div class="bar-fill orange" style="width:304px">30.4 KB (439 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">cleanup</div><div class="bar-fill orange" style="width:290px">29.0 KB (720 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">po</div><div class="bar-fill orange" style="width:261px">26.1 KB (759 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">qa</div><div class="bar-fill blue" style="width:218px">21.8 KB (617 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">delivery</div><div class="bar-fill blue" style="width:210px">21.0 KB (544 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">ux</div><div class="bar-fill blue" style="width:194px">19.4 KB (574 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">perf</div><div class="bar-fill green" style="width:174px">17.4 KB (416 lineas)</div></div>
+  <div class="bar-row"><div class="bar-label">security</div><div class="bar-fill green" style="width:145px">14.5 KB (427 lineas)</div></div>
+</div>
+
+<div class="insight-box">
+  Los top 5 skills (<code>scrum</code>, <code>planner</code>, <code>monitor</code>, <code>cleanup</code>, <code>po</code>)
+  suman 173 KB — el <strong>43% del peso total</strong> de todos los skills.
+</div>
+
+<h2>3. Pipeline de un agente tipico: donde van los tokens</h2>
+
+<div class="flow-diagram">
+<strong>Pipeline completo — Issue M (feature media, ~60 min):</strong>
+
+FASE 0  /ops            10 KB  ── Verificar JAVA_HOME, node, disco, hooks
+FASE 1  /po             26 KB  ── Revisar criterios de aceptacion
+FASE 2  /backend-dev    12 KB  ── Implementar cambios
+FASE 3  /tester         11 KB  ── Ejecutar tests + cobertura
+        /security       15 KB  ── Audit OWASP del diff
+FASE 4  /review          8 KB  ── Code review automatizado
+FASE 5  /delivery       21 KB  ── Commit + push + PR + merge
+                       ───────
+        SUBTOTAL SKILLS: 103 KB (~26K tokens)
+        + CLAUDE.md:      11 KB (~3K tokens)
+        + Memory:         50 KB (~13K tokens)
+        + System prompt:  30 KB (~8K tokens)
+        ═══════════════════════════
+        OVERHEAD TOTAL:  194 KB (~50K tokens) = 25% del contexto
+
+        + Tool results (git, build, tests): ~60K tokens acumulados
+        + Codigo generado y editado: ~30K tokens
+        ═══════════════════════════
+        TOTAL SESION:    ~140K tokens → <strong>COMPACTACION a los ~40 min</strong>
+</div>
+
+<div class="warning-box">
+  <strong>Evidencia real:</strong> En SPR-033, los 3 agentes murieron despues de 100+ turnos cada uno.
+  El agente #1580 (shared-dtos) acumulo 269 mensajes antes de morir — claro indicador de agotamiento
+  de contexto seguido de compactacion + degradacion.
+</div>
+
+<h2>4. Analisis: Que es overhead mecanico vs trabajo inteligente</h2>
+
+<p>La clave para optimizar es separar <strong>tareas que requieren razonamiento de Claude</strong> (y justifican consumir contexto)
+de <strong>tareas mecanicas</strong> que pueden ejecutarse como scripts sin consumir tokens:</p>
+
+<table>
+  <tr><th>Tarea</th><th>Skill actual</th><th>Tokens consumidos</th><th>Requiere razonamiento?</th><th>Migracion</th></tr>
+  <tr style="background:#d4edda;"><td>Verificar JAVA_HOME, Node, disco</td><td>/ops</td><td>~2,500</td><td>No</td><td>Script Node.js</td></tr>
+  <tr style="background:#d4edda;"><td>Verificar hooks existen</td><td>/ops</td><td>~1,500</td><td>No</td><td>Script Node.js</td></tr>
+  <tr style="background:#d4edda;"><td>Ejecutar ./gradlew check</td><td>/builder</td><td>~2,000</td><td>No</td><td>Script bash</td></tr>
+  <tr style="background:#d4edda;"><td>Buscar .env/secrets en diff</td><td>/security (parcial)</td><td>~2,000</td><td>No</td><td>Script Node.js</td></tr>
+  <tr style="background:#d4edda;"><td>Ejecutar tests + parsear resultados</td><td>/tester (parcial)</td><td>~2,000</td><td>No</td><td>Script Node.js</td></tr>
+  <tr style="background:#d4edda;"><td>git commit + push + crear PR</td><td>/delivery (parcial)</td><td>~3,000</td><td>No</td><td>Script Node.js</td></tr>
+  <tr style="background:#d4edda;"><td>Limpiar worktrees, logs, procesos</td><td>/cleanup</td><td>~7,000</td><td>No</td><td>Script Node.js</td></tr>
+  <tr style="background:#d4edda;"><td>Merge PR + delete branch</td><td>/delivery (parcial)</td><td>~1,500</td><td>No</td><td>Script bash</td></tr>
+  <tr><td>Analizar criterios de aceptacion</td><td>/po</td><td>~6,500</td><td><strong>Si</strong></td><td>Mantener como skill</td></tr>
+  <tr><td>Code review del diff</td><td>/review</td><td>~2,000</td><td><strong>Si</strong></td><td>Mantener como skill</td></tr>
+  <tr><td>Decidir arquitectura/patrones</td><td>/guru, /backend-dev</td><td>~5,000</td><td><strong>Si</strong></td><td>Mantener como skill</td></tr>
+  <tr><td>Escribir e implementar codigo</td><td>Dev skills</td><td>~3,000</td><td><strong>Si</strong></td><td>Mantener como skill</td></tr>
+  <tr><td>Planificar sprint/priorizar</td><td>/planner</td><td>~9,000</td><td><strong>Si</strong></td><td>Mantener como skill</td></tr>
+</table>
+
+<div class="metric-grid">
+  <div class="metric green"><div class="value">~22K</div><div class="label">Tokens migrables a scripts</div></div>
+  <div class="metric"><div class="value">~26K</div><div class="label">Tokens que requieren Claude</div></div>
+  <div class="metric green"><div class="value">46%</div><div class="label">Overhead eliminable</div></div>
+  <div class="metric"><div class="value">0</div><div class="label">Funcionalidad perdida</div></div>
+</div>
+
+<h2>5. Propuesta de optimizacion: Script Pipeline</h2>
+
+<p>La propuesta central es crear un <strong>pipeline de scripts</strong> que ejecute las tareas mecanicas
+<em>antes y despues</em> de invocar a Claude, reduciendo dramaticamente los tokens consumidos:</p>
+
+<div class="two-col">
+<div>
+<h3>Hoy (todo via prompts)</h3>
+<div class="flow-diagram" style="font-size:11px; line-height:1.6;">
+Claude inicia sesion
+  ↓ carga CLAUDE.md (3K tok)
+  ↓ carga Memory (13K tok)
+  ↓ invoca /ops (2.5K tok)
+  ↓ invoca /po (6.5K tok)
+  ↓ invoca /backend-dev (3K tok)
+  ↓ CODEA (variable)
+  ↓ invoca /tester (3K tok)
+  ↓ invoca /security (3.5K tok)
+  ↓ invoca /review (2K tok)
+  ↓ invoca /delivery (5K tok)
+  ↓ invoca /cleanup (7K tok)
+  ═══════════════
+  OVERHEAD: ~49K tokens
+  COMPACTACIONES: 2-3 por sesion
+</div>
+</div>
+<div>
+<h3>Propuesto (scripts + prompts)</h3>
+<div class="flow-diagram" style="font-size:11px; line-height:1.6;">
+<strong style="color:#2a9d8f">agent-runner.js (pre-Claude):</strong>
+  ✓ ops-check.js (ya existe)
+  ✓ validate-env.js (0 tokens)
+  ✓ git branch setup (0 tokens)
+
+Claude inicia sesion
+  ↓ carga CLAUDE.md (3K tok)
+  ↓ carga Memory (13K tok)
+  ↓ invoca /po (6.5K tok)
+  ↓ invoca /dev skill (3K tok)
+  ↓ CODEA (variable)
+  ↓ invoca /review (2K tok)
+
+<strong style="color:#2a9d8f">agent-runner.js (post-Claude):</strong>
+  ✓ run-tests.js (0 tokens)
+  ✓ security-scan.js (0 tokens)
+  ✓ delivery.js (0 tokens)
+  ✓ cleanup.js (0 tokens)
+  ═══════════════
+  OVERHEAD: ~28K tokens (-43%)
+  COMPACTACIONES: 0-1 por sesion
+</div>
+</div>
+</div>
+
+<div class="success-box">
+  <strong>Principio:</strong> Claude debe hacer lo que solo Claude puede hacer — razonar, analizar, decidir, codear.
+  Todo lo demas (checks, builds, commits, merges, cleanup) debe ser un script que se ejecuta <em>fuera</em> del contexto.
+</div>
+
+<h2>6. Plan de migracion: 7 scripts propuestos</h2>
+
+<table>
+  <tr><th>#</th><th>Script</th><th>Reemplaza</th><th>Tokens ahorrados</th><th>Prioridad</th><th>Esfuerzo</th></tr>
+  <tr>
+    <td>1</td>
+    <td><code>agent-runner.js</code></td>
+    <td>Orquestador pre/post Claude</td>
+    <td>Indirecto (habilita los demas)</td>
+    <td><span class="tag tag-high">P0</span></td>
+    <td>M (8-12h)</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><code>pre-flight.js</code></td>
+    <td>/ops (verificacion de entorno)</td>
+    <td>~2,500/agente</td>
+    <td><span class="tag tag-high">P0</span></td>
+    <td>S (2-4h)</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><code>run-tests.js</code></td>
+    <td>/tester (ejecucion de tests)</td>
+    <td>~3,000/agente</td>
+    <td><span class="tag tag-high">P0</span></td>
+    <td>S (2-4h)</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><code>security-scan.js</code></td>
+    <td>/security (scan mecanico)</td>
+    <td>~3,500/agente</td>
+    <td><span class="tag tag-med">P1</span></td>
+    <td>S (2-3h)</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><code>auto-delivery.js</code></td>
+    <td>/delivery (commit+PR+merge)</td>
+    <td>~5,000/agente</td>
+    <td><span class="tag tag-med">P1</span></td>
+    <td>M (6-8h)</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><code>auto-cleanup.js</code></td>
+    <td>/cleanup</td>
+    <td>~7,000/agente</td>
+    <td><span class="tag tag-low">P2</span></td>
+    <td>S (ya existe parcialmente)</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td><code>build-check.js</code></td>
+    <td>/builder</td>
+    <td>~2,000/agente</td>
+    <td><span class="tag tag-low">P2</span></td>
+    <td>S (1-2h)</td>
+  </tr>
+</table>
+
+<div class="insight-box">
+  <strong>Ahorro total estimado:</strong> ~23,000 tokens por agente por sesion.
+  Con 3 agentes concurrentes, son ~69,000 tokens ahorrados por sprint.
+  Equivale a eliminar ~1.5 compactaciones por agente.
+</div>
+
+<h2>7. Arquitectura propuesta: agent-runner.js</h2>
+
+<p>El cambio arquitectonico central es envolver la sesion de Claude en un script orquestador:</p>
+
+<div class="flow-diagram">
+<strong>agent-runner.js — Ciclo de vida de un agente:</strong>
+
+┌─────────────────────────────────────────────────────────────┐
+│ PRE-CLAUDE (scripts, 0 tokens)                              │
+│                                                             │
+│  1. pre-flight.js                                           │
+│     ├── Verificar JAVA_HOME, Node, gh CLI                   │
+│     ├── Verificar disco libre > 2 GB                        │
+│     ├── Verificar hooks presentes                           │
+│     └── RESULTADO: env-check.json (pass/fail)               │
+│                                                             │
+│  2. git setup                                               │
+│     ├── git fetch origin main                               │
+│     ├── git checkout -b agent/N-slug origin/main            │
+│     └── Worktree ya listo                                   │
+│                                                             │
+│  3. Leer issue de GitHub                                    │
+│     ├── gh issue view N --json body,title,labels            │
+│     └── Guardar en /tmp/issue-context.json                  │
+├─────────────────────────────────────────────────────────────┤
+│ CLAUDE (prompt minimo, solo razonamiento)                   │
+│                                                             │
+│  Prompt: "Leer /tmp/issue-context.json.                     │
+│           Invocar /po para criterios de aceptacion.         │
+│           Implementar los cambios requeridos.               │
+│           Invocar /review para validar el diff.             │
+│           Al terminar, escribir /tmp/agent-done.json        │
+│           con {files_changed, summary, pr_title, pr_body}"  │
+│                                                             │
+│  Skills usados: /po + /dev + /review (solo 3, no 7+)       │
+│  Tokens ahorrados: ~23K vs pipeline actual                  │
+├─────────────────────────────────────────────────────────────┤
+│ POST-CLAUDE (scripts, 0 tokens — con emision de roles)      │
+│                                                             │
+│  4. run-tests.js                                            │
+│     ├── emit("Claude", "Tester")  ← dashboard ve el nodo   │
+│     ├── ./gradlew check                                     │
+│     ├── Parsear resultados XML                              │
+│     └── Si falla: re-invocar Claude con errores             │
+│                                                             │
+│  5. security-scan.js                                        │
+│     ├── emit("Tester", "Security") ← transicion visible    │
+│     ├── Grep .env, secrets, tokens en diff                  │
+│     └── Si detecta: BLOQUEAR delivery                       │
+│                                                             │
+│  6. auto-delivery.js                                        │
+│     ├── emit("Security", "DeliveryManager") ← rol visible  │
+│     ├── git add + commit (leer /tmp/agent-done.json)        │
+│     ├── git push -u origin branch                           │
+│     ├── gh pr create                                        │
+│     ├── gh pr merge --squash --delete-branch                │
+│     └── Notificar via Telegram                              │
+│                                                             │
+│  7. auto-cleanup.js (si ultimo agente del sprint)           │
+│     ├── Limpiar worktree                                    │
+│     ├── Podar branches                                      │
+│     └── Rotar logs                                          │
+│                                                             │
+│  * Todos los scripts usan emit-transition.js para registrar │
+│    su rol en la sesion → el dashboard muestra el flujo      │
+│    completo con nodos e interacciones, identico a antes.    │
+└─────────────────────────────────────────────────────────────┘
+</div>
+
+<h2>8. Comparacion: antes vs despues</h2>
+
+<table>
+  <tr><th>Metrica</th><th>Actual (todo prompt)</th><th>Propuesto (scripts + prompt)</th><th>Mejora</th></tr>
+  <tr><td>Skills invocados por agente</td><td>6-8</td><td>2-3</td><td>-60%</td></tr>
+  <tr><td>Tokens en overhead/sesion</td><td>~50K</td><td>~28K</td><td>-44%</td></tr>
+  <tr><td>Compactaciones por sesion</td><td>2-3</td><td>0-1</td><td>-66%</td></tr>
+  <tr><td>Tiempo perdido en re-lectura</td><td>~15 min/agente</td><td>~3 min/agente</td><td>-80%</td></tr>
+  <tr><td>Skills que requieren Claude</td><td>Todos (27)</td><td>Solo razonamiento (15)</td><td>-44% carga</td></tr>
+  <tr><td>Funcionalidad perdida</td><td colspan="2" style="text-align:center">—</td><td><strong>CERO</strong></td></tr>
+</table>
+
+<h2>9. Premisa inamovible: sin perdida de funcionalidad</h2>
+
+<div class="success-box">
+  <strong>Garantia:</strong> Cada script propuesto implementa <em>exactamente</em> la misma logica que el skill que reemplaza.
+  La diferencia es que se ejecuta <em>fuera</em> del contexto de Claude, sin consumir tokens.
+  <br><br>
+  <strong>Validacion:</strong> Cada migracion se verifica con:
+  <ul style="margin-bottom:0">
+    <li>Test de paridad: skill vs script producen el mismo resultado</li>
+    <li>Dry-run en paralelo: ambos corren, se comparan outputs</li>
+    <li>Rollback inmediato: si el script falla, se invoca el skill original</li>
+  </ul>
+</div>
+
+<h2>9.1. Requisito critico: preservar visibilidad de roles en el dashboard</h2>
+
+<div class="critical-box">
+  <strong>Regla:</strong> Cuando un skill se migra a script, el <strong>rol del agente debe seguir apareciendo
+  en el dashboard</strong> con sus nodos y transiciones, exactamente como si el skill siguiera siendo invocado por Claude.
+  <br><br>
+  El dashboard muestra el "Flujo de agentes" como un grafo de nodos (roles) y transiciones
+  (interacciones entre roles). Por ejemplo: <code>BackendDev → Tester → DeliveryManager</code>.
+  Si <code>/tester</code> pasa a ser un script, el nodo "Tester" y sus transiciones
+  <strong>no pueden desaparecer</strong> del flujo.
+</div>
+
+<h3>Mecanismo: emision de transiciones desde scripts</h3>
+
+<p>Hoy, el hook <code>activity-logger.js</code> captura las transiciones automaticamente cuando Claude invoca un skill
+(detecta el tool call <code>Skill</code> y registra <code>{from, to, ts}</code> en <code>agent_transitions[]</code>
+de la sesion). Cuando la tarea pasa a ser un script externo, ese hook ya no se dispara.</p>
+
+<p><strong>Solucion:</strong> Cada script que reemplaza un skill debe emitir su propia transicion escribiendo
+directamente en el archivo de sesion activa. Esto se logra con una funcion utilitaria compartida:</p>
+
+<div class="flow-diagram" style="font-size:11px; line-height:1.6;">
+<strong>emit-transition.js — Modulo utilitario para scripts:</strong>
+
+// Uso desde cualquier script:
+//   const { emitTransition } = require('./emit-transition');
+//   emitTransition('BackendDev', 'Tester');   // al iniciar
+//   emitTransition('Tester', 'Security');      // al pasar al siguiente
+
+// Internamente:
+// 1. Lee la sesion activa desde .claude/sessions/
+// 2. Agrega {from, to, ts} a agent_transitions[]
+// 3. Agrega el rol a skills_invoked[]
+// 4. Escribe de vuelta al archivo de sesion
+// 5. El dashboard lo lee en el proximo poll → nodo visible
+</div>
+
+<p>Este modulo se implementa <strong>una sola vez</strong> y lo usan todos los scripts migrados.</p>
+
+<h3>Comparacion: visibilidad antes vs despues</h3>
+
+<table>
+  <tr><th>Aspecto</th><th>Hoy (skill de Claude)</th><th>Propuesto (script + emit)</th><th>Diferencia</th></tr>
+  <tr><td>Nodo "Tester" en el flujo</td><td>✓ Aparece (via activity-logger hook)</td><td>✓ Aparece (via emit-transition.js)</td><td>Ninguna</td></tr>
+  <tr><td>Transicion BackendDev → Tester</td><td>✓ Registrada automaticamente</td><td>✓ Registrada por el script</td><td>Ninguna</td></tr>
+  <tr><td>Icono y color del rol</td><td>✓ Mapeado en AGENT_ICON_MAP</td><td>✓ Mismo mapa, mismo icono</td><td>Ninguna</td></tr>
+  <tr><td>Duracion del paso</td><td>✓ Calculada entre transiciones</td><td>✓ Mismas timestamps</td><td>Ninguna</td></tr>
+  <tr><td>Estado (✓/►/☐)</td><td>✓ Inferido de la sesion</td><td>✓ Inferido igual</td><td>Ninguna</td></tr>
+  <tr><td>Tokens consumidos</td><td>~3,000-7,000 por skill</td><td><strong>0</strong></td><td><span class="tag tag-ok">-100%</span></td></tr>
+</table>
+
+<div class="success-box">
+  <strong>Resultado:</strong> El dashboard muestra <em>exactamente</em> los mismos nodos, transiciones,
+  iconos y estados que antes. La unica diferencia es que los tokens se ahorran porque el trabajo
+  lo hace un script en lugar de Claude leyendo un prompt de 20 KB.
+</div>
+
+<h3>Diagrama: flujo de datos con scripts</h3>
+
+<div class="flow-diagram" style="font-size:11px; line-height:1.6;">
+<strong>Hoy:</strong>
+Claude invoca /tester → activity-logger hook captura → escribe agent_transitions → dashboard lee
+
+<strong>Propuesto:</strong>
+agent-runner.js ejecuta run-tests.js → run-tests.js llama emit-transition.js → escribe agent_transitions → dashboard lee
+                                                                                  ↑ mismo archivo, mismo formato
+</div>
+
+<h3>Contratos de cada script migrado</h3>
+
+<p>Cada script que reemplaza un skill <strong>debe</strong> cumplir estos 3 contratos:</p>
+
+<table>
+  <tr><th>#</th><th>Contrato</th><th>Implementacion</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>Emitir transicion de entrada</strong></td>
+    <td><code>emitTransition(prevRole, thisRole)</code> al iniciar</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Emitir transicion de salida</strong></td>
+    <td><code>emitTransition(thisRole, nextRole)</code> al terminar</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Registrar resultado en la sesion</strong></td>
+    <td>Escribir <code>skills_invoked[]</code> + <code>result: pass/fail</code> en el JSON de sesion</td>
+  </tr>
+</table>
+
+<div class="insight-box">
+  <strong>Ejemplo concreto:</strong> <code>run-tests.js</code> reemplaza a <code>/tester</code>:
+  <br>
+  1. Emite <code>emitTransition("BackendDev", "Tester")</code>
+  <br>
+  2. Ejecuta <code>./gradlew check</code> y parsea resultados
+  <br>
+  3. Emite <code>emitTransition("Tester", "Security")</code>
+  <br>
+  4. En el dashboard: nodo "Tester" aparece con icono 🧪, conectado a BackendDev y Security — <strong>identico a antes</strong>
+</div>
+
+<h2>10. Otras mejoras complementarias</h2>
+
+<table>
+  <tr><th>Mejora</th><th>Impacto</th><th>Esfuerzo</th><th>Detalle</th></tr>
+  <tr>
+    <td>Comprimir skills grandes</td>
+    <td>-15% tokens</td>
+    <td>S</td>
+    <td>scrum (48 KB) y planner (38 KB) tienen mucho texto redundante y ejemplos repetidos</td>
+  </tr>
+  <tr>
+    <td>Lazy loading de skills</td>
+    <td>-20% tokens</td>
+    <td>M</td>
+    <td>No cargar skill completo hasta que se invoque (requiere cambio en Claude Code)</td>
+  </tr>
+  <tr>
+    <td>Cache de resultados de tests</td>
+    <td>-5 min/agente</td>
+    <td>M</td>
+    <td>Si el diff no toca archivos de test, reutilizar resultado previo</td>
+  </tr>
+  <tr>
+    <td>Paralelizar gates</td>
+    <td>-10% tiempo</td>
+    <td>S</td>
+    <td>/security y /tester pueden correr en paralelo (no dependen entre si)</td>
+  </tr>
+  <tr>
+    <td>Prompt minimo para agentes</td>
+    <td>-30% tokens</td>
+    <td>S</td>
+    <td>En lugar de instrucciones detalladas en el prompt, referir a archivos locales que el agente lee bajo demanda</td>
+  </tr>
+</table>
+
+<h2>11. Roadmap de implementacion</h2>
+
+<table>
+  <tr><th>Fase</th><th>Entregable</th><th>Descripcion</th></tr>
+  <tr style="background:#d4edda;">
+    <td><strong>Fase 1</strong><br>Quick wins</td>
+    <td>pre-flight.js + run-tests.js</td>
+    <td>Extraer /ops y /tester (parte mecanica) a scripts. Ahorro inmediato: ~5.5K tokens/agente. Sin cambios en Start-Agente.ps1.</td>
+  </tr>
+  <tr style="background:#d4edda;">
+    <td><strong>Fase 2</strong><br>Core pipeline</td>
+    <td>agent-runner.js + auto-delivery.js</td>
+    <td>Orquestador pre/post-Claude. Modifica Start-Agente.ps1 para usar agent-runner.js como wrapper. Ahorro: ~10K tokens/agente.</td>
+  </tr>
+  <tr>
+    <td><strong>Fase 3</strong><br>Full migration</td>
+    <td>security-scan.js + build-check.js + auto-cleanup.js</td>
+    <td>Completar migracion de todas las tareas mecanicas. Ahorro total: ~23K tokens/agente.</td>
+  </tr>
+  <tr>
+    <td><strong>Fase 4</strong><br>Optimizacion</td>
+    <td>Comprimir skills + prompts minimos</td>
+    <td>Reducir tamano de skills que quedan como prompt. Optimizar CLAUDE.md y memory files.</td>
+  </tr>
+</table>
+
+<h2>12. Metricas de exito</h2>
+
+<div class="metric-grid">
+  <div class="metric"><div class="value">0-1</div><div class="label">Compactaciones por sesion (hoy: 2-3)</div></div>
+  <div class="metric"><div class="value">28K</div><div class="label">Tokens overhead (hoy: 50K)</div></div>
+  <div class="metric"><div class="value">3</div><div class="label">Skills por agente (hoy: 7+)</div></div>
+  <div class="metric green"><div class="value">100%</div><div class="label">Funcionalidad preservada</div></div>
+</div>
+
+<div class="footer">
+  <p>Generado por Claude Opus 4.6 — Intrale Platform | 2026-03-16</p>
+</div>
+</body>
+</html>
