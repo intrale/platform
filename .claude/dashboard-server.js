@@ -273,8 +273,12 @@ function collectData() {
         if (!s) continue;
         // Solo sesiones parent (ignorar sub-agentes)
         if (s.type && s.type !== "parent") continue;
-        // Excluir sesiones done — ya terminaron, el GC las limpiará
-        if (s.status === "done") continue;
+        // Sesiones done: conservar recientes (< 30min) para el flujo de agentes
+        if (s.status === "done") {
+          const doneAge = now - new Date(s.last_activity_ts || s.started_ts).getTime();
+          const DONE_KEEP_MS = 30 * 60 * 1000; // 30 min
+          if (doneAge > DONE_KEEP_MS) continue;
+        }
         const status = getSessionStatus(s);
         const elapsed = now - new Date(s.last_activity_ts).getTime();
         const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
@@ -585,18 +589,28 @@ function normalizeSkillName(name) {
   if (!name) return "Claude";
   const raw = String(name).trim();
   if (!raw) return "Claude";
+  // Direct match in AGENT_ICON_MAP (canonical names)
+  if (typeof AGENT_ICON_MAP !== "undefined" && AGENT_ICON_MAP[raw]) return raw;
   // Buscar en SKILL_TO_AGENT (con y sin slash)
   const clean = raw.replace(/^\/+/, "").toLowerCase();
   const slashVersion = "/" + clean;
   if (SKILL_TO_AGENT[slashVersion]) return SKILL_TO_AGENT[slashVersion];
   if (AGENT_MAP_DASHBOARD[slashVersion]) return AGENT_MAP_DASHBOARD[slashVersion];
+  // Buscar en SKILL_NAME_ALIASES (definido más abajo, lazy check)
+  if (typeof SKILL_NAME_ALIASES !== "undefined") {
+    if (SKILL_NAME_ALIASES[raw]) return SKILL_NAME_ALIASES[raw];
+    if (SKILL_NAME_ALIASES[clean]) return SKILL_NAME_ALIASES[clean];
+    if (SKILL_NAME_ALIASES[slashVersion]) return SKILL_NAME_ALIASES[slashVersion];
+  }
   // Coincidencia case-insensitive contra nombres canónicos
   for (const val of Object.values(SKILL_TO_AGENT)) {
     if (val.toLowerCase() === clean) return val;
   }
   // Coincidencia case-insensitive contra AGENT_ICON_MAP keys
-  for (const key of Object.keys(AGENT_ICON_MAP)) {
-    if (key.toLowerCase() === clean) return key;
+  if (typeof AGENT_ICON_MAP !== "undefined") {
+    for (const key of Object.keys(AGENT_ICON_MAP)) {
+      if (key.toLowerCase() === clean) return key;
+    }
   }
   return raw;
 }
@@ -915,18 +929,7 @@ const SKILL_NAME_ALIASES = {
   "doc (historia)": "Doc", "doc (refinar)": "Doc", "doc (priorizar)": "Doc",
 };
 
-function normalizeSkillName(name) {
-  if (!name) return "";
-  // Direct match in canonical keys (AGENT_ICON_MAP)
-  if (AGENT_ICON_MAP[name]) return name;
-  // Alias lookup (case-insensitive)
-  const lc = name.toLowerCase().trim();
-  if (SKILL_NAME_ALIASES[lc]) return SKILL_NAME_ALIASES[lc];
-  // Try with leading slash
-  if (SKILL_NAME_ALIASES["/" + lc]) return SKILL_NAME_ALIASES["/" + lc];
-  // Fallback: return original (best effort)
-  return name;
-}
+// normalizeSkillName ya definida arriba (línea 588) — esta versión fue removida para evitar duplicación (#1594)
 
 // --- Assign robot SVG icons to root sprint agents (#1544) ---
 // Solo agentes raíz (los del sprint-plan.json), no sub-agentes invocados por ellos.

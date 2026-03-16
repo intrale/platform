@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Autopsia SPR-033 — Por que murieron los agentes</title>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; margin: 40px; color: #1a1a2e; background: #f8f9fa; }
+  h1 { color: #e63946; border-bottom: 3px solid #e63946; padding-bottom: 10px; }
+  h2 { color: #457b9d; margin-top: 30px; }
+  h3 { color: #1d3557; }
+  .summary-box { background: #fff; border-left: 4px solid #e63946; padding: 15px 20px; margin: 20px 0; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .agent-card { background: #fff; border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 15px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+  .agent-card h3 { margin-top: 0; }
+  .status-dead { color: #e63946; font-weight: bold; }
+  .status-pr { color: #e9c46a; font-weight: bold; }
+  .status-ok { color: #2a9d8f; font-weight: bold; }
+  table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+  th, td { border: 1px solid #dee2e6; padding: 10px 14px; text-align: left; }
+  th { background: #1d3557; color: white; }
+  tr:nth-child(even) { background: #f1faee; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; margin: 2px; }
+  .tag-sonnet { background: #a8dadc; color: #1d3557; }
+  .tag-haiku { background: #f4a261; color: #1d3557; }
+  .tag-error { background: #e63946; color: white; }
+  .tag-warning { background: #e9c46a; color: #1d3557; }
+  .finding { background: #fff3cd; border-left: 4px solid #e9c46a; padding: 12px 16px; margin: 10px 0; border-radius: 4px; }
+  .critical { background: #f8d7da; border-left: 4px solid #e63946; padding: 12px 16px; margin: 10px 0; border-radius: 4px; }
+  .timeline { border-left: 3px solid #457b9d; padding-left: 20px; margin: 15px 0; }
+  .timeline-event { margin: 10px 0; position: relative; }
+  .timeline-event::before { content: ''; position: absolute; left: -26px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: #457b9d; }
+  .timeline-event.dead::before { background: #e63946; }
+  code { background: #e9ecef; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+  .footer { margin-top: 40px; padding-top: 15px; border-top: 1px solid #dee2e6; color: #6c757d; font-size: 12px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 15px 0; }
+  .metric { background: #fff; border: 1px solid #dee2e6; border-radius: 8px; padding: 15px; text-align: center; }
+  .metric .value { font-size: 28px; font-weight: bold; color: #1d3557; }
+  .metric .label { font-size: 12px; color: #6c757d; }
+</style>
+</head>
+<body>
+
+<h1>Autopsia SPR-033 — Por que murieron los 3 agentes y el watcher</h1>
+<p><strong>Sprint:</strong> SPR-033 | <strong>Fecha:</strong> 2026-03-16 | <strong>Issues:</strong> #1580, #1578, #1579 (+#1583 pre-muerto)</p>
+
+<div class="summary-box">
+  <strong>Veredicto:</strong> Los 3 agentes terminaron abruptamente sin producir un evento <code>result</code>.
+  La causa raiz es que Claude Code hizo <strong>downgrade automatico de Sonnet a Haiku</strong> durante la sesion,
+  degradando la capacidad del agente hasta que no pudo completar la tarea.
+  Ninguno de los 3 fue un rate limit hard — todos trabajaron 100+ turnos antes de morir.
+</div>
+
+<div class="metric-grid">
+  <div class="metric"><div class="value">3/3</div><div class="label">Agentes muertos</div></div>
+  <div class="metric"><div class="value">0</div><div class="label">Resultados exitosos</div></div>
+  <div class="metric"><div class="value">2</div><div class="label">PRs creadas (abiertas)</div></div>
+  <div class="metric"><div class="value">~47%</div><div class="label">Mensajes en Haiku</div></div>
+</div>
+
+<h2>1. Hallazgo principal: Downgrade silencioso de modelo</h2>
+
+<div class="critical">
+  <strong>CRITICO:</strong> Los 3 agentes arrancaron usando <span class="tag tag-sonnet">Sonnet 4.6</span> pero
+  Claude Code los fue degradando automaticamente a <span class="tag tag-haiku">Haiku 4.5</span> durante la sesion.
+  Esto ocurrio porque <code>Run-AgentStream.ps1</code> no pasaba el flag <code>--model</code> al CLI, permitiendo
+  que el sistema eligiera el modelo segun disponibilidad/carga.
+</div>
+
+<table>
+  <tr><th>Agente</th><th>Issue</th><th>Msgs Sonnet</th><th>Msgs Haiku</th><th>% Haiku</th><th>Ultimo modelo</th></tr>
+  <tr><td>1</td><td>#1580 (shared-dtos)</td><td>141</td><td>128</td><td>47.6%</td><td><span class="tag tag-haiku">Haiku</span></td></tr>
+  <tr><td>2</td><td>#1578 (openapi-spec)</td><td>101</td><td>75</td><td>42.6%</td><td><span class="tag tag-haiku">Haiku</span></td></tr>
+  <tr><td>3</td><td>#1579 (validate-openapi)</td><td>64</td><td>56</td><td>46.7%</td><td><span class="tag tag-sonnet">Sonnet</span></td></tr>
+</table>
+
+<div class="finding">
+  <strong>Impacto:</strong> Haiku tiene menos capacidad para tareas complejas como refactoring, build fixes, y code review.
+  Al degradar mid-session, el agente pierde coherencia con el trabajo previo hecho por Sonnet.
+  El fix (PR #1592) agrega <code>--model $Model</code> al CLI para que el modelo sea explicito y no cambie durante la sesion.
+</div>
+
+<h2>2. Analisis por agente</h2>
+
+<div class="agent-card">
+  <h3>Agente 1 — Issue #1580 (shared-dtos) <span class="status-pr">PR ABIERTA</span></h3>
+  <p><strong>Tarea:</strong> Modulo shared/ con DTOs compartidos frontend-backend</p>
+  <p><strong>PR:</strong> <a href="https://github.com/intrale/platform/pull/1588">#1588</a> — CI: check-backend PASS, check-app PASS, e2e-qa FAIL, pr-status FAIL</p>
+  <p><strong>Lineas de log:</strong> 410 | <strong>Tamano log:</strong> 1 MB</p>
+  <p><strong>Como murio:</strong> Estaba trabajando en fix de build (<code>check-app</code>) cuando la sesion termino
+  abruptamente. El ultimo mensaje era sobre incompatibilidad de Kotlin Native para iOS Simulator con <code>konform:0.6.1</code>.
+  Ya estaba en Haiku, con capacidad reducida para resolver el problema.</p>
+  <p><strong>Trabajo completado:</strong> Creo PR, CI pasa para backend/app/tools. Falla en e2e-qa (gate automatico, no es fallo del agente).</p>
+</div>
+
+<div class="agent-card">
+  <h3>Agente 2 — Issue #1578 (openapi-spec) <span class="status-pr">PR ABIERTA</span></h3>
+  <p><strong>Tarea:</strong> Spec OpenAPI 3.1 para endpoints existentes del backend</p>
+  <p><strong>PR:</strong> <a href="https://github.com/intrale/platform/pull/1590">#1590</a> — CI: pr-status PASS, resto skipped (solo docs)</p>
+  <p><strong>Lineas de log:</strong> 380 | <strong>Tamano log:</strong> 1.3 MB</p>
+  <p><strong>Como murio:</strong> Estaba ejecutando <code>/tester --coverage</code> (gate pre-delivery) en modo Haiku.
+  La sesion termino sin resultado. Dado que la PR solo tiene archivos YAML (docs/api/openapi.yaml), el CI paso.
+  Este agente estaba muy cerca de completar.</p>
+  <p><strong>Trabajo completado:</strong> Spec OpenAPI completa, PR creada, CI passing. Solo le faltaba el gate de /delivery.</p>
+</div>
+
+<div class="agent-card">
+  <h3>Agente 3 — Issue #1579 (validate-openapi-gradle) <span class="status-dead">SIN PR</span></h3>
+  <p><strong>Tarea:</strong> Task Gradle validateOpenApi — consistencia spec y codigo</p>
+  <p><strong>PR:</strong> Ninguna</p>
+  <p><strong>Lineas de log:</strong> 187 | <strong>Tamano log:</strong> 455 KB</p>
+  <p><strong>Rate limit events:</strong> 2 (status: "allowed", overageStatus: "rejected", overageDisabledReason: "org_level_disabled")</p>
+  <p><strong>Como murio:</strong> Estaba en la fase de <code>/security</code> scan cuando murio. Habia completado
+  la implementacion y el tester, pero no llego a /delivery. Los rate_limit_events indican que el plan Claude
+  tiene overage deshabilitado a nivel organizacion, lo que podria causar throttling inesperado.</p>
+  <p><strong>Nota:</strong> Este agente dependia de #1578 que aun no estaba mergeado. El watcher lo relanzara multiples veces
+  (registros muestran 4+ relanzamientos) porque seguia fallando al no tener la dependencia resuelta.</p>
+</div>
+
+<h2>3. Timeline del watcher</h2>
+
+<div class="timeline">
+  <div class="timeline-event"><strong>08:58</strong> — SPR-033 lanzado via Start-Agente.ps1. Agentes 1, 2, 3 inician.</div>
+  <div class="timeline-event"><strong>10:17-11:58</strong> — Watcher relanza #1579 y #1583 multiples veces (nunca trabajaron / PR cerrada).</div>
+  <div class="timeline-event"><strong>12:10</strong> — Watcher detecta PIDs muertos en los 3 agentes. Inicia grace period de 15 min.</div>
+  <div class="timeline-event dead"><strong>12:13</strong> — Agente #1580 declarado muerto. PR #1588 abierta -> movido a "waiting".</div>
+  <div class="timeline-event dead"><strong>12:14</strong> — Agente #1579 declarado muerto. Sin PR -> movido a _incomplete.</div>
+  <div class="timeline-event dead"><strong>12:16</strong> — Agente #1578 declarado muerto. PR #1590 abierta -> movido a "waiting".</div>
+  <div class="timeline-event"><strong>12:16-12:34</strong> — Watcher sigue corriendo: 0 activos, 0 en cola, 3 slots libres.</div>
+  <div class="timeline-event dead"><strong>~12:34</strong> — Watcher deja de logear. Probablemente terminado al cerrarse la sesion PowerShell del usuario.</div>
+</div>
+
+<h2>4. Por que murio el watcher?</h2>
+
+<div class="agent-card">
+  <p>El watcher <strong>no crasheo</strong>. Su ultima linea de log es un estado normal:
+  <code>Estado: activos=0/3 · cola=0 · slots libres=3</code>.</p>
+  <p>Murio porque:</p>
+  <ul>
+    <li>Fue lanzado como proceso hijo de <code>Start-Agente.ps1</code> con <code>Start-Process -WindowStyle Hidden</code></li>
+    <li>Cuando la sesion PowerShell del usuario se cerro (o Windows termino la sesion), los procesos hijos fueron terminados</li>
+    <li>El watcher no tiene mecanismo de auto-restart ni servicio Windows</li>
+  </ul>
+  <p><strong>No es un bug</strong> — es el comportamiento esperado. El watcher deberia auto-terminarse cuando no hay trabajo, lo cual no hacia (seguia polleando indefinidamente con 0 activos).</p>
+</div>
+
+<h2>5. Causa raiz y contribuyentes</h2>
+
+<table>
+  <tr><th>#</th><th>Causa</th><th>Impacto</th><th>Estado</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>Sin --model explicito en CLI</strong></td>
+    <td>Claude Code degrada Sonnet a Haiku mid-session, perdiendo capacidad</td>
+    <td><span class="tag" style="background:#2a9d8f;color:white">CORREGIDO (PR #1592)</span></td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Sesiones sin evento result</strong></td>
+    <td>Los 3 agentes terminaron abruptamente — posible OOM, context limit, o timeout de sesion</td>
+    <td><span class="tag tag-warning">POR INVESTIGAR</span></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Agente #1579 dependia de #1578</strong></td>
+    <td>#1578 no estaba mergeado, asi que #1579 no podia completar su tarea</td>
+    <td><span class="tag tag-warning">DISENAR MEJOR</span></td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>Overage deshabilitado a nivel org</strong></td>
+    <td>Rate limit events con overageDisabledReason: "org_level_disabled"</td>
+    <td><span class="tag tag-warning">VERIFICAR PLAN</span></td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>Watcher no auto-termina</strong></td>
+    <td>Sigue polleando con 0 activos. Consume recursos sin hacer nada util.</td>
+    <td><span class="tag tag-warning">MEJORA PENDIENTE</span></td>
+  </tr>
+</table>
+
+<h2>6. Recomendaciones</h2>
+
+<table>
+  <tr><th>Prioridad</th><th>Accion</th><th>Detalle</th></tr>
+  <tr><td>P0</td><td>Relanzar con fix aplicado</td><td>PR #1592 ya mergeado. El proximo lanzamiento usara --model explicito.</td></tr>
+  <tr><td>P0</td><td>Mergear PRs que casi terminaron</td><td>PR #1590 (openapi-spec) tiene CI passing. PR #1588 (shared-dtos) tiene check-app pass.</td></tr>
+  <tr><td>P1</td><td>No planificar issues con dependencias bloqueantes</td><td>#1579 depende de #1578. No lanzar #1579 hasta que #1578 este mergeado.</td></tr>
+  <tr><td>P1</td><td>Verificar plan de overage</td><td>El rate_limit_event muestra overage deshabilitado. Con 3 agentes concurrentes + sesion principal, se necesita margen.</td></tr>
+  <tr><td>P2</td><td>Watcher: auto-terminar tras N minutos sin actividad</td><td>Agregar logica: si activos=0 y cola=0 durante 10+ min, shutdown graceful.</td></tr>
+  <tr><td>P2</td><td>Investigar terminacion abrupta</td><td>Agregar trap/handler en Run-AgentStream.ps1 para capturar stderr y registrar causa de muerte.</td></tr>
+</table>
+
+<div class="footer">
+  <p>Generado por Claude Opus 4.6 — Intrale Platform | 2026-03-16</p>
+</div>
+</body>
+</html>
