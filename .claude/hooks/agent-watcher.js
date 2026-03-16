@@ -858,6 +858,29 @@ async function runCycle() {
             process.exit(0);
         }
 
+        // Auto-shutdown si solo quedan agentes en "waiting" (PR abierta) sin trabajo real
+        // Evita que el watcher corra indefinidamente esperando reviews manuales
+        if (remainingActive === 0 && remainingQueue === 0 && waitingCount > 0) {
+            if (!global._idleSince) {
+                global._idleSince = Date.now();
+                log("Watcher idle: solo quedan " + waitingCount + " agente(s) en waiting (PR abierta). Timer de 15 min iniciado.");
+            }
+            const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
+            const idleMin = Math.round((Date.now() - global._idleSince) / 60000);
+            if (Date.now() - global._idleSince > IDLE_TIMEOUT_MS) {
+                log("Watcher idle timeout: " + idleMin + " min sin trabajo real. Auto-terminando.");
+                await notify(
+                    "⏹️ <b>Agent Watcher auto-shutdown (idle " + idleMin + " min)</b>\n" +
+                    waitingCount + " agente(s) en waiting (PR abierta) — requieren review manual.\n" +
+                    "<i>Watcher se detiene. Mergear PRs manualmente o relanzar sprint.</i>"
+                );
+                process.exit(0);
+            }
+        } else {
+            // Reset idle timer si hay trabajo activo
+            global._idleSince = null;
+        }
+
     } finally {
         if (locked) releaseLock();
     }
