@@ -143,6 +143,30 @@ Read tool: `.claude/skills/po/business-rules.md`
 
 Identificar qué reglas aplican al issue.
 
+### Paso V2.5: Checklist de specs SDD
+
+Verificar qué specs están disponibles para el issue:
+
+```bash
+# Buscar endpoint del issue en la spec OpenAPI
+grep -n "summary\|operationId" docs/api/openapi.yaml 2>/dev/null | head -20
+
+# Listar UI specs disponibles
+ls docs/ui-specs/ 2>/dev/null || echo "Sin ui-specs"
+ls docs/specs/ 2>/dev/null
+```
+
+Evaluar completitud de specs:
+
+| Verificación | Estado | Criterio de bloqueo |
+|-------------|--------|---------------------|
+| Gherkin en el issue | ✅/❌ | Si falta → REQUIERE CAMBIOS automático |
+| Spec API (`docs/api/openapi.yaml`) | ✅/⚠️/N/A | Si el issue modifica endpoints y no está documentado → WARNING |
+| Spec UI (`docs/ui-specs/` o `docs/specs/`) | ✅/⚠️/N/A | Si el issue agrega pantallas y no hay spec → WARNING |
+| Sección "Specs de referencia" en el issue | ✅/⚠️/N/A | Si el issue toca API/UI y no linkea las specs → WARNING |
+
+> **Regla:** La ausencia de Gherkin bloquea. La ausencia de specs API/UI es WARNING (no bloquea pero debe registrarse).
+
 ### Paso V3: Analizar el diff
 
 ```bash
@@ -159,6 +183,8 @@ Leer los archivos modificados con Read tool. Para cada cambio, evaluar:
 4. **¿Las transiciones de estado son válidas?** — ¿Se validan las ilegales?
 5. **¿Los edge cases están cubiertos?** — Duplicados, vacíos, concurrencia
 6. **¿Tiene escenarios Gherkin?** — El issue DEBE tener sección "Escenarios Gherkin" con mínimo 2 escenarios (happy path + caso de error). Si falta → **REQUIERE CAMBIOS** automáticamente.
+7. **¿Es consistente con spec OpenAPI?** — Si el issue modifica endpoints, verificar que los campos de request/response del código coincidan con los schemas de `docs/api/openapi.yaml`. Divergencia → REQUIERE CAMBIOS.
+8. **¿Es consistente con spec UI?** — Si el issue modifica pantallas, verificar que los campos de UIState y las transiciones de navegación coincidan con la spec en `docs/ui-specs/` o `docs/specs/`. Divergencia → REQUIERE CAMBIOS.
 
 ### Paso V4: Generar test cases para QA
 
@@ -199,6 +225,15 @@ Para cada criterio de aceptación, generar un test case concreto que QA pueda ej
 
 > **Si falta la sección o tiene menos de 2 escenarios → veredicto automático: REQUIERE CAMBIOS.**
 > Indicar al usuario que ejecute `/doc refinar <N>` para agregar los escenarios faltantes.
+
+### Checklist SDD (Spec-Driven Development)
+| Verificación | Estado | Detalle |
+|-------------|--------|---------|
+| Spec API documentada en `docs/api/openapi.yaml` | ✅/⚠️/N/A | [endpoint presente / falta / no aplica] |
+| Spec UI disponible en `docs/ui-specs/` o `docs/specs/` | ✅/⚠️/N/A | [spec encontrada / falta / no aplica] |
+| Sección "Specs de referencia" en el issue | ✅/⚠️/N/A | [presente / falta / no aplica] |
+| Código consistente con schema OpenAPI | ✅/❌/N/A | [campos coinciden / divergencia detectada / no aplica] |
+| UIState consistente con spec UI | ✅/❌/N/A | [campos coinciden / divergencia detectada / no aplica] |
 
 ### Test cases para QA
 [Lista de test cases generados]

@@ -109,7 +109,51 @@ Si se agrego una nueva Function en backend:
 Si se agrego un nuevo servicio en app:
 - Verificar que esta registrado en `DIManager`
 
-### 4.9 Verificar TDD Compliance
+### 4.9 Verificar consistencia con specs SDD
+
+Si el PR está asociado a un issue de GitHub (buscar `Closes #N`, `Fixes #N` o `#N` en el título/body del PR):
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+# Obtener número del issue desde el body del PR
+ISSUE_NUM=$(gh pr view $PR_NUMBER --repo intrale/platform --json body --jq '.body' | grep -oE '(Closes|Fixes|Refs) #[0-9]+' | head -1 | grep -oE '[0-9]+')
+
+# Si encontramos issue, leer su sección de specs
+if [ -n "$ISSUE_NUM" ]; then
+  gh issue view "$ISSUE_NUM" --repo intrale/platform --json body --jq '.body' | grep -A 5 "Specs de referencia"
+fi
+```
+
+Para cada archivo modificado en el diff que sea backend (`backend/`, `users/`) o UI (`app/composeApp/`):
+
+**Si hay cambios en backend:**
+```bash
+# Buscar el endpoint en la spec
+grep -n "/<endpoint-del-pr>" docs/api/openapi.yaml 2>/dev/null | head -5
+```
+
+Evaluar:
+- ¿Los campos del request body del código coinciden con el schema OpenAPI?
+- ¿Los campos de la response del código coinciden con el schema OpenAPI?
+- ¿El código agrega campos nuevos que no están en la spec? → WARNING: spec desactualizada
+
+**Si hay cambios en UI (`app/composeApp/`):**
+```bash
+ls docs/ui-specs/ 2>/dev/null | head -10
+ls docs/specs/ 2>/dev/null | head -10
+```
+
+Evaluar:
+- ¿Los campos del UIState del código coinciden con los definidos en la spec UI?
+- ¿Las rutas de navegación del código coinciden con las transiciones de la spec UI?
+- ¿El código agrega screens nuevos que no están en la spec? → WARNING: spec desactualizada
+
+**Clasificar hallazgos de specs:**
+- **WARNING**: código diverge de la spec (campos extras, campos renombrados, rutas distintas)
+- **INFO**: spec no existe para el flujo modificado (oportunidad de crear una)
+- **✅ OK**: código es consistente con la spec, o no hay spec aplicable
+
+### 4.10 Verificar TDD Compliance
 
 Analizar el historial de commits del branch para verificar que se siguio el patron TDD:
 
@@ -137,6 +181,11 @@ Para cada commit, clasificar los archivos en:
 - [ ] Primer commit contiene solo archivos de test
 - [ ] Tests fueron escritos antes del codigo de produccion
 - [ ] Existe al menos un commit con solo archivos *Test.kt
+
+### SDD Compliance (Spec-Driven Development)
+- [ ] Código backend consistente con schemas de docs/api/openapi.yaml
+- [ ] UIState/navegación consistente con docs/ui-specs/ o docs/specs/
+- [ ] Spec actualizada si se agregaron campos/endpoints nuevos
 ```
 
 Clasificar como:

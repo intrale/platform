@@ -29,6 +29,31 @@ Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan.
 
 **Protocolo de sub-pasos:** Cuando una tarea tiene pasos internos verificables, codificalos en `metadata.steps` al crearla. Al avanzar, actualizá `metadata.current_step` + `metadata.completed_steps` y reflejá el progreso en `activeForm`: `"Implementando endpoint signin (2/4 · 50%)…"`.
 
+## Paso 0: Leer spec OpenAPI (SDD — OBLIGATORIO)
+
+Antes de escribir una línea de código, leer la spec OpenAPI para identificar el contrato del endpoint a implementar o modificar.
+
+```bash
+cat docs/api/openapi.yaml
+```
+
+Buscar en la spec:
+- **Endpoint afectado**: path, método HTTP, tags
+- **Request body**: campos requeridos, tipos, validaciones
+- **Responses**: schemas de respuesta para cada código HTTP (200, 400, 401, 403, etc.)
+- **Security**: si el endpoint requiere `BearerAuth` → usar `SecuredFunction`; si no → `Function`
+
+**Si el endpoint YA existe en la spec:**
+- Implementar siguiendo EXACTAMENTE los schemas definidos (nombres de campos, tipos, estructura)
+- Si la implementación difiere de la spec → la spec manda, no el código
+
+**Si el endpoint NO existe en la spec:**
+- Anotar que se deberá actualizar `docs/api/openapi.yaml` como parte del mismo PR
+- Definir el contrato antes de codificar (path, request, response)
+
+**Si la tarea es infra/refactor sin endpoints:**
+- Indicar "sin spec API aplicable" y continuar al Paso 1
+
 ## Paso 1: Setup del entorno
 
 ```bash
@@ -209,6 +234,8 @@ Si el build falla, leer el error, corregir y volver a intentar hasta que pase.
 - NUNCA crear funciones sin registrarlas en Kodein
 - NUNCA crear responses sin `statusCode`
 - NUNCA commitear — eso lo hace `/delivery`
+- NUNCA implementar un endpoint sin consultar primero `docs/api/openapi.yaml`
+- NUNCA crear un endpoint nuevo sin actualizar la spec OpenAPI en el mismo PR
 
 ### Cuándo escalar
 - Si la tarea requiere cambios en el frontend → avisar que se necesita AndroidDev/WebDev/etc.
