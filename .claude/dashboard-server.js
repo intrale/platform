@@ -269,11 +269,28 @@ function collectData() {
   // - done: excluidas — el session-gc.js las limpia después de 1h
   const ZOMBIE_THRESHOLD_MS = 30 * 60 * 1000;
   const sessions = [];
+  // Recolectar sesiones del repo principal + worktrees de agentes activos
+  const sessionDirs = [SESSIONS_DIR];
   try {
-    if (fs.existsSync(SESSIONS_DIR)) {
-      const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+    // Buscar worktrees sibling con sesiones de agentes
+    const parentDir = path.resolve(REPO_ROOT, "..");
+    const baseName = path.basename(REPO_ROOT);
+    const siblings = fs.readdirSync(parentDir).filter(d =>
+      d.startsWith(baseName + ".agent-") || d.startsWith(baseName + ".codex-"));
+    for (const s of siblings) {
+      const wtSessions = path.join(parentDir, s, ".claude", "sessions");
+      if (fs.existsSync(wtSessions)) sessionDirs.push(wtSessions);
+    }
+  } catch(e) { /* ignore */ }
+  const seenSessionIds = new Set();
+  try {
+    for (const sessDir of sessionDirs) {
+    if (!fs.existsSync(sessDir)) continue;
+      const files = fs.readdirSync(sessDir).filter(f => f.endsWith(".json"));
       for (const f of files) {
-        const s = readJson(path.join(SESSIONS_DIR, f));
+        if (seenSessionIds.has(f)) continue; // Deduplicar por filename
+        seenSessionIds.add(f);
+        const s = readJson(path.join(sessDir, f));
         if (!s) continue;
         // Solo sesiones parent (ignorar sub-agentes)
         if (s.type && s.type !== "parent") continue;
@@ -1607,9 +1624,21 @@ function renderHTML(data, theme) {
 
   // Helper para renderizar una fila de agente del sprint
   function renderSprintAgentRow(ag, forcedStatus) {
-    const matchSession = data.sprintSessions.find(s => {
+    // Buscar sesión del agente: por branch, modified_files path, o slug
+    const agIssueStr = String(ag.issue);
+    const agSlug = ag.slug || "";
+    const worktreePattern = "agent-" + agIssueStr + "-";
+    const matchSession = [...data.sprintSessions, ...(data.sessions || [])].find(s => {
+      // Match por branch con issue number
       const issueMatch = (s.branch || "").match(/(\d+)/);
-      return issueMatch && issueMatch[1] === String(ag.issue);
+      if (issueMatch && issueMatch[1] === agIssueStr) return true;
+      // Match por modified_files path que contenga el worktree name (platform.agent-NNN-slug)
+      if (Array.isArray(s.modified_files) && s.modified_files.length > 0) {
+        if (s.modified_files.some(f => f.includes(worktreePattern))) return true;
+      }
+      // Match por current_task que mencione el issue
+      if (s.current_task && s.current_task.includes("#" + agIssueStr)) return true;
+      return false;
     });
     const agStatus = forcedStatus || (matchSession ? matchSession._status : "pending");
     const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
