@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Spec-Driven Development — Propuesta de Implementación para Intrale</title>
+<style>
+  @page { margin: 1.5cm; size: A4; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a1a; line-height: 1.6; max-width: 900px; margin: 0 auto; padding: 20px; }
+  h1 { color: #0d47a1; border-bottom: 3px solid #0d47a1; padding-bottom: 10px; font-size: 1.8em; }
+  h2 { color: #1565c0; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 30px; }
+  h3 { color: #1976d2; margin-top: 20px; }
+  .meta { background: #e3f2fd; padding: 12px 18px; border-radius: 8px; margin-bottom: 25px; font-size: 0.9em; }
+  .meta strong { color: #0d47a1; }
+  table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+  th { background: #1565c0; color: white; padding: 10px 14px; text-align: left; }
+  td { padding: 8px 14px; border: 1px solid #ddd; }
+  tr:nth-child(even) { background: #f5f5f5; }
+  .highlight { background: #fff3e0; border-left: 4px solid #ff9800; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+  .success { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+  .critical { background: #fce4ec; border-left: 4px solid #e53935; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+  code { background: #eceff1; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #263238; color: #eeffff; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.85em; }
+  .phase { display: inline-block; background: #0d47a1; color: white; padding: 3px 10px; border-radius: 12px; font-size: 0.85em; margin-right: 6px; }
+  .diagram { background: #fafafa; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin: 15px 0; font-family: monospace; white-space: pre; line-height: 1.4; font-size: 0.85em; }
+  ul { padding-left: 24px; }
+  li { margin-bottom: 6px; }
+  .footer { margin-top: 40px; padding-top: 15px; border-top: 1px solid #ddd; font-size: 0.8em; color: #666; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>Spec-Driven Development — Propuesta para Intrale</h1>
+
+<div class="meta">
+  <strong>Fecha:</strong> 15 de marzo de 2026 &nbsp;|&nbsp;
+  <strong>Sprint:</strong> SPR-031 &nbsp;|&nbsp;
+  <strong>Tipo:</strong> Investigación estratégica &nbsp;|&nbsp;
+  <strong>Autor:</strong> Claude (agente principal)
+</div>
+
+<h2>1. ¿Qué es Spec-Driven Development?</h2>
+
+<p>Spec-Driven Development (SDD) es una metodología donde <strong>la especificación formal es el artefacto central</strong> del ciclo de desarrollo. A diferencia de enfoques donde el código se escribe primero y la documentación se genera después, en SDD:</p>
+
+<ul>
+  <li><strong>La spec se escribe ANTES del código</strong> — define contratos, interfaces, comportamientos esperados y criterios de aceptación</li>
+  <li><strong>El código se genera/implementa A PARTIR de la spec</strong> — la spec es la fuente de verdad</li>
+  <li><strong>Los tests se derivan de la spec</strong> — cada criterio de aceptación mapea a uno o más tests</li>
+  <li><strong>Los cambios se propagan desde la spec</strong> — si cambia el requerimiento, se actualiza la spec primero</li>
+</ul>
+
+<h2>2. Estado Actual de Intrale — Mapeo de Gaps</h2>
+
+<table>
+  <tr><th>Aspecto</th><th>Cómo funciona hoy</th><th>Gap con SDD</th></tr>
+  <tr>
+    <td>Definición de features</td>
+    <td>Issues en GitHub con estructura de historia de usuario (skill <code>/doc</code>)</td>
+    <td>Las historias tienen criterios de aceptación textuales pero no specs formales verificables</td>
+  </tr>
+  <tr>
+    <td>Contratos API</td>
+    <td>Backend Ktor con <code>Function</code>/<code>SecuredFunction</code>. No hay schema publicado</td>
+    <td>No existe OpenAPI/AsyncAPI ni spec de contrato; el frontend descubre la API leyendo el backend</td>
+  </tr>
+  <tr>
+    <td>Validación</td>
+    <td>Konform DSL en ViewModels, validación manual en backend</td>
+    <td>Las reglas de validación están dispersas; no hay spec compartida frontend-backend</td>
+  </tr>
+  <tr>
+    <td>Tests</td>
+    <td>kotlin-test + MockK, cobertura Kover ≥80%</td>
+    <td>Tests escritos post-implementación, no derivados de una spec previa</td>
+  </tr>
+  <tr>
+    <td>Agentes IA</td>
+    <td>Skills especializados (<code>/backend-dev</code>, <code>/android-dev</code>, etc.) con pipeline QA</td>
+    <td>Los agentes implementan desde issues textuales; sin spec formal que guíe y valide</td>
+  </tr>
+  <tr>
+    <td>QA</td>
+    <td>Pipeline obligatorio: QA E2E → Tester → PO</td>
+    <td>QA valida contra criterios textuales; no contra una spec ejecutable</td>
+  </tr>
+</table>
+
+<h2>3. Propuesta de Implementación — 4 Fases</h2>
+
+<div class="diagram">
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SPEC-DRIVEN DEVELOPMENT PIPELINE                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐      │
+│  │ FASE 1   │───→│ FASE 2   │───→│ FASE 3   │───→│ FASE 4   │      │
+│  │ Specs de │    │ Specs de │    │ Spec de  │    │ Agentes  │      │
+│  │ Contrato │    │ Comporta │    │ UI/UX    │    │ SDD-aware│      │
+│  │ (API)    │    │ miento   │    │          │    │          │      │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘      │
+│       │               │               │               │            │
+│   OpenAPI 3.1    Gherkin/BDD     Compose Specs    Skills que       │
+│   + Schemas      + Given/When    + Navigation    leen specs y      │
+│   compartidos    /Then en issues  contracts      generan código    │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</div>
+
+<!-- FASE 1 -->
+<h3><span class="phase">FASE 1</span> Specs de Contrato API (Semanas 1-2)</h3>
+
+<p><strong>Objetivo:</strong> Definir formalmente cada endpoint del backend con OpenAPI 3.1, de modo que frontend y backend compartan una fuente de verdad.</p>
+
+<div class="success">
+<strong>Impacto inmediato:</strong> Elimina ambigüedad en la comunicación entre capas. Los <code>Client[X]Service</code> se pueden generar o al menos validar contra la spec.
+</div>
+
+<h4>Qué hacer:</h4>
+
+<ol>
+  <li><strong>Crear <code>docs/api/openapi.yaml</code></strong> como spec central:
+    <pre>openapi: "3.1.0"
+info:
+  title: Intrale Platform API
+  version: "1.0.0"
+paths:
+  /{business}/signin:
+    post:
+      operationId: signIn
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResponse'
+components:
+  schemas:
+    SignInRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }</pre>
+  </li>
+
+  <li><strong>Agregar task Gradle de validación</strong> — <code>:backend:validateOpenApi</code> que verifique que cada <code>Function</code> registrada en Kodein tiene su correspondiente path en la spec</li>
+
+  <li><strong>Schemas compartidos</strong> — Los <code>@Serializable</code> DTOs del backend y los del frontend deben derivarse de la misma spec. Opción: módulo <code>shared/</code> con los data classes comunes</li>
+</ol>
+
+<h4>Integración con el flujo actual:</h4>
+
+<table>
+  <tr><th>Momento</th><th>Acción SDD</th><th>Responsable</th></tr>
+  <tr><td>Issue creado (<code>/doc</code>)</td><td>Si toca API → PO define spec del endpoint en el issue</td><td><code>/po</code></td></tr>
+  <tr><td>Pre-implementación</td><td>Agente crea/actualiza <code>openapi.yaml</code> con el nuevo endpoint</td><td><code>/backend-dev</code></td></tr>
+  <tr><td>Implementación</td><td>Backend implementa contra la spec; test valida contra schema</td><td><code>/backend-dev</code></td></tr>
+  <tr><td>QA</td><td>QA E2E valida respuestas contra schema OpenAPI</td><td><code>/qa</code></td></tr>
+</table>
+
+<!-- FASE 2 -->
+<h3><span class="phase">FASE 2</span> Specs de Comportamiento — BDD (Semanas 3-4)</h3>
+
+<p><strong>Objetivo:</strong> Cada historia de usuario incluye especificaciones de comportamiento en formato Gherkin que se convierten directamente en tests ejecutables.</p>
+
+<h4>Cambio en la estructura de issues:</h4>
+
+<pre># Historia: Login con 2FA
+
+## Criterios de aceptación (Gherkin)
+
+```gherkin
+Feature: Login con verificación 2FA
+
+  Scenario: Login exitoso con 2FA habilitado
+    Given un usuario con email "test@intrale.com" y 2FA habilitado
+    When ingresa credenciales válidas
+    And ingresa el código TOTP correcto
+    Then el sistema retorna un JWT válido
+    And redirige a la pantalla principal
+
+  Scenario: Login fallido por código TOTP inválido
+    Given un usuario con email "test@intrale.com" y 2FA habilitado
+    When ingresa credenciales válidas
+    And ingresa un código TOTP incorrecto
+    Then el sistema muestra error "Código de verificación inválido"
+    And permanece en la pantalla de verificación
+```</pre>
+
+<h4>Mapping a tests (automático):</h4>
+
+<pre>@Test
+fun `login exitoso con 2FA habilitado`() = runTest {
+    // Given un usuario con email "test@intrale.com" y 2FA habilitado
+    val fakeLogin = FakeDoLogin(result = DoLoginResult(requires2FA = true))
+    val fake2FA = FakeDo2FAVerify(result = Do2FAVerifyResult(jwt = "valid-jwt"))
+    val vm = createLoginVm(doLogin = fakeLogin, do2FA = fake2FA)
+
+    // When ingresa credenciales válidas
+    vm.onEmailChanged("test@intrale.com")
+    vm.onPasswordChanged("Password123!")
+    vm.onLoginClicked()
+
+    // And ingresa el código TOTP correcto
+    vm.onTotpCodeChanged("123456")
+    vm.onVerifyClicked()
+
+    // Then el sistema retorna un JWT válido
+    assertEquals("valid-jwt", vm.state.jwt)
+    // And redirige a la pantalla principal
+    assertTrue(vm.state.navigateToHome)
+}</pre>
+
+<div class="highlight">
+<strong>Herramienta clave:</strong> No necesitamos Cucumber ni frameworks BDD pesados. Basta con que los escenarios Gherkin del issue se transcriban como tests con el mapping <code>Given→arrange</code>, <code>When→act</code>, <code>Then→assert</code>. Los agentes pueden hacer esto automáticamente.
+</div>
+
+<!-- FASE 3 -->
+<h3><span class="phase">FASE 3</span> Specs de UI/UX y Navegación (Semanas 5-6)</h3>
+
+<p><strong>Objetivo:</strong> Definir contratos de navegación y estados de UI antes de implementar pantallas.</p>
+
+<h4>Spec de navegación:</h4>
+
+<pre># docs/specs/navigation.yaml
+screens:
+  login:
+    route: "/login"
+    viewModel: LoginViewModel
+    states:
+      idle: { fields: [email, password], actions: [login, forgotPassword] }
+      loading: { showProgress: true, disableActions: true }
+      requires2FA: { fields: [totpCode], actions: [verify, cancel] }
+      error: { message: String, recoverable: true }
+    transitions:
+      - from: idle → loading (on: login clicked, if: validation passes)
+      - from: loading → requires2FA (on: server requires 2FA)
+      - from: loading → error (on: server error)
+      - from: requires2FA → home (on: 2FA verified)</pre>
+
+<h4>Spec de UIState:</h4>
+
+<p>Cada <code>[Feature]UIState</code> data class se define primero como spec antes de codear:</p>
+
+<pre># docs/specs/login-ui-state.yaml
+LoginUIState:
+  fields:
+    email: { type: String, default: "", validation: "email format" }
+    password: { type: String, default: "", validation: "minLength 8" }
+    totpCode: { type: String, default: "" }
+    isLoading: { type: Boolean, default: false }
+    errorMessage: { type: String?, default: null }
+    navigateToHome: { type: Boolean, default: false }
+  invariants:
+    - "isLoading == true → todos los campos disabled"
+    - "errorMessage != null → isLoading == false"</pre>
+
+<!-- FASE 4 -->
+<h3><span class="phase">FASE 4</span> Agentes SDD-Aware (Semanas 7-8)</h3>
+
+<p><strong>Objetivo:</strong> Modificar los skills de agentes para que consuman y produzcan specs como parte integral de su flujo.</p>
+
+<h4>Cambios en skills existentes:</h4>
+
+<table>
+  <tr><th>Skill</th><th>Cambio</th></tr>
+  <tr>
+    <td><code>/doc</code> (historia)</td>
+    <td>Al crear/refinar un issue, incluir sección Gherkin obligatoria + referencia a spec API si aplica</td>
+  </tr>
+  <tr>
+    <td><code>/po</code></td>
+    <td>Valida que la historia tenga specs completas antes de aprobar. Nuevo checklist: ¿tiene Gherkin? ¿tiene spec API? ¿tiene spec de estados UI?</td>
+  </tr>
+  <tr>
+    <td><code>/backend-dev</code></td>
+    <td>Paso 0: leer spec OpenAPI del endpoint. Paso 1: implementar contra spec. Paso N: validar que la respuesta cumple el schema</td>
+  </tr>
+  <tr>
+    <td><code>/android-dev</code></td>
+    <td>Paso 0: leer spec de navegación y UIState. Generar data class y ViewModel skeleton desde spec</td>
+  </tr>
+  <tr>
+    <td><code>/tester</code></td>
+    <td>Genera tests directamente desde los escenarios Gherkin del issue. Cada <code>Scenario:</code> → un <code>@Test fun</code></td>
+  </tr>
+  <tr>
+    <td><code>/qa</code></td>
+    <td>Valida E2E contra specs: respuestas API vs OpenAPI schema, estados UI vs navigation spec</td>
+  </tr>
+  <tr>
+    <td><code>/review</code></td>
+    <td>Nuevo check: ¿el código implementado es consistente con las specs del issue?</td>
+  </tr>
+</table>
+
+<h4>Flujo completo de un issue con SDD:</h4>
+
+<div class="diagram">
+ ┌─────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+ │  /doc   │────→│   /po    │────→│  Agent   │────→│  /qa     │
+ │ crea    │     │ valida   │     │ implemen │     │ valida   │
+ │ issue + │     │ specs    │     │ ta desde │     │ contra   │
+ │ specs   │     │ completas│     │ specs    │     │ specs    │
+ └─────────┘     └──────────┘     └──────────┘     └──────────┘
+      │                │                │                │
+      ▼                ▼                ▼                ▼
+ Gherkin BDD     Spec checklist    openapi.yaml     Schema
+ en el issue     aprobado          actualizado       validation
+                                   tests generados   E2E vs spec
+</div>
+
+<h2>4. Beneficios Específicos para Intrale</h2>
+
+<table>
+  <tr><th>Beneficio</th><th>Impacto en nuestra operación</th></tr>
+  <tr>
+    <td>Agentes más autónomos</td>
+    <td>Con specs formales, los agentes tienen menos ambigüedad. Reducción estimada de <strong>re-work por malinterpretación: ~40%</strong></td>
+  </tr>
+  <tr>
+    <td>QA más precisa</td>
+    <td>QA E2E valida contra schemas, no contra expectativas textuales. Detección temprana de regresiones</td>
+  </tr>
+  <tr>
+    <td>Onboarding de nuevos endpoints</td>
+    <td>Un nuevo <code>Function</code> + spec OpenAPI = documentación viva. No hay drift entre docs y código</td>
+  </tr>
+  <tr>
+    <td>Frontend-backend desacoplados</td>
+    <td>Con schemas compartidos, el frontend puede avanzar con mocks antes de que el backend esté listo</td>
+  </tr>
+  <tr>
+    <td>Tests predecibles</td>
+    <td>Gherkin en issues → tests automáticos. El <code>/tester</code> no tiene que inventar escenarios</td>
+  </tr>
+  <tr>
+    <td>Trazabilidad completa</td>
+    <td>Issue → Spec → Código → Test → QA. Cada artefacto apunta al anterior</td>
+  </tr>
+</table>
+
+<h2>5. Riesgos y Mitigaciones</h2>
+
+<table>
+  <tr><th>Riesgo</th><th>Probabilidad</th><th>Mitigación</th></tr>
+  <tr>
+    <td>Overhead de escribir specs</td>
+    <td>Alta</td>
+    <td>Los agentes (<code>/doc</code>, <code>/po</code>) generan las specs automáticamente. El humano solo revisa y aprueba</td>
+  </tr>
+  <tr>
+    <td>Specs desactualizadas</td>
+    <td>Media</td>
+    <td>Gradle task que valida consistencia spec ↔ código en CI. Si divergen, el build falla</td>
+  </tr>
+  <tr>
+    <td>Resistencia al cambio</td>
+    <td>Baja (somos 1+agentes)</td>
+    <td>Adopción gradual por fases. Fase 1 es la de mayor ROI y menor fricción</td>
+  </tr>
+  <tr>
+    <td>Complejidad en specs de UI</td>
+    <td>Media</td>
+    <td>Fase 3 es opcional para features simples. Solo obligatoria en flujos complejos con múltiples estados</td>
+  </tr>
+</table>
+
+<h2>6. Plan de Adopción Recomendado</h2>
+
+<div class="highlight">
+<strong>Recomendación:</strong> Empezar con Fase 1 (OpenAPI) + Fase 2 (Gherkin en issues) en el próximo sprint de planificación. Son las de mayor impacto con menor fricción.
+</div>
+
+<table>
+  <tr><th>Fase</th><th>Sprint estimado</th><th>Prerequisitos</th><th>Entregable</th></tr>
+  <tr>
+    <td><span class="phase">1</span> API Specs</td>
+    <td>SPR-032 o SPR-033</td>
+    <td>Ninguno</td>
+    <td><code>docs/api/openapi.yaml</code> + Gradle validation task</td>
+  </tr>
+  <tr>
+    <td><span class="phase">2</span> BDD/Gherkin</td>
+    <td>SPR-032 o SPR-033</td>
+    <td>Ninguno</td>
+    <td>Template de issue actualizado, <code>/doc</code> genera Gherkin</td>
+  </tr>
+  <tr>
+    <td><span class="phase">3</span> UI Specs</td>
+    <td>SPR-034</td>
+    <td>Fase 2 estabilizada</td>
+    <td><code>docs/specs/</code> con navigation + UIState specs</td>
+  </tr>
+  <tr>
+    <td><span class="phase">4</span> Agentes SDD</td>
+    <td>SPR-035</td>
+    <td>Fases 1-3 en uso</td>
+    <td>Skills actualizados para leer/producir specs</td>
+  </tr>
+</table>
+
+<h2>7. Ejemplo Concreto — Feature "Agregar dirección"</h2>
+
+<p>Para ilustrar cómo cambiaría el flujo con SDD, tomemos una feature típica:</p>
+
+<h4>HOY (sin SDD):</h4>
+<pre>1. /doc crea issue → "Como cliente quiero agregar una dirección..."
+2. Criterios textuales: "debe validar campos", "debe guardar en backend"
+3. Agente implementa Client[Address]Service, Do[AddAddress], ViewModel, Screen
+4. Agente escribe tests basados en su interpretación
+5. QA valida manualmente</pre>
+
+<h4>CON SDD:</h4>
+<pre>1. /doc crea issue + spec Gherkin:
+   Scenario: Agregar dirección válida
+     Given estoy en la pantalla de direcciones
+     When completo calle "Av. Corrientes 1234", ciudad "CABA", CP "1043"
+     And presiono "Guardar"
+     Then la dirección aparece en mi lista
+     And recibo confirmación "Dirección agregada"
+
+   Scenario: Validación de campos obligatorios
+     Given estoy en el formulario de nueva dirección
+     When dejo el campo calle vacío
+     And presiono "Guardar"
+     Then veo error "La calle es obligatoria"
+
+2. /doc actualiza openapi.yaml:
+   POST /{business}/client/addresses
+   Schema: { street: required, city: required, zip: required }
+
+3. Agente implementa CONTRA las specs:
+   - Backend valida exactamente los campos del schema
+   - Frontend implementa exactamente los estados del Gherkin
+   - Tests son traducciones directas de los escenarios
+
+4. QA valida CONTRA las specs:
+   - Response body matches OpenAPI schema ✓
+   - Cada escenario Gherkin se ejecuta ✓</pre>
+
+<div class="success">
+<strong>Resultado:</strong> Menos ambigüedad → menos re-work → sprints más predecibles → mayor calidad
+</div>
+
+<h2>8. Conclusión</h2>
+
+<p>Spec-Driven Development no es un cambio radical para Intrale — es una <strong>formalización de lo que ya hacemos parcialmente</strong>. Ya tenemos:</p>
+
+<ul>
+  <li>Historias de usuario estructuradas (<code>/doc</code>)</li>
+  <li>Pipeline de QA obligatorio</li>
+  <li>Agentes que pueden leer y producir artefactos</li>
+  <li>CI/CD con validaciones automáticas</li>
+</ul>
+
+<p>Lo que falta es el <strong>eslabón de la spec formal</strong> que conecte todos estos elementos. Con OpenAPI para contratos y Gherkin para comportamiento, cerramos el loop y convertimos a los agentes en implementadores más precisos y al QA en un validador más riguroso.</p>
+
+<div class="critical">
+<strong>Acción recomendada:</strong> Crear un issue de tipo "epic" para SDD e incluir la Fase 1 + Fase 2 como historias en SPR-033 o SPR-034. Estimación: 2 historias size M + actualización de 3 skills.
+</div>
+
+<div class="footer">
+  Reporte generado por Claude (agente principal) — Intrale Platform — 15 de marzo de 2026<br>
+  Sprint SPR-031 | Investigación estratégica
+</div>
+
+</body>
+</html>
