@@ -1090,110 +1090,103 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // --- Force-directed layout (optimized for separation) ---
-  const nodeR = 56;
-  // SVG compacto — nodos más densos para que se vean grandes en el panel
-  const baseSize = 800;
-  const scaleFactor = Math.max(1, nodes.length / 8);
-  const svgW = Math.round(baseSize * Math.max(1, scaleFactor * 0.85));
-  const svgH = Math.round(baseSize * Math.max(0.8, scaleFactor * 0.7));
-  const cx = svgW / 2, cy = svgH / 2;
+  // --- Layered layout con grid routing ---
+  // Capas por profundidad + A* routing de flechas para evitar colisiones.
+  const nodeR = 38;
 
-  // Initialize positions: spread nodes in a circle with generous radius
-  const positions = {};
-  const spreadRadius = Math.min(svgW, svgH) * 0.38;
-  nodes.forEach((name, i) => {
-    const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2;
-    const r = spreadRadius * (0.6 + 0.4 * (i % 2)); // alternating rings
-    positions[name] = {
-      x: cx + r * Math.cos(angle),
-      y: cy + r * Math.sin(angle),
-    };
-  });
-
-  // Build adjacency
-  const neighbors = {};
-  for (const n of nodes) neighbors[n] = new Set();
+  // Build directed adjacency (from → [to])
+  const outEdges = {};
+  const inEdges = {};
+  for (const n of nodes) { outEdges[n] = []; inEdges[n] = []; }
   for (const e of edgeList) {
-    neighbors[e.from].add(e.to);
-    neighbors[e.to].add(e.from);
+    if (outEdges[e.from]) outEdges[e.from].push(e.to);
+    if (inEdges[e.to]) inEdges[e.to].push(e.from);
   }
 
-  // Run force simulation (200 iterations for well-separated layout)
-  const padding = nodeR + 60;
-  for (let iter = 0; iter < 200; iter++) {
-    const alpha = 0.5 * (1 - iter / 200);
-
-    for (const a of nodes) {
-      let fx = 0, fy = 0;
-      const pa = positions[a];
-
-      // Strong repulsion between ALL pairs — prevents any overlap
-      for (const b of nodes) {
-        if (a === b) continue;
-        const pb = positions[b];
-        let dx = pa.x - pb.x, dy = pa.y - pb.y;
-        let dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 1) { dx = 0.5; dy = 0.3; dist = 1; }
-        const repulse = 80000 / (dist * dist);
-        fx += (dx / dist) * repulse;
-        fy += (dy / dist) * repulse;
-      }
-
-      // Attraction along edges — large ideal distance for label clearance
-      for (const b of neighbors[a]) {
-        const pb = positions[b];
-        const dx = pb.x - pa.x, dy = pb.y - pa.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const ideal = 400;
-        const attract = (dist - ideal) * 0.03;
-        fx += (dx / Math.max(dist, 1)) * attract;
-        fy += (dy / Math.max(dist, 1)) * attract;
-      }
-
-      // Gravity toward center (very light)
-      fx += (cx - pa.x) * 0.001;
-      fy += (cy - pa.y) * 0.001;
-
-      pa.x += fx * alpha;
-      pa.y += fy * alpha;
-
-      // Keep within bounds
-      pa.x = Math.max(padding, Math.min(svgW - padding, pa.x));
-      pa.y = Math.max(padding, Math.min(svgH - padding, pa.y));
-    }
-  }
-
-  // Post-layout: ensure minimum separation (7 × nodeR) between all nodes — includes labels
-  const minDist = nodeR * 7;
-  for (let pass = 0; pass < 40; pass++) {
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const pa = positions[nodes[i]];
-        const pb = positions[nodes[j]];
-        let dx = pa.x - pb.x, dy = pa.y - pb.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < minDist && dist > 0) {
-          const push = (minDist - dist) / 2;
-          const ux = dx / dist, uy = dy / dist;
-          pa.x = Math.max(padding, Math.min(svgW - padding, pa.x + ux * push));
-          pa.y = Math.max(padding, Math.min(svgH - padding, pa.y + uy * push));
-          pb.x = Math.max(padding, Math.min(svgW - padding, pb.x - ux * push));
-          pb.y = Math.max(padding, Math.min(svgH - padding, pb.y - uy * push));
-        }
+  // Assign layers via BFS from roots (nodes with no incoming edges)
+  const layer = {};
+  const roots = nodes.filter(n => inEdges[n].length === 0);
+  if (roots.length === 0 && nodes.length > 0) roots.push(nodes[0]); // fallback
+  const queue = [...roots];
+  for (const r of roots) layer[r] = 0;
+  while (queue.length > 0) {
+    const n = queue.shift();
+    for (const next of (outEdges[n] || [])) {
+      if (layer[next] === undefined || layer[next] <= layer[n]) {
+        layer[next] = layer[n] + 1;
+        queue.push(next);
       }
     }
   }
+  // Nodos sin capa asignada (sin edges): ponerlos en la última capa
+  const maxLayer = Math.max(0, ...Object.values(layer));
+  for (const n of nodes) {
+    if (layer[n] === undefined) layer[n] = maxLayer + 1;
+  }
 
-  // Build SVG
-  let svg = `<defs>
-    <marker id="flow-arrow" markerWidth="14" markerHeight="10" refX="13" refY="5" orient="auto">
-      <polygon points="0 0, 14 5, 0 10" fill="#60a5fa" opacity="0.85"/>
-    </marker>
-    <marker id="flow-arrow-recent" markerWidth="14" markerHeight="10" refX="13" refY="5" orient="auto">
-      <polygon points="0 0, 14 5, 0 10" fill="#f59e0b" opacity="0.9"/>
-    </marker>
-    <filter id="node-glow"><feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+  // Agrupar nodos por capa
+  const layers = {};
+  for (const n of nodes) {
+    const l = layer[n];
+    if (!layers[l]) layers[l] = [];
+    layers[l].push(n);
+  }
+  const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
+
+  const colSpacing = 160;
+  const rowSpacing = 120;
+  const maxNodesInLayer = Math.max(...Object.values(layers).map(l => l.length));
+  const padding = nodeR + 30;
+  const svgW = Math.max(500, numLayers * colSpacing + padding * 2);
+  const svgH = Math.max(300, maxNodesInLayer * rowSpacing + padding * 2);
+
+  // Posicionar nodos: columna = capa, fila = índice dentro de la capa (centrado)
+  const positions = {};
+  for (const [layerIdx, layerNodes] of Object.entries(layers)) {
+    const col = Number(layerIdx);
+    const x = padding + col * colSpacing + colSpacing / 2;
+    const count = layerNodes.length;
+    const totalH = (count - 1) * rowSpacing;
+    const startY = svgH / 2 - totalH / 2;
+    layerNodes.forEach((name, i) => {
+      positions[name] = { x, y: startY + i * rowSpacing };
+    });
+  }
+
+  // Trazar origen de cada edge hasta su agente raíz (capa 0) para asignar color
+  const rootColors = ["#f87171", "#60a5fa", "#4ade80", "#fbbf24", "#a78bfa", "#f472b6", "#34d399", "#fb923c", "#22d3ee", "#e879f9"];
+  const rootNodeList = nodes.filter(n => layer[n] === 0);
+  const rootColorMap = {};
+  rootNodeList.forEach((r, i) => { rootColorMap[r] = rootColors[i % rootColors.length]; });
+  // BFS desde cada raíz para asignar "owner" a cada nodo
+  const nodeOwner = {};
+  for (const root of rootNodeList) {
+    const bfsQ = [root];
+    nodeOwner[root] = root;
+    while (bfsQ.length > 0) {
+      const cur = bfsQ.shift();
+      for (const next of (outEdges[cur] || [])) {
+        if (!nodeOwner[next]) { nodeOwner[next] = root; bfsQ.push(next); }
+      }
+    }
+  }
+  // Asignar color de edge según el agente raíz del nodo "from"
+  function edgeColor(fromNode) {
+    const owner = nodeOwner[fromNode];
+    return owner ? (rootColorMap[owner] || "#60a5fa") : "#60a5fa";
+  }
+
+  // Build SVG defs — markers dinámicos por color de agente raíz
+  const usedColors = new Set();
+  for (const e of edgeList) usedColors.add(edgeColor(e.from));
+  let markerDefs = "";
+  for (const c of usedColors) {
+    const id = "fa-" + c.replace("#", "");
+    markerDefs += '<marker id="' + id + '" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0, 7 2.5, 0 5" fill="' + c + '" opacity="0.85"/></marker>';
+  }
+
+  let svg = '<defs>' + markerDefs + `
+    <filter id="node-glow"><feGaussianBlur stdDeviation="6" result="coloredBlur"/>
       <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
     <filter id="icon-brighten" color-interpolation-filters="sRGB">
@@ -1205,12 +1198,177 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     </filter>
     <style>
       @keyframes flow-dash { to { stroke-dashoffset: 0; } }
+      @keyframes node-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
       .flow-edge { stroke-dasharray: 8 6; stroke-dashoffset: 28; animation: flow-dash 1.2s linear infinite; }
-      .flow-edge-recent { stroke-dasharray: 12 6; stroke-dashoffset: 36; animation: flow-dash 0.8s linear infinite; }
+      .node-active { animation: node-pulse 2s ease-in-out infinite; }
     </style>
   </defs>`;
 
-  // Draw edges as curved arrows with sequential labels and issue reference
+  // --- Grid-based A* routing para flechas sin colisiones ---
+  // Resolución fina para ruteo preciso
+  const gridCell = Math.max(8, Math.round(nodeR * 0.35));
+  const gridW = Math.ceil(svgW / gridCell);
+  const gridH = Math.ceil(svgH / gridCell);
+  // Grid de ocupación: 0=libre, 1=nodo (bloqueante duro), 2=flecha previa (penalizada)
+  const grid = Array.from({ length: gridH }, () => new Uint8Array(gridW));
+
+  // Helper: marcar celda si está en rango
+  function markCell(gx, gy, val) {
+    if (gy >= 0 && gy < gridH && gx >= 0 && gx < gridW) {
+      grid[gy][gx] = Math.max(grid[gy][gx], val);
+    }
+  }
+
+  // Marcar celdas ocupadas por nodos — área circular + zona del label
+  const blockRadius = nodeR + 12; // margen alrededor del nodo (círculo)
+  const labelExtraBelow = 35; // espacio del label debajo del nodo
+  for (const name of nodes) {
+    const p = positions[name];
+    if (!p) continue;
+    const gcx = Math.round(p.x / gridCell);
+    const gcy = Math.round(p.y / gridCell);
+    const rCells = Math.ceil(blockRadius / gridCell);
+    const labelCells = Math.ceil((blockRadius + labelExtraBelow) / gridCell);
+    // Círculo bloqueante alrededor del nodo
+    for (let dy = -rCells; dy <= labelCells; dy++) {
+      for (let dx = -rCells; dx <= rCells; dx++) {
+        const px = dx * gridCell, py = dy * gridCell;
+        // Arriba y a los lados: área circular
+        if (dy <= rCells) {
+          const dist = Math.sqrt(px * px + Math.min(py, 0) ** 2);
+          if (dist <= blockRadius) markCell(gcx + dx, gcy + dy, 1);
+        }
+        // Debajo del nodo: rectángulo para el label
+        if (dy > 0 && dy <= labelCells && Math.abs(dx) <= Math.ceil(60 / gridCell)) {
+          markCell(gcx + dx, gcy + dy, 1);
+        }
+      }
+    }
+  }
+
+  // A* pathfinding en la grilla
+  function gridRoute(sx, sy, tx, ty) {
+    const sgx = Math.max(0, Math.min(gridW - 1, Math.round(sx / gridCell)));
+    const sgy = Math.max(0, Math.min(gridH - 1, Math.round(sy / gridCell)));
+    const tgx = Math.max(0, Math.min(gridW - 1, Math.round(tx / gridCell)));
+    const tgy = Math.max(0, Math.min(gridH - 1, Math.round(ty / gridCell)));
+
+    // Liberar celdas de start y target (están dentro de nodos)
+    const savedS = grid[sgy][sgx]; grid[sgy][sgx] = 0;
+    const savedT = grid[tgy][tgx]; grid[tgy][tgx] = 0;
+
+    const key = (x, y) => y * gridW + x;
+    const open = [{ x: sgx, y: sgy, g: 0, f: 0 }];
+    const gScore = new Map(); gScore.set(key(sgx, sgy), 0);
+    const cameFrom = new Map();
+    const dirs = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+
+    let found = false;
+    let maxIter = Math.min(50000, gridW * gridH);
+    while (open.length > 0 && maxIter-- > 0) {
+      open.sort((a, b) => a.f - b.f);
+      const cur = open.shift();
+      if (cur.x === tgx && cur.y === tgy) { found = true; break; }
+
+      for (const [ddx, ddy] of dirs) {
+        const nx = cur.x + ddx, ny = cur.y + ddy;
+        if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
+        if (grid[ny][nx] === 1) continue; // nodo bloqueante
+        const cost = (ddx !== 0 && ddy !== 0) ? 1.41 : 1;
+        const edgePenalty = grid[ny][nx] === 2 ? 8 : 0; // penalizar fuerte celdas con flechas previas
+        const ng = cur.g + cost + edgePenalty;
+        const k = key(nx, ny);
+        if (!gScore.has(k) || ng < gScore.get(k)) {
+          gScore.set(k, ng);
+          const h = Math.abs(nx - tgx) + Math.abs(ny - tgy);
+          open.push({ x: nx, y: ny, g: ng, f: ng + h });
+          cameFrom.set(k, key(cur.x, cur.y));
+        }
+      }
+    }
+
+    // Restaurar grid
+    grid[sgy][sgx] = savedS;
+    grid[tgy][tgx] = savedT;
+
+    if (!found) return null; // fallback a línea recta
+
+    // Reconstruir path
+    const path = [];
+    let ck = key(tgx, tgy);
+    while (ck !== undefined) {
+      const cy = Math.floor(ck / gridW), cx = ck % gridW;
+      path.unshift({ x: cx * gridCell, y: cy * gridCell });
+      ck = cameFrom.get(ck);
+    }
+
+    // Marcar celdas de esta flecha como ocupadas (peso 2) con ancho de 3 celdas
+    for (const pt of path) {
+      const gx = Math.round(pt.x / gridCell), gy = Math.round(pt.y / gridCell);
+      for (let ddy = -1; ddy <= 1; ddy++) {
+        for (let ddx = -1; ddx <= 1; ddx++) {
+          const nx = gx + ddx, ny = gy + ddy;
+          if (ny >= 0 && ny < gridH && nx >= 0 && nx < gridW && grid[ny][nx] === 0) grid[ny][nx] = 2;
+        }
+      }
+    }
+
+    return path;
+  }
+
+  // Simplificar path: eliminar puntos colineales
+  function simplifyPath(pts) {
+    if (pts.length <= 2) return pts;
+    const result = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const prev = result[result.length - 1];
+      const next = pts[i + 1];
+      const cur = pts[i];
+      // Si los 3 puntos son colineales, skip el del medio
+      const dx1 = cur.x - prev.x, dy1 = cur.y - prev.y;
+      const dx2 = next.x - cur.x, dy2 = next.y - cur.y;
+      if (Math.abs(dx1 * dy2 - dy1 * dx2) > 0.1) result.push(cur);
+    }
+    result.push(pts[pts.length - 1]);
+    return result;
+  }
+
+  // Convertir path a SVG con esquinas redondeadas
+  function pathToSvg(pts, fromPos, toPos) {
+    if (!pts || pts.length < 2) {
+      // Fallback: línea recta
+      return "M" + fromPos.x.toFixed(1) + "," + fromPos.y.toFixed(1) + " L" + toPos.x.toFixed(1) + "," + toPos.y.toFixed(1);
+    }
+    const simple = simplifyPath(pts);
+    // Reemplazar primer y último punto con las posiciones reales (borde del nodo)
+    simple[0] = { ...fromPos };
+    simple[simple.length - 1] = { ...toPos };
+
+    if (simple.length === 2) {
+      return "M" + simple[0].x.toFixed(1) + "," + simple[0].y.toFixed(1) + " L" + simple[1].x.toFixed(1) + "," + simple[1].y.toFixed(1);
+    }
+
+    // Path con esquinas redondeadas usando arcos cuadráticos
+    const r = gridCell * 0.6; // radio de redondeo
+    let d = "M" + simple[0].x.toFixed(1) + "," + simple[0].y.toFixed(1);
+    for (let i = 1; i < simple.length - 1; i++) {
+      const prev = simple[i - 1], cur = simple[i], next = simple[i + 1];
+      const d1 = Math.sqrt((cur.x - prev.x) ** 2 + (cur.y - prev.y) ** 2);
+      const d2 = Math.sqrt((next.x - cur.x) ** 2 + (next.y - cur.y) ** 2);
+      const rr = Math.min(r, d1 / 2, d2 / 2);
+      if (rr < 1) { d += " L" + cur.x.toFixed(1) + "," + cur.y.toFixed(1); continue; }
+      const ux1 = (cur.x - prev.x) / d1, uy1 = (cur.y - prev.y) / d1;
+      const ux2 = (next.x - cur.x) / d2, uy2 = (next.y - cur.y) / d2;
+      const bx = cur.x - ux1 * rr, by = cur.y - uy1 * rr;
+      const cx = cur.x + ux2 * rr, cy = cur.y + uy2 * rr;
+      d += " L" + bx.toFixed(1) + "," + by.toFixed(1);
+      d += " Q" + cur.x.toFixed(1) + "," + cur.y.toFixed(1) + " " + cx.toFixed(1) + "," + cy.toFixed(1);
+    }
+    d += " L" + simple[simple.length - 1].x.toFixed(1) + "," + simple[simple.length - 1].y.toFixed(1);
+    return d;
+  }
+
+  // Draw edges con A* routing
   for (const e of edgeList) {
     const from = positions[e.from];
     const to = positions[e.to];
@@ -1219,29 +1377,18 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < 1) continue;
     const ux = dx / dist, uy = dy / dist;
-    const x1 = from.x + ux * (nodeR + 4);
-    const y1 = from.y + uy * (nodeR + 4);
-    const x2 = to.x - ux * (nodeR + 8);
-    const y2 = to.y - uy * (nodeR + 8);
-    // Check if reverse edge exists → increase curve to avoid overlap
-    const reverseKey = e.to + "->" + e.from;
-    const curveMult = edgeSet.has(reverseKey) ? 0.40 : 0.22;
-    const midX = (x1 + x2) / 2;
-    const midY = (y1 + y2) / 2;
-    const cpx = midX + (-(y2 - y1) * curveMult);
-    const cpy = midY + ((x2 - x1) * curveMult);
-    // Midpoint on the quadratic Bézier curve (t=0.5)
-    const bMidX = 0.25 * x1 + 0.5 * cpx + 0.25 * x2;
-    const bMidY = 0.25 * y1 + 0.5 * cpy + 0.25 * y2;
+    const x1 = from.x + ux * (nodeR + 6);
+    const y1 = from.y + uy * (nodeR + 6);
+    const x2 = to.x - ux * (nodeR + 10);
+    const y2 = to.y - uy * (nodeR + 10);
 
-    const isRecent = e.isRecent;
-    const strokeColor = isRecent ? "#f59e0b" : "#60a5fa";
-    const strokeWidth = isRecent ? "4" : "3";
-    const strokeOpacity = isRecent ? "0.9" : "0.7";
-    const arrowMarker = isRecent ? "url(#flow-arrow-recent)" : "url(#flow-arrow)";
+    const route = gridRoute(x1, y1, x2, y2);
+    const pathD = pathToSvg(route, { x: x1, y: y1 }, { x: x2, y: y2 });
 
-    const edgeClass = isRecent ? "flow-edge-recent" : "flow-edge";
-    svg += `<path class="${edgeClass}" d="M${x1.toFixed(1)},${y1.toFixed(1)} Q${cpx.toFixed(1)},${cpy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" marker-end="${arrowMarker}"/>`;
+    const ec = edgeColor(e.from);
+    const markerId = "fa-" + ec.replace("#", "");
+
+    svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
   }
 
   // Draw nodes
@@ -1269,13 +1416,13 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const effectiveR = hasRobot ? nodeR + 4 : nodeR;
     const effectiveImgSize = hasRobot ? effectiveR * 1.6 : imgSize;
 
-    svg += `<g class="flow-node" data-agent="${escHtml(name)}" style="cursor:pointer;opacity:${opacity};" ${filterAttr}>`;
-    // Fondo más opaco para garantizar contraste del icono sobre fondo oscuro
-    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"`;
+    const activeClass = isActive ? ' node-active' : '';
+    svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" style="cursor:pointer;" ${filterAttr}>`;
+    // Fondo del nodo
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"/>`;
+    // Halo pulsante para nodos activos
     if (isActive) {
-      svg += `><animate attributeName="stroke-opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/></circle>`;
-    } else {
-      svg += `/>`;
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 8}" fill="none" stroke="${color}" stroke-width="2"><animate attributeName="r" values="${effectiveR + 4};${effectiveR + 14};${effectiveR + 4}" dur="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.8;0.1;0.8" dur="2s" repeatCount="indefinite"/></circle>`;
     }
     // Círculo de color semitransparente detrás del icono para contraste
     svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${(effectiveR - 3).toFixed(1)}" fill="${color}" fill-opacity="${hasRobot ? '0.15' : '0.30'}"/>`;
@@ -1295,20 +1442,20 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       svg += `<text x="${(pos.x + effectiveR - 3).toFixed(1)}" y="${(pos.y - effectiveR + 6.5).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="white">${robotId}</text>`;
     }
     // Label below node — nombre completo sin truncar
-    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 22).toFixed(1)}" text-anchor="middle" font-size="18" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 16).toFixed(1)}" text-anchor="middle" font-size="13" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
     // Issue number debajo del nombre para agentes raíz
     if (hasRobot) {
       const agentSession = sessionsList.find(s => s.agent_name === name);
       const branchMatch = agentSession ? (agentSession.branch || "").match(/(\d+)/) : null;
       if (branchMatch) {
         const issueUrl = "https://github.com/intrale/platform/issues/" + branchMatch[1];
-        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 40).toFixed(1)}" text-anchor="middle" font-size="15" fill="#60a5fa" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${branchMatch[1]}</text></a>`;
+        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 30).toFixed(1)}" text-anchor="middle" font-size="11" fill="#60a5fa" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${branchMatch[1]}</text></a>`;
       }
     }
     svg += `</g>`;
   }
 
-  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;min-height:500px;height:auto;">${svg}</svg>`;
+  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;">${svg}</svg>`;
 }
 
 // --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
