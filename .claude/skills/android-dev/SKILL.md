@@ -67,13 +67,39 @@ Archivos clave:
 - `app/composeApp/src/commonMain/kotlin/ar/com/intrale/DIManager.kt` — DI del app
 - `app/composeApp/build.gradle.kts` — Config de build, flavors, dependencias
 
+## Paso 2.5: Consultar UI Specs (OBLIGATORIO)
+
+Antes de planificar, leer la spec YAML del flujo afectado en `docs/specs/`:
+
+```bash
+ls docs/specs/
+# login.yaml | signup.yaml | profile.yaml | addresses.yaml | README.yaml
+```
+
+```bash
+cat docs/specs/<flow>.yaml
+```
+
+Las specs definen la **fuente de verdad** para:
+- **Rutas** y screen classes existentes
+- **Campos de UIState** con tipos, defaults y validaciones
+- **Transiciones** de navegación (on_success, on_error, links)
+- **Invariantes** que no se pueden violar
+- **Registros DI** esperados
+
+**Reglas:**
+- Si el flujo a implementar tiene spec → respetar campos, validaciones y transiciones definidas
+- Si se agrega un screen/field nuevo → actualizar la spec como parte del mismo PR
+- Si no existe spec para el flujo → consultar `docs/specs/README.yaml` para convenciones y crear una nueva
+
 ## Paso 3: Planificar la solución
 
-1. **Determinar capas afectadas**: ext → asdo → ViewModel → Screen → DIManager
-2. **Verificar** si es Android-only o commonMain (preferir commonMain)
-3. **Diseñar** el UI state como data class: `[Feature]UIState`
-4. **Planificar** validación con Konform si hay formularios
-5. **Identificar** strings necesarias para `resString()` calls
+1. **Contrastar con spec**: verificar que el plan respeta los campos, rutas e invariantes de la spec
+2. **Determinar capas afectadas**: ext → asdo → ViewModel → Screen → DIManager
+3. **Verificar** si es Android-only o commonMain (preferir commonMain)
+4. **Diseñar** el UI state como data class: `[Feature]UIState`
+5. **Planificar** validación con Konform si hay formularios
+6. **Identificar** strings necesarias para `resString()` calls
 
 Si se pasó `--plan`, reportar el plan y detenerse acá.
 
@@ -271,6 +297,7 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
 - NUNCA importar `kotlin.io.encoding.Base64` en capa UI
 - NUNCA escribir lógica de negocio en la Screen
 - NUNCA commitear — eso lo hace `/delivery`
+- NUNCA ignorar las UI specs de `docs/specs/*.yaml` — si el flujo tiene spec, respetarla
 
 ### Cuándo escalar
 - Cambios en backend → BackendDev

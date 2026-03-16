@@ -1,0 +1,493 @@
+# =============================================================================
+# UI Spec: Profile Flow
+# Perfil de usuario: Client y Delivery con sus particularidades
+# =============================================================================
+
+flow: profile
+version: 1
+description: >
+  Flujo de perfil de usuario con dos variantes: ClientProfile (datos personales,
+  direcciones, preferencias, seguridad) y DeliveryProfile (datos de contacto,
+  vehículo, zonas, disponibilidad horaria).
+
+# ---------------------------------------------------------------------------
+# Screens
+# ---------------------------------------------------------------------------
+screens:
+
+  # -------------------------------------------------------------------------
+  # Client Profile
+  # -------------------------------------------------------------------------
+  - id: client_profile
+    route: /client/profile
+    class: ClientProfileScreen
+    file: ui/sc/client/ClientProfileScreen.kt
+    title_key: client_profile_title
+    description: >
+      Perfil del cliente con secciones: header, datos personales, seguridad,
+      direcciones, preferencias de idioma. Accesible via bottom navigation.
+
+    state:
+      class: ClientProfileUiState
+      file: ui/sc/client/ClientProfileViewModel.kt
+      fields:
+        - name: profileForm
+          type: ClientProfileForm
+          fields:
+            - name: fullName
+              type: String
+              default: ""
+              validation:
+                required: true
+                min_length: 1
+            - name: email
+              type: String
+              default: ""
+              validation:
+                required: true
+                min_length: 1
+                pattern: ".+@.+\\..+"
+            - name: phone
+              type: String
+              default: ""
+              validation:
+                required: false
+                pattern: "^[+]?[-0-9 ()]{7,}$"
+            - name: language
+              type: String
+              default: "es"
+              validation:
+                required: true
+                min_length: 2
+            - name: defaultAddressId
+              type: String?
+              default: null
+        - name: preferences
+          type: ClientPreferences
+          fields:
+            - name: language
+              type: String
+              default: "es"
+        - name: addresses
+          type: "List<ClientAddress>"
+          default: "emptyList()"
+          description: Read-only list displayed in profile; managed via /client/addresses
+        - name: addressForm
+          type: AddressForm
+          description: Legacy inline address form (deprecated in favor of separate flow)
+        - name: loading
+          type: Boolean
+          default: true
+        - name: savingProfile
+          type: Boolean
+          default: false
+        - name: savingAddress
+          type: Boolean
+          default: false
+        - name: error
+          type: String?
+          default: null
+        - name: successKey
+          type: MessageKey?
+          default: null
+
+    viewmodel:
+      class: ClientProfileViewModel
+      file: ui/sc/client/ClientProfileViewModel.kt
+      methods:
+        - loadProfile       # Fetches profile + addresses + preferences
+        - saveProfile       # Validates and updates profile + preferences
+        - saveAddress       # Create or update address (legacy inline)
+        - deleteAddress     # Remove address, reassign default if needed
+        - markDefault       # Set address as default
+        - logout            # Reset cache and clear session
+        - onNameChange
+        - onEmailChange
+        - onPhoneChange
+        - onLanguageChange
+        - startAddressEditing
+        - onAddressChange
+
+    actions:
+      - interface: ToDoGetClientProfile
+        implementation: DoGetClientProfile
+        file: asdo/client/DoClientProfile.kt
+        returns: "Result<ClientProfileData>"
+      - interface: ToDoUpdateClientProfile
+        implementation: DoUpdateClientProfile
+        parameters: [profile: ClientProfile, preferences: ClientPreferences]
+        returns: "Result<ClientProfileData>"
+      - interface: ToDoManageClientAddress
+        implementation: DoManageClientAddress
+        parameters: [action: ManageAddressAction]
+        returns: "Result<ClientProfileData>"
+
+    services:
+      - interface: CommClientProfileService
+        implementation: ClientProfileService
+        endpoints:
+          - method: GET
+            path: /{BUSINESS}/client/profile
+            action: fetchProfile
+          - method: PUT
+            path: /{BUSINESS}/client/profile
+            action: updateProfile
+        auth: Bearer token
+      - interface: CommClientAddressesService
+        implementation: ClientAddressesService
+        endpoints:
+          - method: GET
+            path: /{BUSINESS}/client/addresses
+            action: listAddresses
+          - method: POST
+            path: /{BUSINESS}/client/addresses
+            action: createAddress
+          - method: PUT
+            path: /{BUSINESS}/client/addresses/{id}
+            action: updateAddress
+          - method: DELETE
+            path: /{BUSINESS}/client/addresses/{id}
+            action: deleteAddress
+          - method: PUT
+            path: /{BUSINESS}/client/addresses/{id}/default
+            action: markDefault
+        auth: Bearer token
+
+    sections:
+      - id: header
+        type: display
+        content: avatar_initials, email
+      - id: personal_data
+        type: form
+        fields: [fullName, email, phone]
+        editable: true
+      - id: security
+        type: action_list
+        actions:
+          - label: change_password
+            target: /change-password
+          - label: setup_2fa
+            target: /twoFactorSetup
+          - label: verify_2fa
+            target: /twoFactorVerify
+          - label: logout
+            action: logout
+      - id: addresses
+        type: list
+        items: addresses
+        actions: [view, edit, delete, mark_default, add_new]
+        link: /client/addresses
+      - id: preferences
+        type: form
+        fields: [language]
+        options: ["es", "en"]
+
+    transitions:
+      on_load: loadProfile
+      on_save_success: show_snackbar
+      on_save_error: show_error_snackbar
+      on_logout:
+        - target: /login
+          clear_backstack: true
+
+    navigation:
+      access: bottom_navigation_tab (Home, Orders, Profile)
+
+  # -------------------------------------------------------------------------
+  # Delivery Profile
+  # -------------------------------------------------------------------------
+  - id: delivery_profile
+    route: /delivery/profile
+    class: DeliveryProfileScreen
+    file: ui/sc/delivery/DeliveryProfileScreen.kt
+    title_key: delivery_profile_title
+    description: >
+      Perfil del repartidor con contacto, vehículo, zonas asignadas y
+      configuración de disponibilidad horaria semanal.
+
+    state:
+      class: DeliveryProfileUiState
+      file: ui/sc/delivery/DeliveryProfileViewModel.kt
+      fields:
+        - name: form
+          type: DeliveryProfileForm
+          fields:
+            - name: fullName
+              type: String
+              default: ""
+              validation:
+                required: true
+                min_length: 1
+            - name: email
+              type: String
+              default: ""
+              validation:
+                required: true
+                min_length: 1
+                pattern: ".+@.+\\..+"
+            - name: phone
+              type: String
+              default: ""
+              validation:
+                required: false
+                pattern: "^[+]?[-0-9 ()]{7,}$"
+            - name: vehicleType
+              type: String
+              default: ""
+            - name: vehicleModel
+              type: String
+              default: ""
+            - name: vehiclePlate
+              type: String
+              default: ""
+        - name: zones
+          type: "List<DeliveryZone>"
+          default: "emptyList()"
+          description: Read-only assigned delivery zones
+        - name: availability
+          type: DeliveryAvailabilityForm
+          fields:
+            - name: timezone
+              type: String
+              default: "UTC"
+              validation:
+                required: true
+                min_length: 1
+            - name: slots
+              type: "List<DeliveryAvailabilitySlotForm>"
+              default: "DayOfWeek.entries.map { DeliveryAvailabilitySlotForm(it) }"
+              description: One slot per day of the week (Mon-Sun)
+        - name: loading
+          type: Boolean
+          default: true
+        - name: saving
+          type: Boolean
+          default: false
+        - name: error
+          type: String?
+          default: null
+        - name: successKey
+          type: MessageKey?
+          default: null
+        - name: availabilityErrorKey
+          type: String?
+          default: null
+
+    availability_slot:
+      class: DeliveryAvailabilitySlotForm
+      fields:
+        - name: dayOfWeek
+          type: DayOfWeek
+        - name: enabled
+          type: Boolean
+          default: false
+        - name: mode
+          type: DeliveryAvailabilityMode
+          default: BLOCK
+          options: [BLOCK, CUSTOM]
+        - name: block
+          type: DeliveryAvailabilityBlock
+          default: MORNING
+          options:
+            MORNING: "06:00-12:00"
+            AFTERNOON: "12:00-18:00"
+            NIGHT: "18:00-23:00"
+        - name: start
+          type: String
+          default: "06:00"
+          validation:
+            pattern: "HH:MM"
+            custom: "start < end when mode == CUSTOM"
+        - name: end
+          type: String
+          default: "12:00"
+          validation:
+            pattern: "HH:MM"
+
+    viewmodel:
+      class: DeliveryProfileViewModel
+      file: ui/sc/delivery/DeliveryProfileViewModel.kt
+      methods:
+        - loadProfile       # Load profile + availability concurrently
+        - saveProfile       # Validate both, persist both
+        - logout
+        - onNameChange
+        - onEmailChange
+        - onPhoneChange
+        - onVehicleTypeChange
+        - onVehicleModelChange
+        - onVehiclePlateChange
+        - onTimezoneChange
+        - onToggleDay       # Enable/disable availability for a day
+        - onBlockSelected   # Select predefined block (sets start/end)
+        - onCustomSelected  # Switch to custom time mode
+        - onCustomStartChange
+        - onCustomEndChange
+        - validateProfile
+        - validateAvailability
+
+    actions:
+      - interface: ToDoGetDeliveryProfile
+        implementation: DoGetDeliveryProfile
+        returns: "Result<DeliveryProfileData>"
+      - interface: ToDoUpdateDeliveryProfile
+        implementation: DoUpdateDeliveryProfile
+        parameters: [profile: DeliveryProfile]
+        returns: "Result<DeliveryProfileData>"
+      - interface: ToDoGetDeliveryAvailability
+        implementation: DoGetDeliveryAvailability
+        returns: "Result<DeliveryAvailabilityConfig>"
+      - interface: ToDoUpdateDeliveryAvailability
+        implementation: DoUpdateDeliveryAvailability
+        parameters: [config: DeliveryAvailabilityConfig]
+        returns: "Result<DeliveryAvailabilityConfig>"
+
+    services:
+      - interface: CommDeliveryProfileService
+        implementation: DeliveryProfileService
+        endpoints:
+          - method: GET
+            path: /{DELIVERY}/profile
+            action: fetchProfile
+          - method: PUT
+            path: /{DELIVERY}/profile
+            action: updateProfile
+        auth: Bearer token
+        fallback: demo data on error
+      - interface: CommDeliveryAvailabilityService
+        implementation: DeliveryAvailabilityService
+        endpoints:
+          - method: GET
+            path: /{DELIVERY}/profile/availability
+            action: fetchAvailability
+          - method: PUT
+            path: /{DELIVERY}/profile/availability
+            action: updateAvailability
+        auth: Bearer token
+        fallback: empty UTC config on error
+
+    sections:
+      - id: header
+        type: display
+        content: name, email
+      - id: contact
+        type: form
+        fields: [fullName, email, phone]
+        editable: true
+      - id: vehicle
+        type: form
+        fields: [vehicleType, vehicleModel, vehiclePlate]
+        editable: true
+      - id: zones
+        type: list
+        items: zones
+        read_only: true
+      - id: availability
+        type: complex_form
+        description: Weekly schedule with per-day toggle, block/custom mode
+      - id: actions
+        type: action_list
+        actions:
+          - label: save
+            action: saveProfile
+          - label: logout
+            action: logout
+
+    transitions:
+      on_load: loadProfile (profile + availability concurrent)
+      on_save_success: show_snackbar
+      on_save_error: show_error_snackbar
+      on_logout:
+        - target: /login
+          clear_backstack: true
+
+# ---------------------------------------------------------------------------
+# Domain Models
+# ---------------------------------------------------------------------------
+models:
+
+  ClientProfile:
+    fields: [fullName, email, phone?, defaultAddressId?]
+
+  ClientPreferences:
+    fields: [language]
+
+  ClientProfileData:
+    fields: [profile: ClientProfile, addresses: List<ClientAddress>, preferences: ClientPreferences]
+
+  DeliveryProfile:
+    fields: [fullName, email, phone?, vehicle: DeliveryVehicle]
+
+  DeliveryVehicle:
+    fields: [type, model, plate?]
+
+  DeliveryZone:
+    fields: [id, name, description?]
+
+  DeliveryProfileData:
+    fields: [profile: DeliveryProfile, zones: List<DeliveryZone>]
+
+  DeliveryAvailabilityMode:
+    type: enum
+    values: [BLOCK, CUSTOM]
+
+  DeliveryAvailabilityBlock:
+    type: enum
+    values: [MORNING, AFTERNOON, NIGHT]
+
+  DeliveryAvailabilitySlot:
+    fields: [dayOfWeek, mode, block?, start?, end?]
+
+  DeliveryAvailabilityConfig:
+    fields: [timezone, slots: List<DeliveryAvailabilitySlot>]
+
+# ---------------------------------------------------------------------------
+# Invariants
+# ---------------------------------------------------------------------------
+invariants:
+  - Profile data cached in CommKeyValueStorage after fetch
+  - Client profile and delivery profile are independent flows (different routes, ViewModels, services)
+  - Delivery availability validation requires at least one enabled day
+  - Custom time slots must satisfy start < end
+  - Block selection auto-sets start/end to predefined ranges
+  - Delivery services use fallback/demo data on API errors (graceful degradation)
+  - Client address management in profile delegates to separate /client/addresses flow
+  - Both profiles validate before save (separate validation pipelines for delivery)
+
+# ---------------------------------------------------------------------------
+# DI Registration
+# ---------------------------------------------------------------------------
+di:
+  client_module:
+    bindings:
+      - type: CommClientProfileService
+        impl: ClientProfileService
+      - type: CommClientAddressesService
+        impl: ClientAddressesService
+      - type: ToDoGetClientProfile
+        impl: DoGetClientProfile
+      - type: ToDoUpdateClientProfile
+        impl: DoUpdateClientProfile
+      - type: ToDoManageClientAddress
+        impl: DoManageClientAddress
+    screens:
+      - tag: CLIENT_PROFILE
+        class: ClientProfileScreen
+
+  delivery_module:
+    bindings:
+      - type: CommDeliveryProfileService
+        impl: DeliveryProfileService
+      - type: CommDeliveryAvailabilityService
+        impl: DeliveryAvailabilityService
+      - type: ToDoGetDeliveryProfile
+        impl: DoGetDeliveryProfile
+      - type: ToDoUpdateDeliveryProfile
+        impl: DoUpdateDeliveryProfile
+      - type: ToDoGetDeliveryAvailability
+        impl: DoGetDeliveryAvailability
+      - type: ToDoUpdateDeliveryAvailability
+        impl: DoUpdateDeliveryAvailability
+    screens:
+      - tag: DELIVERY_PROFILE
+        class: DeliveryProfileScreen
