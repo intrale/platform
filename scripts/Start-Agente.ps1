@@ -289,11 +289,22 @@ function Start-UnAgente {
     Write-Host "  Agente $($Agente.numero): issue #$issue ($slug)" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor Cyan
 
-    # Verificar si el worktree ya existe
+    # Verificar si el worktree ya existe Y es un repo git valido
     $wtExists = $false
     if (Test-Path $wtDir) {
-        $wtExists = $true
-        Write-Host ">> Worktree encontrado: $wtDir" -ForegroundColor Yellow
+        # Verificar que tiene .git (archivo o directorio) — si no, es un directorio huerfano
+        $gitCheck = Join-Path $wtDir ".git"
+        if (Test-Path $gitCheck) {
+            $wtExists = $true
+            Write-Host ">> Worktree encontrado: $wtDir" -ForegroundColor Yellow
+        } else {
+            Write-Host ">> Worktree invalido (sin .git): eliminando y recreando..." -ForegroundColor Yellow
+            # Eliminar junction .claude/ primero
+            $jPath = Join-Path $wtDir ".claude"
+            if (Test-Path $jPath) { cmd /c rmdir "$jPath" 2>$null }
+            Remove-Item $wtDir -Recurse -Force -ErrorAction SilentlyContinue
+            git worktree prune 2>$null
+        }
     }
 
     # -Force (#1399): eliminar worktree existente y recrear desde origin/main actual
@@ -362,14 +373,30 @@ function Start-UnAgente {
     }
 
     if (-not $wtExists) {
-        # Ir al repo principal y actualizar main
+        # Ir al repo principal y crear worktree con git nativo
         Push-Location $MainRepo
         try {
             Write-Host ">> Actualizando main..."
             git fetch origin main --quiet 2>$null
 
+            # Eliminar branch local si ya existe (residuo de ejecucion anterior)
+            $branchExists = git branch --list $branch 2>$null
+            if ($branchExists) {
+                Write-Host ">> Eliminando branch local residual: $branch"
+                git branch -D $branch 2>$null
+            }
+
+            # Crear worktree con git nativo (mas confiable que git-wt)
             Write-Host ">> Creando worktree: $branch"
-            & $GitWt switch --create $branch
+            $wtResult = git worktree add $wtDir -b $branch origin/main 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host ">> WARN: git worktree add fallo: $wtResult" -ForegroundColor Yellow
+                # Fallback: intentar con git-wt si git nativo falla
+                if (Test-Path $GitWt) {
+                    Write-Host ">> Intentando con git-wt..."
+                    & $GitWt switch --create $branch
+                }
+            }
         }
         finally {
             Pop-Location
