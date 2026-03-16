@@ -203,6 +203,55 @@ function sendTelegramMediaGroup(photos, caption) {
     });
 }
 
+// ─── Media group with per-photo captions ─────────────────────────────────────
+
+function sendTelegramMediaGroupWithCaptions(photos, captions) {
+    return new Promise((resolve, reject) => {
+        const boundary = "----FormBoundary" + Date.now().toString(36);
+        const media = photos.map((_, i) => ({
+            type: "photo",
+            media: "attach://photo" + i,
+            ...(captions[i] ? { caption: captions[i], parse_mode: "HTML" } : {})
+        }));
+
+        let parts = [];
+        parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + _chatId + "\r\n"));
+        parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"disable_notification\"\r\n\r\ntrue\r\n"));
+        parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"media\"\r\n\r\n" + JSON.stringify(media) + "\r\n"));
+        photos.forEach((buf, i) => {
+            parts.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"photo" + i + "\"; filename=\"photo" + i + ".png\"\r\nContent-Type: image/png\r\n\r\n"));
+            parts.push(buf);
+            parts.push(Buffer.from("\r\n"));
+        });
+        parts.push(Buffer.from("--" + boundary + "--\r\n"));
+        const payload = Buffer.concat(parts);
+
+        const req = https.request({
+            hostname: "api.telegram.org",
+            path: "/bot" + _botToken + "/sendMediaGroup",
+            method: "POST",
+            headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": payload.length },
+            timeout: 30000
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.ok) {
+                        r.result.forEach(m => registerMessage(m.message_id, "command"));
+                        resolve(r);
+                    } else { reject(new Error(d)); }
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+        req.on("error", reject);
+        req.write(payload);
+        req.end();
+    });
+}
+
 // ─── Voice message ───────────────────────────────────────────────────────────
 
 function sendVoiceMessage(audioBuffer) {
@@ -264,6 +313,7 @@ module.exports = {
     telegramDownloadFile,
     sendTelegramPhoto,
     sendTelegramMediaGroup,
+    sendTelegramMediaGroupWithCaptions,
     sendVoiceMessage,
     TG_MSG_MAX
 };

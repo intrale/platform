@@ -761,7 +761,41 @@ async function processInput() {
     }
 
     const sessionId = data.session_id || "";
-    const session = loadSession(sessionId);
+    let session = loadSession(sessionId);
+
+    // Si no se encontró la sesión en el repo principal, buscar en el worktree (#1552)
+    if (!session || !session.branch) {
+        const worktreeSessionsDir = path.join(
+            process.env.CLAUDE_PROJECT_DIR || "",
+            ".claude", "sessions"
+        );
+        if (worktreeSessionsDir !== SESSIONS_DIR) {
+            try {
+                const shortId = sessionId.substring(0, 8);
+                const wFile = path.join(worktreeSessionsDir, shortId + ".json");
+                if (fs.existsSync(wFile)) {
+                    const wSession = JSON.parse(fs.readFileSync(wFile, "utf8"));
+                    if (wSession && wSession.branch) {
+                        session = wSession;
+                        log("Sesión encontrada en worktree: " + wFile + " branch=" + wSession.branch);
+                    }
+                }
+            } catch (e) { log("Error buscando sesión en worktree: " + e.message); }
+        }
+    }
+
+    // Fallback: inferir branch desde el directorio del worktree (#1552)
+    // Los worktrees se nombran: platform.agent-ISSUE-SLUG
+    if (!session || !session.branch) {
+        const projectDir = process.env.CLAUDE_PROJECT_DIR || "";
+        const wtMatch = projectDir.replace(/\\/g, "/").match(/platform\.agent-(\d+)-([^/]+)$/);
+        if (wtMatch) {
+            const inferredBranch = "agent/" + wtMatch[1] + "-" + wtMatch[2];
+            log("Branch inferido desde worktree path: " + inferredBranch);
+            if (!session) session = {};
+            session.branch = inferredBranch;
+        }
+    }
 
     // Verificar si es sesión de sprint antes de cargar el plan
     if (!session || !session.branch) {

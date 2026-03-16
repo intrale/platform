@@ -163,27 +163,70 @@ function fetchDashboardScreenshots(width, height) {
     });
 }
 
+function fetchDashboardSections(width) {
+    return new Promise((resolve) => {
+        const req = http.get("http://localhost:" + DASHBOARD_PORT + "/screenshots/sections?w=" + width, { timeout: 30000 }, (res) => {
+            if (res.statusCode !== 200) { resolve(null); return; }
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const sections = JSON.parse(d);
+                    const valid = sections.filter(s => s.image && Buffer.from(s.image, "base64").length > 500);
+                    resolve(valid.length > 0 ? valid : null);
+                } catch { resolve(null); }
+            });
+        });
+        req.on("error", () => resolve(null));
+        req.on("timeout", () => { req.destroy(); resolve(null); });
+    });
+}
+
 async function handleMonitorDashboard() {
-    _log("Handling /monitor via dashboard screenshot");
+    _log("Handling /monitor via dashboard sections");
+
+    const sectionLabels = {
+        kpis: "\ud83d\udcca <b>KPIs</b> \u2014 Agentes, permisos, CI/CD, acciones, alertas",
+        ejecucion: "\ud83d\ude80 <b>Ejecuci\u00f3n & Agentes</b> \u2014 Estado del sprint activo",
+        flujo: "\ud83d\udd00 <b>Flujo de Agentes</b> \u2014 Interacciones entre agentes",
+        feed: "\ud83d\udce1 <b>Feed</b> \u2014 \u00daltimas acciones en tiempo real",
+        permisos: "\ud83d\udd10 <b>Permisos</b> \u2014 Solicitudes pendientes y recientes",
+        metricas: "\ud83d\udcc8 <b>M\u00e9tricas</b> \u2014 Rendimiento de agentes",
+        roadmap: "\ud83d\uddfa\ufe0f <b>Roadmap</b> \u2014 Sprints planificados y progreso",
+        standalone: "\ud83e\udde9 <b>Standalone</b> \u2014 Sesiones fuera del sprint",
+        ci: "\u2699\ufe0f <b>CI/CD</b> \u2014 Estado de GitHub Actions"
+    };
+
     try {
-        const parts = await fetchDashboardScreenshots(600, 800);
-        if (parts && parts.top.length > 1000 && parts.bottom.length > 1000) {
-            const caption = "\ud83d\udcca <b>Intrale Monitor</b>\n" +
-                new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-            await _tgApi.sendTelegramMediaGroup([parts.top, parts.bottom], caption);
-            _log("/monitor screenshots álbum enviado OK");
+        const sections = await fetchDashboardSections(600);
+        if (sections && sections.length > 0) {
+            const timestamp = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+            const headerCaption = "\ud83d\udcca <b>Intrale Monitor</b>\n" + timestamp;
+            const photos = sections.map(s => Buffer.from(s.image, "base64"));
+            const captions = sections.map((s, i) => i === 0 ? headerCaption : (sectionLabels[s.id] || s.id));
+            for (let i = 0; i < photos.length; i += 10) {
+                const batch = photos.slice(i, i + 10);
+                const batchCaptions = captions.slice(i, i + 10);
+                await _tgApi.sendTelegramMediaGroupWithCaptions(batch, batchCaptions);
+            }
+            _log("/monitor sections enviadas: " + sections.length + " [" + sections.map(s => s.id).join(", ") + "]");
             return true;
         }
+    } catch (e) {
+        _log("/monitor sections error: " + e.message);
+    }
+
+    try {
         const screenshot = await fetchDashboardScreenshot(600, 800);
         if (screenshot && screenshot.length > 1000) {
             const caption = "\ud83d\udcca <b>Intrale Monitor</b>\n" +
                 new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
             await _tgApi.sendTelegramPhoto(screenshot, caption, false);
-            _log("/monitor screenshot single enviado OK");
+            _log("/monitor screenshot single fallback enviado OK");
             return true;
         }
     } catch (e) {
-        _log("/monitor screenshot error: " + e.message);
+        _log("/monitor screenshot fallback error: " + e.message);
     }
 
     // Fallback: obtener datos JSON y enviar como texto
