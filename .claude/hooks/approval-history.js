@@ -5,7 +5,23 @@
 const fs = require("fs");
 const path = require("path");
 
-const HISTORY_FILE = path.join(__dirname, "approval-history.json");
+// Resolver siempre al repo principal (no al worktree) para centralizar permisos (#1404)
+function resolveMainHooksDir() {
+    try {
+        const { execSync } = require("child_process");
+        const output = execSync("git worktree list", {
+            encoding: "utf8", cwd: __dirname, timeout: 5000, windowsHide: true
+        });
+        const firstLine = output.split("\n")[0] || "";
+        const match = firstLine.match(/^(.+?)\s+[0-9a-f]{5,}/);
+        if (match) {
+            const mainPath = match[1].trim().replace(/^\/([a-z])\//, "$1:\\").replace(/\//g, "\\");
+            return path.join(mainPath, ".claude", "hooks");
+        }
+    } catch (e) {}
+    return __dirname;
+}
+const HISTORY_FILE = path.join(resolveMainHooksDir(), "approval-history.json");
 const SUGGEST_THRESHOLD = 3; // sugerir persistencia después de N aprobaciones
 
 function loadHistory() {
