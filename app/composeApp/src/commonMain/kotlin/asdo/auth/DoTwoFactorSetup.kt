@@ -2,9 +2,9 @@ package asdo.auth
 
 import ext.storage.CommKeyValueStorage
 import ext.auth.CommTwoFactorSetupService
-import ext.auth.ExceptionResponse
-import ext.auth.TwoFactorSetupResponse
-import ext.auth.toExceptionResponse
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.auth.TwoFactorSetupResponse
+import ar.com.intrale.shared.toExceptionResponse
 
 class DoTwoFactorSetup(
     private val service: CommTwoFactorSetupService,

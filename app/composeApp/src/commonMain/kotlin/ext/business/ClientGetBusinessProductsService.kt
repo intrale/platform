@@ -1,9 +1,9 @@
 package ext.business
 
 import ar.com.intrale.BuildKonfig
-import ext.auth.ExceptionResponse
-import ext.auth.toExceptionResponse
-import ext.dto.BusinessProductsResponse
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.business.BusinessProductsResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter

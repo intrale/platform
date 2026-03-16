@@ -2,9 +2,9 @@ package ui.sc.business
 
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoListCategories
-import ext.business.CategoryDTO
-import ext.business.ProductDTO
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductStatus
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend

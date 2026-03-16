@@ -1,7 +1,12 @@
 package ext.delivery
 
 import ar.com.intrale.BuildKonfig
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.delivery.DeliveryOrderDTO
+import ar.com.intrale.shared.delivery.DeliveryOrderItemDTO
+import ar.com.intrale.shared.delivery.DeliveryOrderStatusUpdateRequest
+import ar.com.intrale.shared.delivery.DeliveryOrderStatusUpdateResponse
+import ar.com.intrale.shared.delivery.DeliveryOrdersSummaryDTO
 import ext.storage.CommKeyValueStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
@@ -74,12 +79,12 @@ class DeliveryOrdersService(
         throw throwable.toDeliveryException()
     }
 
-    override suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDetailDTO> = runCatching {
+    override suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDTO> = runCatching {
         logger.info { "[Delivery][Orders] Solicitando detalle del pedido $orderId" }
         val response = httpClient.get("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/orders/$orderId") {
             authorize()
         }
-        response.toResult(DeliveryOrderDetailDTO.serializer())
+        response.toResult(DeliveryOrderDTO.serializer())
     }.recoverCatching { throwable ->
         logger.error(throwable) { "[Delivery][Orders] Error al obtener detalle del pedido $orderId" }
         throw throwable.toDeliveryException()

@@ -1,6 +1,6 @@
 package ext.client
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.serialization.Serializable
 
 @Serializable

@@ -11,6 +11,10 @@ import io.ktor.http.isSuccess
 import kotlinx.serialization.json.Json
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.LoginRequest
+import ar.com.intrale.shared.auth.LoginResponse
 
 class DeliveryLoginService(private val httpClient: HttpClient) : CommLoginService {
 

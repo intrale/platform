@@ -2,9 +2,9 @@ package ui.sc.signup
 
 import asdo.business.ToGetBusinesses
 import asdo.signup.*
-import ext.dto.BusinessDTO
-import ext.dto.SearchBusinessesResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.business.BusinessDTO
+import ar.com.intrale.shared.business.SearchBusinessesResponse
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend

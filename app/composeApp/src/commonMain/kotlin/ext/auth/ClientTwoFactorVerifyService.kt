@@ -9,9 +9,12 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.TwoFactorVerifyRequest
+import ar.com.intrale.shared.auth.TwoFactorVerifyResponse
 
 class ClientTwoFactorVerifyService(private val httpClient: HttpClient) : CommTwoFactorVerifyService {
     @OptIn(InternalAPI::class)
@@ -35,10 +38,3 @@ class ClientTwoFactorVerifyService(private val httpClient: HttpClient) : CommTwo
         }
     }
 }
-
-@Serializable
-private data class TwoFactorVerifyRequest(val code: String)
-
-@Serializable
-data class TwoFactorVerifyResponse(val statusCode: StatusCodeDTO)
-

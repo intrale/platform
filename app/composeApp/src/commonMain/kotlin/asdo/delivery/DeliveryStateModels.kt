@@ -1,6 +1,6 @@
 package asdo.delivery
 
-import ext.delivery.DeliveryStateChangeResponse
+import ar.com.intrale.shared.delivery.DeliveryStateChangeResponse
 
 enum class DeliveryState {
     PENDING, PICKED_UP, IN_TRANSIT, DELIVERED, CANCELLED

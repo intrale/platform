@@ -8,11 +8,11 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.InternalAPI
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import ext.auth.ExceptionResponse
-import ext.auth.toExceptionResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.business.RequestJoinBusinessRequest
+import ar.com.intrale.shared.business.RequestJoinBusinessResponse
 
 class ClientRequestJoinBusinessService(private val httpClient: HttpClient) : CommRequestJoinBusinessService {
     @OptIn(InternalAPI::class)
@@ -35,9 +35,3 @@ class ClientRequestJoinBusinessService(private val httpClient: HttpClient) : Com
         }
     }
 }
-
-@Serializable
-data class RequestJoinBusinessRequest(val placeholder: String? = null)
-
-@Serializable
-data class RequestJoinBusinessResponse(val state: String)

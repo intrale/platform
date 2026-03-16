@@ -1,6 +1,6 @@
 package asdo.business
 
-import ext.dto.BusinessDashboardSummaryDTO
+import ar.com.intrale.shared.business.BusinessDashboardSummaryDTO
 
 interface ToGetBusinessDashboardSummary {
     suspend fun execute(businessId: String): Result<BusinessDashboardSummaryDTO>

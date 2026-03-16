@@ -2,9 +2,9 @@ package asdo.auth
 
 import ext.auth.CommChangePasswordService
 import ext.storage.CommKeyValueStorage
-import ext.auth.ChangePasswordResponse
-import ext.auth.ExceptionResponse
-import ext.auth.toExceptionResponse
+import ar.com.intrale.shared.auth.ChangePasswordResponse
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.toExceptionResponse
 
 class DoChangePassword(
     private val service: CommChangePasswordService,

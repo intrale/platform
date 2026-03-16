@@ -1,6 +1,6 @@
-package ext.client
+package ar.com.intrale.shared.client
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -23,7 +23,9 @@ data class ClientAddressDTO(
     val state: String? = null,
     val postalCode: String? = null,
     val country: String? = null,
-    val isDefault: Boolean = false
+    val isDefault: Boolean = false,
+    val createdAt: String? = null,
+    val updatedAt: String? = null
 )
 
 @Serializable
@@ -42,4 +44,10 @@ data class ClientProfileResponse(
 data class ClientAddressResponse(
     val statusCode: StatusCodeDTO? = null,
     val addresses: List<ClientAddressDTO>? = null
+)
+
+@Serializable
+data class ClientProfileUpdateRequest(
+    val profile: ClientProfileDTO? = null,
+    val preferences: ClientPreferencesDTO? = null
 )

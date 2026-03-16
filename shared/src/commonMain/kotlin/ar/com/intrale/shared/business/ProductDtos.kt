@@ -1,6 +1,6 @@
-package ext.business
+package ar.com.intrale.shared.business
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -51,4 +51,21 @@ data class ProductRequest(
 data class ProductListResponse(
     val statusCode: StatusCodeDTO? = null,
     val products: List<ProductDTO> = emptyList()
+)
+
+@Serializable
+data class BusinessProductDTO(
+    val id: String,
+    val name: String,
+    val basePrice: Double,
+    val status: String,
+    val emoji: String? = null,
+    val isAvailable: Boolean = true,
+    val stockQuantity: Int? = null
+)
+
+@Serializable
+data class BusinessProductsResponse(
+    val statusCode: StatusCodeDTO,
+    val products: List<BusinessProductDTO>
 )

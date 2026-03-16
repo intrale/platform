@@ -1,7 +1,14 @@
 package asdo.auth
 
-import ext.auth.*
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.toExceptionResponse
+import ar.com.intrale.shared.auth.*
+import ext.auth.CommLoginService
+import ext.auth.CommChangePasswordService
+import ext.auth.CommPasswordRecoveryService
+import ext.auth.CommTwoFactorSetupService
+import ext.auth.CommTwoFactorVerifyService
 import ext.storage.CommKeyValueStorage
 import ext.storage.model.ClientProfileCache
 import kotlinx.coroutines.test.runTest

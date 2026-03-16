@@ -1,7 +1,7 @@
 package asdo.business
 
-import ext.business.FontsDTO
-import ext.business.FontsRequest
+import ar.com.intrale.shared.business.FontsDTO
+import ar.com.intrale.shared.business.FontsRequest
 
 interface ToDoGetFonts {
     suspend fun execute(businessId: String): Result<FontsDTO>

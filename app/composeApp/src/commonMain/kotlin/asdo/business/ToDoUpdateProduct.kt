@@ -1,7 +1,7 @@
 package asdo.business
 
-import ext.business.ProductDTO
-import ext.business.ProductRequest
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductRequest
 
 interface ToDoUpdateProduct {
     suspend fun execute(

@@ -1,6 +1,9 @@
 package ext.delivery
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.delivery.DeliveryAvailabilityDTO
+import ar.com.intrale.shared.delivery.DeliveryProfileDTO
+import ar.com.intrale.shared.delivery.DeliveryProfileResponse
 import ext.storage.CommKeyValueStorage
 import ext.storage.model.ClientProfileCache
 import io.ktor.client.HttpClient
@@ -173,7 +176,7 @@ class DeliveryOrdersServiceTest {
     }
 
     @Test
-    fun `fetchOrderDetail exitoso retorna DeliveryOrderDetailDTO`() = runTest {
+    fun `fetchOrderDetail exitoso retorna DeliveryOrderDTO`() = runTest {
         val body = """{
             "id":"ord-1","publicId":"P-001","shortCode":"SC1",
             "businessName":"Tienda Centro","neighborhood":"Microcentro",

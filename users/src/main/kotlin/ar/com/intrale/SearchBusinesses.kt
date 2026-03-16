@@ -27,15 +27,16 @@ class SearchBusinesses(
             .sortedBy { it.name ?: "" }
 
         val startIndex = body.lastKey?.let { key -> filtered.indexOfFirst { it.name == key } + 1 } ?: 0
+        val limit = body.limit
 
-        val paged = if (body.limit != null) {
-            filtered.drop(startIndex).take(body.limit)
+        val paged = if (limit != null) {
+            filtered.drop(startIndex).take(limit)
         } else {
             filtered.drop(startIndex)
         }
 
-        val lastKey = if (body.limit != null && startIndex + body.limit < filtered.size) {
-            filtered[startIndex + body.limit - 1].name
+        val lastKey = if (limit != null && startIndex + limit < filtered.size) {
+            filtered[startIndex + limit - 1].name
         } else {
             null
         }

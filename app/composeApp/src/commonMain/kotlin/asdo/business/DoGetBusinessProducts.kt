@@ -1,7 +1,7 @@
 package asdo.business
 
 import ext.business.CommGetBusinessProductsService
-import ext.dto.BusinessProductsResponse
+import ar.com.intrale.shared.business.BusinessProductsResponse
 
 class DoGetBusinessProducts(
     private val service: CommGetBusinessProductsService

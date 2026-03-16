@@ -1,6 +1,6 @@
-package ext.business
+package ar.com.intrale.shared.business
 
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -14,7 +14,7 @@ data class CategoryDTO(
 
 @Serializable
 data class CategoryRequest(
-    val name: String,
+    val name: String = "",
     val description: String? = null
 )
 

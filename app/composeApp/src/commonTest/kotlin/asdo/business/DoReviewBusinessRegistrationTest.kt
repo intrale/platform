@@ -1,8 +1,8 @@
 package asdo.business
 
 import ext.business.CommReviewBusinessRegistrationService
-import ext.business.ReviewBusinessRegistrationResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.business.ReviewBusinessRegistrationResponse
+import ar.com.intrale.shared.StatusCodeDTO
 import ext.storage.CommKeyValueStorage
 import ext.storage.model.ClientProfileCache
 import kotlinx.coroutines.test.runTest

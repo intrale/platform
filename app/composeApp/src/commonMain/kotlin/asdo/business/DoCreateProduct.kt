@@ -1,8 +1,8 @@
 package asdo.business
 
 import ext.business.CommProductService
-import ext.business.ProductDTO
-import ext.business.ProductRequest
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductRequest
 
 class DoCreateProduct(
     private val service: CommProductService

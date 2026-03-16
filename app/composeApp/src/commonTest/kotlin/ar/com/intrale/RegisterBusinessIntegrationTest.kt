@@ -6,9 +6,9 @@ import asdo.business.ToDoRegisterBusiness
 import asdo.business.ToDoReviewBusinessRegistration
 import ext.business.CommRegisterBusinessService
 import ext.business.CommReviewBusinessRegistrationService
-import ext.business.RegisterBusinessResponse
-import ext.business.ReviewBusinessRegistrationResponse
-import ext.dto.StatusCodeDTO
+import ar.com.intrale.shared.business.RegisterBusinessResponse
+import ar.com.intrale.shared.business.ReviewBusinessRegistrationResponse
+import ar.com.intrale.shared.StatusCodeDTO
 import kotlin.test.Test
 import kotlin.test.assertTrue
 

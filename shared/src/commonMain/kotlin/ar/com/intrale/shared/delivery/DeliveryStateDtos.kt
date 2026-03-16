@@ -1,4 +1,4 @@
-package ext.delivery
+package ar.com.intrale.shared.delivery
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable

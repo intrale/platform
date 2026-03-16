@@ -2,9 +2,9 @@ package ui.sc.client
 
 import asdo.business.ToDoListCategories
 import asdo.business.ToDoListProducts
-import ext.business.CategoryDTO
-import ext.business.ProductDTO
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs

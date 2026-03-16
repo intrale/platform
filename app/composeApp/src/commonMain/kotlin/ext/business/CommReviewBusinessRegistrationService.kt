@@ -1,5 +1,7 @@
 package ext.business
 
+import ar.com.intrale.shared.business.ReviewBusinessRegistrationResponse
+
 interface CommReviewBusinessRegistrationService {
     suspend fun execute(
         publicId: String,

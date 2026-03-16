@@ -3,8 +3,8 @@ package ui.sc.business
 import asdo.business.ToDoCreateCategory
 import asdo.business.ToDoDeleteCategory
 import asdo.business.ToDoUpdateCategory
-import ext.business.CategoryDTO
-import ext.business.CategoryRequest
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.CategoryRequest
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

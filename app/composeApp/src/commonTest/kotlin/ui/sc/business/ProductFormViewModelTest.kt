@@ -5,10 +5,10 @@ import asdo.business.ToDoDeleteProduct
 import asdo.business.ToDoListCategories
 import asdo.business.ToDoListProducts
 import asdo.business.ToDoUpdateProduct
-import ext.business.CategoryDTO
-import ext.business.ProductDTO
-import ext.business.ProductRequest
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductRequest
+import ar.com.intrale.shared.business.ProductStatus
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

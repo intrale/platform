@@ -1,7 +1,7 @@
 package asdo.signup
 
-import ext.auth.ExceptionResponse
-import ext.signup.RegisterSalerResponse
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.auth.RegisterSalerResponse
 
 data class RegisterSalerStatusCode(val value: Int, val description: String?)
 

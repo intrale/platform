@@ -54,9 +54,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import ext.business.CategoryDTO
-import ext.business.ProductDTO
-import ext.business.ProductStatus
+import ar.com.intrale.shared.business.CategoryDTO
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductStatus
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch

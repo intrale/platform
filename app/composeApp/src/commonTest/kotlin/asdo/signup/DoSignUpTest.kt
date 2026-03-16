@@ -1,8 +1,15 @@
 package asdo.signup
 
-import ext.auth.ExceptionResponse
-import ext.dto.StatusCodeDTO
-import ext.signup.*
+import ar.com.intrale.shared.ExceptionResponse
+import ar.com.intrale.shared.StatusCodeDTO
+import ar.com.intrale.shared.auth.SignUpResponse
+import ar.com.intrale.shared.auth.ConfirmSignUpResponse
+import ar.com.intrale.shared.auth.RegisterSalerResponse
+import ext.signup.CommSignUpService
+import ext.signup.CommConfirmSignUpService
+import ext.signup.CommRegisterSalerService
+import ext.signup.CommSignUpDeliveryService
+import ext.signup.CommSignUpPlatformAdminService
 import ext.storage.CommKeyValueStorage
 import ext.storage.model.ClientProfileCache
 import kotlinx.coroutines.test.runTest

@@ -1,8 +1,8 @@
 package asdo.business
 
 import ext.business.CommFontsService
-import ext.business.FontsDTO
-import ext.business.FontsRequest
+import ar.com.intrale.shared.business.FontsDTO
+import ar.com.intrale.shared.business.FontsRequest
 
 class DoGetFonts(
     private val service: CommFontsService

@@ -1,5 +1,8 @@
 package ext.business
 
+import ar.com.intrale.shared.business.ProductDTO
+import ar.com.intrale.shared.business.ProductRequest
+
 interface CommProductService {
     suspend fun listProducts(businessId: String): Result<List<ProductDTO>>
     suspend fun getProduct(businessId: String, productId: String): Result<ProductDTO>
