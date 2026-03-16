@@ -1,0 +1,94 @@
+# =============================================================================
+# UI Specs — Convenciones y referencia
+# docs/specs/README.yaml
+# =============================================================================
+
+project: intrale-platform
+spec_version: 1
+description: >
+  Especificaciones YAML de navegación y UIState para los flujos core del app.
+  Estas specs son la fuente de verdad para validar implementaciones y planificar
+  cambios en la UI.
+
+# ---------------------------------------------------------------------------
+# Index de specs
+# ---------------------------------------------------------------------------
+specs:
+  - file: login.yaml
+    flow: login
+    screens: [login, force_change_password]
+    description: Autenticación con soporte multi-app, sesión previa, forzado de password
+
+  - file: signup.yaml
+    flow: signup
+    screens: [signup, confirm_signup, select_signup_profile, signup_platform_admin, signup_delivery, register_saler, register_new_business]
+    description: Registro de usuarios por rol y tipo de app
+
+  - file: profile.yaml
+    flow: profile
+    screens: [client_profile, delivery_profile]
+    description: Perfil de usuario (client y delivery) con datos, preferencias y disponibilidad
+
+  - file: addresses.yaml
+    flow: addresses
+    screens: [address_list, address_form]
+    description: CRUD de direcciones del cliente con list-detail pattern
+
+# ---------------------------------------------------------------------------
+# Convenciones de las specs
+# ---------------------------------------------------------------------------
+conventions:
+
+  structure:
+    - Cada spec define un `flow` con `screens`, `invariants` y `di`
+    - Cada screen tiene `route`, `class`, `state`, `viewmodel`, `actions`, `transitions`
+    - State fields incluyen `type`, `default`, y `validation` cuando aplica
+    - Transitions definen `on_success`, `on_error`, `on_load`
+
+  naming:
+    route: "/feature/sub-feature" (lowercase, slash-separated)
+    screen_class: PascalCase + Screen suffix (e.g., AddressListScreen)
+    state_class: PascalCase + UiState/UIState suffix
+    viewmodel_class: PascalCase + ViewModel suffix
+    action_interface: "ToDo" + PascalCase action name
+    action_impl: "Do" + PascalCase action name
+    service_interface: "Comm" + PascalCase service name
+    service_impl: "Client" + PascalCase service name
+
+  validation:
+    framework: Konform DSL
+    common_patterns:
+      email: ".+@.+\\..+"
+      phone: "^[+]?[-0-9 ()]{7,}$"
+      confirmation_code: "^\\d{6}$"
+    error_keys: resString message keys (form_error_*)
+
+  file_paths:
+    note: Relative to app/composeApp/src/commonMain/kotlin/ar/com/intrale/
+    screens: "ui/sc/{feature}/"
+    viewmodels: "ui/sc/{feature}/"
+    actions: "asdo/{feature}/"
+    services: "ext/{feature}/"
+    di: DIManager.kt
+
+# ---------------------------------------------------------------------------
+# Cómo usar estas specs
+# ---------------------------------------------------------------------------
+usage:
+  for_agents: >
+    Los agentes de desarrollo (/android-dev, /web-dev, /backend-dev) DEBEN
+    consultar la spec del flujo relevante antes de implementar cambios.
+    La spec define la fuente de verdad para: rutas, campos de estado,
+    reglas de validación, transiciones de navegación e invariantes.
+
+  for_review: >
+    /review y /qa pueden verificar que la implementación cumple con la spec:
+    campos de state, validaciones, transiciones, y registros de DI.
+
+  for_planning: >
+    /planner y /po pueden usar las specs para entender el estado actual de
+    cada flujo y planificar nuevos features o cambios.
+
+  updating_specs: >
+    Cuando se modifica un flujo, actualizar la spec correspondiente como
+    parte del mismo PR. La spec y el código deben estar siempre en sync.

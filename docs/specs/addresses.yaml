@@ -1,0 +1,358 @@
+# =============================================================================
+# UI Spec: Addresses Flow
+# CRUD de direcciones del cliente con list + form pattern
+# =============================================================================
+
+flow: addresses
+version: 1
+description: >
+  Flujo de gestión de direcciones del cliente: listado, creación, edición,
+  eliminación y marcado como predeterminada. Usa patrón list-detail con
+  AddressEditorStore como puente entre pantallas.
+
+# ---------------------------------------------------------------------------
+# Screens
+# ---------------------------------------------------------------------------
+screens:
+
+  # -------------------------------------------------------------------------
+  # Address List
+  # -------------------------------------------------------------------------
+  - id: address_list
+    route: /client/addresses
+    class: AddressListScreen
+    file: ui/sc/client/AddressListScreen.kt
+    title_key: client_profile_addresses_title
+    description: Lista de direcciones guardadas con opciones de editar, eliminar y agregar
+
+    state:
+      class: AddressListUiState
+      file: ui/sc/client/AddressListViewModel.kt
+      fields:
+        - name: status
+          type: AddressListStatus
+          default: Idle
+          options: [Idle, Loading, Loaded, Empty, Error]
+        - name: items
+          type: "List<AddressListItem>"
+          default: "emptyList()"
+        - name: errorMessage
+          type: String?
+          default: null
+        - name: deletingAddressId
+          type: String?
+          default: null
+
+    list_item:
+      class: AddressListItem
+      fields:
+        - name: id
+          type: String
+        - name: label
+          type: String
+        - name: street
+          type: String
+        - name: number
+          type: String
+        - name: reference
+          type: String?
+        - name: city
+          type: String
+        - name: state
+          type: String?
+        - name: postalCode
+          type: String?
+        - name: country
+          type: String?
+        - name: isDefault
+          type: Boolean
+
+    viewmodel:
+      class: AddressListViewModel
+      file: ui/sc/client/AddressListViewModel.kt
+      dependencies:
+        - ToDoGetClientProfile
+        - ToDoManageClientAddress
+      methods:
+        - loadAddresses    # Fetches profile, maps addresses to items
+        - deleteAddress    # suspend (addressId: String) -> Result<Unit>
+        - clearError
+        - toDraft          # Converts AddressListItem -> AddressDraft for editing
+
+    transitions:
+      on_load: loadAddresses
+      on_add:
+        - action: AddressEditorStore.clear()
+        - target: /client/addresses/form
+      on_edit:
+        - action: AddressEditorStore.setDraft(item.toDraft())
+        - target: /client/addresses/form
+      on_delete:
+        - action: show_confirmation_dialog
+        - confirm: viewModel.deleteAddress(id)
+        - on_success: show_snackbar (client_profile_address_deleted)
+        - on_error: show_error_snackbar
+
+    message_keys:
+      - client_profile_add_address
+      - client_addresses_retry
+      - client_profile_addresses_empty
+      - client_addresses_error
+      - client_addresses_delete_confirm_title
+      - client_addresses_delete_confirm_message
+      - client_addresses_delete_confirm_accept
+      - client_addresses_delete_confirm_cancel
+      - client_profile_address_deleted
+      - client_profile_edit_address
+      - client_profile_delete_address
+      - client_profile_default_badge
+      - error_generic
+
+  # -------------------------------------------------------------------------
+  # Address Form
+  # -------------------------------------------------------------------------
+  - id: address_form
+    route: /client/addresses/form
+    class: AddressFormScreen
+    file: ui/sc/client/AddressFormScreen.kt
+    title_key: dynamic  # client_address_form_title_create | client_address_form_title_edit
+    description: Formulario de creación/edición de dirección
+
+    state:
+      class: AddressFormUiState
+      file: ui/sc/client/AddressFormViewModel.kt
+      fields:
+        - name: id
+          type: String?
+          default: null
+          description: null = create mode, present = edit mode
+        - name: label
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+            error_key: form_error_required
+        - name: street
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+            error_key: form_error_required
+        - name: number
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+            error_key: form_error_required
+        - name: reference
+          type: String
+          default: ""
+          validation:
+            required: false
+        - name: city
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+            error_key: form_error_required
+        - name: state
+          type: String
+          default: ""
+          validation:
+            required: false
+        - name: postalCode
+          type: String
+          default: ""
+          validation:
+            required: false
+            min_length: 3
+        - name: country
+          type: String
+          default: ""
+          validation:
+            required: false
+        - name: isDefault
+          type: Boolean
+          default: false
+
+    viewmodel:
+      class: AddressFormViewModel
+      file: ui/sc/client/AddressFormViewModel.kt
+      dependencies:
+        - ToDoManageClientAddress
+      extra_state:
+        - name: loading
+          type: Boolean
+          default: false
+        - name: mode
+          type: AddressFormMode
+          default: Create
+          options: [Create, Edit]
+        - name: errorMessage
+          type: String?
+          default: null
+      methods:
+        - save         # suspend -> Result<ClientAddress>
+        - applyDraft   # (draft: AddressDraft?) -> sets UIState + auto-detects mode
+        - isValid
+        - initInputState
+
+    mode_detection:
+      rule: "id == null -> Create; id != null -> Edit"
+      note: Mode transitions from Create to Edit after successful creation (server assigns id)
+
+    transitions:
+      on_save_success:
+        - action: update_draft_in_store
+        - action: show_snackbar (client_profile_address_saved)
+        - target: /client/addresses (navigate back)
+      on_save_error:
+        - action: show_error_snackbar
+      on_validation_failure:
+        - action: mark_invalid_fields
+        - action: show_error_snackbar
+
+    message_keys:
+      - client_address_form_title_create
+      - client_address_form_title_edit
+      - client_profile_address_label
+      - client_profile_address_line1
+      - client_profile_address_number
+      - client_profile_address_reference
+      - client_profile_address_city
+      - client_profile_address_state
+      - client_profile_address_zip
+      - client_profile_address_country
+      - client_profile_make_default
+      - client_profile_save_address
+      - client_profile_save_address_content_description
+      - client_profile_address_saved
+      - error_generic
+      - form_error_required
+
+# ---------------------------------------------------------------------------
+# Cross-Screen Communication
+# ---------------------------------------------------------------------------
+shared_state:
+
+  address_draft:
+    class: AddressDraft
+    file: ui/sc/client/AddressDraft.kt
+    fields: [id?, label, street, number, reference, city, state, postalCode, country, isDefault]
+
+  address_editor_store:
+    class: AddressEditorStore
+    file: ui/sc/client/AddressEditorStore.kt
+    type: singleton_object
+    state: "StateFlow<AddressDraft?>"
+    methods:
+      - setDraft(draft)   # Set or update draft
+      - update(transform) # Transform current draft
+      - clear()           # Reset to null
+    lifecycle: |
+      1. List screen: clear() on Add, setDraft() on Edit
+      2. Form screen: reads draft via collectAsState()
+      3. Form screen: update() on save success (with server-assigned id)
+      4. List screen: re-reads on resume
+
+# ---------------------------------------------------------------------------
+# Domain Actions
+# ---------------------------------------------------------------------------
+actions:
+
+  manage_address:
+    interface: ToDoManageClientAddress
+    implementation: DoManageClientAddress
+    sealed_actions:
+      - type: Create
+        parameters: [address: ClientAddress]
+        service_call: addressesService.createAddress()
+        post_action: markDefault if isDefault
+      - type: Update
+        parameters: [address: ClientAddress]
+        service_call: addressesService.updateAddress()
+        post_action: markDefault if isDefault
+      - type: Delete
+        parameters: [addressId: String]
+        service_call: addressesService.deleteAddress()
+        post_action: reassign default to next address
+      - type: MarkDefault
+        parameters: [addressId: String]
+        service_call: addressesService.markDefault()
+
+    default_resolution:
+      priority:
+        1: "Updated address ID if marked default"
+        2: "First address marked as default in list"
+        3: "Profile's existing defaultAddressId (if in list)"
+        4: "First address in list"
+        5: "null if no addresses"
+      note: All addresses normalized to match resolved default after every action
+
+# ---------------------------------------------------------------------------
+# API Endpoints
+# ---------------------------------------------------------------------------
+api:
+  base: "/{BUSINESS}/client/addresses"
+  auth: Bearer token
+  endpoints:
+    - method: GET
+      path: /
+      action: listAddresses
+      response: "List<ClientAddressDTO> | ClientAddressResponse"
+    - method: POST
+      path: /
+      action: createAddress
+      request: ClientAddressDTO
+      response: ClientAddressDTO (with server-generated id)
+    - method: PUT
+      path: /{id}
+      action: updateAddress
+      request: ClientAddressDTO
+      response: ClientAddressDTO
+    - method: DELETE
+      path: /{id}
+      action: deleteAddress
+      response: empty
+    - method: PUT
+      path: /{id}/default
+      action: markDefault
+      response: ClientAddressDTO
+
+# ---------------------------------------------------------------------------
+# Navigation Graph
+# ---------------------------------------------------------------------------
+navigation:
+  entry_point: /client/addresses (from client profile)
+  flow:
+    - /client/addresses -> /client/addresses/form (Add or Edit)
+    - /client/addresses/form -> /client/addresses (Save success, navigate back)
+    - /client/addresses (Delete: stays on screen, refreshes list)
+
+# ---------------------------------------------------------------------------
+# Invariants
+# ---------------------------------------------------------------------------
+invariants:
+  - AddressEditorStore is the single source of truth for cross-screen draft state
+  - Form mode (Create/Edit) auto-detected from draft.id presence
+  - Create mode transitions to Edit mode after successful server creation
+  - Delete always shows confirmation dialog before executing
+  - Default address reassignment happens server-side; client normalizes after refresh
+  - Empty optional fields converted to null before API call (trimmed strings)
+  - At least one address should be default when list is non-empty
+  - All API calls require Bearer token from CommKeyValueStorage
+
+# ---------------------------------------------------------------------------
+# DI Registration
+# ---------------------------------------------------------------------------
+di:
+  screens:
+    - tag: CLIENT_ADDRESSES
+      class: AddressListScreen
+    - tag: CLIENT_ADDRESS_FORM
+      class: AddressFormScreen
+  note: Services and actions shared with profile module (clientModule)

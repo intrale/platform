@@ -1,0 +1,220 @@
+# =============================================================================
+# UI Spec: Login Flow
+# Flujo de autenticación principal (Client, Business, Delivery)
+# =============================================================================
+
+flow: login
+version: 1
+description: >
+  Flujo de autenticación con soporte para 3 app types, sesión previa,
+  forzado de cambio de contraseña y bloqueo de cuenta.
+
+# ---------------------------------------------------------------------------
+# Screens
+# ---------------------------------------------------------------------------
+screens:
+
+  - id: login
+    route: /login
+    class: Login
+    file: ui/sc/auth/Login.kt
+    title_key: login_appbar_title
+    description: Pantalla principal de login con email y password
+
+    state:
+      class: LoginUIState
+      file: ui/sc/auth/LoginViewModel.kt
+      fields:
+        - name: user
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+            pattern: ".+@.+\\..+"
+            error_key: form_error_invalid_email
+        - name: password
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 8
+            error_key: form_error_min_length_8
+
+    viewmodel:
+      class: LoginViewModel
+      file: ui/sc/auth/LoginViewModel.kt
+      extra_state:
+        - name: loading
+          type: Boolean
+          default: false
+        - name: isCheckingSession
+          type: Boolean
+          default: false
+      methods:
+        - login          # suspend -> Result<DoLoginResult>
+        - previousLogin  # suspend -> Boolean (checks stored token)
+        - onUserChange
+        - onPasswordChange
+        - markCredentialsAsInvalid
+
+    actions:
+      interface: ToDoLogin
+      implementation: DoLogin
+      file: asdo/auth/DoLogin.kt
+      parameters:
+        - user: String
+        - password: String
+        - newPassword: String?    # for forced password change
+        - name: String?           # for forced password change
+        - familyName: String?     # for forced password change
+
+    service:
+      interface: CommLoginService
+      implementations:
+        - class: ClientLoginService
+          endpoint: POST /{BUSINESS}/signin
+          condition: "!isDelivery"
+        - class: DeliveryLoginService
+          endpoint: POST /{DELIVERY}/signin
+          condition: isDelivery
+      request: LoginRequest(email, password, newPassword?, name?, familyName?)
+      response: LoginResponse(statusCode, idToken, accessToken, refreshToken)
+
+    result:
+      success: DoLoginResult(statusCode, accessToken?)
+      exception: DoLoginException(statusCode, message)
+
+    on_launch:
+      - action: check_previous_session
+        via: DoCheckPreviousLogin
+        if_true: trigger_login_with_stored_token
+        if_false: show_login_form
+
+    transitions:
+      on_success:
+        - condition: AppRuntimeConfig.isClient
+          target: /client-home
+          clear_backstack: false
+        - condition: AppRuntimeConfig.isDelivery
+          target: /delivery-dashboard
+          clear_backstack: true
+        - condition: AppRuntimeConfig.isBusiness
+          target: /dashboard
+          clear_backstack: true
+
+      on_error:
+        - status: 401
+          action: mark_credentials_invalid
+          message: invalid_credentials
+        - status: [403, 423]
+          action: show_blocked_message
+          message: user_blocked
+        - status: new_password_required
+          action: store_credentials_and_navigate
+          target: /force-change-password
+        - status: other
+          action: show_generic_error
+
+    links:
+      - label: forgot_password
+        target: /passwordRecovery
+        condition: always
+      - label: no_account_client
+        target: /signup
+        condition: isClient
+      - label: no_account_business
+        target: /selectSignupProfile
+        condition: isBusiness
+      - label: no_account_delivery
+        target: /signupDelivery
+        condition: isDelivery
+      - label: has_recovery_code
+        target: /confirmPasswordRecovery
+        condition: always
+      - label: register_business
+        target: /register-new-business
+        condition: isBusiness
+
+  - id: force_change_password
+    route: /force-change-password
+    class: ForceChangePasswordScreen
+    file: ui/sc/auth/ForceChangePasswordScreen.kt
+    title_key: null
+    description: Pantalla de cambio de contraseña forzado (primer login Cognito)
+
+    state:
+      class: ForceChangePasswordUIState
+      file: ui/sc/auth/ForceChangePasswordViewModel.kt
+      fields:
+        - name: newPassword
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 8
+        - name: name
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+        - name: familyName
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+
+    viewmodel:
+      class: ForceChangePasswordViewModel
+      extra_state:
+        - name: loading
+          type: Boolean
+          default: false
+
+    credential_store:
+      class: ForceChangePasswordCredentialsStore
+      type: singleton_object
+      fields: [user, password]
+      lifecycle: store_on_navigate, clear_on_success
+
+    transitions:
+      on_success:
+        - condition: AppRuntimeConfig.isClient
+          target: /client-home
+        - condition: AppRuntimeConfig.isDelivery
+          target: /delivery-dashboard
+        - condition: AppRuntimeConfig.isBusiness
+          target: /dashboard
+      on_error:
+        - status: 401
+          action: show_invalid_credentials
+
+# ---------------------------------------------------------------------------
+# Invariants
+# ---------------------------------------------------------------------------
+invariants:
+  - Token stored in CommKeyValueStorage on successful login
+  - SessionStore updated with UserRole on successful login
+  - ForceChangePasswordCredentialsStore cleared after successful forced change
+  - Previous session check runs on LaunchedEffect(Unit) at screen init
+  - Service endpoint selected at DI time based on AppRuntimeConfig.isDelivery
+  - All error paths show snackbar; credentials invalid additionally marks fields
+
+# ---------------------------------------------------------------------------
+# DI Registration
+# ---------------------------------------------------------------------------
+di:
+  module: authModule
+  bindings:
+    - type: CommLoginService
+      impl: ClientLoginService | DeliveryLoginService (conditional)
+    - type: ToDoLogin
+      impl: DoLogin
+    - type: ToDoCheckPreviousLogin
+      impl: DoCheckPreviousLogin
+  screens:
+    - tag: init
+      class: Login
+      start_destination: true

@@ -1,0 +1,451 @@
+# =============================================================================
+# UI Spec: Signup Flow
+# Registro de usuarios: client, platform admin, delivery, saler, business
+# =============================================================================
+
+flow: signup
+version: 1
+description: >
+  Flujo de registro con múltiples variantes según app type y rol.
+  Incluye confirmación por código de 6 dígitos y registro de negocios.
+
+# ---------------------------------------------------------------------------
+# Screens
+# ---------------------------------------------------------------------------
+screens:
+
+  # -------------------------------------------------------------------------
+  # Generic Signup (Client)
+  # -------------------------------------------------------------------------
+  - id: signup
+    route: /signup
+    class: SignUpScreen
+    file: ui/sc/signup/SignUpScreen.kt
+    title_key: null
+    description: Registro genérico por email (usado en Client app)
+
+    state:
+      class: SignUpUIState
+      file: ui/sc/signup/SignUpViewModel.kt
+      fields:
+        - name: email
+          type: String
+          default: ""
+          validation:
+            required: true
+            pattern: ".+@.+\\..+"
+            error_key: form_error_invalid_email
+
+    viewmodel:
+      class: SignUpViewModel
+      extra_state:
+        - name: loading
+          type: Boolean
+          default: false
+      methods:
+        - signup    # suspend -> Result<DoSignUpResult>
+        - isValid
+
+    actions:
+      interface: ToDoSignUp
+      implementation: DoSignUp
+      file: asdo/signup/DoSignUp.kt
+      parameters:
+        - email: String
+
+    service:
+      interface: CommSignUpService
+      implementation: ClientSignUpService
+      endpoint: POST /{BUSINESS}/signup
+      request: SignUpRequest(email)
+      response: SignUpResponse(statusCode)
+
+    result:
+      success: DoSignUpResult(statusCode)
+      exception: DoSignUpException(statusCode, message)
+
+    transitions:
+      on_success:
+        - target: /confirmSignUp
+          clear_backstack: false
+
+  # -------------------------------------------------------------------------
+  # Confirm Signup (Email verification)
+  # -------------------------------------------------------------------------
+  - id: confirm_signup
+    route: /confirmSignUp
+    class: ConfirmSignUpScreen
+    file: ui/sc/signup/ConfirmSignUpScreen.kt
+    title_key: null
+    description: Verificación de email con código de 6 dígitos
+
+    state:
+      class: ConfirmSignUpUIState
+      file: ui/sc/signup/ConfirmSignUpViewModel.kt
+      fields:
+        - name: email
+          type: String
+          default: ""
+          validation:
+            required: true
+            pattern: ".+@.+\\..+"
+            error_key: form_error_invalid_email
+        - name: code
+          type: String
+          default: ""
+          validation:
+            required: true
+            pattern: "^\\d{6}$"
+            error_key: form_error_invalid_code
+
+    viewmodel:
+      class: ConfirmSignUpViewModel
+      extra_state:
+        - name: loading
+          type: Boolean
+          default: false
+      methods:
+        - confirmSignUp  # suspend -> Result<DoConfirmSignUpResult>
+        - resendCode     # re-invokes ToDoSignUp
+
+    actions:
+      interface: ToDoConfirmSignUp
+      implementation: DoConfirmSignUp
+      file: asdo/signup/DoConfirmSignUp.kt
+      parameters:
+        - email: String
+        - code: String
+
+    service:
+      interface: CommConfirmSignUpService
+      implementation: ClientConfirmSignUpService
+      endpoint: POST /{BUSINESS}/confirmSignUp
+      request: ConfirmSignUpRequest(email, code)
+      response: ConfirmSignUpResponse(statusCode)
+
+    result:
+      success: DoConfirmSignUpResult(statusCode)
+      exception: DoConfirmSignUpException(statusCode, message)
+
+    transitions:
+      on_success:
+        - target: /login
+          clear_backstack: true
+      on_resend_code:
+        - action: show_snackbar
+          message: code_resent
+
+  # -------------------------------------------------------------------------
+  # Select Signup Profile (Business app)
+  # -------------------------------------------------------------------------
+  - id: select_signup_profile
+    route: /selectSignupProfile
+    class: SelectSignUpProfileScreen
+    file: ui/sc/signup/SelectSignUpProfileScreen.kt
+    title_key: null
+    description: Selector de perfil de registro (Platform Admin o Delivery)
+
+    state: null  # No form state — solo navegación
+
+    transitions:
+      cards:
+        - label: platform_admin
+          target: /signupPlatformAdmin
+        - label: delivery_partner
+          target: /signupDelivery
+
+  # -------------------------------------------------------------------------
+  # Signup Platform Admin
+  # -------------------------------------------------------------------------
+  - id: signup_platform_admin
+    route: /signupPlatformAdmin
+    class: SignUpPlatformAdminScreen
+    file: ui/sc/signup/SignUpPlatformAdminScreen.kt
+    title_key: null
+    description: Registro de administrador de plataforma
+
+    state:
+      class: SignUpUIState
+      file: ui/sc/signup/SignUpPlatformAdminViewModel.kt
+      fields:
+        - name: email
+          type: String
+          default: ""
+          validation:
+            required: true
+            pattern: ".+@.+\\..+"
+            error_key: form_error_invalid_email
+
+    viewmodel:
+      class: SignUpPlatformAdminViewModel
+      extra_state:
+        - name: loading
+          type: Boolean
+          default: false
+
+    actions:
+      interface: ToDoSignUpPlatformAdmin
+      implementation: DoSignUpPlatformAdmin
+      file: asdo/signup/DoSignUpPlatformAdmin.kt
+
+    service:
+      interface: CommSignUpPlatformAdminService
+      implementation: ClientSignUpPlatformAdminService
+      endpoint: POST /{BUSINESS}/signupPlatformAdmin
+      request: SignUpRequest(email)
+      response: SignUpResponse(statusCode)
+
+    transitions:
+      on_success:
+        - target: /login
+          clear_backstack: false
+
+  # -------------------------------------------------------------------------
+  # Signup Delivery
+  # -------------------------------------------------------------------------
+  - id: signup_delivery
+    route: /signupDelivery
+    class: SignUpDeliveryScreen
+    file: ui/sc/signup/SignUpDeliveryScreen.kt
+    title_key: null
+    description: Registro de repartidor con selección de negocio
+
+    state:
+      class: SignUpUIState
+      file: ui/sc/signup/SignUpDeliveryViewModel.kt
+      fields:
+        - name: email
+          type: String
+          default: ""
+          validation:
+            required: true
+            pattern: ".+@.+\\..+"
+            error_key: form_error_invalid_email
+        - name: businessPublicId
+          type: String
+          default: ""
+          validation:
+            required: true
+        - name: businessName
+          type: String
+          default: ""
+          description: Display-only, selected from dropdown
+
+    viewmodel:
+      class: SignUpDeliveryViewModel
+      extra_state:
+        - name: loading
+          type: Boolean
+          default: false
+        - name: suggestions
+          type: "List<BusinessView>"
+          default: "emptyList()"
+      methods:
+        - signup
+        - searchBusinesses  # query: String -> populates suggestions
+
+    actions:
+      interface: ToDoSignUpDelivery
+      implementation: DoSignUpDelivery
+      file: asdo/signup/DoSignUpDelivery.kt
+      parameters:
+        - business: String   # publicId
+        - email: String
+
+    service:
+      interface: CommSignUpDeliveryService
+      implementation: ClientSignUpDeliveryService
+      endpoint: POST /{business}/signupDelivery
+      note: business param in URL path is dynamic (not constant BUSINESS)
+      request: SignUpRequest(email)
+      response: SignUpResponse(statusCode)
+
+    ui_components:
+      - type: ExposedDropdownMenuBox
+        purpose: Business search with autocomplete suggestions
+
+    transitions:
+      on_success:
+        - target: /login
+          clear_backstack: false
+
+  # -------------------------------------------------------------------------
+  # Register Saler (requires auth)
+  # -------------------------------------------------------------------------
+  - id: register_saler
+    route: /registerSaler
+    class: RegisterSalerScreen
+    file: ui/sc/signup/RegisterSalerScreen.kt
+    title_key: null
+    description: Registro de vendedor (requiere token de autenticación)
+    requires_auth: true
+
+    state:
+      class: RegisterSalerUIState
+      file: ui/sc/signup/RegisterSalerViewModel.kt
+      fields:
+        - name: email
+          type: String
+          default: ""
+          validation:
+            required: true
+            pattern: ".+@.+\\..+"
+            error_key: register_saler_email_invalid
+
+    viewmodel:
+      class: RegisterSalerViewModel
+
+    actions:
+      interface: ToDoRegisterSaler
+      implementation: DoRegisterSaler
+      file: asdo/signup/DoRegisterSaler.kt
+      note: Retrieves Bearer token from CommKeyValueStorage
+
+    service:
+      interface: CommRegisterSalerService
+      implementation: ClientRegisterSalerService
+      endpoint: POST /{BUSINESS}/registerSaler
+      headers:
+        Authorization: "{token}"
+      request: RegisterSalerRequest(email)
+      response: RegisterSalerResponse(statusCode)
+
+    transitions:
+      on_success:
+        - action: show_snackbar_and_reset_form
+          stays_on_screen: true
+
+  # -------------------------------------------------------------------------
+  # Register New Business
+  # -------------------------------------------------------------------------
+  - id: register_new_business
+    route: /registerNewBusiness
+    class: RegisterNewBusinessScreen
+    file: ui/sc/business/RegisterNewBusinessScreen.kt
+    title_key: null
+    description: Registro de un nuevo negocio
+
+    state:
+      class: UIState
+      file: ui/sc/business/RegisterBusinessViewModel.kt
+      fields:
+        - name: name
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+            error_key: form_error_required
+        - name: email
+          type: String
+          default: ""
+          validation:
+            required: true
+            pattern: ".+@.+\\..+"
+            error_key: form_error_invalid_email
+        - name: description
+          type: String
+          default: ""
+          validation:
+            required: true
+            min_length: 1
+            error_key: form_error_required
+
+    viewmodel:
+      class: RegisterBusinessViewModel
+
+    actions:
+      interface: ToDoRegisterBusiness
+      implementation: DoRegisterBusiness
+      file: asdo/business/DoRegisterBusiness.kt
+      parameters:
+        - name: String
+        - emailAdmin: String
+        - description: String
+
+    service:
+      interface: CommRegisterBusinessService
+      implementation: ClientRegisterBusinessService
+      endpoint: POST /{BUSINESS}/registerBusiness
+      request: RegisterBusinessRequest(name, emailAdmin, description)
+      response: RegisterBusinessResponse(statusCode)
+
+    transitions:
+      on_success:
+        - action: show_snackbar_and_reset_form
+          stays_on_screen: true
+
+# ---------------------------------------------------------------------------
+# Navigation Graph
+# ---------------------------------------------------------------------------
+navigation:
+  entry_points:
+    client: /signup
+    business: /selectSignupProfile
+    delivery: /signupDelivery
+
+  flows:
+    client_signup:
+      - /signup -> /confirmSignUp -> /login
+    business_admin_signup:
+      - /selectSignupProfile -> /signupPlatformAdmin -> /login
+    business_delivery_signup:
+      - /selectSignupProfile -> /signupDelivery -> /login
+    business_register:
+      - /register-new-business (stays on screen)
+    post_auth_saler:
+      - /registerSaler (stays on screen, requires auth)
+
+# ---------------------------------------------------------------------------
+# Invariants
+# ---------------------------------------------------------------------------
+invariants:
+  - All signup endpoints are public except /registerSaler (requires Bearer token)
+  - Email validation pattern ".+@.+\..+" applied uniformly across all signup forms
+  - Confirmation code must be exactly 6 digits
+  - resendCode reuses ToDoSignUp action (same endpoint as initial signup)
+  - Delivery signup uses dynamic business publicId in URL path
+  - Post-auth flows (saler, business) stay on screen after success and reset form
+  - Business search autocomplete via ToGetBusinesses populates suggestions list
+
+# ---------------------------------------------------------------------------
+# DI Registration
+# ---------------------------------------------------------------------------
+di:
+  module: signupModule
+  bindings:
+    - type: CommSignUpService
+      impl: ClientSignUpService
+    - type: CommSignUpPlatformAdminService
+      impl: ClientSignUpPlatformAdminService
+    - type: CommSignUpDeliveryService
+      impl: ClientSignUpDeliveryService
+    - type: CommRegisterSalerService
+      impl: ClientRegisterSalerService
+    - type: CommConfirmSignUpService
+      impl: ClientConfirmSignUpService
+    - type: ToDoSignUp
+      impl: DoSignUp
+    - type: ToDoSignUpPlatformAdmin
+      impl: DoSignUpPlatformAdmin
+    - type: ToDoSignUpDelivery
+      impl: DoSignUpDelivery
+    - type: ToDoRegisterSaler
+      impl: DoRegisterSaler
+    - type: ToDoConfirmSignUp
+      impl: DoConfirmSignUp
+  screens:
+    - tag: SIGNUP
+      class: SignUpScreen
+    - tag: CONFIRM_SIGNUP
+      class: ConfirmSignUpScreen
+    - tag: SELECT_SIGNUP_PROFILE
+      class: SelectSignUpProfileScreen
+    - tag: SIGNUP_PLATFORM_ADMIN
+      class: SignUpPlatformAdminScreen
+    - tag: SIGNUP_DELIVERY
+      class: SignUpDeliveryScreen
+    - tag: REGISTER_SALER
+      class: RegisterSalerScreen
+    - tag: REGISTER_NEW_BUSINESS
+      class: RegisterNewBusinessScreen
