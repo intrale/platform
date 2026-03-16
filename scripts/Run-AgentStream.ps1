@@ -27,7 +27,8 @@ param(
     [Parameter(Mandatory)] [int]$AgentNum,
     [Parameter(Mandatory)] [int]$Issue,
     [Parameter(Mandatory)] [string]$Slug,
-    [Parameter(Mandatory)] [string]$Branch
+    [Parameter(Mandatory)] [string]$Branch,
+    [string]$Model = "sonnet"
 )
 
 Set-StrictMode -Version Latest
@@ -69,7 +70,7 @@ try {
     }
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo.FileName = $claudePath
-    $process.StartInfo.Arguments = "-p --dangerously-skip-permissions --output-format stream-json --verbose"
+    $process.StartInfo.Arguments = "-p --model $Model --dangerously-skip-permissions --output-format stream-json --verbose"
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.RedirectStandardInput = $true
     $process.StartInfo.RedirectStandardOutput = $true
