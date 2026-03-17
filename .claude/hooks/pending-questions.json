@@ -26,8 +26,9 @@
       },
       "skill_context": null,
       "approver_pid": 8564,
-      "status": "pending",
-      "answered_at": null
+      "status": "answered",
+      "answered_at": "2026-03-17T11:57:47.060Z",
+      "answered_via": "console"
     },
     {
       "id": "2ccf81f969760231",
@@ -55,8 +56,9 @@
       },
       "skill_context": null,
       "approver_pid": 12748,
-      "status": "pending",
-      "answered_at": null
+      "status": "answered",
+      "answered_at": "2026-03-17T11:57:47.974Z",
+      "answered_via": "console"
     },
     {
       "id": "e629f82bc57232ae",
@@ -84,8 +86,9 @@
       },
       "skill_context": null,
       "approver_pid": 20472,
-      "status": "pending",
-      "answered_at": null
+      "status": "answered",
+      "answered_at": "2026-03-17T11:57:48.547Z",
+      "answered_via": "console"
     },
     {
       "id": "37f3838e26a0d10d",
@@ -113,8 +116,9 @@
       },
       "skill_context": null,
       "approver_pid": 19580,
-      "status": "pending",
-      "answered_at": null
+      "status": "answered",
+      "answered_at": "2026-03-17T11:57:48.915Z",
+      "answered_via": "console"
     },
     {
       "id": "f5f6e65294427437",

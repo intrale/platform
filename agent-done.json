@@ -1,14 +1,13 @@
 {
-  "summary": "Implementado endpoint backend GET /{business}/products que devuelve solo productos PUBLISHED para la app cliente. Se creó la función ClientProducts (SecuredFunction), la respuesta ClientProductListResponse con payload compatible con BusinessProductsResponse del cliente, y se agregó listPublishedProducts al ProductRepository. Registrado en DI (Modules.kt y E2ETestBase.kt) con 6 tests unitarios completos.",
-  "pr_title": "feat(backend): endpoint de productos publicados para app cliente (#613)",
-  "pr_body": "## Cambios\n\n- Nuevo endpoint `GET /{business}/products` que retorna solo productos en estado `PUBLISHED`\n- Nueva clase `ClientProducts` (SecuredFunction) registrada con tag `products`\n- Nuevo `ClientProductListResponse` + `ClientProductPayload` (compatible con `BusinessProductsResponse` del cliente)\n- `ProductRepository.listPublishedProducts()` — filtro por estado PUBLISHED\n- Registrado en `Modules.kt` y `E2ETestBase.kt`\n- 6 tests unitarios en `ClientProductsTest` cubriendo todos los criterios de aceptación\n\n## Criterios de aceptación cubiertos\n\n- ✅ Producto en DRAFT no aparece en la app cliente\n- ✅ Producto en PUBLISHED sí aparece en la app cliente\n- ✅ Cambio DRAFT→PUBLISHED hace visible el producto sin reinstalar\n- ✅ Cambio PUBLISHED→DRAFT oculta el producto\n- ✅ Lista vacía cuando no hay productos publicados (estado vacío ya manejado por `ClientProductsState.Empty`)\n\nCloses #613",
+  "summary": "Implementación del Home/Dashboard de la app de negocio (issue #603). Se actualizó DashboardScreen con encabezado mejorado (nombre del negocio + subtítulo 'Panel de administración' + texto intro), y se reestructuró DashboardActionCard para soportar descripción y múltiples CTAs por card. Cards: Productos (Ver catálogo + Agregar producto), Pedidos (Pedidos pendientes + Historial), Delivery (Ver repartidores + Invitar repartidor), Configuración (Editar configuración). Se agregaron 12 nuevas claves en MessageKey con traducciones en ES/EN. Se actualizó el test de guardia.",
+  "pr_title": "feat(dashboard): header mejorado + descripciones y múltiples CTAs por card (#603)",
+  "pr_body": "## Cambios\n\n- **Encabezado**: muestra nombre del negocio como título principal + subtítulo 'Panel de administración' + texto introductorio\n- **DashboardActionCard**: nuevo parámetro `description` + `actions: List<Pair<String, () -> Unit>>` para múltiples CTAs\n- **Card Productos**: descripción + CTAs 'Ver catálogo' y 'Agregar producto'\n- **Card Pedidos**: descripción + CTAs 'Pedidos pendientes' e 'Historial de pedidos'\n- **Card Delivery**: descripción + CTAs 'Ver repartidores' e 'Invitar repartidor'\n- **Card Configuración**: descripción + CTA 'Editar configuración'\n- **Strings**: 12 nuevas claves en MessageKey con traducciones ES/EN\n- **Test**: DashboardGuardTest actualizado al nuevo texto 'Panel de administración'\n\nCloses #603",
   "commit_type": "feat",
   "files_changed": [
-    "users/src/main/kotlin/ar/com/intrale/ClientProducts.kt",
-    "users/src/main/kotlin/ar/com/intrale/ClientProductResponse.kt",
-    "users/src/main/kotlin/ar/com/intrale/ProductRepository.kt",
-    "users/src/main/kotlin/ar/com/intrale/Modules.kt",
-    "users/src/test/kotlin/ar/com/intrale/E2ETestBase.kt",
-    "users/src/test/kotlin/ar/com/intrale/ClientProductsTest.kt"
+    "app/composeApp/src/commonMain/kotlin/ui/sc/business/DashboardScreen.kt",
+    "app/composeApp/src/commonMain/kotlin/ar/com/intrale/strings/model/MessageKey.kt",
+    "app/composeApp/src/commonMain/kotlin/ar/com/intrale/strings/catalog/DefaultCatalog_es.kt",
+    "app/composeApp/src/commonMain/kotlin/ar/com/intrale/strings/catalog/DefaultCatalog_en.kt",
+    "app/composeApp/src/androidInstrumentedTest/kotlin/ui/sc/business/DashboardGuardTest.kt"
   ]
 }
