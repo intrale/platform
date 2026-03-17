@@ -5,6 +5,7 @@
 
 const https = require("https");
 const { registerMessage } = require("../telegram-message-registry");
+const { sanitizeHtml } = require("../telegram-sanitizer");
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 const TG_MSG_MAX = 4096;
@@ -58,9 +59,10 @@ function escHtml(s) {
 }
 
 async function sendMessage(text, parseMode) {
+    const sanitizedText = (parseMode || "HTML") === "HTML" ? sanitizeHtml(text) : text;
     const result = await telegramPost("sendMessage", {
         chat_id: _chatId,
-        text: text,
+        text: sanitizedText,
         parse_mode: parseMode || "HTML"
     }, 8000);
     if (result && result.message_id) {

@@ -6,6 +6,7 @@
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const { sanitizeHtml } = require("./telegram-sanitizer");
 
 const HOOKS_DIR = __dirname;
 const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
@@ -114,8 +115,9 @@ async function sendMessage(text, opts) {
     const chatId = opts.chatId || getChatId();
     if (!chatId) throw new Error("No chat_id configured");
 
-    // Truncar si excede límite de Telegram
-    const safeText = text.length > TG_MSG_MAX ? text.substring(0, TG_MSG_MAX - 20) + "\n\n…(truncado)" : text;
+    // Sanitizar UTF-8 y truncar si excede límite de Telegram
+    const sanitized = sanitizeHtml(text);
+    const safeText = sanitized.length > TG_MSG_MAX ? sanitized.substring(0, TG_MSG_MAX - 20) + "\n\n…(truncado)" : sanitized;
 
     const params = {
         chat_id: chatId,
@@ -141,7 +143,7 @@ async function editMessage(messageId, text, opts) {
     const params = {
         chat_id: chatId,
         message_id: messageId,
-        text: text,
+        text: sanitizeHtml(text),
         parse_mode: "HTML"
     };
     if (opts.replyMarkup) params.reply_markup = opts.replyMarkup;
@@ -160,15 +162,16 @@ function sendPhoto(imageBuffer, caption, opts) {
     const chatId = opts.chatId || getChatId();
     const token = getBotToken();
     if (!token || !chatId) return Promise.reject(new Error("No bot_token or chat_id"));
+    const safeCaption = caption ? sanitizeHtml(caption) : caption;
 
     return new Promise((resolve, reject) => {
         const boundary = "----TgClient" + Date.now();
         let body = "";
         body += "--" + boundary + "\r\n";
         body += "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + chatId + "\r\n";
-        if (caption) {
+        if (safeCaption) {
             body += "--" + boundary + "\r\n";
-            body += "Content-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n";
+            body += "Content-Disposition: form-data; name=\"caption\"\r\n\r\n" + safeCaption + "\r\n";
             body += "--" + boundary + "\r\n";
             body += "Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\nHTML\r\n";
         }
@@ -221,15 +224,16 @@ function sendDocument(fileBuffer, filename, caption, opts) {
     const chatId = opts.chatId || getChatId();
     const token = getBotToken();
     if (!token || !chatId) return Promise.reject(new Error("No bot_token or chat_id"));
+    const safeCaption = caption ? sanitizeHtml(caption) : caption;
 
     return new Promise((resolve, reject) => {
         const boundary = "----TgClient" + Date.now();
         let body = "";
         body += "--" + boundary + "\r\n";
         body += "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + chatId + "\r\n";
-        if (caption) {
+        if (safeCaption) {
             body += "--" + boundary + "\r\n";
-            body += "Content-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n";
+            body += "Content-Disposition: form-data; name=\"caption\"\r\n\r\n" + safeCaption + "\r\n";
         }
         body += "--" + boundary + "\r\n";
         body += "Content-Disposition: form-data; name=\"document\"; filename=\"" + filename + "\"\r\nContent-Type: application/octet-stream\r\n\r\n";

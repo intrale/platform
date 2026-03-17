@@ -15,6 +15,7 @@ const path = require("path");
 const { readSessionContext } = require("./context-reader");
 const { resolveMainRepoRoot } = require("./permission-utils");
 const { registerMessage } = require("./telegram-message-registry");
+const { sanitizeHtml } = require("./telegram-sanitizer");
 
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
@@ -163,7 +164,7 @@ function sendTelegram(text, attempt, options) {
     return new Promise((resolve, reject) => {
         const params = {
             chat_id: CHAT_ID,
-            text: text,
+            text: sanitizeHtml(text),
             parse_mode: "HTML",
             disable_web_page_preview: true
         };
@@ -352,6 +353,7 @@ async function processInput() {
         if (screenshot && screenshot.length > 1000) {
             let caption = classification.emoji + " <b>" + escHtml(agent) + " \u2014 " + escHtml(displayTitle) + "</b>";
             if (contextLine) caption += "\n" + contextLine;
+            caption = sanitizeHtml(caption);
 
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                 try {
