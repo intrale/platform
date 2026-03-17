@@ -181,6 +181,12 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                         onClick = { navigate(DELIVERY_DASHBOARD_PATH) }
                     )
                     DashboardActionCard(
+                        title = Txt(MessageKey.business_config_title),
+                        metric = Txt(MessageKey.business_config_description),
+                        actionLabel = Txt(MessageKey.dashboard_menu_business_config),
+                        onClick = { navigate(BUSINESS_CONFIG_PATH) }
+                    )
+                    DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_settings_title),
                         metric = Txt(MessageKey.dashboard_card_settings_metric),
                         actionLabel = Txt(MessageKey.dashboard_card_settings_cta),
