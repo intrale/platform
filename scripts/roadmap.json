@@ -1,77 +1,199 @@
 {
-  "updated_ts": "2026-03-17T23:00:00Z",
-  "updated_by": "manual — Agent Registry + sprint sizing (#1642, #1643)",
+  "updated_ts": "2026-03-18T00:40:00.000Z",
+  "updated_by": "scrum-master",
   "horizon_sprints": 5,
   "sprints": [
     {
-      "id": "SPR-037",
-      "tema": "Sprint negocio — carry-over dashboard + config + mejoras backend",
-      "status": "done",
-      "size": "medio",
-      "closed_at": "2026-03-17T18:00:00Z",
-      "stories": [
-        { "issue": 603, "title": "Home/dashboard app negocio", "effort": "medio", "stream": "C", "status": "done" },
-        { "issue": 677, "title": "Config datos básicos del negocio", "effort": "simple", "stream": "C", "status": "carry-over" },
-        { "issue": 1621, "title": "Sincronizar roadmap.json y sprint-plan.json", "effort": "simple", "stream": "E", "status": "carry-over" },
-        { "issue": 1637, "title": "Sanitización UTF-8 en reportes Telegram", "effort": "simple", "stream": "E", "status": "carry-over" },
-        { "issue": 1635, "title": "Paginación y filtrado para endpoint productos", "effort": "simple", "stream": "E", "status": "carry-over" },
-        { "issue": 1636, "title": "Cache/ETag para endpoint productos", "effort": "simple", "stream": "E", "status": "carry-over" }
-      ]
-    },
-    {
-      "id": "SPR-038",
-      "tema": "Sprint negocio — carry-over config/infra + UX dashboard + QA E2E + pedidos",
-      "status": "active",
-      "size": "grande",
-      "started_at": "2026-03-17T18:45:00Z",
-      "stories": [
-        { "issue": 677, "title": "Config datos básicos del negocio", "effort": "simple", "stream": "C", "status": "planned", "moved_from": "SPR-037" },
-        { "issue": 1637, "title": "Sanitización UTF-8 en reportes Telegram", "effort": "simple", "stream": "E", "status": "planned", "moved_from": "SPR-037" },
-        { "issue": 1621, "title": "Sincronizar roadmap.json y sprint-plan.json", "effort": "simple", "stream": "E", "status": "planned", "moved_from": "SPR-037" },
-        { "issue": 1635, "title": "Paginación y filtrado para endpoint productos", "effort": "simple", "stream": "E", "status": "planned", "moved_from": "SPR-037" },
-        { "issue": 1636, "title": "Cache/ETag para endpoint productos", "effort": "simple", "stream": "E", "status": "planned", "moved_from": "SPR-037" },
-        { "issue": 1631, "title": "Empty states y skeleton loading para Home dashboard", "effort": "simple", "stream": "C", "status": "planned" },
-        { "issue": 1632, "title": "Accesibilidad (a11y) para Home dashboard", "effort": "simple", "stream": "C", "status": "planned" },
-        { "issue": 1633, "title": "QA E2E con video — Home dashboard", "effort": "medio", "stream": "E", "status": "planned" },
-        { "issue": 1634, "title": "QA E2E con video — Publicación de productos", "effort": "medio", "stream": "E", "status": "planned" },
-        { "issue": 674, "title": "Detalle de pedido y estado", "effort": "medio", "stream": "C", "status": "planned" }
-      ]
-    },
-    {
-      "id": "SPR-039",
-      "tema": "Sprint infra — Agent Registry + sizing sprints",
-      "status": "active",
-      "size": "medio",
-      "started_at": "2026-03-17T23:30:00Z",
-      "stories": [
-        { "issue": 1642, "title": "Agent Registry único — fuente de verdad centralizada para agentes activos", "effort": "grande", "stream": "E", "status": "planned" },
-        { "issue": 1643, "title": "Eliminar fechas de planificación — sizing simple/medio/grande", "effort": "simple", "stream": "E", "status": "planned" }
-      ]
-    },
-    {
       "id": "SPR-040",
-      "tema": "Sprint negocio — delivery y configuración",
-      "status": "planned",
-      "size": "grande",
+      "tema": "Sprint infra — carry-over config + backend simples",
+      "status": "active",
+      "size": "simple",
+      "started_at": "2026-03-18T00:20:00Z",
       "stories": [
-        { "issue": 675, "title": "Gestión de repartidores", "effort": "medio", "stream": "C", "status": "planned" },
-        { "issue": 676, "title": "Asignación de pedidos a repartidores", "effort": "medio", "stream": "C", "status": "planned" },
-        { "issue": 678, "title": "Config horarios y zonas de entrega", "effort": "medio", "stream": "C", "status": "planned" },
-        { "issue": 679, "title": "Config medios de pago", "effort": "simple", "stream": "C", "status": "planned" },
-        { "issue": 680, "title": "Gestión banners y marketing del negocio", "effort": "medio", "stream": "C", "status": "planned" }
+        {
+          "issue": 677,
+          "title": "Config datos básicos del negocio",
+          "effort": "simple",
+          "stream": "C",
+          "status": "in_progress",
+          "moved_from": "SPR-038"
+        },
+        {
+          "issue": 1637,
+          "title": "Sanitización UTF-8 en reportes Telegram",
+          "effort": "simple",
+          "stream": "E",
+          "status": "in_progress",
+          "moved_from": "SPR-038"
+        },
+        {
+          "issue": 1621,
+          "title": "Sincronizar roadmap.json y sprint-plan.json",
+          "effort": "simple",
+          "stream": "E",
+          "status": "in_progress",
+          "moved_from": "SPR-038"
+        },
+        {
+          "issue": 1635,
+          "title": "Paginación y filtrado para endpoint productos",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned",
+          "moved_from": "SPR-038"
+        },
+        {
+          "issue": 1636,
+          "title": "Cache/ETag para endpoint productos",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned",
+          "moved_from": "SPR-038"
+        }
       ]
     },
     {
       "id": "SPR-041",
-      "tema": "Sprint cliente — carrito y pedidos",
+      "tema": "Sprint UX — dashboard polish + QA E2E",
       "status": "planned",
-      "size": "grande",
+      "size": "medio",
       "stories": [
-        { "issue": 717, "title": "Visualización del carrito", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 718, "title": "Confirmación de pedido y checkout", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 720, "title": "Selección medio de pago", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 721, "title": "Listado de pedidos del cliente", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 722, "title": "Detalle y seguimiento de pedido", "effort": "medio", "stream": "B", "status": "planned" }
+        {
+          "issue": 1631,
+          "title": "Empty states y skeleton loading para Home dashboard",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1632,
+          "title": "Accesibilidad (a11y) para Home dashboard",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1647,
+          "title": "Mostrar tamaño (sizing) de sprints e issues en el dashboard",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1633,
+          "title": "QA E2E con video — Home dashboard",
+          "effort": "medio",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1634,
+          "title": "QA E2E con video — Publicación de productos",
+          "effort": "medio",
+          "stream": "E",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-042",
+      "tema": "Sprint negocio — pedidos + config delivery",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 674,
+          "title": "Detalle de pedido y estado",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 675,
+          "title": "Gestión de repartidores",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 676,
+          "title": "Asignación de pedidos a repartidores",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 678,
+          "title": "Config horarios y zonas de entrega",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 679,
+          "title": "Config medios de pago",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-043",
+      "tema": "Sprint cliente — carrito + marketing negocio",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 680,
+          "title": "Gestión banners y marketing del negocio",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 717,
+          "title": "Visualización del carrito",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 718,
+          "title": "Confirmación de pedido y checkout",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 720,
+          "title": "Selección medio de pago",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 721,
+          "title": "Listado de pedidos del cliente",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-044",
+      "tema": "Sprint cliente — tracking de pedidos",
+      "status": "planned",
+      "size": "simple",
+      "stories": [
+        {
+          "issue": 722,
+          "title": "Detalle y seguimiento de pedido",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        }
       ]
     }
   ]
