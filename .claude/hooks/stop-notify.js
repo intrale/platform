@@ -18,6 +18,10 @@ try {
 
 const { registerMessage } = require("./telegram-message-registry");
 
+// Agent Registry — marcar agente como done al terminar (#1642)
+let agentRegistry = null;
+try { agentRegistry = require("./agent-registry"); } catch (e) { /* módulo no disponible */ }
+
 const _tgCfg = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "telegram-config.json"), "utf8"));
 const BOT_TOKEN = _tgCfg.bot_token;
 const CHAT_ID = _tgCfg.chat_id;
@@ -243,6 +247,11 @@ function markSessionDone(sessionId) {
         session.last_activity_ts = completedAt;
         fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");
         log("Sesion " + shortId + " marcada como done con completed_at=" + completedAt);
+
+        // Marcar agente como done en el registry centralizado (#1642)
+        if (agentRegistry) {
+            try { agentRegistry.markDone(shortId); } catch (e) { log("agentRegistry.markDone error: " + e.message); }
+        }
     } catch(e) { log("Error marcando sesion done: " + e.message); }
 }
 
@@ -304,6 +313,11 @@ function cleanOldSessions() {
 
         if (zombies > 0) log("GC: " + zombies + " sesion(es) zombie marcadas done");
         if (cleaned > 0) log("Rotacion: " + cleaned + " session(s) antiguas eliminadas");
+
+        // Sweep del agent registry: purgar entradas done/zombie viejas (#1642)
+        if (agentRegistry) {
+            try { agentRegistry.sweepRegistry(); } catch (e) { /* no bloquear */ }
+        }
     } catch(e) { log("Error en rotacion de sessions: " + e.message); }
 }
 

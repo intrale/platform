@@ -48,7 +48,12 @@ const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
 const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
 const ROADMAP_FILE = path.join(REPO_ROOT, "scripts", "roadmap.json");
 const AGENT_METRICS_FILE = path.join(CLAUDE_DIR, "hooks", "agent-metrics.json");
+const AGENT_REGISTRY_FILE = path.join(CLAUDE_DIR, "hooks", "agent-registry.json");
 const ICONS_DIR = path.join(CLAUDE_DIR, "icons");
+
+// Agent Registry — fuente de verdad centralizada (#1642)
+let agentRegistry = null;
+try { agentRegistry = require(path.join(CLAUDE_DIR, "hooks", "agent-registry")); } catch (e) { /* módulo no disponible */ }
 
 // --- Load agent icons as base64 data URIs (once at startup) ---
 function loadIconDataUri(filename) {
@@ -553,10 +558,26 @@ function collectData() {
   let roadmap = null;
   try { roadmap = readJson(ROADMAP_FILE); } catch {}
 
+  // Agent Registry — fuente de verdad centralizada para agentes activos (#1642)
+  // Sweep: detectar zombies, purgar entradas viejas
+  let registryAgents = [];
+  let registryActiveCount = 0;
+  if (agentRegistry) {
+    try {
+      agentRegistry.sweepRegistry();
+      registryAgents = agentRegistry.getAllAgents();
+      registryActiveCount = agentRegistry.countActiveAgents();
+    } catch (e) { /* no bloquear dashboard */ }
+  }
+
+  // Usar el conteo del registry como fuente de verdad para agentes activos.
+  // Si el registry tiene datos, prevalece sobre el conteo de sesiones.
+  const effectiveActiveAgents = registryActiveCount > 0 ? registryActiveCount : activeSessions.length;
+
   const data = {
     timestamp: new Date().toISOString(),
     sessions,
-    activeSessions: activeSessions.length,
+    activeSessions: effectiveActiveAgents,
     idleSessions: idleSessions.length,
     totalTasks: allTasks.length,
     completedTasks: completedTasks.length,
@@ -587,6 +608,8 @@ function collectData() {
     skillUsage,
     agentMetrics,
     roadmap,
+    registryAgents,
+    registryActiveCount,
     metrics: {
       totalActions,
       totalActiveTimeMs: totalActiveTime,
@@ -2016,7 +2039,12 @@ function renderHTML(data, theme) {
       </div>`;
   }
   if (visibleSessions.length === 0) {
-    agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
+    // Verificar registry como fallback (#1642): puede haber agentes activos no detectados por sesiones
+    if (data.registryActiveCount > 0) {
+      agentsHtml = '<div class="empty-state">Agentes activos en registry: ' + data.registryActiveCount + ' (sesiones no visibles)</div>';
+    } else {
+      agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
+    }
   }
 
   // --- UNIFIED AGENT CARDS (combina sprint execution + session info) ---
@@ -3053,14 +3081,31 @@ function handleRequest(req, res) {
         count: g.count,
         ts: g.ts,
       })),
-      agentProgress: data.sessions.filter(s => s._status === "active").map(s => ({
-        id: s.id,
-        agent: s.agent_name || "Agente",
-        lastTool: s.last_tool,
-        lastTarget: (s.last_target || "").substring(0, 60),
-        actions: s.action_count,
-        skillsInvoked: s.skills_invoked || [],
-      })),
+      agentProgress: (() => {
+        // Fuente primaria: sesiones activas
+        const fromSessions = data.sessions.filter(s => s._status === "active").map(s => ({
+          id: s.id,
+          agent: s.agent_name || "Agente",
+          lastTool: s.last_tool,
+          lastTarget: (s.last_target || "").substring(0, 60),
+          actions: s.action_count,
+          skillsInvoked: s.skills_invoked || [],
+        }));
+        // Fallback: agentes del registry no presentes en sesiones (#1642)
+        const sessionIds = new Set(fromSessions.map(s => s.id));
+        const fromRegistry = (data.registryAgents || [])
+          .filter(a => a.status === "active" && !sessionIds.has(a.session_id))
+          .map(a => ({
+            id: a.session_id,
+            agent: a.skill || "Agente (#" + (a.issue || "?") + ")",
+            lastTool: null,
+            lastTarget: a.branch || "",
+            actions: 0,
+            skillsInvoked: [],
+            _source: "registry",
+          }));
+        return [...fromSessions, ...fromRegistry];
+      })(),
     };
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
     res.end(JSON.stringify(activityPayload));
