@@ -28,7 +28,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
@@ -58,10 +57,9 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
     private fun ScreenContent(viewModel: DashboardViewModel = viewModel { DashboardViewModel() }) {
         val coroutineScope = rememberCoroutineScope()
         val uiState = viewModel.state
-        val dashboardTitle = Txt(MessageKey.dashboard_title)
         val selectorLabel = Txt(MessageKey.dashboard_business_selector_label)
-        val businessHeader = if (uiState.selectedBusinessName.isNotBlank()) {
-            Txt(MessageKey.dashboard_business_header, mapOf("business" to uiState.selectedBusinessName))
+        val businessName = if (uiState.selectedBusinessName.isNotBlank()) {
+            uiState.selectedBusinessName
         } else {
             Txt(MessageKey.dashboard_business_header_empty)
         }
@@ -80,13 +78,18 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                 ),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
         ) {
+            // Encabezado: nombre del negocio + subtítulo + descripción
             Text(
-                text = dashboardTitle,
+                text = businessName,
                 style = MaterialTheme.typography.headlineMedium
             )
             Text(
-                text = businessHeader,
-                style = MaterialTheme.typography.bodyLarge
+                text = Txt(MessageKey.dashboard_admin_subtitle),
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                text = Txt(MessageKey.dashboard_manage_intro),
+                style = MaterialTheme.typography.bodyMedium
             )
 
             if (uiState.isBusinessLoading) {
@@ -155,36 +158,47 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                 Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)) {
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_products_title),
+                        description = Txt(MessageKey.dashboard_card_products_description),
                         metric = Txt(
                             MessageKey.dashboard_card_products_metric,
                             mapOf("count" to summary.productsCount.toString())
                         ),
-                        actionLabel = Txt(MessageKey.dashboard_card_products_cta),
-                        onClick = { navigate(BUSINESS_PRODUCTS_PATH) }
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_products_cta_catalog) to { navigate(BUSINESS_PRODUCTS_PATH) },
+                            Txt(MessageKey.dashboard_card_products_cta_add) to { navigate(BUSINESS_PRODUCT_FORM_PATH) }
+                        )
                     )
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_orders_title),
+                        description = Txt(MessageKey.dashboard_card_orders_description),
                         metric = Txt(
                             MessageKey.dashboard_card_orders_metric,
                             mapOf("count" to summary.pendingOrders.toString())
                         ),
-                        actionLabel = Txt(MessageKey.dashboard_card_orders_cta),
-                        onClick = { navigate(BUSINESS_ORDERS_PATH) }
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_orders_cta_pending) to { navigate(BUSINESS_ORDERS_PATH) },
+                            Txt(MessageKey.dashboard_card_orders_cta_history) to { navigate(BUSINESS_ORDERS_PATH) }
+                        )
                     )
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_delivery_title),
+                        description = Txt(MessageKey.dashboard_card_delivery_description),
                         metric = Txt(
                             MessageKey.dashboard_card_delivery_metric,
                             mapOf("count" to summary.activeDrivers.toString())
                         ),
-                        actionLabel = Txt(MessageKey.dashboard_card_delivery_cta),
-                        onClick = { navigate(DELIVERY_DASHBOARD_PATH) }
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_delivery_cta_drivers) to { navigate(DELIVERY_DASHBOARD_PATH) },
+                            Txt(MessageKey.dashboard_card_delivery_cta_invite) to { navigate(DELIVERY_DASHBOARD_PATH) }
+                        )
                     )
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_settings_title),
+                        description = Txt(MessageKey.dashboard_card_settings_description),
                         metric = Txt(MessageKey.dashboard_card_settings_metric),
-                        actionLabel = Txt(MessageKey.dashboard_card_settings_cta),
-                        onClick = { navigate(PERSONALIZATION_PATH) }
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_settings_cta) to { navigate(PERSONALIZATION_PATH) }
+                        )
                     )
                 }
             }
@@ -194,9 +208,9 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
     @Composable
     private fun DashboardActionCard(
         title: String,
+        description: String,
         metric: String,
-        actionLabel: String,
-        onClick: () -> Unit
+        actions: List<Pair<String, () -> Unit>>
     ) {
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -206,17 +220,23 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(MaterialTheme.spacing.x2),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
             ) {
                 Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(text = metric, style = MaterialTheme.typography.bodySmall)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Text(text = metric, style = MaterialTheme.typography.bodyLarge)
-                    TextButton(onClick = onClick) {
-                        Text(text = actionLabel)
+                    actions.forEach { (label, onClick) ->
+                        TextButton(onClick = onClick) {
+                            Text(text = label)
+                        }
                     }
                 }
             }

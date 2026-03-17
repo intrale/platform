@@ -1,7 +1,13 @@
 {
-  "summary": "propagar GH_TOKEN a auto-delivery.js desde Run-AgentStream.ps1",
-  "pr_title": "fix: propagar GH_TOKEN a auto-delivery.js desde Run-AgentStream.ps1",
-  "pr_body": "## Problema\n\n`auto-delivery.js` no podía crear PRs porque `git credential fill` no funciona en el subprocess de node. El `GH_TOKEN` no se propagaba desde la sesión PowerShell al `agent-runner.js`.\n\n## Solución\n\nEn `Run-AgentStream.ps1`, antes de lanzar el proceso node, se obtiene el `GH_TOKEN` con tres métodos en cascada:\n1. `$env:GH_TOKEN` si ya está seteado\n2. `git credential fill` (funciona en el contexto PS1)\n3. `gh auth token` como fallback\n\nEl token se pasa al proceso node via `$process.StartInfo.EnvironmentVariables[\"GH_TOKEN\"]`. Desde ahí, `agent-runner.js` lo propaga a `auto-delivery.js` a través de `...process.env` en el env del subprocess post-Claude.\n\n## Archivos modificados\n\n- `scripts/Run-AgentStream.ps1` — agrega bloque de obtención y propagación de GH_TOKEN\n\nCloses #1618\n\n---\nGenerated with [Claude Code](https://claude.ai/claude-code)",
-  "commit_type": "fix",
-  "files_changed": ["scripts/Run-AgentStream.ps1"]
+  "summary": "Implementación del Home/Dashboard de la app de negocio (issue #603). Se actualizó DashboardScreen con encabezado mejorado (nombre del negocio + subtítulo 'Panel de administración' + texto intro), y se reestructuró DashboardActionCard para soportar descripción y múltiples CTAs por card. Cards: Productos (Ver catálogo + Agregar producto), Pedidos (Pedidos pendientes + Historial), Delivery (Ver repartidores + Invitar repartidor), Configuración (Editar configuración). Se agregaron 12 nuevas claves en MessageKey con traducciones en ES/EN. Se actualizó el test de guardia.",
+  "pr_title": "feat(dashboard): header mejorado + descripciones y múltiples CTAs por card (#603)",
+  "pr_body": "## Cambios\n\n- **Encabezado**: muestra nombre del negocio como título principal + subtítulo 'Panel de administración' + texto introductorio\n- **DashboardActionCard**: nuevo parámetro `description` + `actions: List<Pair<String, () -> Unit>>` para múltiples CTAs\n- **Card Productos**: descripción + CTAs 'Ver catálogo' y 'Agregar producto'\n- **Card Pedidos**: descripción + CTAs 'Pedidos pendientes' e 'Historial de pedidos'\n- **Card Delivery**: descripción + CTAs 'Ver repartidores' e 'Invitar repartidor'\n- **Card Configuración**: descripción + CTA 'Editar configuración'\n- **Strings**: 12 nuevas claves en MessageKey con traducciones ES/EN\n- **Test**: DashboardGuardTest actualizado al nuevo texto 'Panel de administración'\n\nCloses #603",
+  "commit_type": "feat",
+  "files_changed": [
+    "app/composeApp/src/commonMain/kotlin/ui/sc/business/DashboardScreen.kt",
+    "app/composeApp/src/commonMain/kotlin/ar/com/intrale/strings/model/MessageKey.kt",
+    "app/composeApp/src/commonMain/kotlin/ar/com/intrale/strings/catalog/DefaultCatalog_es.kt",
+    "app/composeApp/src/commonMain/kotlin/ar/com/intrale/strings/catalog/DefaultCatalog_en.kt",
+    "app/composeApp/src/androidInstrumentedTest/kotlin/ui/sc/business/DashboardGuardTest.kt"
+  ]
 }
