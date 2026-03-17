@@ -84,7 +84,7 @@ async function main() {
         if (fs.existsSync(planPath)) {
             const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
             const count = plan.agentes ? plan.agentes.length : "?";
-            planInfo = "\n\n\uD83D\uDCCB Sprint " + (plan.fecha || "?") + " \u2014 " + count + " agente(s)";
+            planInfo = "\n\n\uD83D\uDCCB Sprint " + (plan.sprint_id || "?") + " \u2014 " + count + " agente(s)";
         }
     } catch(e) {}
 

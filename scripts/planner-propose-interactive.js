@@ -76,10 +76,10 @@ function loadSprintContext() {
     if (fs.existsSync(SPRINT_PLAN_FILE)) {
         try {
             const plan = JSON.parse(fs.readFileSync(SPRINT_PLAN_FILE, "utf8"));
-            context.fecha = plan.fecha || "?";
+            context.sprintId = plan.sprint_id || "?";
             context.agentes = plan.agentes || [];
             context.issues = (plan.agentes || []).map(a => a.issue).filter(Boolean);
-            log(`Sprint cargado: fecha=${context.fecha}, issues=[${context.issues.join(",")}]`);
+            log(`Sprint cargado: id=${context.sprintId}, issues=[${context.issues.join(",")}]`);
         } catch (e) {
             log("Error leyendo sprint-plan.json: " + e.message);
         }
@@ -214,7 +214,7 @@ function generateProposals(context, debtData, history) {
                 if (!discardedTitles.has(title.toLowerCase().substring(0, 30))) {
                     proposals.push({
                         title,
-                        justification: `Feature implementada en sprint ${context.fecha} sin tests de cobertura`,
+                        justification: `Feature implementada en sprint ${context.sprintId} sin tests de cobertura`,
                         body: buildTestProposalBody(module, description),
                         labels: ["backlog-tecnico", "testing"],
                         effort: "S",
@@ -589,7 +589,7 @@ async function main() {
     const proposalsData = saveProposals(proposals);
 
     // Actualizar historial
-    updateHistory(context.fecha, proposals);
+    updateHistory(context.sprintId, proposals);
 
     // 5. Enviar / mostrar
     if (DRY_RUN) {
@@ -606,7 +606,7 @@ async function main() {
         console.log(`Propuestas guardadas en: ${PROPOSALS_FILE}`);
     } else {
         log("Paso 5/5: Enviando propuestas a Telegram...");
-        const sent = await sendToTelegram(proposalsData, context.fecha);
+        const sent = await sendToTelegram(proposalsData, context.sprintId);
         if (sent) {
             console.log(`\n✅ ${proposals.length} propuesta(s) enviadas a Telegram para aprobación interactiva.\n`);
         } else {

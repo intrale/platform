@@ -344,12 +344,6 @@ function generateDefaultPrompt(issue, slug) {
 
 function generateSprintPlan(selectedIssues) {
     const today = new Date();
-    const fechaStr = today.toISOString().split("T")[0];
-
-    // Fecha de fin: 5 días hábiles desde hoy (aprox 1 semana)
-    const fechaFin = new Date(today);
-    fechaFin.setDate(fechaFin.getDate() + 7);
-    const fechaFinStr = fechaFin.toISOString().split("T")[0];
 
     // Construir agentes (máx MAX_AGENTS simultáneos)
     const agentes = selectedIssues.slice(0, MAX_AGENTS).map((issue, i) => ({
@@ -364,8 +358,6 @@ function generateSprintPlan(selectedIssues) {
     }));
 
     const plan = {
-        fecha: fechaStr,
-        fechaFin: fechaFinStr,
         generado_por: "auto-plan-sprint.js",
         generado_at: new Date().toISOString(),
         priorization: "Técnico → QA → Negocio",
@@ -403,7 +395,7 @@ async function notifyTelegram(plan) {
 
     let text = `📅 <b>Plan del siguiente sprint generado</b>\n`;
     text += `<i>Priorización: Técnico → QA → Negocio</i>\n\n`;
-    text += `<b>Sprint:</b> ${plan.fecha} → ${plan.fechaFin}\n`;
+    text += `<b>Sprint:</b> ${plan.sprint_id || "nuevo"} (${plan.size || "?"})\n`;
     text += `<b>Issues seleccionados:</b> ${plan.total_selected}/${plan.max_issues}\n\n`;
 
     text += `🚀 <b>Agentes (primeros 2, simultáneos):</b>\n`;
@@ -504,7 +496,7 @@ async function main() {
 
     // Imprimir resumen siempre
     console.log("=== RESUMEN DEL PLAN ===");
-    console.log(`Sprint: ${plan.fecha} → ${plan.fechaFin}`);
+    console.log(`Sprint: ${plan.sprint_id || "nuevo"} (${plan.size || "?"})`);
     console.log(`Total issues: ${plan.total_selected}`);
     console.log(`\nAgentes simultáneos (${plan.agentes.length}):`);
     for (const a of plan.agentes) {

@@ -77,8 +77,9 @@ describe("P-08: Agent monitor", () => {
 
     it("getAgentStatus incluye campo status por agente", () => {
         const plan = {
-            fecha: "2026-03-08",
-            fechaFin: "2026-03-14",
+            sprint_id: "SPR-TEST",
+            size: "medio",
+            started_at: "2026-03-08T10:00:00Z",
             agentes: [{ numero: 1, issue: 9999, slug: "test-slug" }]
         };
         agentMonitor.startAgentMonitor(plan, { guardianOnly: true });
@@ -91,8 +92,9 @@ describe("P-08: Agent monitor", () => {
 
     it("getAgentStatus incluye campos failed y terminal en el resumen", () => {
         const plan = {
-            fecha: "2026-03-08",
-            fechaFin: "2026-03-14",
+            sprint_id: "SPR-TEST",
+            size: "medio",
+            started_at: "2026-03-08T10:00:00Z",
             agentes: [{ numero: 1, issue: 9998, slug: "test-slug-2" }]
         };
         agentMonitor.startAgentMonitor(plan, { guardianOnly: true });

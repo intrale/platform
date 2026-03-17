@@ -418,7 +418,7 @@ async function handleAutoPlanCallback(callbackData, callbackQueryId, messageId) 
                 const plan = JSON.parse(fs.readFileSync(_sprintPlanFile, "utf8"));
                 const agentes = plan.agentes || [];
                 const cola = plan.cola || [];
-                planText = `📅 <b>Sprint plan</b> — ${_tgApi.escHtml(plan.fecha || "?")} → ${_tgApi.escHtml(plan.fechaFin || "?")}\n`;
+                planText = `📋 <b>Sprint plan</b> — ${_tgApi.escHtml(plan.sprint_id || "?")} (${_tgApi.escHtml(plan.size || "?")})\n`;
                 planText += `<i>Priorización: ${_tgApi.escHtml(plan.priorization || "N/A")}</i>\n`;
                 planText += `<b>Issues seleccionados:</b> ${plan.total_selected || agentes.length + cola.length}/${plan.max_issues || 5}\n\n`;
                 planText += `🚀 <b>Agentes simultáneos (${agentes.length}):</b>\n`;

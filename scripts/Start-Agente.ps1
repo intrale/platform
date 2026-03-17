@@ -88,28 +88,19 @@ $Plan = Get-Content $PlanFile -Raw | ConvertFrom-Json
 function Test-SprintActivo {
     param([Parameter(Mandatory)] $Plan)
 
-    if (-not $Plan.fechaFin) {
-        Write-Error ("El plan no tiene campo 'fechaFin'. El sprint no es valido.`n" +
+    if (-not $Plan.sprint_id) {
+        Write-Error ("El plan no tiene campo 'sprint_id'. El sprint no es valido.`n" +
                      "Ejecuta /planner sprint para planificar un nuevo sprint antes de lanzar agentes.")
         exit 1
     }
 
-    try {
-        $fechaFin = [DateTime]::ParseExact($Plan.fechaFin, 'yyyy-MM-dd', $null)
-    }
-    catch {
-        Write-Error ("No se pudo parsear fechaFin '{0}'. Formato esperado: yyyy-MM-dd.`n" +
-                     "Ejecuta /planner sprint para generar un plan valido." -f $Plan.fechaFin)
+    if ($Plan.estado -ne 'activo') {
+        Write-Error ("El sprint $($Plan.sprint_id) no esta activo (estado: $($Plan.estado)).`n" +
+                     "Ejecuta /planner sprint para activar el sprint antes de lanzar agentes.")
         exit 1
     }
 
-    if ((Get-Date).Date -gt $fechaFin.Date) {
-        Write-Error ("El sprint del plan actual ha expirado (fechaFin: {0}).`n" +
-                     "Ejecuta /planner sprint para planificar un nuevo sprint antes de lanzar agentes." -f $Plan.fechaFin)
-        exit 1
-    }
-
-    Write-Host ">> Sprint activo (fechaFin: $($Plan.fechaFin))" -ForegroundColor Green
+    Write-Host ">> Sprint activo: $($Plan.sprint_id) (size: $($Plan.size))" -ForegroundColor Green
 }
 
 Test-SprintActivo -Plan $Plan

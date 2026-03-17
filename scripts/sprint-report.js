@@ -250,7 +250,7 @@ const CSS = `
 `;
 
 function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData) {
-    const fecha = plan.fecha || new Date().toISOString().split("T")[0];
+    const fecha = (plan.started_at || "").split("T")[0] || new Date().toISOString().split("T")[0];
     const tema = plan.tema || "";
     const agentes = plan.agentes || [];
     const sprintId = plan.sprint_id || null;
@@ -584,7 +584,7 @@ function buildTimelineEvents(activityLogPath, agentes, plan) {
 
     // Evento de inicio del sprint
     events.push({
-        time: plan.fecha || "Sprint",
+        time: (plan.started_at || "").split("T")[0] || "Sprint",
         title: `Sprint iniciado — ${agentes.length} agentes`,
         detail: `Tema: ${plan.tema || "N/A"}`,
         type: "info"
@@ -668,7 +668,7 @@ async function main() {
         process.exit(0);
     }
 
-    log(`Plan: ${plan.fecha}, ${plan.agentes.length} agentes`);
+    log(`Plan: ${plan.sprint_id || (plan.started_at || "").split("T")[0]}, ${plan.agentes.length} agentes`);
 
     // Snapshot de sesiones (antes de que se limpien)
     const sessions = snapshotSessions();
@@ -746,8 +746,8 @@ async function main() {
     log(`Datos enriquecidos: ${activityProblems.length} problemas en activity, ${prProblems.length} en PRs, ${debtData.length} deuda técnica`);
 
     // Generar HTML
-    const fecha = plan.fecha || new Date().toISOString().split("T")[0];
-    const htmlFileName = `reporte-sprint-${fecha}.html`;
+    const fecha = (plan.started_at || "").split("T")[0] || new Date().toISOString().split("T")[0];
+    const htmlFileName = `reporte-sprint-${plan.sprint_id || fecha}.html`;
     const htmlPath = path.join(QA_DIR, htmlFileName);
     const html = buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData);
 
