@@ -28,7 +28,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
@@ -37,6 +36,7 @@ import org.kodein.log.newLogger
 import ui.cp.inputs.InputState
 import ui.cp.inputs.TextField
 import ui.sc.delivery.DELIVERY_DASHBOARD_PATH
+import ui.sc.signup.REGISTER_SALER_PATH
 import ui.sc.shared.Screen
 import ui.th.spacing
 
@@ -58,13 +58,14 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
     private fun ScreenContent(viewModel: DashboardViewModel = viewModel { DashboardViewModel() }) {
         val coroutineScope = rememberCoroutineScope()
         val uiState = viewModel.state
-        val dashboardTitle = Txt(MessageKey.dashboard_title)
         val selectorLabel = Txt(MessageKey.dashboard_business_selector_label)
-        val businessHeader = if (uiState.selectedBusinessName.isNotBlank()) {
-            Txt(MessageKey.dashboard_business_header, mapOf("business" to uiState.selectedBusinessName))
+        val businessName = if (uiState.selectedBusinessName.isNotBlank()) {
+            uiState.selectedBusinessName
         } else {
             Txt(MessageKey.dashboard_business_header_empty)
         }
+        val dashboardSubtitle = Txt(MessageKey.dashboard_title)
+        val dashboardDescription = Txt(MessageKey.dashboard_subtitle)
 
         LaunchedEffect(Unit) {
             coroutineScope.launch { viewModel.loadDashboard() }
@@ -81,12 +82,18 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
         ) {
             Text(
-                text = dashboardTitle,
+                text = businessName,
                 style = MaterialTheme.typography.headlineMedium
             )
             Text(
-                text = businessHeader,
-                style = MaterialTheme.typography.bodyLarge
+                text = dashboardSubtitle,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = dashboardDescription,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             if (uiState.isBusinessLoading) {
@@ -155,36 +162,46 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                 Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)) {
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_products_title),
+                        description = Txt(MessageKey.dashboard_card_products_description),
                         metric = Txt(
                             MessageKey.dashboard_card_products_metric,
                             mapOf("count" to summary.productsCount.toString())
                         ),
-                        actionLabel = Txt(MessageKey.dashboard_card_products_cta),
-                        onClick = { navigate(BUSINESS_PRODUCTS_PATH) }
+                        primaryActionLabel = Txt(MessageKey.dashboard_card_products_cta),
+                        onPrimaryClick = { navigate(BUSINESS_PRODUCTS_PATH) },
+                        secondaryActionLabel = Txt(MessageKey.dashboard_card_products_cta_add),
+                        onSecondaryClick = { navigate(BUSINESS_PRODUCT_FORM_PATH) }
                     )
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_orders_title),
+                        description = Txt(MessageKey.dashboard_card_orders_description),
                         metric = Txt(
                             MessageKey.dashboard_card_orders_metric,
                             mapOf("count" to summary.pendingOrders.toString())
                         ),
-                        actionLabel = Txt(MessageKey.dashboard_card_orders_cta),
-                        onClick = { navigate(BUSINESS_ORDERS_PATH) }
+                        primaryActionLabel = Txt(MessageKey.dashboard_card_orders_cta),
+                        onPrimaryClick = { navigate(BUSINESS_ORDERS_PATH) },
+                        secondaryActionLabel = Txt(MessageKey.dashboard_card_orders_cta_history),
+                        onSecondaryClick = { navigate(BUSINESS_ORDERS_PATH) }
                     )
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_delivery_title),
+                        description = Txt(MessageKey.dashboard_card_delivery_description),
                         metric = Txt(
                             MessageKey.dashboard_card_delivery_metric,
                             mapOf("count" to summary.activeDrivers.toString())
                         ),
-                        actionLabel = Txt(MessageKey.dashboard_card_delivery_cta),
-                        onClick = { navigate(DELIVERY_DASHBOARD_PATH) }
+                        primaryActionLabel = Txt(MessageKey.dashboard_card_delivery_cta),
+                        onPrimaryClick = { navigate(DELIVERY_DASHBOARD_PATH) },
+                        secondaryActionLabel = Txt(MessageKey.dashboard_card_delivery_cta_invite),
+                        onSecondaryClick = { navigate(REGISTER_SALER_PATH) }
                     )
                     DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_settings_title),
+                        description = Txt(MessageKey.dashboard_card_settings_description),
                         metric = Txt(MessageKey.dashboard_card_settings_metric),
-                        actionLabel = Txt(MessageKey.dashboard_card_settings_cta),
-                        onClick = { navigate(PERSONALIZATION_PATH) }
+                        primaryActionLabel = Txt(MessageKey.dashboard_card_settings_cta),
+                        onPrimaryClick = { navigate(PERSONALIZATION_PATH) }
                     )
                 }
             }
@@ -194,9 +211,12 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
     @Composable
     private fun DashboardActionCard(
         title: String,
+        description: String,
         metric: String,
-        actionLabel: String,
-        onClick: () -> Unit
+        primaryActionLabel: String,
+        onPrimaryClick: () -> Unit,
+        secondaryActionLabel: String? = null,
+        onSecondaryClick: (() -> Unit)? = null
     ) {
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -206,17 +226,30 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(MaterialTheme.spacing.x2),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1_5)
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
             ) {
                 Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = metric,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                 ) {
-                    Text(text = metric, style = MaterialTheme.typography.bodyLarge)
-                    TextButton(onClick = onClick) {
-                        Text(text = actionLabel)
+                    TextButton(onClick = onPrimaryClick) {
+                        Text(text = primaryActionLabel)
+                    }
+                    if (secondaryActionLabel != null && onSecondaryClick != null) {
+                        TextButton(onClick = onSecondaryClick) {
+                            Text(text = secondaryActionLabel)
+                        }
                     }
                 }
             }
