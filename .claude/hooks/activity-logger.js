@@ -5,6 +5,10 @@ const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 
+// Agent Registry — fuente de verdad centralizada (#1642)
+let agentRegistry = null;
+try { agentRegistry = require("./agent-registry"); } catch (e) { /* módulo no disponible */ }
+
 // Resolver REPO_ROOT al repo principal (no al worktree)
 function resolveMainRepoRoot() {
     const candidate = process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform";
@@ -317,6 +321,11 @@ function checkZombieSessions() {
         if (zombieCount > 0) {
             const logFile = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
             try { fs.appendFileSync(logFile, "[" + new Date().toISOString() + "] activity-logger: " + zombieCount + " sesion(es) zombie marcadas done (PID muerto)\n"); } catch(e) {}
+        }
+
+        // Sweep del agent registry (#1642): detectar zombies y purgar entradas viejas
+        if (agentRegistry) {
+            try { agentRegistry.sweepRegistry(); } catch (e) { /* no bloquear hook */ }
         }
     } catch(e) { /* no bloquear hook */ }
 }
@@ -680,5 +689,38 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
         } catch(e) { /* no bloquear hook */ }
 
         fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");
+
+        // ─── Agent Registry: auto-registro y heartbeat (#1642) ──────────
+        if (agentRegistry && sessionId && session.branch) {
+            try {
+                const isAgentBranch = /^agent\/\d+/.test(session.branch);
+                if (isAgentBranch) {
+                    const sid = sessionId.substring(0, 8);
+                    const registry = agentRegistry.loadRegistry();
+                    if (!registry.agents[sid]) {
+                        // Auto-registro: primera vez que vemos esta sesión de agente
+                        const issueMatch = session.branch.match(/^agent\/(\d+)-?(.*)$/);
+                        const issueNum = issueMatch ? issueMatch[1] : null;
+                        const slug = issueMatch ? issueMatch[2] : "";
+                        agentRegistry.registerAgent({
+                            session_id: sid,
+                            issue: issueNum ? "#" + issueNum : null,
+                            skill: session.agent_name || null,
+                            branch: session.branch,
+                            worktree: WORKTREE_ROOT !== REPO_ROOT ? WORKTREE_ROOT : null,
+                            pid: session.pid || process.ppid || null,
+                            started_at: session.started_ts || ts,
+                            status: "active",
+                        });
+                    } else {
+                        // Heartbeat: actualizar timestamp y datos dinámicos
+                        agentRegistry.updateHeartbeat(sid, {
+                            skill: session.agent_name || registry.agents[sid].skill,
+                            pid: session.pid || registry.agents[sid].pid,
+                        });
+                    }
+                }
+            } catch (e) { /* no bloquear hook */ }
+        }
     } catch(e) { /* no bloquear hook por error de sesion */ }
 }
