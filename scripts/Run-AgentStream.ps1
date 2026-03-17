@@ -98,6 +98,29 @@ try {
         $process.StartInfo.CreateNoWindow = $false
         $process.StartInfo.WorkingDirectory = $WorkDir
         $process.StartInfo.EnvironmentVariables["CLAUDE_PROJECT_DIR"] = $WorkDir
+
+        # Propagar GH_TOKEN para que auto-delivery.js pueda crear/mergear PRs
+        $ghToken = $env:GH_TOKEN
+        if (-not $ghToken -or $ghToken.Length -lt 10) {
+            try {
+                $credInput = "protocol=https`nhost=github.com`n"
+                $credLines = ($credInput | & git credential fill 2>$null)
+                $pwdLine = @($credLines) | Where-Object { $_ -match '^password=' }
+                if ($pwdLine) { $ghToken = (($pwdLine | Select-Object -First 1) -replace '^password=', '').Trim() }
+            } catch { }
+        }
+        if (-not $ghToken -or $ghToken.Length -lt 10) {
+            try {
+                $ghToken = (& "C:\Workspaces\gh-cli\bin\gh.exe" auth token 2>$null | Out-String).Trim()
+            } catch { }
+        }
+        if ($ghToken -and $ghToken.Length -gt 10) {
+            $process.StartInfo.EnvironmentVariables["GH_TOKEN"] = $ghToken
+            Write-Host "  GH_TOKEN obtenido y propagado al runner" -ForegroundColor DarkGreen
+        } else {
+            Write-Host "  WARN: No se pudo obtener GH_TOKEN — auto-delivery puede fallar" -ForegroundColor DarkYellow
+        }
+
         $process.Start() | Out-Null
 
         # Leer output del runner (incluye output de Claude proxied)

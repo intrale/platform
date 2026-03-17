@@ -1,7 +1,7 @@
 {
-  "summary": "README para scripts/pipeline",
-  "pr_title": "docs: README para scripts/pipeline",
-  "pr_body": "Documenta el pipeline de eficiencia. Closes #1615",
-  "commit_type": "docs",
-  "files_changed": ["scripts/pipeline/README.md"]
+  "summary": "propagar GH_TOKEN a auto-delivery.js desde Run-AgentStream.ps1",
+  "pr_title": "fix: propagar GH_TOKEN a auto-delivery.js desde Run-AgentStream.ps1",
+  "pr_body": "## Problema\n\n`auto-delivery.js` no podía crear PRs porque `git credential fill` no funciona en el subprocess de node. El `GH_TOKEN` no se propagaba desde la sesión PowerShell al `agent-runner.js`.\n\n## Solución\n\nEn `Run-AgentStream.ps1`, antes de lanzar el proceso node, se obtiene el `GH_TOKEN` con tres métodos en cascada:\n1. `$env:GH_TOKEN` si ya está seteado\n2. `git credential fill` (funciona en el contexto PS1)\n3. `gh auth token` como fallback\n\nEl token se pasa al proceso node via `$process.StartInfo.EnvironmentVariables[\"GH_TOKEN\"]`. Desde ahí, `agent-runner.js` lo propaga a `auto-delivery.js` a través de `...process.env` en el env del subprocess post-Claude.\n\n## Archivos modificados\n\n- `scripts/Run-AgentStream.ps1` — agrega bloque de obtención y propagación de GH_TOKEN\n\nCloses #1618\n\n---\nGenerated with [Claude Code](https://claude.ai/claude-code)",
+  "commit_type": "fix",
+  "files_changed": ["scripts/Run-AgentStream.ps1"]
 }
