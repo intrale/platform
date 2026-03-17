@@ -18,6 +18,10 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
+// Agent Registry — fuente de verdad centralizada (#1642)
+let agentRegistry = null;
+try { agentRegistry = require("./agent-registry"); } catch (e) { /* módulo no disponible */ }
+
 // ─── Sprint sync: actualizar roadmap en puntos clave (#1433) ─────────────────
 
 let _sprintSyncAcc = null;
@@ -1021,6 +1025,19 @@ async function processInput() {
         const zombieIssues = markZombieSessions();
         if (zombieIssues.size > 0) {
             log("Sesiones zombie marcadas: issues " + Array.from(zombieIssues).join(", ") + " → excluidos del conteo de slots");
+        }
+
+        // Sweep del agent registry: detectar zombies y purgar entradas viejas (#1642)
+        if (agentRegistry) {
+            try {
+                const sweepResult = agentRegistry.sweepRegistry();
+                if (sweepResult.zombies.length > 0) {
+                    log("Registry sweep: " + sweepResult.zombies.length + " zombie(s) detectado(s)");
+                }
+                if (sweepResult.purged.length > 0) {
+                    log("Registry sweep: " + sweepResult.purged.length + " entrada(s) purgada(s)");
+                }
+            } catch (e) { log("agentRegistry.sweepRegistry error: " + e.message); }
         }
 
         // Contar solo agentes no-waiting: los waiting ya liberaron su slot al entrar en espera (#1356)
