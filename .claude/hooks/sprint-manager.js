@@ -1,5 +1,6 @@
 // sprint-manager.js -- Gestion unificada del sprint: sincronizacion y reparacion
 // Consolidacion de sprint-sync.js + auto-repair-sprint.js (#1511)
+// Issue #1621: roadmap.json es fuente de verdad para composición de sprints
 //
 // Este modulo unifica la API publica de ambos scripts de gestion del sprint.
 // Los archivos originales se mantienen como implementacion interna.
@@ -9,7 +10,7 @@
 //   node sprint-manager.js repair [--auto]
 //
 // Uso como modulo:
-//   const { runSync, syncRoadmapOnly, runAutoRepair } = require("./sprint-manager");
+//   const { runSync, syncRoadmapOnly, getSprintComposition, runAutoRepair } = require("./sprint-manager");
 
 "use strict";
 
@@ -42,6 +43,8 @@ module.exports = {
     runSync: syncModule.runSync,
     syncRoadmapOnly: syncModule.syncRoadmapOnly,
     archiveSprintMetrics: syncModule.archiveSprintMetrics,
+    getSprintComposition: syncModule.getSprintComposition,
+    reconcileComposition: syncModule.reconcileComposition,
     runAutoRepair: repairModule.runAutoRepair,
     readAuditHistory: repairModule.readAuditHistory
 };
