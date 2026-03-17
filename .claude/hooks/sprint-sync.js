@@ -1,15 +1,19 @@
-// sprint-sync.js — Reconciliación periódica: sprint-plan ↔ roadmap ↔ dashboard ↔ Telegram
-// Issue #1417: sincronización automática de las 4 fuentes de verdad del sprint
+// sprint-sync.js — Reconciliación periódica: roadmap ↔ sprint-plan ↔ dashboard ↔ Telegram
+// Issue #1417: sincronización automática de las fuentes del sprint
+// Issue #1621: roadmap.json es la ÚNICA FUENTE DE VERDAD para composición de sprints
 //
 // Responsabilidades:
-//   a) sprint-plan.json → realidad GitHub:
-//      - Agentes con status "done"/"waiting" y PR mergeada → mover a _completed[]
-//      - Issues en _queue[] ya cerrados en GitHub → mover a _completed[]
-//   b) roadmap.json ← sprint-plan.json:
+//   a) roadmap.json → sprint-plan.json (composición):
+//      - roadmap.json define qué issues componen cada sprint (stories[])
+//      - sprint-plan.json solo agrega metadata operativa (prompts, PIDs, status, timestamps)
+//      - Si hay divergencia en composición, roadmap.json prevalece
+//   b) sprint-plan.json → roadmap.json (status operativo):
 //      - _completed[] → status "done" en roadmap
 //      - agentes[] → status "in_progress" en roadmap
-//   c) Dashboard freshness: actualizar archivo de estado para invalidar cache
-//   d) Telegram: alertar cuando se detecta y auto-corrige desincronización
+//   c) sprint-plan.json → realidad GitHub:
+//      - Agentes con status "done"/"waiting" y PR mergeada → mover a _completed[]
+//   d) Dashboard freshness: actualizar archivo de estado para invalidar cache
+//   e) Telegram: alertar cuando se detecta y auto-corrige desincronización
 //
 // Throttle: máx 1 ejecución cada 2 minutos (salvo --force)
 // Idempotente: ejecutar N veces produce el mismo resultado
@@ -286,6 +290,31 @@ function sendTelegram(message) {
     }
 }
 
+// ─── Helpers de conversión (#1621) ────────────────────────────────────────────
+
+/**
+ * Genera un slug simplificado a partir del título de una story.
+ * Solo para uso interno cuando se agrega un issue faltante a sprint-plan.
+ */
+function generateSlugFromTitle(title) {
+    return (title || "sin-titulo")
+        .toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // quitar acentos
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .substring(0, 40);
+}
+
+/**
+ * Convierte effort de roadmap (simple/medio/grande) a size de sprint-plan (S/M/L).
+ */
+function effortToSize(effort) {
+    if (effort === "simple") return "S";
+    if (effort === "medio") return "M";
+    if (effort === "grande") return "L";
+    return "S";
+}
+
 // ─── Reconciliación: sprint-plan → GitHub ─────────────────────────────────────
 
 /**
@@ -392,10 +421,85 @@ function reconcileSprintPlan(plan, ghCmd) {
     return changes;
 }
 
-// ─── Reconciliación: roadmap ← sprint-plan ────────────────────────────────────
+// ─── Reconciliación: roadmap → sprint-plan (composición) (#1621) ──────────────
+// roadmap.json es fuente de verdad para composición del sprint.
+// Si sprint-plan tiene issues que no están en roadmap, se alertan.
+// Si roadmap tiene issues que no están en sprint-plan, se agregan a _queue.
 
 /**
- * Actualiza el sprint activo del roadmap a partir del estado de sprint-plan.
+ * Reconcilia la composición de sprint-plan.json a partir de roadmap.json.
+ * roadmap.json prevalece: si hay un issue en roadmap que no está en sprint-plan,
+ * se agrega a _queue[]. Si hay un issue en sprint-plan que no está en roadmap,
+ * se genera una alerta.
+ *
+ * @param {object} plan - sprint-plan.json actual
+ * @param {object} roadmap - roadmap.json actual
+ * @returns {string[]} Lista de cambios aplicados
+ */
+function reconcileComposition(plan, roadmap) {
+    const changes = [];
+
+    if (!plan || !roadmap || !Array.isArray(roadmap.sprints)) return changes;
+
+    // Encontrar sprint activo en roadmap que coincide con sprint-plan
+    const activeSprint = roadmap.sprints.find(s => s.id === plan.sprint_id);
+    if (!activeSprint) {
+        log("reconcileComposition: Sprint " + plan.sprint_id + " no encontrado en roadmap");
+        return changes;
+    }
+
+    const stories = Array.isArray(activeSprint.stories) ? activeSprint.stories : [];
+    const roadmapIssueSet = new Set(stories.map(s => Number(s.issue)));
+
+    // Collect all issues currently in sprint-plan
+    const planIssueSet = new Set();
+    for (const ag of (plan.agentes || [])) planIssueSet.add(Number(ag.issue));
+    for (const q of (plan._queue || [])) planIssueSet.add(Number(q.issue));
+    for (const c of (plan._completed || [])) planIssueSet.add(Number(c.issue));
+
+    // a) Issues en roadmap que NO están en sprint-plan → agregar a _queue
+    for (const story of stories) {
+        const issueNum = Number(story.issue);
+        if (!planIssueSet.has(issueNum) && story.status !== "done") {
+            if (!Array.isArray(plan._queue)) plan._queue = [];
+            const maxNumero = Math.max(
+                ...(plan.agentes || []).map(a => a.numero || 0),
+                ...(plan._queue || []).map(q => q.numero || 0),
+                ...(plan._completed || []).map(c => c.numero || 0),
+                0
+            );
+            plan._queue.push({
+                numero: maxNumero + 1,
+                issue: issueNum,
+                slug: generateSlugFromTitle(story.title),
+                titulo: story.title,
+                stream: story.stream || "E",
+                size: effortToSize(story.effort),
+                status: "waiting"
+            });
+            changes.push("composición: #" + issueNum + " agregado a _queue desde roadmap");
+            log("reconcileComposition: #" + issueNum + " agregado a _queue (estaba en roadmap pero no en sprint-plan)");
+        }
+    }
+
+    // b) Issues en sprint-plan (agentes/queue) que NO están en roadmap → alerta
+    for (const ag of [...(plan.agentes || []), ...(plan._queue || [])]) {
+        if (!roadmapIssueSet.has(Number(ag.issue))) {
+            log("reconcileComposition: #" + ag.issue + " en sprint-plan pero no en roadmap." + activeSprint.id);
+            changes.push("alerta: #" + ag.issue + " en sprint-plan pero no en roadmap (roadmap es fuente de verdad)");
+        }
+    }
+
+    return changes;
+}
+
+// ─── Reconciliación: sprint-plan → roadmap (status operativo) ──────────────────
+// sprint-plan refleja el estado de ejecución (in_progress, done) hacia roadmap.
+// roadmap.json mantiene el status de cada story actualizado.
+
+/**
+ * Actualiza el status de las stories del sprint activo en roadmap
+ * a partir del estado operativo de sprint-plan (agentes, _completed, _queue).
  * Retorna lista de cambios aplicados.
  */
 function reconcileRoadmap(plan, roadmap) {
@@ -422,34 +526,26 @@ function reconcileRoadmap(plan, roadmap) {
 
     let roadmapChanged = false;
 
-    if (!Array.isArray(activeSprint.issues)) activeSprint.issues = [];
+    // roadmap.json usa "stories" con campo "issue" (no "issues" con "number") — #1621
+    const stories = Array.isArray(activeSprint.stories) ? activeSprint.stories : [];
 
-    for (const issue of activeSprint.issues) {
-        const num = Number(issue.number);
-        let newStatus = issue.status;
+    for (const story of stories) {
+        const num = Number(story.issue);
+        let newStatus = story.status;
 
-        if (completedIssues.has(num) && issue.status !== "done") {
+        if (completedIssues.has(num) && story.status !== "done") {
             newStatus = "done";
-        } else if (inProgressIssues.has(num) && issue.status !== "in_progress" && issue.status !== "done") {
+        } else if (inProgressIssues.has(num) && story.status !== "in_progress" && story.status !== "done") {
             newStatus = "in_progress";
-        } else if (queueIssues.has(num) && issue.status !== "planned" && issue.status !== "done" && issue.status !== "in_progress") {
+        } else if (queueIssues.has(num) && story.status !== "planned" && story.status !== "done" && story.status !== "in_progress") {
             newStatus = "planned";
         }
 
-        if (newStatus !== issue.status) {
-            log("Roadmap: #" + issue.number + " " + issue.status + " → " + newStatus);
-            changes.push("roadmap: #" + issue.number + " " + issue.status + " → " + newStatus);
-            issue.status = newStatus;
+        if (newStatus !== story.status) {
+            log("Roadmap: #" + story.issue + " " + story.status + " → " + newStatus);
+            changes.push("roadmap: #" + story.issue + " " + story.status + " → " + newStatus);
+            story.status = newStatus;
             roadmapChanged = true;
-        }
-    }
-
-    // Detectar issues en sprint-plan que no están en roadmap
-    const roadmapIssueSet = new Set(activeSprint.issues.map(i => Number(i.number)));
-    for (const ag of [...(plan.agentes || []), ...(plan._completed || []), ...(plan._queue || [])]) {
-        if (!roadmapIssueSet.has(Number(ag.issue))) {
-            log("Desincronización: #" + ag.issue + " en sprint-plan pero no en roadmap." + activeSprint.id);
-            changes.push("alerta: #" + ag.issue + " en sprint-plan pero no en roadmap (requiere revisión manual)");
         }
     }
 
@@ -479,6 +575,36 @@ function reconcileRoadmap(plan, roadmap) {
     roadmap.horizon_sprints = 5;
 
     return changes;
+}
+
+// ─── Lectura de composición del sprint desde roadmap (fuente de verdad) ─────────
+// Issue #1621: cualquier hook que necesite saber qué issues componen el sprint
+// debe usar esta función en lugar de leer sprint-plan.json directamente.
+
+/**
+ * Retorna la composición del sprint activo desde roadmap.json.
+ * Incluye todas las stories con su issue number, title, effort, stream y status.
+ *
+ * @param {string} [sprintId] - ID del sprint a buscar. Si no se pasa, busca el activo.
+ * @returns {{ sprintId: string, stories: object[] } | null}
+ */
+function getSprintComposition(sprintId) {
+    const roadmap = readJson(ROADMAP_FILE);
+    if (!roadmap || !Array.isArray(roadmap.sprints)) return null;
+
+    const sprint = sprintId
+        ? roadmap.sprints.find(s => s.id === sprintId)
+        : roadmap.sprints.find(s => s.status === "active");
+
+    if (!sprint) return null;
+
+    return {
+        sprintId: sprint.id,
+        tema: sprint.tema,
+        size: sprint.size,
+        status: sprint.status,
+        stories: Array.isArray(sprint.stories) ? sprint.stories : []
+    };
 }
 
 // ─── Archivado de métricas por sprint (#1419) ─────────────────────────────────
@@ -563,6 +689,11 @@ function archiveSprintMetrics(plan) {
 
 /**
  * Ejecuta la reconciliación completa.
+ * Orden de reconciliación (#1621):
+ *   1. roadmap → sprint-plan (composición: roadmap prevalece)
+ *   2. sprint-plan → GitHub (PRs mergeadas/cerradas)
+ *   3. sprint-plan → roadmap (status operativo: in_progress, done)
+ *
  * @param {object} opts - Opciones
  * @param {boolean} opts.force - Omitir throttle y lock
  * @param {boolean} opts.silent - No enviar Telegram si no hay cambios
@@ -595,24 +726,32 @@ async function runSync(opts) {
             return { skipped: true, reason: "no sprint-plan" };
         }
 
-        // 2. Reconciliar sprint-plan vs GitHub (solo si hay gh)
+        // 2. Reconciliar composición: roadmap → sprint-plan (#1621)
+        //    roadmap.json es fuente de verdad para qué issues componen el sprint
+        if (roadmap) {
+            const compChanges = reconcileComposition(plan, roadmap);
+            allChanges.push(...compChanges);
+            if (compChanges.some(c => c.startsWith("composición:"))) sprintPlanChanged = true;
+        }
+
+        // 3. Reconciliar sprint-plan vs GitHub (solo si hay gh)
         if (ghCmd) {
             const spChanges = reconcileSprintPlan(plan, ghCmd);
             allChanges.push(...spChanges);
             if (spChanges.length > 0) sprintPlanChanged = true;
         }
 
-        // 3. Reconciliar roadmap ← sprint-plan
+        // 4. Reconciliar status operativo: sprint-plan → roadmap
         if (roadmap) {
             const rmChanges = reconcileRoadmap(plan, roadmap);
             allChanges.push(...rmChanges);
             if (rmChanges.some(c => c.startsWith("roadmap:"))) roadmapChanged = true;
         }
 
-        // 4. Persistir cambios
+        // 5. Persistir cambios
         if (sprintPlanChanged) {
             writeJson(SPRINT_PLAN_FILE, plan);
-            log("sprint-plan.json actualizado (" + allChanges.filter(c => c.startsWith("sprint-plan:")).length + " cambios)");
+            log("sprint-plan.json actualizado (" + allChanges.filter(c => c.startsWith("sprint-plan:") || c.startsWith("composición:")).length + " cambios)");
         }
 
         if (roadmapChanged && roadmap) {
@@ -620,7 +759,7 @@ async function runSync(opts) {
             log("roadmap.json actualizado (" + allChanges.filter(c => c.startsWith("roadmap:")).length + " cambios)");
         }
 
-        // 5. Actualizar estado (toca el archivo → invalida cache del dashboard)
+        // 6. Actualizar estado (toca el archivo → invalida cache del dashboard)
         const syncState = {
             lastRun: Date.now(),
             lastRunIso: new Date().toISOString(),
@@ -631,8 +770,8 @@ async function runSync(opts) {
         };
         updateState(syncState);
 
-        // 6. Notificar via Telegram solo si hay cambios relevantes
-        const realChanges = allChanges.filter(c => c.startsWith("sprint-plan:") || c.startsWith("roadmap:"));
+        // 7. Notificar via Telegram solo si hay cambios relevantes
+        const realChanges = allChanges.filter(c => c.startsWith("sprint-plan:") || c.startsWith("roadmap:") || c.startsWith("composición:"));
         const alerts      = allChanges.filter(c => c.startsWith("alerta:"));
 
         if (realChanges.length > 0) {
@@ -730,4 +869,4 @@ if (require.main === module) {
     }, 2000);
 }
 
-module.exports = { runSync, syncRoadmapOnly, archiveSprintMetrics };
+module.exports = { runSync, syncRoadmapOnly, archiveSprintMetrics, getSprintComposition, reconcileComposition };

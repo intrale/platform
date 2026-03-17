@@ -118,6 +118,12 @@ function isLargeSize(size) {
     return size === "L" || size === "XL";
 }
 
+function sizeToEffort(size) {
+    if (size === "XS" || size === "S") return "simple";
+    if (size === "M") return "medio";
+    return "grande";
+}
+
 function isBugOrBlocker(labels) {
     return labels.includes("bug")         ||
            labels.includes("blocker")     ||
@@ -408,8 +414,8 @@ function planRoadmap(opts) {
     // 3. Colectar todos los issue numbers ya asignados en algún sprint
     const assignedNumbers = new Set();
     for (const sprint of roadmap.sprints) {
-        for (const issue of (sprint.issues || [])) {
-            assignedNumbers.add(issue.number);
+        for (const story of (sprint.stories || [])) {
+            assignedNumbers.add(Number(story.issue));
         }
     }
     log("Issues ya asignados en roadmap: " + assignedNumbers.size);
@@ -427,7 +433,7 @@ function planRoadmap(opts) {
 
     // 7. Identificar sprints vacíos (sin issues) entre los futuros
     const emptySprints = futureSprints.filter(s =>
-        !s.issues || s.issues.length === 0
+        !s.stories || s.stories.length === 0
     );
     log("Sprints vacíos a llenar: " + emptySprints.length);
 
@@ -467,10 +473,10 @@ function planRoadmap(opts) {
         }
 
         // Convertir al formato de roadmap.json
-        const roadmapIssues = assigned.map(issue => ({
-            number: issue.number,
+        const roadmapStories = assigned.map(issue => ({
+            issue:  issue.number,
             title:  issue.title,
-            size:   getSize(issue.labels),
+            effort: sizeToEffort(getSize(issue.labels)),
             stream: getStream(issue.labels),
             status: "planned"
         }));
@@ -478,10 +484,10 @@ function planRoadmap(opts) {
         // Actualizar el sprint en el roadmap (buscar por id)
         const sprintIdx = roadmap.sprints.findIndex(s => s.id === targetSprint.id);
         if (sprintIdx !== -1) {
-            roadmap.sprints[sprintIdx].issues = roadmapIssues;
+            roadmap.sprints[sprintIdx].stories = roadmapStories;
         }
 
-        const streamSummary = roadmapIssues.reduce((acc, i) => {
+        const streamSummary = roadmapStories.reduce((acc, i) => {
             acc[i.stream] = (acc[i.stream] || 0) + 1;
             return acc;
         }, {});
