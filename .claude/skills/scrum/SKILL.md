@@ -618,7 +618,7 @@ Ejecutar Paso 0, luego calcular y mostrar métricas:
   Trazabilidad:          N% (sesiones con issue vinculado)
 
 ### Salud del Sprint Actual
-  Sprint:          [sprint_id] ([fechaInicio] → [fechaFin])
+  Sprint:          [sprint_id] (size: [simple|medio|grande])
   Estado:          [active | overdue | closed]
   Inconsistencias: N [🟢 0 | 🟡 1-3 | 🔴 >3]
   ├─ PR mergeado/issue abierto: N
@@ -973,7 +973,7 @@ node /c/Workspaces/Intrale/platform/.claude/skills/scrum/health-report.js 2>/dev
 ## 🏁 Sprint Cerrado — [sprint_id]
 
 ### Resumen del sprint
-- **Período**: [fechaInicio] → [fechaFin]
+- **Tamaño**: [simple|medio|grande]
 - **Historias completadas**: N/M (velocity: N)
 - **Issues redistribuidos**: N
 - **Backup roadmap**: scripts/roadmap.backup.json ✓

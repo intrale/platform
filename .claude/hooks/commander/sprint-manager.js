@@ -322,7 +322,7 @@ async function handleSprint(agentNumber) {
     const results = new Array(agentes.length).fill("pending");
 
     let header = "🏃 <b>Sprint iniciado</b> — " + _tgApi.escHtml(plan.titulo) + "\n";
-    header += "📅 " + _tgApi.escHtml(plan.fecha) + " · " + agentes.length + " agente(s)\n";
+    header += "📋 " + _tgApi.escHtml(plan.sprint_id || "Sprint") + " (" + _tgApi.escHtml(plan.size || "?") + ") · " + agentes.length + " agente(s)\n";
     header += "📊 Monitor periódico: cada " + Math.round(sprintMonitorIntervalMs / 60000) + " min\n\n";
     header += formatSprintProgress(agentes, 0, results);
     await _tgApi.sendMessage(header);

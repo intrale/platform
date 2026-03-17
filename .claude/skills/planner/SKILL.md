@@ -341,11 +341,10 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 ```json
 {
   "sprint_id": "SPR-NNN",
-  "fecha": "2026-02-20",
-  "fechaInicio": "2026-02-20",
-  "fechaFin": "2026-02-26",
+  "size": "medio",
   "tema": "Sprint general — mix de prioridades",
   "estado": "activo",
+  "started_at": "2026-02-20T10:00:00Z",
   "concurrency_limit": 3,
   "pipeline_mode": "scripts",
   "total_stories": 7,
@@ -428,9 +427,9 @@ para que `Start-Agente.ps1` pueda lanzar agentes automaticamente:
 - **NUNCA** poner más de 3 en `agentes[]` aunque el sprint tenga 10 historias.
 
 Reglas de otros campos:
-- `fecha`: fecha de creacion del plan (backward compat, mismo valor que `fechaInicio`)
-- `fechaInicio`: fecha de inicio del sprint (ISO 8601, ej: `"2026-03-03"`) — siempre la fecha actual al momento de planificar
-- `fechaFin`: fecha de fin del sprint (ISO 8601, ej: `"2026-03-07"`) — `fechaInicio` + duracion del sprint (default: 5 dias habiles / 1 semana, excluyendo fines de semana). Si el sprint se planifica un lunes, `fechaFin` es el viernes de esa semana. **OBLIGATORIO** — `Start-Agente.ps1` y `Watch-Agentes.ps1` bloquean la ejecucion si `fechaFin` no existe o ya paso
+- `size`: tamaño del sprint (`"simple"` | `"medio"` | `"grande"`) — Simple: 1-3 stories simples, un solo stream. Medio: 4-6 stories o mix de esfuerzos. Grande: 7+ stories o stories de esfuerzo grande.
+- `started_at`: timestamp ISO 8601 de cuando arranca el sprint (se agrega automáticamente al activar)
+- `closed_at`: timestamp ISO 8601 de cuando se cierra el sprint (se agrega automáticamente al cerrar)
 - `numero`: secuencial empezando en 1 para toda la lista (agentes + _queue juntos)
 - `issue`: numero del issue de GitHub
 - `slug`: identificador corto sin espacios ni caracteres especiales (usado para branch y worktree)

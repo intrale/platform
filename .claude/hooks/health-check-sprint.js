@@ -2,7 +2,7 @@
 // Lee sprint-plan.json, verifica estado de issues en GitHub y detecta inconsistencias:
 //   - PR mergeado pero issue abierto
 //   - Historias en "In Progress" > 6h sin actividad (estancadas)
-//   - Sprint pasada fechaFin sin cerrar
+//   - Sprint activo demasiado tiempo sin cerrar (basado en started_at)
 //   - PRs abiertos hace más de 24h sin merge
 // Salida: JSON con diagnóstico detallado
 
@@ -27,7 +27,7 @@ const GH_CLI_CANDIDATES = [
 // Umbrales de detección
 const STALE_IN_PROGRESS_HOURS = 6;   // Historias "In Progress" sin actividad > 6h → estancada
 const STALE_PR_HOURS = 24;           // PRs abiertos sin merge > 24h → alertar
-const SPRINT_OVERDUE_DAYS = 2;       // Sprint pasada fechaFin por > 2 días → cerrar
+const SPRINT_OVERDUE_DAYS = 2;       // Días extra sobre MAX_SPRINT_DAYS para marcar critical
 
 function log(msg) {
     try {
@@ -449,27 +449,28 @@ async function runHealthCheck() {
         issuesDiagnosis.push(issueDiag);
     }
 
-    // ─── Detección 5: Sprint pasada fechaFin sin cerrar ───────────────────────
+    // ─── Detección 5: Sprint overdue (sin fechaFin planificada, basado en started_at + duración) ──
     let sprintStatus = "active";
     let sprintOverdue = null;
-    if (sprintPlan.fechaFin && !sprintPlan.sprint_cerrado) {
-        const fechaFin = new Date(sprintPlan.fechaFin + "T23:59:59Z");
-        const daysOverdue = (now - fechaFin) / (1000 * 60 * 60 * 24);
-        if (daysOverdue > 0) {
-            sprintStatus = daysOverdue > SPRINT_OVERDUE_DAYS ? "overdue_critical" : "overdue";
+    if (sprintPlan.sprint_cerrado) {
+        sprintStatus = "closed";
+    } else if (sprintPlan.started_at) {
+        const startedAt = new Date(sprintPlan.started_at);
+        const daysSinceStart = (now - startedAt) / (1000 * 60 * 60 * 24);
+        // Sprints sin fecha de fin planificada: alertar si lleva más de 7 días activo
+        const MAX_SPRINT_DAYS = 7;
+        if (daysSinceStart > MAX_SPRINT_DAYS) {
+            sprintStatus = daysSinceStart > (MAX_SPRINT_DAYS + SPRINT_OVERDUE_DAYS) ? "overdue_critical" : "overdue";
             sprintOverdue = {
                 type: "sprint_overdue",
-                severity: daysOverdue > SPRINT_OVERDUE_DAYS ? "critical" : "medium",
-                days_overdue: Math.round(daysOverdue),
-                fecha_fin: sprintPlan.fechaFin,
-                message: `Sprint ${sprintPlan.sprint_id} venció hace ${Math.round(daysOverdue)} día(s) sin cerrar`,
-                action: daysOverdue > SPRINT_OVERDUE_DAYS ? "close_sprint" : "alert_sprint_overdue"
+                severity: daysSinceStart > (MAX_SPRINT_DAYS + SPRINT_OVERDUE_DAYS) ? "critical" : "medium",
+                days_active: Math.round(daysSinceStart),
+                message: `Sprint ${sprintPlan.sprint_id} lleva ${Math.round(daysSinceStart)} día(s) activo sin cerrar`,
+                action: sprintStatus === "overdue_critical" ? "close_sprint" : "alert_sprint_overdue"
             };
             inconsistencias.push(sprintOverdue);
             log("Inconsistencia: " + sprintOverdue.message);
         }
-    } else if (sprintPlan.sprint_cerrado) {
-        sprintStatus = "closed";
     }
 
     // ─── Calcular métricas de progreso ────────────────────────────────────────

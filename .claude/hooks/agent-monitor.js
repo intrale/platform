@@ -405,7 +405,7 @@ function saveParticipation(data) {
 function recordSprintParticipation() {
     if (!_plan) return null;
 
-    const sprintId = _plan.fechaInicio || _plan.fecha || new Date().toISOString().split("T")[0];
+    const sprintId = _plan.sprint_id || ((_plan.started_at || "").split("T")[0]) || new Date().toISOString().split("T")[0];
 
     // Recopilar skills invocados de todas las sesiones registradas en agent-metrics.json
     const agentsParticipated = new Set();
@@ -429,8 +429,8 @@ function recordSprintParticipation() {
     const existing = participation.sprints.findIndex(s => s.sprint_id === sprintId);
     const record = {
         sprint_id: sprintId,
-        fecha_inicio: _plan.fechaInicio || _plan.fecha,
-        fecha_fin: _plan.fechaFin,
+        fecha_inicio: (_plan.started_at || "").split("T")[0] || null,
+        fecha_fin: (_plan.closed_at || "").split("T")[0] || null,
         recorded_at: new Date().toISOString(),
         agents_participated: agentsList,
         agents_total: ALL_PIPELINE_AGENTS.length,

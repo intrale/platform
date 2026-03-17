@@ -95,28 +95,19 @@ $Plan = Get-Content $PlanFile -Raw | ConvertFrom-Json
 function Test-SprintActivo {
     param([Parameter(Mandatory)] $Plan)
 
-    if (-not $Plan.fechaFin) {
-        Write-Error ("El plan no tiene campo 'fechaFin'. El sprint no es valido.`n" +
+    if (-not $Plan.sprint_id) {
+        Write-Error ("El plan no tiene campo 'sprint_id'. El sprint no es valido.`n" +
                      "Ejecuta /planner sprint para planificar un nuevo sprint antes de lanzar agentes.")
         exit 1
     }
 
-    try {
-        $fechaFin = [DateTime]::ParseExact($Plan.fechaFin, 'yyyy-MM-dd', $null)
-    }
-    catch {
-        Write-Error ("No se pudo parsear fechaFin '{0}'. Formato esperado: yyyy-MM-dd.`n" +
-                     "Ejecuta /planner sprint para generar un plan valido." -f $Plan.fechaFin)
+    if ($Plan.estado -ne 'activo') {
+        Write-Error ("El sprint $($Plan.sprint_id) no esta activo (estado: $($Plan.estado)).`n" +
+                     "Ejecuta /planner sprint para activar el sprint antes de lanzar agentes.")
         exit 1
     }
 
-    if ((Get-Date).Date -gt $fechaFin.Date) {
-        Write-Error ("El sprint del plan actual ha expirado (fechaFin: {0}).`n" +
-                     "Ejecuta /planner sprint para planificar un nuevo sprint antes de lanzar agentes." -f $Plan.fechaFin)
-        exit 1
-    }
-
-    Write-Log ('Sprint activo (fechaFin: {0})' -f $Plan.fechaFin) 'Green'
+    Write-Log ('Sprint activo: {0} (size: {1})' -f $Plan.sprint_id, $Plan.size) 'Green'
 }
 
 Test-SprintActivo -Plan $Plan
@@ -133,7 +124,7 @@ Write-Host '============================================' -ForegroundColor Magen
 Write-Host '  Watch-Agentes -- Ciclo Continuo'            -ForegroundColor Magenta
 Write-Host '============================================' -ForegroundColor Magenta
 Write-Host ''
-Write-Log ('Vigilando {0} agente(s) del sprint {1}' -f $AgentCount, $Plan.fecha) 'Cyan'
+Write-Log ('Vigilando {0} agente(s) del sprint {1}' -f $AgentCount, $Plan.sprint_id) 'Cyan'
 Write-Log ('Intervalo de polling: {0}s' -f $PollInterval) 'Cyan'
 if ($SkipMerge) {
     Write-Log 'SkipMerge activado — PRs sin merge automatico' 'Yellow'
@@ -144,7 +135,7 @@ if ($EffectiveNoAutoPlan) {
 }
 Write-Host ''
 
-$tgMsg = "Watch-Agentes iniciado -- vigilando $AgentCount agente(s) del sprint $($Plan.fecha)"
+$tgMsg = "Watch-Agentes iniciado -- vigilando $AgentCount agente(s) del sprint $($Plan.sprint_id)"
 Send-TelegramMessage $tgMsg
 
 foreach ($a in $Plan.agentes) {

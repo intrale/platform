@@ -63,10 +63,10 @@ describe("P-24: health-check-sprint.js — existencia y estructura", () => {
         );
     });
 
-    it("detecta sprint pasada fechaFin sin cerrar (sprint_overdue)", () => {
+    it("detecta sprint overdue basado en started_at (sprint_overdue)", () => {
         const src = readSource("health-check-sprint.js");
         assert.ok(src.includes("sprint_overdue"), "debe detectar tipo sprint_overdue");
-        assert.ok(src.includes("fechaFin"), "debe comparar contra fechaFin");
+        assert.ok(src.includes("started_at"), "debe comparar contra started_at");
         assert.ok(src.includes("sprint_cerrado"), "debe verificar campo sprint_cerrado");
     });
 

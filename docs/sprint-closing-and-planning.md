@@ -180,8 +180,8 @@ Un issue bloqueado por una dependencia **no incluida en el plan** es excluido.
 
 ```json
 {
-  "fecha": "2026-03-15",
-  "fechaFin": "2026-03-22",
+  "sprint_id": "SPR-NNN",
+  "size": "medio",
   "generado_por": "auto-plan-sprint.js",
   "priorization": "Técnico → QA → Negocio",
   "max_issues": 5,

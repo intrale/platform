@@ -161,10 +161,10 @@ async function main() {
         process.exit(0);
     }
 
-    // Fecha de cierre del sprint
-    const sprintDate = plan.fechaFin || plan.fecha || new Date().toISOString().split("T")[0];
-    const tagName = `sprint/${sprintDate}`;
+    // Fecha de cierre del sprint (derivada de closed_at o started_at)
+    const sprintDate = (plan.closed_at || plan.started_at || "").split("T")[0] || new Date().toISOString().split("T")[0];
     const sprintId = plan.sprint_id || null;
+    const tagName = sprintId ? `sprint/${sprintId}` : `sprint/${sprintDate}`;
 
     log(`Sprint: ${sprintId || "sin ID"}, fecha cierre: ${sprintDate}, tag: ${tagName}`);
 

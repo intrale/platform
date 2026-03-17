@@ -767,9 +767,8 @@ function mockEjecucionData() {
   const mockSprintPlan = {
     sprint_id: "SPR-013",
     estado: "activo",
-    fecha: new Date().toISOString().split("T")[0],
-    fechaInicio: new Date().toISOString().split("T")[0],
-    fechaFin: new Date(Date.now() + 5 * 86400000).toISOString().split("T")[0],
+    size: "medio",
+    started_at: new Date().toISOString(),
     tema: "Sprint demo — todos los estados de ejecucion",
     agentes: [
       { numero: 1, issue: 1300, slug: "api-pedidos", titulo: "API REST de pedidos", stream: "A", size: "M" },

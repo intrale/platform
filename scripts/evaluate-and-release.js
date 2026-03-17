@@ -279,9 +279,9 @@ async function main() {
         log(`Sprint plan no disponible: ${e.message} — continuando sin él`);
     }
 
-    const sprintDate = plan?.fechaFin || plan?.fecha || new Date().toISOString().split("T")[0];
+    const sprintDate = (plan?.closed_at || plan?.started_at || "").split("T")[0] || new Date().toISOString().split("T")[0];
     const sprintId = plan?.sprint_id || null;
-    const sprintTag = `sprint/${sprintDate}`;
+    const sprintTag = sprintId ? `sprint/${sprintId}` : `sprint/${sprintDate}`;
 
     // Obtener última release
     const lastRelease = getLastRelease();

@@ -22,8 +22,9 @@ function makeTmpDir() {
 
 function buildPlan(overrides = {}) {
     return Object.assign({
-        fecha: "2026-03-08",
-        fechaFin: "2026-03-15",
+        sprint_id: "SPR-TEST",
+        size: "medio",
+        started_at: "2026-03-08T10:00:00Z",
         concurrency_limit: 3,
         agentes: [
             { numero: 1, issue: 1277, slug: "hooks-validar-concurrencia-agentes" },
