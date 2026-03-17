@@ -1,15 +1,15 @@
 {
-  "last_check": 1772578224362,
-  "last_check_iso": "2026-03-03T22:50:24.362Z",
-  "all_ok": false,
-  "issues_found": 1,
-  "next_interval_ms": 120000,
+  "last_check": 1773748680609,
+  "last_check_iso": "2026-03-17T11:58:00.609Z",
+  "all_ok": true,
+  "issues_found": 0,
+  "next_interval_ms": 600000,
   "checks": {
     "commander": true,
     "approvers": true,
     "telegram": true,
     "settings": true,
     "hooks": true,
-    "worktrees": false
+    "worktrees": true
   }
 }

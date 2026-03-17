@@ -1,0 +1,12 @@
+const plan = require('C:/Workspaces/Intrale/platform/scripts/sprint-plan.json');
+const roadmap = require('C:/Workspaces/Intrale/platform/scripts/roadmap.json');
+const rmSprint = roadmap.sprints.find(s => s.id === plan.sprint_id);
+const planIssues = [...(plan.agentes||[]), ...(plan._queue||[]), ...(plan._completed||[])].map(a => a.issue);
+const rmIssues = rmSprint ? rmSprint.issues.map(i => i.number) : [];
+console.log('Plan:', plan.sprint_id, '| estado:', plan.estado);
+console.log('Plan issues:', JSON.stringify(planIssues));
+console.log('Roadmap sprint:', rmSprint ? rmSprint.id : 'NOT FOUND');
+console.log('Roadmap issues:', JSON.stringify(rmIssues));
+const rmSet = new Set(rmIssues);
+const missing = planIssues.filter(i => !rmSet.has(i));
+console.log('Desincronizados:', missing.length === 0 ? 'NINGUNO ✓' : missing);

@@ -27,7 +27,7 @@ class DashboardGuardTest {
 
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithText("Panel principal").assertExists()
+        composeRule.onNodeWithText("Panel de administración").assertExists()
 
         val fallbackNodes = composeRule.onAllNodesWithText(RES_ERROR_PREFIX, substring = true)
         val fallbackCount = fallbackNodes.fetchSemanticsNodes().size
