@@ -12,6 +12,11 @@ class ProductRepository {
     fun listProducts(business: String): List<ProductRecord> =
         products.values.filter { it.businessId == business.lowercase() }.map { it.copy() }
 
+    fun listPublishedProducts(business: String): List<ProductRecord> =
+        products.values.filter {
+            it.businessId == business.lowercase() && it.status.uppercase() == "PUBLISHED"
+        }.map { it.copy() }
+
     fun getProduct(business: String, productId: String): ProductRecord? =
         products[key(business, productId)]?.copy()
 

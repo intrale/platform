@@ -253,6 +253,10 @@ val appModule = DI.Module("appModule") {
         singleton { BusinessProducts(instance(), instance(), instance(), instance(), instance(), instance()) }
     }
 
+    bind<Function> (tag="products") {
+        singleton { ClientProducts(instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="business/categories") {
         singleton { BusinessCategories(instance(), instance(), instance(), instance(), instance()) }
     }

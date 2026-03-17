@@ -46,6 +46,7 @@ abstract class E2ETestBase {
             bind<Faker>() { singleton { Faker() } }
             bind<ClientProfileRepository>() { singleton { ClientProfileRepository() } }
             bind<ClientOrderRepository>() { singleton { ClientOrderRepository() } }
+            bind<ProductRepository>() { singleton { ProductRepository() } }
 
             // Funciones no seguras
             bind<Function>(tag = "signup") {
@@ -127,6 +128,9 @@ abstract class E2ETestBase {
             }
             bind<Function>(tag = "business/orders") {
                 singleton { BusinessOrdersFunction(instance(), instance(), instance(), instance()) }
+            }
+            bind<Function>(tag = "products") {
+                singleton { ClientProducts(instance(), instance(), instance(), instance()) }
             }
         }
     }
