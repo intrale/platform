@@ -95,6 +95,9 @@ const AGENT_ICON_MAP = {
   "Perf": loadIconDataUri("perf.png"),
   "Cost": loadIconDataUri("cost.png"),
   "Hotfix": loadIconDataUri("hotfix.png"),
+  "Config": loadIconDataUri("config.svg"),
+  "Done": loadIconDataUri("done.svg"),
+  "Error": loadIconDataUri("error.svg"),
 };
 const CLAUDE_ICONS = [
   loadIconDataUri("claude-1.svg"),
@@ -102,7 +105,10 @@ const CLAUDE_ICONS = [
   loadIconDataUri("claude-3.svg"),
   loadIconDataUri("claude-4.svg"),
 ].filter(Boolean);
-if (CLAUDE_ICONS.length > 0) AGENT_ICON_MAP["Claude"] = CLAUDE_ICONS[0];
+if (CLAUDE_ICONS.length > 0) {
+  AGENT_ICON_MAP["Claude"] = CLAUDE_ICONS[0];
+  AGENT_ICON_MAP["Main"] = CLAUDE_ICONS[0];
+}
 
 // Iconos de robots para agentes raíz del sprint (#1544)
 // Carga robot1.svg a robot10.svg como SVG inline (data URI)
@@ -132,6 +138,7 @@ const SKILL_TO_AGENT = {
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
   "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
   "/security": "Security", "/cleanup": "Cleanup", "/perf": "Perf", "/cost": "Cost", "/hotfix": "Hotfix",
+  "/update-config": "Config", "/simplify": "Simplify",
 };
 // Case-insensitive lookup for AGENT_ICON_MAP
 const _ICON_MAP_LC = {};
@@ -181,6 +188,8 @@ let cachedData = null;
 let cachedDataTs = 0;
 const DATA_CACHE_MS = 2000;
 let etag = "0";
+let cachedHtml = null;
+let cachedHtmlDataTs = 0;
 // Freshness: mtime del sprint-plan.json — si cambia, invalida el cache aunque no expire el TTL (#1417)
 let sprintPlanMtime = 0;
 // Watcher mtime: para broadcast SSE inmediato al detectar cambio en sprint-plan.json (#1434)
@@ -360,7 +369,7 @@ function collectData() {
   try {
     const ghPath = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
     if (fs.existsSync(ghPath)) {
-      const raw = execSync('"' + ghPath + '" run list --limit 5 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 15000, windowsHide: true }).toString().trim();
+      const raw = execSync('"' + ghPath + '" run list --limit 3 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 5000, windowsHide: true }).toString().trim();
       ciRuns = JSON.parse(raw || "[]");
     }
   } catch {}
@@ -1031,8 +1040,10 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   for (const n of rawNodes) {
     nodeSet.add(normalizeSkillName(n));
   }
-  const nodes = [...nodeSet];
   const transitions = Array.isArray(agentTransitions) ? agentTransitions : [];
+  const nodesWithEdges = new Set();
+  for (const t of transitions) { nodesWithEdges.add(normalizeSkillName(t.from)); nodesWithEdges.add(normalizeSkillName(t.to)); }
+  const nodes = [...nodeSet].filter(n => nodesWithEdges.has(n));
 
   if (nodes.length === 0) {
     return '<div class="empty-state">Sin flujo de agentes registrado</div>';
@@ -1073,29 +1084,95 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     if (s.id) sessionMap[s.id] = s;
   }
 
-  // Deduplicate edges, carrying issue + recency metadata
+  // --- Per-agent edge lists (no global dedup — each agent has its own numbered flow) ---
   const edgeList = [];
-  const edgeSet = new Set();
-  let edgeSeq = 0;
+  const edgeSet = new Set(); // for layout adjacency (unique node pairs)
   const now = Date.now();
+
+  // Group transitions by root agent (session → root agent name)
+  const sessionToRoot = {};
+  for (const s of sessionsList) {
+    if (s.id && s.agent_name) sessionToRoot[s.id] = s.agent_name;
+  }
+
+  // Identify which sessions belong to Main: any session whose transitions include
+  // "Main" as source node (i.e. Claude-renamed sessions)
+  const mainSessionIds = new Set();
   for (const t of transitions) {
-    const key = t.from + "->" + t.to;
-    if (!edgeSet.has(key) && nodes.includes(t.from) && nodes.includes(t.to)) {
-      edgeSet.add(key);
+    if (t.from === "Main" && t._session) mainSessionIds.add(t._session);
+  }
+
+  // Collect transitions per root agent
+  const agentEdges = {}; // rootName → [{from, to, ...}]
+  const mainEdgeSet = new Set(); // Main edges dedup globally (no duplicates — reduces noise)
+  for (const t of transitions) {
+    if (!nodes.includes(t.from) || !nodes.includes(t.to)) continue;
+    // If this session ever had a Main→X transition, ALL its transitions belong to Main
+    let rootName = mainSessionIds.has(t._session) ? "Main"
+      : (t._session ? (sessionToRoot[t._session] || "Main") : "Main");
+    if (rootName === "Claude") rootName = "Main";
+    if (!agentEdges[rootName]) agentEdges[rootName] = [];
+    const pairKey = t.from + "->" + t.to;
+    if (rootName === "Main") {
+      // Main: dedup globally — never duplicate edges from Main
+      if (mainEdgeSet.has(pairKey)) continue;
+      mainEdgeSet.add(pairKey);
+    } else {
+      // Other agents: dedup within same agent only
+      if (agentEdges[rootName].some(e => e.from === t.from && e.to === t.to)) continue;
+    }
+    agentEdges[rootName].push({ from: t.from, to: t.to, ts: t.ts, _session: t._session });
+    edgeSet.add(pairKey);
+  }
+
+  // Build edgeList with per-agent sequence numbers
+  // Format: "agentNum.stepNum" (e.g. "1.1", "1.2", "2.1")
+  let edgeSeq = 0;
+  for (const [rootName, edges] of Object.entries(agentEdges)) {
+    const agentMatch = rootName.match(/^Agente\s+(\d+)$/i);
+    const agentNum = agentMatch ? agentMatch[1] : "0";
+    const session = edges[0] && edges[0]._session ? (sessionMap[edges[0]._session] || null) : null;
+    const branchMatch = session ? (session.branch || "").match(/(\d+)/) : null;
+    const issueNum = branchMatch ? branchMatch[1] : null;
+    edges.forEach((e, i) => {
       edgeSeq++;
-      // Resolve issue number from session branch (e.g. "agent/1394-foo" → "1394")
-      const session = t._session ? (sessionMap[t._session] || null) : null;
-      const branchMatch = session ? (session.branch || "").match(/(\d+)/) : null;
-      const issueNum = branchMatch ? branchMatch[1] : null;
-      // Recent = transition happened in the last 5 minutes
-      const isRecent = t.ts ? (now - new Date(t.ts).getTime() < 5 * 60 * 1000) : false;
-      edgeList.push({ from: t.from, to: t.to, seq: edgeSeq, issueNum, isRecent });
+      const isRecent = e.ts ? (now - new Date(e.ts).getTime() < 5 * 60 * 1000) : false;
+      edgeList.push({ from: e.from, to: e.to, seq: edgeSeq, agentSeq: agentNum + "." + (i + 1), agentRoot: rootName, issueNum, isRecent });
+    });
+  }
+
+  // --- Terminal nodes: Done (success) and Error (failure) ---
+  const _out = {}, _in = {};
+  for (const n of nodes) { _out[n] = new Set(); _in[n] = new Set(); }
+  for (const e of edgeList) { if (_out[e.from]) _out[e.from].add(e.to); if (_in[e.to]) _in[e.to].add(e.from); }
+  for (const root of nodes.filter(n => /^Agente\s+\d+$/i.test(n))) {
+    // Find last node in this agent's chain
+    const myEdges = edgeList.filter(e => e.agentRoot === root);
+    let last = root;
+    if (myEdges.length > 0) last = myEdges[myEdges.length - 1].to;
+    const sess = sessionsList.find(s => s.agent_name === root);
+    const isDone = sess && (sess._status === "done" || sess.status === "done" || sess._status === "stale" || sess.status === "stale");
+    const isError = sess && (sess._status === "error" || sess.status === "error");
+    const isActive = sess && (sess._status === "active" || sess.status === "active");
+    if (isDone && !isActive) {
+      if (!nodes.includes("Done")) nodes.push("Done");
+      const agentMatch = root.match(/^Agente\s+(\d+)$/i);
+      const agentNum = agentMatch ? agentMatch[1] : "0";
+      const stepNum = myEdges.length + 1;
+      edgeSeq++;
+      edgeList.push({ from: last, to: "Done", seq: edgeSeq, agentSeq: agentNum + "." + stepNum, agentRoot: root, issueNum: null, isRecent: false });
+    } else if (isError) {
+      if (!nodes.includes("Error")) nodes.push("Error");
+      const agentMatch = root.match(/^Agente\s+(\d+)$/i);
+      const agentNum = agentMatch ? agentMatch[1] : "0";
+      const stepNum = myEdges.length + 1;
+      edgeSeq++;
+      edgeList.push({ from: last, to: "Error", seq: edgeSeq, agentSeq: agentNum + "." + stepNum, agentRoot: root, issueNum: null, isRecent: false });
     }
   }
 
   // --- Layered layout con grid routing ---
-  // Capas por profundidad + A* routing de flechas para evitar colisiones.
-  const nodeR = 38;
+  const nodeR = 44;
 
   // Build directed adjacency (from → [to])
   const outEdges = {};
@@ -1106,26 +1183,30 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     if (inEdges[e.to]) inEdges[e.to].push(e.from);
   }
 
-  // Assign layers via BFS from roots (nodes with no incoming edges)
+  // Assign layers via BFS — cycle-safe: each node visited at most once
   const layer = {};
+  const visited = new Set();
   const roots = nodes.filter(n => inEdges[n].length === 0);
-  if (roots.length === 0 && nodes.length > 0) roots.push(nodes[0]); // fallback
+  if (roots.length === 0 && nodes.length > 0) roots.push(nodes[0]);
   const queue = [...roots];
-  for (const r of roots) layer[r] = 0;
+  for (const r of roots) { layer[r] = 0; visited.add(r); }
   while (queue.length > 0) {
     const n = queue.shift();
     for (const next of (outEdges[n] || [])) {
-      if (layer[next] === undefined || layer[next] <= layer[n]) {
+      if (!visited.has(next)) {
+        visited.add(next);
         layer[next] = layer[n] + 1;
         queue.push(next);
       }
     }
   }
-  // Nodos sin capa asignada (sin edges): ponerlos en la última capa
   const maxLayer = Math.max(0, ...Object.values(layer));
   for (const n of nodes) {
-    if (layer[n] === undefined) layer[n] = maxLayer + 1;
+    if (layer[n] === undefined) layer[n] = Math.min(maxLayer + 1, nodes.length - 1);
   }
+  // Force terminal nodes to rightmost layer
+  if (nodes.includes("Done")) { layer["Done"] = maxLayer + 1; }
+  if (nodes.includes("Error")) { layer["Error"] = maxLayer + 1; }
 
   // Agrupar nodos por capa
   const layers = {};
@@ -1137,11 +1218,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
 
   const colSpacing = 160;
-  const rowSpacing = 120;
+  const rowSpacing = 130;
   const maxNodesInLayer = Math.max(...Object.values(layers).map(l => l.length));
-  const padding = nodeR + 30;
-  const svgW = Math.max(500, numLayers * colSpacing + padding * 2);
-  const svgH = Math.max(300, maxNodesInLayer * rowSpacing + padding * 2);
+  const padding = nodeR + 40;
+  const svgW = Math.max(600, numLayers * colSpacing + padding * 2);
+  const svgH = Math.max(400, maxNodesInLayer * rowSpacing + padding * 2);
 
   // Posicionar nodos: columna = capa, fila = índice dentro de la capa (centrado)
   const positions = {};
@@ -1157,10 +1238,16 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // Trazar origen de cada edge hasta su agente raíz (capa 0) para asignar color
-  const rootColors = ["#f87171", "#60a5fa", "#4ade80", "#fbbf24", "#a78bfa", "#f472b6", "#34d399", "#fb923c", "#22d3ee", "#e879f9"];
+  // 20 distinct colors — enough for any sprint, never repeat between agents
+  const rootColors = [
+    "#f87171", "#60a5fa", "#4ade80", "#fbbf24", "#a78bfa",
+    "#f472b6", "#fb923c", "#22d3ee", "#e879f9", "#84cc16",
+    "#f59e0b", "#06b6d4", "#ec4899", "#14b8a6", "#8b5cf6",
+    "#ef4444", "#3b82f6", "#10b981", "#f97316", "#6366f1",
+  ];
   const rootNodeList = nodes.filter(n => layer[n] === 0);
   const rootColorMap = {};
-  rootNodeList.forEach((r, i) => { rootColorMap[r] = rootColors[i % rootColors.length]; });
+  rootNodeList.forEach((r, i) => { rootColorMap[r] = rootColors[i] || rootColors[i % rootColors.length]; });
   // BFS desde cada raíz para asignar "owner" a cada nodo
   const nodeOwner = {};
   for (const root of rootNodeList) {
@@ -1209,7 +1296,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
   // --- Grid-based A* routing para flechas sin colisiones ---
   // Resolución fina para ruteo preciso
-  const gridCell = Math.max(8, Math.round(nodeR * 0.35));
+  const gridCell = Math.max(12, Math.round(nodeR * 0.5));
   const gridW = Math.ceil(svgW / gridCell);
   const gridH = Math.ceil(svgH / gridCell);
   // Grid de ocupación: 0=libre, 1=nodo (bloqueante duro), 2=flecha previa (penalizada)
@@ -1267,7 +1354,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const dirs = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
     let found = false;
-    let maxIter = Math.min(50000, gridW * gridH);
+    let maxIter = Math.min(2000, gridW * gridH);
     while (open.length > 0 && maxIter-- > 0) {
       open.sort((a, b) => a.f - b.f);
       const cur = open.shift();
@@ -1378,18 +1465,32 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < 1) continue;
     const ux = dx / dist, uy = dy / dist;
-    const x1 = from.x + ux * (nodeR + 6);
-    const y1 = from.y + uy * (nodeR + 6);
-    const x2 = to.x - ux * (nodeR + 10);
-    const y2 = to.y - uy * (nodeR + 10);
+    // Offset perpendicular for parallel edges between same node pair
+    const pairKey = e.from + "->" + e.to;
+    const pairEdges = edgeList.filter(x => x.from === e.from && x.to === e.to);
+    const pairIdx = pairEdges.indexOf(e);
+    const pairCount = pairEdges.length;
+    const perpOff = pairCount > 1 ? (pairIdx - (pairCount - 1) / 2) * 12 : 0;
+    const px = -uy * perpOff, py = ux * perpOff; // perpendicular vector
+    const x1 = from.x + ux * (nodeR + 6) + px;
+    const y1 = from.y + uy * (nodeR + 6) + py;
+    const x2 = to.x - ux * (nodeR + 10) + px;
+    const y2 = to.y - uy * (nodeR + 10) + py;
 
     const route = gridRoute(x1, y1, x2, y2);
     const pathD = pathToSvg(route, { x: x1, y: y1 }, { x: x2, y: y2 });
 
-    const ec = edgeColor(e.from);
+    // Color by root agent (not from-node) so each agent's flow has consistent color
+    const ec = e.agentRoot ? edgeColor(e.agentRoot) : edgeColor(e.from);
     const markerId = "fa-" + ec.replace("#", "");
 
     svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
+    // Edge label: per-agent sequence (e.g. "1.2" = Agent 1, step 2)
+    const label = e.agentSeq || String(e.seq);
+    const labelR = label.length > 3 ? 12 : 9;
+    const mx = ((x1 + x2) / 2).toFixed(1), my = ((y1 + y2) / 2).toFixed(1);
+    svg += `<circle cx="${mx}" cy="${my}" r="${labelR}" fill="var(--bg, #0a0b10)" stroke="${ec}" stroke-width="1.5"/>`;
+    svg += `<text x="${mx}" y="${(parseFloat(my) + 3.5).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 7 : 8}" font-weight="700" fill="${ec}">${label}</text>`;
   }
 
   // Draw nodes
@@ -1456,7 +1557,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     svg += `</g>`;
   }
 
-  return `<svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;">${svg}</svg>`;
+  const minH = Math.max(400, svgH);
+  return `<div style="overflow-x:auto;"><svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;min-height:${minH}px;height:auto;">${svg}</svg></div>`;
 }
 
 // --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
@@ -1767,7 +1869,8 @@ function renderHTML(data, theme) {
     "BackendDev": "#f87171", "AndroidDev": "#4ade80", "WebDev": "#60a5fa",
     "Branch": "#84cc16", "Cleanup": "#78716c", "Security": "#ef4444",
     "Perf": "#eab308", "Cost": "#06b6d4", "Hotfix": "#dc2626",
-    "Claude": "#9399b2",
+    "Claude": "#9399b2", "Main": "#D4A574", "Config": "#a8a29e",
+    "Done": "#34d399", "Error": "#ef4444",
   };
 
   const STATUS_COLORS = { active: "#34d399", idle: "#fbbf24", done: "#6C7086", stale: "#555872" };
@@ -2938,13 +3041,19 @@ function handleRequest(req, res) {
     const mockMode = url.searchParams.get("mock");
     const data = mockMode === "ejecucion" ? mockEjecucionData() : collectData();
     let html;
-    try {
-      html = renderHTML(data, theme);
-    } catch (renderErr) {
-      console.log("[dashboard-server] renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
-      res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end("renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
-      return;
+    const htmlCacheFresh = cachedHtml && (Date.now() - cachedHtmlDataTs < 5000) && !mockMode;
+    if (htmlCacheFresh) {
+      html = cachedHtml;
+    } else {
+      try {
+        html = renderHTML(data, theme);
+        if (!mockMode) { cachedHtml = html; cachedHtmlDataTs = Date.now(); }
+      } catch (renderErr) {
+        console.log("[dashboard-server] renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
+        return;
+      }
     }
     const body = Buffer.from(html, "utf8");
 
