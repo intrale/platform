@@ -29,6 +29,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
@@ -96,11 +98,13 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                 // Encabezado: nombre del negocio + subtitulo + descripcion
                 Text(
                     text = businessName,
-                    style = MaterialTheme.typography.headlineMedium
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.semantics { heading() }
                 )
                 Text(
                     text = Txt(MessageKey.dashboard_admin_subtitle),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { heading() }
                 )
                 Text(
                     text = Txt(MessageKey.dashboard_manage_intro),
@@ -256,13 +260,24 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                     .padding(MaterialTheme.spacing.x2),
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
             ) {
-                Text(text = title, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(text = metric, style = MaterialTheme.typography.bodySmall)
+                // Sección de información: título + descripción + métrica se fusionan para
+                // lectores de pantalla (TalkBack/VoiceOver), anunciándose como una sola unidad.
+                Column(
+                    modifier = Modifier.semantics(mergeDescendants = true) { },
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.semantics { heading() }
+                    )
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(text = metric, style = MaterialTheme.typography.bodySmall)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
