@@ -281,3 +281,102 @@ class BusinessConfigViewModelTest {
         assertEquals("https://logo.new", req.logoUrl)
     }
 }
+
+// ── Tests adicionales para cobertura ──────────────────────────────────────────
+
+class BusinessConfigViewModelEdgeCaseTest {
+
+    @BeforeTest
+    fun setup() {
+        SessionStore.clear()
+    }
+
+    @Test
+    fun `loadConfig establece Loading antes del resultado`() = runTest {
+        val vm = BusinessConfigViewModel(
+            toDoGetBusinessConfig = FakeGetBusinessConfig(Result.success(sampleConfig)),
+            toDoUpdateBusinessConfig = FakeUpdateBusinessConfig(Result.success(sampleConfig)),
+            loggerFactory = testLoggerFactory
+        )
+
+        assertEquals(BusinessConfigStatus.Idle, vm.state.status)
+        vm.loadConfig("biz-1")
+        assertEquals(BusinessConfigStatus.Loaded, vm.state.status)
+    }
+
+    @Test
+    fun `saveConfig establece Saving y luego Saved`() = runTest {
+        val fakeUpdate = FakeUpdateBusinessConfig(Result.success(sampleConfig))
+        val vm = BusinessConfigViewModel(
+            toDoGetBusinessConfig = FakeGetBusinessConfig(Result.success(sampleConfig)),
+            toDoUpdateBusinessConfig = fakeUpdate,
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadConfig("biz-1")
+        val result = vm.saveConfig("biz-1")
+
+        assertTrue(result.isSuccess)
+        assertEquals(BusinessConfigStatus.Saved, vm.state.status)
+    }
+
+    @Test
+    fun `saveConfig con businessId vacio falla`() = runTest {
+        val vm = BusinessConfigViewModel(
+            toDoGetBusinessConfig = FakeGetBusinessConfig(Result.success(sampleConfig)),
+            toDoUpdateBusinessConfig = FakeUpdateBusinessConfig(Result.success(sampleConfig)),
+            loggerFactory = testLoggerFactory
+        )
+
+        val result = vm.saveConfig("")
+
+        assertTrue(result.isFailure)
+        assertEquals(BusinessConfigStatus.MissingBusiness, vm.state.status)
+    }
+
+    @Test
+    fun `estado inicial tiene campos vacios`() = runTest {
+        val vm = BusinessConfigViewModel(
+            toDoGetBusinessConfig = FakeGetBusinessConfig(Result.success(sampleConfig)),
+            toDoUpdateBusinessConfig = FakeUpdateBusinessConfig(Result.success(sampleConfig)),
+            loggerFactory = testLoggerFactory
+        )
+
+        assertEquals("", vm.state.name)
+        assertEquals("", vm.state.address)
+        assertEquals("", vm.state.phone)
+        assertEquals("", vm.state.email)
+        assertEquals("", vm.state.logoUrl)
+        assertEquals(BusinessConfigStatus.Idle, vm.state.status)
+    }
+
+    @Test
+    fun `loadConfig con error sin mensaje usa mensaje por defecto`() = runTest {
+        val vm = BusinessConfigViewModel(
+            toDoGetBusinessConfig = FakeGetBusinessConfig(Result.failure(RuntimeException())),
+            toDoUpdateBusinessConfig = FakeUpdateBusinessConfig(Result.success(sampleConfig)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadConfig("biz-1")
+
+        assertTrue(vm.state.status is BusinessConfigStatus.Error)
+        assertEquals("Error al cargar configuracion", (vm.state.status as BusinessConfigStatus.Error).message)
+    }
+
+    @Test
+    fun `saveConfig con error sin mensaje usa mensaje por defecto`() = runTest {
+        val vm = BusinessConfigViewModel(
+            toDoGetBusinessConfig = FakeGetBusinessConfig(Result.success(sampleConfig)),
+            toDoUpdateBusinessConfig = FakeUpdateBusinessConfig(Result.failure(RuntimeException())),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadConfig("biz-1")
+        val result = vm.saveConfig("biz-1")
+
+        assertTrue(result.isFailure)
+        assertTrue(vm.state.status is BusinessConfigStatus.Error)
+        assertEquals("Error al guardar configuracion", (vm.state.status as BusinessConfigStatus.Error).message)
+    }
+}
