@@ -67,6 +67,7 @@
     <li>Propuesta: Migracion de Agentes a Scripts</li>
     <li>Lecciones Aprendidas Historicas</li>
     <li>Plan de Mejora Priorizado</li>
+    <li>Persistencia de Datos Historicos y Dashboard</li>
     <li>Conclusion</li>
   </ol>
 </div>
@@ -560,15 +561,146 @@
 </div>
 
 <!-- ==================== SECCION 10 ==================== -->
-<h2>10. Conclusion</h2>
+<div class="page-break"></div>
+<h2>10. Persistencia de Datos Historicos y Dashboard</h2>
+
+<p>Se auditó el sistema completo de persistencia de datos para evaluar si se preserva la información histórica necesaria para retrospectivas, auditorías y análisis de tendencias.</p>
+
+<h3>10.1 Estado Actual de Persistencia por Archivo</h3>
+<table>
+  <tr><th>Archivo</th><th>Contenido</th><th>Modelo</th><th>Max</th><th>Archivo?</th><th>Veredicto</th></tr>
+  <tr><td><code>activity-log.jsonl</code></td><td>Tool calls por sesion</td><td>Rolling window</td><td>250 lineas</td><td><span class="badge badge-red">NO</span></td><td class="priority-high">Se pierden entradas</td></tr>
+  <tr><td><code>agent-metrics.json</code></td><td>Metricas por agente</td><td>Snapshot (sobreescrito)</td><td>N/A</td><td><span class="badge badge-red">NO</span></td><td class="priority-high">Sin historial de sprints</td></tr>
+  <tr><td><code>agent-registry.json</code></td><td>Agentes activos/done</td><td>Acumulativo sin limpieza</td><td>Infinito</td><td><span class="badge badge-red">NO</span></td><td class="priority-medium">Crece sin control</td></tr>
+  <tr><td><code>sessions/*.json</code></td><td>Detalle de sesion</td><td>Borrado a la hora</td><td>~1h</td><td><span class="badge badge-red">NO</span></td><td class="priority-high">Se pierde todo el trabajo</td></tr>
+  <tr><td><code>permissions-log.jsonl</code></td><td>Grants automaticos</td><td>Rolling window</td><td>500 lineas</td><td><span class="badge badge-red">NO</span></td><td class="priority-medium">Truncado sin archivo</td></tr>
+  <tr><td><code>approval-history.json</code></td><td>Conteo de aprobaciones</td><td>Agregado (sin timeline)</td><td>Infinito</td><td><span class="badge badge-yellow">PARCIAL</span></td><td>Solo conteos, no eventos</td></tr>
+  <tr><td><code>scrum-health-history.jsonl</code></td><td>Salud por sprint</td><td>Append + archive</td><td>200</td><td><span class="badge badge-green">SI</span></td><td class="priority-low">Correcto</td></tr>
+  <tr><td><code>delivery-gate-audit.jsonl</code></td><td>Decisiones QA gate</td><td>Append + archive</td><td>200</td><td><span class="badge badge-green">SI</span></td><td class="priority-low">Correcto</td></tr>
+  <tr><td><code>ops-learnings.jsonl</code></td><td>Incidentes operativos</td><td>Append + archive</td><td>200</td><td><span class="badge badge-green">SI</span></td><td class="priority-low">Correcto</td></tr>
+  <tr><td><code>hook-debug.log</code></td><td>Debug de hooks</td><td>Rotacion a .log.1</td><td>100 KB</td><td><span class="badge badge-red">NO</span></td><td>Sobreescribe .log.1</td></tr>
+</table>
+
+<h3>10.2 Gaps Criticos de Persistencia</h3>
+
+<div class="section weakness">
+  <h3>GAP 1: Activity Log — Entradas Descartadas <span class="priority-high">[CRITICO]</span></h3>
+  <p><code>activity-log.jsonl</code> mantiene solo las ultimas 250 entradas. Con agentes que hacen 80-150 tool calls por sesion, un sprint de 5 historias genera ~500+ entradas. <strong>Cada rotacion descarta ~250 entradas sin archivar.</strong></p>
+  <p><strong>Impacto:</strong> No se puede reconstruir que hizo un agente en un sprint anterior. Imposible hacer analisis de productividad sprint-over-sprint.</p>
+  <p><strong>Fix:</strong> Cambiar rotacion para append a <code>activity-log.archive.jsonl</code> en vez de descartar.</p>
+</div>
+
+<div class="section weakness">
+  <h3>GAP 2: Agent Metrics — Snapshot sin Historia <span class="priority-high">[CRITICO]</span></h3>
+  <p><code>agent-metrics.json</code> es una foto instantanea que se sobreescribe con cada sprint nuevo. <strong>Las metricas del sprint anterior se pierden completamente.</strong></p>
+  <p><strong>Impacto:</strong> No hay datos para comparar rendimiento entre sprints, detectar tendencias de eficiencia, o calcular costo acumulado.</p>
+  <p><strong>Fix:</strong> Crear <code>agent-metrics-history.jsonl</code> — append snapshot al cierre de sprint.</p>
+</div>
+
+<div class="section weakness">
+  <h3>GAP 3: Sesiones Borradas en 1 Hora <span class="priority-high">[CRITICO]</span></h3>
+  <p><code>session-gc.js</code> borra archivos de sesion 1 hora despues de completarse. Los archivos contienen: rama, herramientas usadas, archivos modificados, tareas, timestamps, estado final.</p>
+  <p><strong>Impacto:</strong> No se puede auditar el trabajo de un agente despues de 1 hora. Si hay problemas post-merge, no hay forma de reconstruir que paso.</p>
+  <p><strong>Fix:</strong> Mover sesiones completadas a <code>sessions/archive/</code> antes de borrar. Limpiar archivos >30 dias.</p>
+</div>
+
+<div class="section weakness">
+  <h3>GAP 4: Historial de Permisos Truncado <span class="priority-medium">[ALTO]</span></h3>
+  <p><code>permissions-log.jsonl</code> mantiene solo 500 entradas. <code>approval-history.json</code> guarda conteos agregados pero pierde el timeline individual (quien aprobo que, cuando, en que contexto).</p>
+  <p><strong>Impacto:</strong> No hay audit trail completo de permisos — critico para seguridad.</p>
+  <p><strong>Fix:</strong> Rotar a <code>permissions-log.archive.jsonl</code>. Crear <code>approval-audit.jsonl</code> con eventos individuales.</p>
+</div>
+
+<h3>10.3 Dashboard — Solo Muestra Estado Actual</h3>
+<p>El <code>dashboard-server.js</code> (3,420 lineas) lee exclusivamente snapshots actuales:</p>
+<ul>
+  <li>Sesiones: solo las activas en <code>sessions/</code> (borradas a la hora)</li>
+  <li>Actividad: ultimas 20 entradas de <code>activity-log.jsonl</code></li>
+  <li>Metricas: <code>agent-metrics.json</code> snapshot actual</li>
+  <li>Agentes: <code>agent-registry.json</code> solo activos</li>
+  <li>Cache: 2 segundos con invalidacion por mtime</li>
+</ul>
+<p><strong>No hay:</strong></p>
+<ul>
+  <li>Visualizacion de tendencias sprint-over-sprint</li>
+  <li>Graficos historicos de tool usage, tiempo de agentes, o completitud</li>
+  <li>Comparativas entre sprints (velocidad, costo, tasa de carry-over)</li>
+  <li>Timeline de permisos o aprobaciones</li>
+</ul>
+
+<h3>10.4 Modelo de Persistencia Correcto vs Actual</h3>
+<table>
+  <tr><th>Dato</th><th>Modelo Actual</th><th>Modelo Correcto</th></tr>
+  <tr><td>Tool calls por sesion</td><td>Rolling 250 → descarte</td><td>Rolling 250 → <strong>archive.jsonl</strong></td></tr>
+  <tr><td>Metricas de agentes</td><td>Snapshot sobreescrito</td><td>Snapshot + <strong>append a history.jsonl al cierre sprint</strong></td></tr>
+  <tr><td>Sesiones completadas</td><td>Borrado a 1 hora</td><td><strong>Mover a sessions/archive/</strong> → limpiar >30d</td></tr>
+  <tr><td>Permisos otorgados</td><td>Rolling 500 → descarte</td><td>Rolling 500 → <strong>archive.jsonl</strong></td></tr>
+  <tr><td>Aprobaciones individuales</td><td>Solo conteo agregado</td><td><strong>Append individual a audit.jsonl</strong></td></tr>
+  <tr><td>Debug logs</td><td>.log → .log.1 (sobreescribe)</td><td><strong>.log → .YYYY-MM-DD.log</strong> (datado)</td></tr>
+  <tr><td>Dashboard</td><td>Solo estado actual</td><td>Estado actual + <strong>tab historico leyendo archives</strong></td></tr>
+</table>
+
+<h3>10.5 Plan de Implementacion de Persistencia Historica</h3>
+<table>
+  <tr><th>Prioridad</th><th>Accion</th><th>Archivos a Modificar</th><th>Esfuerzo</th></tr>
+  <tr>
+    <td><span class="badge badge-red">P0</span></td>
+    <td><strong>Archivar activity-log.jsonl</strong> — append a .archive.jsonl en vez de descartar</td>
+    <td>activity-logger.js (linea 191)</td>
+    <td>Simple</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-red">P0</span></td>
+    <td><strong>Crear agent-metrics-history.jsonl</strong> — snapshot al cierre de sprint</td>
+    <td>sprint-manager.js o scrum-auto-corrections.js</td>
+    <td>Simple</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-red">P0</span></td>
+    <td><strong>Archivar sesiones completadas</strong> — mover a sessions/archive/ antes de GC</td>
+    <td>session-gc.js</td>
+    <td>Simple</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-yellow">P1</span></td>
+    <td><strong>Archivar permissions-log.jsonl</strong> — append a .archive.jsonl</td>
+    <td>permission-tracker.js (linea 100)</td>
+    <td>Simple</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-yellow">P1</span></td>
+    <td><strong>Crear approval-audit.jsonl</strong> — log individual de cada aprobacion</td>
+    <td>approval-history.js</td>
+    <td>Simple</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">P2</span></td>
+    <td><strong>Tab historico en dashboard</strong> — leer .archive.jsonl para tendencias</td>
+    <td>dashboard-server.js</td>
+    <td>Grande</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">P2</span></td>
+    <td><strong>Rotacion datada de .log</strong> — .YYYY-MM-DD.log en vez de .log.1</td>
+    <td>log-rotation.js</td>
+    <td>Simple</td>
+  </tr>
+</table>
+
+<!-- ==================== SECCION 11 ==================== -->
+<h2>11. Conclusion</h2>
 
 <div class="summary-box">
   <h3>Veredicto General</h3>
-  <p>El proceso de desarrollo de Intrale tiene una <strong>base solida</strong>: automatizacion madura, QA riguroso, fuente unica de verdad, y transparencia total. Sin embargo, ha alcanzado un punto de <strong>complejidad donde la infraestructura de IA consume recursos significativos en tareas que no requieren inteligencia</strong>.</p>
+  <p>El proceso de desarrollo de Intrale tiene una <strong>base solida</strong>: automatizacion madura, QA riguroso, fuente unica de verdad, y transparencia total. Sin embargo, se identifican <strong>tres ejes criticos de mejora</strong>:</p>
 
-  <p>La principal oportunidad de mejora es <strong>separar lo determinista de lo inteligente</strong>: migrar tareas mecanicas (monitor, scrum, ops, cleanup, branch) a scripts puros, reservando tokens de Claude exclusivamente para lo que realmente necesita razonamiento (implementacion, review, QA analisis, producto).</p>
+  <ol style="color: white;">
+    <li><strong>Eficiencia de tokens:</strong> Separar lo determinista de lo inteligente — migrar 8 skills operativos a scripts puros. Ahorro estimado: ~235K tokens/sprint (15-17%).</li>
+    <li><strong>Uso optimo de modelos:</strong> Opus ahora asignado a los 6 skills que mas lo necesitan (dev, QA, tests, review). Tester pasó de Haiku a Opus — el cambio mas critico.</li>
+    <li><strong>Persistencia historica:</strong> 5 de 10 archivos de estado pierden datos al rotar o cerrar sprint. Activity logs, metricas de agentes y sesiones se borran sin archivar. El dashboard solo muestra estado actual, sin tendencias historicas.</li>
+  </ol>
 
-  <p>El plan propuesto de 11 mejoras distribuidas en 3 sprints lograria un ahorro estimado de <strong>~235K tokens por sprint</strong> (15-17% del total) mientras mejora la confiabilidad al eliminar dependencias innecesarias de IA para operaciones rutinarias.</p>
+  <p>El plan completo de <strong>18 mejoras</strong> distribuidas en 3 sprints abarca: migracion a scripts, reasignacion de modelos (ya aplicada), y sistema de archivado historico. Priorizando los 7 items P0, se resuelven los gaps mas criticos con esfuerzo mayoritariamente <em>simple</em>.</p>
 </div>
 
 <p style="text-align: center; color: #666; margin-top: 40px; font-size: 11px;">
