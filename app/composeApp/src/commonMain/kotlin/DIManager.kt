@@ -19,11 +19,13 @@ import asdo.auth.ToDoTwoFactorVerify
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
 import asdo.client.DoGetClientProfile
+import asdo.client.DoGetPaymentMethods
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
 import asdo.delivery.DoDeliveryStateChange
@@ -121,6 +123,8 @@ import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientOrdersService
 import ext.client.CommClientProfileService
+import ext.client.CommPaymentMethodsService
+import ext.client.PaymentMethodsService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
 import ext.delivery.CommDeliveryOrdersService
@@ -389,6 +393,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
     bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
+    bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance()) }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -396,6 +401,7 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
+    bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {

@@ -631,4 +631,9 @@ enum class MessageKey {
     banner_form_saved,
     banner_form_error,
     banner_form_missing_business,
+    client_cart_payment_method_title,
+    client_cart_payment_method_empty,
+    client_cart_payment_method_loading,
+    client_cart_payment_method_cash_hint,
+    client_cart_continue_missing_payment,
 }

@@ -16,6 +16,8 @@ object ClientCartStore {
     val items: StateFlow<Map<String, ClientCartItem>> = _items.asStateFlow()
     private val _selectedAddressId = MutableStateFlow<String?>(null)
     val selectedAddressId: StateFlow<String?> = _selectedAddressId.asStateFlow()
+    private val _selectedPaymentMethodId = MutableStateFlow<String?>(null)
+    val selectedPaymentMethodId: StateFlow<String?> = _selectedPaymentMethodId.asStateFlow()
 
     fun add(product: ClientProduct) {
         if (!product.isAvailable) return
@@ -63,9 +65,14 @@ object ClientCartStore {
     fun clear() {
         _items.value = emptyMap()
         _selectedAddressId.value = null
+        _selectedPaymentMethodId.value = null
     }
 
     fun selectAddress(addressId: String?) {
         _selectedAddressId.value = addressId
+    }
+
+    fun selectPaymentMethod(paymentMethodId: String?) {
+        _selectedPaymentMethodId.value = paymentMethodId
     }
 }
