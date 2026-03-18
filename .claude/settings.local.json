@@ -60,7 +60,32 @@
       "Skill(*)",
       "ToolSearch",
       "WebFetch(domain:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(export PATH=*)",
+      "Bash(powershell:*)",
+      "Skill(android-dev)",
+      "Bash(export JAVA_HOME=*)",
+      "Bash(wmic process:*)",
+      "Bash(export GH_TOKEN=*)",
+      "Skill(delivery)",
+      "Skill(guru)",
+      "Skill(tester)",
+      "Skill(doc)",
+      "Skill(planner)",
+      "Skill(monitor)",
+      "Skill(auth)",
+      "Skill(builder)",
+      "Skill(review)",
+      "Skill(qa)",
+      "Skill(refinar)",
+      "Skill(priorizar)",
+      "Skill(historia)",
+      "Bash(file:*)",
+      "Bash(xxd:*)",
+      "Skill(web-dev)",
+      "Skill(update-config)",
+      "Skill(ops)",
+      "Bash(netstat:*)"
     ],
     "deny": [
       "Bash(git push --force*)",
@@ -68,7 +93,8 @@
       "Bash(git reset --hard*)",
       "Bash(git clean -f*)",
       "Bash(rm -rf*)",
-      "Bash(rm -r *)"
+      "Bash(rm -r *)",
+      "Bash(git clean -fd*)"
     ]
   }
 }
