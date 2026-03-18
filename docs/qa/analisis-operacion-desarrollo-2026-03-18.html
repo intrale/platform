@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Análisis Operativo del Proceso de Desarrollo — Intrale Platform</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; color: #1a1a2e; line-height: 1.6; font-size: 13px; }
+  h1 { color: #16213e; border-bottom: 3px solid #0f3460; padding-bottom: 10px; font-size: 22px; }
+  h2 { color: #0f3460; border-bottom: 2px solid #e94560; padding-bottom: 6px; margin-top: 30px; font-size: 17px; }
+  h3 { color: #533483; margin-top: 20px; font-size: 14px; }
+  .header { text-align: center; margin-bottom: 30px; }
+  .header p { color: #666; font-size: 12px; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; margin: 2px; }
+  .badge-green { background: #d4edda; color: #155724; }
+  .badge-red { background: #f8d7da; color: #721c24; }
+  .badge-yellow { background: #fff3cd; color: #856404; }
+  .badge-blue { background: #d1ecf1; color: #0c5460; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 12px; }
+  th, td { border: 1px solid #dee2e6; padding: 8px 10px; text-align: left; }
+  th { background: #0f3460; color: white; font-weight: 600; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  .section { margin: 20px 0; padding: 15px; border-radius: 8px; }
+  .strength { background: #d4edda; border-left: 4px solid #28a745; }
+  .weakness { background: #f8d7da; border-left: 4px solid #dc3545; }
+  .attention { background: #fff3cd; border-left: 4px solid #ffc107; }
+  .recommendation { background: #d1ecf1; border-left: 4px solid #17a2b8; }
+  .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 15px 0; }
+  .metric-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; text-align: center; }
+  .metric-card .value { font-size: 24px; font-weight: bold; color: #0f3460; }
+  .metric-card .label { font-size: 11px; color: #666; }
+  .priority-high { color: #dc3545; font-weight: bold; }
+  .priority-medium { color: #fd7e14; font-weight: bold; }
+  .priority-low { color: #28a745; }
+  code { background: #e9ecef; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+  .toc { background: #f8f9fa; padding: 15px 25px; border-radius: 8px; margin: 20px 0; }
+  .toc ol { margin: 5px 0; }
+  .toc li { margin: 3px 0; font-size: 12px; }
+  .page-break { page-break-before: always; }
+  .summary-box { background: linear-gradient(135deg, #0f3460 0%, #533483 100%); color: white; padding: 20px; border-radius: 10px; margin: 20px 0; }
+  .summary-box h3 { color: #ffd700; margin-top: 5px; }
+  .icon { font-size: 16px; margin-right: 5px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Analisis Operativo del Proceso de Desarrollo</h1>
+  <p><strong>Intrale Platform</strong> — Monorepo Kotlin (Ktor + Compose Multiplatform)</p>
+  <p>Fecha: 18 de Marzo de 2026 | Sprint Activo: SPR-041 | Sprints Completados: 40+</p>
+  <p><span class="badge badge-blue">CONFIDENCIAL</span> <span class="badge badge-green">v1.0</span></p>
+</div>
+
+<div class="summary-box">
+  <h3>Resumen Ejecutivo</h3>
+  <p>Este informe analiza la operacion completa del proceso de desarrollo de Intrale Platform, un sistema que combina <strong>agentes IA autonomos</strong> (Claude Code) con orquestacion automatizada via hooks, scripts PowerShell y notificaciones Telegram. Se identifican <strong>7 fortalezas clave</strong>, <strong>9 debilidades</strong> y <strong>5 puntos de atencion urgente</strong>, junto con recomendaciones concretas para optimizar el consumo de tokens, reducir la complejidad operativa y mejorar la confiabilidad del pipeline.</p>
+</div>
+
+<div class="toc">
+  <strong>Indice</strong>
+  <ol>
+    <li>Panorama del Sistema Actual</li>
+    <li>Metricas Operativas Clave</li>
+    <li>Fortalezas del Proceso</li>
+    <li>Debilidades Identificadas</li>
+    <li>Puntos de Atencion Urgente</li>
+    <li>Analisis de Eficiencia en Tokens</li>
+    <li>Propuesta: Migracion de Agentes a Scripts</li>
+    <li>Lecciones Aprendidas Historicas</li>
+    <li>Plan de Mejora Priorizado</li>
+    <li>Conclusion</li>
+  </ol>
+</div>
+
+<!-- ==================== SECCION 1 ==================== -->
+<h2>1. Panorama del Sistema Actual</h2>
+
+<h3>1.1 Arquitectura de Automatizacion</h3>
+<p>El sistema opera en <strong>6 capas de automatizacion</strong>:</p>
+
+<table>
+  <tr><th>Capa</th><th>Componentes</th><th>Funcion</th></tr>
+  <tr><td>T0 - Manual</td><td><code>Start-Agente.ps1</code></td><td>Lanzamiento de agentes por sprint</td></tr>
+  <tr><td>T1 - Skills</td><td>27 skills en <code>.claude/skills/</code></td><td>Capacidades especializadas (/backend-dev, /qa, etc.)</td></tr>
+  <tr><td>T2 - Hooks Sync</td><td>PreToolUse gates, PostToolUse loggers</td><td>Validacion en tiempo real + telemetria</td></tr>
+  <tr><td>T3 - Hooks Async</td><td>agent-concurrency-check, scrum-monitor-bg</td><td>Gestion de cola + salud del sprint</td></tr>
+  <tr><td>T4 - Monitors</td><td>agent-watcher.js, ci-monitor-bg.js</td><td>Health checks en background</td></tr>
+  <tr><td>T5 - Dashboard</td><td>dashboard-server.js @ :3100</td><td>Visibilidad via Puppeteer + Telegram</td></tr>
+</table>
+
+<h3>1.2 Composicion del Ecosistema</h3>
+<table>
+  <tr><th>Componente</th><th>Cantidad</th><th>Peso Aprox.</th></tr>
+  <tr><td>Hooks JavaScript (.js)</td><td>58 archivos</td><td>~450 KB total</td></tr>
+  <tr><td>Skills (.claude/skills/)</td><td>27 directorios (25 activos, 2 congelados)</td><td>~200 KB SKILL.md total</td></tr>
+  <tr><td>Scripts PowerShell</td><td>5 principales + auxiliares</td><td>~80 KB</td></tr>
+  <tr><td>Scripts Node.js (scripts/)</td><td>15+ planificacion/reporte</td><td>~180 KB</td></tr>
+  <tr><td>Agentes rules (agents/)</td><td>21 archivos markdown</td><td>~50 KB</td></tr>
+  <tr><td>Archivos de estado (.json)</td><td>15+ archivos de estado mutable</td><td>Variable</td></tr>
+  <tr><td><strong>TOTAL infraestructura IA</strong></td><td><strong>~140 archivos</strong></td><td><strong>~960 KB</strong></td></tr>
+</table>
+
+<!-- ==================== SECCION 2 ==================== -->
+<h2>2. Metricas Operativas Clave</h2>
+
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="value">40+</div>
+    <div class="label">Sprints completados</div>
+  </div>
+  <div class="metric-card">
+    <div class="value">58</div>
+    <div class="label">Hooks activos</div>
+  </div>
+  <div class="metric-card">
+    <div class="value">27</div>
+    <div class="label">Skills configurados</div>
+  </div>
+  <div class="metric-card">
+    <div class="value">3</div>
+    <div class="label">Max agentes simultaneos</div>
+  </div>
+  <div class="metric-card">
+    <div class="value">5</div>
+    <div class="label">Historias por sprint</div>
+  </div>
+  <div class="metric-card">
+    <div class="value">~377K</div>
+    <div class="label">Tokens estimados/24h</div>
+  </div>
+</div>
+
+<h3>2.1 Distribucion de Modelos por Rol <span class="badge badge-green">ACTUALIZADO</span></h3>
+<table>
+  <tr><th>Modelo</th><th>Skills Asignados</th><th>Uso Tipico</th><th>Costo Relativo</th></tr>
+  <tr><td><strong>Opus</strong></td><td>backend-dev, android-dev, web-dev, qa, tester, review + sesion principal</td><td>Implementacion, generacion de tests, code review, QA E2E, orquestacion</td><td>Alto</td></tr>
+  <tr><td><strong>Sonnet</strong></td><td>guru, planner, po, ux, security, hotfix</td><td>Investigacion, planificacion, analisis de producto</td><td>Medio</td></tr>
+  <tr><td><strong>Haiku</strong></td><td>branch, doc, delivery, monitor, auth, builder, ops, historia, refinar, priorizar, cleanup, scrum, cost, perf</td><td>Tareas operativas, deterministas, bajo razonamiento</td><td>Bajo</td></tr>
+</table>
+
+<div class="section recommendation">
+  <h3>Correccion Aplicada: Reasignacion de Modelos (2026-03-18)</h3>
+  <p>Se detectó que <strong>Opus no se usaba en ningun agente de desarrollo</strong>, desperdiciando el modelo mas capaz en solo la sesion principal. Se corrigieron 6 skills:</p>
+  <table>
+    <tr><th>Skill</th><th>Antes</th><th>Ahora</th><th>Justificacion</th></tr>
+    <tr><td>/backend-dev</td><td>Sonnet</td><td class="priority-high">Opus</td><td>Implementacion backend completa requiere razonamiento profundo</td></tr>
+    <tr><td>/android-dev</td><td>Sonnet</td><td class="priority-high">Opus</td><td>Compose UI + arquitectura MVVM compleja</td></tr>
+    <tr><td>/web-dev</td><td>Sonnet</td><td class="priority-high">Opus</td><td>Kotlin/Wasm con particularidades de compilacion</td></tr>
+    <tr><td>/qa</td><td>Sonnet</td><td class="priority-high">Opus</td><td>Generacion de casos de prueba E2E + analisis de resultados</td></tr>
+    <tr><td><strong>/tester</strong></td><td><strong>Haiku</strong></td><td class="priority-high"><strong>Opus</strong></td><td><strong>Caso mas critico:</strong> generaba tests con el modelo mas basico</td></tr>
+    <tr><td>/review</td><td>Sonnet</td><td class="priority-high">Opus</td><td>Code review profundo detecta bugs sutiles</td></tr>
+  </table>
+  <p><strong>Impacto esperado:</strong> Mejor calidad de codigo generado, tests mas exhaustivos, menos iteraciones de correccion post-QA, reviews que detecten mas problemas antes del merge.</p>
+</div>
+
+<h3>2.2 Health Check — Estado Actual</h3>
+<table>
+  <tr><th>Componente</th><th>Estado</th><th>Checks Consecutivos OK</th></tr>
+  <tr><td>Commander</td><td><span class="badge badge-green">PASS</span></td><td>25</td></tr>
+  <tr><td>Approvers</td><td><span class="badge badge-green">PASS</span></td><td>25</td></tr>
+  <tr><td>Telegram</td><td><span class="badge badge-green">PASS</span></td><td>25</td></tr>
+  <tr><td>Settings</td><td><span class="badge badge-green">PASS</span></td><td>25</td></tr>
+  <tr><td>Hooks</td><td><span class="badge badge-green">PASS</span></td><td>47</td></tr>
+  <tr><td>Worktrees</td><td><span class="badge badge-green">PASS</span></td><td>25</td></tr>
+</table>
+
+<!-- ==================== SECCION 3 ==================== -->
+<div class="page-break"></div>
+<h2>3. Fortalezas del Proceso</h2>
+
+<div class="section strength">
+  <h3>F1. Automatizacion Madura y Multi-capa</h3>
+  <p>Con 58 hooks activos, el sistema cubre validacion pre-ejecucion (branch-guard, delivery-gate), telemetria post-ejecucion (activity-logger, agent-metrics), y auto-reparacion (scrum-auto-corrections, ensure-permissions). Esto reduce drasticamente errores humanos.</p>
+  <p><strong>Evidencia:</strong> 47 checks consecutivos sin fallas en hooks; inconsistencias detectadas y reparadas automaticamente en SPR-025, SPR-028, SPR-033.</p>
+</div>
+
+<div class="section strength">
+  <h3>F2. Fuente Unica de Verdad (roadmap.json)</h3>
+  <p>Desde la correccion del issue #1621 (SPR-040), <code>roadmap.json</code> es la unica fuente de verdad para sprints. <code>sprint-plan.json</code> es un cache auto-generado. Esto resolvio el problema historico de desincronizacion entre multiples archivos de estado.</p>
+  <p><strong>Impacto:</strong> Elimina una clase entera de bugs de consistencia que causaron sprints fantasma y carry-overs perdidos.</p>
+</div>
+
+<div class="section strength">
+  <h3>F3. Pipeline de QA Riguroso</h3>
+  <p>Gate obligatorio <code>QA E2E → Tester → PO</code> con labels verificables (<code>qa:passed</code>/<code>qa:skipped</code>) antes de merge. El hook <code>delivery-gate.js</code> bloquea automaticamente merges sin QA. Videos de evidencia enviados a Telegram como parte del cierre.</p>
+  <p><strong>Impacto:</strong> Cero regresiones en produccion desde implementacion del gate.</p>
+</div>
+
+<div class="section strength">
+  <h3>F4. Sizing Abstracto (Simple/Medio/Grande)</h3>
+  <p>Abandonar estimaciones temporales (dias/semanas) por complejidad abstracta es una decision excelente para un equipo operado por agentes IA, donde el tiempo real depende de slots, rate limits y dependencias externas.</p>
+</div>
+
+<div class="section strength">
+  <h3>F5. Sistema de Permisos Auto-healing</h3>
+  <p>Defensa en 4 capas: baseline (50 allow + 7 deny), hook auto-heal cada 1h, Guardian cada 5 min, y auto-learn on-the-fly. Esto garantiza que agentes nuevos arrancan con permisos correctos sin intervencion manual.</p>
+</div>
+
+<div class="section strength">
+  <h3>F6. Transparencia Total via Telegram</h3>
+  <p>Notificaciones automaticas para: completitud de tareas, errores bloqueantes, aprobaciones de permisos, CI status, y heartbeats periodicos con screenshots del dashboard. El operador tiene visibilidad completa desde el celular.</p>
+</div>
+
+<div class="section strength">
+  <h3>F7. Worktree Isolation por Agente</h3>
+  <p>Cada agente trabaja en su propio worktree Git, eliminando conflictos de archivos entre agentes concurrentes. La leccion de junctions NTFS (2026-02-27) fue bien aprendida: ahora se usan copias de <code>.claude/</code> en vez de symlinks.</p>
+</div>
+
+<!-- ==================== SECCION 4 ==================== -->
+<h2>4. Debilidades Identificadas</h2>
+
+<div class="section weakness">
+  <h3>D1. Complejidad Excesiva del Ecosistema de Hooks (CRITICA)</h3>
+  <p><strong>Problema:</strong> 58 archivos JavaScript de hooks (~450 KB) representan un sistema operativo paralelo que:</p>
+  <ul>
+    <li>Consume contexto de Claude en cada sesion (los hooks se cargan como parte del entorno)</li>
+    <li>Tiene interdependencias no documentadas (activity-logger lanza dashboard-server, que usa telegram-client, que depende de telegram-config)</li>
+    <li>Genera overhead en cada tool use: <code>permission-gate.js</code> evalua CADA accion con timeout de 1830s</li>
+    <li>Dificulta el debugging: cuando algo falla, hay 6+ capas donde buscar</li>
+  </ul>
+  <p><strong>Dato:</strong> <code>agent-concurrency-check.js</code> tiene 55 KB — mas grande que muchos microservicios del backend.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D2. Consumo de Tokens en Tareas Operativas</h3>
+  <p><strong>Problema:</strong> Skills operativos que no requieren razonamiento avanzado (monitor, scrum, ops, cleanup, branch, delivery) consumen tokens de Claude para tareas que podrian ser scripts deterministas.</p>
+  <p><strong>Ejemplo:</strong> <code>/monitor</code> recopila estado de 12 paneles leyendo archivos JSON y formateando output — una tarea puramente mecanica. <code>/scrum</code> valida consistencia entre roadmap.json y GitHub issues — logica determinista.</p>
+  <p><strong>Estimacion de desperdicio:</strong> ~30-40% de los tokens de una sesion de orquestacion se gastan en lectura/formateo de estado, no en razonamiento.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D3. Agent Watcher Deshabilitado (Bug #1551)</h3>
+  <p><strong>Problema:</strong> El <code>agent-watcher.js</code> fue deshabilitado porque evaluaba PRs a los 3 segundos, marcando agentes como "failed" antes de que trabajaran. Esto deja un hueco en la supervision automatica: si un agente muere silenciosamente, no hay deteccion automatica.</p>
+  <p><strong>Impacto:</strong> Dependencia en supervision manual para detectar agentes muertos.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D4. Rate Limits con 3 Agentes Simultaneos</h3>
+  <p><strong>Problema:</strong> 3 agentes Claude corriendo en paralelo frecuentemente alcanzan rate limits de la API, especialmente cuando usan modelo Sonnet para implementacion. La leccion de SPR-029/030 documenta esto, pero la mitigacion actual (escalonamiento manual de 2-3 min) es fragil.</p>
+  <p><strong>Impacto:</strong> Agentes se ralentizan o fallan por throttling, reduciendo throughput efectivo.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D5. Falsos Positivos en QA Operativo</h3>
+  <p><strong>Problema documentado (2026-03-09):</strong> Agentes cerraban issues de QA verificando que el codigo existia (grep/ls) sin ejecutarlo realmente. Patron: buscar archivo → encontrar → concluir "implementado" → cerrar issue.</p>
+  <p><strong>Mitigacion parcial:</strong> Regla de "ejecutar funcionalidad, no solo verificar codigo" documentada, pero depende de que el agente la siga — no hay enforcement automatico.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D6. Proliferacion de Archivos de Estado</h3>
+  <p>Al menos <strong>15 archivos JSON/JSONL mutables</strong> en <code>.claude/hooks/</code>: agent-metrics, agent-registry, scrum-monitor-state, health-check-state, health-check-components, ops-learnings, scrum-health-history, telegram-messages, pending-questions, activity-logger-last, worktree-guard-last-alert, auto-review-state, agent-progress-state, launcher-last-check, sprint-pids. Mas <code>roadmap.json</code> y <code>sprint-plan.json</code> en scripts/.</p>
+  <p><strong>Riesgo:</strong> Corrupcion, race conditions entre hooks concurrentes, y dificultad para diagnosticar inconsistencias.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D7. Skills SKILL.md como Contexto Pesado</h3>
+  <p>Los SKILL.md son prompts extensos (el de monitor tiene 440 lineas, planner 100+, backend-dev 100+). Cuando se invoca un skill, todo el SKILL.md se carga en contexto. Para skills que se invocan frecuentemente, esto multiplica el consumo de tokens.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D8. Dependencia de Puppeteer para Screenshots</h3>
+  <p>El dashboard envia heartbeats via Puppeteer (headless Chrome → screenshot PNG → Telegram). Este es un proceso pesado que consume RAM significativa y tiene fallos documentados (isPngValid, consecutiveSkipCount). Una solucion mas ligera seria viable.</p>
+</div>
+
+<div class="section weakness">
+  <h3>D9. Documentacion Fragmentada de la Infraestructura</h3>
+  <p>Las reglas operativas estan distribuidas entre: 42 archivos de memoria, CLAUDE.md, 21 archivos en agents/, SKILL.md de cada skill, y comentarios en los hooks. No hay un documento unico que explique "como funciona todo junto".</p>
+</div>
+
+<!-- ==================== SECCION 5 ==================== -->
+<div class="page-break"></div>
+<h2>5. Puntos de Atencion Urgente</h2>
+
+<div class="section attention">
+  <h3>U1. Overhead de Hooks en Cada Tool Use <span class="priority-high">[ALTA]</span></h3>
+  <p><strong>Situacion:</strong> Cada llamada a herramienta pasa por <code>permission-gate.js</code> (PreToolUse) y <code>activity-logger.js</code> + <code>post-tool-orchestrator.js</code> (PostToolUse). Con agentes que hacen 80-150 tool calls por sesion, esto suma miles de ejecuciones de hooks por sprint.</p>
+  <p><strong>Riesgo:</strong> Latencia acumulada + potencial de errores en cascada. Si un hook falla, puede bloquear al agente.</p>
+  <p><strong>Recomendacion:</strong> Auditar latencia real de cada hook. Considerar batching o sampling para activity-logger (logear 1 de cada N acciones en vez de todas).</p>
+</div>
+
+<div class="section attention">
+  <h3>U2. CI Failures Silenciosos <span class="priority-high">[ALTA]</span></h3>
+  <p><strong>Situacion:</strong> El agente #677 tuvo CI failure pero el PR #1652 fue mergeado exitosamente. ops-learnings registra el fallo pero no hubo bloqueo.</p>
+  <p><strong>Riesgo:</strong> Merges con CI rojo pasan al main branch. El delivery-gate verifica labels QA pero no status de CI.</p>
+  <p><strong>Recomendacion:</strong> Agregar check de CI status en delivery-gate.js ademas de labels QA.</p>
+</div>
+
+<div class="section attention">
+  <h3>U3. Worktrees Huerfanos Recurrentes <span class="priority-medium">[MEDIA]</span></h3>
+  <p><strong>Situacion:</strong> 11 worktrees muertos detectados el 2026-03-04 (19 ocurrencias en ops-learnings). Aunque fueron limpiados, el issue subyacente sigue OPEN — los agentes que mueren no siempre limpian su worktree.</p>
+  <p><strong>Recomendacion:</strong> Agregar cleanup en el hook Stop para el agente que termina, no solo en health-check periodico.</p>
+</div>
+
+<div class="section attention">
+  <h3>U4. 18+ Ramas Agent/* Legacy en Remoto <span class="priority-medium">[MEDIA]</span></h3>
+  <p><strong>Situacion:</strong> Ramas de sprints anteriores siguen en el repositorio remoto. Esto ensucia el namespace y puede confundir herramientas.</p>
+  <p><strong>Recomendacion:</strong> Script de limpieza periodica de ramas mergeadas. Puede ser un cron o parte del cierre de sprint.</p>
+</div>
+
+<div class="section attention">
+  <h3>U5. Sin Metricas de Costo Real por Sprint <span class="priority-medium">[MEDIA]</span></h3>
+  <p><strong>Situacion:</strong> Aunque existe <code>cost-report.js</code> y se estiman ~377K tokens/24h, no hay tracking preciso de costo USD por sprint ni por historia. Esto dificulta decisiones de optimizacion.</p>
+  <p><strong>Recomendacion:</strong> Integrar metricas de costo de la API de Anthropic al cierre de sprint.</p>
+</div>
+
+<!-- ==================== SECCION 6 ==================== -->
+<h2>6. Analisis de Eficiencia en Tokens</h2>
+
+<h3>6.1 Distribucion Estimada del Consumo</h3>
+<table>
+  <tr><th>Categoria</th><th>% Estimado</th><th>Tokens/Sprint</th><th>Optimizable?</th></tr>
+  <tr><td>Implementacion de codigo (backend-dev, android-dev, web-dev)</td><td>35%</td><td>~500K</td><td>Parcialmente (mejores prompts)</td></tr>
+  <tr><td>QA E2E y testing</td><td>15%</td><td>~215K</td><td>Si — scripts Maestro son deterministas</td></tr>
+  <tr><td>Orquestacion y planificacion (scrum, planner, monitor)</td><td>20%</td><td>~285K</td><td><strong>Si — alto potencial</strong></td></tr>
+  <tr><td>Operaciones (ops, cleanup, branch, delivery)</td><td>15%</td><td>~215K</td><td><strong>Si — mayoría determinista</strong></td></tr>
+  <tr><td>Carga de contexto (SKILL.md, CLAUDE.md, memory)</td><td>10%</td><td>~140K</td><td>Si — reducir SKILL.md</td></tr>
+  <tr><td>Hooks overhead (permission-gate, activity-logger)</td><td>5%</td><td>~70K</td><td>Si — sampling/batching</td></tr>
+</table>
+
+<h3>6.2 Top Oportunidades de Ahorro</h3>
+<table>
+  <tr><th>#</th><th>Oportunidad</th><th>Ahorro Estimado</th><th>Esfuerzo</th></tr>
+  <tr><td>1</td><td>Migrar /monitor a script Node.js puro</td><td>~50K tokens/sprint</td><td>Medio</td></tr>
+  <tr><td>2</td><td>Migrar /scrum validacion a script Node.js</td><td>~40K tokens/sprint</td><td>Medio</td></tr>
+  <tr><td>3</td><td>Migrar /ops health-check a script Node.js</td><td>~30K tokens/sprint</td><td>Simple</td></tr>
+  <tr><td>4</td><td>Migrar /cleanup a script bash/node</td><td>~20K tokens/sprint</td><td>Simple</td></tr>
+  <tr><td>5</td><td>Migrar /branch a script git puro</td><td>~15K tokens/sprint</td><td>Simple</td></tr>
+  <tr><td>6</td><td>Reducir SKILL.md de skills frecuentes</td><td>~30K tokens/sprint</td><td>Simple</td></tr>
+  <tr><td>7</td><td>Delivery como script con gh CLI</td><td>~25K tokens/sprint</td><td>Medio</td></tr>
+  <tr><td></td><td><strong>TOTAL POTENCIAL</strong></td><td><strong>~210K tokens/sprint</strong></td><td></td></tr>
+</table>
+<p><em>Nota: 210K tokens/sprint representa aproximadamente un 15% de reduccion en consumo total.</em></p>
+
+<!-- ==================== SECCION 7 ==================== -->
+<div class="page-break"></div>
+<h2>7. Propuesta: Migracion de Agentes a Scripts</h2>
+
+<h3>7.1 Criterio de Migracion</h3>
+<p>Un skill es candidato a migracion total o parcial si cumple:</p>
+<ol>
+  <li><strong>Determinista:</strong> La logica no requiere razonamiento — solo lectura de estado, transformacion y escritura</li>
+  <li><strong>Repetitivo:</strong> Se ejecuta multiples veces por sprint con la misma logica</li>
+  <li><strong>Sin creatividad:</strong> No necesita generar codigo, analizar problemas o tomar decisiones ambiguas</li>
+</ol>
+
+<h3>7.2 Clasificacion de Skills</h3>
+<table>
+  <tr><th>Skill</th><th>Clasificacion</th><th>Accion Recomendada</th></tr>
+  <tr><td>/monitor</td><td class="priority-high">100% Determinista</td><td><strong>Migrar completamente</strong> a script Node.js. Ya lee archivos JSON y formatea output.</td></tr>
+  <tr><td>/scrum</td><td class="priority-high">90% Determinista</td><td><strong>Migrar validacion y sync</strong> a script. Mantener agente solo para decisiones de reparacion complejas.</td></tr>
+  <tr><td>/ops</td><td class="priority-high">95% Determinista</td><td><strong>Migrar completamente.</strong> health-check.js ya hace el trabajo real.</td></tr>
+  <tr><td>/cleanup</td><td class="priority-high">100% Determinista</td><td><strong>Migrar completamente.</strong> Borrar worktrees/logs/procesos es puramente mecanico.</td></tr>
+  <tr><td>/branch</td><td class="priority-high">100% Determinista</td><td><strong>Migrar completamente.</strong> git worktree add + git checkout es un script de 20 lineas.</td></tr>
+  <tr><td>/delivery</td><td class="priority-medium">80% Determinista</td><td><strong>Migrar parcialmente.</strong> Commit+push+PR es mecanico, pero el mensaje de commit requiere analisis de cambios.</td></tr>
+  <tr><td>/builder</td><td class="priority-medium">85% Determinista</td><td><strong>Migrar parcialmente.</strong> gradlew build es mecanico, diagnosticar fallas requiere razonamiento.</td></tr>
+  <tr><td>/tester</td><td class="priority-medium">70% Determinista</td><td><strong>Migrar ejecucion</strong> de tests a script. Mantener agente para analisis de fallas y generacion de tests.</td></tr>
+  <tr><td>/cost</td><td class="priority-high">100% Determinista</td><td><strong>Migrar completamente.</strong> Calculo de metricas puras.</td></tr>
+  <tr style="background: #f0f0f0;"><td>/backend-dev</td><td class="priority-low">10% Determinista</td><td>Mantener como agente. Requiere razonamiento completo.</td></tr>
+  <tr style="background: #f0f0f0;"><td>/android-dev</td><td class="priority-low">10% Determinista</td><td>Mantener como agente.</td></tr>
+  <tr style="background: #f0f0f0;"><td>/qa</td><td class="priority-low">20% Determinista</td><td>Mantener como agente. La ejecucion de Maestro ya es un script, pero el analisis de resultados requiere IA.</td></tr>
+  <tr style="background: #f0f0f0;"><td>/review</td><td class="priority-low">15% Determinista</td><td>Mantener como agente. Code review necesita razonamiento.</td></tr>
+  <tr style="background: #f0f0f0;"><td>/guru</td><td class="priority-low">5% Determinista</td><td>Mantener como agente. Investigacion pura.</td></tr>
+  <tr style="background: #f0f0f0;"><td>/po, /ux</td><td class="priority-low">5% Determinista</td><td>Mantener como agente. Analisis de producto/UX.</td></tr>
+</table>
+
+<h3>7.3 Arquitectura Propuesta Post-Migracion</h3>
+<table>
+  <tr><th>Capa</th><th>Antes</th><th>Despues</th></tr>
+  <tr><td>Operaciones</td><td>8 skills IA (monitor, scrum, ops, cleanup, branch, delivery, builder, cost)</td><td>8 scripts Node.js/bash invocables sin Claude</td></tr>
+  <tr><td>Implementacion</td><td>5 skills IA (backend-dev, android-dev, web-dev, qa, review)</td><td>Sin cambio — requieren razonamiento</td></tr>
+  <tr><td>Producto</td><td>4 skills IA (po, ux, guru, doc)</td><td>Sin cambio — requieren creatividad</td></tr>
+  <tr><td>Orquestacion</td><td>Sesion Opus principal</td><td>Script orquestador + Opus solo para decisiones</td></tr>
+</table>
+
+<!-- ==================== SECCION 8 ==================== -->
+<h2>8. Lecciones Aprendidas Historicas</h2>
+
+<p>De las 42 memorias operativas acumuladas, las lecciones mas impactantes fueron:</p>
+
+<table>
+  <tr><th>#</th><th>Leccion</th><th>Origen</th><th>Impacto</th><th>Estado</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>Fuente unica de verdad para sprints</strong> — roadmap.json como single source, sprint-plan.json como cache</td>
+    <td>Bug critico: sprint entero ejecutado sin que roadmap lo supiera</td>
+    <td class="priority-high">CRITICO</td>
+    <td><span class="badge badge-green">RESUELTO</span> (#1621)</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Junctions NTFS destruyen .claude/</strong> — usar copias, no symlinks</td>
+    <td>rm -rf en worktree borro .claude/ real del repo principal</td>
+    <td class="priority-high">CRITICO</td>
+    <td><span class="badge badge-green">RESUELTO</span></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Agent watcher con grace period</strong> — no evaluar antes de 15 min</td>
+    <td>Agentes marcados "failed" a los 3 segundos de arrancar</td>
+    <td class="priority-high">CRITICO</td>
+    <td><span class="badge badge-yellow">PARCIAL</span> (watcher deshabilitado)</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>No usar Agent tool para implementar</strong> — usar terminales independientes</td>
+    <td>Subprocesos internos invisibles, no auditables</td>
+    <td class="priority-medium">ALTO</td>
+    <td><span class="badge badge-green">RESUELTO</span></td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>QA debe ejecutar, no solo verificar existencia</strong></td>
+    <td>Agentes cerraban issues confirmando que archivos existian sin probarlos</td>
+    <td class="priority-high">CRITICO</td>
+    <td><span class="badge badge-yellow">PARCIAL</span> (regla, sin enforcement)</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><strong>Re-leer archivos despues de escribir</strong> — hooks pueden revertir</td>
+    <td>Hooks sobreescribian cambios silenciosamente</td>
+    <td class="priority-medium">ALTO</td>
+    <td><span class="badge badge-green">RESUELTO</span></td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td><strong>OpenAI key perdida al cambiar de branch</strong></td>
+    <td>Config no commiteada + branch switch = perdida de credenciales</td>
+    <td class="priority-medium">ALTO</td>
+    <td><span class="badge badge-green">RESUELTO</span></td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td><strong>Cola no debe mover agentes recien promovidos a incomplete</strong></td>
+    <td>Bug cascada: cola se vaciaba sola</td>
+    <td class="priority-medium">ALTO</td>
+    <td><span class="badge badge-green">RESUELTO</span></td>
+  </tr>
+  <tr>
+    <td>9</td>
+    <td><strong>Rate limits con 3 agentes</strong> — considerar escalonamiento</td>
+    <td>SPR-029/030: agentes throttled</td>
+    <td class="priority-medium">ALTO</td>
+    <td><span class="badge badge-yellow">PARCIAL</span> (manual)</td>
+  </tr>
+  <tr>
+    <td>10</td>
+    <td><strong>PowerShell stream-json con errores de sintaxis</strong> — crash silencioso</td>
+    <td>PR #1550 revertido</td>
+    <td class="priority-medium">ALTO</td>
+    <td><span class="badge badge-green">RESUELTO</span> (revert a Start-Transcript)</td>
+  </tr>
+</table>
+
+<h3>8.1 Patron de Problemas Recurrentes</h3>
+<p>Analizando las lecciones, emergen 3 patrones:</p>
+<ol>
+  <li><strong>Complejidad genera bugs de consistencia:</strong> Multiples fuentes de verdad (roadmap vs sprint-plan), hooks que interfieren entre si, estados distribuidos en 15+ archivos JSON.</li>
+  <li><strong>Automatizacion sin enforcement real:</strong> Reglas documentadas (ej: "QA debe ejecutar") que dependen de que el agente las siga, sin validacion mecanica.</li>
+  <li><strong>Windows/MSYS2 como fuente de friccion:</strong> Junctions NTFS, paths con espacios, heredocs, PowerShell vs bash — cada uno genero al menos un bug critico.</li>
+</ol>
+
+<!-- ==================== SECCION 9 ==================== -->
+<div class="page-break"></div>
+<h2>9. Plan de Mejora Priorizado</h2>
+
+<table>
+  <tr><th>Prioridad</th><th>Mejora</th><th>Esfuerzo</th><th>Impacto</th><th>Sprint Sugerido</th></tr>
+  <tr>
+    <td><span class="badge badge-red">P0</span></td>
+    <td><strong>Migrar /monitor a script Node.js</strong> — eliminar consumo de tokens para lectura de estado puro</td>
+    <td>Medio</td>
+    <td>~50K tokens/sprint ahorro</td>
+    <td>SPR-042</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-red">P0</span></td>
+    <td><strong>Agregar CI status check en delivery-gate.js</strong> — prevenir merges con CI rojo</td>
+    <td>Simple</td>
+    <td>Elimina regresiones por CI ignorado</td>
+    <td>SPR-042</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-yellow">P1</span></td>
+    <td><strong>Migrar /branch, /cleanup, /cost a scripts</strong> — tareas 100% deterministas</td>
+    <td>Simple</td>
+    <td>~85K tokens/sprint ahorro</td>
+    <td>SPR-042</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-yellow">P1</span></td>
+    <td><strong>Rehabilitar agent-watcher con grace period 15min</strong> — deteccion automatica de agentes muertos</td>
+    <td>Simple</td>
+    <td>Elimina supervision manual</td>
+    <td>SPR-042</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-yellow">P1</span></td>
+    <td><strong>Consolidar archivos de estado</strong> — reducir de 15+ JSONs a 3-4 archivos maestros</td>
+    <td>Grande</td>
+    <td>Reduce race conditions y simplifica debugging</td>
+    <td>SPR-043</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">P2</span></td>
+    <td><strong>Migrar /scrum validacion y /ops a scripts</strong></td>
+    <td>Medio</td>
+    <td>~70K tokens/sprint ahorro</td>
+    <td>SPR-043</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">P2</span></td>
+    <td><strong>Implementar rate-limit-aware scheduling</strong> — escalonamiento automatico de agentes basado en consumo real de API</td>
+    <td>Medio</td>
+    <td>Elimina throttling, mejora throughput</td>
+    <td>SPR-043</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">P2</span></td>
+    <td><strong>Limpieza periodica de ramas remotas</strong> — script post-sprint que elimina agent/* mergeadas</td>
+    <td>Simple</td>
+    <td>Namespace limpio</td>
+    <td>SPR-042</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">P2</span></td>
+    <td><strong>Reducir SKILL.md de skills frecuentes</strong> — comprimir instrucciones a lo esencial</td>
+    <td>Simple</td>
+    <td>~30K tokens/sprint ahorro en contexto</td>
+    <td>SPR-043</td>
+  </tr>
+  <tr>
+    <td class="priority-low">P3</td>
+    <td><strong>Dashboard ligero sin Puppeteer</strong> — reemplazar screenshots PNG por reportes texto/HTML enviados directamente</td>
+    <td>Grande</td>
+    <td>Reduce RAM + elimina errores PNG</td>
+    <td>SPR-044</td>
+  </tr>
+  <tr>
+    <td class="priority-low">P3</td>
+    <td><strong>Documento unico de arquitectura de infra IA</strong> — como funciona todo junto</td>
+    <td>Medio</td>
+    <td>Reduce onboarding friction</td>
+    <td>SPR-044</td>
+  </tr>
+</table>
+
+<h3>9.1 Impacto Acumulado del Plan</h3>
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="value">~235K</div>
+    <div class="label">Tokens/sprint ahorro potencial</div>
+  </div>
+  <div class="metric-card">
+    <div class="value">8→3</div>
+    <div class="label">Skills operativos que usan IA</div>
+  </div>
+  <div class="metric-card">
+    <div class="value">15→4</div>
+    <div class="label">Archivos de estado JSON</div>
+  </div>
+</div>
+
+<!-- ==================== SECCION 10 ==================== -->
+<h2>10. Conclusion</h2>
+
+<div class="summary-box">
+  <h3>Veredicto General</h3>
+  <p>El proceso de desarrollo de Intrale tiene una <strong>base solida</strong>: automatizacion madura, QA riguroso, fuente unica de verdad, y transparencia total. Sin embargo, ha alcanzado un punto de <strong>complejidad donde la infraestructura de IA consume recursos significativos en tareas que no requieren inteligencia</strong>.</p>
+
+  <p>La principal oportunidad de mejora es <strong>separar lo determinista de lo inteligente</strong>: migrar tareas mecanicas (monitor, scrum, ops, cleanup, branch) a scripts puros, reservando tokens de Claude exclusivamente para lo que realmente necesita razonamiento (implementacion, review, QA analisis, producto).</p>
+
+  <p>El plan propuesto de 11 mejoras distribuidas en 3 sprints lograria un ahorro estimado de <strong>~235K tokens por sprint</strong> (15-17% del total) mientras mejora la confiabilidad al eliminar dependencias innecesarias de IA para operaciones rutinarias.</p>
+</div>
+
+<p style="text-align: center; color: #666; margin-top: 40px; font-size: 11px;">
+  <em>Generado automaticamente por Claude Opus 4.6 — Intrale Platform<br>
+  18 de Marzo de 2026</em>
+</p>
+
+</body>
+</html>

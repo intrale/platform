@@ -3,7 +3,7 @@ description: Review — Code review automatizado de PRs antes del merge
 user-invocable: true
 argument-hint: "[<PR-number>] [--strict] [--quick]"
 allowed-tools: Bash, Read, Grep, Glob
-model: claude-sonnet-4-6
+model: claude-opus-4-6
 ---
 
 # /review — Review
