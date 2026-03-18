@@ -187,13 +187,42 @@ function handleInput() {
         // Verificar evidencia de video (soft gate — no bloquea, solo advierte en audit)
         const videoEvidence = checkVideoEvidence(repoRoot, issueNumber);
 
+        // Verificar CI status del branch (#1661 — prevenir merges con CI rojo)
+        let ciWarning = null;
+        try {
+            const ciResult = execSync(
+                `gh run list --branch "${branch}" --limit 1 --json conclusion,status --jq ".[0]"`,
+                { cwd: projectDir, timeout: 10000, encoding: "utf8", windowsHide: true,
+                  env: { ...process.env, PATH: "/c/Workspaces/gh-cli/bin:" + process.env.PATH } }
+            ).trim();
+            if (ciResult) {
+                const ci = JSON.parse(ciResult);
+                if (ci.conclusion === "failure") {
+                    ciWarning = "CI FAILED — el último workflow de GitHub Actions falló para esta rama.";
+                } else if (ci.status === "in_progress") {
+                    ciWarning = "CI en progreso — considerar esperar a que termine.";
+                }
+            }
+        } catch(e) { /* gh no disponible o sin runs — skip */ }
+
         if (missingGates.length === 0) {
             // Todos los gates tienen evidencia — permitir PR
-            const auditDetails = { evidence, videoEvidence };
+            const auditDetails = { evidence, videoEvidence, ciWarning };
             if (!videoEvidence.hasVideos) {
                 auditDetails.videoWarning = "Sin evidencia de video en qa/evidence/" + (issueNumber || "?") + "/ (solo aplica si hay flows Android/Maestro)";
             }
-            writeAuditLog(repoRoot, branch, issueNumber, "pass", "Todos los gates pasaron", auditDetails);
+            // CI failure = soft block con warning (#1661)
+            if (ciWarning && ciWarning.includes("FAILED")) {
+                const ciMsg = JSON.stringify({
+                    decision: "block",
+                    reason: `⚠️ CI FAILURE DETECTED\n\n${ciWarning}\n\nTodos los gates de skill pasaron, pero el CI de GitHub Actions falló.\nVerificar con: gh run list --branch "${branch}" --limit 1\n\nSi el fallo es por un test flaky o irrelevante, crear override:\n  echo '{"branch":"${branch}","bypass":true,"created_at":"${new Date().toISOString()}"}' > .claude/hooks/delivery-gate-state.json`
+                });
+                writeAuditLog(repoRoot, branch, issueNumber, "blocked-ci", "Gates OK pero CI failed", auditDetails);
+                process.stdout.write(ciMsg);
+                process.exit(0);
+                return;
+            }
+            writeAuditLog(repoRoot, branch, issueNumber, "pass", "Todos los gates pasaron" + (ciWarning ? " (CI: " + ciWarning + ")" : ""), auditDetails);
             process.exit(0);
             return;
         }

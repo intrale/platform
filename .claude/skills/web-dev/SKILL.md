@@ -3,7 +3,7 @@ description: WebDev — Desarrollo web con Kotlin/Wasm, PWA, Webpack y browser A
 user-invocable: true
 argument-hint: "<issue-o-tarea> [--plan] [--test]"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, TaskCreate, TaskUpdate, TaskList
-model: claude-sonnet-4-6
+model: claude-opus-4-6
 ---
 
 # /web-dev — WebDev

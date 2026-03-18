@@ -21,7 +21,9 @@ function resolveMainHooksDir() {
     } catch (e) {}
     return __dirname;
 }
-const HISTORY_FILE = path.join(resolveMainHooksDir(), "approval-history.json");
+const MAIN_HOOKS_DIR = resolveMainHooksDir();
+const HISTORY_FILE = path.join(MAIN_HOOKS_DIR, "approval-history.json");
+const AUDIT_FILE = path.join(MAIN_HOOKS_DIR, "approval-audit.jsonl");
 const SUGGEST_THRESHOLD = 3; // sugerir persistencia después de N aprobaciones
 
 function loadHistory() {
@@ -53,6 +55,16 @@ function incrementApproval(pattern) {
     data.patterns[pattern].last = new Date().toISOString();
     const count = data.patterns[pattern].count;
     saveHistory(data);
+    // Audit trail individual (#1661 — preservar timeline de aprobaciones)
+    try {
+        const auditEntry = JSON.stringify({
+            ts: new Date().toISOString(),
+            pattern,
+            count,
+            session: process.env.CLAUDE_SESSION_ID || "unknown"
+        });
+        fs.appendFileSync(AUDIT_FILE, auditEntry + "\n", "utf8");
+    } catch(e) {}
     return {
         count,
         shouldSuggest: count === SUGGEST_THRESHOLD // solo en el umbral exacto

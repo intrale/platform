@@ -183,12 +183,15 @@ function handleInput() {
 
             fs.appendFileSync(LOG_FILE, entry + "\n", "utf8");
 
-            // Rotacion del JSONL
+            // Rotacion del JSONL — archivar exceso en vez de descartar (#1661)
             try {
                 const content = fs.readFileSync(LOG_FILE, "utf8").trim();
                 const lines = content.split("\n");
                 if (lines.length > MAX_LINES) {
                     const keep = Math.floor(MAX_LINES / 2);
+                    const excess = lines.slice(0, lines.length - keep);
+                    const ARCHIVE_FILE = LOG_FILE.replace(".jsonl", ".archive.jsonl");
+                    fs.appendFileSync(ARCHIVE_FILE, excess.join("\n") + "\n", "utf8");
                     fs.writeFileSync(LOG_FILE, lines.slice(-keep).join("\n") + "\n", "utf8");
                 }
             } catch(e) {}

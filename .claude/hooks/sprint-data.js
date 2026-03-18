@@ -155,6 +155,21 @@ function writeRoadmap(rm, caller) {
         fs.renameSync(tmpFile, ROADMAP_FILE);
         // 5. Regenerar cache
         generateSprintPlanCache(rm);
+        // 6. Snapshot de métricas si algún sprint cambió a done (#1661)
+        try {
+            (rm.sprints || []).forEach(function(sp) {
+                if (sp.status === "done" && sp.execution && sp.execution.concurrency_limit) {
+                    var markerFile = path.join(HOOKS_DIR, "metrics-snapshot-" + sp.id + ".done");
+                    if (!fs.existsSync(markerFile)) {
+                        var allDone = (sp.stories || []).every(function(st) { return st.status === "done"; });
+                        if (allDone) {
+                            snapshotMetricsOnClose(sp.id);
+                            fs.writeFileSync(markerFile, new Date().toISOString(), "utf8");
+                        }
+                    }
+                }
+            });
+        } catch(snapErr) { log("snapshotMetrics skipped: " + snapErr.message); }
         log("writeRoadmap OK (caller: " + (caller || "unknown") + ")");
         return true;
     } catch (e) {
@@ -395,6 +410,34 @@ function migrateFromSprintPlan() {
     return rm;
 }
 
+/**
+ * Snapshot de agent-metrics al cierre de sprint (#1661 — preservar historial).
+ * Append al archivo agent-metrics-history.jsonl con las métricas del sprint cerrado.
+ */
+function snapshotMetricsOnClose(sprintId) {
+    try {
+        var metricsFile = path.join(HOOKS_DIR, "agent-metrics.json");
+        var historyFile = path.join(HOOKS_DIR, "agent-metrics-history.jsonl");
+        if (!fs.existsSync(metricsFile)) return;
+        var metrics = JSON.parse(fs.readFileSync(metricsFile, "utf8"));
+        var entry = JSON.stringify({
+            ts: new Date().toISOString(),
+            sprint_id: sprintId,
+            sessions: metrics.sessions || [],
+            summary: {
+                total_sessions: (metrics.sessions || []).length,
+                total_tool_calls: (metrics.sessions || []).reduce(function(acc, s) { return acc + (s.tool_calls || 0); }, 0),
+                total_files_modified: (metrics.sessions || []).reduce(function(acc, s) { return acc + (s.modified_files_count || 0); }, 0),
+                total_duration_min: (metrics.sessions || []).reduce(function(acc, s) { return acc + (s.duration_min || 0); }, 0)
+            }
+        });
+        fs.appendFileSync(historyFile, entry + "\n", "utf8");
+        log("agent-metrics snapshot saved for " + sprintId);
+    } catch(e) {
+        log("Error saving metrics snapshot: " + e.message);
+    }
+}
+
 module.exports = {
     ROADMAP_FILE: ROADMAP_FILE, SPRINT_PLAN_FILE: SPRINT_PLAN_FILE,
     REPO_ROOT: REPO_ROOT, SCRIPTS_DIR: SCRIPTS_DIR, HOOKS_DIR: HOOKS_DIR,
@@ -405,5 +448,6 @@ module.exports = {
     ensureExecution: ensureExecution, getConcurrencyLimit: getConcurrencyLimit,
     generateSprintPlanCache: generateSprintPlanCache, migrateFromSprintPlan: migrateFromSprintPlan,
     validateRoadmap: validateRoadmap, acquireLock: acquireLock, releaseLock: releaseLock,
-    readJson: readJson, writeJson: writeJson, log: log
+    readJson: readJson, writeJson: writeJson, log: log,
+    snapshotMetricsOnClose: snapshotMetricsOnClose
 };

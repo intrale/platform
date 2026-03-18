@@ -94,10 +94,15 @@ function handleInput() {
         if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
         fs.appendFileSync(LOG_PATH, logEntry + "\n", "utf8");
 
-        // Rotacion: mantener 500 líneas (#1159)
+        // Rotacion: mantener 500 líneas, archivar exceso (#1159, #1661)
         try {
             const lines = fs.readFileSync(LOG_PATH, "utf8").trim().split("\n");
-            if (lines.length > 600) fs.writeFileSync(LOG_PATH, lines.slice(-500).join("\n") + "\n", "utf8");
+            if (lines.length > 600) {
+                const ARCHIVE_PATH = LOG_PATH.replace(".jsonl", ".archive.jsonl");
+                const excess = lines.slice(0, lines.length - 500);
+                fs.appendFileSync(ARCHIVE_PATH, excess.join("\n") + "\n", "utf8");
+                fs.writeFileSync(LOG_PATH, lines.slice(-500).join("\n") + "\n", "utf8");
+            }
         } catch(e) {}
     } catch(e) {
         process.exit(0);

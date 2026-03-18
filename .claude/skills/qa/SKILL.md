@@ -3,7 +3,7 @@ description: QA — Tests E2E contra entorno real con video y reporte de calidad
 user-invocable: true
 argument-hint: "[api|desktop|android|all|validate <issue-number>] [--skip-env] [--keep-env]"
 allowed-tools: Bash, Read, Write, Grep, Glob, TaskCreate, TaskUpdate, TaskList
-model: claude-sonnet-4-6
+model: claude-opus-4-6
 ---
 
 # /qa — QA E2E

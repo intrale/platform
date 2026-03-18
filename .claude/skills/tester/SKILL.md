@@ -3,7 +3,7 @@ description: Tester — Ejecutar tests, verificar cobertura Kover, generar tests
 user-invocable: true
 argument-hint: "[modulo] [--coverage] [--fail-fast] [--from-gherkin <issue>]"
 allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList, Write, Edit
-model: claude-haiku-4-5-20251001
+model: claude-opus-4-6
 ---
 
 # /tester — Tester
