@@ -595,12 +595,4 @@ enum class MessageKey {
     business_config_save,
     business_config_saved,
     dashboard_menu_business_config,
-    dashboard_empty_title,
-    dashboard_empty_description,
-    dashboard_empty_products_hint,
-    dashboard_error_title,
-    dashboard_error_description,
-    dashboard_summary_empty_title,
-    dashboard_summary_empty_description,
-    dashboard_summary_empty_cta,
 }

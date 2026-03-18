@@ -592,12 +592,4 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.business_config_save to "Guardar datos",
     MessageKey.business_config_saved to "Datos guardados correctamente",
     MessageKey.dashboard_menu_business_config to "Datos del negocio",
-    MessageKey.dashboard_empty_title to "Tu panel esta listo",
-    MessageKey.dashboard_empty_description to "Todavia no hay datos para mostrar. Empeza cargando tus productos.",
-    MessageKey.dashboard_empty_products_hint to "Agregar productos",
-    MessageKey.dashboard_error_title to "Algo salio mal",
-    MessageKey.dashboard_error_description to "No pudimos cargar la informacion del panel. Reintenta en unos segundos.",
-    MessageKey.dashboard_summary_empty_title to "Sin actividad reciente",
-    MessageKey.dashboard_summary_empty_description to "Cuando tengas productos y pedidos, vas a ver las metricas aca.",
-    MessageKey.dashboard_summary_empty_cta to "Ir a productos",
 )

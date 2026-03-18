@@ -592,12 +592,4 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.business_config_save to "Save details",
     MessageKey.business_config_saved to "Details saved successfully",
     MessageKey.dashboard_menu_business_config to "Business details",
-    MessageKey.dashboard_empty_title to "Your dashboard is ready",
-    MessageKey.dashboard_empty_description to "No data to show yet. Start by adding your products.",
-    MessageKey.dashboard_empty_products_hint to "Add products",
-    MessageKey.dashboard_error_title to "Something went wrong",
-    MessageKey.dashboard_error_description to "We couldn't load the dashboard information. Try again in a few seconds.",
-    MessageKey.dashboard_summary_empty_title to "No recent activity",
-    MessageKey.dashboard_summary_empty_description to "When you have products and orders, you'll see the metrics here.",
-    MessageKey.dashboard_summary_empty_cta to "Go to products",
 )
