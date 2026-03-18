@@ -120,6 +120,10 @@ private fun Route.registerDynamicHandler(httpMethod: HttpMethod) {
                 }
             }
 
+            functionResponse.responseHeaders.forEach { (key, value) ->
+                call.response.headers.append(key, value)
+            }
+
             call.respondText(
                 text = Gson().toJson(functionResponse),
                 contentType = ContentType.Application.Json,

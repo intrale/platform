@@ -172,4 +172,122 @@ class ClientProductsTest {
 
         assertTrue(response is RequestValidationException)
     }
+
+    @Test
+    fun `GET retorna header ETag en la respuesta`() = runBlocking {
+        seedProduct(name = "Chorizo", status = "PUBLISHED", basePrice = 800.0)
+
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        )
+
+        assertTrue(response is ClientProductListResponse)
+        val etag = response.responseHeaders["ETag"]
+        assertTrue(etag != null && etag.isNotBlank(), "La respuesta debe incluir header ETag")
+        assertTrue(etag!!.startsWith("\"") && etag.endsWith("\""), "ETag debe estar entre comillas")
+    }
+
+    @Test
+    fun `GET con If-None-Match coincidente retorna 304 Not Modified`() = runBlocking {
+        seedProduct(name = "Morcilla", status = "PUBLISHED", basePrice = 500.0)
+
+        val firstResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        )
+        assertTrue(firstResponse is ClientProductListResponse)
+        val etag = firstResponse.responseHeaders["ETag"]!!
+
+        val secondResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET", "If-None-Match" to etag),
+            textBody = ""
+        )
+
+        assertTrue(secondResponse is NotModifiedResponse)
+        assertEquals(HttpStatusCode.NotModified, secondResponse.statusCode)
+        assertEquals(etag, secondResponse.responseHeaders["ETag"])
+    }
+
+    @Test
+    fun `GET con If-None-Match distinto retorna 200 con datos`() = runBlocking {
+        seedProduct(name = "Vacío", status = "PUBLISHED", basePrice = 1500.0)
+
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET", "If-None-Match" to "\"etag-viejo\""),
+            textBody = ""
+        )
+
+        assertTrue(response is ClientProductListResponse)
+        assertEquals(HttpStatusCode.OK, response.statusCode)
+        assertEquals(1, response.products.size)
+    }
+
+    @Test
+    fun `ETag cambia al publicar un producto nuevo`() = runBlocking {
+        seedProduct(name = "Entraña", status = "PUBLISHED", basePrice = 1200.0)
+
+        val firstResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        ) as ClientProductListResponse
+        val firstEtag = firstResponse.responseHeaders["ETag"]!!
+
+        seedProduct(name = "Matambre", status = "PUBLISHED", basePrice = 900.0)
+
+        val secondResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        ) as ClientProductListResponse
+        val secondEtag = secondResponse.responseHeaders["ETag"]!!
+
+        assertTrue(firstEtag != secondEtag, "ETag debe cambiar cuando se agrega un producto publicado")
+    }
+
+    @Test
+    fun `ETag cambia al despublicar un producto`() = runBlocking {
+        val product = seedProduct(name = "Bife de chorizo", status = "PUBLISHED", basePrice = 2000.0)
+
+        val firstResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        ) as ClientProductListResponse
+        val firstEtag = firstResponse.responseHeaders["ETag"]!!
+
+        productRepository.updateProduct("la-carne", product.id, product.copy(status = "DRAFT"))
+
+        val secondResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        ) as ClientProductListResponse
+        val secondEtag = secondResponse.responseHeaders["ETag"]!!
+
+        assertTrue(firstEtag != secondEtag, "ETag debe cambiar cuando se despublica un producto")
+    }
+
+    @Test
+    fun `computeETag es determinista para la misma lista de productos`() {
+        val payloads = listOf(
+            ClientProductPayload(id = "1", name = "Test", basePrice = 100.0, status = "PUBLISHED", isAvailable = true)
+        )
+        val etag1 = function.computeETag(payloads)
+        val etag2 = function.computeETag(payloads)
+        assertEquals(etag1, etag2, "computeETag debe ser determinista")
+    }
 }
