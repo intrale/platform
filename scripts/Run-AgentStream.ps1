@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Ejecuta claude en modo stream-json y muestra actividad en tiempo real.
 .DESCRIPTION
@@ -245,6 +245,8 @@ try {
     }
 
     # Diagnostico de muerte: registrar causa en el log
+    $diagToolCalls = $(if ($useRunner) { -1 } else { $toolCount })
+    $diagMessages = $(if ($useRunner) { -1 } else { $msgCount })
     $deathDiag = @{
         timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
         agent = $AgentNum
@@ -253,8 +255,8 @@ try {
         model = $Model
         exitCode = $exitCode
         pipelineMode = $pipelineMode
-        toolCalls = if ($useRunner) { -1 } else { $toolCount }
-        messages = if ($useRunner) { -1 } else { $msgCount }
+        toolCalls = $diagToolCalls
+        messages = $diagMessages
         hasStderr = [bool]$stderrOutput
     }
     $diagJson = $deathDiag | ConvertTo-Json -Compress
