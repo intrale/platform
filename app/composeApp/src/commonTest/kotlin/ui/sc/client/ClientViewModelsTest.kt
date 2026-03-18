@@ -6,7 +6,10 @@ import asdo.client.ClientPreferences
 import asdo.client.ClientProfile
 import asdo.client.ClientProfileData
 import asdo.client.ManageAddressAction
+import asdo.client.PaymentMethod
+import asdo.client.PaymentMethodType
 import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
 import kotlin.test.BeforeTest
@@ -668,5 +671,209 @@ class ClientProfileViewModelComprehensiveTest {
         viewModel.logout()
 
         assertTrue(resetFake.called)
+    }
+}
+
+// =============================================================================
+// PaymentMethod Fakes
+// =============================================================================
+
+private val samplePaymentMethods = listOf(
+    PaymentMethod(
+        id = "pm-1",
+        name = "Efectivo",
+        type = PaymentMethodType.CASH,
+        description = "Pago en efectivo al recibir",
+        isCashOnDelivery = true,
+        enabled = true
+    ),
+    PaymentMethod(
+        id = "pm-2",
+        name = "Transferencia bancaria",
+        type = PaymentMethodType.TRANSFER,
+        description = "CBU/CVU del negocio",
+        isCashOnDelivery = false,
+        enabled = true
+    )
+)
+
+private class FakeGetPaymentMethodsSuccess(
+    private val methods: List<PaymentMethod> = samplePaymentMethods
+) : ToDoGetPaymentMethods {
+    override suspend fun execute(): Result<List<PaymentMethod>> = Result.success(methods)
+}
+
+private class FakeGetPaymentMethodsFailure(
+    private val error: String = "Error de red"
+) : ToDoGetPaymentMethods {
+    override suspend fun execute(): Result<List<PaymentMethod>> =
+        Result.failure(RuntimeException(error))
+}
+
+// =============================================================================
+// ClientCartStore - Payment methods
+// =============================================================================
+
+class ClientCartStorePaymentMethodTest {
+
+    @BeforeTest
+    fun setUp() {
+        ClientCartStore.clear()
+    }
+
+    @Test
+    fun `selectPaymentMethod establece el medio de pago seleccionado`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+
+        assertEquals("pm-1", ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `selectPaymentMethod permite cambiar el medio de pago`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+        ClientCartStore.selectPaymentMethod("pm-2")
+
+        assertEquals("pm-2", ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `selectPaymentMethod permite establecer null`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+        ClientCartStore.selectPaymentMethod(null)
+
+        assertNull(ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `clear limpia el medio de pago seleccionado`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+
+        ClientCartStore.clear()
+
+        assertNull(ClientCartStore.selectedPaymentMethodId.value)
+    }
+}
+
+// =============================================================================
+// ClientCartViewModel - Payment methods
+// =============================================================================
+
+class ClientCartViewModelPaymentMethodTest {
+
+    @BeforeTest
+    fun setUp() {
+        ClientCartStore.clear()
+    }
+
+    private fun createViewModel(
+        getClientProfile: ToDoGetClientProfile = FakeGetClientProfileSuccess(),
+        getPaymentMethods: ToDoGetPaymentMethods = FakeGetPaymentMethodsSuccess()
+    ): ClientCartViewModel = ClientCartViewModel(
+        getClientProfile = getClientProfile,
+        getPaymentMethods = getPaymentMethods,
+        loggerFactory = vmTestLoggerFactory
+    )
+
+    @Test
+    fun `estado inicial tiene lista vacia de medios de pago`() {
+        val viewModel = createViewModel()
+
+        assertTrue(viewModel.state.paymentMethods.isEmpty())
+        assertNull(viewModel.state.selectedPaymentMethodId)
+        assertFalse(viewModel.state.loadingPaymentMethods)
+    }
+
+    @Test
+    fun `loadPaymentMethods carga medios de pago y selecciona el primero`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.loadPaymentMethods()
+
+        assertFalse(viewModel.state.loadingPaymentMethods)
+        assertEquals(2, viewModel.state.paymentMethods.size)
+        assertEquals("pm-1", viewModel.state.selectedPaymentMethodId)
+        assertEquals("pm-1", ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `loadPaymentMethods con error actualiza el estado con mensaje de error`() = runTest {
+        val viewModel = createViewModel(
+            getPaymentMethods = FakeGetPaymentMethodsFailure("Sin conexion")
+        )
+
+        viewModel.loadPaymentMethods()
+
+        assertFalse(viewModel.state.loadingPaymentMethods)
+        assertEquals("Sin conexion", viewModel.state.error)
+        assertTrue(viewModel.state.paymentMethods.isEmpty())
+    }
+
+    @Test
+    fun `loadPaymentMethods con lista vacia maneja correctamente`() = runTest {
+        val viewModel = createViewModel(
+            getPaymentMethods = FakeGetPaymentMethodsSuccess(emptyList())
+        )
+
+        viewModel.loadPaymentMethods()
+
+        assertTrue(viewModel.state.paymentMethods.isEmpty())
+        assertNull(viewModel.state.selectedPaymentMethodId)
+        assertFalse(viewModel.state.loadingPaymentMethods)
+    }
+
+    @Test
+    fun `loadPaymentMethods filtra metodos deshabilitados`() = runTest {
+        val mixedMethods = listOf(
+            PaymentMethod("pm-1", "Efectivo", PaymentMethodType.CASH, null, true, true),
+            PaymentMethod("pm-2", "Tarjeta", PaymentMethodType.CARD, null, false, false),
+            PaymentMethod("pm-3", "Transfer", PaymentMethodType.TRANSFER, null, false, true)
+        )
+        val viewModel = createViewModel(
+            getPaymentMethods = FakeGetPaymentMethodsSuccess(mixedMethods)
+        )
+
+        viewModel.loadPaymentMethods()
+
+        assertEquals(2, viewModel.state.paymentMethods.size)
+        assertEquals("pm-1", viewModel.state.selectedPaymentMethodId)
+    }
+
+    @Test
+    fun `selectPaymentMethod actualiza el estado y el store`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadPaymentMethods()
+
+        viewModel.selectPaymentMethod("pm-2")
+
+        assertEquals("pm-2", viewModel.state.selectedPaymentMethodId)
+        assertNull(viewModel.state.error)
+        assertEquals("pm-2", ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `selectPaymentMethod limpia error previo`() = runTest {
+        val viewModel = createViewModel(
+            getPaymentMethods = FakeGetPaymentMethodsFailure("Error previo")
+        )
+        viewModel.loadPaymentMethods()
+        assertEquals("Error previo", viewModel.state.error)
+
+        viewModel.selectPaymentMethod("pm-1")
+
+        assertNull(viewModel.state.error)
+    }
+
+    @Test
+    fun `loadPaymentMethods con error sin mensaje usa mensaje por defecto`() = runTest {
+        val viewModel = createViewModel(
+            getPaymentMethods = object : ToDoGetPaymentMethods {
+                override suspend fun execute(): Result<List<PaymentMethod>> =
+                    Result.failure(RuntimeException())
+            }
+        )
+
+        viewModel.loadPaymentMethods()
+
+        assertEquals("No se pudieron cargar los medios de pago", viewModel.state.error)
     }
 }

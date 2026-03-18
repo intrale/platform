@@ -53,7 +53,10 @@ import androidx.compose.ui.unit.dp
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import asdo.client.ClientAddress
+import asdo.client.PaymentMethod
+import asdo.client.PaymentMethodType
 import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoGetPaymentMethods
 import kotlinx.coroutines.launch
 import org.kodein.di.direct
 import org.kodein.di.instance
@@ -109,9 +112,16 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
         val deliveryLoading = Txt(MessageKey.client_cart_delivery_address_loading)
         val continueMissingAddress = Txt(MessageKey.client_cart_continue_missing_address)
         val continueWithAddress = Txt(MessageKey.client_cart_continue_with_address)
+        val paymentMethodTitle = Txt(MessageKey.client_cart_payment_method_title)
+        val paymentMethodEmpty = Txt(MessageKey.client_cart_payment_method_empty)
+        val paymentMethodLoading = Txt(MessageKey.client_cart_payment_method_loading)
+        val paymentMethodCashHint = Txt(MessageKey.client_cart_payment_method_cash_hint)
+        val continueMissingPayment = Txt(MessageKey.client_cart_continue_missing_payment)
 
         val getClientProfile: ToDoGetClientProfile = remember { DIManager.di.direct.instance() }
+        val getPaymentMethods: ToDoGetPaymentMethods = remember { DIManager.di.direct.instance() }
         var deliveryState by remember { mutableStateOf(DeliveryAddressState(loading = true)) }
+        var paymentMethodsState by remember { mutableStateOf(PaymentMethodsState(loading = true)) }
 
         LaunchedEffect(Unit) {
             deliveryState = deliveryState.copy(loading = true)
@@ -127,6 +137,22 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                 .onFailure { throwable ->
                     logger.error(throwable) { "No se pudieron cargar las direcciones" }
                     deliveryState = deliveryState.copy(loading = false, error = throwable.message)
+                }
+
+            paymentMethodsState = paymentMethodsState.copy(loading = true)
+            getPaymentMethods.execute()
+                .onSuccess { methods ->
+                    val enabled = methods.filter { it.enabled }
+                    paymentMethodsState = PaymentMethodsState(
+                        methods = enabled,
+                        selectedMethodId = enabled.firstOrNull()?.id,
+                        loading = false
+                    )
+                    ClientCartStore.selectPaymentMethod(enabled.firstOrNull()?.id)
+                }
+                .onFailure { throwable ->
+                    logger.error(throwable) { "No se pudieron cargar los medios de pago" }
+                    paymentMethodsState = paymentMethodsState.copy(loading = false, error = throwable.message)
                 }
         }
 
@@ -182,6 +208,20 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                     }
 
                     item {
+                        PaymentMethodCard(
+                            title = paymentMethodTitle,
+                            loadingMessage = paymentMethodLoading,
+                            emptyMessage = paymentMethodEmpty,
+                            cashHint = paymentMethodCashHint,
+                            state = paymentMethodsState,
+                            onSelect = {
+                                paymentMethodsState = paymentMethodsState.copy(selectedMethodId = it)
+                                ClientCartStore.selectPaymentMethod(it)
+                            }
+                        )
+                    }
+
+                    item {
                         ClientCartSummaryCard(
                             summaryTitle = summaryTitle,
                             subtotalLabel = subtotalLabel,
@@ -205,6 +245,10 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                                         deliveryState.addresses.isEmpty() -> {
                                             snackbarHostState.showSnackbar(continueMissingAddress)
                                             navigate(CLIENT_PROFILE_PATH)
+                                        }
+                                        paymentMethodsState.loading -> snackbarHostState.showSnackbar(paymentMethodLoading)
+                                        paymentMethodsState.selectedMethodId == null && paymentMethodsState.methods.isNotEmpty() -> {
+                                            snackbarHostState.showSnackbar(continueMissingPayment)
                                         }
                                         else -> {
                                             val label = deliveryState.selectedAddress()?.label.orEmpty()
@@ -629,4 +673,109 @@ private data class DeliveryAddressState(
     val error: String? = null
 ) {
     fun selectedAddress(): ClientAddress? = addresses.firstOrNull { it.id == selectedAddressId } ?: addresses.firstOrNull()
+}
+
+private data class PaymentMethodsState(
+    val methods: List<PaymentMethod> = emptyList(),
+    val selectedMethodId: String? = null,
+    val loading: Boolean = false,
+    val error: String? = null
+) {
+    fun selectedMethod(): PaymentMethod? = methods.firstOrNull { it.id == selectedMethodId }
+}
+
+@Composable
+private fun PaymentMethodCard(
+    title: String,
+    loadingMessage: String,
+    emptyMessage: String,
+    cashHint: String,
+    state: PaymentMethodsState,
+    onSelect: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            when {
+                state.loading -> {
+                    Text(text = loadingMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                state.methods.isEmpty() -> {
+                    Text(text = emptyMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                else -> {
+                    state.methods.forEach { method ->
+                        PaymentMethodRow(
+                            method = method,
+                            isSelected = state.selectedMethodId == method.id,
+                            cashHint = cashHint,
+                            onSelect = { onSelect(method.id) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PaymentMethodRow(
+    method: PaymentMethod,
+    isSelected: Boolean,
+    cashHint: String,
+    onSelect: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            RadioButton(selected = isSelected, onClick = onSelect)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = method.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (method.description != null) {
+                    Text(
+                        text = method.description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (method.isCashOnDelivery) {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(text = cashHint) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                        )
+                    )
+                }
+            }
+        }
+    }
 }
