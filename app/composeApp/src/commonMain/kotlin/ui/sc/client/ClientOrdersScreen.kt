@@ -2,6 +2,7 @@ package ui.sc.client
 
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,6 +33,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -39,8 +43,10 @@ import asdo.client.ClientOrderStatus
 import kotlinx.coroutines.launch
 import ui.sc.shared.Screen
 import ui.th.spacing
+import ui.util.formatPrice
 
 const val CLIENT_ORDERS_PATH = "/client/orders"
+const val CLIENT_ORDER_DETAIL_PATH = "/client/orders/detail"
 
 class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
 
@@ -69,6 +75,22 @@ class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
         val filterDelivering = Txt(MessageKey.client_orders_status_delivering)
         val filterDelivered = Txt(MessageKey.client_orders_status_delivered)
         val filterCancelled = Txt(MessageKey.client_orders_status_cancelled)
+
+        val statusLabels = remember(
+            filterPending, filterConfirmed, filterPreparing, filterReady,
+            filterDelivering, filterDelivered, filterCancelled
+        ) {
+            mapOf(
+                ClientOrderStatus.PENDING to filterPending,
+                ClientOrderStatus.CONFIRMED to filterConfirmed,
+                ClientOrderStatus.PREPARING to filterPreparing,
+                ClientOrderStatus.READY to filterReady,
+                ClientOrderStatus.DELIVERING to filterDelivering,
+                ClientOrderStatus.DELIVERED to filterDelivered,
+                ClientOrderStatus.CANCELLED to filterCancelled,
+                ClientOrderStatus.UNKNOWN to filterPending
+            )
+        }
 
         LaunchedEffect(Unit) {
             viewModel.loadOrders()
@@ -172,8 +194,10 @@ class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
                                 order = order,
                                 dateLabel = dateLabel,
                                 itemsLabel = itemsLabel,
+                                statusLabel = statusLabels[order.status] ?: order.status.name,
                                 onClick = {
-                                    coroutineScope.launch { viewModel.loadOrderDetail(order.id) }
+                                    ClientOrderSelectionStore.select(order.id)
+                                    navigate(CLIENT_ORDER_DETAIL_PATH)
                                 }
                             )
                         }
@@ -245,8 +269,12 @@ private fun OrderCard(
     order: ClientOrder,
     dateLabel: String,
     itemsLabel: String,
+    statusLabel: String,
     onClick: () -> Unit
 ) {
+    val statusColor = order.status.toColor()
+    val statusBackground = order.status.toBackgroundColor()
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -263,17 +291,18 @@ private fun OrderCard(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "#${order.shortCode}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-                Text(
-                    text = order.status.name,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                OrderStatusBadge(
+                    label = statusLabel,
+                    textColor = statusColor,
+                    backgroundColor = statusBackground
                 )
             }
             Text(
@@ -296,11 +325,58 @@ private fun OrderCard(
                 )
             }
             Text(
-                text = "$${order.total}",
+                text = formatPrice(order.total),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.primary
             )
         }
     }
+}
+
+@Composable
+internal fun OrderStatusBadge(
+    label: String,
+    textColor: Color,
+    backgroundColor: Color
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(MaterialTheme.spacing.x1))
+            .background(backgroundColor)
+            .padding(
+                horizontal = MaterialTheme.spacing.x2,
+                vertical = MaterialTheme.spacing.x0_5
+            )
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = textColor
+        )
+    }
+}
+
+// Colores de estado para pedidos del cliente
+internal fun ClientOrderStatus.toColor(): Color = when (this) {
+    ClientOrderStatus.PENDING -> Color(0xFFE65100)
+    ClientOrderStatus.CONFIRMED -> Color(0xFF1565C0)
+    ClientOrderStatus.PREPARING -> Color(0xFF6A1B9A)
+    ClientOrderStatus.READY -> Color(0xFF2E7D32)
+    ClientOrderStatus.DELIVERING -> Color(0xFF0277BD)
+    ClientOrderStatus.DELIVERED -> Color(0xFF1B5E20)
+    ClientOrderStatus.CANCELLED -> Color(0xFFC62828)
+    ClientOrderStatus.UNKNOWN -> Color(0xFF616161)
+}
+
+internal fun ClientOrderStatus.toBackgroundColor(): Color = when (this) {
+    ClientOrderStatus.PENDING -> Color(0xFFFFF3E0)
+    ClientOrderStatus.CONFIRMED -> Color(0xFFE3F2FD)
+    ClientOrderStatus.PREPARING -> Color(0xFFF3E5F5)
+    ClientOrderStatus.READY -> Color(0xFFE8F5E9)
+    ClientOrderStatus.DELIVERING -> Color(0xFFE1F5FE)
+    ClientOrderStatus.DELIVERED -> Color(0xFFC8E6C9)
+    ClientOrderStatus.CANCELLED -> Color(0xFFFFEBEE)
+    ClientOrderStatus.UNKNOWN -> Color(0xFFF5F5F5)
 }

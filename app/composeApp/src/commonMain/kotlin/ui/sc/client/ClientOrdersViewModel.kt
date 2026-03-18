@@ -55,7 +55,7 @@ class ClientOrdersViewModel(
         state = state.copy(status = ClientOrdersStatus.Loading, errorMessage = null)
         getClientOrders.execute()
             .onSuccess { orders ->
-                allOrders = orders
+                allOrders = orders.sortedByDescending { it.createdAt }
                 applyFilter()
             }
             .onFailure { throwable ->

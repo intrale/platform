@@ -222,6 +222,7 @@ enum class MessageKey {
     client_orders_status_delivering,
     client_orders_status_delivered,
     client_orders_status_cancelled,
+    client_orders_detail_back,
     client_cart_title,
     client_cart_subtitle,
     client_cart_summary_title,
