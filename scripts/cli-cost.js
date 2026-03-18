@@ -102,7 +102,7 @@ if (metricsHistory.length > 0) {
     console.log("─────────────────────────────────────────────────────");
     for (const h of metricsHistory) {
         const s = h.summary || {};
-        console.log(`${(h.sprint_id || "?").padEnd(12)} ${String(s.total_sessions || 0).padStart(10)} ${String(s.total_tool_calls || 0).padStart(8)} ${(s.total_duration_min || 0 + "min").padStart(10)} ${(h.ts || "?").substring(0, 10).padEnd(12)}`);
+        console.log(`${(h.sprint_id || "?").padEnd(12)} ${String(s.total_sessions || 0).padStart(10)} ${String(s.total_tool_calls || 0).padStart(8)} ${String((s.total_duration_min || 0) + "min").padStart(10)} ${(h.ts || "?").substring(0, 10).padEnd(12)}`);
     }
 }
 
