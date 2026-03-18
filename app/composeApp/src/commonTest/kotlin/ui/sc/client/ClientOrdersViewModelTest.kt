@@ -5,6 +5,7 @@ import asdo.client.ClientOrderAddress
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderItem
 import asdo.client.ClientOrderStatus
+import asdo.client.ClientOrderTrackingStep
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import kotlin.test.Test
@@ -40,7 +41,14 @@ private val sampleDetail = ClientOrderDetail(
         ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
         ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
     ),
-    address = null
+    address = null,
+    paymentMethod = "Efectivo",
+    businessMessage = "Tu pedido esta en preparacion",
+    trackingSteps = listOf(
+        ClientOrderTrackingStep(key = "received", label = "Pedido recibido", completed = true, current = false, timestamp = "10:00"),
+        ClientOrderTrackingStep(key = "preparing", label = "En preparacion", completed = false, current = true, timestamp = null)
+    ),
+    businessPhone = "+5491155551234"
 )
 
 private class FakeGetClientOrders(
@@ -237,6 +245,26 @@ class ClientOrdersViewModelTest {
         assertEquals("new", viewModel.state.orders[0].id)
         assertEquals("mid", viewModel.state.orders[1].id)
         assertEquals("old", viewModel.state.orders[2].id)
+    }
+
+    @Test
+    fun `loadOrderDetail exitoso incluye tracking steps y forma de pago`() = runTest {
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadOrderDetail("ord-1")
+
+        val detail = viewModel.state.selectedOrder
+        assertNotNull(detail)
+        assertEquals("Efectivo", detail.paymentMethod)
+        assertEquals("Tu pedido esta en preparacion", detail.businessMessage)
+        assertEquals(2, detail.trackingSteps.size)
+        assertTrue(detail.trackingSteps[0].completed)
+        assertTrue(detail.trackingSteps[1].current)
+        assertEquals("+5491155551234", detail.businessPhone)
     }
 
     @Test

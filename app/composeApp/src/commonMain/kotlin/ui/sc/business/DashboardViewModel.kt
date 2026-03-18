@@ -24,6 +24,7 @@ data class DashboardBusiness(
 sealed interface BusinessDashboardSummaryState {
     data object Loading : BusinessDashboardSummaryState
     data object MissingBusiness : BusinessDashboardSummaryState
+    data object Empty : BusinessDashboardSummaryState
     data class Error(val message: String) : BusinessDashboardSummaryState
     data class Loaded(val summary: BusinessDashboardSummaryDTO) : BusinessDashboardSummaryState
 }
