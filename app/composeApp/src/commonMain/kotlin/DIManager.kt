@@ -16,11 +16,13 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
+import asdo.client.DoCreateOrder
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
 import asdo.client.DoGetClientProfile
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
+import asdo.client.ToDoCreateOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
@@ -203,6 +205,7 @@ import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientOrdersScreen
 import ui.sc.client.ClientCartScreen
+import ui.sc.client.ClientCheckoutScreen
 import ui.sc.client.ClientProductDetailScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
@@ -233,6 +236,7 @@ public const val CLIENT_CART = "clientCart"
 public const val CLIENT_PROFILE = "clientProfile"
 public const val CLIENT_ADDRESSES = "clientAddresses"
 public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
+public const val CLIENT_CHECKOUT = "clientCheckout"
 public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
 public const val HOME = "home"
 public const val INIT = "init"
@@ -377,6 +381,7 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
+    bindSingleton<ToDoCreateOrder> { DoCreateOrder(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {
@@ -407,6 +412,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
     bindSingleton(tag = CLIENT_ADDRESSES) { AddressListScreen() }
     bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
+    bindSingleton(tag = CLIENT_CHECKOUT) { ClientCheckoutScreen() }
     bindSingleton(tag = CLIENT_PRODUCT_DETAIL) { ClientProductDetailScreen() }
     bindSingleton(tag = HOME) { Home() }
     bindSingleton(tag = INIT) { Login() }
@@ -454,6 +460,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_CATALOG))
                     add(instance(tag = CLIENT_ORDERS))
                     add(instance(tag = CLIENT_CART))
+                    add(instance(tag = CLIENT_CHECKOUT))
                     add(instance(tag = CLIENT_PROFILE))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))

@@ -32,6 +32,8 @@ import ar.com.intrale.shared.client.ClientProfileUpdateRequest as SharedClientPr
 import ar.com.intrale.shared.client.ClientOrderRequest as SharedClientOrderRequest
 import ar.com.intrale.shared.client.ClientOrderItemDTO as SharedClientOrderItemDTO
 import ar.com.intrale.shared.client.ClientOrderDTO as SharedClientOrderDTO
+import ar.com.intrale.shared.client.CreateOrderRequestDTO as SharedCreateOrderRequestDTO
+import ar.com.intrale.shared.client.CreateOrderResponseDTO as SharedCreateOrderResponseDTO
 
 // --- Delivery ---
 import ar.com.intrale.shared.delivery.DeliveryVehicleDTO as SharedDeliveryVehicleDTO
@@ -79,6 +81,8 @@ typealias ClientProfileUpdateRequest = SharedClientProfileUpdateRequest
 typealias ClientOrderRequest = SharedClientOrderRequest
 typealias ClientOrderItemPayload = SharedClientOrderItemDTO
 typealias ClientOrderPayload = SharedClientOrderDTO
+typealias CreateOrderRequest = SharedCreateOrderRequestDTO
+typealias CreateOrderResponse = SharedCreateOrderResponseDTO
 
 // Delivery
 typealias DeliveryVehiclePayload = SharedDeliveryVehicleDTO

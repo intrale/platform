@@ -3,6 +3,7 @@ package ar.com.intrale
 import com.auth0.jwt.JWT
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import kotlinx.serialization.json.Json
 import org.slf4j.Logger
 
 class ClientOrders(
@@ -11,6 +12,8 @@ class ClientOrders(
     private val repository: ClientOrderRepository,
     override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
 ) : SecuredFunction(config, logger, jwtValidator) {
+
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     override suspend fun securedExecute(
         business: String,
@@ -28,8 +31,58 @@ class ClientOrders(
                 ClientOrderListResponse(orders = orders, status = HttpStatusCode.OK)
             }
 
+            HttpMethod.Post.value.uppercase() -> {
+                logger.info("Creando pedido del cliente $email en negocio $business")
+                createOrder(business, email, textBody)
+            }
+
             else -> RequestValidationException("Unsupported method for client orders: $method")
         }
+    }
+
+    private fun createOrder(business: String, email: String, textBody: String): Response {
+        val request = runCatching {
+            json.decodeFromString(
+                ar.com.intrale.shared.client.CreateOrderRequestDTO.serializer(),
+                textBody
+            )
+        }.getOrElse {
+            logger.error("Error al parsear request de creación de pedido: ${it.message}")
+            return RequestValidationException("Invalid request body: ${it.message}")
+        }
+
+        if (request.items.isEmpty()) {
+            return RequestValidationException("El pedido debe contener al menos un producto")
+        }
+
+        val total = request.items.sumOf { it.subtotal }
+        val payload = ClientOrderPayload(
+            publicId = "",
+            businessName = business,
+            status = "PENDING",
+            items = request.items.map { item ->
+                ClientOrderItemPayload(
+                    id = item.id,
+                    productId = item.productId,
+                    productName = item.productName,
+                    name = item.name.ifBlank { item.productName },
+                    quantity = item.quantity,
+                    unitPrice = item.unitPrice,
+                    subtotal = item.subtotal
+                )
+            },
+            total = total,
+            notes = request.notes,
+            itemCount = request.items.sumOf { it.quantity }
+        )
+
+        val created = repository.createOrder(business, email, payload)
+        logger.info("Pedido creado: ${created.id} (shortCode=${created.shortCode})")
+
+        return ClientOrderDetailResponse(
+            order = created,
+            status = HttpStatusCode.Created
+        )
     }
 
     private fun resolveEmail(headers: Map<String, String>): String? {

@@ -62,3 +62,17 @@ data class ClientOrderDetailResponse(
 data class ClientOrderRequest(
     val orderId: String? = null
 )
+
+@Serializable
+data class CreateOrderRequestDTO(
+    val items: List<ClientOrderItemDTO> = emptyList(),
+    val addressId: String? = null,
+    val notes: String? = null,
+    val paymentMethod: String? = null
+)
+
+@Serializable
+data class CreateOrderResponseDTO(
+    val statusCode: StatusCodeDTO? = null,
+    val order: ClientOrderDTO? = null
+)

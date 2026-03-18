@@ -198,7 +198,7 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                             continueLabel = continueLabel,
                             clearLabel = clearLabel,
                             onContinue = {
-                                logger.info { "Continuar pedido" }
+                                logger.info { "Continuar pedido -> checkout" }
                                 coroutineScope.launch {
                                     when {
                                         deliveryState.loading -> snackbarHostState.showSnackbar(deliveryLoading)
@@ -207,9 +207,10 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                                             navigate(CLIENT_PROFILE_PATH)
                                         }
                                         else -> {
-                                            val label = deliveryState.selectedAddress()?.label.orEmpty()
-                                            val message = continueWithAddress.replace("{label}", label.ifBlank { "-" })
-                                            snackbarHostState.showSnackbar(message)
+                                            deliveryState.selectedAddressId?.let {
+                                                ClientCartStore.selectAddress(it)
+                                            }
+                                            navigate(CLIENT_CHECKOUT_PATH)
                                         }
                                     }
                                 }

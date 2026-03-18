@@ -4,6 +4,8 @@ import ext.client.ClientExceptionResponse
 import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
 import ar.com.intrale.shared.client.ClientOrderItemDTO
+import ar.com.intrale.shared.client.CreateOrderRequestDTO
+import ar.com.intrale.shared.client.CreateOrderResponseDTO
 import ext.client.CommClientOrdersService
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -41,6 +43,8 @@ private class FakeClientOrdersService(
 ) : CommClientOrdersService {
     override suspend fun listOrders(): Result<List<ClientOrderDTO>> = listResult
     override suspend fun fetchOrderDetail(orderId: String): Result<ClientOrderDetailDTO> = detailResult
+    override suspend fun createOrder(request: CreateOrderRequestDTO): Result<CreateOrderResponseDTO> =
+        Result.success(CreateOrderResponseDTO())
 }
 
 // region DoGetClientOrders
