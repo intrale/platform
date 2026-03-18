@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderItem
+import asdo.client.ClientOrderStatusEvent
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -66,6 +67,13 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
         val retryLabel = Txt(MessageKey.client_orders_retry)
         val dateLabel = Txt(MessageKey.client_orders_order_date)
         val backLabel = Txt(MessageKey.client_orders_detail_back)
+        val paymentTitle = Txt(MessageKey.client_orders_detail_payment_title)
+        val paymentMethod = Txt(MessageKey.client_orders_detail_payment_method)
+        val statusTitle = Txt(MessageKey.client_orders_detail_status_title)
+        val businessMessageTitle = Txt(MessageKey.client_orders_detail_business_message_title)
+        val businessContactTitle = Txt(MessageKey.client_orders_detail_business_contact_title)
+        val businessContactButton = Txt(MessageKey.client_orders_detail_business_contact_button)
+        val noContactAvailable = Txt(MessageKey.client_orders_detail_no_contact_available)
 
         val statusLabels = remember {
             emptyMap<asdo.client.ClientOrderStatus, String>()
@@ -165,6 +173,14 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
                         addressTitle = addressTitle,
                         backLabel = backLabel,
                         statusLabel = resolvedStatusLabels[detail.status] ?: detail.status.name,
+                        paymentTitle = paymentTitle,
+                        paymentMethod = paymentMethod,
+                        statusTitle = statusTitle,
+                        businessMessageTitle = businessMessageTitle,
+                        businessContactTitle = businessContactTitle,
+                        businessContactButton = businessContactButton,
+                        noContactAvailable = noContactAvailable,
+                        statusLabels = resolvedStatusLabels,
                         padding = padding,
                         onBackClick = { goBack() }
                     )
@@ -183,6 +199,14 @@ private fun OrderDetailContent(
     addressTitle: String,
     backLabel: String,
     statusLabel: String,
+    paymentTitle: String,
+    paymentMethod: String,
+    statusTitle: String,
+    businessMessageTitle: String,
+    businessContactTitle: String,
+    businessContactButton: String,
+    noContactAvailable: String,
+    statusLabels: Map<asdo.client.ClientOrderStatus, String>,
     padding: PaddingValues,
     onBackClick: () -> Unit
 ) {
@@ -335,6 +359,167 @@ private fun OrderDetailContent(
                         }
                     }
                 }
+            }
+        }
+
+        detail.paymentMethod?.let { method ->
+            item {
+                Text(
+                    text = paymentTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Text(
+                        text = method,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(MaterialTheme.spacing.x4)
+                    )
+                }
+            }
+        }
+
+        if (detail.statusHistory.isNotEmpty()) {
+            item {
+                Text(
+                    text = statusTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            items(detail.statusHistory, key = { it.timestamp }) { event ->
+                OrderStatusEventRow(event = event, statusLabels = statusLabels)
+            }
+        }
+
+        detail.businessMessage?.let { message ->
+            item {
+                Text(
+                    text = businessMessageTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    )
+                ) {
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(MaterialTheme.spacing.x4),
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+        }
+
+        detail.businessPhone?.let { phone ->
+            item {
+                Text(
+                    text = businessContactTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(MaterialTheme.spacing.x4),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5)
+                        ) {
+                            Text(
+                                text = phone,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        TextButton(onClick = { /* TODO: handle phone call */ }) {
+                            Text(businessContactButton)
+                        }
+                    }
+                }
+            }
+        } ?: run {
+            if (detail.statusHistory.isNotEmpty() || detail.businessMessage != null) {
+                item {
+                    Text(
+                        text = noContactAvailable,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(MaterialTheme.spacing.x4)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OrderStatusEventRow(
+    event: ClientOrderStatusEvent,
+    statusLabels: Map<asdo.client.ClientOrderStatus, String>
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = statusLabels[event.status] ?: event.status.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = event.timestamp,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            event.message?.let { msg ->
+                Text(
+                    text = msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

@@ -3,6 +3,7 @@ package asdo.client
 import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
 import ar.com.intrale.shared.client.ClientOrderItemDTO
+import ar.com.intrale.shared.client.ClientOrderStatusEventDTO
 
 enum class ClientOrderStatus {
     PENDING, CONFIRMED, PREPARING, READY, DELIVERING, DELIVERED, CANCELLED, UNKNOWN
@@ -20,6 +21,12 @@ data class ClientOrder(
     val itemCount: Int
 )
 
+data class ClientOrderStatusEvent(
+    val status: ClientOrderStatus,
+    val timestamp: String,
+    val message: String? = null
+)
+
 data class ClientOrderDetail(
     val id: String,
     val publicId: String,
@@ -31,7 +38,11 @@ data class ClientOrderDetail(
     val total: Double,
     val itemCount: Int,
     val items: List<ClientOrderItem>,
-    val address: ClientOrderAddress?
+    val address: ClientOrderAddress?,
+    val paymentMethod: String? = null,
+    val statusHistory: List<ClientOrderStatusEvent> = emptyList(),
+    val businessMessage: String? = null,
+    val businessPhone: String? = null
 )
 
 data class ClientOrderItem(
@@ -94,7 +105,17 @@ fun ClientOrderDetailDTO.toDomain(): ClientOrderDetail = ClientOrderDetail(
             reference = it.reference,
             postalCode = it.postalCode
         )
-    }
+    },
+    paymentMethod = paymentMethod,
+    statusHistory = statusHistory.map { it.toDomain() },
+    businessMessage = businessMessage,
+    businessPhone = businessPhone
+)
+
+fun ClientOrderStatusEventDTO.toDomain(): ClientOrderStatusEvent = ClientOrderStatusEvent(
+    status = status.toClientOrderStatus(),
+    timestamp = timestamp,
+    message = message
 )
 
 fun ClientOrderItemDTO.toDomain(): ClientOrderItem = ClientOrderItem(

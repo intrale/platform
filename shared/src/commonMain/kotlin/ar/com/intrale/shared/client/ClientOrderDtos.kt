@@ -32,6 +32,13 @@ data class ClientOrderDTO(
 )
 
 @Serializable
+data class ClientOrderStatusEventDTO(
+    val status: String = "",
+    val timestamp: String = "",
+    val message: String? = null
+)
+
+@Serializable
 data class ClientOrderDetailDTO(
     val id: String? = null,
     val publicId: String = "",
@@ -43,7 +50,11 @@ data class ClientOrderDetailDTO(
     val total: Double = 0.0,
     val itemCount: Int = 0,
     val items: List<ClientOrderItemDTO> = emptyList(),
-    val address: ClientAddressDTO? = null
+    val address: ClientAddressDTO? = null,
+    val paymentMethod: String? = null,
+    val statusHistory: List<ClientOrderStatusEventDTO> = emptyList(),
+    val businessMessage: String? = null,
+    val businessPhone: String? = null
 )
 
 @Serializable
