@@ -137,6 +137,9 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                     body = Gson().toJson(functionResponse)
                     logger.info("Returning body is $body")
                     statusCode = functionResponse.statusCode?.value
+                    if (functionResponse.responseHeaders.isNotEmpty()) {
+                        headers = (headers ?: emptyMap()) + functionResponse.responseHeaders
+                    }
                 }
 
             }

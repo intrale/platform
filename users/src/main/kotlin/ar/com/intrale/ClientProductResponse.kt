@@ -14,8 +14,13 @@ data class ClientProductPayload(
 
 class ClientProductListResponse(
     val products: List<ClientProductPayload>,
-    status: HttpStatusCode = HttpStatusCode.OK
-) : Response(statusCode = status)
+    status: HttpStatusCode = HttpStatusCode.OK,
+    headers: Map<String, String> = emptyMap()
+) : Response(statusCode = status, responseHeaders = headers)
+
+class NotModifiedResponse(
+    headers: Map<String, String> = emptyMap()
+) : Response(statusCode = HttpStatusCode.NotModified, responseHeaders = headers)
 
 fun ProductRecord.toClientPayload() = ClientProductPayload(
     id = id,
