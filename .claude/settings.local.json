@@ -85,7 +85,10 @@
       "Skill(web-dev)",
       "Skill(update-config)",
       "Skill(ops)",
-      "Bash(netstat:*)"
+      "Bash(netstat:*)",
+      "Bash(bash:*)",
+      "Bash(cmd:*)",
+      "Bash(BRANCH=*)"
     ],
     "deny": [
       "Bash(git push --force*)",
