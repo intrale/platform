@@ -219,6 +219,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_orders_status_delivering to "Delivering",
     MessageKey.client_orders_status_delivered to "Delivered",
     MessageKey.client_orders_status_cancelled to "Cancelled",
+    MessageKey.client_orders_detail_back to "Back to orders",
     MessageKey.client_cart_title to "Cart",
     MessageKey.client_cart_subtitle to "Review the products before confirming your order.",
     MessageKey.client_cart_summary_title to "Summary",
