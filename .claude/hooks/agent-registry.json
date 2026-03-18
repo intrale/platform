@@ -1,4 +1,16 @@
 {
-  "agents": {},
-  "updated_at": null
+  "agents": {
+    "5644fd45": {
+      "session_id": "5644fd45",
+      "issue": "#677",
+      "skill": "Guru",
+      "branch": "agent/677-business-config",
+      "worktree": null,
+      "pid": 13584,
+      "started_at": "2026-03-18T11:45:01Z",
+      "last_heartbeat": "2026-03-18T12:45:39Z",
+      "status": "active"
+    }
+  },
+  "updated_at": "2026-03-18T12:45:39Z"
 }

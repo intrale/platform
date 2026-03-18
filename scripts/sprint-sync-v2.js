@@ -322,7 +322,7 @@ async function runSync(opts) {
         // 3. Persistir si hubo cambios
         var realChanges = allChanges.filter(function(c) { return c.indexOf("roadmap:") === 0; });
         if (realChanges.length > 0) {
-            sprintData.writeRoadmap(roadmap, "sprint-sync"); // Esto tambien regenera sprint-plan.json
+            sprintData.writeRoadmap(roadmap); // Esto tambien regenera sprint-plan.json
             log("roadmap.json actualizado (" + realChanges.length + " cambios)");
         } else {
             // Regenerar sprint-plan.json por si acaso (sin tocar roadmap)
