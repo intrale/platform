@@ -48,4 +48,47 @@ class ProductRepository {
     fun deleteProduct(business: String, productId: String): Boolean {
         return products.remove(key(business, productId)) != null
     }
+
+    fun listPublishedProductsPaginated(
+        business: String,
+        offset: Int = 0,
+        limit: Int = 20,
+        category: String? = null,
+        search: String? = null
+    ): PaginatedResult<ProductRecord> {
+        var filtered = products.values.filter {
+            it.businessId == business.lowercase() && it.status.uppercase() == "PUBLISHED"
+        }
+
+        if (!category.isNullOrBlank()) {
+            filtered = filtered.filter { it.categoryId.equals(category, ignoreCase = true) }
+        }
+
+        if (!search.isNullOrBlank()) {
+            val searchLower = search.lowercase()
+            filtered = filtered.filter { it.name.lowercase().contains(searchLower) }
+        }
+
+        val total = filtered.size
+        val sortedList = filtered.sortedBy { it.name }
+        val paged = sortedList.drop(offset).take(limit).map { it.copy() }
+        val hasMore = offset + limit < total
+
+        return PaginatedResult(
+            items = paged,
+            total = total,
+            offset = offset,
+            limit = limit,
+            hasMore = hasMore
+        )
+    }
+
 }
+
+data class PaginatedResult<T>(
+    val items: List<T>,
+    val total: Int,
+    val offset: Int,
+    val limit: Int,
+    val hasMore: Boolean
+)

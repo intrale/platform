@@ -111,10 +111,13 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                                     } else {
                                         logger.info("Request body not found")
                                     }
+                                    val queryParams = (requestEvent.queryStringParameters ?: emptyMap()).map {
+                                        "X-Query-${it.key}" to it.value
+                                    }.toMap()
                                     val headers = (requestEvent.headers ?: emptyMap()) + mapOf(
                                         "X-Http-Method" to httpMethod,
                                         "X-Function-Path" to functionPath
-                                    )
+                                    ) + queryParams
                                     function.execute(
                                         businessName,
                                         functionPath,

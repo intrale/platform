@@ -12,8 +12,16 @@ data class ClientProductPayload(
     val stockQuantity: Int? = null
 )
 
+data class PaginationMetadata(
+    val total: Int,
+    val offset: Int,
+    val limit: Int,
+    val hasMore: Boolean
+)
+
 class ClientProductListResponse(
     val products: List<ClientProductPayload>,
+    val pagination: PaginationMetadata? = null,
     status: HttpStatusCode = HttpStatusCode.OK,
     headers: Map<String, String> = emptyMap()
 ) : Response(statusCode = status, responseHeaders = headers)
