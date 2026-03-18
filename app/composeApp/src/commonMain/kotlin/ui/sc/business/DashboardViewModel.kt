@@ -24,6 +24,7 @@ data class DashboardBusiness(
 sealed interface BusinessDashboardSummaryState {
     data object Loading : BusinessDashboardSummaryState
     data object MissingBusiness : BusinessDashboardSummaryState
+    data object Empty : BusinessDashboardSummaryState
     data class Error(val message: String) : BusinessDashboardSummaryState
     data class Loaded(val summary: BusinessDashboardSummaryDTO) : BusinessDashboardSummaryState
 }
@@ -125,7 +126,16 @@ class DashboardViewModel(
         state = state.copy(summaryState = BusinessDashboardSummaryState.Loading)
         toGetBusinessDashboardSummary.execute(businessId)
             .onSuccess { summary ->
-                state = state.copy(summaryState = BusinessDashboardSummaryState.Loaded(summary))
+                val isEmpty = summary.productsCount == 0
+                    && summary.pendingOrders == 0
+                    && summary.activeDrivers == 0
+                state = state.copy(
+                    summaryState = if (isEmpty) {
+                        BusinessDashboardSummaryState.Empty
+                    } else {
+                        BusinessDashboardSummaryState.Loaded(summary)
+                    }
+                )
             }
             .onFailure { error ->
                 logger.error(error) { "Error al obtener métricas del dashboard" }
