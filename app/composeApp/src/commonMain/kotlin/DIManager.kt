@@ -47,9 +47,13 @@ import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
 import asdo.business.DoDeleteCategory
+import asdo.business.DoGetBusinessConfig
 import asdo.business.DoGetFonts
+import asdo.business.DoUpdateBusinessConfig
 import asdo.business.DoUpdateFonts
+import asdo.business.ToDoGetBusinessConfig
 import asdo.business.ToDoGetFonts
+import asdo.business.ToDoUpdateBusinessConfig
 import asdo.business.ToDoUpdateFonts
 import asdo.business.DoGetBusinesses
 import asdo.business.DoGetBusinessDashboardSummary
@@ -117,7 +121,9 @@ import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
 import ext.delivery.DeliveryStateService
+import ext.business.ClientBusinessConfigService
 import ext.business.ClientFontsService
+import ext.business.CommBusinessConfigService
 import ext.business.CommFontsService
 import ext.business.ClientGetBusinessOrdersService
 import ext.business.CommGetBusinessOrdersService
@@ -180,6 +186,7 @@ import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.DashboardScreen
+import ui.sc.business.BusinessConfigScreen
 import ui.sc.business.PersonalizationScreen
 import ui.sc.business.TypographyScreen
 import ui.sc.business.ProductFormScreen
@@ -257,6 +264,7 @@ public const val BUSINESS_CATEGORIES = "businessCategories"
 public const val BUSINESS_CATEGORY_FORM = "businessCategoryForm"
 public const val TWO_FACTOR_SETUP = "twoFactorSetup"
 public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
+public const val BUSINESS_CONFIG = "businessConfig"
 public const val TYPOGRAPHY_FONTS = "typographyFonts"
 public const val FORCE_CHANGE_PASSWORD = "forceChangePassword"
 
@@ -333,6 +341,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
     bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
     bindSingleton<CommFontsService> { ClientFontsService(instance(), instance()) }
+    bindSingleton<CommBusinessConfigService> { ClientBusinessConfigService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -353,6 +362,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToGetProduct> { DoGetProduct(instance()) }
     bindSingleton<ToDoGetFonts> { DoGetFonts(instance()) }
     bindSingleton<ToDoUpdateFonts> { DoUpdateFonts(instance()) }
+    bindSingleton<ToDoGetBusinessConfig> { DoGetBusinessConfig(instance()) }
+    bindSingleton<ToDoUpdateBusinessConfig> { DoUpdateBusinessConfig(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
@@ -427,6 +438,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_CATEGORY_FORM) { CategoryFormScreen() }
     bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
     bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
+    bindSingleton(tag = BUSINESS_CONFIG) { BusinessConfigScreen() }
     bindSingleton(tag = TYPOGRAPHY_FONTS) { TypographyScreen() }
     bindSingleton(tag = FORCE_CHANGE_PASSWORD) { ForceChangePasswordScreen() }
 
@@ -493,6 +505,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = REQUEST_JOIN_BUSINESS))
                     add(instance(tag = REVIEW_JOIN_BUSINESS))
                     add(instance(tag = PERSONALIZATION))
+                    add(instance(tag = BUSINESS_CONFIG))
                     add(instance(tag = TYPOGRAPHY_FONTS))
                     add(instance(tag = BUSINESS_ORDERS))
                     add(instance(tag = BUSINESS_PRODUCTS))
@@ -523,6 +536,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = REQUEST_JOIN_BUSINESS))
                     add(instance(tag = REVIEW_JOIN_BUSINESS))
                     add(instance(tag = PERSONALIZATION))
+                    add(instance(tag = BUSINESS_CONFIG))
                     add(instance(tag = TYPOGRAPHY_FONTS))
                     add(instance(tag = BUSINESS_PRODUCTS))
                     add(instance(tag = BUSINESS_PRODUCT_FORM))

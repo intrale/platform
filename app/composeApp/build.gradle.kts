@@ -68,6 +68,10 @@ kover {
                         "ar.com.intrale.strings.runtime.*",
                         // Config de app (platform-specific)
                         "ar.com.intrale.appconfig.*",
+                        // HTTP clients (requieren integration tests, no unit tests)
+                        "ext.business.ClientBusinessConfigService*",
+                        "ext.business.ClientFontsService*",
+                        "ext.business.ClientGetBusinessOrdersService*",
                         // Storage (platform-specific, depende de settings nativas)
                         "ext.storage.*",
                         // Expect/actual platform

@@ -1,5 +1,5 @@
 {
-  "updated_ts": "2026-03-18T00:40:00.000Z",
+  "updated_ts": "2026-03-18T00:34:12.496Z",
   "updated_by": "scrum-master",
   "horizon_sprints": 5,
   "sprints": [
@@ -23,7 +23,7 @@
           "title": "Sanitización UTF-8 en reportes Telegram",
           "effort": "simple",
           "stream": "E",
-          "status": "in_progress",
+          "status": "done",
           "moved_from": "SPR-038"
         },
         {
@@ -31,7 +31,7 @@
           "title": "Sincronizar roadmap.json y sprint-plan.json",
           "effort": "simple",
           "stream": "E",
-          "status": "in_progress",
+          "status": "done",
           "moved_from": "SPR-038"
         },
         {
@@ -39,7 +39,7 @@
           "title": "Paginación y filtrado para endpoint productos",
           "effort": "simple",
           "stream": "E",
-          "status": "planned",
+          "status": "done",
           "moved_from": "SPR-038"
         },
         {
@@ -47,7 +47,7 @@
           "title": "Cache/ETag para endpoint productos",
           "effort": "simple",
           "stream": "E",
-          "status": "planned",
+          "status": "done",
           "moved_from": "SPR-038"
         }
       ]

@@ -132,6 +132,9 @@ abstract class E2ETestBase {
             bind<Function>(tag = "products") {
                 singleton { ClientProducts(instance(), instance(), instance(), instance()) }
             }
+            bind<Function>(tag = "business/config") {
+                singleton { BusinessConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+            }
         }
     }
 

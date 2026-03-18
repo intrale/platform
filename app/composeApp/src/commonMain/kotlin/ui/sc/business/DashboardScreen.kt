@@ -193,6 +193,14 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                         )
                     )
                     DashboardActionCard(
+                        title = Txt(MessageKey.dashboard_card_business_config_title),
+                        description = Txt(MessageKey.dashboard_card_business_config_description),
+                        metric = Txt(MessageKey.dashboard_card_business_config_metric),
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_business_config_cta) to { navigate(BUSINESS_CONFIG_PATH) }
+                        )
+                    )
+                    DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_settings_title),
                         description = Txt(MessageKey.dashboard_card_settings_description),
                         metric = Txt(MessageKey.dashboard_card_settings_metric),

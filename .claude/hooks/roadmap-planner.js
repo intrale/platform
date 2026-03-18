@@ -88,6 +88,12 @@ function writeJson(filePath, obj) {
     fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + "\n", "utf8");
 }
 
+// sprint-data para escritura segura de roadmap (lock + validacion)
+var sprintData = null;
+try { sprintData = require("./sprint-data"); } catch (e) {
+    try { sprintData = require(path.join(SCRIPTS_DIR, "sprint-data")); } catch (e2) {}
+}
+
 // ─── Clasificación de issues ──────────────────────────────────────────────────
 
 /**
@@ -502,10 +508,17 @@ function planRoadmap(opts) {
     roadmap.updated_ts = new Date().toISOString();
     roadmap.updated_by = "roadmap-planner";
 
-    // 10. Escribir roadmap.json
+    // 10. Escribir roadmap.json (via sprint-data con lock + validacion)
     if (!dryRun) {
-        writeJson(ROADMAP_FILE, roadmap);
-        log("roadmap.json actualizado: " + filledCount + " sprint(s) llenados");
+        if (sprintData && sprintData.writeRoadmap) {
+            var ok = sprintData.writeRoadmap(roadmap, "roadmap-planner");
+            if (!ok) { log("ERROR: writeRoadmap fallo (lock o validacion)"); }
+            else { log("roadmap.json actualizado via sprint-data: " + filledCount + " sprint(s) llenados"); }
+        } else {
+            // Fallback si sprint-data no esta disponible
+            writeJson(ROADMAP_FILE, roadmap);
+            log("roadmap.json actualizado (fallback directo): " + filledCount + " sprint(s) llenados");
+        }
     } else {
         log("[dry-run] Se hubieran llenado " + filledCount + " sprint(s)");
     }
