@@ -26,11 +26,17 @@ class ClientOrderRepository {
 
     fun createOrder(business: String, email: String, payload: ClientOrderPayload): ClientOrderPayload {
         val now = Instant.now().toString()
+        val statusEvent = ClientOrderStatusEventDTO(
+            status = payload.status,
+            timestamp = now,
+            message = null
+        )
         val created = payload.copy(
             id = payload.id?.ifBlank { UUID.randomUUID().toString() } ?: UUID.randomUUID().toString(),
             shortCode = payload.shortCode ?: generateShortCode(),
             createdAt = now,
-            updatedAt = now
+            updatedAt = now,
+            statusHistory = listOf(statusEvent)
         )
         orders.getOrPut(key(business, email)) { mutableListOf() }.add(created)
         return created
