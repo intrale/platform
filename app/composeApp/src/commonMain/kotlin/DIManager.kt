@@ -47,12 +47,20 @@ import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
 import asdo.business.DoDeleteCategory
+import asdo.business.DoCreateBanner
 import asdo.business.DoGetBusinessConfig
 import asdo.business.DoGetFonts
+import asdo.business.DoListBanners
+import asdo.business.DoToggleBanner
+import asdo.business.DoUpdateBanner
 import asdo.business.DoUpdateBusinessConfig
 import asdo.business.DoUpdateFonts
+import asdo.business.ToDoCreateBanner
 import asdo.business.ToDoGetBusinessConfig
 import asdo.business.ToDoGetFonts
+import asdo.business.ToDoListBanners
+import asdo.business.ToDoToggleBanner
+import asdo.business.ToDoUpdateBanner
 import asdo.business.ToDoUpdateBusinessConfig
 import asdo.business.ToDoUpdateFonts
 import asdo.business.DoGetBusinesses
@@ -121,8 +129,10 @@ import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
 import ext.delivery.DeliveryStateService
+import ext.business.ClientBannerService
 import ext.business.ClientBusinessConfigService
 import ext.business.ClientFontsService
+import ext.business.CommBannerService
 import ext.business.CommBusinessConfigService
 import ext.business.CommFontsService
 import ext.business.ClientGetBusinessOrdersService
@@ -183,6 +193,8 @@ import ui.sc.auth.Login
 import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
+import ui.sc.business.BannerFormScreen
+import ui.sc.business.BannerListScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.DashboardScreen
@@ -267,6 +279,8 @@ public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 public const val BUSINESS_CONFIG = "businessConfig"
 public const val TYPOGRAPHY_FONTS = "typographyFonts"
 public const val FORCE_CHANGE_PASSWORD = "forceChangePassword"
+public const val BUSINESS_BANNERS = "businessBanners"
+public const val BUSINESS_BANNER_FORM = "businessBannerForm"
 
 const val LOGIN_PATH = "/login"
 
@@ -342,6 +356,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
     bindSingleton<CommFontsService> { ClientFontsService(instance(), instance()) }
     bindSingleton<CommBusinessConfigService> { ClientBusinessConfigService(instance(), instance()) }
+    bindSingleton<CommBannerService> { ClientBannerService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -364,6 +379,10 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoUpdateFonts> { DoUpdateFonts(instance()) }
     bindSingleton<ToDoGetBusinessConfig> { DoGetBusinessConfig(instance()) }
     bindSingleton<ToDoUpdateBusinessConfig> { DoUpdateBusinessConfig(instance()) }
+    bindSingleton<ToDoListBanners> { DoListBanners(instance()) }
+    bindSingleton<ToDoCreateBanner> { DoCreateBanner(instance()) }
+    bindSingleton<ToDoUpdateBanner> { DoUpdateBanner(instance()) }
+    bindSingleton<ToDoToggleBanner> { DoToggleBanner(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
@@ -441,6 +460,8 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_CONFIG) { BusinessConfigScreen() }
     bindSingleton(tag = TYPOGRAPHY_FONTS) { TypographyScreen() }
     bindSingleton(tag = FORCE_CHANGE_PASSWORD) { ForceChangePasswordScreen() }
+    bindSingleton(tag = BUSINESS_BANNERS) { BannerListScreen() }
+    bindSingleton(tag = BUSINESS_BANNER_FORM) { BannerFormScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -512,6 +533,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))
                     add(instance(tag = BUSINESS_CATEGORY_FORM))
+                    add(instance(tag = BUSINESS_BANNERS))
+                    add(instance(tag = BUSINESS_BANNER_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))
                     add(instance(tag = TWO_FACTOR_VERIFY))
                 }
@@ -542,6 +565,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))
                     add(instance(tag = BUSINESS_CATEGORY_FORM))
+                    add(instance(tag = BUSINESS_BANNERS))
+                    add(instance(tag = BUSINESS_BANNER_FORM))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))

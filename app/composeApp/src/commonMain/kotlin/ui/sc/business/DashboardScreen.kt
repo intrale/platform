@@ -231,6 +231,14 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                         )
                     )
                     DashboardActionCard(
+                        title = Txt(MessageKey.dashboard_card_banners_title),
+                        description = Txt(MessageKey.dashboard_card_banners_description),
+                        metric = Txt(MessageKey.dashboard_card_banners_metric),
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_banners_cta) to { navigate(BUSINESS_BANNERS_PATH) }
+                        )
+                    )
+                    DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_settings_title),
                         description = Txt(MessageKey.dashboard_card_settings_description),
                         metric = Txt(MessageKey.dashboard_card_settings_metric),
