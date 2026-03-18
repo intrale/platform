@@ -13,6 +13,12 @@ class ClientProducts(
     override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
 ) : SecuredFunction(config = config, logger = logger, jwtValidator = jwtValidator) {
 
+    companion object {
+        const val DEFAULT_OFFSET = 0
+        const val DEFAULT_LIMIT = 20
+        const val MAX_LIMIT = 100
+    }
+
     private val gson = Gson()
 
     override suspend fun securedExecute(
@@ -27,11 +33,24 @@ class ClientProducts(
             return RequestValidationException("Metodo no soportado: $method")
         }
 
-        logger.debug("Consultando productos publicados para negocio=$business")
-        val products = productRepository.listPublishedProducts(business)
-        logger.debug("Productos publicados encontrados: ${products.size} en negocio=$business")
+        val offset = headers["X-Query-offset"]?.toIntOrNull()?.coerceAtLeast(0) ?: DEFAULT_OFFSET
+        val limit = headers["X-Query-limit"]?.toIntOrNull()?.coerceIn(1, MAX_LIMIT) ?: DEFAULT_LIMIT
+        val category = headers["X-Query-category"]
+        val search = headers["X-Query-search"]
 
-        val payloads = products.map { it.toClientPayload() }
+        logger.debug("Consultando productos publicados para negocio=$business offset=$offset limit=$limit category=$category search=$search")
+
+        val result = productRepository.listPublishedProductsPaginated(
+            business = business,
+            offset = offset,
+            limit = limit,
+            category = category,
+            search = search
+        )
+
+        logger.debug("Productos publicados encontrados: ${result.total} en negocio=$business (pagina: ${result.items.size} items)")
+
+        val payloads = result.items.map { it.toClientPayload() }
         val etag = computeETag(payloads)
 
         val ifNoneMatch = headers["If-None-Match"]
@@ -42,6 +61,12 @@ class ClientProducts(
 
         return ClientProductListResponse(
             products = payloads,
+            pagination = PaginationMetadata(
+                total = result.total,
+                offset = result.offset,
+                limit = result.limit,
+                hasMore = result.hasMore
+            ),
             status = HttpStatusCode.OK,
             headers = mapOf("ETag" to etag)
         )
@@ -51,6 +76,6 @@ class ClientProducts(
         val json = gson.toJson(products)
         val digest = MessageDigest.getInstance("MD5")
         val hash = digest.digest(json.toByteArray(Charsets.UTF_8))
-        return "\"${hash.joinToString("") { "%02x".format(it) }}\""
+        return "\"" + hash.joinToString("") { "%02x".format(it) } + "\""
     }
 }

@@ -85,12 +85,16 @@ private fun Route.registerDynamicHandler(httpMethod: HttpMethod) {
                 else -> null
             }
 
+            val queryParams = call.request.queryParameters.entries().associate {
+                "X-Query-${it.key}" to it.value.joinToString(",")
+            }
+
             val headers: Map<String, String> = call.request.headers.entries().associate {
                 it.key to it.value.joinToString(",")
             } + mapOf(
                 "X-Http-Method" to httpMethod.value,
                 "X-Function-Path" to functionPath
-            )
+            ) + queryParams
 
             val functionResponse: Response = when {
                 businessName == null -> RequestValidationException("No business defined on path")
