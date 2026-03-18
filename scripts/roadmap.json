@@ -1,21 +1,22 @@
 {
-  "updated_ts": "2026-03-18T00:34:12.496Z",
+  "updated_ts": "2026-03-18T23:30:00.000Z",
   "updated_by": "scrum-master",
   "horizon_sprints": 5,
   "sprints": [
     {
       "id": "SPR-040",
       "tema": "Sprint infra — carry-over config + backend simples",
-      "status": "active",
+      "status": "done",
       "size": "simple",
       "started_at": "2026-03-18T00:20:00Z",
+      "completed_at": "2026-03-18T16:00:00Z",
       "stories": [
         {
           "issue": 677,
           "title": "Config datos básicos del negocio",
           "effort": "simple",
           "stream": "C",
-          "status": "in_progress",
+          "status": "done",
           "moved_from": "SPR-038"
         },
         {
@@ -55,7 +56,7 @@
     {
       "id": "SPR-041",
       "tema": "Sprint UX — dashboard polish + QA E2E",
-      "status": "planned",
+      "status": "done",
       "size": "medio",
       "stories": [
         {
@@ -63,15 +64,153 @@
           "title": "Empty states y skeleton loading para Home dashboard",
           "effort": "simple",
           "stream": "C",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 1632,
           "title": "Accesibilidad (a11y) para Home dashboard",
           "effort": "simple",
           "stream": "C",
+          "status": "done"
+        },
+        {
+          "issue": 1647,
+          "title": "Mostrar tamaño (sizing) de sprints e issues en el dashboard",
+          "effort": "simple",
+          "stream": "E",
+          "status": "deferred",
+          "deferred_to": "backlog"
+        },
+        {
+          "issue": 1633,
+          "title": "QA E2E con video — Home dashboard",
+          "effort": "medio",
+          "stream": "E",
+          "status": "deferred",
+          "deferred_to": "backlog"
+        },
+        {
+          "issue": 1634,
+          "title": "QA E2E con video — Publicación de productos",
+          "effort": "medio",
+          "stream": "E",
+          "status": "deferred",
+          "deferred_to": "backlog"
+        }
+      ]
+    },
+    {
+      "id": "SPR-043",
+      "tema": "Sprint cliente — carrito + marketing negocio",
+      "status": "done",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 680,
+          "title": "Gestión banners y marketing del negocio",
+          "effort": "medio",
+          "stream": "C",
+          "status": "done"
+        },
+        {
+          "issue": 720,
+          "title": "Selección medio de pago",
+          "effort": "medio",
+          "stream": "B",
+          "status": "done"
+        },
+        {
+          "issue": 721,
+          "title": "Listado de pedidos del cliente",
+          "effort": "medio",
+          "stream": "B",
+          "status": "done"
+        },
+        {
+          "issue": 717,
+          "title": "Visualización del carrito",
+          "effort": "medio",
+          "stream": "B",
+          "status": "deferred",
+          "deferred_to": "backlog"
+        },
+        {
+          "issue": 718,
+          "title": "Confirmación de pedido y checkout",
+          "effort": "medio",
+          "stream": "B",
+          "status": "deferred",
+          "deferred_to": "backlog"
+        }
+      ]
+    },
+    {
+      "id": "SPR-044",
+      "tema": "Sprint cliente — tracking de pedidos",
+      "status": "done",
+      "size": "simple",
+      "started_at": "2026-03-18T20:42:08Z",
+      "completed_at": "2026-03-18T23:30:00Z",
+      "stories": [
+        {
+          "issue": 722,
+          "title": "Detalle y seguimiento de pedido",
+          "effort": "medio",
+          "stream": "B",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "id": "SPR-042",
+      "tema": "Sprint negocio — pedidos + config delivery",
+      "status": "active",
+      "size": "medio",
+      "started_at": "2026-03-18T23:30:00Z",
+      "stories": [
+        {
+          "issue": 674,
+          "title": "Detalle de pedido y estado",
+          "effort": "medio",
+          "stream": "C",
+          "status": "in_progress"
+        },
+        {
+          "issue": 675,
+          "title": "Gestión de repartidores",
+          "effort": "medio",
+          "stream": "C",
+          "status": "in_progress"
+        },
+        {
+          "issue": 676,
+          "title": "Asignación de pedidos a repartidores",
+          "effort": "medio",
+          "stream": "C",
+          "status": "in_progress"
+        },
+        {
+          "issue": 678,
+          "title": "Config horarios y zonas de entrega",
+          "effort": "medio",
+          "stream": "C",
           "status": "planned"
         },
+        {
+          "issue": 679,
+          "title": "Config medios de pago",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-045",
+      "tema": "Sprint deuda — QA E2E + carrito pendiente",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
         {
           "issue": 1647,
           "title": "Mostrar tamaño (sizing) de sprints e issues en el dashboard",
@@ -92,64 +231,6 @@
           "effort": "medio",
           "stream": "E",
           "status": "planned"
-        }
-      ]
-    },
-    {
-      "id": "SPR-042",
-      "tema": "Sprint negocio — pedidos + config delivery",
-      "status": "planned",
-      "size": "medio",
-      "stories": [
-        {
-          "issue": 674,
-          "title": "Detalle de pedido y estado",
-          "effort": "medio",
-          "stream": "C",
-          "status": "planned"
-        },
-        {
-          "issue": 675,
-          "title": "Gestión de repartidores",
-          "effort": "medio",
-          "stream": "C",
-          "status": "planned"
-        },
-        {
-          "issue": 676,
-          "title": "Asignación de pedidos a repartidores",
-          "effort": "medio",
-          "stream": "C",
-          "status": "planned"
-        },
-        {
-          "issue": 678,
-          "title": "Config horarios y zonas de entrega",
-          "effort": "medio",
-          "stream": "C",
-          "status": "planned"
-        },
-        {
-          "issue": 679,
-          "title": "Config medios de pago",
-          "effort": "simple",
-          "stream": "C",
-          "status": "planned"
-        }
-      ]
-    },
-    {
-      "id": "SPR-043",
-      "tema": "Sprint cliente — carrito + marketing negocio",
-      "status": "planned",
-      "size": "medio",
-      "stories": [
-        {
-          "issue": 680,
-          "title": "Gestión banners y marketing del negocio",
-          "effort": "medio",
-          "stream": "C",
-          "status": "planned"
         },
         {
           "issue": 717,
@@ -161,35 +242,6 @@
         {
           "issue": 718,
           "title": "Confirmación de pedido y checkout",
-          "effort": "medio",
-          "stream": "B",
-          "status": "planned"
-        },
-        {
-          "issue": 720,
-          "title": "Selección medio de pago",
-          "effort": "medio",
-          "stream": "B",
-          "status": "planned"
-        },
-        {
-          "issue": 721,
-          "title": "Listado de pedidos del cliente",
-          "effort": "medio",
-          "stream": "B",
-          "status": "planned"
-        }
-      ]
-    },
-    {
-      "id": "SPR-044",
-      "tema": "Sprint cliente — tracking de pedidos",
-      "status": "planned",
-      "size": "simple",
-      "stories": [
-        {
-          "issue": 722,
-          "title": "Detalle y seguimiento de pedido",
           "effort": "medio",
           "stream": "B",
           "status": "planned"
