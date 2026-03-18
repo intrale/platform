@@ -19,11 +19,13 @@ import asdo.auth.ToDoTwoFactorVerify
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
 import asdo.client.DoGetClientProfile
+import asdo.client.DoGetPaymentMethods
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
 import asdo.delivery.DoDeliveryStateChange
@@ -47,12 +49,20 @@ import asdo.delivery.ToDoUpdateDeliveryProfile
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
 import asdo.business.DoDeleteCategory
+import asdo.business.DoCreateBanner
 import asdo.business.DoGetBusinessConfig
 import asdo.business.DoGetFonts
+import asdo.business.DoListBanners
+import asdo.business.DoToggleBanner
+import asdo.business.DoUpdateBanner
 import asdo.business.DoUpdateBusinessConfig
 import asdo.business.DoUpdateFonts
+import asdo.business.ToDoCreateBanner
 import asdo.business.ToDoGetBusinessConfig
 import asdo.business.ToDoGetFonts
+import asdo.business.ToDoListBanners
+import asdo.business.ToDoToggleBanner
+import asdo.business.ToDoUpdateBanner
 import asdo.business.ToDoUpdateBusinessConfig
 import asdo.business.ToDoUpdateFonts
 import asdo.business.DoGetBusinesses
@@ -113,6 +123,8 @@ import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientOrdersService
 import ext.client.CommClientProfileService
+import ext.client.CommPaymentMethodsService
+import ext.client.PaymentMethodsService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
 import ext.delivery.CommDeliveryOrdersService
@@ -121,8 +133,10 @@ import ext.delivery.DeliveryAvailabilityService
 import ext.delivery.DeliveryProfileService
 import ext.delivery.DeliveryOrdersService
 import ext.delivery.DeliveryStateService
+import ext.business.ClientBannerService
 import ext.business.ClientBusinessConfigService
 import ext.business.ClientFontsService
+import ext.business.CommBannerService
 import ext.business.CommBusinessConfigService
 import ext.business.CommFontsService
 import ext.business.ClientGetBusinessOrdersService
@@ -183,6 +197,8 @@ import ui.sc.auth.Login
 import ui.sc.auth.PasswordRecoveryScreen
 import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
+import ui.sc.business.BannerFormScreen
+import ui.sc.business.BannerListScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.DashboardScreen
@@ -201,6 +217,7 @@ import ui.sc.client.ClientCatalogScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
 import ui.sc.client.ClientOnboardingScreen
+import ui.sc.client.ClientOrderDetailScreen
 import ui.sc.client.ClientOrdersScreen
 import ui.sc.client.ClientCartScreen
 import ui.sc.client.ClientProductDetailScreen
@@ -233,6 +250,7 @@ public const val CLIENT_CART = "clientCart"
 public const val CLIENT_PROFILE = "clientProfile"
 public const val CLIENT_ADDRESSES = "clientAddresses"
 public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
+public const val CLIENT_ORDER_DETAIL = "clientOrderDetail"
 public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
 public const val HOME = "home"
 public const val INIT = "init"
@@ -267,6 +285,8 @@ public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 public const val BUSINESS_CONFIG = "businessConfig"
 public const val TYPOGRAPHY_FONTS = "typographyFonts"
 public const val FORCE_CHANGE_PASSWORD = "forceChangePassword"
+public const val BUSINESS_BANNERS = "businessBanners"
+public const val BUSINESS_BANNER_FORM = "businessBannerForm"
 
 const val LOGIN_PATH = "/login"
 
@@ -342,6 +362,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
     bindSingleton<CommFontsService> { ClientFontsService(instance(), instance()) }
     bindSingleton<CommBusinessConfigService> { ClientBusinessConfigService(instance(), instance()) }
+    bindSingleton<CommBannerService> { ClientBannerService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -364,12 +385,17 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoUpdateFonts> { DoUpdateFonts(instance()) }
     bindSingleton<ToDoGetBusinessConfig> { DoGetBusinessConfig(instance()) }
     bindSingleton<ToDoUpdateBusinessConfig> { DoUpdateBusinessConfig(instance()) }
+    bindSingleton<ToDoListBanners> { DoListBanners(instance()) }
+    bindSingleton<ToDoCreateBanner> { DoCreateBanner(instance()) }
+    bindSingleton<ToDoUpdateBanner> { DoUpdateBanner(instance()) }
+    bindSingleton<ToDoToggleBanner> { DoToggleBanner(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
     bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
     bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
+    bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance()) }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -377,6 +403,7 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
+    bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {
@@ -403,6 +430,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_HOME) { ClientHomeScreen() }
     bindSingleton(tag = CLIENT_CATALOG) { ClientCatalogScreen() }
     bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
+    bindSingleton(tag = CLIENT_ORDER_DETAIL) { ClientOrderDetailScreen() }
     bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
     bindSingleton(tag = CLIENT_ADDRESSES) { AddressListScreen() }
@@ -441,6 +469,8 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_CONFIG) { BusinessConfigScreen() }
     bindSingleton(tag = TYPOGRAPHY_FONTS) { TypographyScreen() }
     bindSingleton(tag = FORCE_CHANGE_PASSWORD) { ForceChangePasswordScreen() }
+    bindSingleton(tag = BUSINESS_BANNERS) { BannerListScreen() }
+    bindSingleton(tag = BUSINESS_BANNER_FORM) { BannerFormScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -453,6 +483,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_HOME))
                     add(instance(tag = CLIENT_CATALOG))
                     add(instance(tag = CLIENT_ORDERS))
+                    add(instance(tag = CLIENT_ORDER_DETAIL))
                     add(instance(tag = CLIENT_CART))
                     add(instance(tag = CLIENT_PROFILE))
                     add(instance(tag = CLIENT_ADDRESSES))
@@ -512,6 +543,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))
                     add(instance(tag = BUSINESS_CATEGORY_FORM))
+                    add(instance(tag = BUSINESS_BANNERS))
+                    add(instance(tag = BUSINESS_BANNER_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))
                     add(instance(tag = TWO_FACTOR_VERIFY))
                 }
@@ -542,6 +575,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))
                     add(instance(tag = BUSINESS_CATEGORY_FORM))
+                    add(instance(tag = BUSINESS_BANNERS))
+                    add(instance(tag = BUSINESS_BANNER_FORM))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))

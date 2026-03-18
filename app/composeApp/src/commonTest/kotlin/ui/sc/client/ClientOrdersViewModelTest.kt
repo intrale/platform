@@ -69,7 +69,9 @@ class ClientOrdersViewModelTest {
 
         assertEquals(ClientOrdersStatus.Loaded, viewModel.state.status)
         assertEquals(2, viewModel.state.orders.size)
-        assertEquals("PUB-001", viewModel.state.orders[0].publicId)
+        // Ordenados por fecha descendente: 2025-01-02 primero
+        assertEquals("PUB-002", viewModel.state.orders[0].publicId)
+        assertEquals("PUB-001", viewModel.state.orders[1].publicId)
     }
 
     @Test
@@ -201,5 +203,55 @@ class ClientOrdersViewModelTest {
         assertEquals(ClientOrdersStatus.Loaded, viewModel.state.status)
         assertEquals(2, viewModel.state.orders.size)
         assertNull(viewModel.state.selectedFilter)
+    }
+
+    @Test
+    fun `loadOrders ordena por fecha descendente`() = runTest {
+        val unorderedOrders = listOf(
+            ClientOrder(
+                id = "old", publicId = "PUB-OLD", shortCode = "OLD",
+                businessName = "Tienda", status = ClientOrderStatus.DELIVERED,
+                createdAt = "2025-01-01", promisedAt = null, total = 50.0, itemCount = 1
+            ),
+            ClientOrder(
+                id = "new", publicId = "PUB-NEW", shortCode = "NEW",
+                businessName = "Tienda", status = ClientOrderStatus.PENDING,
+                createdAt = "2025-06-15", promisedAt = null, total = 300.0, itemCount = 2
+            ),
+            ClientOrder(
+                id = "mid", publicId = "PUB-MID", shortCode = "MID",
+                businessName = "Tienda", status = ClientOrderStatus.CONFIRMED,
+                createdAt = "2025-03-10", promisedAt = null, total = 100.0, itemCount = 1
+            )
+        )
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(Result.success(unorderedOrders)),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadOrders()
+
+        assertEquals(ClientOrdersStatus.Loaded, viewModel.state.status)
+        assertEquals(3, viewModel.state.orders.size)
+        assertEquals("new", viewModel.state.orders[0].id)
+        assertEquals("mid", viewModel.state.orders[1].id)
+        assertEquals("old", viewModel.state.orders[2].id)
+    }
+
+    @Test
+    fun `clearError limpia el mensaje de error`() = runTest {
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(Result.failure(RuntimeException("Fallo"))),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadOrders()
+        assertNotNull(viewModel.state.errorMessage)
+
+        viewModel.clearError()
+
+        assertNull(viewModel.state.errorMessage)
     }
 }

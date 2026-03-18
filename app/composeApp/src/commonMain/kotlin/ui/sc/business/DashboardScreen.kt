@@ -29,12 +29,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.inputs.InputState
 import ui.cp.inputs.TextField
+import ui.cp.loading.DashboardSkeletonContent
+import ui.cp.loading.EmptyState
+import ui.cp.loading.ErrorState
 import ui.sc.delivery.DELIVERY_DASHBOARD_PATH
 import ui.sc.shared.Screen
 import ui.th.spacing
@@ -78,80 +83,105 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                 ),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
         ) {
-            // Encabezado: nombre del negocio + subtítulo + descripción
-            Text(
-                text = businessName,
-                style = MaterialTheme.typography.headlineMedium
-            )
-            Text(
-                text = Txt(MessageKey.dashboard_admin_subtitle),
-                style = MaterialTheme.typography.titleMedium
-            )
-            Text(
-                text = Txt(MessageKey.dashboard_manage_intro),
-                style = MaterialTheme.typography.bodyMedium
-            )
-
             if (uiState.isBusinessLoading) {
-                Text(text = Txt(MessageKey.dashboard_business_loading))
+                // Skeleton loading mientras se cargan los datos iniciales
+                DashboardSkeletonContent()
             } else if (uiState.businessError != null) {
-                Text(text = Txt(MessageKey.dashboard_business_error))
-            } else if (uiState.businesses.size > 1) {
-                var expanded by remember { mutableStateOf(false) }
-                val inputState = remember { mutableStateOf(InputState("businessSelector")) }
-                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
-                    TextField(
-                        label = MessageKey.dashboard_business_selector_label,
-                        value = uiState.selectedBusinessName,
-                        state = inputState,
-                        modifier = Modifier.menuAnchor(),
-                        onValueChange = {},
-                        enabled = true
-                    )
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                        uiState.businesses.forEach { business ->
-                            DropdownMenuItem(
-                                text = { Text(business.name) },
-                                onClick = {
-                                    coroutineScope.launch { viewModel.selectBusiness(business.id) }
-                                    expanded = false
-                                }
-                            )
+                // Error al cargar negocios - estado de error con reintentar
+                ErrorState(
+                    title = Txt(MessageKey.dashboard_error_title),
+                    description = Txt(MessageKey.dashboard_error_description),
+                    retryLabel = Txt(MessageKey.dashboard_summary_retry),
+                    onRetry = { coroutineScope.launch { viewModel.loadDashboard() } }
+                )
+            } else {
+                // Encabezado: nombre del negocio + subtitulo + descripcion
+                Text(
+                    text = businessName,
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.semantics { heading() }
+                )
+                Text(
+                    text = Txt(MessageKey.dashboard_admin_subtitle),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { heading() }
+                )
+                Text(
+                    text = Txt(MessageKey.dashboard_manage_intro),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                if (uiState.businesses.size > 1) {
+                    var expanded by remember { mutableStateOf(false) }
+                    val inputState = remember { mutableStateOf(InputState("businessSelector")) }
+                    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+                        TextField(
+                            label = MessageKey.dashboard_business_selector_label,
+                            value = uiState.selectedBusinessName,
+                            state = inputState,
+                            modifier = Modifier.menuAnchor(),
+                            onValueChange = {},
+                            enabled = true
+                        )
+                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            uiState.businesses.forEach { business ->
+                                DropdownMenuItem(
+                                    text = { Text(business.name) },
+                                    onClick = {
+                                        coroutineScope.launch { viewModel.selectBusiness(business.id) }
+                                        expanded = false
+                                    }
+                                )
+                            }
                         }
                     }
+                    Text(
+                        text = selectorLabel,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
-                Text(
-                    text = selectorLabel,
-                    style = MaterialTheme.typography.bodySmall
+
+                DashboardSummarySection(
+                    state = uiState.summaryState,
+                    onRetry = { coroutineScope.launch { viewModel.refreshSummary() } },
+                    onNavigateProducts = { navigate(BUSINESS_PRODUCTS_PATH) }
                 )
             }
-
-            DashboardSummarySection(
-                state = uiState.summaryState,
-                onRetry = { coroutineScope.launch { viewModel.refreshSummary() } }
-            )
         }
     }
 
     @Composable
     private fun DashboardSummarySection(
         state: BusinessDashboardSummaryState,
-        onRetry: () -> Unit
+        onRetry: () -> Unit,
+        onNavigateProducts: () -> Unit
     ) {
         when (state) {
             BusinessDashboardSummaryState.Loading -> {
-                Text(text = Txt(MessageKey.dashboard_summary_loading))
+                // Skeleton loading para la seccion de metricas
+                DashboardSkeletonContent()
             }
             BusinessDashboardSummaryState.MissingBusiness -> {
-                Text(text = Txt(MessageKey.dashboard_business_missing))
+                EmptyState(
+                    title = Txt(MessageKey.dashboard_empty_title),
+                    description = Txt(MessageKey.dashboard_business_missing)
+                )
+            }
+            BusinessDashboardSummaryState.Empty -> {
+                EmptyState(
+                    title = Txt(MessageKey.dashboard_summary_empty_title),
+                    description = Txt(MessageKey.dashboard_summary_empty_description),
+                    actionLabel = Txt(MessageKey.dashboard_summary_empty_cta),
+                    onAction = onNavigateProducts
+                )
             }
             is BusinessDashboardSummaryState.Error -> {
-                Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
-                    Text(text = Txt(MessageKey.dashboard_summary_error))
-                    TextButton(onClick = onRetry) {
-                        Text(text = Txt(MessageKey.dashboard_summary_retry))
-                    }
-                }
+                ErrorState(
+                    title = Txt(MessageKey.dashboard_error_title),
+                    description = Txt(MessageKey.dashboard_summary_error),
+                    retryLabel = Txt(MessageKey.dashboard_summary_retry),
+                    onRetry = onRetry
+                )
             }
             is BusinessDashboardSummaryState.Loaded -> {
                 val summary = state.summary
@@ -201,6 +231,14 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                         )
                     )
                     DashboardActionCard(
+                        title = Txt(MessageKey.dashboard_card_banners_title),
+                        description = Txt(MessageKey.dashboard_card_banners_description),
+                        metric = Txt(MessageKey.dashboard_card_banners_metric),
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_banners_cta) to { navigate(BUSINESS_BANNERS_PATH) }
+                        )
+                    )
+                    DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_settings_title),
                         description = Txt(MessageKey.dashboard_card_settings_description),
                         metric = Txt(MessageKey.dashboard_card_settings_metric),
@@ -230,13 +268,24 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                     .padding(MaterialTheme.spacing.x2),
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
             ) {
-                Text(text = title, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(text = metric, style = MaterialTheme.typography.bodySmall)
+                // Sección de información: título + descripción + métrica se fusionan para
+                // lectores de pantalla (TalkBack/VoiceOver), anunciándose como una sola unidad.
+                Column(
+                    modifier = Modifier.semantics(mergeDescendants = true) { },
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.semantics { heading() }
+                    )
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(text = metric, style = MaterialTheme.typography.bodySmall)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
