@@ -26,8 +26,12 @@ function resolveMainRepoRoot() {
 
 const REPO_ROOT = resolveMainRepoRoot();
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
+const SESSIONS_ARCHIVE_DIR = path.join(REPO_ROOT, ".claude", "sessions", "archive");
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 const GC_STATE_FILE = path.join(REPO_ROOT, ".claude", "hooks", "session-gc-state.json");
+
+// Retención de archivos en archive/ (30 días)
+const ARCHIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // Umbrales de GC
 const DONE_MAX_AGE_MS   = 1 * 60 * 60 * 1000;  // done  > 1h  → eliminar
@@ -103,9 +107,17 @@ function runGC() {
             }
 
             if (shouldDelete) {
+                // Archivar antes de eliminar (#1661 — preservar historial)
+                try {
+                    if (!fs.existsSync(SESSIONS_ARCHIVE_DIR)) fs.mkdirSync(SESSIONS_ARCHIVE_DIR, { recursive: true });
+                    const archivePath = path.join(SESSIONS_ARCHIVE_DIR, file);
+                    fs.copyFileSync(filePath, archivePath);
+                } catch(archErr) {
+                    log("Error archivando " + file + ": " + archErr.message);
+                }
                 fs.unlinkSync(filePath);
                 deleted++;
-                log("Eliminada " + file + " [" + reason + "]");
+                log("Archivada+eliminada " + file + " [" + reason + "]");
             }
         } catch(e) {
             errors++;
@@ -115,8 +127,25 @@ function runGC() {
     }
 
     if (deleted > 0 || errors > 0) {
-        log("GC completado: " + deleted + " eliminadas, " + errors + " errores. Total archivos=" + files.length);
+        log("GC completado: " + deleted + " archivadas+eliminadas, " + errors + " errores. Total archivos=" + files.length);
     }
+
+    // Limpiar archivos en archive/ mayores a 30 días (#1661)
+    try {
+        if (fs.existsSync(SESSIONS_ARCHIVE_DIR)) {
+            const archiveFiles = fs.readdirSync(SESSIONS_ARCHIVE_DIR).filter(f => f.endsWith(".json"));
+            let archiveDeleted = 0;
+            for (const af of archiveFiles) {
+                const afPath = path.join(SESSIONS_ARCHIVE_DIR, af);
+                const mtime = fs.statSync(afPath).mtimeMs;
+                if (now - mtime > ARCHIVE_MAX_AGE_MS) {
+                    fs.unlinkSync(afPath);
+                    archiveDeleted++;
+                }
+            }
+            if (archiveDeleted > 0) log("Archive cleanup: " + archiveDeleted + " archivos >30d eliminados");
+        }
+    } catch(e) {}
 }
 
 // Leer stdin (PostToolUse hook — no necesitamos el contenido, solo ejecutar GC)

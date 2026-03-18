@@ -35,6 +35,7 @@ const JSONL_FILES = [
     "sprint-audit.jsonl",
     "ops-learnings.jsonl",
     "restart-log.jsonl",
+    "approval-audit.jsonl",
 ];
 
 // ─── Utilidades ─────────────────────────────────────────────────────────────
@@ -61,16 +62,14 @@ function formatBytes(bytes) {
 
 /**
  * Rota un archivo .log si supera el límite de tamaño.
- * Estrategia: mover el archivo actual a .log.1 (sobrescribiendo el anterior),
- * luego crear un nuevo archivo vacío.
- * Esto preserva los logs anteriores sin eliminarlos.
+ * Estrategia (#1661): mover a archivo datado (.YYYY-MM-DD.log) para preservar historial.
+ * Los archivos datados se acumulan — cleanup externo puede borrar >90 días.
  *
  * @param {string} fileName nombre del archivo (ej: "hook-debug.log")
  * @returns {{ rotated: boolean, before: number, reason: string }}
  */
 function rotateLogFile(fileName) {
     const filePath = path.join(HOOKS_DIR, fileName);
-    const archivePath = filePath + ".1";
 
     if (!fs.existsSync(filePath)) {
         log(`  [SKIP] ${fileName} no existe`);
@@ -83,13 +82,20 @@ function rotateLogFile(fileName) {
         return { rotated: false, before: size, reason: `${formatBytes(size)} bajo el límite` };
     }
 
-    log(`  [ROT]  ${fileName} ${formatBytes(size)} > 100 KB → rotando a ${fileName}.1`);
+    const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const baseName = fileName.replace(/\.log$/, "");
+    const archivePath = path.join(HOOKS_DIR, `${baseName}.${dateStr}.log`);
+
+    log(`  [ROT]  ${fileName} ${formatBytes(size)} > 100 KB → rotando a ${baseName}.${dateStr}.log`);
 
     if (!DRY_RUN) {
-        // Mover actual → .log.1 (sobrescribe el .log.1 anterior si existe)
-        fs.copyFileSync(filePath, archivePath);
-        // Crear archivo vacío (con encabezado de rotación)
-        const header = `[${new Date().toISOString()}] Log rotado — archivo anterior en ${fileName}.1\n`;
+        // Si ya existe archivo datado de hoy, append en vez de sobreescribir
+        if (fs.existsSync(archivePath)) {
+            fs.appendFileSync(archivePath, fs.readFileSync(filePath, "utf8"));
+        } else {
+            fs.copyFileSync(filePath, archivePath);
+        }
+        const header = `[${new Date().toISOString()}] Log rotado — archivo anterior en ${baseName}.${dateStr}.log\n`;
         fs.writeFileSync(filePath, header, "utf8");
     }
 
