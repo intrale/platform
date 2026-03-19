@@ -181,8 +181,54 @@ function reconcileRoadmapVsGithub(roadmap, ghCmd) {
     for (var i = 0; i < sprint.stories.length; i++) {
         var story = sprint.stories[i];
 
-        // Solo procesar stories in_progress con agent info
-        if (story.status !== "in_progress" || !story.agent || !story.slug) continue;
+        if (story.status !== "in_progress") continue;
+
+        // Auto-heal: stories in_progress sin agent metadata (bug: agent-concurrency-check no las pobló)
+        if (!story.agent) {
+            log("WARN: Story #" + story.issue + " in_progress SIN campo agent — auto-healing");
+            story.agent = { launched_at: null, pid: null, completed_at: null, result: null };
+        }
+
+        // Auto-heal: deducir slug del issue number si falta
+        if (!story.slug) {
+            log("WARN: Story #" + story.issue + " in_progress SIN slug — buscando branch en GitHub");
+            try {
+                var branchCmd = "\"" + ghCmd + "\" pr list --repo intrale/platform --search \"" + story.issue + "\" --state all --json headRefName --limit 5";
+                var branchOut = execSync(branchCmd, { encoding: "utf8", timeout: 10000, windowsHide: true });
+                var branchPrs = JSON.parse(branchOut || "[]");
+                var match = branchPrs.find(function(p) { return p.headRefName && p.headRefName.indexOf("/" + story.issue + "-") !== -1; });
+                if (match) {
+                    var slugMatch = match.headRefName.match(/\/\d+-(.+)$/);
+                    if (slugMatch) {
+                        story.slug = slugMatch[1];
+                        log("Auto-healed slug for #" + story.issue + ": " + story.slug);
+                        changes.push("auto-heal: #" + story.issue + " slug=" + story.slug);
+                    }
+                }
+            } catch (e) { log("WARN: No se pudo deducir slug para #" + story.issue + ": " + e.message); }
+
+            // Si no encontramos slug, verificar issue state en GitHub para decidir status
+            if (!story.slug) {
+                try {
+                    var issueCmd = "\"" + ghCmd + "\" issue view " + story.issue + " --repo intrale/platform --json state,labels --jq '.state'";
+                    var issueState = execSync(issueCmd, { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
+                    if (issueState === "CLOSED") {
+                        story.status = "done";
+                        story.agent.completed_at = new Date().toISOString();
+                        story.agent.result = "ok";
+                        changes.push("auto-heal: #" + story.issue + " in_progress -> done (issue cerrado en GitHub)");
+                        log("Auto-healed #" + story.issue + " -> done (issue CLOSED)");
+                    } else {
+                        // Issue abierto, sin slug, sin branch — marcar como planned (no hay agente)
+                        story.status = "planned";
+                        story.agent = null;
+                        changes.push("auto-heal: #" + story.issue + " in_progress -> planned (sin agente ni branch)");
+                        log("Auto-healed #" + story.issue + " -> planned (sin agente activo)");
+                    }
+                } catch (e) { log("WARN: No se pudo verificar issue #" + story.issue + ": " + e.message); }
+                continue;
+            }
+        }
 
         // Grace period: no tocar agentes lanzados hace menos de 15 min
         var launchedAt = story.agent.launched_at ? new Date(story.agent.launched_at).getTime() : 0;
