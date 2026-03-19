@@ -650,6 +650,114 @@ function buildTimelineEvents(activityLogPath, agentes, plan) {
     return events;
 }
 
+// --- Generador de propuestas basadas en aprendizaje del sprint ---
+function generateProposals(plan, issueInfos, problemsData, debtData, agentSummaries) {
+    const proposals = [];
+
+    // 1. Propuestas desde problemas detectados en activity logs y PRs
+    const allProblems = [
+        ...(problemsData.activityProblems || []),
+        ...(problemsData.prProblems || [])
+    ];
+    // Agrupar problemas por área/tema
+    const problemAreas = {};
+    for (const p of allProblems) {
+        const area = p.area || p.category || "general";
+        if (!problemAreas[area]) problemAreas[area] = [];
+        problemAreas[area].push(p);
+    }
+    for (const [area, problems] of Object.entries(problemAreas)) {
+        if (problems.length >= 1) {
+            const descriptions = problems.slice(0, 3).map(p => p.message || p.description || p.text || "").filter(Boolean);
+            proposals.push({
+                title: `Resolver problemas recurrentes en ${area}`,
+                type: "bug",
+                priority: problems.length >= 3 ? "alta" : "media",
+                effort: problems.length >= 3 ? "medio" : "simple",
+                justification: `Se detectaron ${problems.length} problema(s) en ${area} durante el sprint: ${descriptions.join("; ").substring(0, 200)}`,
+                origin: "Problemas detectados en ejecución"
+            });
+        }
+    }
+
+    // 2. Propuestas desde deuda técnica
+    for (const debt of (debtData || []).slice(0, 5)) {
+        proposals.push({
+            title: debt.title || `Deuda técnica: ${debt.area || debt.description || "pendiente"}`,
+            type: "deuda",
+            priority: "media",
+            effort: "medio",
+            justification: debt.description || debt.details || `Deuda técnica identificada en ${debt.area || "el sprint"} que debería resolverse para mantener la calidad del código.`,
+            origin: `Issue #${debt.issue || "?"}`
+        });
+    }
+
+    // 3. Propuestas desde agentes fallidos o con problemas
+    const incompleteAgents = (plan._incomplete || []);
+    for (const ag of incompleteAgents) {
+        proposals.push({
+            title: `Reintentar: ${ag.titulo || ag.slug || "#" + ag.issue}`,
+            type: "mejora",
+            priority: "alta",
+            effort: ag.size || "simple",
+            justification: `Issue #${ag.issue} no se completó en el sprint. Motivo: ${ag.motivo || ag.resultado || "desconocido"}. Requiere reintento o análisis del fallo.`,
+            origin: `Sprint ${plan.sprint_id || ""} — issue fallido`
+        });
+    }
+
+    // 4. Propuestas por patrones en los issues completados
+    const completedIssues = (plan._completed || []);
+    const areas = {};
+    for (const c of completedIssues) {
+        const issueInfo = issueInfos[c.issue] || {};
+        const labels = (issueInfo.labels || []).map(l => l.name || l);
+        for (const label of labels) {
+            if (label.startsWith("area:") || label.startsWith("app:")) {
+                if (!areas[label]) areas[label] = 0;
+                areas[label]++;
+            }
+        }
+    }
+    // Si se trabajó mucho en un área, sugerir tests/QA para esa área
+    for (const [area, count] of Object.entries(areas)) {
+        if (count >= 2) {
+            proposals.push({
+                title: `QA y testing reforzado para ${area}`,
+                type: "mejora",
+                priority: "baja",
+                effort: "medio",
+                justification: `Se tocaron ${count} issues en ${area} durante este sprint. Conviene reforzar la cobertura de tests y QA E2E para evitar regresiones.`,
+                origin: `Concentración de cambios en ${area}`
+            });
+        }
+    }
+
+    // 5. Propuestas de mejora de tooling basadas en sesiones de agentes
+    const summaryValues = Object.values(agentSummaries || {});
+    const avgActions = summaryValues.length > 0
+        ? Math.round(summaryValues.reduce((s, v) => s + (v.actionCount || 0), 0) / summaryValues.length)
+        : 0;
+    if (avgActions > 100) {
+        proposals.push({
+            title: "Optimizar pipeline de agentes — sesiones muy largas",
+            type: "mejora",
+            priority: "media",
+            effort: "medio",
+            justification: `Las sesiones de agentes promediaron ${avgActions} acciones. Sesiones largas consumen más tokens y son propensas a errores. Evaluar si se puede dividir el trabajo o mejorar los prompts.`,
+            origin: "Métricas de sesiones del sprint"
+        });
+    }
+
+    // Deduplicar por título similar
+    const seen = new Set();
+    return proposals.filter(p => {
+        const key = p.title.toLowerCase().substring(0, 40);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    }).slice(0, 8); // Máximo 8 propuestas
+}
+
 // --- Main ---
 async function main() {
     const startTime = Date.now();
@@ -787,82 +895,42 @@ async function main() {
     }
 
     // --- Sección de Próximos Sprints / Propuestas (desde roadmap.json) ---
-    log("--- Generando sección de próximos sprints ---");
+    // --- Sección de Propuestas de Nuevas Historias (basado en aprendizaje del sprint) ---
+    log("--- Generando propuestas de nuevas historias ---");
     try {
-        const roadmapPath = path.join(REPO_ROOT, "scripts", "roadmap.json");
-        if (fs.existsSync(roadmapPath)) {
-            const roadmap = JSON.parse(fs.readFileSync(roadmapPath, "utf8"));
-            const futureSprints = (roadmap.sprints || []).filter(s => s.status !== "done").slice(0, 3);
-            const deferredItems = (roadmap.deferred || []).slice(0, 10);
-
-            const STREAM_NAMES = { A: "Backend", B: "Cliente", C: "Negocio", D: "Delivery", E: "Cross" };
-            const STREAM_COLORS = { A: "#f87171", B: "#60a5fa", C: "#fbbf24", D: "#34d399", E: "#a78bfa" };
-
-            let nextHtml = `
+        const proposals = generateProposals(plan, issueInfos, problemsData, debtData, agentSummaries);
+        if (proposals.length > 0) {
+            let propHtml = `
 <div style="page-break-before:always;"></div>
 <div style="border-top:3px solid #34d399;margin-top:40px;padding-top:20px;">
-  <h1 style="color:#34d399;font-size:28px;">Planificación — Próximos Sprints</h1>`;
+  <h1 style="color:#34d399;font-size:28px;">Propuestas de Nuevas Historias</h1>
+  <p style="color:#888;font-size:13px;margin-bottom:20px;">Basadas en el conocimiento adquirido durante la ejecución del sprint ${plan.sprint_id || ""}. Estas propuestas surgen de problemas detectados, deuda técnica identificada y oportunidades de mejora observadas.</p>`;
 
-            for (const spr of futureSprints) {
-                const stories = spr.stories || [];
-                nextHtml += `
-  <div style="margin:20px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #814dff;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <h2 style="color:#fff;margin:0;font-size:20px;">${spr.id} — ${spr.tema || ""}</h2>
-      <span style="background:#814dff20;color:#814dff;padding:4px 10px;border-radius:4px;font-size:12px;font-weight:600;">${spr.size || "?"}</span>
+            proposals.forEach((p, i) => {
+                const prioColor = p.priority === "alta" ? "#f87171" : p.priority === "media" ? "#fbbf24" : "#34d399";
+                const prioLabel = p.priority === "alta" ? "ALTA" : p.priority === "media" ? "MEDIA" : "BAJA";
+                const typeIcon = p.type === "bug" ? "&#128027;" : p.type === "mejora" ? "&#9889;" : p.type === "deuda" ? "&#128295;" : "&#128161;";
+                propHtml += `
+  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid ${prioColor};">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <h3 style="color:#fff;margin:0;font-size:16px;">${typeIcon} ${p.title}</h3>
+      <span style="background:${prioColor}20;color:${prioColor};padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">${prioLabel}</span>
     </div>
-    <table style="width:100%;border-collapse:collapse;">
-      <tr style="background:#252640;color:#ccc;font-size:12px;">
-        <th style="padding:8px;text-align:left;">Issue</th>
-        <th style="padding:8px;text-align:left;">Título</th>
-        <th style="padding:8px;text-align:center;">Stream</th>
-        <th style="padding:8px;text-align:center;">Esfuerzo</th>
-      </tr>`;
-                for (const st of stories) {
-                    const streamColor = STREAM_COLORS[st.stream] || "#888";
-                    const streamName = STREAM_NAMES[st.stream] || st.stream || "?";
-                    const movedBadge = st.moved_from ? ` <span style="font-size:10px;color:#fbbf24;">(carry-over ${st.moved_from})</span>` : "";
-                    nextHtml += `
-      <tr style="border-bottom:1px solid #333;">
-        <td style="padding:6px 8px;font-weight:bold;color:#60a5fa;">#${st.issue}</td>
-        <td style="padding:6px 8px;color:#ddd;">${st.title || ""}${movedBadge}</td>
-        <td style="padding:6px 8px;text-align:center;"><span style="background:${streamColor}20;color:${streamColor};padding:2px 8px;border-radius:3px;font-size:11px;">${streamName}</span></td>
-        <td style="padding:6px 8px;text-align:center;font-size:12px;color:#aaa;">${st.effort || "?"}</td>
-      </tr>`;
-                }
-                nextHtml += `</table></div>`;
-            }
+    <p style="color:#ccc;font-size:13px;margin:8px 0;">${p.justification}</p>
+    <div style="display:flex;gap:12px;font-size:11px;color:#888;">
+      <span>Tipo: <strong style="color:#aaa;">${p.type}</strong></span>
+      <span>Esfuerzo: <strong style="color:#aaa;">${p.effort}</strong></span>
+      <span>Origen: <strong style="color:#aaa;">${p.origin}</strong></span>
+    </div>
+  </div>`;
+            });
 
-            if (deferredItems.length > 0) {
-                nextHtml += `
-  <h2 style="color:#fbbf24;margin-top:30px;">Candidatos futuros (${roadmap.deferred.length} issues diferidos)</h2>
-  <p style="color:#888;font-size:13px;">Issues que no entraron en los próximos sprints — serán planificados cuando se libere capacidad.</p>
-  <table style="width:100%;border-collapse:collapse;margin:12px 0;">
-    <tr style="background:#252640;color:#ccc;font-size:12px;">
-      <th style="padding:8px;text-align:left;">Issue</th>
-      <th style="padding:8px;text-align:left;">Título</th>
-      <th style="padding:8px;text-align:left;">Categoría</th>
-    </tr>`;
-                for (const d of deferredItems) {
-                    nextHtml += `
-    <tr style="border-bottom:1px solid #333;">
-      <td style="padding:6px 8px;color:#60a5fa;">#${d.number}</td>
-      <td style="padding:6px 8px;color:#ddd;">${d.title || ""}</td>
-      <td style="padding:6px 8px;font-size:12px;color:#888;">${d.reason || ""}</td>
-    </tr>`;
-                }
-                nextHtml += `</table>`;
-                if (roadmap.deferred.length > 10) {
-                    nextHtml += `<p style="color:#666;font-size:11px;">... y ${roadmap.deferred.length - 10} más en el backlog diferido.</p>`;
-                }
-            }
-
-            nextHtml += `</div>`;
-            html = html.replace("</body>", nextHtml + "\n</body>");
-            log("Sección de próximos sprints embebida en reporte");
+            propHtml += `</div>`;
+            html = html.replace("</body>", propHtml + "\n</body>");
+            log(`${proposals.length} propuestas embebidas en reporte`);
         }
     } catch (e) {
-        log("Error generando sección de próximos sprints: " + e.message + " (no bloquea)");
+        log("Error generando propuestas: " + e.message + " (no bloquea)");
     }
 
     // Escribir HTML unificado y generar PDF único
