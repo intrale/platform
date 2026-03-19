@@ -8,6 +8,8 @@ const { getPendingQuestions, getExpiredQuestions, retryQuestion, resolveQuestion
 const { generatePattern, getSettingsPaths, persistPattern } = require("../permission-utils");
 const { getStats: getRegistryStats } = require("../telegram-message-registry");
 const { cleanup: cleanupMessages } = require("../telegram-cleanup");
+const lastFullResponse = require("../telegram-last-full-response");
+const imageUtils = require("../telegram-image-utils");
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 const CLEANUP_TTL_MS = 4 * 60 * 60 * 1000; // 4 horas
@@ -105,6 +107,7 @@ function parseCommand(text) {
     if (trimmed === "/pendientes") return { type: "pendientes" };
     if (trimmed === "/retry") return { type: "retry" };
     if (trimmed === "/limpiar") return { type: "limpiar" };
+    if (trimmed === "/detalle" || trimmed === "/mas") return { type: "detalle" };
     if (trimmed === "/restart") return { type: "restart" };
     if (trimmed === "/session") return { type: "session" };
     if (trimmed === "/session clear") return { type: "session_clear" };
@@ -561,6 +564,23 @@ async function handleFreetext(text) {
     await _cmdContext.executeClaudeQueued(text, [], { useSession: true, skill: null });
 }
 
+async function handleDetalle() {
+    const stored = lastFullResponse.load();
+    if (!stored) {
+        await _tgApi.sendMessage("⏱ No hay detalle guardado o ya expiró (TTL: 10 min).\nEjecutá un skill para generar una nueva respuesta.");
+        return;
+    }
+
+    const caption = "📋 <b>" + _tgApi.escHtml(stored.label || "Detalle completo") + "</b>";
+    const img = imageUtils.renderTextAsPng(stored.text);
+    if (img) {
+        await _tgApi.sendTelegramPhoto(img, caption, false);
+    } else {
+        // Fallback: enviar como texto largo si canvas no está disponible
+        await _tgApi.sendLongMessage(caption + "\n\n" + _tgApi.escHtml(stored.text));
+    }
+}
+
 module.exports = {
     init,
     setSkills,
@@ -581,5 +601,6 @@ module.exports = {
     handleRestart,
     handleSkill,
     handleFreetext,
+    handleDetalle,
     CLEANUP_TTL_MS,
 };

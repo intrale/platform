@@ -6,6 +6,8 @@ const fs = require("fs");
 const path = require("path");
 const { getPendingQuestions, getExpiredQuestions, retryQuestion, resolveQuestion, getQuestionById, loadQuestions, saveQuestions } = require("../pending-questions");
 const { generatePattern, getSettingsPaths, persistPattern } = require("../permission-utils");
+const lastFullResponse = require("../telegram-last-full-response");
+const imageUtils = require("../telegram-image-utils");
 
 // ─── Dependencias inyectadas ─────────────────────────────────────────────────
 let _tgApi = null;
@@ -826,6 +828,33 @@ async function routeCallback(cbData, callbackQueryId, message) {
                 show_alert: true
             }, 5000);
         } catch (e2) {}
+        return true;
+    }
+
+    // Detalle bajo demanda (#1681)
+    if (cbData === "show_detail") {
+        _log("Callback show_detail recibido");
+        try {
+            await _tgApi.telegramPost("answerCallbackQuery", {
+                callback_query_id: callbackQueryId,
+                text: "Generando detalle...",
+                show_alert: false
+            }, 5000);
+        } catch (e) {}
+
+        const stored = lastFullResponse.load();
+        if (!stored) {
+            await _tgApi.sendMessage("⏱ El detalle expiró (TTL: 10 min). Ejecutá el skill nuevamente.");
+            return true;
+        }
+
+        const caption = "📋 <b>" + _tgApi.escHtml(stored.label || "Detalle completo") + "</b>";
+        const img = imageUtils.renderTextAsPng(stored.text);
+        if (img) {
+            await _tgApi.sendTelegramPhoto(img, caption, false);
+        } else {
+            await _tgApi.sendLongMessage(caption + "\n\n" + _tgApi.escHtml(stored.text));
+        }
         return true;
     }
 
