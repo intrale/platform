@@ -557,11 +557,45 @@ function collectData() {
     }
     // Add session agent itself
     if (s.agent_name) agentNodes.add(normalizeSkillName(s.agent_name));
+
+    // Synthetic Main transitions: si la sesión Main tiene skills o tools Agent
+    // pero no tiene agent_transitions, generar edges sintéticos
+    if (isMainSession && (!s.agent_transitions || s.agent_transitions.length === 0)) {
+      const mainSkills = (s.skills_invoked || []).map(sk => normalizeSkillName(AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "")));
+      // También contar Agent tool invocations como actividad Main
+      const hasAgentTool = s.tool_counts && s.tool_counts.Agent > 0;
+      if (mainSkills.length > 0 || hasAgentTool) {
+        agentNodes.add("Main");
+        // Generar transición Main → cada skill invocado
+        let prevNode = "Main";
+        for (const sk of mainSkills) {
+          agentTransitions.push({ from: prevNode, to: sk, ts: s.last_activity_ts, _session: s.id });
+          agentNodes.add(sk);
+          prevNode = sk;
+        }
+        // Si usó Agent tool pero no invocó skills, crear edge Main → cada agente del sprint
+        // Esto refleja que Main coordina/lanza los agentes
+        if (mainSkills.length === 0 && hasAgentTool) {
+          const sprintAgentNodes = [...agentNodes].filter(n => /^Agente\s+\d+$/i.test(n));
+          for (const an of sprintAgentNodes) {
+            agentTransitions.push({ from: "Main", to: an, ts: s.last_activity_ts, _session: s.id, _synthetic: true });
+          }
+        }
+      }
+    }
   }
 
   // Inject "Start" node as sprint root — all agents connect from Start
+  // Map agentNodeName → issue number (para mostrar #issue en nodos sin sesión activa)
+  const agentIssueMap = {};
+  // Set de agentes en cola (para grisarlos en el flujo)
+  const queuedAgents = new Set();
   if (_flowPlan && _flowIssues.size > 0) {
     agentNodes.add("Start");
+    // Marcar agentes en _queue
+    for (const ag of (_flowPlan._queue || [])) {
+      queuedAgents.add("Agente " + ag.numero);
+    }
     const allSprintStories = [
       ...(_flowPlan.agentes || []),
       ...(_flowPlan._queue || []),
@@ -575,6 +609,8 @@ function collectData() {
       });
       const agentNodeName = agSession ? normalizeSkillName(agSession.agent_name) : ("Agente " + ag.numero);
       if (!agentNodes.has(agentNodeName)) agentNodes.add(agentNodeName);
+      // Guardar issue number para este agente (funciona con o sin sesión)
+      if (ag.issue) agentIssueMap[agentNodeName] = String(ag.issue);
       // Use the agent's session id so the edge gets colored with the agent's color
       const sessionId = agSession ? agSession.id : "synthetic-" + ag.issue;
       agentTransitions.push({ from: "Start", to: agentNodeName, _session: sessionId, _synthetic: true });
@@ -708,6 +744,8 @@ function collectData() {
     adhocSessions,
     agentTransitions,
     agentNodes: Array.from(agentNodes),
+    agentIssueMap,
+    queuedAgents: Array.from(queuedAgents),
     skillUsage,
     agentMetrics,
     roadmap,
@@ -1126,8 +1164,9 @@ function assignRobotIcons(sprintAgents) {
 
 // --- BUILD FLOW GRAPH SVG (force-directed organic layout) ---
 // rootAgentRobotMap: { canonicalName -> robotId } para asignar icono robot a agentes raíz (#1544)
-function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap) {
+function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap, agentIssueMap, queuedAgentsList) {
   const robotMap = rootAgentRobotMap || {};
+  const queuedAgents = new Set(queuedAgentsList || []);
   // Deduplicar nodos normalizados (#1542)
   const rawNodes = Array.isArray(agentNodes) ? agentNodes : [];
   const nodeSet = new Set();
@@ -1332,36 +1371,74 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   if (nodes.includes("Done")) { layer["Done"] = terminalLayer; }
   if (nodes.includes("Error")) { layer["Error"] = terminalLayer; }
 
-  // Agrupar nodos por capa
+  // Identify Main-only nodes (skills used exclusively by Main, not by any agent)
+  // These will be positioned peripherally to avoid cluttering agent flows
+  const mainOnlyNodes = new Set();
+  const agentPattern3 = /^Agente\s+/i;
+  for (const n of nodes) {
+    if (n === "Main" || n === "Start" || n === "Done" || n === "Error" || agentPattern3.test(n)) continue;
+    const nodeEdgesIn = edgeList.filter(e => e.to === n);
+    const nodeEdgesOut = edgeList.filter(e => e.from === n);
+    const allEdges = [...nodeEdgesIn, ...nodeEdgesOut];
+    if (allEdges.length > 0 && allEdges.every(e => e.agentRoot === "Main")) {
+      mainOnlyNodes.add(n);
+    }
+  }
+  if (nodes.includes("Main")) mainOnlyNodes.add("Main");
+
+  // Agrupar nodos por capa (excluyendo Main-only del layout principal)
   const layers = {};
   for (const n of nodes) {
+    if (mainOnlyNodes.has(n)) continue; // Main-only se posiciona aparte
     const l = layer[n];
     if (!layers[l]) layers[l] = [];
     layers[l].push(n);
   }
+  // Ensure at least one layer exists
+  if (Object.keys(layers).length === 0) layers[0] = [];
   const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
 
-  const colSpacing = 240;
-  const rowSpacing = 160;
-  const maxNodesInLayer = Math.max(...Object.values(layers).map(l => l.length));
-  const padding = nodeR + 50;
-  const svgW = Math.max(1000, numLayers * colSpacing + padding * 2);
-  const svgH = Math.max(600, maxNodesInLayer * rowSpacing + padding * 2);
+  // Spacing dinámico: menos capas → más espacio; muchas capas → más compacto
+  const colSpacing = numLayers <= 4 ? 260 : numLayers <= 6 ? 220 : 190;
+  // rowSpacing adaptativo: más nodos → más espacio para issue labels + issue number
+  const maxNodesInLayer = Math.max(1, ...Object.values(layers).map(l => l.length));
+  const rowSpacing = maxNodesInLayer <= 4 ? 210 : maxNodesInLayer <= 6 ? 190 : 175;
+  const padding = 120;
+  const mainZoneW = numLayers * colSpacing + padding * 2;
+  // Main peripheral zone: positioned below the agent flow
+  const mainNodesList = [...mainOnlyNodes];
+  const mainZoneH = mainNodesList.length > 0 ? 200 : 0; // extra height for Main zone
+  const mainRowSpacing = 140;
+  const svgW = Math.max(900, mainZoneW);
+  const agentZoneH = Math.max(500, maxNodesInLayer * rowSpacing + padding * 2);
+  const svgH = agentZoneH + mainZoneH;
 
-  // Posicionar nodos: columna = capa, fila = índice dentro de la capa (centrado)
+  // Posicionar nodos del flujo de agentes (zona principal, centrada verticalmente)
   const positions = {};
   for (const [layerIdx, layerNodes] of Object.entries(layers)) {
     const col = Number(layerIdx);
     const x = padding + col * colSpacing + colSpacing / 2;
     const count = layerNodes.length;
     const totalH = (count - 1) * rowSpacing;
-    const startY = svgH / 2 - totalH / 2;
+    const startY = agentZoneH / 2 - totalH / 2;
     layerNodes.forEach((name, i) => {
       positions[name] = { x, y: startY + i * rowSpacing };
     });
   }
 
-  // Trazar origen de cada edge hasta su agente raíz (capa 0) para asignar color
+  // Posicionar nodos Main-only en zona periférica inferior
+  if (mainNodesList.length > 0) {
+    const mainStartY = agentZoneH + 40; // separación de la zona de agentes
+    const mainColSpacing = Math.min(200, (svgW - padding * 2) / mainNodesList.length);
+    mainNodesList.forEach((name, i) => {
+      positions[name] = {
+        x: padding + i * mainColSpacing + mainColSpacing / 2,
+        y: mainStartY + 60,
+      };
+    });
+  }
+
+  // Asignar colores por agente raíz (Agente N), NO por layer 0 (que ahora es solo Start)
   // 20 distinct colors — enough for any sprint, never repeat between agents
   const rootColors = [
     "#f87171", "#60a5fa", "#4ade80", "#fbbf24", "#a78bfa",
@@ -1369,30 +1446,49 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     "#f59e0b", "#06b6d4", "#ec4899", "#14b8a6", "#8b5cf6",
     "#ef4444", "#3b82f6", "#10b981", "#f97316", "#6366f1",
   ];
-  const rootNodeList = nodes.filter(n => layer[n] === 0);
-  const rootColorMap = {};
-  rootNodeList.forEach((r, i) => { rootColorMap[r] = rootColors[i] || rootColors[i % rootColors.length]; });
-  // BFS desde cada raíz para asignar "owner" a cada nodo
+  // Color roots = Agent nodes (layer 1), not Start (layer 0)
+  const agentPattern2 = /^Agente\s+/i;
+  const agentNodeList = nodes.filter(n => agentPattern2.test(n));
+  const agentColorMap = {};
+  agentNodeList.forEach((a, i) => { agentColorMap[a] = rootColors[i % rootColors.length]; });
+  // Start and Main get neutral colors
+  agentColorMap["Start"] = "#6C7086";
+  agentColorMap["Main"] = "#9ca3af";
+  agentColorMap["Done"] = "#4ade80";
+  agentColorMap["Error"] = "#f87171";
+
+  // BFS desde cada agente raíz para asignar "owner" a cada nodo downstream
   const nodeOwner = {};
-  for (const root of rootNodeList) {
-    const bfsQ = [root];
-    nodeOwner[root] = root;
+  for (const agent of agentNodeList) {
+    nodeOwner[agent] = agent;
+    const bfsQ = [agent];
     while (bfsQ.length > 0) {
       const cur = bfsQ.shift();
       for (const next of (outEdges[cur] || [])) {
-        if (!nodeOwner[next]) { nodeOwner[next] = root; bfsQ.push(next); }
+        if (!nodeOwner[next] && next !== "Done" && next !== "Error") {
+          nodeOwner[next] = agent;
+          bfsQ.push(next);
+        }
       }
     }
   }
-  // Asignar color de edge según el agente raíz del nodo "from"
-  function edgeColor(fromNode) {
-    const owner = nodeOwner[fromNode];
-    return owner ? (rootColorMap[owner] || "#60a5fa") : "#60a5fa";
+  // Asignar color de edge según el agente raíz
+  function edgeColor(nodeOrAgent) {
+    // Si es un agente conocido, usar su color directo
+    if (agentColorMap[nodeOrAgent]) return agentColorMap[nodeOrAgent];
+    // Sino, buscar owner
+    const owner = nodeOwner[nodeOrAgent];
+    return owner ? (agentColorMap[owner] || "#60a5fa") : "#60a5fa";
   }
 
   // Build SVG defs — markers dinámicos por color de agente raíz
   const usedColors = new Set();
-  for (const e of edgeList) usedColors.add(edgeColor(e.from));
+  for (const e of edgeList) {
+    // Incluir colores de Start→Agent (que usan color del target)
+    if (e.from === "Start" && agentColorMap[e.to]) usedColors.add(agentColorMap[e.to]);
+    else if (e.agentRoot && agentColorMap[e.agentRoot]) usedColors.add(agentColorMap[e.agentRoot]);
+    else usedColors.add(edgeColor(e.from));
+  }
   let markerDefs = "";
   for (const c of usedColors) {
     const id = "fa-" + c.replace("#", "");
@@ -1433,9 +1529,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Marcar celdas ocupadas por nodos — área circular + zona del label
-  const blockRadius = nodeR + 12; // margen alrededor del nodo (círculo)
-  const labelExtraBelow = 35; // espacio del label debajo del nodo
+  // Marcar celdas ocupadas por nodos — área circular + zona del label + issue number
+  const blockRadius = nodeR + 18; // margen amplio alrededor del nodo (evitar colisiones)
+  const labelExtraBelow = 50; // espacio del label + issue number debajo del nodo
   for (const name of nodes) {
     const p = positions[name];
     if (!p) continue;
@@ -1452,8 +1548,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
           const dist = Math.sqrt(px * px + Math.min(py, 0) ** 2);
           if (dist <= blockRadius) markCell(gcx + dx, gcy + dy, 1);
         }
-        // Debajo del nodo: rectángulo para el label
-        if (dy > 0 && dy <= labelCells && Math.abs(dx) <= Math.ceil(60 / gridCell)) {
+        // Debajo del nodo: rectángulo para el label + issue number (ancho amplio)
+        if (dy > 0 && dy <= labelCells && Math.abs(dx) <= Math.ceil(75 / gridCell)) {
           markCell(gcx + dx, gcy + dy, 1);
         }
       }
@@ -1478,7 +1574,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const dirs = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
     let found = false;
-    let maxIter = Math.min(2000, gridW * gridH);
+    let maxIter = Math.min(4000, gridW * gridH);
     while (open.length > 0 && maxIter-- > 0) {
       open.sort((a, b) => a.f - b.f);
       const cur = open.shift();
@@ -1604,8 +1700,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const route = gridRoute(x1, y1, x2, y2);
     const pathD = pathToSvg(route, { x: x1, y: y1 }, { x: x2, y: y2 });
 
-    // Color by root agent (not from-node) so each agent's flow has consistent color
-    const ec = e.agentRoot ? edgeColor(e.agentRoot) : edgeColor(e.from);
+    // Color by root agent — Start→Agent edges use the TARGET agent's color
+    let ec;
+    if (e.from === "Start" && agentColorMap[e.to]) {
+      ec = agentColorMap[e.to]; // Start edges inherit target agent color
+    } else if (e.agentRoot && agentColorMap[e.agentRoot]) {
+      ec = agentColorMap[e.agentRoot];
+    } else {
+      ec = edgeColor(e.from);
+    }
     const markerId = "fa-" + ec.replace("#", "");
 
     const isStartEdge = e.from === "Start" || e.to === "Start";
@@ -1614,10 +1717,10 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
     // Edge label: per-agent sequence (e.g. "1.2" = Agent 1, step 2)
     const label = e.agentSeq || String(e.seq);
-    const labelR = label.length > 3 ? 12 : 9;
+    const labelR = label.length > 3 ? 14 : 12;
     const mx = ((x1 + x2) / 2).toFixed(1), my = ((y1 + y2) / 2).toFixed(1);
     svg += `<circle cx="${mx}" cy="${my}" r="${labelR}" fill="var(--bg, #0a0b10)" stroke="${ec}" stroke-width="1.5"/>`;
-    svg += `<text x="${mx}" y="${(parseFloat(my) + 3.5).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 7 : 8}" font-weight="700" fill="${ec}">${label}</text>`;
+    svg += `<text x="${mx}" y="${(parseFloat(my) + 4).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 10 : 11}" font-weight="700" fill="${ec}">${label}</text>`;
     svg += '</g>';
   }
 
@@ -1627,7 +1730,12 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   for (const name of nodes) {
     const pos = positions[name];
     if (!pos) continue;
-    const color = (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
+    const isActive = activeAgents.has(name);
+    const isDone = doneAgents.has(name);
+    const isQueued = queuedAgents.has(name);
+    // Color del nodo: gris para cola, color por agente-owner para activos
+    const baseColor = agentColorMap[name] || (nodeOwner[name] && agentColorMap[nodeOwner[name]]) || (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
+    const color = isQueued ? "#6C7086" : baseColor;
     // Resolve icon: usar robot SVG para agentes raíz (#1544)
     // Primero intentar robotMap (sprint-plan), luego patrón "Agente N"
     let robotId = robotMap[name];
@@ -1637,10 +1745,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
     const hasRobot = robotId && ROBOT_ICONS[robotId];
     const iconUrl = hasRobot ? ROBOT_ICONS[robotId] : resolveIconUri(name);
-    const isActive = activeAgents.has(name);
-    const isDone = doneAgents.has(name);
-    // Todos los nodos con transiciones se muestran al 100% — no grisar nodos participantes
-    const opacity = "1";
+    // Agentes en cola se muestran grisados para diferenciarlos de activos
+    const opacity = isQueued ? "0.4" : "1";
     const filterAttr = isActive ? 'filter="url(#node-glow)"' : '';
     // Nodo raíz con robot tiene radio ligeramente mayor
     const effectiveR = hasRobot ? nodeR + 4 : nodeR;
@@ -1665,7 +1771,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
 
     const activeClass = isActive ? ' node-active' : '';
-    svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;" ${filterAttr}>`;
+    const opacityStyle = isQueued ? `opacity:${opacity};` : '';
+    svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;${opacityStyle}" ${filterAttr}>`;
     // Fondo del nodo
     svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"/>`;
     // Halo pulsante para nodos activos
@@ -1679,32 +1786,45 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       svg += `<image href="${iconUrl}" x="${(pos.x - effectiveImgSize / 2).toFixed(1)}" y="${(pos.y - effectiveImgSize / 2).toFixed(1)}" width="${effectiveImgSize.toFixed(0)}" height="${effectiveImgSize.toFixed(0)}" style="pointer-events:none;" filter="url(#icon-brighten)"/>`;
       if (isDone && !isActive) {
         svg += `<circle cx="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" cy="${(pos.y - effectiveImgSize/2 + 2).toFixed(1)}" r="5" fill="${color}"/>`;
-        svg += `<text x="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" y="${(pos.y - effectiveImgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="7" fill="white">&#10003;</text>`;
+        svg += `<text x="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" y="${(pos.y - effectiveImgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="8" fill="white">&#10003;</text>`;
       }
     } else if (isDone && !isActive) {
       svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
     }
     // Badge de robot ID para agentes raíz (#1544)
     if (hasRobot) {
-      svg += `<circle cx="${(pos.x + effectiveR - 3).toFixed(1)}" cy="${(pos.y - effectiveR + 3).toFixed(1)}" r="8" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
-      svg += `<text x="${(pos.x + effectiveR - 3).toFixed(1)}" y="${(pos.y - effectiveR + 6.5).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="white">${robotId}</text>`;
+      svg += `<circle cx="${(pos.x + effectiveR - 2).toFixed(1)}" cy="${(pos.y - effectiveR + 2).toFixed(1)}" r="10" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
+      svg += `<text x="${(pos.x + effectiveR - 2).toFixed(1)}" y="${(pos.y - effectiveR + 6).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="700" fill="white">${robotId}</text>`;
     }
     // Label below node — nombre completo sin truncar
-    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 16).toFixed(1)}" text-anchor="middle" font-size="13" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 20).toFixed(1)}" text-anchor="middle" font-size="17" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
     // Issue number debajo del nombre para agentes raíz
     if (hasRobot) {
       const agentSession = sessionsList.find(s => s.agent_name === name);
       const branchMatch = agentSession ? (agentSession.branch || "").match(/(\d+)/) : null;
-      if (branchMatch) {
-        const issueUrl = "https://github.com/intrale/platform/issues/" + branchMatch[1];
-        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 30).toFixed(1)}" text-anchor="middle" font-size="11" fill="#60a5fa" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${branchMatch[1]}</text></a>`;
+      // Fallback: usar agentIssueMap del sprint-plan (para agentes sin sesión activa)
+      const issueNum = branchMatch ? branchMatch[1] : (agentIssueMap && agentIssueMap[name]);
+      if (issueNum) {
+        const issueUrl = "https://github.com/intrale/platform/issues/" + issueNum;
+        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 38).toFixed(1)}" text-anchor="middle" font-size="15" fill="${isQueued ? '#6C7086' : '#60a5fa'}" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${issueNum}</text></a>`;
       }
     }
     svg += `</g>`;
   }
 
-  const minH = Math.max(400, svgH);
-  return `<div style="overflow-x:auto;"><svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;min-height:${minH}px;height:auto;">${svg}</svg></div>`;
+  // Divider line between agent zone and Main zone (if Main nodes exist)
+  if (mainNodesList.length > 0) {
+    const divY = agentZoneH + 10;
+    svg += `<g data-flow-root="main">`;
+    svg += `<line x1="${padding}" y1="${divY}" x2="${svgW - padding}" y2="${divY}" stroke="var(--border, #2a2d3a)" stroke-width="1" stroke-dasharray="6 4" opacity="0.5"/>`;
+    svg += `<text x="${padding + 4}" y="${divY - 6}" font-size="13" fill="var(--text-muted, #6C7086)" font-weight="500" opacity="0.7">Main</text>`;
+    svg += `</g>`;
+  }
+
+  // Altura display: permite crecer hasta 900px antes de forzar scroll vertical
+  const displayH = Math.min(svgH, 900);
+  // SVG responsivo: ancho 100% del contenedor, scroll solo si es muy alto
+  return `<div style="overflow:auto;max-height:${displayH + 40}px;"><svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMinYMin meet" style="width:100%;height:${displayH}px;display:block;">${svg}</svg></div>`;
 }
 
 // --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
@@ -2514,7 +2634,7 @@ function renderHTML(data, theme) {
       }
     }
   }
-  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap);
+  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap, data.agentIssueMap || {}, data.queuedAgents || []);
 
   // --- GANTT ROADMAP (#1382) ---
   const ganttHtml = buildGanttChart(data.roadmap);
@@ -3111,7 +3231,7 @@ function renderHTML(data, theme) {
           <span>Flujo de agentes <span class="chip chip-blue">${data.agentNodes.length} nodos</span></span>
           <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);cursor:pointer;font-weight:400;">
             <input type="checkbox" id="toggle-main-flow" style="cursor:pointer;" onchange="toggleMainFlow(this.checked)">
-            Mostrar flujo Main
+            Mostrar flujo Main${data.agentTransitions.some(t => t.from === 'Claude' || t.from === 'Main') ? '' : ' <span style="opacity:0.5">(sin actividad)</span>'}
           </label>
         </div>
         ${flowGraphHtml}

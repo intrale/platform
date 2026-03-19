@@ -191,6 +191,30 @@ gh pr view --json labels --jq '.labels[].name' | grep -E "qa:passed|qa:skipped"
 ```
 Si no existe ninguno de los dos labels → **BLOQUEAR merge** y escalar a `/qa`.
 
+## Lanzamiento de agentes (CRITICO)
+
+**SIEMPRE** lanzar agentes de sprint via `Start-Agente.ps1`. **NUNCA** crear worktrees manualmente ni lanzar `claude -p` directo.
+
+```bash
+# Lanzar todos los agentes del sprint
+powershell.exe -NonInteractive -File scripts/Start-Agente.ps1 all
+
+# Lanzar un agente específico
+powershell.exe -NonInteractive -File scripts/Start-Agente.ps1 1
+
+# Relanzar con worktree limpio
+powershell.exe -NonInteractive -File scripts/Start-Agente.ps1 1 -Force
+```
+
+`Start-Agente.ps1` garantiza:
+- Worktree aislado con `.claude/` copiado
+- `Run-AgentStream.ps1` con stream-json parsing
+- Pipeline post-Claude automático (tests → security → build → delivery)
+- `agent-watcher.js` monitoreando agentes muertos y promoviendo de cola
+- Logs en `scripts/logs/agente_N.log` con diagnóstico de muerte
+
+**Prohibido:** crear worktrees con `git worktree add` + lanzar `claude` manualmente. Esto bypasea el pipeline post-Claude y los agentes mueren sin hacer delivery.
+
 ## Protocolo de tareas (obligatorio en toda implementación)
 
 **Concurrencia de agentes:** máximo **3 agentes simultáneos** por sprint. El hook `agent-concurrency-check.js` (Stop event) valida el límite automáticamente y lanza el siguiente agente de la cola cuando se libera un slot.
