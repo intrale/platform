@@ -28,6 +28,46 @@ const filteredArgs = args.filter(a => a !== '--stdin' && a !== '--md');
 const inputArg = filteredArgs[0];
 const caption = filteredArgs[1] || filteredArgs[0] || 'Reporte Intrale';
 
+// --- UTF-8 sanitization ---
+
+/**
+ * Sanitiza texto para envío a Telegram: elimina lone surrogates, bytes nulos
+ * y caracteres de control no-printable. Preserva emojis, tildes, eñes y
+ * cualquier carácter Unicode válido.
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeUtf8(text) {
+  if (typeof text !== 'string' || !text) return text || '';
+  let sanitized = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      // High surrogate: válido solo si va seguido de low surrogate
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        sanitized += text[i] + text[i + 1];
+        i++;
+      }
+      // si no, lone surrogate → descartar
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      // Lone low surrogate → descartar
+    } else if (
+      (code < 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D) ||
+      code === 0x7F ||
+      (code >= 0x80 && code <= 0x9F)
+    ) {
+      // Caracteres de control no deseados → descartar
+    } else {
+      sanitized += text[i];
+    }
+  }
+  if (sanitized !== text) {
+    console.warn(`[sanitizeUtf8] ${text.length - sanitized.length} caracteres problemáticos eliminados del texto para Telegram`);
+  }
+  return sanitized;
+}
+
 async function readStdin() {
   return new Promise((resolve) => {
     let data = '';
@@ -153,12 +193,13 @@ function sendToTelegram(pdfPath, caption) {
     const pdfData = fs.readFileSync(pdfPath);
     const filename = path.basename(pdfPath);
     const boundary = 'boundary' + Date.now();
+    const safeCaption = sanitizeUtf8(caption);
 
     let body = '';
     body += '--' + boundary + '\r\n';
     body += 'Content-Disposition: form-data; name="chat_id"\r\n\r\n' + config.chat_id + '\r\n';
     body += '--' + boundary + '\r\n';
-    body += 'Content-Disposition: form-data; name="caption"\r\n\r\n' + caption + '\r\n';
+    body += 'Content-Disposition: form-data; name="caption"\r\n\r\n' + safeCaption + '\r\n';
     body += '--' + boundary + '\r\n';
     body += 'Content-Disposition: form-data; name="document"; filename="' + filename + '"\r\nContent-Type: application/pdf\r\n\r\n';
     const tail = '\r\n--' + boundary + '--\r\n';

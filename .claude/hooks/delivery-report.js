@@ -43,6 +43,44 @@ try {
 }
 
 const TMP_DIR = path.join(__dirname, "..", "tmp");
+// --- UTF-8 sanitization ---
+
+/**
+ * Sanitiza texto para envío a Telegram: elimina lone surrogates, bytes nulos
+ * y caracteres de control no-printable. Preserva emojis, tildes, eñes y
+ * cualquier carácter Unicode válido.
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeUtf8(text) {
+    if (typeof text !== 'string' || !text) return text || '';
+    let sanitized = '';
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        if (code >= 0xD800 && code <= 0xDBFF) {
+            const next = text.charCodeAt(i + 1);
+            if (next >= 0xDC00 && next <= 0xDFFF) {
+                sanitized += text[i] + text[i + 1];
+                i++;
+            }
+        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+            // lone low surrogate -> descartar
+        } else if (
+            (code < 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D) ||
+            code === 0x7F ||
+            (code >= 0x80 && code <= 0x9F)
+        ) {
+            // caracteres de control -> descartar
+        } else {
+            sanitized += text[i];
+        }
+    }
+    if (sanitized !== text) {
+        console.warn('[delivery-report] [sanitizeUtf8] ' + (text.length - sanitized.length) + ' caracteres problemáticos eliminados para Telegram');
+    }
+    return sanitized;
+}
+
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1500;
 
@@ -496,10 +534,10 @@ async function main() {
     }
 
     // Enviar a Telegram con reintentos
-    const caption = (data.state === "ERROR" ? "\u274C" : "\uD83D\uDE80") +
+    const caption = sanitizeUtf8((data.state === "ERROR" ? "\u274C" : "\uD83D\uDE80") +
         " Delivery " + (data.state === "ERROR" ? "fallido" : "completado") +
         " | " + data.branch +
-        (data.prNumber ? " | PR #" + data.prNumber : "");
+        (data.prNumber ? " | PR #" + data.prNumber : ""));
 
     let sent = false;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -514,7 +552,7 @@ async function main() {
                 break;
             } else {
                 // Fallback a texto plano
-                const text = buildTextFallback(data);
+                const text = sanitizeUtf8(buildTextFallback(data));
                 const result = await sendTelegramText(text);
                 if (result && result.result && result.result.message_id) {
                     registerMessage(result.result.message_id);

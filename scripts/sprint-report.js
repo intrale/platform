@@ -36,6 +36,44 @@ function execSafe(cmd, opts = {}) {
     }
 }
 
+// --- UTF-8 sanitization ---
+
+/**
+ * Sanitiza texto para envío a Telegram: elimina lone surrogates, bytes nulos
+ * y caracteres de control no-printable. Preserva emojis, tildes, eñes y
+ * cualquier carácter Unicode válido.
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeUtf8(text) {
+    if (typeof text !== 'string' || !text) return text || '';
+    let sanitized = '';
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        if (code >= 0xD800 && code <= 0xDBFF) {
+            const next = text.charCodeAt(i + 1);
+            if (next >= 0xDC00 && next <= 0xDFFF) {
+                sanitized += text[i] + text[i + 1];
+                i++;
+            }
+        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+            // lone low surrogate → descartar
+        } else if (
+            (code < 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D) ||
+            code === 0x7F ||
+            (code >= 0x80 && code <= 0x9F)
+        ) {
+            // caracteres de control → descartar
+        } else {
+            sanitized += text[i];
+        }
+    }
+    if (sanitized !== text) {
+        log(`[sanitizeUtf8] ${text.length - sanitized.length} caracteres problemáticos eliminados del caption para Telegram`);
+    }
+    return sanitized;
+}
+
 // --- PDF + Telegram via script unificado ---
 function sendReportViaTelegram(htmlPath, caption) {
     if (!fs.existsSync(REPORT_TO_PDF_TELEGRAM)) {
@@ -760,7 +798,7 @@ async function main() {
         plan.agentes.some(a => p.headRefName === `agent/${a.issue}-${a.slug}`) && p.state === "MERGED"
     ).length;
     const sprintIdLabel = plan.sprint_id ? plan.sprint_id + " — " : "";
-    const caption = `📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`;
+    const caption = sanitizeUtf8(`📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`);
     sendReportViaTelegram(htmlPath, caption);
 
     // Paso 1: Tag de sprint (siempre, sin condiciones)
