@@ -1,5 +1,9 @@
 package ar.com.intrale
 
+
+import ar.com.intrale.shared.business.BusinessOrderDetailDTO
+import ar.com.intrale.shared.business.BusinessOrderItemDTO
+import ar.com.intrale.shared.business.BusinessOrderStatusUpdateRequestDTO
 import com.google.gson.Gson
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -36,7 +40,17 @@ data class AssignOrderRequest(
     val orderId: String = "",
     val deliveryPersonEmail: String? = null
 )
+data class BusinessOrderDetailResponse(
+    val order: BusinessOrderDetailDTO? = null,
+    val status: HttpStatusCode = HttpStatusCode.OK
+) : Response(statusCode = status)
 
+data class BusinessOrderStatusUpdateResponse(
+    val orderId: String = "",
+    val newStatus: String = "",
+    val updatedAt: String = "",
+    val status: HttpStatusCode = HttpStatusCode.OK
+) : Response(statusCode = status)
 class BusinessOrdersFunction(
     override val config: UsersConfig,
     override val logger: Logger,
@@ -46,6 +60,13 @@ class BusinessOrdersFunction(
 ) : SecuredFunction(config, logger, jwtValidator) {
 
     private val gson = Gson()
+    companion object {
+        private val VALID_TRANSITIONS: Map<String, List<String>> = mapOf(
+            "PENDING" to listOf("PREPARING", "CANCELLED"),
+            "PREPARING" to listOf("DELIVERING", "CANCELLED"),
+            "DELIVERING" to listOf("DELIVERED")
+        )
+    }
 
     override suspend fun securedExecute(
         business: String,
@@ -113,6 +134,102 @@ class BusinessOrdersFunction(
             }
 
             else -> RequestValidationException("Unsupported method for business orders: " + method + " (" + subPath + ")")
+        val functionPath = headers["X-Function-Path"] ?: function
+        val segments = functionPath.split("/").filter { it.isNotBlank() }
+        val subPath = segments.getOrNull(2)
+
+        return when (method) {
+            HttpMethod.Get.value.uppercase() -> handleGet(business, subPath)
+            HttpMethod.Put.value.uppercase() -> handlePut(business, textBody)
+            else -> RequestValidationException("Unsupported method for business orders: $method")
         }
+    }
+
+    private fun handleGet(business: String, subPath: String?): Response {
+        if (subPath.isNullOrBlank()) {
+            logger.info("Listando pedidos del negocio $business")
+            val items = repository.listAllOrdersForBusiness(business)
+            val payloads = items.map { item ->
+                BusinessOrderPayload(
+                    id = item.order.id ?: "",
+                    shortCode = item.order.shortCode,
+                    clientEmail = item.clientEmail,
+                    status = item.order.status.uppercase(),
+                    total = item.order.total,
+                    createdAt = item.order.createdAt,
+                    updatedAt = item.order.updatedAt
+                )
+            }
+            return BusinessOrderListResponse(orders = payloads)
+        }
+
+        logger.info("Consultando detalle del pedido $subPath en negocio $business")
+        val item = repository.getBusinessOrder(business, subPath)
+            ?: return ExceptionResponse("Order not found", HttpStatusCode.NotFound)
+
+        val detail = BusinessOrderDetailDTO(
+            id = item.order.id ?: "",
+            shortCode = item.order.shortCode,
+            clientEmail = item.clientEmail,
+            status = item.order.status.uppercase(),
+            total = item.order.total,
+            items = item.order.items.map { i ->
+                BusinessOrderItemDTO(
+                    id = i.id,
+                    name = i.name.ifBlank { i.productName },
+                    quantity = i.quantity,
+                    unitPrice = i.unitPrice,
+                    subtotal = i.subtotal
+                )
+            },
+            deliveryAddress = item.order.deliveryAddress?.let {
+                it.street + " " + it.number + ", " + it.city
+            },
+            deliveryCity = item.order.deliveryAddress?.city,
+            deliveryReference = item.order.deliveryAddress?.reference,
+            createdAt = item.order.createdAt,
+            updatedAt = item.order.updatedAt
+        )
+        return BusinessOrderDetailResponse(order = detail)
+    }
+
+    private fun handlePut(business: String, textBody: String): Response {
+        val request = try {
+            Gson().fromJson(textBody, BusinessOrderStatusUpdateRequestDTO::class.java)
+        } catch (e: Exception) {
+            logger.error("Error al parsear request de actualizacion de estado: ${e.message}")
+            return RequestValidationException("Invalid request body")
+        }
+
+        if (request.orderId.isBlank() || request.newStatus.isBlank()) {
+            return RequestValidationException("orderId and newStatus are required")
+        }
+
+        val currentItem = repository.getBusinessOrder(business, request.orderId)
+            ?: return ExceptionResponse("Order not found", HttpStatusCode.NotFound)
+
+        val currentStatus = currentItem.order.status.uppercase()
+        val allowedTransitions = VALID_TRANSITIONS[currentStatus] ?: emptyList()
+
+        if (request.newStatus.uppercase() !in allowedTransitions) {
+            logger.info("Transicion de estado invalida: $currentStatus -> ${request.newStatus}")
+            return RequestValidationException(
+                "Invalid status transition from $currentStatus to ${request.newStatus}. Allowed: ${allowedTransitions.joinToString(", ")}"
+            )
+        }
+
+        if (request.newStatus.uppercase() == "CANCELLED" && request.reason.isNullOrBlank()) {
+            return RequestValidationException("A reason is required when cancelling an order")
+        }
+
+        logger.info("Actualizando estado del pedido ${request.orderId} de $currentStatus a ${request.newStatus}")
+        val updated = repository.updateOrderStatus(business, request.orderId, request.newStatus.uppercase(), request.reason)
+            ?: return ExceptionResponse("Failed to update order status", HttpStatusCode.InternalServerError)
+
+        return BusinessOrderStatusUpdateResponse(
+            orderId = request.orderId,
+            newStatus = updated.order.status.uppercase(),
+            updatedAt = updated.order.updatedAt ?: ""
+        )
     }
 }

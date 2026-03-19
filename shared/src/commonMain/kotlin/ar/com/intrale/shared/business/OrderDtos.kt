@@ -38,6 +38,18 @@ data class AssignOrderDeliveryPersonResponseDTO(
     val orderId: String = "",
     @SerialName("deliveryPersonEmail")
     val deliveryPersonEmail: String? = null,
+data class BusinessOrderItemDTO(
+    val id: String? = null,
+    val name: String = "",
+    val quantity: Int = 0,
+    val unitPrice: Double = 0.0,
+    val subtotal: Double = 0.0
+)
+
+@Serializable
+data class BusinessOrderStatusEventDTO(
+    val status: String = "",
+    val timestamp: String = "",
     val message: String? = null
 )
 
@@ -53,4 +65,39 @@ data class DeliveryPersonListResponseDTO(
     val statusCode: StatusCodeDTO? = null,
     @SerialName("deliveryPeople")
     val deliveryPeople: List<DeliveryPersonSummaryDTO>? = null
+data class BusinessOrderDetailDTO(
+    val id: String = "",
+    val shortCode: String? = null,
+    val clientEmail: String = "",
+    val clientName: String? = null,
+    val status: String = "PENDING",
+    val total: Double = 0.0,
+    val items: List<BusinessOrderItemDTO> = emptyList(),
+    val deliveryAddress: String? = null,
+    val deliveryCity: String? = null,
+    val deliveryReference: String? = null,
+    val statusHistory: List<BusinessOrderStatusEventDTO> = emptyList(),
+    val createdAt: String? = null,
+    val updatedAt: String? = null
+)
+
+@Serializable
+data class BusinessOrderDetailResponseDTO(
+    val statusCode: StatusCodeDTO? = null,
+    val order: BusinessOrderDetailDTO? = null
+)
+
+@Serializable
+data class BusinessOrderStatusUpdateRequestDTO(
+    val orderId: String = "",
+    val newStatus: String = "",
+    val reason: String? = null
+)
+
+@Serializable
+data class BusinessOrderStatusUpdateResponseDTO(
+    val statusCode: StatusCodeDTO? = null,
+    val orderId: String = "",
+    val newStatus: String = "",
+    val updatedAt: String = ""
 )

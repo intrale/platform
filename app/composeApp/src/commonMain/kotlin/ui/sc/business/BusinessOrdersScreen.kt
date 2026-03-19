@@ -239,6 +239,7 @@ class BusinessOrdersScreen : Screen(BUSINESS_ORDERS_PATH) {
                                 }
                             }
                         )
+                        BusinessOrderCard(order = order, onClick = { BusinessOrderSelectionStore.select(order.id); navigate(BUSINESS_ORDER_DETAIL_PATH) })
                     }
                 }
             }
@@ -257,6 +258,8 @@ private fun BusinessOrderCard(
     onAssign: (String?) -> Unit
 ) {
     Card(
+private fun BusinessOrderCard(order: BusinessOrder, onClick: () -> Unit = {}) {
+    Card(onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant

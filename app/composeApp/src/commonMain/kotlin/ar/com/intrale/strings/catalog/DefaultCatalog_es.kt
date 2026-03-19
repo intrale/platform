@@ -1,7 +1,6 @@
 package ar.com.intrale.strings.catalog
 
 import ar.com.intrale.strings.model.MessageKey
-
 internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.app_name to "Intrale",
     MessageKey.buttons_preview_login to "Iniciar sesión",
@@ -257,6 +256,30 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.client_cart_payment_method_loading to "Cargando medios de pago...",
     MessageKey.client_cart_payment_method_cash_hint to "Pagás al recibir",
     MessageKey.client_cart_continue_missing_payment to "Seleccioná un medio de pago para continuar.",
+    MessageKey.business_order_detail_title to "Detalle del pedido",
+    MessageKey.business_order_detail_back to "Volver",
+    MessageKey.business_order_detail_error to "No se pudo cargar el detalle del pedido",
+    MessageKey.business_order_detail_retry to "Reintentar",
+    MessageKey.business_order_detail_status_updated to "Estado del pedido actualizado",
+    MessageKey.business_order_detail_section_status to "Estado",
+    MessageKey.business_order_detail_section_client to "Cliente",
+    MessageKey.business_order_detail_section_address to "Direccion de entrega",
+    MessageKey.business_order_detail_section_items to "Items del pedido",
+    MessageKey.business_order_detail_section_history to "Historial de estados",
+    MessageKey.business_order_detail_client_email to "Email",
+    MessageKey.business_order_detail_client_name to "Nombre",
+    MessageKey.business_order_detail_date to "Fecha",
+    MessageKey.business_order_detail_total to "Total",
+    MessageKey.business_order_detail_action_prepare to "Comenzar preparacion",
+    MessageKey.business_order_detail_action_send to "Enviar pedido",
+    MessageKey.business_order_detail_action_deliver to "Marcar como entregado",
+    MessageKey.business_order_detail_action_cancel to "Cancelar pedido",
+    MessageKey.business_order_detail_cancel_title to "Cancelar pedido",
+    MessageKey.business_order_detail_cancel_message to "Indica el motivo de la cancelacion",
+    MessageKey.business_order_detail_cancel_reason_hint to "Motivo de cancelacion",
+    MessageKey.business_order_detail_cancel_reason_required to "El motivo es obligatorio",
+    MessageKey.business_order_detail_cancel_confirm to "Confirmar cancelacion",
+    MessageKey.business_order_detail_cancel_dismiss to "Volver",
     MessageKey.client_profile_title to "Perfil",
     MessageKey.client_profile_subtitle to "Gestioná tus datos y preferencias",
     MessageKey.client_profile_retry to "Reintentar",
@@ -649,9 +672,4 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.banner_form_saved to "Banner guardado correctamente",
     MessageKey.banner_form_error to "No pudimos guardar el banner",
     MessageKey.banner_form_missing_business to "Selecciona un negocio para continuar",
-    MessageKey.client_cart_payment_method_title to "Medio de pago",
-    MessageKey.client_cart_payment_method_empty to "Este negocio no tiene medios de pago configurados.",
-    MessageKey.client_cart_payment_method_loading to "Cargando medios de pago...",
-    MessageKey.client_cart_payment_method_cash_hint to "Pagás al recibir",
-    MessageKey.client_cart_continue_missing_payment to "Seleccioná un medio de pago para continuar.",
 )
