@@ -92,7 +92,13 @@
       "Bash(WT=*)",
       "Bash(BASE=/c/Workspaces/Intrale/platform.agent-675-gestion-repartidores:*)",
       "Bash(sed:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(df:*)",
+      "Bash(du:*)",
+      "Skill(cleanup)",
+      "Edit",
+      "Write",
+      "Skill(checkup)"
     ],
     "deny": [
       "Bash(git push --force*)",
