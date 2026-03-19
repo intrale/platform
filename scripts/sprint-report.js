@@ -666,12 +666,24 @@ async function main() {
         }
     })();
 
-    if (!plan || !plan.agentes || plan.agentes.length === 0) {
+    // Considerar agentes activos + completados + incompletos como "stories del sprint"
+    const allStories = [
+        ...(plan.agentes || []),
+        ...(plan._completed || []),
+        ...(plan._incomplete || []),
+        ...(plan._queue || [])
+    ];
+    if (!plan || allStories.length === 0) {
         log("Plan vacío o inválido. Abortando.");
         process.exit(0);
     }
 
-    log(`Plan: ${plan.sprint_id || (plan.started_at || "").split("T")[0]}, ${plan.agentes.length} agentes`);
+    // Para backward-compat: si agentes está vacío pero hay _completed, usar _completed como fuente
+    if ((!plan.agentes || plan.agentes.length === 0) && (plan._completed || []).length > 0) {
+        plan.agentes = plan._completed.map(c => ({ ...c, status: "completed" }));
+    }
+
+    log(`Plan: ${plan.sprint_id || (plan.started_at || "").split("T")[0]}, ${allStories.length} stories (${(plan._completed || []).length} completed, ${(plan.agentes || []).length} agentes)`);
 
     // Snapshot de sesiones (antes de que se limpien)
     const sessions = snapshotSessions();
