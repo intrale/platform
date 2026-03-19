@@ -499,19 +499,34 @@ Implementar issue #NNN. Leer el issue completo con: gh issue view NNN --repo int
 12. `Usar /delivery para commit+PR al terminar. Closes #NNN` — siempre al final
 13. FASE 6 (si último issue del sprint): `invocar /scrum` y `invocar /cleanup`
 
-### Lanzar agentes automaticamente
+### Lanzar agentes automaticamente (OBLIGATORIO via Start-Agente.ps1)
 
 Tras escribir `sprint-plan.json`, lanzar los agentes **directamente sin preguntar** al usuario.
 Esto permite el ciclo continuo autonomo (Stop-Agente -> /planner sprint -> Start-Agente -> agentes trabajan -> Stop-Agente).
 
-Ejecutar:
+**SIEMPRE** ejecutar:
 ```bash
 powershell.exe -NonInteractive -File /c/Workspaces/Intrale/platform/scripts/Start-Agente.ps1 all
 ```
 
-`Start-Agente.ps1 all` lanza automaticamente `Watch-Agentes.ps1` en background.
-El watcher vigila las sesiones, ejecuta Stop-Agente al finalizar y notifica via Telegram.
-No es necesario lanzar el watcher manualmente.
+**PROHIBIDO**: crear worktrees manualmente (`git worktree add`) y lanzar `claude -p` directo.
+Esto bypasea el pipeline post-Claude y los agentes mueren sin hacer delivery.
+
+`Start-Agente.ps1 all` garantiza:
+- Worktrees aislados con `.claude/` copiado
+- `Run-AgentStream.ps1` con stream-json parsing y logs
+- Pipeline post-Claude automatico (tests → security → build → delivery)
+- `Watch-Agentes.ps1` / `agent-watcher.js` monitoreando agentes muertos
+- Diagnostico de muerte en `scripts/logs/agente_N.log`
+
+Para **relanzar** agentes muertos:
+```bash
+# Relanzar un agente específico (recrea worktree limpio)
+powershell.exe -NonInteractive -File /c/Workspaces/Intrale/platform/scripts/Start-Agente.ps1 1 -Force
+
+# Relanzar todos
+powershell.exe -NonInteractive -File /c/Workspaces/Intrale/platform/scripts/Start-Agente.ps1 all -Force
+```
 
 Tras ejecutar, reportar al usuario cuantos agentes fueron lanzados:
 > 🚀 N agente(s) lanzado(s) en terminales independientes. Watch-Agentes vigilando en background.
