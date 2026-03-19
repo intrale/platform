@@ -420,14 +420,19 @@ function main() {
 // Para uso desde sprint-report.js como sección embebida del reporte unificado
 function buildCostSection(sprintId) {
     try {
-        const metrics = collectMetrics();
-        const sprintPlan = fs.existsSync(PLAN_FILE) ? JSON.parse(fs.readFileSync(PLAN_FILE, "utf8")) : null;
-        const html = buildHtml(metrics.sessions, costPerAction, weeklyBudget, sprintPlan, sprintId);
-        // Extract only the <body> content (between <body> and </body>)
+        const metrics = readJsonSafe(METRICS_PATH);
+        if (!metrics || !metrics.sessions || metrics.sessions.length === 0) {
+            return '<div style="color:#fbbf24;padding:12px;"><p>Sin métricas de costos registradas para este sprint.</p></div>';
+        }
+        const config = readJsonSafe(CONFIG_PATH) || {};
+        const cpa = (config.claude_metrics && config.claude_metrics.cost_per_action_usd) || 0.003;
+        const wb = (config.claude_metrics && config.claude_metrics.weekly_budget_usd) || 50;
+        const sprintPlan = readJsonSafe(SPRINT_PLAN_PATH);
+        const html = buildHtml(metrics.sessions, cpa, wb, sprintPlan, sprintId);
         const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
         return bodyMatch ? bodyMatch[1] : "";
     } catch (e) {
-        return `<div style="color:#f87171;padding:20px;"><h3>Error generando sección de costos</h3><p>${e.message}</p></div>`;
+        return '<div style="color:#f87171;padding:20px;"><h3>Error generando sección de costos</h3><p>' + e.message + '</p></div>';
     }
 }
 

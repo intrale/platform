@@ -795,49 +795,66 @@ async function main() {
             const futureSprints = (roadmap.sprints || []).filter(s => s.status !== "done").slice(0, 3);
             const deferredItems = (roadmap.deferred || []).slice(0, 10);
 
+            const STREAM_NAMES = { A: "Backend", B: "Cliente", C: "Negocio", D: "Delivery", E: "Cross" };
+            const STREAM_COLORS = { A: "#f87171", B: "#60a5fa", C: "#fbbf24", D: "#34d399", E: "#a78bfa" };
+
             let nextHtml = `
 <div style="page-break-before:always;"></div>
 <div style="border-top:3px solid #34d399;margin-top:40px;padding-top:20px;">
-  <h1 style="color:#34d399;font-size:28px;">Próximos Sprints y Propuestas</h1>`;
+  <h1 style="color:#34d399;font-size:28px;">Planificación — Próximos Sprints</h1>`;
 
-            if (futureSprints.length > 0) {
-                nextHtml += `<h2 style="color:#60a5fa;">Sprints planificados (${futureSprints.length})</h2>`;
-                nextHtml += `<table style="width:100%;border-collapse:collapse;margin:16px 0;">
-                  <tr style="background:#1e2030;color:#fff;">
-                    <th style="padding:10px;text-align:left;border:1px solid #333;">Sprint</th>
-                    <th style="padding:10px;text-align:left;border:1px solid #333;">Tema</th>
-                    <th style="padding:10px;text-align:left;border:1px solid #333;">Tamaño</th>
-                    <th style="padding:10px;text-align:left;border:1px solid #333;">Issues</th>
-                  </tr>`;
-                for (const spr of futureSprints) {
-                    const stories = spr.stories || [];
-                    const issueList = stories.map(s => `#${s.issue}`).join(", ");
-                    nextHtml += `<tr style="border:1px solid #333;">
-                      <td style="padding:8px;border:1px solid #333;font-weight:bold;">${spr.id}</td>
-                      <td style="padding:8px;border:1px solid #333;">${spr.tema || ""}</td>
-                      <td style="padding:8px;border:1px solid #333;">${spr.size || "?"}</td>
-                      <td style="padding:8px;border:1px solid #333;font-size:12px;">${issueList || "—"}</td>
-                    </tr>`;
+            for (const spr of futureSprints) {
+                const stories = spr.stories || [];
+                nextHtml += `
+  <div style="margin:20px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #814dff;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h2 style="color:#fff;margin:0;font-size:20px;">${spr.id} — ${spr.tema || ""}</h2>
+      <span style="background:#814dff20;color:#814dff;padding:4px 10px;border-radius:4px;font-size:12px;font-weight:600;">${spr.size || "?"}</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr style="background:#252640;color:#ccc;font-size:12px;">
+        <th style="padding:8px;text-align:left;">Issue</th>
+        <th style="padding:8px;text-align:left;">Título</th>
+        <th style="padding:8px;text-align:center;">Stream</th>
+        <th style="padding:8px;text-align:center;">Esfuerzo</th>
+      </tr>`;
+                for (const st of stories) {
+                    const streamColor = STREAM_COLORS[st.stream] || "#888";
+                    const streamName = STREAM_NAMES[st.stream] || st.stream || "?";
+                    const movedBadge = st.moved_from ? ` <span style="font-size:10px;color:#fbbf24;">(carry-over ${st.moved_from})</span>` : "";
+                    nextHtml += `
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:6px 8px;font-weight:bold;color:#60a5fa;">#${st.issue}</td>
+        <td style="padding:6px 8px;color:#ddd;">${st.title || ""}${movedBadge}</td>
+        <td style="padding:6px 8px;text-align:center;"><span style="background:${streamColor}20;color:${streamColor};padding:2px 8px;border-radius:3px;font-size:11px;">${streamName}</span></td>
+        <td style="padding:6px 8px;text-align:center;font-size:12px;color:#aaa;">${st.effort || "?"}</td>
+      </tr>`;
                 }
-                nextHtml += `</table>`;
+                nextHtml += `</table></div>`;
             }
 
             if (deferredItems.length > 0) {
-                nextHtml += `<h2 style="color:#fbbf24;">Backlog diferido (${deferredItems.length}${roadmap.deferred.length > 10 ? "+" : ""})</h2>`;
-                nextHtml += `<table style="width:100%;border-collapse:collapse;margin:16px 0;">
-                  <tr style="background:#1e2030;color:#fff;">
-                    <th style="padding:8px;text-align:left;border:1px solid #333;">Issue</th>
-                    <th style="padding:8px;text-align:left;border:1px solid #333;">Título</th>
-                    <th style="padding:8px;text-align:left;border:1px solid #333;">Razón</th>
-                  </tr>`;
+                nextHtml += `
+  <h2 style="color:#fbbf24;margin-top:30px;">Candidatos futuros (${roadmap.deferred.length} issues diferidos)</h2>
+  <p style="color:#888;font-size:13px;">Issues que no entraron en los próximos sprints — serán planificados cuando se libere capacidad.</p>
+  <table style="width:100%;border-collapse:collapse;margin:12px 0;">
+    <tr style="background:#252640;color:#ccc;font-size:12px;">
+      <th style="padding:8px;text-align:left;">Issue</th>
+      <th style="padding:8px;text-align:left;">Título</th>
+      <th style="padding:8px;text-align:left;">Categoría</th>
+    </tr>`;
                 for (const d of deferredItems) {
-                    nextHtml += `<tr style="border:1px solid #333;">
-                      <td style="padding:6px;border:1px solid #333;">#${d.number}</td>
-                      <td style="padding:6px;border:1px solid #333;">${d.title || ""}</td>
-                      <td style="padding:6px;border:1px solid #333;font-size:12px;">${d.reason || ""}</td>
-                    </tr>`;
+                    nextHtml += `
+    <tr style="border-bottom:1px solid #333;">
+      <td style="padding:6px 8px;color:#60a5fa;">#${d.number}</td>
+      <td style="padding:6px 8px;color:#ddd;">${d.title || ""}</td>
+      <td style="padding:6px 8px;font-size:12px;color:#888;">${d.reason || ""}</td>
+    </tr>`;
                 }
                 nextHtml += `</table>`;
+                if (roadmap.deferred.length > 10) {
+                    nextHtml += `<p style="color:#666;font-size:11px;">... y ${roadmap.deferred.length - 10} más en el backlog diferido.</p>`;
+                }
             }
 
             nextHtml += `</div>`;
