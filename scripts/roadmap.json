@@ -1,5 +1,5 @@
 {
-  "updated_ts": "2026-03-19T02:35:05.337Z",
+  "updated_ts": "2026-03-19T13:41:24Z",
   "updated_by": "sprint-sync",
   "horizon_sprints": 5,
   "sprints": [
@@ -53,52 +53,9 @@
       ]
     },
     {
-      "id": "SPR-041",
-      "tema": "Sprint UX — dashboard polish + QA E2E",
-      "status": "planned",
-      "size": "medio",
-      "stories": [
-        {
-          "issue": 1631,
-          "title": "Empty states y skeleton loading para Home dashboard",
-          "effort": "simple",
-          "stream": "C",
-          "status": "planned"
-        },
-        {
-          "issue": 1632,
-          "title": "Accesibilidad (a11y) para Home dashboard",
-          "effort": "simple",
-          "stream": "C",
-          "status": "planned"
-        },
-        {
-          "issue": 1647,
-          "title": "Mostrar tamaño (sizing) de sprints e issues en el dashboard",
-          "effort": "simple",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "issue": 1633,
-          "title": "QA E2E con video — Home dashboard",
-          "effort": "medio",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "issue": 1634,
-          "title": "QA E2E con video — Publicación de productos",
-          "effort": "medio",
-          "stream": "E",
-          "status": "planned"
-        }
-      ]
-    },
-    {
       "id": "SPR-042",
       "tema": "Sprint negocio — pedidos + config delivery",
-      "status": "active",
+      "status": "done",
       "size": "medio",
       "stories": [
         {
@@ -106,18 +63,18 @@
           "title": "Detalle de pedido y estado",
           "effort": "medio",
           "stream": "C",
-          "status": "in_progress",
+          "status": "done",
           "slug": "detalle-pedido-estado",
           "agent": {
-            "prompt": "Implementar issue #674 BORD-002 — Detalle de pedido y actualización de estado para app de negocio. Leer issue con: gh issue view 674. Usar /android-dev para implementar, /delivery para entregar.",
-            "pid": 36004,
+            "prompt": null,
+            "pid": null,
             "promoted_at": null,
-            "launched_at": "2026-03-19T01:24:56.113Z",
-            "completed_at": null,
-            "result": null,
-            "pr": null,
+            "launched_at": null,
+            "completed_at": "2026-03-19T11:51:05.480Z",
+            "result": "ok",
+            "pr": 1679,
             "retry_count": 0,
-            "duration_min": null,
+            "duration_min": 0,
             "detected_by": null,
             "failure_reason": null,
             "waiting_since": null,
@@ -129,20 +86,20 @@
           "title": "Gestión de repartidores",
           "effort": "medio",
           "stream": "C",
-          "status": "in_progress",
+          "status": "moved",
           "slug": "gestion-repartidores",
           "agent": {
-            "prompt": "Implementar issue #675 BDEL-001 — Gestión de repartidores del negocio. Leer issue con: gh issue view 675. Usar /android-dev para implementar, /delivery para entregar.",
-            "pid": 15544,
+            "prompt": null,
+            "pid": null,
             "promoted_at": null,
-            "launched_at": "2026-03-19T01:26:53.347Z",
+            "launched_at": null,
             "completed_at": null,
-            "result": null,
+            "result": "failed",
             "pr": null,
             "retry_count": 0,
-            "duration_min": null,
+            "duration_min": 0,
             "detected_by": null,
-            "failure_reason": null,
+            "failure_reason": "duración insuficiente (0 min < 2 min); PR no mergeada (status=none); rama sin commits propios",
             "waiting_since": null,
             "waiting_reason": null
           }
@@ -152,7 +109,7 @@
           "title": "Asignación de pedidos a repartidores",
           "effort": "medio",
           "stream": "C",
-          "status": "failed",
+          "status": "done",
           "slug": "asignacion-pedidos-repartidores",
           "agent": {
             "prompt": null,
@@ -175,7 +132,7 @@
           "title": "Config horarios y zonas de entrega",
           "effort": "medio",
           "stream": "C",
-          "status": "in_progress",
+          "status": "moved",
           "slug": "config-horarios-zonas",
           "agent": {
             "prompt": "Implementar issue #678 BCONF-002 — Configuración de horarios de atención y zonas de entrega. Leer issue con: gh issue view 678. Usar /android-dev para implementar, /delivery para entregar.",
@@ -198,8 +155,23 @@
           "title": "Config medios de pago",
           "effort": "simple",
           "stream": "C",
-          "status": "planned",
-          "slug": "config-medios-pago"
+          "status": "moved",
+          "slug": "config-medios-pago",
+          "agent": {
+            "prompt": null,
+            "pid": null,
+            "promoted_at": null,
+            "launched_at": null,
+            "completed_at": null,
+            "result": null,
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": null,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
         }
       ],
       "execution": {
@@ -207,48 +179,21 @@
         "pipeline_mode": "scripts",
         "waiting_sweep_ts": 1773887694166,
         "sentinel_ts": 1773887694166
-      }
-    },
-    {
-      "id": "SPR-043",
-      "tema": "Sprint cliente — carrito + marketing negocio",
-      "status": "planned",
-      "size": "medio",
-      "stories": [
+      },
+      "closed_at": "2026-03-19T12:04:38Z",
+      "velocity": 2,
+      "moved_issues": [
         {
-          "issue": 680,
-          "title": "Gestión banners y marketing del negocio",
-          "effort": "medio",
-          "stream": "C",
-          "status": "planned"
+          "number": 675,
+          "moved_to": "SPR-043"
         },
         {
-          "issue": 717,
-          "title": "Visualización del carrito",
-          "effort": "medio",
-          "stream": "B",
-          "status": "planned"
+          "number": 678,
+          "moved_to": "SPR-043"
         },
         {
-          "issue": 718,
-          "title": "Confirmación de pedido y checkout",
-          "effort": "medio",
-          "stream": "B",
-          "status": "planned"
-        },
-        {
-          "issue": 720,
-          "title": "Selección medio de pago",
-          "effort": "medio",
-          "stream": "B",
-          "status": "planned"
-        },
-        {
-          "issue": 721,
-          "title": "Listado de pedidos del cliente",
-          "effort": "medio",
-          "stream": "B",
-          "status": "planned"
+          "number": 679,
+          "moved_to": "SPR-043"
         }
       ]
     },
@@ -266,6 +211,455 @@
           "status": "done"
         }
       ]
+    },
+    {
+      "id": "SPR-043",
+      "tema": "Issues de hoy + bugs cross criticos",
+      "status": "active",
+      "size": "simple",
+      "stories": [
+        {
+          "issue": 1682,
+          "title": "Bug: falso positivo rate limit",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done",
+          "slug": "fix-rate-limit-falso-positivo",
+          "agent": {
+            "prompt": null,
+            "pid": null,
+            "promoted_at": null,
+            "launched_at": null,
+            "completed_at": "2026-03-19T13:17:14.907Z",
+            "result": "ok",
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": 0,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
+        },
+        {
+          "issue": 1681,
+          "title": "Respuestas inteligentes Telegram",
+          "effort": "simple",
+          "stream": "E",
+          "status": "in_progress",
+          "slug": "telegram-respuestas-inteligentes",
+          "agent": {
+            "prompt": null,
+            "pid": null,
+            "promoted_at": null,
+            "launched_at": null,
+            "completed_at": "2026-03-19T13:17:14.907Z",
+            "result": "ok",
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": 0,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
+        },
+        {
+          "issue": 1683,
+          "title": "Historial consumo API Anthropic",
+          "effort": "medio",
+          "stream": "E",
+          "status": "in_progress",
+          "slug": "historial-consumo-api-anthropic",
+          "agent": {
+            "prompt": null,
+            "pid": null,
+            "promoted_at": "2026-03-19T13:17:14.907Z",
+            "launched_at": null,
+            "completed_at": null,
+            "result": null,
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": null,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
+        },
+        {
+          "issue": 1684,
+          "title": "Trazas actividad Telegram Commander",
+          "effort": "simple",
+          "stream": "E",
+          "status": "in_progress",
+          "slug": "trazas-actividad-telegram-commander",
+          "agent": {
+            "prompt": null,
+            "pid": null,
+            "promoted_at": "2026-03-19T13:17:14.907Z",
+            "launched_at": null,
+            "completed_at": null,
+            "result": null,
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": null,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
+        },
+        {
+          "issue": 1639,
+          "title": "Sanitizacion UTF-8 reportes Telegram",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done",
+          "slug": "sanitizacion-utf8-telegram",
+          "agent": {
+            "prompt": null,
+            "pid": null,
+            "promoted_at": null,
+            "launched_at": null,
+            "completed_at": "2026-03-19T13:17:14.907Z",
+            "result": "ok",
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": 0,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
+        }
+      ],
+      "started_at": "2026-03-19T12:34:50Z",
+      "execution": {
+        "concurrency_limit": 3,
+        "pipeline_mode": "scripts",
+        "waiting_sweep_ts": 1773925630280,
+        "sentinel_ts": 1773925630280
+      }
+    },
+    {
+      "id": "SPR-044",
+      "tema": "Cross/infra — dashboard + validacion + cache",
+      "status": "planned",
+      "size": "simple",
+      "stories": [
+        {
+          "issue": 1659,
+          "title": "Bug: Start-Agente paths largos worktrees",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1651,
+          "title": "Dashboard auto-sync sprint-plan",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1647,
+          "title": "Mostrar sizing sprints en dashboard",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1660,
+          "title": "Validacion cruzada roadmap vs registry",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1638,
+          "title": "Cache HTTP ETag endpoint productos",
+          "effort": "simple",
+          "stream": "E",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-045",
+      "tema": "Cross/infra — CI build inteligente ciclo continuo",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 1656,
+          "title": "Auto-reparacion CI relanzar agente",
+          "effort": "medio",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1657,
+          "title": "Build inteligente modulos afectados",
+          "effort": "medio",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1658,
+          "title": "Ciclo continuo sprints cierre reporte",
+          "effort": "medio",
+          "stream": "E",
+          "status": "planned"
+        },
+        {
+          "issue": 1093,
+          "title": "QA video Registros especializados",
+          "effort": "medio",
+          "stream": "E",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-046",
+      "tema": "Negocio — carry-over SPR-042 + features",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 675,
+          "title": "Gestion repartidores del negocio",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned",
+          "moved_from": "SPR-042"
+        },
+        {
+          "issue": 678,
+          "title": "Config horarios y zonas entrega",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned",
+          "moved_from": "SPR-042"
+        },
+        {
+          "issue": 679,
+          "title": "Config medios de pago",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned",
+          "moved_from": "SPR-042"
+        },
+        {
+          "issue": 672,
+          "title": "Config productos destacados promociones",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1633,
+          "title": "QA E2E Home dashboard negocio",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1634,
+          "title": "QA E2E Publicacion productos",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-047",
+      "tema": "Cliente — carrito pedidos seguridad",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 717,
+          "title": "Visualizacion carrito de compras",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 718,
+          "title": "Confirmacion pedido resumen compra",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 723,
+          "title": "Repetir pedido anterior",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 724,
+          "title": "Notificaciones pedidos mensajes",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 726,
+          "title": "Integracion 2FA cliente",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 597,
+          "title": "Pantalla carrito resumen pedido",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        }
+      ]
+    }
+  ],
+  "deferred": [
+    {
+      "number": 732,
+      "title": "Listado pedidos para tomar",
+      "reason": "delivery"
+    },
+    {
+      "number": 734,
+      "title": "Flujo estados entrega",
+      "reason": "delivery"
+    },
+    {
+      "number": 735,
+      "title": "Placeholder ubicacion mapa",
+      "reason": "delivery"
+    },
+    {
+      "number": 737,
+      "title": "Historial pedidos repartidor",
+      "reason": "delivery"
+    },
+    {
+      "number": 740,
+      "title": "Notificaciones delivery",
+      "reason": "delivery"
+    },
+    {
+      "number": 741,
+      "title": "Contacto comercio delivery",
+      "reason": "delivery"
+    },
+    {
+      "number": 742,
+      "title": "2FA delivery",
+      "reason": "delivery"
+    },
+    {
+      "number": 615,
+      "title": "INTAKE NEGOCIO",
+      "reason": "intake"
+    },
+    {
+      "number": 607,
+      "title": "INTAKE NEGOCIO",
+      "reason": "intake"
+    },
+    {
+      "number": 727,
+      "title": "INTAKE DELIVERY",
+      "reason": "intake"
+    },
+    {
+      "number": 681,
+      "title": "INTAKE CLIENTE",
+      "reason": "intake"
+    },
+    {
+      "number": 1094,
+      "title": "qa video Cliente onboarding",
+      "reason": "QA"
+    },
+    {
+      "number": 1095,
+      "title": "qa video Cliente catalogo",
+      "reason": "QA"
+    },
+    {
+      "number": 1096,
+      "title": "qa video Cliente perfil",
+      "reason": "QA"
+    },
+    {
+      "number": 1097,
+      "title": "qa video Cliente pedidos",
+      "reason": "QA"
+    },
+    {
+      "number": 1098,
+      "title": "qa video Negocio onboarding",
+      "reason": "QA"
+    },
+    {
+      "number": 1099,
+      "title": "qa video Negocio registro",
+      "reason": "QA"
+    },
+    {
+      "number": 1100,
+      "title": "qa video Negocio categorias",
+      "reason": "QA"
+    },
+    {
+      "number": 1101,
+      "title": "qa video Negocio union",
+      "reason": "QA"
+    },
+    {
+      "number": 1102,
+      "title": "qa video Delivery home",
+      "reason": "QA"
+    },
+    {
+      "number": 1103,
+      "title": "qa video Delivery perfil",
+      "reason": "QA"
+    },
+    {
+      "number": 1118,
+      "title": "qa compliance categorias",
+      "reason": "QA"
+    },
+    {
+      "number": 1121,
+      "title": "qa compliance carrito",
+      "reason": "QA"
+    },
+    {
+      "number": 1122,
+      "title": "qa compliance perfil",
+      "reason": "QA"
+    },
+    {
+      "number": 1123,
+      "title": "qa compliance home delivery",
+      "reason": "QA"
+    },
+    {
+      "number": 1124,
+      "title": "qa compliance detalle delivery",
+      "reason": "QA"
+    },
+    {
+      "number": 1125,
+      "title": "qa compliance perfil delivery",
+      "reason": "QA"
     }
   ]
 }

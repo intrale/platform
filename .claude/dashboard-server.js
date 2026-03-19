@@ -97,7 +97,7 @@ const AGENT_ICON_MAP = {
   "Hotfix": loadIconDataUri("hotfix.png"),
   "Config": loadIconDataUri("config.svg"),
   "Done": loadIconDataUri("done.svg"),
-  "Error": loadIconDataUri("error.svg"),
+  "Error": loadIconDataUri("failure.svg"),
 };
 const CLAUDE_ICONS = [
   loadIconDataUri("claude-1.svg"),
@@ -514,7 +514,11 @@ function collectData() {
   // Usar normalizeSkillName para deduplicar nodos (#1542)
   const agentTransitions = [];
   const agentNodes = new Set();
+  // Track which issues have transitions (to detect missing agents)
+  const issuesWithTransitions = new Set();
   for (const s of sessions) {
+    const issueMatch = (s.branch || "").match(/(\d+)/);
+    const issueNum = issueMatch ? issueMatch[1] : null;
     if (Array.isArray(s.agent_transitions)) {
       for (const t of s.agent_transitions) {
         const normFrom = normalizeSkillName(t.from);
@@ -522,6 +526,7 @@ function collectData() {
         agentTransitions.push({ ...t, from: normFrom, to: normTo, _session: s.id });
         agentNodes.add(normFrom);
         agentNodes.add(normTo);
+        if (issueNum) issuesWithTransitions.add(issueNum);
       }
     }
     // Also add agents from skills_invoked
@@ -533,6 +538,48 @@ function collectData() {
     }
     // Add session agent itself
     if (s.agent_name) agentNodes.add(normalizeSkillName(s.agent_name));
+  }
+
+  // Inject synthetic transitions for completed sprint agents (pipeline_mode=scripts)
+  // When agent-runner.js handles post-Claude phases, the session ends at Review
+  // but the agent actually reached Done via the external pipeline
+  const sprintPlanData = readJson(SPRINT_PLAN_FILE);
+  if (sprintPlanData) {
+    // Completed agents -> Done node
+    const completedIssues = (sprintPlanData._completed || []).map(a => String(a.issue));
+    for (const issueStr of completedIssues) {
+      const sessionTransitions = agentTransitions.filter(t => {
+        const sess = sessions.find(s => s.id === t._session);
+        if (!sess) return false;
+        const m = (sess.branch || "").match(/(\d+)/);
+        return m && m[1] === issueStr;
+      });
+      if (sessionTransitions.length > 0) {
+        const lastNode = sessionTransitions[sessionTransitions.length - 1].to;
+        agentTransitions.push({ from: lastNode, to: "Done", _session: "synthetic", _synthetic: true });
+        agentNodes.add("Done");
+      } else if (!issuesWithTransitions.has(issueStr)) {
+        agentNodes.add("Done");
+      }
+    }
+
+    // Failed/incomplete agents -> Error node (same layer as Done)
+    const incompleteIssues = (sprintPlanData._incomplete || []).map(a => String(a.issue));
+    for (const issueStr of incompleteIssues) {
+      const sessionTransitions = agentTransitions.filter(t => {
+        const sess = sessions.find(s => s.id === t._session);
+        if (!sess) return false;
+        const m = (sess.branch || "").match(/(\d+)/);
+        return m && m[1] === issueStr;
+      });
+      if (sessionTransitions.length > 0) {
+        const lastNode = sessionTransitions[sessionTransitions.length - 1].to;
+        agentTransitions.push({ from: lastNode, to: "Error", _session: "synthetic", _synthetic: true });
+      } else {
+        agentTransitions.push({ from: "Claude", to: "Error", _session: "synthetic", _synthetic: true });
+      }
+      agentNodes.add("Error");
+    }
   }
 
   // Active time
@@ -1577,7 +1624,17 @@ function buildGanttChart(roadmap) {
   const STREAM_LABELS = { A: "Backend", B: "Cliente", C: "Negocio", D: "Delivery", E: "Cross" };
   const STATUS_OPACITY = { done: 0.45, deferred: 0.25, blocked: 1, in_progress: 1, planned: 1 };
 
-  const sprints = roadmap.sprints;
+  // Filter to show exactly 5 sprints: last executed (done) + active (if any) + next planned
+  const allSprints = [...roadmap.sprints].sort((a, b) => a.id.localeCompare(b.id));
+  const doneList = allSprints.filter(s => s.status === "done");
+  const activeList = allSprints.filter(s => s.status === "active" || s.status === "in_progress");
+  const plannedList = allSprints.filter(s => s.status === "planned");
+  // Last done: most recently closed (by closed_at timestamp, fallback to last by ID)
+  doneList.sort((a, b) => (b.closed_at || "").localeCompare(a.closed_at || "") || b.id.localeCompare(a.id));
+  const lastDone = doneList.length > 0 ? [doneList[0]] : [];
+  // Fill remaining 4 slots: active first, then planned by ID order
+  const remaining = [...activeList, ...plannedList].slice(0, 5 - lastDone.length);
+  const sprints = [...lastDone, ...remaining].slice(0, 5);
   const numSprints = sprints.length;
 
   // Collect all issues with sprint index
@@ -1663,8 +1720,11 @@ function buildGanttChart(roadmap) {
     const x = labelColW + si * colW;
     // Column separator
     svg += `<line x1="${x}" y1="0" x2="${x}" y2="${svgH}" stroke="var(--border)" stroke-width="0.5" stroke-opacity="0.4"/>`;
-    // Sprint label (ID)
-    svg += `<text x="${x + colW / 2}" y="24" text-anchor="middle" font-size="18" font-weight="700" fill="var(--white)" opacity="0.9">${escHtml(spr.id)}</text>`;
+
+    // Status icon + Sprint label (ID) + Size badge
+    const statusIcon = spr.status === "done" ? "✅" : (spr.status === "active" || spr.status === "in_progress") ? "▶️" : "⏳";
+    const sizeLabel = spr.size ? ` [${spr.size}]` : "";
+    svg += `<text x="${x + colW / 2}" y="24" text-anchor="middle" font-size="18" font-weight="700" fill="var(--white)" opacity="0.9">${statusIcon} ${escHtml(spr.id)}${escHtml(sizeLabel)}</text>`;
     // Date range
     const start = (spr.start || "").substring(5); // MM-DD
     const end = (spr.end || "").substring(5);
@@ -1707,14 +1767,17 @@ function buildGanttChart(roadmap) {
       barPositions[iss.number] = { cx, cy };
 
       const status = iss.status || "planned";
-      const opacity = STATUS_OPACITY[status] !== undefined ? STATUS_OPACITY[status] : 1;
-      const fillColor = status === "blocked" ? "#f87171" : color;
+      const isDone = status === "done";
+      const opacity = isDone ? 0.5 : (STATUS_OPACITY[status] !== undefined ? STATUS_OPACITY[status] : 1);
+      const fillColor = isDone ? "#6b7280" : status === "blocked" ? "#f87171" : color;
+      const barFillOpacity = isDone ? 0.35 : 0.22;
+      const barStroke = isDone ? "#9ca3af" : fillColor;
 
       // Main bar
       const issueUrl = `https://github.com/intrale/platform/issues/${iss.number}`;
       svg += `<g opacity="${opacity}">`;
       svg += `<a href="${issueUrl}" target="_blank" rel="noopener noreferrer" class="gantt-bar-link">`;
-      svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="${fillColor}" fill-opacity="0.22" stroke="${fillColor}" stroke-width="1" rx="3" style="cursor:pointer;">`;
+      svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="${fillColor}" fill-opacity="${barFillOpacity}" stroke="${barStroke}" stroke-width="1" rx="3" style="cursor:pointer;">`;
       svg += `<title>#${iss.number} ${iss.title}\nStream: ${s} | Size: ${iss.size || "M"} | Status: ${status}</title>`;
       svg += `</rect>`;
 
@@ -1886,7 +1949,8 @@ function renderHTML(data, theme) {
   const spAgentes = data.sprintPlan && Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : [];
   const spQueue = data.sprintPlan && Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : [];
   const spCompleted = data.sprintPlan && Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : [];
-  const allSprintAgentes = [...spAgentes, ...spQueue, ...spCompleted];
+  const spIncomplete = data.sprintPlan && Array.isArray(data.sprintPlan._incomplete) ? data.sprintPlan._incomplete : [];
+  const allSprintAgentes = [...spAgentes, ...spQueue, ...spCompleted, ...spIncomplete];
 
   // Helper para renderizar una fila de agente del sprint
   function renderSprintAgentRow(ag, forcedStatus) {
@@ -2167,7 +2231,8 @@ function renderHTML(data, theme) {
     const sections = [
       { items: spAgentes, label: "EN EJECUCI\u00D3N", color: "var(--accent-green)", icon: "&#9654;" },
       { items: spQueue, label: "EN COLA", color: "#fbbf24", icon: "&#9711;" },
-      { items: spCompleted, label: "COMPLETADOS", color: "var(--text-muted)", icon: "&#10003;" }
+      { items: spCompleted, label: "COMPLETADOS", color: "var(--text-muted)", icon: "&#10003;" },
+      { items: spIncomplete, label: "FALLIDOS", color: "#f87171", icon: "&#10007;" }
     ];
 
     for (const sec of sections) {
@@ -2198,7 +2263,30 @@ function renderHTML(data, theme) {
         let pct = agStatus === "done" ? 100 : tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
 
         const isBlocked = matchSession && blockedPids.has(matchSession.id);
-        const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+        const isFailed = sec.label.includes("FALLIDO");
+        const isIdle = agStatus === "idle";
+        const isPending = agStatus === "pending" || sec.label.includes("COLA");
+        const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : isFailed ? "#f87171" : statusColor;
+
+        // Compute status reason message
+        let statusReason = "";
+        if (isFailed && ag.motivo) {
+          statusReason = ag.motivo;
+        } else if (isFailed && ag.resultado) {
+          statusReason = ag.resultado === "suspicious" ? "Sesi\u00F3n finaliz\u00F3 sin completar el trabajo (duraci\u00F3n insuficiente o sin PR)" : ag.resultado;
+        } else if (isIdle && matchSession) {
+          const idleMs = matchSession.last_activity_ts ? Date.now() - new Date(matchSession.last_activity_ts).getTime() : 0;
+          const idleMin = Math.round(idleMs / 60000);
+          if (matchSession.last_tool === "AskUserQuestion") {
+            statusReason = "Esperando respuesta del usuario (" + idleMin + "m)";
+          } else if (idleMin > 10) {
+            statusReason = "Sin actividad hace " + idleMin + "m \u2014 posible espera de permiso o rate limit";
+          } else {
+            statusReason = "Idle hace " + idleMin + "m \u2014 \u00FAltima acci\u00F3n: " + (matchSession.last_tool || "desconocida");
+          }
+        } else if (isPending && !isFailed) {
+          statusReason = "En cola \u2014 ser\u00E1 promovido cuando se libere un slot de ejecuci\u00F3n";
+        }
 
         unifiedAgentsHtml += `
           <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid ${statusColor};">
@@ -2211,7 +2299,10 @@ function renderHTML(data, theme) {
                 </div>
                 <div style="font-size:11px;color:var(--text-muted);">${formatIssueLink(ag.issue)} &middot; ${escHtml(ag.slug || "")} &middot; <span class="chip chip-blue" style="font-size:9px;padding:1px 4px;">${escHtml(ag.size || "?")}</span></div>
               </div>
-            </div>
+            </div>${statusReason ? `
+            <div style="margin:0 0 8px;padding:6px 8px;border-radius:4px;background:${isFailed ? '#f8717115' : isIdle ? '#fbbf2415' : '#60a5fa15'};border:1px solid ${isFailed ? '#f8717130' : isIdle ? '#fbbf2430' : '#60a5fa30'};font-size:10px;color:${isFailed ? '#f87171' : isIdle ? '#fbbf24' : '#60a5fa'};">
+              ${isFailed ? '&#10007;' : isIdle ? '&#9888;' : '&#9711;'} ${escHtml(statusReason)}
+            </div>` : ''}
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
               <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${pct}%;background:${barColor};"></div></div>
               <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${pct}%</span>
