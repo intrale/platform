@@ -654,12 +654,29 @@ function buildTimelineEvents(activityLogPath, agentes, plan) {
 function generateProposals(plan, issueInfos, problemsData, debtData, agentSummaries) {
     const proposals = [];
 
+    // Fuentes de datos: plan actual + roadmap (para sprint cerrado)
+    const allCompleted = [...(plan._completed || []), ...(plan.agentes || []).filter(a => a.status === "completed")];
+    const allIncomplete = plan._incomplete || [];
+
+    // Si el plan está vacío, intentar leer el sprint cerrado desde roadmap
+    if (allCompleted.length === 0 && allIncomplete.length === 0) {
+        try {
+            const roadmapPath = path.join(REPO_ROOT, "scripts", "roadmap.json");
+            const roadmap = JSON.parse(fs.readFileSync(roadmapPath, "utf8"));
+            // Buscar el último sprint done (el recién cerrado)
+            const doneSprints = (roadmap.sprints || []).filter(s => s.status === "done");
+            if (doneSprints.length > 0) {
+                const lastDone = doneSprints.sort((a, b) => (b.closed_at || "").localeCompare(a.closed_at || ""))[0];
+                for (const st of (lastDone.stories || [])) {
+                    if (st.status === "done") allCompleted.push({ issue: st.issue, titulo: st.title, stream: st.stream, size: st.effort });
+                    else if (st.status === "failed" || st.status === "moved") allIncomplete.push({ issue: st.issue, titulo: st.title, motivo: st.status, stream: st.stream });
+                }
+            }
+        } catch (e) { /* ignore */ }
+    }
+
     // 1. Propuestas desde problemas detectados en activity logs y PRs
-    const allProblems = [
-        ...(problemsData.activityProblems || []),
-        ...(problemsData.prProblems || [])
-    ];
-    // Agrupar problemas por área/tema
+    const allProblems = [...(problemsData.activityProblems || []), ...(problemsData.prProblems || [])];
     const problemAreas = {};
     for (const p of allProblems) {
         const area = p.area || p.category || "general";
@@ -667,17 +684,15 @@ function generateProposals(plan, issueInfos, problemsData, debtData, agentSummar
         problemAreas[area].push(p);
     }
     for (const [area, problems] of Object.entries(problemAreas)) {
-        if (problems.length >= 1) {
-            const descriptions = problems.slice(0, 3).map(p => p.message || p.description || p.text || "").filter(Boolean);
-            proposals.push({
-                title: `Resolver problemas recurrentes en ${area}`,
-                type: "bug",
-                priority: problems.length >= 3 ? "alta" : "media",
-                effort: problems.length >= 3 ? "medio" : "simple",
-                justification: `Se detectaron ${problems.length} problema(s) en ${area} durante el sprint: ${descriptions.join("; ").substring(0, 200)}`,
-                origin: "Problemas detectados en ejecución"
-            });
-        }
+        const descriptions = problems.slice(0, 3).map(p => p.message || p.description || p.text || "").filter(Boolean);
+        proposals.push({
+            title: `Resolver problemas detectados en ${area}`,
+            type: "bug",
+            priority: problems.length >= 3 ? "alta" : "media",
+            effort: problems.length >= 3 ? "medio" : "simple",
+            justification: `Se detectaron ${problems.length} problema(s) en ${area} durante el sprint: ${descriptions.join("; ").substring(0, 200) || "ver logs de ejecución"}`,
+            origin: "Problemas en ejecución"
+        });
     }
 
     // 2. Propuestas desde deuda técnica
@@ -687,28 +702,26 @@ function generateProposals(plan, issueInfos, problemsData, debtData, agentSummar
             type: "deuda",
             priority: "media",
             effort: "medio",
-            justification: debt.description || debt.details || `Deuda técnica identificada en ${debt.area || "el sprint"} que debería resolverse para mantener la calidad del código.`,
+            justification: debt.description || debt.details || `Deuda técnica identificada en ${debt.area || "el sprint"}.`,
             origin: `Issue #${debt.issue || "?"}`
         });
     }
 
-    // 3. Propuestas desde agentes fallidos o con problemas
-    const incompleteAgents = (plan._incomplete || []);
-    for (const ag of incompleteAgents) {
+    // 3. Issues fallidos → propuesta de reintento
+    for (const ag of allIncomplete) {
         proposals.push({
             title: `Reintentar: ${ag.titulo || ag.slug || "#" + ag.issue}`,
             type: "mejora",
             priority: "alta",
             effort: ag.size || "simple",
-            justification: `Issue #${ag.issue} no se completó en el sprint. Motivo: ${ag.motivo || ag.resultado || "desconocido"}. Requiere reintento o análisis del fallo.`,
-            origin: `Sprint ${plan.sprint_id || ""} — issue fallido`
+            justification: `Issue #${ag.issue} no se completó. Motivo: ${ag.motivo || ag.resultado || "desconocido"}.`,
+            origin: `Sprint ${plan.sprint_id || ""} — fallido`
         });
     }
 
-    // 4. Propuestas por patrones en los issues completados
-    const completedIssues = (plan._completed || []);
+    // 4. Propuestas por concentración de cambios en áreas
     const areas = {};
-    for (const c of completedIssues) {
+    for (const c of allCompleted) {
         const issueInfo = issueInfos[c.issue] || {};
         const labels = (issueInfo.labels || []).map(l => l.name || l);
         for (const label of labels) {
@@ -718,7 +731,6 @@ function generateProposals(plan, issueInfos, problemsData, debtData, agentSummar
             }
         }
     }
-    // Si se trabajó mucho en un área, sugerir tests/QA para esa área
     for (const [area, count] of Object.entries(areas)) {
         if (count >= 2) {
             proposals.push({
@@ -726,36 +738,58 @@ function generateProposals(plan, issueInfos, problemsData, debtData, agentSummar
                 type: "mejora",
                 priority: "baja",
                 effort: "medio",
-                justification: `Se tocaron ${count} issues en ${area} durante este sprint. Conviene reforzar la cobertura de tests y QA E2E para evitar regresiones.`,
-                origin: `Concentración de cambios en ${area}`
+                justification: `Se tocaron ${count} issues en ${area}. Reforzar tests y QA E2E para evitar regresiones.`,
+                origin: `Concentración de cambios`
             });
         }
     }
 
-    // 5. Propuestas de mejora de tooling basadas en sesiones de agentes
+    // 5. Mejora de tooling si sesiones largas
     const summaryValues = Object.values(agentSummaries || {});
     const avgActions = summaryValues.length > 0
-        ? Math.round(summaryValues.reduce((s, v) => s + (v.actionCount || 0), 0) / summaryValues.length)
-        : 0;
+        ? Math.round(summaryValues.reduce((s, v) => s + (v.actionCount || 0), 0) / summaryValues.length) : 0;
     if (avgActions > 100) {
         proposals.push({
             title: "Optimizar pipeline de agentes — sesiones muy largas",
-            type: "mejora",
-            priority: "media",
-            effort: "medio",
-            justification: `Las sesiones de agentes promediaron ${avgActions} acciones. Sesiones largas consumen más tokens y son propensas a errores. Evaluar si se puede dividir el trabajo o mejorar los prompts.`,
-            origin: "Métricas de sesiones del sprint"
+            type: "mejora", priority: "media", effort: "medio",
+            justification: `Promedio de ${avgActions} acciones por sesión. Evaluar división de trabajo o mejora de prompts.`,
+            origin: "Métricas de sesiones"
         });
     }
 
-    // Deduplicar por título similar
+    // 6. Si se completaron issues de infra/Telegram, sugerir tests de integración
+    const infraCompleted = allCompleted.filter(c => {
+        const info = issueInfos[c.issue] || {};
+        const labels = (info.labels || []).map(l => l.name || l);
+        return labels.some(l => l.includes("infra") || l.includes("tipo:infra"));
+    });
+    if (infraCompleted.length >= 2) {
+        proposals.push({
+            title: "Tests de integración para hooks y scripts de infra",
+            type: "mejora", priority: "media", effort: "medio",
+            justification: `Se completaron ${infraCompleted.length} issues de infra (${infraCompleted.map(c => "#" + c.issue).join(", ")}). Agregar tests automatizados para los hooks y scripts modificados.`,
+            origin: "Volumen de cambios infra"
+        });
+    }
+
+    // Si no hay propuestas, generar una genérica basada en el sprint
+    if (proposals.length === 0 && allCompleted.length > 0) {
+        proposals.push({
+            title: "Revisión de calidad post-sprint",
+            type: "mejora", priority: "baja", effort: "simple",
+            justification: `Sprint completó ${allCompleted.length} issues. Ejecutar revisión manual de las áreas afectadas para detectar oportunidades de mejora no captadas automáticamente.`,
+            origin: "Cierre de sprint"
+        });
+    }
+
+    // Deduplicar
     const seen = new Set();
     return proposals.filter(p => {
         const key = p.title.toLowerCase().substring(0, 40);
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
-    }).slice(0, 8); // Máximo 8 propuestas
+    }).slice(0, 8);
 }
 
 // --- Main ---
