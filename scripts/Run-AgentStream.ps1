@@ -127,13 +127,27 @@ try {
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
             if (-not $line) { continue }
-            $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
+            # Usar AppendAllText para evitar IOException por file lock cuando otro proceso tiene el log abierto
+            $retries = 3
+            while ($retries -gt 0) {
+                try {
+                    [System.IO.File]::AppendAllText($LogFile, $line + "`n", [System.Text.Encoding]::UTF8)
+                    break
+                } catch {
+                    $retries--
+                    if ($retries -gt 0) { Start-Sleep -Milliseconds 100 }
+                }
+            }
             Write-Host "  $line" -ForegroundColor Gray
         }
 
         $stderrOutput = $process.StandardError.ReadToEnd()
         if ($stderrOutput) {
-            $stderrOutput | Out-File -FilePath $LogFile -Encoding utf8 -Append
+            try {
+                [System.IO.File]::AppendAllText($LogFile, $stderrOutput, [System.Text.Encoding]::UTF8)
+            } catch {
+                Write-Host "  WARN: No se pudo escribir stderr al log: $_" -ForegroundColor DarkYellow
+            }
         }
 
         $process.WaitForExit()
