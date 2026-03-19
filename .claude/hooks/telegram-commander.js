@@ -24,6 +24,10 @@ const callbackHandler = require("./commander/callback-handler");
 const sessionManager = require("./commander/session-manager");
 const lockManager = require("./commander/lock-manager");
 
+// ─── Resumen inteligente de respuestas (#1681) ────────────────
+const responseSummarizer = require("./telegram-response-summarizer");
+const lastFullResponse = require("./telegram-last-full-response");
+
 // ─── Dependencias existentes (externas al commander) ─────────────────────────
 const { getPendingQuestions, getExpiredQuestions, resolveQuestion, getQuestionById, loadQuestions, saveQuestions } = require("./pending-questions");
 const { cleanup: cleanupMessages } = require("./telegram-cleanup");
@@ -293,15 +297,36 @@ async function sendResult(label, result) {
         return;
     }
 
+    let rawText = "";
     try {
         const json = JSON.parse(result.stdout);
-        const text = json.result || json.text || json.content || result.stdout;
-        output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(text);
+        rawText = json.result || json.text || json.content || result.stdout;
     } catch (e) {
-        output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(result.stdout || "(sin output)");
+        rawText = result.stdout || "(sin output)";
     }
 
-    await tgApi.sendLongMessage(output);
+    // Resumen inteligente (#1681): si la respuesta es larga, resumir y ofrecer detalle
+    if (!responseSummarizer.isShort(rawText)) {
+        lastFullResponse.save(rawText, label);
+        const summary = responseSummarizer.summarize(rawText);
+        output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(summary);
+        try {
+            const { registerMessage } = require("./telegram-message-registry");
+            const r = await tgApi.telegramPost("sendMessage", {
+                chat_id: tgApi.getChatId(),
+                text: output,
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: [[{ text: "📋 Ver detalle", callback_data: "show_detail" }]] }
+            }, 8000);
+            if (r && r.message_id) registerMessage(r.message_id, "command");
+        } catch (e) {
+            log("sendResult: error enviando con boton, fallback: " + e.message);
+            await tgApi.sendLongMessage(output);
+        }
+    } else {
+        output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(rawText);
+        await tgApi.sendLongMessage(output);
+    }
 }
 
 // ─── Contexto de comandos (compartido entre módulos) ─────────────────────────
@@ -785,6 +810,12 @@ async function pollingLoop() {
                         break;
                     case "restart":
                         await dispatcher.handleRestart();
+                        break;
+                    case "detalle":
+                        dispatcher.handleDetalle().catch(e => {
+                            log("Error en handleDetalle: " + e.message);
+                            tgApi.sendMessage("❌ Error: <code>" + tgApi.escHtml(e.message) + "</code>").catch(() => {});
+                        });
                         break;
                     case "unknown_command":
                         await tgApi.sendMessage("❓ Comando <code>/" + tgApi.escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
