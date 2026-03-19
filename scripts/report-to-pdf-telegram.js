@@ -28,6 +28,9 @@ const filteredArgs = args.filter(a => a !== '--stdin' && a !== '--md');
 const inputArg = filteredArgs[0];
 const caption = filteredArgs[1] || filteredArgs[0] || 'Reporte Intrale';
 
+// Reutilizar sanitizador centralizado (#1637/#1639)
+const { sanitize: sanitizeUtf8 } = require(path.join(__dirname, '..', '.claude', 'hooks', 'telegram-sanitizer'));
+
 async function readStdin() {
   return new Promise((resolve) => {
     let data = '';
@@ -153,12 +156,13 @@ function sendToTelegram(pdfPath, caption) {
     const pdfData = fs.readFileSync(pdfPath);
     const filename = path.basename(pdfPath);
     const boundary = 'boundary' + Date.now();
+    const safeCaption = sanitizeUtf8(caption);
 
     let body = '';
     body += '--' + boundary + '\r\n';
     body += 'Content-Disposition: form-data; name="chat_id"\r\n\r\n' + config.chat_id + '\r\n';
     body += '--' + boundary + '\r\n';
-    body += 'Content-Disposition: form-data; name="caption"\r\n\r\n' + caption + '\r\n';
+    body += 'Content-Disposition: form-data; name="caption"\r\n\r\n' + safeCaption + '\r\n';
     body += '--' + boundary + '\r\n';
     body += 'Content-Disposition: form-data; name="document"; filename="' + filename + '"\r\nContent-Type: application/pdf\r\n\r\n';
     const tail = '\r\n--' + boundary + '--\r\n';

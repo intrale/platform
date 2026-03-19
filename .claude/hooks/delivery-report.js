@@ -43,6 +43,10 @@ try {
 }
 
 const TMP_DIR = path.join(__dirname, "..", "tmp");
+
+// Reutilizar sanitizador centralizado (#1637/#1639)
+const { sanitize: sanitizeUtf8 } = require("./telegram-sanitizer");
+
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1500;
 
@@ -496,10 +500,10 @@ async function main() {
     }
 
     // Enviar a Telegram con reintentos
-    const caption = (data.state === "ERROR" ? "\u274C" : "\uD83D\uDE80") +
+    const caption = sanitizeUtf8((data.state === "ERROR" ? "\u274C" : "\uD83D\uDE80") +
         " Delivery " + (data.state === "ERROR" ? "fallido" : "completado") +
         " | " + data.branch +
-        (data.prNumber ? " | PR #" + data.prNumber : "");
+        (data.prNumber ? " | PR #" + data.prNumber : ""));
 
     let sent = false;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -514,7 +518,7 @@ async function main() {
                 break;
             } else {
                 // Fallback a texto plano
-                const text = buildTextFallback(data);
+                const text = sanitizeUtf8(buildTextFallback(data));
                 const result = await sendTelegramText(text);
                 if (result && result.result && result.result.message_id) {
                     registerMessage(result.result.message_id);

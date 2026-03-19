@@ -36,6 +36,9 @@ function execSafe(cmd, opts = {}) {
     }
 }
 
+// Reutilizar sanitizador centralizado (#1637/#1639)
+const { sanitize: sanitizeUtf8 } = require(path.join(__dirname, '..', '.claude', 'hooks', 'telegram-sanitizer'));
+
 // --- PDF + Telegram via script unificado ---
 function sendReportViaTelegram(htmlPath, caption) {
     if (!fs.existsSync(REPORT_TO_PDF_TELEGRAM)) {
@@ -760,7 +763,7 @@ async function main() {
         plan.agentes.some(a => p.headRefName === `agent/${a.issue}-${a.slug}`) && p.state === "MERGED"
     ).length;
     const sprintIdLabel = plan.sprint_id ? plan.sprint_id + " — " : "";
-    const caption = `📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`;
+    const caption = sanitizeUtf8(`📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`);
     sendReportViaTelegram(htmlPath, caption);
 
     // Paso 1: Tag de sprint (siempre, sin condiciones)
