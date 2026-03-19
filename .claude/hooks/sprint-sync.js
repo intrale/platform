@@ -409,6 +409,48 @@ async function runSync(opts) {
             sendTelegram("\u26a0\ufe0f <b>Sprint Sync \u2014 Alerta</b>:\n" + alertLines);
         }
 
+        // 6. Auto-detect sprint completion: all stories terminal (done/failed/moved)
+        var freshSprint = sprintData.getActiveSprint(roadmap);
+        if (freshSprint && Array.isArray(freshSprint.stories) && freshSprint.stories.length > 0) {
+            var terminalStatuses = { done: true, failed: true, moved: true };
+            var allTerminal = freshSprint.stories.every(function(s) { return terminalStatuses[s.status]; });
+            var doneCount = freshSprint.stories.filter(function(s) { return s.status === "done"; }).length;
+            var totalCount = freshSprint.stories.length;
+
+            if (allTerminal) {
+                log("Sprint " + freshSprint.id + " COMPLETO: " + doneCount + "/" + totalCount + " done — cerrando automaticamente");
+
+                // Mark sprint as done in roadmap
+                freshSprint.status = "done";
+                freshSprint.closed_at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+                freshSprint.velocity = doneCount;
+                sprintData.writeRoadmap(roadmap, "sprint-sync (auto-close)");
+
+                // Generate sprint report PDF + send to Telegram
+                var reportScript = path.join(__dirname, "..", "..", "scripts", "sprint-report.js");
+                var planFile = path.join(__dirname, "..", "..", "scripts", "sprint-plan.json");
+                if (fs.existsSync(reportScript)) {
+                    try {
+                        execSync('node "' + reportScript + '" "' + planFile + '"', {
+                            cwd: path.join(__dirname, "..", ".."), timeout: 60000, windowsHide: true
+                        });
+                        log("Reporte de sprint generado y enviado");
+                    } catch (e) {
+                        log("Error generando reporte de sprint: " + e.message);
+                    }
+                }
+
+                sendTelegram(
+                    "\ud83c\udfc1 <b>Sprint " + freshSprint.id + " FINALIZADO</b>\n\n" +
+                    "\u2705 Completados: " + doneCount + "/" + totalCount + "\n" +
+                    "Velocity: " + doneCount + "\n\n" +
+                    "Roadmap actualizado automaticamente."
+                );
+
+                allChanges.push("roadmap: sprint " + freshSprint.id + " cerrado automaticamente (all terminal)");
+            }
+        }
+
         return { ok: true, changes: allChanges };
 
     } catch (e) {
