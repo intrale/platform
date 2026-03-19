@@ -274,6 +274,28 @@ try {
     $diagJson = $deathDiag | ConvertTo-Json -Compress
     "DEATH_DIAG: $diagJson" | Out-File -FilePath $LogFile -Encoding utf8 -Append
 
+    # Recolectar métricas reales de consumo de API (#1683)
+    try {
+        $collectScript = Join-Path $mainRepoScripts "collect-api-usage.js"
+        if (-not (Test-Path $collectScript)) {
+            $collectScript = Join-Path $PSScriptRoot "collect-api-usage.js"
+        }
+        if (Test-Path $collectScript) {
+            $sprintArg = @()
+            $planPath2 = Join-Path $mainRepoScripts "sprint-plan.json"
+            if (Test-Path $planPath2) {
+                try {
+                    $plan2 = Get-Content $planPath2 -Raw | ConvertFrom-Json
+                    if ($plan2.sprint_id) { $sprintArg = @("--sprint", $plan2.sprint_id) }
+                } catch { }
+            }
+            $collectOut = & node $collectScript --log $LogFile --agent $AgentNum --issue $Issue --slug $Slug @sprintArg 2>&1
+            Write-Host "  [metrics] $collectOut" -ForegroundColor DarkCyan
+        }
+    } catch {
+        Write-Host "  [metrics] WARN: $_" -ForegroundColor DarkYellow
+    }
+
     Write-Host ""
     if ($useRunner) {
         Write-Host "  Resumen: pipeline=$pipelineMode, modelo=$Model" -ForegroundColor Cyan

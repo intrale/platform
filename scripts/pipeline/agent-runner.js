@@ -164,6 +164,29 @@ function runClaude(config) {
     });
 }
 
+// ─── Collect API usage metrics (#1683) ───────────────────────────────────────
+
+function collectApiMetrics(config) {
+    try {
+        const collectScript = path.join(REPO_ROOT, "scripts", "collect-api-usage.js");
+        if (!fs.existsSync(collectScript)) return;
+        let sprint = "";
+        try {
+            const plan = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "scripts", "sprint-plan.json"), "utf8"));
+            sprint = plan.sprint_id || "";
+        } catch (e) { /* sin sprint */ }
+        const sprintArg = sprint ? " --sprint " + sprint : "";
+        execSync(
+            'node "' + collectScript + '" --log "' + config.logFile + '" --agent ' + config.agentNum +
+            ' --issue ' + config.issue + ' --slug "' + config.slug + '"' + sprintArg,
+            { timeout: 30000, encoding: "utf8", windowsHide: true }
+        );
+        log("Métricas de API recolectadas");
+    } catch (e) {
+        log("WARN: collect-api-usage falló: " + (e.message || "").substring(0, 100));
+    }
+}
+
 // ─── Post-Claude pipeline ────────────────────────────────────────────────────
 
 function runPostPipeline(config, claudeResult) {
@@ -305,8 +328,12 @@ async function main() {
             JSON.stringify(diag, null, 2),
             "utf8"
         );
+
+        collectApiMetrics(config);
         process.exit(1);
     }
+
+    collectApiMetrics(config);
 
     log("=== Pipeline completo ===");
     process.exit(0);
