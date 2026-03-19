@@ -14,6 +14,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const readline = require("readline");
 
 // ─── Módulos del commander ───────────────────────────────────────────────────
 const tgApi = require("./commander/telegram-api");
@@ -145,11 +146,30 @@ async function executeClaudeQueued(prompt, extraArgs, options) {
     }
     const cmdId = _nextCmdNumber++;
     const label = (prompt || "").substring(0, 80);
+    const _qOpts = options || {};
     activeCommands.set(cmdId, { label, sessionId: null, startTime: Date.now() });
     log("Comando [Cmd #" + cmdId + "] registrado: " + label + " (activos: " + activeCommands.size + ")");
+
+    // ─── Traza de inicio en terminal ─────────────────────────────────────────
+    const _ts0 = new Date().toISOString().substring(11, 19);
+    const _displayLabel = _qOpts.cmdLabel || (_qOpts.skill ? "/" + _qOpts.skill : label.substring(0, 60));
+    const _fromSuffix = _qOpts.from ? " (from: " + _qOpts.from + ")" : "";
+    console.log("[36m[" + _ts0 + "] CMD: " + _displayLabel + _fromSuffix + "[0m");
+
+    const _startMs = Date.now();
     try {
         const result = await executeClaude(prompt, extraArgs, options);
         result.cmdId = cmdId;
+
+        // ─── Traza de fin en terminal ─────────────────────────────────────────
+        const _elapsed = ((Date.now() - _startMs) / 1000).toFixed(1);
+        const _tsEnd = new Date().toISOString().substring(11, 19);
+        if (result.code === 0) {
+            console.log("[32m[" + _tsEnd + "] DONE: " + _displayLabel + " (" + _elapsed + "s)[0m");
+        } else {
+            console.log("[31m[" + _tsEnd + "] ERROR: " + _displayLabel + " (exit " + result.code + ", " + _elapsed + "s)[0m");
+        }
+
         return result;
     } finally {
         activeCommands.delete(cmdId);
@@ -160,7 +180,7 @@ async function executeClaudeQueued(prompt, extraArgs, options) {
 function executeClaude(prompt, extraArgs, options) {
     const opts = options || {};
     return new Promise((resolve) => {
-        const args = ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions"].concat(extraArgs || []);
+        const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"].concat(extraArgs || []);
 
         let resumedSessionId = null;
         if (opts.useSession && activeCommands.size <= 1) {
@@ -192,10 +212,44 @@ function executeClaude(prompt, extraArgs, options) {
         proc.stdin.write(prompt);
         proc.stdin.end();
 
-        let stdout = "";
         let stderr = "";
+        let _finalResultJson = null;
+        let _toolCount = 0;
 
-        proc.stdout.on("data", (d) => { stdout += d.toString(); });
+        // ─── Procesamiento stream-json en tiempo real ─────────────────────────
+        const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
+
+        rl.on("line", (line) => {
+            if (!line.trim()) return;
+            try {
+                const evt = JSON.parse(line);
+                const ts = new Date().toISOString().substring(11, 19);
+
+                if (evt.type === "assistant" && evt.message && evt.message.content) {
+                    const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
+                    for (const block of blocks) {
+                        if (block.type === "tool_use") {
+                            _toolCount++;
+                            let snippet = (block.input && (block.input.command || block.input.pattern || block.input.file_path || block.input.description)) || "";
+                            if (snippet.length > 80) snippet = snippet.substring(0, 80);
+                            const tLabel = snippet
+                                ? "  [" + ts + "] [" + _toolCount + "] " + block.name + ": " + snippet
+                                : "  [" + ts + "] [" + _toolCount + "] " + block.name;
+                            console.log("\x1b[33m" + tLabel + "\x1b[0m");
+                        } else if (block.type === "text" && block.text) {
+                            let preview = block.text;
+                            if (preview.length > 120) preview = preview.substring(0, 120) + "...";
+                            console.log("\x1b[90m  [" + ts + "] > " + preview + "\x1b[0m");
+                        }
+                    }
+                } else if (evt.type === "result") {
+                    _finalResultJson = evt;
+                }
+            } catch (e) {
+                // línea no es JSON válido — ignorar
+            }
+        });
+
         proc.stderr.on("data", (d) => { stderr += d.toString(); });
 
         let resolved = false;
@@ -203,19 +257,15 @@ function executeClaude(prompt, extraArgs, options) {
             if (resolved) return;
             resolved = true;
             clearTimeout(timer);
+            const stdout = _finalResultJson ? JSON.stringify(_finalResultJson) : "";
             log("claude terminó con código " + code + " (stdout: " + stdout.length + " bytes, stderr: " + stderr.length + " bytes)");
             if (stderr) log("STDERR: " + stderr.substring(0, 500));
 
             let sessionId = null;
-            if (opts.useSession && code === 0) {
-                try {
-                    const json = JSON.parse(stdout);
-                    sessionId = json.session_id || null;
-                    if (sessionId) {
-                        sessionManager.saveSession(sessionId, opts.skill || null);
-                    }
-                } catch (e) {
-                    log("No se pudo parsear session_id del output: " + e.message);
+            if (opts.useSession && code === 0 && _finalResultJson) {
+                sessionId = _finalResultJson.session_id || null;
+                if (sessionId) {
+                    sessionManager.saveSession(sessionId, opts.skill || null);
                 }
             }
 
