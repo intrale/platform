@@ -1,6 +1,6 @@
 {
-  "updated_ts": "2026-03-19T15:12:59Z",
-  "updated_by": "scrum (cleanup duplicate SPR-044)",
+  "updated_ts": "2026-03-19T14:55:53.982Z",
+  "updated_by": "sprint-sync (auto-close)",
   "horizon_sprints": 5,
   "sprints": [
     {
@@ -198,6 +198,21 @@
       ]
     },
     {
+      "id": "SPR-044",
+      "tema": "Sprint cliente — tracking de pedidos",
+      "status": "done",
+      "size": "simple",
+      "stories": [
+        {
+          "issue": 722,
+          "title": "Detalle y seguimiento de pedido",
+          "effort": "medio",
+          "stream": "B",
+          "status": "done"
+        }
+      ]
+    },
+    {
       "id": "SPR-043",
       "tema": "Issues de hoy + bugs cross criticos",
       "status": "done",
@@ -326,13 +341,13 @@
         "waiting_sweep_ts": 1773928864609,
         "sentinel_ts": 1773928864609
       },
-      "closed_at": "2026-03-19T15:12:30Z",
+      "closed_at": "2026-03-19T14:55:53Z",
       "velocity": 5
     },
     {
       "id": "SPR-044",
       "tema": "Cross/infra — dashboard + validacion + cache",
-      "status": "active",
+      "status": "planned",
       "size": "simple",
       "stories": [
         {
@@ -370,8 +385,7 @@
           "stream": "E",
           "status": "planned"
         }
-      ],
-      "started_at": "2026-03-19T15:12:30Z"
+      ]
     },
     {
       "id": "SPR-045",
