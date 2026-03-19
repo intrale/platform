@@ -1,6 +1,6 @@
 {
-  "updated_ts": "2026-03-19T14:44:56.369Z",
-  "updated_by": "sprint-sync",
+  "updated_ts": "2026-03-19T14:55:53.982Z",
+  "updated_by": "sprint-sync (auto-close)",
   "horizon_sprints": 5,
   "sprints": [
     {
@@ -215,7 +215,7 @@
     {
       "id": "SPR-043",
       "tema": "Issues de hoy + bugs cross criticos",
-      "status": "active",
+      "status": "done",
       "size": "simple",
       "stories": [
         {
@@ -340,7 +340,9 @@
         "pipeline_mode": "scripts",
         "waiting_sweep_ts": 1773928864609,
         "sentinel_ts": 1773928864609
-      }
+      },
+      "closed_at": "2026-03-19T14:55:53Z",
+      "velocity": 5
     },
     {
       "id": "SPR-044",
