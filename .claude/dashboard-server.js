@@ -558,6 +558,33 @@ function collectData() {
     if (s.agent_name) agentNodes.add(normalizeSkillName(s.agent_name));
   }
 
+  // Inject "Start" node as sprint root — all agents connect from Start
+  if (_flowPlan && _flowIssues.size > 0) {
+    agentNodes.add("Start");
+    const allSprintStories = [
+      ...(_flowPlan.agentes || []),
+      ...(_flowPlan._queue || []),
+      ...(_flowPlan._completed || []),
+      ...(_flowPlan._incomplete || [])
+    ];
+    for (const ag of allSprintStories) {
+      // Find the agent_name for this issue from sessions
+      const agSession = sessions.find(s => {
+        const m = (s.branch || "").match(/(\d+)/);
+        return m && m[1] === String(ag.issue) && s.agent_name;
+      });
+      const agentNodeName = agSession ? normalizeSkillName(agSession.agent_name) : ("Agente " + ag.numero);
+      // Only add Start → Agent if the agent node exists (has transitions)
+      if (agentNodes.has(agentNodeName)) {
+        agentTransitions.push({ from: "Start", to: agentNodeName, _session: "synthetic", _synthetic: true });
+      } else {
+        // Agent hasn't started yet (queued) — still add the node + edge so it's visible
+        agentNodes.add(agentNodeName);
+        agentTransitions.push({ from: "Start", to: agentNodeName, _session: "synthetic", _synthetic: true });
+      }
+    }
+  }
+
   // Inject synthetic transitions for completed sprint agents (pipeline_mode=scripts)
   // When agent-runner.js handles post-Claude phases, the session ends at Review
   // but the agent actually reached Done via the external pipeline
