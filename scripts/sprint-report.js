@@ -801,15 +801,16 @@ async function main() {
     // /planner proponer analiza gaps del codebase y genera propuestas + botones Telegram
     log("--- Iniciando propuesta de nuevas historias ---");
     try {
-        const claudeCmd = process.platform === "win32" ? "claude" : "claude";
         const propPrompt = "Ejecutar /planner proponer — analizar gaps del codebase tras el sprint " +
             (plan.sprint_id || "") + " y proponer nuevas historias. Generar planner-proposals.json y enviar botones a Telegram.";
         const { spawn } = require("child_process");
-        const child = spawn(claudeCmd, ["--model", "sonnet", "-p", propPrompt], {
-            cwd: REPO_ROOT, detached: true, stdio: "ignore", windowsHide: true
+        // Use shell:true so it finds claude in PATH; detached + unref so it doesn't block
+        const child = spawn("claude", ["--model", "sonnet", "-p", propPrompt], {
+            cwd: REPO_ROOT, detached: true, stdio: "ignore", windowsHide: true, shell: true
         });
+        child.on("error", (e) => { log("Propuesta spawn error: " + e.message + " (no bloquea)"); });
         child.unref();
-        log("Propuesta de historias lanzada en background (PID " + child.pid + ")");
+        log("Propuesta de historias lanzada en background (PID " + (child.pid || "?") + ")");
     } catch (e) {
         log("Error lanzando propuesta de historias: " + e.message + " (no bloquea)");
     }
