@@ -1188,6 +1188,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   for (const s of sessionsList) {
     if (s.id && s.agent_name) sessionToRoot[s.id] = s.agent_name;
   }
+  // Map synthetic session ids to their agent names
+  for (const t of transitions) {
+    if (t._synthetic && t._session && t._session.startsWith("synthetic-")) {
+      // "synthetic-1659" → find agent name from real sessions
+      const issueStr = t._session.replace("synthetic-", "");
+      const realSess = sessionsList.find(s => { const m = (s.branch || "").match(/(\d+)/); return m && m[1] === issueStr && s.agent_name; });
+      if (realSess) sessionToRoot[t._session] = realSess.agent_name;
+    }
+  }
 
   // Identify which sessions belong to Main: any session whose transitions include
   // "Main" as source node (i.e. Claude-renamed sessions)
@@ -1266,7 +1275,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // --- Layered layout con grid routing ---
-  const nodeR = 44;
+  const nodeR = 56;
 
   // Build directed adjacency (from → [to])
   const outEdges = {};
@@ -1332,12 +1341,12 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
   const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
 
-  const colSpacing = 200;
-  const rowSpacing = 140;
+  const colSpacing = 240;
+  const rowSpacing = 160;
   const maxNodesInLayer = Math.max(...Object.values(layers).map(l => l.length));
   const padding = nodeR + 50;
-  const svgW = Math.max(800, numLayers * colSpacing + padding * 2);
-  const svgH = Math.max(500, maxNodesInLayer * rowSpacing + padding * 2);
+  const svgW = Math.max(1000, numLayers * colSpacing + padding * 2);
+  const svgH = Math.max(600, maxNodesInLayer * rowSpacing + padding * 2);
 
   // Posicionar nodos: columna = capa, fila = índice dentro de la capa (centrado)
   const positions = {};
