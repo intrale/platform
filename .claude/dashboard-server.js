@@ -98,6 +98,7 @@ const AGENT_ICON_MAP = {
   "Config": loadIconDataUri("config.svg"),
   "Done": loadIconDataUri("done.svg"),
   "Error": loadIconDataUri("failure.svg"),
+  "Start": loadIconDataUri("start.svg"),
 };
 const CLAUDE_ICONS = [
   loadIconDataUri("claude-1.svg"),
