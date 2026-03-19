@@ -181,6 +181,26 @@ function reconcileRoadmapVsGithub(roadmap, ghCmd) {
     for (var i = 0; i < sprint.stories.length; i++) {
         var story = sprint.stories[i];
 
+        // Skip stories already terminal (done/failed/moved)
+        if (story.status === "done" || story.status === "failed" || story.status === "moved") continue;
+
+        // For planned stories: check if issue was closed in GitHub (completed outside sprint flow)
+        if (story.status === "planned") {
+            try {
+                var issueStateCmd = "\"" + ghCmd + "\" issue view " + story.issue + " --repo intrale/platform --json state --jq '.state'";
+                var issueState2 = execSync(issueStateCmd, { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
+                if (issueState2 === "CLOSED") {
+                    story.status = "done";
+                    if (!story.agent) story.agent = {};
+                    story.agent.completed_at = new Date().toISOString();
+                    story.agent.result = "ok";
+                    changes.push("roadmap: #" + story.issue + " planned -> done (issue cerrado en GitHub)");
+                    log("Auto-healed #" + story.issue + " -> done (CLOSED while planned)");
+                }
+            } catch (e) { /* skip on error */ }
+            continue;
+        }
+
         if (story.status !== "in_progress") continue;
 
         // Auto-heal: stories in_progress sin agent metadata (bug: agent-concurrency-check no las pobló)
