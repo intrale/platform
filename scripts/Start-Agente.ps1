@@ -137,7 +137,9 @@ function Invoke-WorktreeCleanup {
     # Obtener slugs de agentes del sprint actual para no eliminarlos
     $currentSlugs = @()
     foreach ($a in $Plan.agentes) { $currentSlugs += "agent-$($a.issue)-$($a.slug)" }
-    foreach ($q in $Plan._queue)  { $currentSlugs += "agent-$($q.issue)-$($q.slug)" }
+    if ($Plan.PSObject.Properties.Match('_queue').Count -and $Plan._queue) {
+        foreach ($q in $Plan._queue) { $currentSlugs += "agent-$($q.issue)-$($q.slug)" }
+    }
 
     $removed = 0
     $kept    = 0
@@ -490,6 +492,21 @@ function Start-UnAgente {
         "-Model", $agentModel
     ) -PassThru
 
+    # Extraer PID de forma segura — $proc.Id puede fallar si el proceso terminó inmediatamente
+    $procId = $null
+    try {
+        if ($proc -and $proc.PSObject.Properties.Match('Id').Count) {
+            $procId = $proc.Id
+        }
+    } catch {
+        Write-Host ">> WARN: No se pudo obtener PID del proceso lanzado: $_" -ForegroundColor Yellow
+    }
+
+    if (-not $procId) {
+        Write-Host ">> WARN: Proceso lanzado pero sin PID accesible. Continuando sin tracking." -ForegroundColor Yellow
+        return $proc
+    }
+
     # Guardar PID en sprint-pids.json
     $pidsFile = Join-Path $PSScriptRoot "sprint-pids.json"
     $pidsData = if (Test-Path $pidsFile) {
@@ -497,11 +514,12 @@ function Start-UnAgente {
     } else {
         [PSCustomObject]@{}
     }
-    $pidsData | Add-Member -NotePropertyName "agente_$($Agente.numero)" -NotePropertyValue $proc.Id -Force
+    $pidsData | Add-Member -NotePropertyName "agente_$($Agente.numero)" -NotePropertyValue $procId -Force
     $pidsData | ConvertTo-Json | Set-Content $pidsFile
 
     # #1522: Escribir _pid, _launched_at y status=active en sprint-plan.json
     # Esto confirma que el agente realmente se lanzó (reconciliación atómica)
+    # CRITICO: Solo actualizar los campos del agente target, NO reescribir/remover otros agentes
     try {
         $freshPlan = Get-Content $PlanFile -Raw | ConvertFrom-Json
         $targetAgent = $freshPlan.agentes | Where-Object { $_.issue -eq $issue }
@@ -513,9 +531,9 @@ function Start-UnAgente {
                 $targetAgent | Add-Member -NotePropertyName 'status' -NotePropertyValue 'active' -Force
             }
             if ($targetAgent.PSObject.Properties.Match('_pid').Count) {
-                $targetAgent._pid = $proc.Id
+                $targetAgent._pid = $procId
             } else {
-                $targetAgent | Add-Member -NotePropertyName '_pid' -NotePropertyValue $proc.Id -Force
+                $targetAgent | Add-Member -NotePropertyName '_pid' -NotePropertyValue $procId -Force
             }
             $launchedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
             if ($targetAgent.PSObject.Properties.Match('_launched_at').Count) {
@@ -523,8 +541,15 @@ function Start-UnAgente {
             } else {
                 $targetAgent | Add-Member -NotePropertyName '_launched_at' -NotePropertyValue $launchedAt -Force
             }
-            $freshPlan | ConvertTo-Json -Depth 10 | Set-Content $PlanFile
-            Write-Host ">> sprint-plan.json actualizado: status=active, _pid=$($proc.Id)" -ForegroundColor Green
+            # Verificar integridad antes de escribir: asegurar que no se pierdan agentes
+            $originalAgentCount = ((Get-Content $PlanFile -Raw | ConvertFrom-Json).agentes | Measure-Object).Count
+            $newAgentCount = ($freshPlan.agentes | Measure-Object).Count
+            if ($newAgentCount -lt $originalAgentCount) {
+                Write-Host ">> WARN: Serialización perdería agentes ($originalAgentCount -> $newAgentCount). Abortando escritura." -ForegroundColor Red
+            } else {
+                $freshPlan | ConvertTo-Json -Depth 10 | Set-Content $PlanFile
+                Write-Host ">> sprint-plan.json actualizado: status=active, _pid=$procId" -ForegroundColor Green
+            }
         } else {
             Write-Host ">> WARN: Agente issue #$issue no encontrado en sprint-plan.json para actualizar _pid" -ForegroundColor Yellow
         }
@@ -532,7 +557,7 @@ function Start-UnAgente {
         Write-Host ">> WARN: No se pudo actualizar sprint-plan.json con _pid: $_" -ForegroundColor Yellow
     }
 
-    Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal (PID $($proc.Id))" -ForegroundColor Green
+    Write-Host ">> Agente $($Agente.numero) lanzado en nueva terminal (PID $procId)" -ForegroundColor Green
     return $proc
 }
 
@@ -562,7 +587,10 @@ function Start-UnAgenteConRetry {
         Write-Host ">> Verificando estabilidad del agente $($Agente.numero) (${ProbeDelay}s)..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $ProbeDelay
 
-        if (-not $proc.HasExited) {
+        # Safety check: $proc puede no tener HasExited si el proceso terminó y fue disposed
+        $procAlive = $false
+        try { $procAlive = -not $proc.HasExited } catch { $procAlive = $false }
+        if ($procAlive) {
             # Proceso sigue corriendo — lanzamiento exitoso
             return $proc
         }
@@ -596,7 +624,7 @@ function Start-UnAgenteConRetry {
 
         # Diagnosticar causa real cuando NO es rate limit
         if (-not $isRateLimit) {
-            $exitCodeInfo = if ($proc.HasExited) { "exit_code=$($proc.ExitCode)" } else { "proceso_vivo" }
+            $exitCodeInfo = try { if ($proc.HasExited) { "exit_code=$($proc.ExitCode)" } else { "proceso_vivo" } } catch { "proceso_disposed" }
             $lastLines = if (Test-Path $logFile) {
                 (Get-Content $logFile -ErrorAction SilentlyContinue | Select-Object -Last 5) -join " | "
             } else { "(sin log)" }
@@ -647,7 +675,8 @@ if ($Numero -eq "all") {
 
         $proc = Start-UnAgenteConRetry -Agente $agente
         if ($proc) {
-            $resultados["agente_$($agente.numero)"] = "OK (PID $($proc.Id))"
+            $safePid = try { $proc.Id } catch { "?" }
+            $resultados["agente_$($agente.numero)"] = "OK (PID $safePid)"
         } else {
             $resultados["agente_$($agente.numero)"] = "FALLO"
         }
@@ -685,7 +714,8 @@ if ($Numero -eq "all") {
             -ArgumentList $watcherScript `
             -WindowStyle Hidden -PassThru `
             -WorkingDirectory $MainRepo
-        Write-Host ">> Agent Watcher iniciado (PID $($watcher.Id), grace period 15 min) — fix #1553" -ForegroundColor Green
+        $watcherId = try { $watcher.Id } catch { "?" }
+        Write-Host ">> Agent Watcher iniciado (PID $watcherId, grace period 15 min) — fix #1553" -ForegroundColor Green
     }
 }
 else {
@@ -693,7 +723,7 @@ else {
     $agente = $Plan.agentes | Where-Object { $_.numero -eq $num }
 
     if (-not $agente) {
-        Write-Error "Agente $num no encontrado en el plan. Agentes disponibles: $($Plan.agentes | ForEach-Object { $_.numero } | Join-String -Separator ', ')"
+        Write-Error "Agente $num no encontrado en el plan. Agentes disponibles: $(($Plan.agentes | ForEach-Object { $_.numero }) -join ', ')"
         exit 1
     }
 
