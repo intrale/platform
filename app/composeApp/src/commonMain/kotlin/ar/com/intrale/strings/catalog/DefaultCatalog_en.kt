@@ -1,7 +1,6 @@
 package ar.com.intrale.strings.catalog
 
 import ar.com.intrale.strings.model.MessageKey
-
 internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.app_name to "Intrale",
     MessageKey.buttons_preview_login to "Sign in",
@@ -257,6 +256,30 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_cart_payment_method_loading to "Loading payment methods...",
     MessageKey.client_cart_payment_method_cash_hint to "Pay on delivery",
     MessageKey.client_cart_continue_missing_payment to "Select a payment method to continue.",
+    MessageKey.business_order_detail_title to "Order detail",
+    MessageKey.business_order_detail_back to "Back",
+    MessageKey.business_order_detail_error to "Could not load order detail",
+    MessageKey.business_order_detail_retry to "Retry",
+    MessageKey.business_order_detail_status_updated to "Order status updated",
+    MessageKey.business_order_detail_section_status to "Status",
+    MessageKey.business_order_detail_section_client to "Customer",
+    MessageKey.business_order_detail_section_address to "Delivery address",
+    MessageKey.business_order_detail_section_items to "Order items",
+    MessageKey.business_order_detail_section_history to "Status history",
+    MessageKey.business_order_detail_client_email to "Email",
+    MessageKey.business_order_detail_client_name to "Name",
+    MessageKey.business_order_detail_date to "Date",
+    MessageKey.business_order_detail_total to "Total",
+    MessageKey.business_order_detail_action_prepare to "Start preparation",
+    MessageKey.business_order_detail_action_send to "Send order",
+    MessageKey.business_order_detail_action_deliver to "Mark as delivered",
+    MessageKey.business_order_detail_action_cancel to "Cancel order",
+    MessageKey.business_order_detail_cancel_title to "Cancel order",
+    MessageKey.business_order_detail_cancel_message to "Please provide a reason for cancellation",
+    MessageKey.business_order_detail_cancel_reason_hint to "Cancellation reason",
+    MessageKey.business_order_detail_cancel_reason_required to "Reason is required",
+    MessageKey.business_order_detail_cancel_confirm to "Confirm cancellation",
+    MessageKey.business_order_detail_cancel_dismiss to "Back",
     MessageKey.client_profile_title to "Profile",
     MessageKey.client_profile_subtitle to "Manage your information and preferences",
     MessageKey.client_profile_retry to "Retry",
@@ -649,9 +672,4 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.banner_form_saved to "Banner saved successfully",
     MessageKey.banner_form_error to "We couldn't save the banner",
     MessageKey.banner_form_missing_business to "Select a business to continue",
-    MessageKey.client_cart_payment_method_title to "Payment method",
-    MessageKey.client_cart_payment_method_empty to "This store has no payment methods configured.",
-    MessageKey.client_cart_payment_method_loading to "Loading payment methods...",
-    MessageKey.client_cart_payment_method_cash_hint to "Pay on delivery",
-    MessageKey.client_cart_continue_missing_payment to "Select a payment method to continue.",
 )

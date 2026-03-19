@@ -93,6 +93,10 @@ import asdo.business.ToDoUpdateProduct
 import asdo.business.ToGetBusinesses
 import asdo.business.ToGetBusinessDashboardSummary
 import asdo.business.ToGetBusinessOrders
+import asdo.business.DoGetBusinessOrderDetail
+import asdo.business.DoUpdateBusinessOrderStatus
+import asdo.business.ToGetBusinessOrderDetail
+import asdo.business.ToUpdateBusinessOrderStatus
 import asdo.business.DoGetBusinessOrders
 import asdo.business.ToGetProduct
 import asdo.business.ToGetBusinessProducts
@@ -144,6 +148,10 @@ import ext.business.CommBannerService
 import ext.business.CommBusinessConfigService
 import ext.business.CommFontsService
 import ext.business.ClientGetBusinessOrdersService
+import ext.business.ClientGetBusinessOrderDetailService
+import ext.business.ClientUpdateBusinessOrderStatusService
+import ext.business.CommGetBusinessOrderDetailService
+import ext.business.CommUpdateBusinessOrderStatusService
 import ext.business.CommGetBusinessOrdersService
 import ext.business.ClientAssignOrderDeliveryPersonService
 import ext.business.CommAssignOrderDeliveryPersonService
@@ -209,6 +217,7 @@ import ui.sc.business.BannerFormScreen
 import ui.sc.business.BannerListScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
+import ui.sc.business.BusinessOrderDetailScreen
 import ui.sc.business.DashboardScreen
 import ui.sc.business.BusinessConfigScreen
 import ui.sc.business.PersonalizationScreen
@@ -284,6 +293,7 @@ public const val REQUEST_JOIN_BUSINESS = "requestJoinBusiness"
 public const val REVIEW_JOIN_BUSINESS = "reviewJoinBusiness"
 public const val PERSONALIZATION = "personalization"
 public const val BUSINESS_ORDERS = "businessOrders"
+public const val BUSINESS_ORDER_DETAIL = "businessOrderDetail"
 public const val BUSINESS_PRODUCTS = "businessProducts"
 public const val BUSINESS_PRODUCT_FORM = "businessProductForm"
 public const val BUSINESS_CATEGORIES = "businessCategories"
@@ -365,6 +375,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommReviewJoinBusinessService> { ClientReviewJoinBusinessService(instance()) }
     bindSingleton<CommGetBusinessDashboardSummaryService> { ClientGetBusinessDashboardSummaryService(instance(), instance()) }
     bindSingleton<CommGetBusinessOrdersService> { ClientGetBusinessOrdersService(instance(), instance()) }
+    bindSingleton<CommGetBusinessOrderDetailService> { ClientGetBusinessOrderDetailService(instance(), instance()) }
+    bindSingleton<CommUpdateBusinessOrderStatusService> { ClientUpdateBusinessOrderStatusService(instance(), instance()) }
     bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
     bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
     bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
@@ -377,6 +389,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
     bindSingleton<ToGetBusinessOrders> { DoGetBusinessOrders(instance()) }
+    bindSingleton<ToGetBusinessOrderDetail> { DoGetBusinessOrderDetail(instance()) }
+    bindSingleton<ToUpdateBusinessOrderStatus> { DoUpdateBusinessOrderStatus(instance()) }
     bindSingleton<ToDoListProducts> { DoListProducts(instance()) }
     bindSingleton<ToDoListCategories> { DoListCategories(instance()) }
     bindSingleton<ToDoCreateProduct> { DoCreateProduct(instance()) }
@@ -472,6 +486,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = REVIEW_JOIN_BUSINESS) { ReviewJoinBusinessScreen() }
     bindSingleton(tag = PERSONALIZATION) { PersonalizationScreen() }
     bindSingleton(tag = BUSINESS_ORDERS) { BusinessOrdersScreen() }
+    bindSingleton(tag = BUSINESS_ORDER_DETAIL) { BusinessOrderDetailScreen() }
     bindSingleton(tag = BUSINESS_PRODUCTS) { ProductListScreen() }
     bindSingleton(tag = BUSINESS_PRODUCT_FORM) { ProductFormScreen() }
     bindSingleton(tag = BUSINESS_CATEGORIES) { CategoryListScreen() }
@@ -551,6 +566,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_CONFIG))
                     add(instance(tag = TYPOGRAPHY_FONTS))
                     add(instance(tag = BUSINESS_ORDERS))
+                    add(instance(tag = BUSINESS_ORDER_DETAIL))
                     add(instance(tag = BUSINESS_PRODUCTS))
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
                     add(instance(tag = BUSINESS_CATEGORIES))

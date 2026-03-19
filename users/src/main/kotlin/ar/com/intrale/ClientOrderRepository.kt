@@ -58,6 +58,32 @@ class ClientOrderRepository {
         return created
     }
 
+    fun getBusinessOrder(business: String, orderId: String): BusinessOrderItem? =
+        orders.entries
+            .filter { (k, _) -> k.startsWith("${business.lowercase()}#") }
+            .flatMap { (k, list) ->
+                val clientEmail = k.substringAfter("#")
+                list.filter { it.id == orderId }
+                    .map { BusinessOrderItem(clientEmail = clientEmail, order = it.copy()) }
+            }
+            .firstOrNull()
+
+    fun updateOrderStatus(business: String, orderId: String, newStatus: String, reason: String? = null): BusinessOrderItem? {
+        val now = Instant.now().toString()
+        for ((k, list) in orders) {
+            if (!k.startsWith("${business.lowercase()}#")) continue
+            val clientEmail = k.substringAfter("#")
+            val index = list.indexOfFirst { it.id == orderId }
+            if (index >= 0) {
+                val order = list[index]
+                val updated = order.copy(status = newStatus, updatedAt = now)
+                list[index] = updated
+                return BusinessOrderItem(clientEmail = clientEmail, order = updated.copy())
+            }
+        }
+        return null
+    }
+
     private fun generateShortCode(): String {
         val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         return (1..6).map { chars.random() }.joinToString("")
