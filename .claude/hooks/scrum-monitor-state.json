@@ -1,8 +1,8 @@
 {
-  "last_check": 1773747322173,
-  "last_check_iso": "2026-03-17T11:35:22.173Z",
-  "last_health_level": "healthy",
-  "last_inconsistencias": 0,
-  "sprint_id": "SPR-036",
+  "last_check": 1773887693760,
+  "last_check_iso": "2026-03-19T02:34:53.760Z",
+  "last_health_level": "warning",
+  "last_inconsistencias": 2,
+  "sprint_id": "SPR-042",
   "sprint_status": "active"
 }

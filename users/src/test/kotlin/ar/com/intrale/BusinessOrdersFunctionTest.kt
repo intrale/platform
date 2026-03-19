@@ -11,11 +11,12 @@ class BusinessOrdersFunctionTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = testConfig("pizzeria")
     private val repository = ClientOrderRepository()
+    private val deliveryProfileRepository = DeliveryProfileRepository()
     private val validator = LocalJwtValidator()
 
     @Test
     fun `GET retorna lista vacía cuando el negocio no tiene pedidos`() = runBlocking {
-        val function = BusinessOrdersFunction(config, logger, repository, validator)
+        val function = BusinessOrdersFunction(config, logger, repository, deliveryProfileRepository, validator)
         val email = "admin@pizzeria.com"
 
         val response = function.securedExecute(
@@ -35,7 +36,7 @@ class BusinessOrdersFunctionTest {
 
     @Test
     fun `GET retorna todos los pedidos del negocio con datos correctos`() = runBlocking {
-        val function = BusinessOrdersFunction(config, logger, repository, validator)
+        val function = BusinessOrdersFunction(config, logger, repository, deliveryProfileRepository, validator)
         val email = "admin@pizzeria.com"
 
         repository.createOrder("pizzeria", "cliente1@test.com", ClientOrderPayload(
@@ -63,7 +64,7 @@ class BusinessOrdersFunctionTest {
     @Test
     fun `GET pedidos de un negocio no incluye pedidos de otro negocio`() = runBlocking {
         val configMulti = testConfig("pizzeria", "farmacia")
-        val function = BusinessOrdersFunction(configMulti, logger, repository, validator)
+        val function = BusinessOrdersFunction(configMulti, logger, repository, deliveryProfileRepository, validator)
         val email = "admin@pizzeria.com"
 
         repository.createOrder("pizzeria", "cliente1@test.com", ClientOrderPayload(status = "PENDING", total = 1000.0))
@@ -87,7 +88,7 @@ class BusinessOrdersFunctionTest {
 
     @Test
     fun `GET sin autenticación retorna 401`() = runBlocking {
-        val function = BusinessOrdersFunction(config, logger, repository, validator)
+        val function = BusinessOrdersFunction(config, logger, repository, deliveryProfileRepository, validator)
 
         // Llamar a execute (no securedExecute) para que se aplique la validación JWT
         val response = function.execute(
@@ -102,7 +103,7 @@ class BusinessOrdersFunctionTest {
 
     @Test
     fun `método no soportado retorna 400`() = runBlocking {
-        val function = BusinessOrdersFunction(config, logger, repository, validator)
+        val function = BusinessOrdersFunction(config, logger, repository, deliveryProfileRepository, validator)
         val email = "admin@pizzeria.com"
 
         val response = function.securedExecute(
@@ -120,7 +121,7 @@ class BusinessOrdersFunctionTest {
 
     @Test
     fun `GET retorna pedidos con clientEmail correcto`() = runBlocking {
-        val function = BusinessOrdersFunction(config, logger, repository, validator)
+        val function = BusinessOrdersFunction(config, logger, repository, deliveryProfileRepository, validator)
         val email = "admin@pizzeria.com"
 
         repository.createOrder("pizzeria", "juan@test.com", ClientOrderPayload(

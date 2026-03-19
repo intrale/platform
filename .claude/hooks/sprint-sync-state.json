@@ -1,8 +1,11 @@
 {
-  "lastRun": 1773744865143,
-  "lastRunIso": "2026-03-17T10:54:25.143Z",
-  "changes": [],
-  "sprintId": "SPR-036",
+  "lastRun": 1773887705340,
+  "lastRunIso": "2026-03-19T02:35:05.340Z",
+  "changes": [
+    "roadmap: reverse-sync desde sprint-plan.json modificado",
+    "alerta: #678 agente muerto sin PR ni worktree"
+  ],
+  "sprintId": "SPR-042",
   "sprintPlanChanged": false,
-  "roadmapChanged": false
+  "roadmapChanged": true
 }

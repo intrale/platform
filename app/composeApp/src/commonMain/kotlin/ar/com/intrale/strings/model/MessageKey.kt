@@ -644,4 +644,12 @@ enum class MessageKey {
     client_cart_payment_method_loading,
     client_cart_payment_method_cash_hint,
     client_cart_continue_missing_payment,
+    business_orders_assign_title,
+    business_orders_assign_unassigned,
+    business_orders_assign_select,
+    business_orders_assign_success,
+    business_orders_assign_error,
+    business_orders_assign_loading,
+    business_orders_delivery_people_empty,
+    business_orders_assigned_to,
 }

@@ -1,5 +1,5 @@
 {
-  "updated_ts": "2026-03-17T11:56:29Z",
+  "updated_ts": "2026-03-19T02:35:04Z",
   "sessions": [
     {
       "id": "a32950c5",
@@ -176,6 +176,104 @@
       "tokens_output": null,
       "tokens_total": null,
       "tokens_estimated": 216735
+    },
+    {
+      "id": "432772b5",
+      "sprint_id": "SPR-042",
+      "agent_name": "Agente (#676)",
+      "branch": "agent/676-asignacion-pedidos",
+      "started_ts": "2026-03-19T02:26:42Z",
+      "ended_ts": "2026-03-19T02:27:54Z",
+      "duration_min": 1,
+      "tool_counts": {
+        "Bash": 3
+      },
+      "total_tool_calls": 3,
+      "modified_files_count": 0,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 2580
+    },
+    {
+      "id": "5fcb1554",
+      "sprint_id": "SPR-042",
+      "agent_name": null,
+      "branch": "agent/676-asignacion-pedidos",
+      "started_ts": "2026-03-19T02:31:10Z",
+      "ended_ts": "2026-03-19T02:32:13Z",
+      "duration_min": 1,
+      "tool_counts": {
+        "Bash": 2
+      },
+      "total_tool_calls": 2,
+      "modified_files_count": 0,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 1945
+    },
+    {
+      "id": "5a76dcd1",
+      "sprint_id": "SPR-042",
+      "agent_name": "Agente (#722)",
+      "branch": "agent/722-order-detail",
+      "started_ts": "2026-03-18T23:31:59Z",
+      "ended_ts": "2026-03-19T02:34:54Z",
+      "duration_min": 183,
+      "tool_counts": {
+        "Bash": 260,
+        "Agent": 4,
+        "Edit": 15,
+        "TaskOutput": 5,
+        "ToolSearch": 3,
+        "Write": 16,
+        "EnterWorktree": 1,
+        "ExitWorktree": 1
+      },
+      "total_tool_calls": 305,
+      "modified_files_count": 27,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 317125
+    },
+    {
+      "id": "e93178f6",
+      "sprint_id": "SPR-042",
+      "agent_name": "Agente 3",
+      "branch": "agent/676-asignacion-pedidos",
+      "started_ts": "2026-03-19T02:09:22Z",
+      "ended_ts": "2026-03-19T02:35:04Z",
+      "duration_min": 26,
+      "tool_counts": {
+        "Bash": 31,
+        "Skill": 1,
+        "ToolSearch": 1,
+        "TodoWrite": 6,
+        "Edit": 1,
+        "Write": 1
+      },
+      "total_tool_calls": 41,
+      "modified_files_count": 1,
+      "tasks_created": 6,
+      "tasks_completed": 6,
+      "skills_invoked": [
+        "/ops"
+      ],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 43630
     }
   ]
 }
