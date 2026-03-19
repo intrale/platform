@@ -1531,6 +1531,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const ec = e.agentRoot ? edgeColor(e.agentRoot) : edgeColor(e.from);
     const markerId = "fa-" + ec.replace("#", "");
 
+    const edgeRootAttr = (e.agentRoot === "Main") ? ' data-flow-root="main"' : ' data-flow-root="agent"';
+    svg += '<g' + edgeRootAttr + '>';
     svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
     // Edge label: per-agent sequence (e.g. "1.2" = Agent 1, step 2)
     const label = e.agentSeq || String(e.seq);
@@ -1538,6 +1540,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const mx = ((x1 + x2) / 2).toFixed(1), my = ((y1 + y2) / 2).toFixed(1);
     svg += `<circle cx="${mx}" cy="${my}" r="${labelR}" fill="var(--bg, #0a0b10)" stroke="${ec}" stroke-width="1.5"/>`;
     svg += `<text x="${mx}" y="${(parseFloat(my) + 3.5).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 7 : 8}" font-weight="700" fill="${ec}">${label}</text>`;
+    svg += '</g>';
   }
 
   // Draw nodes
@@ -1565,8 +1568,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const effectiveR = hasRobot ? nodeR + 4 : nodeR;
     const effectiveImgSize = hasRobot ? effectiveR * 1.6 : imgSize;
 
+    // Determine if this node is only reachable from Main (for toggle visibility)
+    const nodeEdgesAsTarget = edgeList.filter(e => e.to === name);
+    const nodeEdgesAsSource = edgeList.filter(e => e.from === name);
+    const allEdges = [...nodeEdgesAsTarget, ...nodeEdgesAsSource];
+    const isMainOnly = name === "Main" || (allEdges.length > 0 && allEdges.every(e => e.agentRoot === "Main"));
+    const flowRootAttr = isMainOnly ? 'data-flow-root="main"' : 'data-flow-root="agent"';
+
     const activeClass = isActive ? ' node-active' : '';
-    svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" style="cursor:pointer;" ${filterAttr}>`;
+    svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;" ${filterAttr}>`;
     // Fondo del nodo
     svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"/>`;
     // Halo pulsante para nodos activos
@@ -3008,7 +3018,13 @@ function renderHTML(data, theme) {
     <!-- Fila 1: Flujo de agentes (ancho completo) #1378 -->
     <div class="grid-flow" data-panel="sessions">
       <div class="panel">
-        <div class="panel-title">Flujo de agentes <span class="chip chip-blue">${data.agentNodes.length} nodos</span></div>
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Flujo de agentes <span class="chip chip-blue">${data.agentNodes.length} nodos</span></span>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);cursor:pointer;font-weight:400;">
+            <input type="checkbox" id="toggle-main-flow" style="cursor:pointer;" onchange="toggleMainFlow(this.checked)">
+            Mostrar flujo Main
+          </label>
+        </div>
         ${flowGraphHtml}
       </div>
     </div>
@@ -3066,6 +3082,21 @@ function renderHTML(data, theme) {
     // Auto-scroll feed
     var feed = document.getElementById('activity-feed');
     if (feed) { feed.scrollTop = 0; }
+
+    // Toggle Main flow visibility (default: hidden)
+    function toggleMainFlow(show) {
+      document.querySelectorAll('[data-flow-root="main"]').forEach(function(el) {
+        el.style.display = show ? '' : 'none';
+      });
+      localStorage.setItem('showMainFlow', show ? '1' : '0');
+    }
+    // Apply saved preference (default: hidden)
+    (function() {
+      var show = localStorage.getItem('showMainFlow') === '1';
+      var cb = document.getElementById('toggle-main-flow');
+      if (cb) cb.checked = show;
+      toggleMainFlow(show);
+    })();
 
     // Flow graph tooltips
     document.querySelectorAll('.flow-node').forEach(function(node) {
