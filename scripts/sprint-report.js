@@ -760,60 +760,115 @@ async function main() {
 
     log(`Datos enriquecidos: ${activityProblems.length} problemas en activity, ${prProblems.length} en PRs, ${debtData.length} deuda técnica`);
 
-    // Generar HTML
+    // Generar HTML base del sprint
     const fecha = (plan.started_at || "").split("T")[0] || new Date().toISOString().split("T")[0];
     const htmlFileName = `reporte-sprint-${plan.sprint_id || fecha}.html`;
     const htmlPath = path.join(QA_DIR, htmlFileName);
-    const html = buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData);
+    let html = buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData);
 
+    // --- Sección de Costos (embebida en el mismo PDF) ---
+    log("--- Generando sección de costos ---");
+    try {
+        const costReport = require(path.join(__dirname, "cost-report.js"));
+        const costSection = costReport.buildCostSection(plan.sprint_id || null);
+        if (costSection) {
+            // Insertar antes del </body>
+            const costHtml = `
+<div style="page-break-before:always;"></div>
+<div style="border-top:3px solid #814dff;margin-top:40px;padding-top:20px;">
+  <h1 style="color:#814dff;font-size:28px;">Reporte de Costos</h1>
+  ${costSection}
+</div>`;
+            html = html.replace("</body>", costHtml + "\n</body>");
+            log("Sección de costos embebida en reporte");
+        }
+    } catch (e) {
+        log("Error generando sección de costos: " + e.message + " (no bloquea)");
+    }
+
+    // --- Sección de Próximos Sprints / Propuestas (desde roadmap.json) ---
+    log("--- Generando sección de próximos sprints ---");
+    try {
+        const roadmapPath = path.join(REPO_ROOT, "scripts", "roadmap.json");
+        if (fs.existsSync(roadmapPath)) {
+            const roadmap = JSON.parse(fs.readFileSync(roadmapPath, "utf8"));
+            const futureSprints = (roadmap.sprints || []).filter(s => s.status !== "done").slice(0, 3);
+            const deferredItems = (roadmap.deferred || []).slice(0, 10);
+
+            let nextHtml = `
+<div style="page-break-before:always;"></div>
+<div style="border-top:3px solid #34d399;margin-top:40px;padding-top:20px;">
+  <h1 style="color:#34d399;font-size:28px;">Próximos Sprints y Propuestas</h1>`;
+
+            if (futureSprints.length > 0) {
+                nextHtml += `<h2 style="color:#60a5fa;">Sprints planificados (${futureSprints.length})</h2>`;
+                nextHtml += `<table style="width:100%;border-collapse:collapse;margin:16px 0;">
+                  <tr style="background:#1e2030;color:#fff;">
+                    <th style="padding:10px;text-align:left;border:1px solid #333;">Sprint</th>
+                    <th style="padding:10px;text-align:left;border:1px solid #333;">Tema</th>
+                    <th style="padding:10px;text-align:left;border:1px solid #333;">Tamaño</th>
+                    <th style="padding:10px;text-align:left;border:1px solid #333;">Issues</th>
+                  </tr>`;
+                for (const spr of futureSprints) {
+                    const stories = spr.stories || [];
+                    const issueList = stories.map(s => `#${s.issue}`).join(", ");
+                    nextHtml += `<tr style="border:1px solid #333;">
+                      <td style="padding:8px;border:1px solid #333;font-weight:bold;">${spr.id}</td>
+                      <td style="padding:8px;border:1px solid #333;">${spr.tema || ""}</td>
+                      <td style="padding:8px;border:1px solid #333;">${spr.size || "?"}</td>
+                      <td style="padding:8px;border:1px solid #333;font-size:12px;">${issueList || "—"}</td>
+                    </tr>`;
+                }
+                nextHtml += `</table>`;
+            }
+
+            if (deferredItems.length > 0) {
+                nextHtml += `<h2 style="color:#fbbf24;">Backlog diferido (${deferredItems.length}${roadmap.deferred.length > 10 ? "+" : ""})</h2>`;
+                nextHtml += `<table style="width:100%;border-collapse:collapse;margin:16px 0;">
+                  <tr style="background:#1e2030;color:#fff;">
+                    <th style="padding:8px;text-align:left;border:1px solid #333;">Issue</th>
+                    <th style="padding:8px;text-align:left;border:1px solid #333;">Título</th>
+                    <th style="padding:8px;text-align:left;border:1px solid #333;">Razón</th>
+                  </tr>`;
+                for (const d of deferredItems) {
+                    nextHtml += `<tr style="border:1px solid #333;">
+                      <td style="padding:6px;border:1px solid #333;">#${d.number}</td>
+                      <td style="padding:6px;border:1px solid #333;">${d.title || ""}</td>
+                      <td style="padding:6px;border:1px solid #333;font-size:12px;">${d.reason || ""}</td>
+                    </tr>`;
+                }
+                nextHtml += `</table>`;
+            }
+
+            nextHtml += `</div>`;
+            html = html.replace("</body>", nextHtml + "\n</body>");
+            log("Sección de próximos sprints embebida en reporte");
+        }
+    } catch (e) {
+        log("Error generando sección de próximos sprints: " + e.message + " (no bloquea)");
+    }
+
+    // Escribir HTML unificado y generar PDF único
     ensureDir(QA_DIR);
     fs.writeFileSync(htmlPath, html, "utf8");
-    log(`HTML generado: ${htmlPath}`);
+    log(`HTML unificado generado: ${htmlPath}`);
 
-    // Generar PDF y enviar a Telegram via script unificado
     const mergedCount = prs.filter(p =>
         plan.agentes.some(a => p.headRefName === `agent/${a.issue}-${a.slug}`) && p.state === "MERGED"
     ).length;
     const sprintIdLabel = plan.sprint_id ? plan.sprint_id + " — " : "";
-    const caption = sanitizeUtf8(`📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged`);
+    const caption = sanitizeUtf8(`📋 ${sprintIdLabel}Sprint ${fecha} — ${plan.agentes.length} issues, ${mergedCount} PRs merged — Incluye costos y próximos sprints`);
     sendReportViaTelegram(htmlPath, caption);
 
-    // Paso 1: Tag de sprint (siempre, sin condiciones)
+    // Paso 1: Tag de sprint
     log("--- Iniciando sprint-tagger.js ---");
     execSafe(`node "${path.join(__dirname, "sprint-tagger.js")}" "${planPath}"`, { timeout: 60000 });
     log("--- sprint-tagger.js completado ---");
 
-    // Paso 2: Evaluar y crear release (autónomo)
+    // Paso 2: Evaluar y crear release
     log("--- Iniciando evaluate-and-release.js ---");
     execSafe(`node "${path.join(__dirname, "evaluate-and-release.js")}" "${planPath}"`, { timeout: 60000 });
     log("--- evaluate-and-release.js completado ---");
-
-    // Paso 3: Generar reporte de costos del sprint (fail-open)
-    const costReportScript = path.join(__dirname, "cost-report.js");
-    if (fs.existsSync(costReportScript)) {
-        log("--- Iniciando cost-report.js ---");
-        const sprintFlag = plan.sprint_id ? `--sprint ${plan.sprint_id}` : "";
-        execSafe(`node "${costReportScript}" --telegram ${sprintFlag}`, { timeout: 120000 });
-        log("--- cost-report.js completado ---");
-    }
-
-    // Paso 4: Propuesta de nuevas historias (lanzar sesión claude en background)
-    // /planner proponer analiza gaps del codebase y genera propuestas + botones Telegram
-    log("--- Iniciando propuesta de nuevas historias ---");
-    try {
-        const propPrompt = "Ejecutar /planner proponer — analizar gaps del codebase tras el sprint " +
-            (plan.sprint_id || "") + " y proponer nuevas historias. Generar planner-proposals.json y enviar botones a Telegram.";
-        const { spawn } = require("child_process");
-        // Use shell:true so it finds claude in PATH; detached + unref so it doesn't block
-        const child = spawn("claude", ["--model", "sonnet", "-p", propPrompt], {
-            cwd: REPO_ROOT, detached: true, stdio: "ignore", windowsHide: true, shell: true
-        });
-        child.on("error", (e) => { log("Propuesta spawn error: " + e.message + " (no bloquea)"); });
-        child.unref();
-        log("Propuesta de historias lanzada en background (PID " + (child.pid || "?") + ")");
-    } catch (e) {
-        log("Error lanzando propuesta de historias: " + e.message + " (no bloquea)");
-    }
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     log(`=== sprint-report.js completado en ${elapsed}s ===`);
