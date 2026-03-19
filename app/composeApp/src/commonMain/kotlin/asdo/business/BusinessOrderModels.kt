@@ -16,6 +16,7 @@ data class BusinessOrder(
     val clientEmail: String,
     val status: BusinessOrderStatus,
     val total: Double,
+    val assignedDeliveryPersonEmail: String? = null,
     val createdAt: String
 )
 
@@ -36,5 +37,11 @@ fun BusinessOrderDTO.toDomain(): BusinessOrder = BusinessOrder(
     clientEmail = clientEmail,
     status = status.toBusinessOrderStatus(),
     total = total,
+    assignedDeliveryPersonEmail = assignedDeliveryPersonEmail,
     createdAt = createdAt ?: ""
+)
+
+data class DeliveryPersonSummary(
+    val email: String,
+    val fullName: String
 )

@@ -28,7 +28,9 @@ data class ClientOrderDTO(
     val createdAt: String? = null,
     val updatedAt: String? = null,
     val promisedAt: String? = null,
-    val itemCount: Int = 0
+    val itemCount: Int = 0,
+    val assignedDeliveryPersonEmail: String? = null,
+    val statusHistory: List<ClientOrderStatusEventDTO> = emptyList()
 )
 
 @Serializable

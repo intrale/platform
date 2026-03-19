@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,9 +36,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import asdo.business.BusinessOrder
 import asdo.business.BusinessOrderDateFilter
 import asdo.business.BusinessOrderStatus
+import asdo.business.DeliveryPersonSummary
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import ui.sc.shared.Screen
 import ui.th.spacing
 
@@ -60,12 +72,31 @@ class BusinessOrdersScreen : Screen(BUSINESS_ORDERS_PATH) {
     private fun ScreenContent(viewModel: BusinessOrdersViewModel = viewModel { BusinessOrdersViewModel() }) {
         val state = viewModel.state
         val coroutineScope = rememberCoroutineScope()
+        val snackbarHostState = remember { SnackbarHostState() }
 
         LaunchedEffect(Unit) {
             coroutineScope.launch { viewModel.loadOrders() }
+            coroutineScope.launch { viewModel.loadDeliveryPeople() }
         }
 
-        Scaffold { padding ->
+        val assignSuccessMsg = Txt(MessageKey.business_orders_assign_success)
+        val assignErrorMsg = Txt(MessageKey.business_orders_assign_error)
+        LaunchedEffect(state.assignSuccess) {
+            if (state.assignSuccess != null) {
+                snackbarHostState.showSnackbar(assignSuccessMsg)
+                viewModel.clearAssignMessages()
+            }
+        }
+        LaunchedEffect(state.assignError) {
+            if (state.assignError != null) {
+                snackbarHostState.showSnackbar(assignErrorMsg)
+                viewModel.clearAssignMessages()
+            }
+        }
+
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) }
+        ) { padding ->
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -189,7 +220,25 @@ class BusinessOrdersScreen : Screen(BUSINESS_ORDERS_PATH) {
                     }
 
                     else -> items(state.filteredOrders, key = { it.id }) { order ->
-                        BusinessOrderCard(order = order)
+                        BusinessOrderCard(
+                            order = order,
+                            deliveryPeople = state.deliveryPeople,
+                            isLoadingDeliveryPeople = state.isLoadingDeliveryPeople,
+                            isAssigning = state.assigningOrderId == order.id,
+                            isExpanded = state.selectedOrderId == order.id,
+                            onToggleAssignment = {
+                                if (state.selectedOrderId == order.id) {
+                                    viewModel.selectOrderForAssignment(null)
+                                } else {
+                                    viewModel.selectOrderForAssignment(order.id)
+                                }
+                            },
+                            onAssign = { email ->
+                                coroutineScope.launch {
+                                    viewModel.assignDeliveryPerson(order.id, email)
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -198,7 +247,15 @@ class BusinessOrdersScreen : Screen(BUSINESS_ORDERS_PATH) {
 }
 
 @Composable
-private fun BusinessOrderCard(order: BusinessOrder) {
+private fun BusinessOrderCard(
+    order: BusinessOrder,
+    deliveryPeople: List<DeliveryPersonSummary>,
+    isLoadingDeliveryPeople: Boolean,
+    isAssigning: Boolean,
+    isExpanded: Boolean,
+    onToggleAssignment: () -> Unit,
+    onAssign: (String?) -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -245,6 +302,129 @@ private fun BusinessOrderCard(order: BusinessOrder) {
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary
                 )
+            }
+
+            Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2))
+
+            DeliveryPersonAssignmentSection(
+                assignedEmail = order.assignedDeliveryPersonEmail,
+                deliveryPeople = deliveryPeople,
+                isLoadingDeliveryPeople = isLoadingDeliveryPeople,
+                isAssigning = isAssigning,
+                isExpanded = isExpanded,
+                onToggle = onToggleAssignment,
+                onAssign = onAssign
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeliveryPersonAssignmentSection(
+    assignedEmail: String?,
+    deliveryPeople: List<DeliveryPersonSummary>,
+    isLoadingDeliveryPeople: Boolean,
+    isAssigning: Boolean,
+    isExpanded: Boolean,
+    onToggle: () -> Unit,
+    onAssign: (String?) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+    ) {
+        Text(
+            text = Txt(MessageKey.business_orders_assign_title),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        val displayName = if (assignedEmail != null) {
+            val person = deliveryPeople.find { it.email == assignedEmail }
+            if (person != null && person.fullName.isNotBlank()) {
+                Txt(MessageKey.business_orders_assigned_to, mapOf("name" to person.fullName))
+            } else {
+                Txt(MessageKey.business_orders_assigned_to, mapOf("name" to assignedEmail))
+            }
+        } else {
+            Txt(MessageKey.business_orders_assign_unassigned)
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (assignedEmail != null)
+                    MaterialTheme.colorScheme.primary
+                else
+                    MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (isAssigning) {
+                CircularProgressIndicator(
+                    modifier = Modifier.padding(MaterialTheme.spacing.x1)
+                )
+            } else {
+                Box {
+                    OutlinedButton(onClick = onToggle) {
+                        Text(Txt(MessageKey.business_orders_assign_select))
+                    }
+                    var dropdownExpanded by remember { mutableStateOf(false) }
+                    LaunchedEffect(isExpanded) { dropdownExpanded = isExpanded }
+
+                    DropdownMenu(
+                        expanded = dropdownExpanded,
+                        onDismissRequest = { onToggle() }
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = Txt(MessageKey.business_orders_assign_unassigned),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            },
+                            onClick = { onAssign(null) }
+                        )
+
+                        if (isLoadingDeliveryPeople) {
+                            DropdownMenuItem(
+                                text = { Text(text = Txt(MessageKey.business_orders_assign_loading), style = MaterialTheme.typography.bodySmall) },
+                                onClick = { },
+                                enabled = false
+                            )
+                        } else if (deliveryPeople.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text(text = Txt(MessageKey.business_orders_delivery_people_empty), style = MaterialTheme.typography.bodySmall) },
+                                onClick = { },
+                                enabled = false
+                            )
+                        } else {
+                            deliveryPeople.forEach { person ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                text = person.fullName.ifBlank { person.email },
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (person.email == assignedEmail) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                            if (person.fullName.isNotBlank()) {
+                                                Text(text = person.email, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        }
+                                    },
+                                    onClick = { onAssign(person.email) }
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

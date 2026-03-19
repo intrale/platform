@@ -24,6 +24,22 @@ class ClientOrderRepository {
             }
             .sortedByDescending { it.order.createdAt }
 
+    fun assignDeliveryPerson(business: String, orderId: String, deliveryPersonEmail: String?): ClientOrderPayload? {
+        val allOrders = orders.values.flatten()
+        val order = allOrders.firstOrNull { it.id == orderId } ?: return null
+        val updatedOrder = order.copy(
+            assignedDeliveryPersonEmail = deliveryPersonEmail,
+            updatedAt = java.time.Instant.now().toString()
+        )
+        orders.forEach { (key, list) ->
+            val index = list.indexOfFirst { it.id == orderId }
+            if (index >= 0) {
+                list[index] = updatedOrder
+            }
+        }
+        return updatedOrder
+    }
+
     fun createOrder(business: String, email: String, payload: ClientOrderPayload): ClientOrderPayload {
         val now = Instant.now().toString()
         val statusEvent = ClientOrderStatusEventDTO(

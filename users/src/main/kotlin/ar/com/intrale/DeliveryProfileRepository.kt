@@ -40,6 +40,13 @@ class DeliveryProfileRepository {
         return getProfile(business, email)
     }
 
+    fun listByBusiness(business: String): List<DeliveryProfileRecord> {
+        val prefix = business.lowercase() + "#"
+        return profiles.entries
+            .filter { (k, _) -> k.startsWith(prefix) }
+            .map { (_, record) -> record.copy() }
+    }
+
     fun getAvailability(business: String, email: String): DeliveryAvailabilityPayload {
         return availability.getOrDefault(key(business, email), DeliveryAvailabilityPayload(timezone = "UTC"))
     }

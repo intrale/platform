@@ -88,7 +88,11 @@
       "Bash(netstat:*)",
       "Bash(bash:*)",
       "Bash(cmd:*)",
-      "Bash(BRANCH=*)"
+      "Bash(BRANCH=*)",
+      "Bash(WT=*)",
+      "Bash(BASE=/c/Workspaces/Intrale/platform.agent-675-gestion-repartidores:*)",
+      "Bash(sed:*)",
+      "Bash(python:*)"
     ],
     "deny": [
       "Bash(git push --force*)",

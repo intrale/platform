@@ -1,6 +1,6 @@
 {
-  "updated_ts": "2026-03-18T23:30:00.000Z",
-  "updated_by": "scrum-master",
+  "updated_ts": "2026-03-19T02:35:05.337Z",
+  "updated_by": "sprint-sync",
   "horizon_sprints": 5,
   "sprints": [
     {
@@ -9,7 +9,6 @@
       "status": "done",
       "size": "simple",
       "started_at": "2026-03-18T00:20:00Z",
-      "completed_at": "2026-03-18T16:00:00Z",
       "stories": [
         {
           "issue": 677,
@@ -56,7 +55,7 @@
     {
       "id": "SPR-041",
       "tema": "Sprint UX — dashboard polish + QA E2E",
-      "status": "done",
+      "status": "planned",
       "size": "medio",
       "stories": [
         {
@@ -64,100 +63,35 @@
           "title": "Empty states y skeleton loading para Home dashboard",
           "effort": "simple",
           "stream": "C",
-          "status": "done"
+          "status": "planned"
         },
         {
           "issue": 1632,
           "title": "Accesibilidad (a11y) para Home dashboard",
           "effort": "simple",
           "stream": "C",
-          "status": "done"
+          "status": "planned"
         },
         {
           "issue": 1647,
           "title": "Mostrar tamaño (sizing) de sprints e issues en el dashboard",
           "effort": "simple",
           "stream": "E",
-          "status": "deferred",
-          "deferred_to": "backlog"
+          "status": "planned"
         },
         {
           "issue": 1633,
           "title": "QA E2E con video — Home dashboard",
           "effort": "medio",
           "stream": "E",
-          "status": "deferred",
-          "deferred_to": "backlog"
+          "status": "planned"
         },
         {
           "issue": 1634,
           "title": "QA E2E con video — Publicación de productos",
           "effort": "medio",
           "stream": "E",
-          "status": "deferred",
-          "deferred_to": "backlog"
-        }
-      ]
-    },
-    {
-      "id": "SPR-043",
-      "tema": "Sprint cliente — carrito + marketing negocio",
-      "status": "done",
-      "size": "medio",
-      "stories": [
-        {
-          "issue": 680,
-          "title": "Gestión banners y marketing del negocio",
-          "effort": "medio",
-          "stream": "C",
-          "status": "done"
-        },
-        {
-          "issue": 720,
-          "title": "Selección medio de pago",
-          "effort": "medio",
-          "stream": "B",
-          "status": "done"
-        },
-        {
-          "issue": 721,
-          "title": "Listado de pedidos del cliente",
-          "effort": "medio",
-          "stream": "B",
-          "status": "done"
-        },
-        {
-          "issue": 717,
-          "title": "Visualización del carrito",
-          "effort": "medio",
-          "stream": "B",
-          "status": "deferred",
-          "deferred_to": "backlog"
-        },
-        {
-          "issue": 718,
-          "title": "Confirmación de pedido y checkout",
-          "effort": "medio",
-          "stream": "B",
-          "status": "deferred",
-          "deferred_to": "backlog"
-        }
-      ]
-    },
-    {
-      "id": "SPR-044",
-      "tema": "Sprint cliente — tracking de pedidos",
-      "status": "done",
-      "size": "simple",
-      "started_at": "2026-03-18T20:42:08Z",
-      "completed_at": "2026-03-18T23:30:00Z",
-      "stories": [
-        {
-          "issue": 722,
-          "title": "Detalle y seguimiento de pedido",
-          "effort": "medio",
-          "stream": "B",
-          "status": "done"
+          "status": "planned"
         }
       ]
     },
@@ -166,70 +100,126 @@
       "tema": "Sprint negocio — pedidos + config delivery",
       "status": "active",
       "size": "medio",
-      "started_at": "2026-03-18T23:30:00Z",
       "stories": [
         {
           "issue": 674,
           "title": "Detalle de pedido y estado",
           "effort": "medio",
           "stream": "C",
-          "status": "in_progress"
+          "status": "in_progress",
+          "slug": "detalle-pedido-estado",
+          "agent": {
+            "prompt": "Implementar issue #674 BORD-002 — Detalle de pedido y actualización de estado para app de negocio. Leer issue con: gh issue view 674. Usar /android-dev para implementar, /delivery para entregar.",
+            "pid": 36004,
+            "promoted_at": null,
+            "launched_at": "2026-03-19T01:24:56.113Z",
+            "completed_at": null,
+            "result": null,
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": null,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
         },
         {
           "issue": 675,
           "title": "Gestión de repartidores",
           "effort": "medio",
           "stream": "C",
-          "status": "in_progress"
+          "status": "in_progress",
+          "slug": "gestion-repartidores",
+          "agent": {
+            "prompt": "Implementar issue #675 BDEL-001 — Gestión de repartidores del negocio. Leer issue con: gh issue view 675. Usar /android-dev para implementar, /delivery para entregar.",
+            "pid": 15544,
+            "promoted_at": null,
+            "launched_at": "2026-03-19T01:26:53.347Z",
+            "completed_at": null,
+            "result": null,
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": null,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
         },
         {
           "issue": 676,
           "title": "Asignación de pedidos a repartidores",
           "effort": "medio",
           "stream": "C",
-          "status": "in_progress"
+          "status": "failed",
+          "slug": "asignacion-pedidos-repartidores",
+          "agent": {
+            "prompt": null,
+            "pid": null,
+            "promoted_at": null,
+            "launched_at": null,
+            "completed_at": "2026-03-19T02:11:25.746Z",
+            "result": "failed",
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": 0,
+            "detected_by": null,
+            "failure_reason": "Sin PR — el agente no completó /delivery",
+            "waiting_since": null,
+            "waiting_reason": null
+          }
         },
         {
           "issue": 678,
           "title": "Config horarios y zonas de entrega",
           "effort": "medio",
           "stream": "C",
-          "status": "planned"
+          "status": "in_progress",
+          "slug": "config-horarios-zonas",
+          "agent": {
+            "prompt": "Implementar issue #678 BCONF-002 — Configuración de horarios de atención y zonas de entrega. Leer issue con: gh issue view 678. Usar /android-dev para implementar, /delivery para entregar.",
+            "pid": null,
+            "promoted_at": "2026-03-19T02:34:54.173Z",
+            "launched_at": null,
+            "completed_at": null,
+            "result": null,
+            "pr": null,
+            "retry_count": 0,
+            "duration_min": null,
+            "detected_by": null,
+            "failure_reason": null,
+            "waiting_since": null,
+            "waiting_reason": null
+          }
         },
         {
           "issue": 679,
           "title": "Config medios de pago",
           "effort": "simple",
           "stream": "C",
-          "status": "planned"
+          "status": "planned",
+          "slug": "config-medios-pago"
         }
-      ]
+      ],
+      "execution": {
+        "concurrency_limit": 3,
+        "pipeline_mode": "scripts",
+        "waiting_sweep_ts": 1773887694166,
+        "sentinel_ts": 1773887694166
+      }
     },
     {
-      "id": "SPR-045",
-      "tema": "Sprint deuda — QA E2E + carrito pendiente",
+      "id": "SPR-043",
+      "tema": "Sprint cliente — carrito + marketing negocio",
       "status": "planned",
       "size": "medio",
       "stories": [
         {
-          "issue": 1647,
-          "title": "Mostrar tamaño (sizing) de sprints e issues en el dashboard",
-          "effort": "simple",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "issue": 1633,
-          "title": "QA E2E con video — Home dashboard",
+          "issue": 680,
+          "title": "Gestión banners y marketing del negocio",
           "effort": "medio",
-          "stream": "E",
-          "status": "planned"
-        },
-        {
-          "issue": 1634,
-          "title": "QA E2E con video — Publicación de productos",
-          "effort": "medio",
-          "stream": "E",
+          "stream": "C",
           "status": "planned"
         },
         {
@@ -245,6 +235,35 @@
           "effort": "medio",
           "stream": "B",
           "status": "planned"
+        },
+        {
+          "issue": 720,
+          "title": "Selección medio de pago",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 721,
+          "title": "Listado de pedidos del cliente",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-044",
+      "tema": "Sprint cliente — tracking de pedidos",
+      "status": "done",
+      "size": "simple",
+      "stories": [
+        {
+          "issue": 722,
+          "title": "Detalle y seguimiento de pedido",
+          "effort": "medio",
+          "stream": "B",
+          "status": "done"
         }
       ]
     }

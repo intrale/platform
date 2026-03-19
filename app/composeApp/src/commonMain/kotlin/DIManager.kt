@@ -96,6 +96,10 @@ import asdo.business.ToGetBusinessOrders
 import asdo.business.DoGetBusinessOrders
 import asdo.business.ToGetProduct
 import asdo.business.ToGetBusinessProducts
+import asdo.business.DoAssignOrderDeliveryPerson
+import asdo.business.DoGetBusinessDeliveryPeople
+import asdo.business.ToDoAssignOrderDeliveryPerson
+import asdo.business.ToDoGetBusinessDeliveryPeople
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoConfirmSignUp
 import asdo.signup.DoSignUp
@@ -141,6 +145,10 @@ import ext.business.CommBusinessConfigService
 import ext.business.CommFontsService
 import ext.business.ClientGetBusinessOrdersService
 import ext.business.CommGetBusinessOrdersService
+import ext.business.ClientAssignOrderDeliveryPersonService
+import ext.business.CommAssignOrderDeliveryPersonService
+import ext.business.ClientGetBusinessDeliveryPeopleService
+import ext.business.CommGetBusinessDeliveryPeopleService
 import ext.business.ClientGetBusinessDashboardSummaryService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientCategoryService
@@ -363,6 +371,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommFontsService> { ClientFontsService(instance(), instance()) }
     bindSingleton<CommBusinessConfigService> { ClientBusinessConfigService(instance(), instance()) }
     bindSingleton<CommBannerService> { ClientBannerService(instance(), instance()) }
+    bindSingleton<CommAssignOrderDeliveryPersonService> { ClientAssignOrderDeliveryPersonService(instance(), instance()) }
+    bindSingleton<CommGetBusinessDeliveryPeopleService> { ClientGetBusinessDeliveryPeopleService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -389,6 +399,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoCreateBanner> { DoCreateBanner(instance()) }
     bindSingleton<ToDoUpdateBanner> { DoUpdateBanner(instance()) }
     bindSingleton<ToDoToggleBanner> { DoToggleBanner(instance()) }
+    bindSingleton<ToDoAssignOrderDeliveryPerson> { DoAssignOrderDeliveryPerson(instance()) }
+    bindSingleton<ToDoGetBusinessDeliveryPeople> { DoGetBusinessDeliveryPeople(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
