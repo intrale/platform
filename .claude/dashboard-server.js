@@ -576,7 +576,7 @@ function collectData() {
         // Si usó Agent tool pero no invocó skills, crear edge Main → cada agente del sprint
         // Esto refleja que Main coordina/lanza los agentes
         if (mainSkills.length === 0 && hasAgentTool) {
-          const sprintAgentNodes = [...agentNodes].filter(n => /^Agente\s+\d+$/i.test(n));
+          const sprintAgentNodes = [...agentNodes].filter(n => /^Agente\s+\d+/i.test(n));
           for (const an of sprintAgentNodes) {
             agentTransitions.push({ from: "Main", to: an, ts: s.last_activity_ts, _session: s.id, _synthetic: true });
           }
@@ -1287,7 +1287,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   const _out = {}, _in = {};
   for (const n of nodes) { _out[n] = new Set(); _in[n] = new Set(); }
   for (const e of edgeList) { if (_out[e.from]) _out[e.from].add(e.to); if (_in[e.to]) _in[e.to].add(e.from); }
-  for (const root of nodes.filter(n => /^Agente\s+\d+$/i.test(n))) {
+  for (const root of nodes.filter(n => /^Agente\s+\d+/i.test(n))) {
     // Find last node in this agent's chain
     const myEdges = edgeList.filter(e => e.agentRoot === root);
     let last = root;
@@ -1740,7 +1740,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     // Primero intentar robotMap (sprint-plan), luego patrón "Agente N"
     let robotId = robotMap[name];
     if (!robotId) {
-      const agentMatch = name.match(/^Agente\s+(\d+)$/i);
+      const agentMatch = name.match(/^Agente\s+(\d+)/i);
       if (agentMatch) robotId = ((parseInt(agentMatch[1], 10) - 1) % 10) + 1;
     }
     const hasRobot = robotId && ROBOT_ICONS[robotId];
@@ -1796,8 +1796,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       svg += `<circle cx="${(pos.x + effectiveR - 2).toFixed(1)}" cy="${(pos.y - effectiveR + 2).toFixed(1)}" r="10" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
       svg += `<text x="${(pos.x + effectiveR - 2).toFixed(1)}" y="${(pos.y - effectiveR + 6).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="700" fill="white">${robotId}</text>`;
     }
-    // Label below node — nombre completo sin truncar
-    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 20).toFixed(1)}" text-anchor="middle" font-size="17" fill="var(--text-dim)" font-weight="600">${escHtml(name)}</text>`;
+    // Label below node — nombre limpio (sin sufijo #issue que es solo para unicidad interna)
+    const displayName = name.replace(/\s+#\d+$/, "");
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 20).toFixed(1)}" text-anchor="middle" font-size="17" fill="var(--text-dim)" font-weight="600">${escHtml(displayName)}</text>`;
     // Issue number debajo del nombre para agentes raíz
     if (hasRobot) {
       const agentSession = sessionsList.find(s => s.agent_name === name);
@@ -2308,9 +2309,41 @@ function renderHTML(data, theme) {
       ? `<span class="sprint-status-badge sprint-finalizado">&#10003; FINALIZADO</span>`
       : `<span class="sprint-status-badge sprint-activo">ACTIVO</span>`;
 
+    // Calcular ETA del sprint basado en progreso y tiempo transcurrido
+    let sprintEtaHtml = "";
+    if (!isFinalizado && sprintPct > 0 && sprintPct < 100) {
+      const sprintStartedAt = data.sprintPlan.started_at;
+      if (sprintStartedAt) {
+        const elapsedMs = Date.now() - new Date(sprintStartedAt).getTime();
+        const elapsedMin = Math.round(elapsedMs / 60000);
+        const progress = sprintPct / 100;
+        const totalEstMin = elapsedMin / progress;
+        const remainMin = Math.max(0, Math.round(totalEstMin - elapsedMin));
+        if (remainMin > 0) {
+          const etaText = remainMin >= 60
+            ? "~" + Math.floor(remainMin / 60) + "h " + (remainMin % 60) + "min restantes"
+            : "~" + remainMin + "min restantes";
+          sprintEtaHtml = ` <span style="opacity:0.7;font-size:11px;">${etaText}</span>`;
+        } else {
+          sprintEtaHtml = ` <span style="opacity:0.7;font-size:11px;">finalizando...</span>`;
+        }
+      }
+    } else if (isFinalizado) {
+      // Mostrar duración total del sprint
+      const sprintStartedAt = data.sprintPlan.started_at;
+      if (sprintStartedAt) {
+        const totalMs = Date.now() - new Date(sprintStartedAt).getTime();
+        const totalMin = Math.round(totalMs / 60000);
+        const durText = totalMin >= 60
+          ? Math.floor(totalMin / 60) + "h " + (totalMin % 60) + "min"
+          : totalMin + "min";
+        sprintEtaHtml = ` <span style="opacity:0.7;font-size:11px;">dur: ${durText}</span>`;
+      }
+    }
+
     ejecutionHtml += `<div class="exec-subview">
       <div class="exec-subview-header">
-        <span class="exec-label">&#128640; Sprint ${sprintLabelId} &#9656; ${sprintEstadoBadge}</span>
+        <span class="exec-label">&#128640; Sprint ${sprintLabelId} &#9656; ${sprintEstadoBadge}${sprintEtaHtml}</span>
         <span class="exec-progress-badge">${completedCount}/${agentesTotal} &middot; ${sprintPct}%</span>
       </div>
       <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>`;
@@ -2439,10 +2472,24 @@ function renderHTML(data, theme) {
     const sprintId = data.sprintPlan.sprint_id || "Sprint";
     const sprintTema = data.sprintPlan.tema || "";
     const sprintPctColor = sprintPct >= 80 ? "var(--green)" : sprintPct >= 40 ? "#fbbf24" : "var(--text-muted)";
+    // ETA para el encabezado unificado del sprint
+    let unifiedSprintEtaHtml = "";
+    const unifiedSprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
+    const unifiedIsFinalizado = unifiedSprintEstado === "finalizado";
+    if (!unifiedIsFinalizado && sprintPct > 0 && sprintPct < 100 && data.sprintPlan.started_at) {
+      const elMs = Date.now() - new Date(data.sprintPlan.started_at).getTime();
+      const elMin = Math.round(elMs / 60000);
+      const prog = sprintPct / 100;
+      const remMin = Math.max(0, Math.round((elMin / prog) - elMin));
+      const etaTxt = remMin >= 60
+        ? "~" + Math.floor(remMin / 60) + "h " + (remMin % 60) + "min rest."
+        : "~" + remMin + "min rest.";
+      unifiedSprintEtaHtml = ` <span style="opacity:0.7;font-size:11px;">${etaTxt}</span>`;
+    }
     unifiedAgentsHtml += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
       <span style="font-size:14px;font-weight:700;color:var(--white);">${escHtml(sprintId)}</span>
       <span style="font-size:13px;font-weight:700;color:${sprintPctColor};">${sprintPct}%</span>
-      <span style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(sprintTema)}</span>
+      <span style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(sprintTema)}${unifiedSprintEtaHtml}</span>
       <span style="font-size:10px;color:var(--text-dim);">${spCompleted.length}/${allSprintAgentes.length} completados</span>
     </div>`;
 
@@ -2507,6 +2554,34 @@ function renderHTML(data, theme) {
           statusReason = "En cola \u2014 ser\u00E1 promovido cuando se libere un slot de ejecuci\u00F3n";
         }
 
+        // Calcular ETA por agente en tarjeta unificada
+        let cardEtaHtml = "";
+        if (isPending && !isFailed) {
+          cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">En cola</span>';
+        } else if (agStatus === "done" || isFailed) {
+          if (matchSession && matchSession.started_ts) {
+            const totalMs = (matchSession.last_activity_ts ? new Date(matchSession.last_activity_ts).getTime() : Date.now()) - new Date(matchSession.started_ts).getTime();
+            const totalMin = Math.round(totalMs / 60000);
+            const durTxt = totalMin >= 60
+              ? Math.floor(totalMin / 60) + "h " + (totalMin % 60) + "min"
+              : totalMin + "min";
+            cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">' + durTxt + '</span>';
+          }
+        } else if (matchSession && matchSession.started_ts && pct > 5) {
+          const elMs = Date.now() - new Date(matchSession.started_ts).getTime();
+          const elMin = Math.round(elMs / 60000);
+          const prog = pct / 100;
+          const remMin = Math.max(0, Math.round((elMin / prog) - elMin));
+          if (remMin > 0) {
+            const etaTxt = remMin >= 60
+              ? "~" + Math.floor(remMin / 60) + "h " + (remMin % 60) + "min rest."
+              : "~" + remMin + "min rest.";
+            cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">' + etaTxt + '</span>';
+          } else {
+            cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">finalizando...</span>';
+          }
+        }
+
         unifiedAgentsHtml += `
           <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid ${statusColor};">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
@@ -2527,7 +2602,7 @@ function renderHTML(data, theme) {
               <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${pct}%</span>
             </div>
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
-              <span>${actionCount} acc${duration ? ' &middot; ' + duration : ''}</span>
+              <span>${actionCount} acc${duration ? ' &middot; ' + duration : ''}${cardEtaHtml ? ' &middot; ' + cardEtaHtml : ''}</span>
               ${lastAction ? '<span>' + lastAction + '</span>' : ''}
             </div>${tasks.length > 0 ? `
             <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
