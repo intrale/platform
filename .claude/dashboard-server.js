@@ -510,18 +510,36 @@ function collectData() {
     }
   }
 
-  // Aggregate agent transitions from all sessions for flow graph
+  // Aggregate agent transitions from sessions of the ACTIVE sprint only
   // Usar normalizeSkillName para deduplicar nodos (#1542)
   const agentTransitions = [];
   const agentNodes = new Set();
   // Track which issues have transitions (to detect missing agents)
   const issuesWithTransitions = new Set();
+  // Filter: only sessions belonging to the current sprint's issues
+  const _flowPlan = readJson(SPRINT_PLAN_FILE);
+  const _flowIssues = new Set();
+  if (_flowPlan) {
+    for (const a of (_flowPlan.agentes || [])) _flowIssues.add(String(a.issue));
+    for (const a of (_flowPlan._queue || [])) _flowIssues.add(String(a.issue));
+    for (const a of (_flowPlan._completed || [])) _flowIssues.add(String(a.issue));
+    for (const a of (_flowPlan._incomplete || [])) _flowIssues.add(String(a.issue));
+  }
   for (const s of sessions) {
     const issueMatch = (s.branch || "").match(/(\d+)/);
     const issueNum = issueMatch ? issueMatch[1] : null;
+    // Skip sessions not related to the active sprint (unless it's Main session or no sprint)
+    const isMainSession = !s.branch || !s.branch.startsWith("agent/");
+    if (_flowIssues.size > 0 && !isMainSession && issueNum && !_flowIssues.has(issueNum)) continue;
     if (Array.isArray(s.agent_transitions)) {
+      // For sprint agent sessions, replace "Claude" origin with the agent name
+      // so each agent appears as its own root node in the flow graph
+      const isSprintAgent = s.branch && s.branch.startsWith("agent/") && s.agent_name;
+      const agentRootName = isSprintAgent ? normalizeSkillName(s.agent_name) : null;
       for (const t of s.agent_transitions) {
-        const normFrom = normalizeSkillName(t.from);
+        let normFrom = normalizeSkillName(t.from);
+        // Replace "Claude"/"Main" with the agent's own name for sprint agents
+        if (agentRootName && (normFrom === "Claude" || normFrom === "Main")) normFrom = agentRootName;
         const normTo = normalizeSkillName(t.to);
         agentTransitions.push({ ...t, from: normFrom, to: normTo, _session: s.id });
         agentNodes.add(normFrom);
