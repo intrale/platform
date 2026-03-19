@@ -568,20 +568,15 @@ function collectData() {
       ...(_flowPlan._incomplete || [])
     ];
     for (const ag of allSprintStories) {
-      // Find the agent_name for this issue from sessions
       const agSession = sessions.find(s => {
         const m = (s.branch || "").match(/(\d+)/);
         return m && m[1] === String(ag.issue) && s.agent_name;
       });
       const agentNodeName = agSession ? normalizeSkillName(agSession.agent_name) : ("Agente " + ag.numero);
-      // Only add Start → Agent if the agent node exists (has transitions)
-      if (agentNodes.has(agentNodeName)) {
-        agentTransitions.push({ from: "Start", to: agentNodeName, _session: "synthetic", _synthetic: true });
-      } else {
-        // Agent hasn't started yet (queued) — still add the node + edge so it's visible
-        agentNodes.add(agentNodeName);
-        agentTransitions.push({ from: "Start", to: agentNodeName, _session: "synthetic", _synthetic: true });
-      }
+      if (!agentNodes.has(agentNodeName)) agentNodes.add(agentNodeName);
+      // Use the agent's session id so the edge gets colored with the agent's color
+      const sessionId = agSession ? agSession.id : "synthetic-" + ag.issue;
+      agentTransitions.push({ from: "Start", to: agentNodeName, _session: sessionId, _synthetic: true });
     }
   }
 
@@ -590,9 +585,16 @@ function collectData() {
   // but the agent actually reached Done via the external pipeline
   const sprintPlanData = readJson(SPRINT_PLAN_FILE);
   if (sprintPlanData) {
+    // Helper: find session id for an issue
+    const findSessionForIssue = (issueStr) => {
+      const s = sessions.find(s => { const m = (s.branch || "").match(/(\d+)/); return m && m[1] === issueStr; });
+      return s ? s.id : "synthetic-" + issueStr;
+    };
+
     // Completed agents -> Done node
     const completedIssues = (sprintPlanData._completed || []).map(a => String(a.issue));
     for (const issueStr of completedIssues) {
+      const sid = findSessionForIssue(issueStr);
       const sessionTransitions = agentTransitions.filter(t => {
         const sess = sessions.find(s => s.id === t._session);
         if (!sess) return false;
@@ -601,16 +603,15 @@ function collectData() {
       });
       if (sessionTransitions.length > 0) {
         const lastNode = sessionTransitions[sessionTransitions.length - 1].to;
-        agentTransitions.push({ from: lastNode, to: "Done", _session: "synthetic", _synthetic: true });
-        agentNodes.add("Done");
-      } else if (!issuesWithTransitions.has(issueStr)) {
-        agentNodes.add("Done");
+        agentTransitions.push({ from: lastNode, to: "Done", _session: sid, _synthetic: true });
       }
+      agentNodes.add("Done");
     }
 
-    // Failed/incomplete agents -> Error node (same layer as Done)
+    // Failed/incomplete agents -> Error node
     const incompleteIssues = (sprintPlanData._incomplete || []).map(a => String(a.issue));
     for (const issueStr of incompleteIssues) {
+      const sid = findSessionForIssue(issueStr);
       const sessionTransitions = agentTransitions.filter(t => {
         const sess = sessions.find(s => s.id === t._session);
         if (!sess) return false;
@@ -619,9 +620,9 @@ function collectData() {
       });
       if (sessionTransitions.length > 0) {
         const lastNode = sessionTransitions[sessionTransitions.length - 1].to;
-        agentTransitions.push({ from: lastNode, to: "Error", _session: "synthetic", _synthetic: true });
+        agentTransitions.push({ from: lastNode, to: "Error", _session: sid, _synthetic: true });
       } else {
-        agentTransitions.push({ from: "Claude", to: "Error", _session: "synthetic", _synthetic: true });
+        agentTransitions.push({ from: "Claude", to: "Error", _session: sid, _synthetic: true });
       }
       agentNodes.add("Error");
     }
@@ -1296,9 +1297,30 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   for (const n of nodes) {
     if (layer[n] === undefined) layer[n] = Math.min(maxLayer + 1, nodes.length - 1);
   }
+
+  // Force specific layers for sprint structure:
+  // Layer 0: Start only
+  // Layer 1: Agent nodes only (Agente 1, Agente 2, etc.)
+  // Layer 2+: Skills (PO, BackendDev, Review, etc.)
+  // Last layer: Done, Error
+  if (nodes.includes("Start")) {
+    layer["Start"] = 0;
+    // Push all agent nodes to layer 1
+    const agentPattern = /^Agente\s+/i;
+    for (const n of nodes) {
+      if (agentPattern.test(n)) layer[n] = 1;
+    }
+    // Push all non-agent, non-terminal, non-Start nodes to layer >= 2
+    for (const n of nodes) {
+      if (n === "Start" || n === "Done" || n === "Error" || agentPattern.test(n)) continue;
+      if (layer[n] <= 1) layer[n] = 2;
+    }
+  }
+
   // Force terminal nodes to rightmost layer
-  if (nodes.includes("Done")) { layer["Done"] = maxLayer + 1; }
-  if (nodes.includes("Error")) { layer["Error"] = maxLayer + 1; }
+  const terminalLayer = Math.max(3, ...Object.values(layer)) + 1;
+  if (nodes.includes("Done")) { layer["Done"] = terminalLayer; }
+  if (nodes.includes("Error")) { layer["Error"] = terminalLayer; }
 
   // Agrupar nodos por capa
   const layers = {};
@@ -1309,12 +1331,12 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
   const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
 
-  const colSpacing = 160;
-  const rowSpacing = 130;
+  const colSpacing = 200;
+  const rowSpacing = 140;
   const maxNodesInLayer = Math.max(...Object.values(layers).map(l => l.length));
-  const padding = nodeR + 40;
-  const svgW = Math.max(600, numLayers * colSpacing + padding * 2);
-  const svgH = Math.max(400, maxNodesInLayer * rowSpacing + padding * 2);
+  const padding = nodeR + 50;
+  const svgW = Math.max(800, numLayers * colSpacing + padding * 2);
+  const svgH = Math.max(500, maxNodesInLayer * rowSpacing + padding * 2);
 
   // Posicionar nodos: columna = capa, fila = índice dentro de la capa (centrado)
   const positions = {};
@@ -1576,7 +1598,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const ec = e.agentRoot ? edgeColor(e.agentRoot) : edgeColor(e.from);
     const markerId = "fa-" + ec.replace("#", "");
 
-    const edgeRootAttr = (e.agentRoot === "Main") ? ' data-flow-root="main"' : ' data-flow-root="agent"';
+    const isStartEdge = e.from === "Start" || e.to === "Start";
+    const edgeRootAttr = isStartEdge ? ' data-flow-root="sprint"' : (e.agentRoot === "Main") ? ' data-flow-root="main"' : ' data-flow-root="agent"';
     svg += '<g' + edgeRootAttr + '>';
     svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
     // Edge label: per-agent sequence (e.g. "1.2" = Agent 1, step 2)
@@ -1613,12 +1636,23 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const effectiveR = hasRobot ? nodeR + 4 : nodeR;
     const effectiveImgSize = hasRobot ? effectiveR * 1.6 : imgSize;
 
-    // Determine if this node is only reachable from Main (for toggle visibility)
-    const nodeEdgesAsTarget = edgeList.filter(e => e.to === name);
-    const nodeEdgesAsSource = edgeList.filter(e => e.from === name);
-    const allEdges = [...nodeEdgesAsTarget, ...nodeEdgesAsSource];
-    const isMainOnly = name === "Main" || (allEdges.length > 0 && allEdges.every(e => e.agentRoot === "Main"));
-    const flowRootAttr = isMainOnly ? 'data-flow-root="main"' : 'data-flow-root="agent"';
+    // Determine visibility category for toggle:
+    // "sprint" = always visible (Start, Done, Error, Agent nodes)
+    // "agent" = visible by default (skills used by agents)
+    // "main" = hidden by default (Main session skills)
+    const isSprintInfra = name === "Start" || name === "Done" || name === "Error" || /^Agente\s+/i.test(name);
+    let flowRootAttr;
+    if (isSprintInfra) {
+      flowRootAttr = 'data-flow-root="sprint"';
+    } else if (name === "Main") {
+      flowRootAttr = 'data-flow-root="main"';
+    } else {
+      const nodeEdgesAsTarget = edgeList.filter(e => e.to === name);
+      const nodeEdgesAsSource = edgeList.filter(e => e.from === name);
+      const allNodeEdges = [...nodeEdgesAsTarget, ...nodeEdgesAsSource];
+      const isMainOnly = allNodeEdges.length > 0 && allNodeEdges.every(e => e.agentRoot === "Main");
+      flowRootAttr = isMainOnly ? 'data-flow-root="main"' : 'data-flow-root="agent"';
+    }
 
     const activeClass = isActive ? ' node-active' : '';
     svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;" ${filterAttr}>`;
