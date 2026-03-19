@@ -570,11 +570,38 @@ function Start-UnAgenteConRetry {
         # Proceso termino prematuramente — revisar si fue por rate limit
         $logFile = Join-Path $PSScriptRoot "logs\agente_$($Agente.numero).log"
         $isRateLimit = $false
+        $realCause = "desconocida"
         if (Test-Path $logFile) {
-            $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-            if ($logContent -match 'rate.?limit|hit.?your.?limit|You have hit|Claude.ai/api') {
-                $isRateLimit = $true
+            # Parsear JSON line por line para detectar rate limit real (status != "allowed")
+            # Evita falsos positivos: Claude siempre emite rate_limit_event con status="allowed" al inicio
+            foreach ($line in (Get-Content $logFile -ErrorAction SilentlyContinue)) {
+                try {
+                    $evt = $line | ConvertFrom-Json -ErrorAction Stop
+                    if ($evt.type -eq 'rate_limit_event' -and $evt.rate_limit_info.status -ne 'allowed') {
+                        $isRateLimit = $true
+                        $realCause = "rate_limit (status=$($evt.rate_limit_info.status), type=$($evt.rate_limit_info.rateLimitType))"
+                        break
+                    }
+                } catch { }
             }
+            # Fallback: detectar errores HTTP 429 explícitos en texto plano
+            if (-not $isRateLimit) {
+                $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+                if ($logContent -match 'HTTP 429|rate limit reached|You have hit your rate limit') {
+                    $isRateLimit = $true
+                    $realCause = "rate_limit (HTTP 429 o mensaje explícito)"
+                }
+            }
+        }
+
+        # Diagnosticar causa real cuando NO es rate limit
+        if (-not $isRateLimit) {
+            $exitCodeInfo = if ($proc.HasExited) { "exit_code=$($proc.ExitCode)" } else { "proceso_vivo" }
+            $lastLines = if (Test-Path $logFile) {
+                (Get-Content $logFile -ErrorAction SilentlyContinue | Select-Object -Last 5) -join " | "
+            } else { "(sin log)" }
+            $realCause = "$exitCodeInfo | ultimas_lineas: $lastLines"
+            Write-Host ">> Causa real de muerte: $realCause" -ForegroundColor DarkYellow
         }
 
         if (-not $isRateLimit) {
@@ -583,11 +610,11 @@ function Start-UnAgenteConRetry {
         }
 
         if ($attempt -ge $MaxRetries) {
-            Write-Host ">> Agente $($Agente.numero) fallo tras $MaxRetries intento(s) por rate limit." -ForegroundColor Red
+            Write-Host ">> Agente $($Agente.numero) fallo tras $MaxRetries intento(s) por rate limit ($realCause)." -ForegroundColor Red
             return $null
         }
 
-        Write-Host ">> Rate limit detectado en agente $($Agente.numero) (intento $attempt/$MaxRetries). Esperando ${RetryDelay}s..." -ForegroundColor Yellow
+        Write-Host ">> Rate limit detectado en agente $($Agente.numero) ($realCause) — intento $attempt/$MaxRetries. Esperando ${RetryDelay}s..." -ForegroundColor Yellow
         Start-Sleep -Seconds $RetryDelay
     }
 
