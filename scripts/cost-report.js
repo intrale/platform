@@ -416,4 +416,23 @@ function main() {
     log("=== cost-report.js completado ===");
 }
 
-main();
+// --- Exportable: generar solo la sección HTML del body (sin <html>/<head> wrapper) ---
+// Para uso desde sprint-report.js como sección embebida del reporte unificado
+function buildCostSection(sprintId) {
+    try {
+        const metrics = collectMetrics();
+        const sprintPlan = fs.existsSync(PLAN_FILE) ? JSON.parse(fs.readFileSync(PLAN_FILE, "utf8")) : null;
+        const html = buildHtml(metrics.sessions, costPerAction, weeklyBudget, sprintPlan, sprintId);
+        // Extract only the <body> content (between <body> and </body>)
+        const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+        return bodyMatch ? bodyMatch[1] : "";
+    } catch (e) {
+        return `<div style="color:#f87171;padding:20px;"><h3>Error generando sección de costos</h3><p>${e.message}</p></div>`;
+    }
+}
+
+if (require.main === module) {
+    main();
+}
+
+module.exports = { buildCostSection };
