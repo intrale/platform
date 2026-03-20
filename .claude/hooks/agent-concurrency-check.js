@@ -274,6 +274,24 @@ function loadPlan() {
 }
 
 function savePlan(plan) {
+    // Respetar _lock_until: no reorganizar si el plan fue protegido
+    try {
+        var existing = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+        if (existing._lock_until && new Date(existing._lock_until).getTime() > Date.now()) {
+            // Solo merge conservador de _pid/status, no reorganizar agentes/queue
+            var changed = false;
+            for (var ag of (existing.agentes || [])) {
+                var updated = (plan.agentes || []).find(function(a) { return a.issue === ag.issue; });
+                if (updated) {
+                    if (updated._pid && !ag._pid) { ag._pid = updated._pid; changed = true; }
+                    if (updated.status && updated.status !== ag.status) { ag.status = updated.status; changed = true; }
+                }
+            }
+            if (changed) fs.writeFileSync(PLAN_FILE, JSON.stringify(existing, null, 2) + "\n", "utf8");
+            return;
+        }
+    } catch (e) {}
+
     // Escribir a archivo temporal, luego renombrar (atómico en NTFS best-effort)
     const tmpFile = PLAN_FILE + ".tmp." + process.pid;
     fs.writeFileSync(tmpFile, JSON.stringify(plan, null, 2) + "\n", "utf8");

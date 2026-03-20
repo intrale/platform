@@ -157,6 +157,25 @@ function loadPlan() {
 }
 
 function savePlan(plan) {
+    // Respetar _lock_until: no sobreescribir si el plan fue protegido por Start-Agente.ps1
+    try {
+        var existing = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+        if (existing._lock_until && new Date(existing._lock_until).getTime() > Date.now()) {
+            // Preservar lock y solo actualizar campos que el watcher necesita (_pid, status)
+            // No reorganizar agentes/queue
+            log("savePlan: plan protegido hasta " + existing._lock_until + " — merge conservador");
+            var changed = false;
+            for (var ag of (existing.agentes || [])) {
+                var updated = (plan.agentes || []).find(function(a) { return a.issue === ag.issue; });
+                if (updated && updated._pid && !ag._pid) { ag._pid = updated._pid; changed = true; }
+            }
+            if (changed) {
+                fs.writeFileSync(PLAN_FILE, JSON.stringify(existing, null, 2) + "\n", "utf8");
+            }
+            return;
+        }
+    } catch (e) {}
+
     const tmpFile = PLAN_FILE + ".tmp." + process.pid;
     fs.writeFileSync(tmpFile, JSON.stringify(plan, null, 2) + "\n", "utf8");
     try {
