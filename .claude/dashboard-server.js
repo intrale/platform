@@ -1783,10 +1783,10 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
     // Edge label: per-agent sequence (e.g. "1.2" = Agent 1, step 2)
     const label = e.agentSeq || String(e.seq);
-    const labelR = label.length > 3 ? 14 : 12;
+    const labelR = label.length > 3 ? 16 : 14;
     const mx = ((x1 + x2) / 2).toFixed(1), my = ((y1 + y2) / 2).toFixed(1);
     svg += `<circle cx="${mx}" cy="${my}" r="${labelR}" fill="var(--bg, #0a0b10)" stroke="${ec}" stroke-width="1.5"/>`;
-    svg += `<text x="${mx}" y="${(parseFloat(my) + 4).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 10 : 11}" font-weight="700" fill="${ec}">${label}</text>`;
+    svg += `<text x="${mx}" y="${(parseFloat(my) + 5).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 12 : 14}" font-weight="700" fill="${ec}">${label}</text>`;
     svg += '</g>';
   }
 
@@ -1852,19 +1852,19 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       svg += `<image href="${iconUrl}" x="${(pos.x - effectiveImgSize / 2).toFixed(1)}" y="${(pos.y - effectiveImgSize / 2).toFixed(1)}" width="${effectiveImgSize.toFixed(0)}" height="${effectiveImgSize.toFixed(0)}" style="pointer-events:none;" filter="url(#icon-brighten)"/>`;
       if (isDone && !isActive) {
         svg += `<circle cx="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" cy="${(pos.y - effectiveImgSize/2 + 2).toFixed(1)}" r="5" fill="${color}"/>`;
-        svg += `<text x="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" y="${(pos.y - effectiveImgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="8" fill="white">&#10003;</text>`;
+        svg += `<text x="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" y="${(pos.y - effectiveImgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="10" fill="white">&#10003;</text>`;
       }
     } else if (isDone && !isActive) {
-      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 5).toFixed(1)}" text-anchor="middle" font-size="16" fill="${color}">&#10003;</text>`;
+      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 6).toFixed(1)}" text-anchor="middle" font-size="20" fill="${color}">&#10003;</text>`;
     }
     // Badge de robot ID para agentes raíz (#1544)
     if (hasRobot) {
-      svg += `<circle cx="${(pos.x + effectiveR - 2).toFixed(1)}" cy="${(pos.y - effectiveR + 2).toFixed(1)}" r="10" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
-      svg += `<text x="${(pos.x + effectiveR - 2).toFixed(1)}" y="${(pos.y - effectiveR + 6).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="700" fill="white">${robotId}</text>`;
+      svg += `<circle cx="${(pos.x + effectiveR - 2).toFixed(1)}" cy="${(pos.y - effectiveR + 2).toFixed(1)}" r="12" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
+      svg += `<text x="${(pos.x + effectiveR - 2).toFixed(1)}" y="${(pos.y - effectiveR + 7).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" fill="white">${robotId}</text>`;
     }
     // Label below node — nombre limpio (sin sufijo #issue que es solo para unicidad interna)
     const displayName = name.replace(/\s+#\d+$/, "");
-    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 20).toFixed(1)}" text-anchor="middle" font-size="17" fill="var(--text-dim)" font-weight="600">${escHtml(displayName)}</text>`;
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 22).toFixed(1)}" text-anchor="middle" font-size="20" fill="var(--text-dim)" font-weight="600">${escHtml(displayName)}</text>`;
     // Issue number debajo del nombre para agentes raíz
     if (hasRobot) {
       const agentSession = sessionsList.find(s => s.agent_name === name);
@@ -1873,7 +1873,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       const issueNum = branchMatch ? branchMatch[1] : (agentIssueMap && agentIssueMap[name]);
       if (issueNum) {
         const issueUrl = "https://github.com/intrale/platform/issues/" + issueNum;
-        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 38).toFixed(1)}" text-anchor="middle" font-size="15" fill="${isQueued ? '#6C7086' : '#60a5fa'}" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${issueNum}</text></a>`;
+        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 42).toFixed(1)}" text-anchor="middle" font-size="18" fill="${isQueued ? '#6C7086' : '#60a5fa'}" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${issueNum}</text></a>`;
       }
     }
     svg += `</g>`;
@@ -1884,7 +1884,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const divY = agentZoneH + 10;
     svg += `<g data-flow-root="main">`;
     svg += `<line x1="${padding}" y1="${divY}" x2="${svgW - padding}" y2="${divY}" stroke="var(--border, #2a2d3a)" stroke-width="1" stroke-dasharray="6 4" opacity="0.5"/>`;
-    svg += `<text x="${padding + 4}" y="${divY - 6}" font-size="13" fill="var(--text-muted, #6C7086)" font-weight="500" opacity="0.7">Main</text>`;
+    svg += `<text x="${padding + 4}" y="${divY - 6}" font-size="16" fill="var(--text-muted, #6C7086)" font-weight="500" opacity="0.7">Main</text>`;
     svg += `</g>`;
   }
 
