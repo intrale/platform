@@ -2613,6 +2613,7 @@ function renderHTML(data, theme) {
         const icon = AGENT_ICONS[agentName] || agentIconHtml(agentName);
         const gradient = AGENT_GRADIENTS[agentName] || AGENT_GRADIENTS["Claude"];
         const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+        const isFailed = sec.label.includes("FALLIDO");
         // Para agentes done/failed, calcular duración real (started → last_activity), no hasta ahora
         let duration = "";
         if (matchSession && matchSession.started_ts) {
@@ -2633,7 +2634,6 @@ function renderHTML(data, theme) {
         let pct = agStatus === "done" ? 100 : tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
 
         const isBlocked = matchSession && blockedPids.has(matchSession.id);
-        const isFailed = sec.label.includes("FALLIDO");
         const isIdle = agStatus === "idle";
         const isPending = agStatus === "pending" || sec.label.includes("COLA");
         const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : isFailed ? "#f87171" : statusColor;
