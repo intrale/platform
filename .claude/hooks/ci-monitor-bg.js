@@ -570,6 +570,24 @@ async function main() {
                                 msg += "\n<b>Sugerencia:</b> " + analysis.suggestions[0];
                             }
                         }
+
+                        // Auto-reparacion CI (#1656): relanzar agente si la rama es agent/*
+                        if (BRANCH.startsWith("agent/")) {
+                            try {
+                                const ciAutoRepair = require("./ci-auto-repair");
+                                await ciAutoRepair.triggerRepair({
+                                    branch: BRANCH,
+                                    sha: SHA,
+                                    prNumber: prNumber || null,
+                                    runId: runId,
+                                    runUrl: runUrl,
+                                    analysis: analysis,
+                                    logs: logs
+                                });
+                            } catch (eRepair) {
+                                log("ci-auto-repair: error al disparar reparacion: " + eRepair.message);
+                            }
+                        }
                     } catch (e) {
                         log("Auto-builder: error en análisis: " + e.message);
                     }

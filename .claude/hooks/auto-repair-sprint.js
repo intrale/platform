@@ -267,6 +267,21 @@ function updateSprintPlan(issueNumber, newStatus) {
                     if (started) duracion_min = Math.round((Date.now() - started) / 60000);
                 }
 
+                // No mover a _completed si CI tiene errores pendientes (#1656)
+                let ciClean = true;
+                try { ciClean = require("./ci-auto-repair").isCIClean(agent); } catch (e) {}
+                if (!ciClean) {
+                    agent.ci_status = agent.ci_status || "ci-failed";
+                    agent.resultado = "ci-blocked";
+                    agent.motivo = "CI failure pendiente";
+                    agent.status = "ci-failed";
+                    if (!Array.isArray(plan.agentes)) plan.agentes = [];
+                    plan.agentes.push(agent);
+                    log("updateSprintPlan: #" + issueNumber + " bloqueado por CI rojo");
+                    fs.writeFileSync(SPRINT_PLAN_FILE, JSON.stringify(plan, null, 2), "utf8");
+                    return true;
+                }
+
                 const validation = validateCompletionCriteria(duracion_min, prStatus, branch);
                 if (validation.suspicious) {
                     // Validación fallida → marcar como suspicious en _incomplete[]
@@ -405,6 +420,21 @@ async function repairInconsistencia(token, inconsistencia, dryRun) {
             } else {
                 result.status = "notified";
                 result.details = { alert_sent: true };
+            }
+            break;
+        }
+
+        case "ci_failed": {
+            // CI rojo en PR de agente: mantener en agentes (no mover a _completed)
+            if (!dryRun) {
+                await commentOnIssue(issue,
+                                     "CI rojo detectado — completion bloqueada hasta que CI pase. Auto-repair en curso.");
+                updateSprintPlan(issue, "ci-failed");
+                result.status = "ok";
+                result.details = { notified: true, blocked_completion: true };
+            } else {
+                result.status = "dry_run";
+                result.details = { would_block_completion: true };
             }
             break;
         }
