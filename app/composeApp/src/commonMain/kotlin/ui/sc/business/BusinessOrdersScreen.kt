@@ -250,15 +250,14 @@ class BusinessOrdersScreen : Screen(BUSINESS_ORDERS_PATH) {
 @Composable
 private fun BusinessOrderCard(
     order: BusinessOrder,
-    deliveryPeople: List<DeliveryPersonSummary>,
-    isLoadingDeliveryPeople: Boolean,
-    isAssigning: Boolean,
-    isExpanded: Boolean,
-    onToggleAssignment: () -> Unit,
-    onAssign: (String?) -> Unit
+    onClick: () -> Unit = {},
+    deliveryPeople: List<DeliveryPersonSummary> = emptyList(),
+    isLoadingDeliveryPeople: Boolean = false,
+    isAssigning: Boolean = false,
+    isExpanded: Boolean = false,
+    onToggleAssignment: () -> Unit = {},
+    onAssign: (String?) -> Unit = {}
 ) {
-    Card(
-private fun BusinessOrderCard(order: BusinessOrder, onClick: () -> Unit = {}) {
     Card(onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(

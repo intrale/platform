@@ -1,0 +1,59 @@
+appId: com.intrale.app.client
+---
+# Flujo: Registro Platform Admin (#1093)
+- launchApp:
+    clearState: true
+
+# Saltar onboarding (4 paginas, aparece en primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 15000
+- tapOn:
+    text: "Saltar"
+
+# Esperar Home y navegar a registro
+- extendedWaitUntil:
+    visible:
+      text: "Registrarme"
+    timeout: 10000
+- tapOn:
+    text: "Registrarme"
+
+# Esperar pantalla de seleccion de perfil
+- extendedWaitUntil:
+    visible:
+      text: "Registro Platform Admin"
+    timeout: 10000
+
+# Screenshot de la seleccion de perfil
+- takeScreenshot: select-profile-screen
+
+# Navegar al formulario de Platform Admin
+- tapOn:
+    text: "Registro Platform Admin"
+
+# Esperar formulario de registro Platform Admin
+- extendedWaitUntil:
+    visible:
+      text: "Registrar administrador"
+    timeout: 10000
+
+# Screenshot del formulario vacio
+- takeScreenshot: signup-platform-admin-empty
+
+# Ingresar email de prueba
+- tapOn:
+    id: "field_Correo electrónico"
+- inputText: "admin-qa-test@intrale.com"
+
+# Screenshot con email ingresado
+- takeScreenshot: signup-platform-admin-filled
+
+# Intentar enviar sin completar (validacion)
+- tapOn:
+    text: "Registrar administrador"
+- waitForAnimationToEnd
+
+# Screenshot del resultado (validacion o envio)
+- takeScreenshot: signup-platform-admin-submitted
