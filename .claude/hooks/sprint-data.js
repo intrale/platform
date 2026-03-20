@@ -242,6 +242,18 @@ function getConcurrencyLimit(sp) {
 // --- Backward-compat: generar sprint-plan.json desde roadmap.json ---
 
 function generateSprintPlanCache(rm) {
+    // Verificar si sprint-plan.json está protegido por _lock_until
+    try {
+        var existing = readJson(SPRINT_PLAN_FILE);
+        if (existing && existing._lock_until) {
+            var lockUntil = new Date(existing._lock_until).getTime();
+            if (!isNaN(lockUntil) && Date.now() < lockUntil) {
+                log("generateSprintPlanCache SKIP: plan protegido hasta " + existing._lock_until);
+                return;
+            }
+        }
+    } catch (e) {}
+
     var sp = getActiveSprint(rm);
     if (!sp) return;
     var stories = sp.stories || [], exec = sp.execution || {};
