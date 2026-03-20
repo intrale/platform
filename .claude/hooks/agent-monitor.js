@@ -225,6 +225,194 @@ function hasAgentWorktrees() {
     } catch (e) { return false; }
 }
 
+// ─── Supervisión de PRs de agentes (#1658) ────────────────────────────────────────────────
+
+const GH_CLI_CANDIDATES_AM = [
+    "C:\\Workspaces\\gh-cli\\bin\\gh.exe",
+    "/c/Workspaces/gh-cli/bin/gh.exe",
+    "gh"
+];
+
+function findGhCliForMonitor() {
+    for (const candidate of GH_CLI_CANDIDATES_AM) {
+        try {
+            execSync('"' + candidate + '" --version', { encoding: "utf8", timeout: 3000, windowsHide: true });
+            return candidate;
+        } catch (e) {}
+    }
+    return null;
+}
+
+/**
+ * Verifica el estado de CI para un PR dado su número.
+ * @returns {"success"|"failure"|"pending"|"unknown"}
+ */
+function getPRCiStatus(prNumber) {
+    const ghCmd = findGhCliForMonitor();
+    if (!ghCmd) return "unknown";
+    try {
+        const out = execSync(
+            '"' + ghCmd + '" pr checks ' + prNumber + ' --repo intrale/platform --json name,state,conclusion',
+            { encoding: "utf8", timeout: 15000, windowsHide: true }
+        );
+        const checks = JSON.parse(out || "[]");
+        if (!Array.isArray(checks) || checks.length === 0) return "unknown";
+        if (checks.some(ch => ch.conclusion === "FAILURE" || ch.conclusion === "CANCELLED")) return "failure";
+        if (checks.some(ch => ch.state === "IN_PROGRESS" || ch.state === "QUEUED" || ch.conclusion === null)) return "pending";
+        if (checks.every(ch => ch.conclusion === "SUCCESS")) return "success";
+        return "unknown";
+    } catch (e) {
+        return "unknown";
+    }
+}
+
+/**
+ * Obtiene PRs abiertos de ramas agent/* con su estado de CI.
+ * @returns {{ prNumber: number, branch: string, ci: string, url: string }[]}
+ */
+function getOpenAgentPRs() {
+    const ghCmd = findGhCliForMonitor();
+    if (!ghCmd) return [];
+    try {
+        const out = execSync(
+            '"' + ghCmd + '" pr list --repo intrale/platform --state open --json number,headRefName,url,updatedAt',
+            { encoding: "utf8", timeout: 15000, windowsHide: true }
+        );
+        const prs = JSON.parse(out || "[]");
+        return prs
+            .filter(pr => pr.headRefName && pr.headRefName.startsWith("agent/"))
+            .map(pr => ({
+                prNumber: pr.number,
+                branch: pr.headRefName,
+                url: pr.url,
+                updatedAt: pr.updatedAt,
+                ci: getPRCiStatus(pr.number)
+            }));
+    } catch (e) {
+        log("getOpenAgentPRs error: " + e.message);
+        return [];
+    }
+}
+
+/**
+ * Verifica si un PR tiene label qa:passed o qa:skipped.
+ */
+function prHasQaLabel(prNumber) {
+    const ghCmd = findGhCliForMonitor();
+    if (!ghCmd) return false;
+    try {
+        const out = execSync(
+            '"' + ghCmd + '" pr view ' + prNumber + ' --repo intrale/platform --json labels --jq ' + "'" + '.labels[].name' + "'" + '',
+            { encoding: "utf8", timeout: 10000, windowsHide: true }
+        );
+        return out.includes("qa:passed") || out.includes("qa:skipped");
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Persiste el estado del ciclo de cierre en sprint-plan.json (#1658).
+ * Estados: "activo" | "ci-pending" | "merging" | "closing" | "planificando" | "arrancando" | "finalizado"
+ */
+function persistCicloEstado(estado, extraFields) {
+    try {
+        if (!fs.existsSync(PLAN_FILE)) return;
+        const plan = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+        plan.estado = estado;
+        if (extraFields) Object.assign(plan, extraFields);
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        log("persistCicloEstado: " + estado);
+    } catch (e) {
+        log("persistCicloEstado error: " + e.message);
+    }
+}
+
+/**
+ * Loop de supervisión de PRs abiertos de ramas agent/*.
+ * Se ejecuta cada PR_POLL_INTERVAL_MS (5 min) (#1658).
+ */
+async function supervisePRs() {
+    const openPRs = getOpenAgentPRs();
+    const ghCmd = findGhCliForMonitor();
+    const now = Date.now();
+
+    if (openPRs.length === 0) {
+        const plan = loadPlan();
+        if (plan) {
+            const currentQueue = Array.isArray(plan._queue) ? plan._queue :
+                (Array.isArray(plan.cola) ? plan.cola : []);
+            const allAgentsDone = (plan.agentes || []).every(ag => isAgentDone(ag));
+            const safeToCLose = plan.estado !== "closing" && plan.estado !== "planificando" &&
+                plan.estado !== "arrancando" && plan.estado !== "finalizado";
+            if (currentQueue.length === 0 && allAgentsDone && safeToCLose) {
+                log("supervisePRs: sin PRs abiertos y todos terminados → cerrando sprint");
+                const elapsed = _startTime ? Math.round((Date.now() - _startTime) / 60000) : 0;
+                await handleAllDone(elapsed);
+            }
+        }
+        return;
+    }
+
+    for (const pr of openPRs) {
+        const lastNotif = _prLastActivity[pr.prNumber] || 0;
+        const staleSince = now - lastNotif;
+
+        if (pr.ci === "failure") {
+            if (staleSince > 60000) {
+                await notify(
+                    "🔴 <b>CI rojo en PR #" + pr.prNumber + "</b>\n" +
+                    "Rama: <code>" + pr.branch + "</code>\n" +
+                    "URL: " + pr.url + "\n" +
+                    "Requiere auto-reparación (#1656)"
+                );
+                _prLastActivity[pr.prNumber] = now;
+                log("supervisePRs: CI rojo PR #" + pr.prNumber);
+            }
+        } else if (pr.ci === "success") {
+            const hasQa = prHasQaLabel(pr.prNumber);
+            if (hasQa && ghCmd) {
+                try {
+                    execSync(
+                        '"' + ghCmd + '" pr merge ' + pr.prNumber +
+                        ' --repo intrale/platform --squash --auto',
+                        { encoding: "utf8", timeout: 30000, windowsHide: true }
+                    );
+                    await notify(
+                        "✅ <b>Auto-merge PR #" + pr.prNumber + "</b>\n" +
+                        "Rama: <code>" + pr.branch + "</code>"
+                    );
+                    _prLastActivity[pr.prNumber] = now;
+                    log("supervisePRs: auto-merge PR #" + pr.prNumber);
+                } catch (e) {
+                    log("supervisePRs: merge PR #" + pr.prNumber + " (ya mergeado o error): " + e.message);
+                }
+            } else if (!hasQa && staleSince > PR_STALE_MS) {
+                await notify(
+                    "⚠️ <b>PR #" + pr.prNumber + " CI verde sin label QA</b>\n" +
+                    "Rama: <code>" + pr.branch + "</code>\n" +
+                    "Pendiente: <code>qa:passed</code> o <code>qa:skipped</code>"
+                );
+                _prLastActivity[pr.prNumber] = now;
+            }
+        } else if (pr.ci === "pending" || pr.ci === "unknown") {
+            if (staleSince > PR_STALE_MS) {
+                await notify(
+                    "⏳ <b>PR #" + pr.prNumber + " lleva " + Math.round(staleSince / 60000) + " min en CI</b>\n" +
+                    "Rama: <code>" + pr.branch + "</code>\n" +
+                    pr.url
+                );
+                _prLastActivity[pr.prNumber] = now;
+            }
+        }
+
+        if (!_prLastActivity[pr.prNumber]) {
+            _prLastActivity[pr.prNumber] = now;
+        }
+    }
+}
+
+
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
 
 function checkAgents() {
@@ -233,52 +421,169 @@ function checkAgents() {
 }
 
 async function handleAllDone(elapsedMin) {
+    // Leer ciclo_estado para crash resilience (#1658)
+    let cicloEstado = "closing";
+    try {
+        if (fs.existsSync(PLAN_FILE)) {
+            const planSnap = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+            const saved = planSnap.ciclo_estado;
+            if (saved && ["closing", "planificando", "arrancando"].includes(saved)) {
+                cicloEstado = saved;
+                log("handleAllDone: retomando desde estado '" + cicloEstado + "' (crash resilience)");
+            }
+        }
+    } catch (e) {}
+
     stopAgentMonitor();
 
-    await notify("🏁 <b>Agentes finalizados</b>\n\nTodos los agentes terminaron (" + elapsedMin + " min).\nEjecutando cleanup...");
+    // ── Fase 1: Cierre del sprint ─────────────────────────────────────────────
+    if (cicloEstado === "closing") {
+        persistCicloEstado("closing", { ciclo_estado: "closing" });
+        await notify("🏁 <b>Agentes finalizados</b>\n\nTodos los agentes terminaron (" + elapsedMin + " min).\nEjecutando cierre del sprint...");
 
-    // Ejecutar Stop-Agente.ps1 all
-    const stopScript = path.join(REPO_ROOT, "scripts", "Stop-Agente.ps1");
-    if (fs.existsSync(stopScript)) {
+        // Stop-Agente.ps1 all
+        const stopScript = path.join(REPO_ROOT, "scripts", "Stop-Agente.ps1");
+        if (fs.existsSync(stopScript)) {
+            try {
+                execSync('powershell -File "' + stopScript + '" all', {
+                    cwd: REPO_ROOT, timeout: 120000, windowsHide: true, stdio: "ignore"
+                });
+                log("Stop-Agente.ps1 finalizado");
+            } catch (e) {
+                log("Error en Stop-Agente: " + e.message);
+            }
+        }
+
+        // Reporte de sprint (sprint-report.js)
+        const reportScript = path.join(REPO_ROOT, "scripts", "sprint-report.js");
+        if (fs.existsSync(reportScript)) {
+            try {
+                execSync('node "' + reportScript + '" "' + PLAN_FILE + '"', {
+                    cwd: REPO_ROOT, timeout: 120000, windowsHide: true, stdio: "ignore"
+                });
+                log("Reporte de sprint generado");
+            } catch (e) {
+                log("Error generando reporte: " + e.message);
+            }
+        }
+
+        // Reporte de costos (cost-report.js --telegram)
+        const costScript = path.join(REPO_ROOT, "scripts", "cost-report.js");
+        if (fs.existsSync(costScript)) {
+            try {
+                execSync('node "' + costScript + '" --telegram', {
+                    cwd: REPO_ROOT, timeout: 120000, windowsHide: true, stdio: "ignore"
+                });
+                log("Reporte de costos generado");
+            } catch (e) {
+                log("Error generando costos: " + e.message);
+            }
+        }
+
+        // Registrar participación de agentes
         try {
-            execSync('powershell -File "' + stopScript + '" all', {
-                cwd: REPO_ROOT, timeout: 120000, windowsHide: true, stdio: "ignore"
-            });
-            log("Stop-Agente.ps1 finalizado");
-        } catch (e) {
-            log("Error en Stop-Agente: " + e.message);
+            const participation = recordSprintParticipation();
+            if (participation) {
+                const semaforo = participation.coveragePct >= 80 ? "🟢" : participation.coveragePct >= 50 ? "🟡" : "🔴";
+                await notify(
+                    "📊 <b>Cobertura de agentes del sprint</b>\n\n" +
+                    semaforo + " " + participation.agentsList.length + "/" + ALL_PIPELINE_AGENTS.length +
+                    " agentes (" + participation.coveragePct + "%)\n" +
+                    "Participaron: " + participation.agentsList.join(", ")
+                );
+                await alertInactiveAgents();
+            }
+        } catch (e) { log("Error en métricas de participación: " + e.message); }
+
+        // Marcar sprint como finalizado en plan
+        try {
+            if (fs.existsSync(PLAN_FILE)) {
+                const planToClose = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+                planToClose.estado = "finalizado";
+                planToClose.closed_at = new Date().toISOString();
+                planToClose.ciclo_estado = "planificando";
+                fs.writeFileSync(PLAN_FILE, JSON.stringify(planToClose, null, 2) + "\n", "utf8");
+            }
+        } catch (e) { log("Error actualizando plan al cerrar: " + e.message); }
+
+        cicloEstado = "planificando";
+        log("Fase 1 completada: sprint cerrado");
+    }
+
+    // ── Fase 2: Planificar siguiente sprint ───────────────────────────────────
+    if (cicloEstado === "planificando") {
+        persistCicloEstado("planificando", { ciclo_estado: "planificando" });
+        await notify("🗺️ <b>Planificando siguiente sprint...</b>\nEjecutando auto-plan-sprint.js");
+
+        const planScript = path.join(REPO_ROOT, "scripts", "auto-plan-sprint.js");
+        let planOk = false;
+        if (fs.existsSync(planScript)) {
+            try {
+                execSync('node "' + planScript + '"', {
+                    cwd: REPO_ROOT, timeout: 300000, windowsHide: true, stdio: "ignore"
+                });
+                planOk = true;
+                log("Siguiente sprint planificado");
+            } catch (e) {
+                log("Error en auto-plan-sprint: " + e.message);
+                await notify("⚠️ <b>Error planificando sprint</b>\n" + e.message.substring(0, 200));
+            }
+        } else {
+            log("auto-plan-sprint.js no encontrado");
+        }
+
+        if (planOk) {
+            cicloEstado = "arrancando";
+            // Persistir el avance
+            try {
+                if (fs.existsSync(PLAN_FILE)) {
+                    const planNext = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+                    planNext.ciclo_estado = "arrancando";
+                    fs.writeFileSync(PLAN_FILE, JSON.stringify(planNext, null, 2) + "\n", "utf8");
+                }
+            } catch (e) {}
+        } else {
+            await notify("🚨 <b>Planificación fallida</b>\nRevisa auto-plan-sprint.log y lanza manualmente.");
+            return;
         }
     }
 
-    // Generar reporte de sprint
-    const reportScript = path.join(REPO_ROOT, "scripts", "sprint-report.js");
-    if (fs.existsSync(reportScript)) {
-        try {
-            execSync('node "' + reportScript + '" "' + PLAN_FILE + '"', {
-                cwd: REPO_ROOT, timeout: 60000, windowsHide: true, stdio: "ignore"
-            });
-            log("Reporte de sprint generado");
-        } catch (e) {
-            log("Error generando reporte: " + e.message);
+    // ── Fase 3: Arrancar agentes del siguiente sprint ─────────────────────────
+    if (cicloEstado === "arrancando") {
+        persistCicloEstado("arrancando", { ciclo_estado: "arrancando" });
+
+        const startScript = path.join(REPO_ROOT, "scripts", "Start-Agente.ps1");
+        if (fs.existsSync(startScript)) {
+            try {
+                await notify("🚀 <b>Arrancando siguiente sprint...</b>");
+                const child = require("child_process").spawn("powershell.exe", ["-NonInteractive", "-File", startScript, "all"], {
+                    detached: true, stdio: "ignore", windowsHide: false, cwd: REPO_ROOT
+                });
+                child.unref();
+                log("Start-Agente.ps1 all lanzado (PID " + child.pid + ")");
+                await notify("🏃 <b>Siguiente sprint iniciado</b>\nAgentes arrancando...");
+            } catch (e) {
+                log("Error arrancando agentes: " + e.message);
+                await notify("⚠️ <b>Error arrancando agentes</b>\n" + e.message.substring(0, 200));
+            }
+        } else {
+            log("Start-Agente.ps1 no encontrado");
+            await notify("⚠️ <b>Start-Agente.ps1 no encontrado</b>\nLanzar agentes manualmente.");
         }
+
+        // Limpiar ciclo_estado del plan
+        try {
+            if (fs.existsSync(PLAN_FILE)) {
+                const planFinal = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+                delete planFinal.ciclo_estado;
+                fs.writeFileSync(PLAN_FILE, JSON.stringify(planFinal, null, 2) + "\n", "utf8");
+            }
+        } catch (e) {}
+
+        log("Fase 3 completada: ciclo sprint→cierre→plan→arranque finalizado");
     }
 
-    // Registrar participación de agentes del sprint y alertar sobre inactivos
-    try {
-        const participation = recordSprintParticipation();
-        if (participation) {
-            const semaforo = participation.coveragePct >= 80 ? "🟢" : participation.coveragePct >= 50 ? "🟡" : "🔴";
-            await notify(
-                "📊 <b>Cobertura de agentes del sprint</b>\n\n" +
-                semaforo + " " + participation.agentsList.length + "/" + ALL_PIPELINE_AGENTS.length +
-                " agentes (" + participation.coveragePct + "%)\n" +
-                "Participaron: " + participation.agentsList.join(", ")
-            );
-            await alertInactiveAgents();
-        }
-    } catch (e) { log("Error en métricas de participación: " + e.message); }
-
-    // Callback externo
+    // Callback externo (backward compat)
     if (_onAllDone) {
         try { await _onAllDone(); } catch (e) { log("onAllDone callback error: " + e.message); }
     }
@@ -499,6 +804,11 @@ function startAgentMonitor(plan, opts) {
     _guardianInterval = setInterval(guardianCheck, GUARDIAN_INTERVAL_MS);
     log("Guardian iniciado: polling cada " + (GUARDIAN_INTERVAL_MS / 60000) + " min");
 
+    // Supervisión de PRs: ciclo continuo (#1658)
+    _prSupervisionInterval = setInterval(supervisePRs, PR_POLL_INTERVAL_MS);
+    _prLastActivity = {};
+    log("PR supervision iniciada: polling cada " + (PR_POLL_INTERVAL_MS / 60000) + " min");
+
     return { watching: !!_pollInterval, guardian: !!_guardianInterval };
 }
 
@@ -508,6 +818,7 @@ function startAgentMonitor(plan, opts) {
 function stopAgentMonitor() {
     if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
     if (_guardianInterval) { clearInterval(_guardianInterval); _guardianInterval = null; }
+    if (_prSupervisionInterval) { clearInterval(_prSupervisionInterval); _prSupervisionInterval = null; }
     _running = false;
     log("Agent monitor detenido");
 }
@@ -738,15 +1049,33 @@ async function _checkAgentsImpl() {
     const allTerminal = (currentPlan.agentes || []).every(ag => isAgentDone(ag));
 
     if (currentQueue.length === 0 && allTerminal) {
-        log("Sprint completado: cola vacía y todos los agentes terminados");
+        // Verificar PRs abiertos antes de cerrar el sprint (#1658)
+        const openPRs = getOpenAgentPRs();
+        const redCIPRs = openPRs.filter(pr => pr.ci === "failure");
+        if (redCIPRs.length > 0) {
+            persistCicloEstado("ci-pending", {});
+            log("_checkAgentsImpl: PRs con CI rojo, esperando auto-reparación: " + redCIPRs.map(p => "#" + p.prNumber).join(", "));
+            return;
+        }
+        if (openPRs.length > 0) {
+            persistCicloEstado("merging", {});
+            log("_checkAgentsImpl: " + openPRs.length + " PRs abiertos, esperando merge para cerrar sprint");
+            return;
+        }
+        log("Sprint completado: cola vacía y todos los agentes terminados, sin PRs abiertos");
         handleAllDone(elapsedMin);
         return;
     }
 
     // Failsafe: si pasó mucho tiempo y no hay procesos claude
     if ((Date.now() - _startTime) > FAILSAFE_MS && !isAnyClaude()) {
-        log("Failsafe: no hay procesos claude activos tras " + elapsedMin + " min. Procediendo.");
-        handleAllDone(elapsedMin);
+        const openPRsFail = getOpenAgentPRs();
+        if (openPRsFail.length === 0) {
+            log("Failsafe: no hay procesos claude activos tras " + elapsedMin + " min. Procediendo.");
+            handleAllDone(elapsedMin);
+        } else {
+            log("Failsafe: no hay procesos claude pero hay " + openPRsFail.length + " PRs abiertos, supervisePRs se encargará");
+        }
     }
 }
 
@@ -878,5 +1207,8 @@ module.exports = {
     promoteFromQueue, countActiveAgents, moveToCompleted, launchAgents,
     MAX_CONCURRENT_AGENTS, _checkAgentsImpl,
     checkTimeouts, updateSprintPlanStatus, agentBranchExists,
-    STALE_MS, FAILED_TOTAL_MS
+    STALE_MS, FAILED_TOTAL_MS,
+    // #1658 — ciclo continuo
+    getOpenAgentPRs, getPRCiStatus, prHasQaLabel,
+    persistCicloEstado, supervisePRs
 };
