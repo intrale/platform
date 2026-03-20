@@ -679,7 +679,7 @@ function collectData() {
       return s ? s.id : "synthetic-" + issueStr;
     };
 
-    // Completed agents -> Done node
+    // Completed agents -> Done node (edge desde último skill, no desde agente raíz)
     const completedIssues = (sprintPlanData._completed || []).map(a => String(a.issue));
     for (const issueStr of completedIssues) {
       const sid = findSessionForIssue(issueStr);
@@ -690,7 +690,12 @@ function collectData() {
         return m && m[1] === issueStr;
       });
       if (sessionTransitions.length > 0) {
-        const lastNode = sessionTransitions[sessionTransitions.length - 1].to;
+        // Buscar el último skill real (excluir Done/Error/Start y agentes raíz)
+        const skillTransitions = sessionTransitions.filter(t =>
+          t.to !== "Done" && t.to !== "Error" && t.to !== "Start" && !/^Agente\s+/i.test(t.to));
+        const lastNode = skillTransitions.length > 0
+          ? skillTransitions[skillTransitions.length - 1].to
+          : sessionTransitions[sessionTransitions.length - 1].to;
         agentTransitions.push({ from: lastNode, to: "Done", _session: sid, _synthetic: true });
       }
       agentNodes.add("Done");
@@ -707,7 +712,11 @@ function collectData() {
         return m && m[1] === issueStr;
       });
       if (sessionTransitions.length > 0) {
-        const lastNode = sessionTransitions[sessionTransitions.length - 1].to;
+        const skillTrans = sessionTransitions.filter(t =>
+          t.to !== "Done" && t.to !== "Error" && t.to !== "Start" && !/^Agente\s+/i.test(t.to));
+        const lastNode = skillTrans.length > 0
+          ? skillTrans[skillTrans.length - 1].to
+          : sessionTransitions[sessionTransitions.length - 1].to;
         agentTransitions.push({ from: lastNode, to: "Error", _session: sid, _synthetic: true });
       } else {
         agentTransitions.push({ from: "Claude", to: "Error", _session: sid, _synthetic: true });
@@ -1351,14 +1360,17 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const isDone = sess && (sess._status === "done" || sess.status === "done" || sess._status === "stale" || sess.status === "stale");
     const isError = sess && (sess._status === "error" || sess.status === "error");
     const isActive = sess && (sess._status === "active" || sess.status === "active");
-    if (isDone && !isActive) {
+    // Solo agregar edge terminal si este agente no tiene ya uno a Done/Error
+    const alreadyHasDone = myEdges.some(e => e.to === "Done");
+    const alreadyHasError = myEdges.some(e => e.to === "Error");
+    if (isDone && !isActive && !alreadyHasDone) {
       if (!nodes.includes("Done")) nodes.push("Done");
       const agentMatch = root.match(/^Agente\s+(\d+)$/i);
       const agentNum = agentMatch ? agentMatch[1] : "0";
       const stepNum = myEdges.length + 1;
       edgeSeq++;
       edgeList.push({ from: last, to: "Done", seq: edgeSeq, agentSeq: agentNum + "." + stepNum, agentRoot: root, issueNum: null, isRecent: false });
-    } else if (isError) {
+    } else if (isError && !alreadyHasError) {
       if (!nodes.includes("Error")) nodes.push("Error");
       const agentMatch = root.match(/^Agente\s+(\d+)$/i);
       const agentNum = agentMatch ? agentMatch[1] : "0";
