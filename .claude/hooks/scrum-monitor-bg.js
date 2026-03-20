@@ -19,7 +19,7 @@ const PID_FILE = path.join(HOOKS_DIR, "scrum-monitor-bg.pid");
 // Intervalo de chequeo: 30 minutos
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 // Auto-reparación automática para inconsistencias menores (sin --auto)
-const AUTO_REPAIR_TYPES = ["pr_merged_issue_open", "closed_issue_wrong_status"];
+const AUTO_REPAIR_TYPES = ["pr_merged_issue_open", "closed_issue_wrong_status", "roadmap_zombie"];
 
 function log(msg) {
     try {

@@ -504,6 +504,15 @@ async function runHealthCheck() {
         inconsistencias
     };
 
+    // Deteccion 6: Validacion cruzada roadmap vs agent-registry (#1660)
+    try {
+        var crossCheckMod=require("./roadmap-registry-check");
+        var crossCheck=crossCheckMod.runCrossValidation({});
+        (crossCheck.zombies||[]).forEach(function(z){inconsistencias.push(z);log("Inconsistencia (zombie): "+z.message);});
+        (crossCheck.orphans||[]).forEach(function(o){inconsistencias.push(o);log("Inconsistencia (orphan): "+o.message);});
+    } catch(e) {
+        log("Validacion cruzada roadmap-registry fallo: "+e.message);
+    }
     log("Health check completado: " + inconsistencias.length + " inconsistencia(s), nivel: " + healthLevel);
     return result;
 }
