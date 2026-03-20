@@ -1433,8 +1433,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Force terminal nodes to rightmost layer
-  const terminalLayer = Math.max(3, ...Object.values(layer)) + 1;
+  // Force terminal nodes right after the last skill layer (sin gap extra)
+  const terminalLayer = Math.max(0, ...Object.values(layer)) + 1;
   if (nodes.includes("Done")) { layer["Done"] = terminalLayer; }
   if (nodes.includes("Error")) { layer["Error"] = terminalLayer; }
 
@@ -1465,8 +1465,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   if (Object.keys(layers).length === 0) layers[0] = [];
   const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
 
-  // Spacing dinámico: menos capas → más espacio; muchas capas → más compacto
-  const colSpacing = numLayers <= 4 ? 260 : numLayers <= 6 ? 220 : 190;
+  // Spacing dinámico: target ~1200px de ancho total para caber sin escalar
+  const targetW = 1200;
+  const colSpacing = Math.max(130, Math.min(260, Math.round((targetW - 240) / Math.max(numLayers, 1))));
   // rowSpacing adaptativo: más nodos → más espacio para issue labels + issue number
   const maxNodesInLayer = Math.max(1, ...Object.values(layers).map(l => l.length));
   const rowSpacing = maxNodesInLayer <= 4 ? 210 : maxNodesInLayer <= 6 ? 190 : 175;
