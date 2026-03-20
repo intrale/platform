@@ -1262,14 +1262,35 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
-  // Determine active/done agents from sessions (con normalización #1542)
-  const activeAgents = new Set();
-  const doneAgents = new Set();
+  // Determine agent states and current skill per agent
+  const activeAgents = new Set();   // corriendo ahora
+  const idleAgents = new Set();     // idle/stale/esperando
+  const doneAgents = new Set();     // completados
+  const currentSkillMap = {};       // agentName → skill que usa AHORA
+  const agentWaitingReason = {};    // agentName → razón de espera
   for (const s of sessionsList) {
     if (s.agent_name) {
       const norm = normalizeSkillName(s.agent_name);
-      if (s._status === "active" || s.status === "active") activeAgents.add(norm);
-      if (s._status === "done" || s.status === "done") doneAgents.add(norm);
+      const st = s._status || s.status;
+      if (st === "active") {
+        activeAgents.add(norm);
+        // Detectar skill actual: si last_tool es Skill, el target es el skill
+        if (s.last_tool === "Skill" && s.last_target) {
+          const skillName = normalizeSkillName(AGENT_MAP_DASHBOARD["/" + s.last_target] || s.last_target);
+          currentSkillMap[norm] = skillName;
+        }
+      } else if (st === "idle" || st === "stale") {
+        idleAgents.add(norm);
+        // Detectar razón de espera
+        if (s.last_tool === "AskUserQuestion") {
+          agentWaitingReason[norm] = "Esperando respuesta del usuario";
+        } else {
+          const idleMs = s.last_activity_ts ? Date.now() - new Date(s.last_activity_ts).getTime() : 0;
+          agentWaitingReason[norm] = "Sin actividad hace " + Math.round(idleMs / 60000) + "min";
+        }
+      } else if (st === "done") {
+        doneAgents.add(norm);
+      }
     }
     if (Array.isArray(s.skills_invoked)) {
       for (const sk of s.skills_invoked) {
@@ -1805,14 +1826,18 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const pos = positions[name];
     if (!pos) continue;
     const isActive = activeAgents.has(name);
+    const isIdle = idleAgents.has(name);
     const isDone = doneAgents.has(name);
     const isQueued = queuedAgents.has(name);
-    const isSkillNode = !(/^Agente\s+/i.test(name)) && name !== "Start" && name !== "Done" && name !== "Error" && name !== "Main";
+    const isAgentNode = /^Agente\s+/i.test(name);
+    const isSkillNode = !isAgentNode && name !== "Start" && name !== "Done" && name !== "Error" && name !== "Main";
     // Para skills: encontrar todos los agentes que pasaron por este nodo
     const passingAgents = isSkillNode
       ? [...new Set(edgeList.filter(e => e.to === name || e.from === name).map(e => e.agentRoot).filter(r => r && r !== "Main"))]
       : [];
     const passingColors = passingAgents.map(a => agentColorMap[a] || "#6C7086").filter((c, i, arr) => arr.indexOf(c) === i);
+    // ¿Está este skill siendo usado AHORA por algún agente activo?
+    const isSkillActiveNow = isSkillNode && Object.values(currentSkillMap).includes(name);
     // Color del nodo: skills usan color neutral propio, agentes usan su color
     const baseColor = isSkillNode ? "#8b95a5" : (agentColorMap[name] || (nodeOwner[name] && agentColorMap[nodeOwner[name]]) || (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086");
     const color = isQueued ? "#6C7086" : baseColor;
@@ -1825,9 +1850,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
     const hasRobot = robotId && ROBOT_ICONS[robotId];
     const iconUrl = hasRobot ? ROBOT_ICONS[robotId] : resolveIconUri(name);
-    // Agentes en cola se muestran grisados para diferenciarlos de activos
-    const opacity = isQueued ? "0.4" : "1";
-    const filterAttr = isActive ? 'filter="url(#node-glow)"' : '';
+    // Opacity: cola=grisado, idle=semitransparente, done=normal, active=normal
+    const opacity = isQueued ? "0.4" : isIdle ? "0.65" : "1";
+    // Glow: solo agentes activos y skills usados AHORA
+    const shouldGlow = (isAgentNode && isActive) || isSkillActiveNow;
+    const filterAttr = shouldGlow ? 'filter="url(#node-glow)"' : '';
     // Nodo raíz con robot tiene radio ligeramente mayor
     const effectiveR = hasRobot ? nodeR + 4 : nodeR;
     const effectiveImgSize = hasRobot ? effectiveR * 1.6 : imgSize;
@@ -1850,7 +1877,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       flowRootAttr = isMainOnly ? 'data-flow-root="main"' : 'data-flow-root="agent"';
     }
 
-    const activeClass = isActive ? ' node-active' : '';
+    const activeClass = (isAgentNode && isActive && !isDone) || isSkillActiveNow ? ' node-active' : '';
     const opacityStyle = isQueued ? `opacity:${opacity};` : '';
     svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;${opacityStyle}" ${filterAttr}>`;
     // Fondo del nodo
@@ -1880,10 +1907,17 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       // Agent/Start/Done/Error nodes: borde sólido con su propio color
       svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"/>`;
     }
-    // Halo pulsante para nodos activos (agentes Y skills)
-    if (isActive || (isSkillNode && passingAgents.some(a => activeAgents.has(a)))) {
-      const pulseColor = isSkillNode ? (passingColors[0] || color) : color;
+    // Halo pulsante: SOLO agentes en ejecución activa y skills usados AHORA
+    if (isAgentNode && isActive && !isDone && !isQueued) {
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 8}" fill="none" stroke="${color}" stroke-width="2"><animate attributeName="r" values="${effectiveR + 4};${effectiveR + 14};${effectiveR + 4}" dur="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.8;0.1;0.8" dur="2s" repeatCount="indefinite"/></circle>`;
+    } else if (isSkillActiveNow) {
+      // Skill usado AHORA: pulsar con el color del agente que lo usa
+      const usingAgent = Object.entries(currentSkillMap).find(([_, sk]) => sk === name);
+      const pulseColor = usingAgent ? (agentColorMap[usingAgent[0]] || "#60a5fa") : "#60a5fa";
       svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 8}" fill="none" stroke="${pulseColor}" stroke-width="2"><animate attributeName="r" values="${effectiveR + 4};${effectiveR + 14};${effectiveR + 4}" dur="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.8;0.1;0.8" dur="2s" repeatCount="indefinite"/></circle>`;
+    } else if (isAgentNode && isIdle) {
+      // Agente idle: borde punteado indicando espera
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 4}" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.6"/>`;
     }
     // Círculo de color semitransparente detrás del icono para contraste
     const fillColor = isSkillNode ? "#8b95a5" : color;
@@ -1916,6 +1950,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
         const issueUrl = "https://github.com/intrale/platform/issues/" + issueNum;
         svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 42).toFixed(1)}" text-anchor="middle" font-size="18" fill="${isQueued ? '#6C7086' : '#60a5fa'}" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${issueNum}</text></a>`;
       }
+    }
+    // Status label para agentes idle/waiting
+    if (isAgentNode && isIdle && agentWaitingReason[name]) {
+      const yOff = hasRobot ? effectiveR + 58 : effectiveR + 38;
+      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + yOff).toFixed(1)}" text-anchor="middle" font-size="11" fill="#fbbf24" opacity="0.8">${escHtml(agentWaitingReason[name])}</text>`;
     }
     svg += `</g>`;
   }
