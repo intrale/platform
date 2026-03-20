@@ -81,11 +81,25 @@ function runGC() {
         return;
     }
 
+    // Proteger sesiones del sprint activo (#1716)
+    let sprintIssues = new Set();
+    try {
+        const planPath = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+        if (fs.existsSync(planPath)) {
+            const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
+            [...(plan.agentes||[]), ...(plan._queue||[]), ...(plan._completed||[]), ...(plan._incomplete||[])].forEach(a => sprintIssues.add(String(a.issue)));
+        }
+    } catch(e) {}
+
     for (const file of files) {
         const filePath = path.join(SESSIONS_DIR, file);
         try {
             const session = JSON.parse(fs.readFileSync(filePath, "utf8"));
             const status = session.status || "active";
+
+            // No borrar sesiones del sprint activo (preservar transiciones y checklists)
+            const branchIssue = (session.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+            if (branchIssue && sprintIssues.has(branchIssue[1])) continue;
 
             // Timestamp de referencia para calcular antigüedad
             const refTs = session.completed_at || session.last_activity_ts || session.started_ts;
