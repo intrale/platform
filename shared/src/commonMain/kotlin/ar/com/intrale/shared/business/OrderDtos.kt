@@ -37,7 +37,10 @@ data class AssignOrderDeliveryPersonResponseDTO(
     @SerialName("orderId")
     val orderId: String = "",
     @SerialName("deliveryPersonEmail")
-    val deliveryPersonEmail: String? = null,
+    val deliveryPersonEmail: String? = null
+)
+
+@Serializable
 data class BusinessOrderItemDTO(
     val id: String? = null,
     val name: String = "",
@@ -65,6 +68,9 @@ data class DeliveryPersonListResponseDTO(
     val statusCode: StatusCodeDTO? = null,
     @SerialName("deliveryPeople")
     val deliveryPeople: List<DeliveryPersonSummaryDTO>? = null
+)
+
+@Serializable
 data class BusinessOrderDetailDTO(
     val id: String = "",
     val shortCode: String? = null,
