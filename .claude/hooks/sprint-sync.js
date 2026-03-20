@@ -367,6 +367,17 @@ async function runSync(opts) {
     if (!shouldRun(force)) return { skipped: true };
     if (!acquireLock()) return { skipped: true, reason: "lock" };
 
+    
+
+    // Si sprint-plan.json no existe, regenerar desde roadmap antes de sincronizar (#1651)
+    if (!fs.existsSync(sprintData.SPRINT_PLAN_FILE)) {
+        var rmForRegen = sprintData.readRoadmap();
+        if (rmForRegen) {
+            sprintData.generateSprintPlanCache(rmForRegen);
+            log("sprint-plan.json regenerado desde roadmap (no existia)");
+        }
+    }
+
     log("Iniciando reconciliacion" + (force ? " (forzada)" : ""));
 
     var allChanges = [];

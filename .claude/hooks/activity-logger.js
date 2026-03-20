@@ -211,6 +211,9 @@ function handleInput() {
         // Detectar sesiones zombie (PID muerto + >20min inactivas), throttled a 1/min (#1408)
         checkZombieSessions();
 
+        // Auto-cleanup de sesiones de sprints anteriores (#1651)
+        autoCleanupStaleSprintSessions();
+
         // Auto-iniciar reporter PNG si no esta corriendo
         ensureReporterRunning();
     } catch(e) {}
@@ -726,4 +729,83 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
             } catch (e) { /* no bloquear hook */ }
         }
     } catch(e) { /* no bloquear hook por error de sesion */ }
+}
+
+// Auto-cleanup de sesiones al cambiar de sprint (#1651)
+// Archiva sesiones de sprints anteriores para que el dashboard muestre solo el sprint activo.
+const SPRINT_CHANGE_STATE_FILE = path.join(REPO_ROOT, ".claude", "hooks", "sprint-change-state.json");
+const SESSIONS_ARCHIVE_DIR = path.join(SESSIONS_DIR, "archive");
+const SPRINT_CHANGE_CHECK_THROTTLE_MS = 5 * 60 * 1000; // cada 5 min
+
+function autoCleanupStaleSprintSessions() {
+    try {
+        // Throttle: solo correr cada 5 minutos
+        try {
+            if (fs.existsSync(SPRINT_CHANGE_STATE_FILE)) {
+                const s = JSON.parse(fs.readFileSync(SPRINT_CHANGE_STATE_FILE, "utf8"));
+                if (s.last_check && (Date.now() - s.last_check) < SPRINT_CHANGE_CHECK_THROTTLE_MS) return;
+            }
+        } catch(e) {}
+
+        // Leer sprint activo del roadmap
+        const roadmapPath = path.join(REPO_ROOT, "scripts", "roadmap.json");
+        if (!fs.existsSync(roadmapPath)) return;
+        const roadmap = JSON.parse(fs.readFileSync(roadmapPath, "utf8"));
+        const activeSprint = Array.isArray(roadmap.sprints)
+            ? roadmap.sprints.find(s => s.status === "active") : null;
+        if (!activeSprint) return;
+        const currentSprintId = activeSprint.id;
+
+        // Leer sprint_id anterior del state
+        let lastSprintId = null;
+        try {
+            const state = JSON.parse(fs.readFileSync(SPRINT_CHANGE_STATE_FILE, "utf8"));
+            lastSprintId = state.sprint_id || null;
+        } catch(e) {}
+
+        // Actualizar state con sprint actual y timestamp
+        fs.writeFileSync(SPRINT_CHANGE_STATE_FILE, JSON.stringify({
+            sprint_id: currentSprintId, last_check: Date.now()
+        }), "utf8");
+
+        // Si sprint no cambió, nada que hacer
+        if (!lastSprintId || lastSprintId === currentSprintId) return;
+
+        // Sprint cambió — archivar sesiones de sprints anteriores
+        if (!fs.existsSync(SESSIONS_DIR)) return;
+        if (!fs.existsSync(SESSIONS_ARCHIVE_DIR)) fs.mkdirSync(SESSIONS_ARCHIVE_DIR, { recursive: true });
+        const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+        let archivedCount = 0;
+        const logFile = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
+
+        // Issues del sprint activo: sus sesiones NO deben archivarse
+        const activeIssues = new Set(
+            (activeSprint.stories || [])
+                .filter(s => s.status === "in_progress" && s.issue)
+                .map(s => String(s.issue))
+        );
+
+        for (const file of files) {
+            try {
+                const filePath2 = path.join(SESSIONS_DIR, file);
+                const session = JSON.parse(fs.readFileSync(filePath2, "utf8"));
+                // No archivar sesiones del sprint activo
+                const branchMatch = (session.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+                if (branchMatch && activeIssues.has(branchMatch[1])) continue;
+                // No archivar sesiones activas recientes (<30min) — pueden ser la sesión Main activa
+                if (session.status === "active") {
+                    const age = Date.now() - new Date(session.last_activity_ts || 0).getTime();
+                    if (age < 30 * 60 * 1000) continue;
+                }
+                // Archivar sesión
+                const archivePath = path.join(SESSIONS_ARCHIVE_DIR, lastSprintId + "_" + file);
+                fs.renameSync(filePath2, archivePath);
+                archivedCount++;
+            } catch(e) { /* ignorar errores por archivo */ }
+        }
+
+        if (archivedCount > 0) {
+            try { fs.appendFileSync(logFile, "[" + new Date().toISOString() + "] activity-logger: Sprint cambió " + lastSprintId + " → " + currentSprintId + ". " + archivedCount + " sesión(es) archivadas\n"); } catch(e) {}
+        }
+    } catch(e) { /* no bloquear hook */ }
 }

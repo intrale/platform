@@ -56,7 +56,7 @@ class ClientProducts(
         val ifNoneMatch = headers["If-None-Match"]
         if (ifNoneMatch != null && ifNoneMatch == etag) {
             logger.debug("ETag coincide ($etag), retornando 304 Not Modified para negocio=$business")
-            return NotModifiedResponse(headers = mapOf("ETag" to etag))
+            return NotModifiedResponse(headers = mapOf("ETag" to etag, "Cache-Control" to "max-age=60"))
         }
 
         return ClientProductListResponse(
@@ -68,7 +68,7 @@ class ClientProducts(
                 hasMore = result.hasMore
             ),
             status = HttpStatusCode.OK,
-            headers = mapOf("ETag" to etag)
+            headers = mapOf("ETag" to etag, "Cache-Control" to "max-age=60")
         )
     }
 
