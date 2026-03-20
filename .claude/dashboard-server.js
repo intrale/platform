@@ -2380,25 +2380,28 @@ function renderHTML(data, theme) {
     const sprintId = data.sprintPlan.sprint_id || null;
     const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
     const isFinalizado = sprintEstado === "finalizado";
-    const sprintTasksTotal = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).length, 0);
-    const sprintTasksDone = data.sprintSessions.reduce((sum, s) => sum + (s.current_tasks || []).filter(t => t.status === "completed").length, 0);
-    if (sprintTasksTotal > 0) {
-      sprintPct = Math.round((sprintTasksDone / sprintTasksTotal) * 100);
-    } else {
-      // Heurística: completados cuentan 100%, activos por action_count, cola en 0%
-      const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
-      let totalPctSum = completedCount * 100;
-      for (const ag of spAgentes) {
-        const match = data.sprintSessions.find(s => {
-          const m = (s.branch || "").match(/(\d+)/);
-          return m && m[1] === String(ag.issue);
-        });
-        if (match && match.action_count > 0) {
+    // Progreso del sprint: basado en issues completados (fuente de verdad)
+    // + progreso parcial de agentes activos basado en tareas o acciones
+    let totalPctSum = completedCount * 100; // Cada issue completado = 100%
+    for (const ag of spAgentes) {
+      // Agentes activos: progreso basado en tareas o action_count
+      const match = data.sprintSessions.find(s => {
+        const m = (s.branch || "").match(/(\d+)/);
+        return m && m[1] === String(ag.issue);
+      });
+      if (match) {
+        const tasks = match.current_tasks || [];
+        const tasksDone = tasks.filter(t => t.status === "completed").length;
+        if (tasks.length > 0) {
+          totalPctSum += Math.round((tasksDone / tasks.length) * 100);
+        } else if (match.action_count > 0) {
+          const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
           totalPctSum += Math.min(90, Math.round((match.action_count / (sizeExpected[ag.size] || 60)) * 100));
         }
       }
-      sprintPct = agentesTotal > 0 ? Math.round(totalPctSum / agentesTotal) : 0;
+      // Agentes en cola sin sesión contribuyen 0%
     }
+    sprintPct = agentesTotal > 0 ? Math.round(totalPctSum / agentesTotal) : 0;
 
     const sprintLabelId = sprintId ? escHtml(sprintId) : (spDate ? escHtml(spDate) : "Sprint");
     const sprintEstadoBadge = isFinalizado
