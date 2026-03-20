@@ -1469,7 +1469,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   const maxNodesInLayer = Math.max(1, ...Object.values(layers).map(l => l.length));
   const colSpacing = numLayers <= 5 ? 260 : numLayers <= 8 ? 200 : 170;
   const rowSpacing = maxNodesInLayer <= 3 ? 240 : maxNodesInLayer <= 5 ? 210 : 180;
-  const padding = 130;
+  const padding = 70;
   const mainZoneW = numLayers * colSpacing + padding * 2;
   // Main peripheral zone: positioned below the agent flow
   const mainNodesList = [...mainOnlyNodes];
@@ -1888,10 +1888,10 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     svg += `</g>`;
   }
 
-  // Altura display: permite crecer hasta 900px antes de forzar scroll vertical
-  const displayH = Math.min(svgH, 900);
-  // SVG responsivo: ancho 100% del contenedor, scroll solo si es muy alto
-  return `<div style="overflow:auto;max-height:${displayH + 40}px;"><svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMinYMin meet" style="width:100%;height:${displayH}px;display:block;">${svg}</svg></div>`;
+  // SVG responsivo: ocupa todo el ancho, altura proporcional al contenido
+  const maxDisplayH = 1000;
+  const displayH = Math.min(svgH, maxDisplayH);
+  return `<div style="overflow:auto;max-height:${displayH + 40}px;"><svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:${displayH}px;display:block;">${svg}</svg></div>`;
 }
 
 // --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
