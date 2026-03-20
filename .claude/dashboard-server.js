@@ -690,13 +690,18 @@ function collectData() {
         return m && m[1] === issueStr;
       });
       if (sessionTransitions.length > 0) {
-        // Buscar el último skill real (excluir Done/Error/Start y agentes raíz)
+        // Buscar el último skill real: filtrar solo transiciones del agente (no de Claude/Main)
+        // y excluir Done/Error/Start y agentes raíz como destino
         const skillTransitions = sessionTransitions.filter(t =>
-          t.to !== "Done" && t.to !== "Error" && t.to !== "Start" && !/^Agente\s+/i.test(t.to));
+          t.to !== "Done" && t.to !== "Error" && t.to !== "Start"
+          && !/^Agente\s+/i.test(t.to) && t.from !== "Claude" && t.from !== "Main");
         const lastNode = skillTransitions.length > 0
           ? skillTransitions[skillTransitions.length - 1].to
           : sessionTransitions[sessionTransitions.length - 1].to;
-        agentTransitions.push({ from: lastNode, to: "Done", _session: sid, _synthetic: true });
+        // Solo agregar si lastNode no es Done/Error (evitar duplicados)
+        if (lastNode !== "Done" && lastNode !== "Error") {
+          agentTransitions.push({ from: lastNode, to: "Done", _session: sid, _synthetic: true });
+        }
       }
       agentNodes.add("Done");
     }
@@ -713,11 +718,14 @@ function collectData() {
       });
       if (sessionTransitions.length > 0) {
         const skillTrans = sessionTransitions.filter(t =>
-          t.to !== "Done" && t.to !== "Error" && t.to !== "Start" && !/^Agente\s+/i.test(t.to));
+          t.to !== "Done" && t.to !== "Error" && t.to !== "Start"
+          && !/^Agente\s+/i.test(t.to) && t.from !== "Claude" && t.from !== "Main");
         const lastNode = skillTrans.length > 0
           ? skillTrans[skillTrans.length - 1].to
           : sessionTransitions[sessionTransitions.length - 1].to;
-        agentTransitions.push({ from: lastNode, to: "Error", _session: sid, _synthetic: true });
+        if (lastNode !== "Done" && lastNode !== "Error") {
+          agentTransitions.push({ from: lastNode, to: "Error", _session: sid, _synthetic: true });
+        }
       } else {
         agentTransitions.push({ from: "Claude", to: "Error", _session: sid, _synthetic: true });
       }
