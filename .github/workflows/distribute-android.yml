@@ -20,6 +20,14 @@ name: Distribución Android — Firebase App Distribution (3 Flavors)
 on:
   push:
     branches: [ main ]
+    # Solo distribuir Android si cambiaron archivos de la app o compartidos de build
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'buildSrc/**'
+      - 'gradle.properties'
   workflow_dispatch:
     inputs:
       release_notes:

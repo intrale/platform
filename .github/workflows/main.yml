@@ -4,8 +4,35 @@ on:
   push:
     branches: [ main ]
   repository_dispatch:
+
 jobs:
+  # ── Detectar si los cambios afectan backend/users (único motivo para deployar Lambda) ──
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy-needed: ${{ steps.filter.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch completo para que paths-filter pueda comparar con el commit anterior
+          fetch-depth: 2
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            deploy:
+              - 'backend/**'
+              - 'users/**'
+              - 'build.gradle.kts'
+              - 'settings.gradle.kts'
+              - 'gradle/**'
+              - 'buildSrc/**'
+              - 'gradle.properties'
+
   deploy-lambda:
+    needs: detect-changes
+    # Solo deployar Lambda si cambiaron backend, users o archivos compartidos de build
+    if: needs.detect-changes.outputs.deploy-needed == 'true' || github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     steps:
 

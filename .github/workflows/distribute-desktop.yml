@@ -23,6 +23,14 @@ name: Distribución Desktop — GitHub Releases (MSI + Deb)
 on:
   push:
     branches: [ main ]
+    # Solo distribuir Desktop si cambiaron archivos de la app o compartidos de build
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'buildSrc/**'
+      - 'gradle.properties'
   workflow_dispatch:
     inputs:
       release_notes:

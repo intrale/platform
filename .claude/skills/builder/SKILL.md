@@ -1,7 +1,7 @@
 ---
 description: Builder — Build y compilacion del proyecto
 user-invocable: true
-argument-hint: "[modulo] [--clean] [--verify] [--fast]"
+argument-hint: "[modulo] [--clean] [--verify] [--fast] [--all]"
 allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
 ---
@@ -13,10 +13,11 @@ Tu herramienta es Gradle. Compilás hasta que pasa. Sin excusas, sin piedad.
 
 ## Argumentos
 
-- `[modulo]` — Modulo a compilar: `backend`, `users`, `app`, o vacio para todo el proyecto
+- `[modulo]` — Modulo a compilar: `backend`, `users`, `app`, o vacio para deteccion inteligente
 - `--clean` — Limpiar antes de compilar (`clean build`)
 - `--verify` — Ejecutar todas las verificaciones (strings, recursos, ASCII fallbacks)
 - `--fast` — Build rapido sin verificaciones extras (solo compilacion)
+- `--all` — Forzar build completo ignorando deteccion de modulos
 
 ## Pre-flight: Registrar tareas
 
@@ -37,12 +38,19 @@ Verificar que Java 21 esta disponible:
 
 ## Paso 2: Determinar scope
 
-Segun el argumento recibido:
+Sin argumento — Smart Build (POR DEFECTO)
 
-### Todo el proyecto (sin argumento o --clean)
+Usar smart-build.sh para detectar modulos afectados (git diff vs main):
 ```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew clean build 2>&1 | tail -80
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && 
+  bash scripts/smart-build.sh 2>&1 | tail -60
+```
+Mapeo: backend/** → :backend:check; users/** → :users:check (transitivo); app/** → :app:composeApp:check; tools/** → :tools:forbidden-strings-processor:check; buildSrc/gradle/*.gradle.kts → build completo; solo docs/scripts/.claude → skip.
+
+### Forzar build completo (--all)
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && 
+  bash scripts/smart-build.sh --all 2>&1 | tail -80
 ```
 
 ### Modulo `backend`

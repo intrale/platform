@@ -22,6 +22,14 @@ name: Distribución Web — AWS S3 + CloudFront (Wasm)
 on:
   push:
     branches: [ main ]
+    # Solo distribuir Web/Wasm si cambiaron archivos de la app o compartidos de build
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'buildSrc/**'
+      - 'gradle.properties'
   workflow_dispatch:
     inputs:
       release_notes:
