@@ -2636,15 +2636,22 @@ function renderHTML(data, theme) {
         // Calcular ETA por agente en tarjeta unificada
         let cardEtaHtml = "";
         if (isPending && !isFailed) {
-          cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">En cola</span>';
-        } else if (agStatus === "done" || isFailed) {
+          cardEtaHtml = '<span style="font-size:11px;color:#fbbf24;font-weight:600;">&#9202; En cola</span>';
+        } else if (agStatus === "done") {
           if (matchSession && matchSession.started_ts) {
             const totalMs = (matchSession.last_activity_ts ? new Date(matchSession.last_activity_ts).getTime() : Date.now()) - new Date(matchSession.started_ts).getTime();
             const totalMin = Math.round(totalMs / 60000);
             const durTxt = totalMin >= 60
               ? Math.floor(totalMin / 60) + "h " + (totalMin % 60) + "min"
               : totalMin + "min";
-            cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">' + durTxt + '</span>';
+            cardEtaHtml = '<span style="font-size:11px;color:var(--green);font-weight:600;">&#10003; ' + durTxt + '</span>';
+          }
+        } else if (isFailed) {
+          if (matchSession && matchSession.started_ts) {
+            const totalMs = (matchSession.last_activity_ts ? new Date(matchSession.last_activity_ts).getTime() : Date.now()) - new Date(matchSession.started_ts).getTime();
+            const totalMin = Math.round(totalMs / 60000);
+            const durTxt = totalMin >= 60 ? Math.floor(totalMin / 60) + "h " + (totalMin % 60) + "min" : totalMin + "min";
+            cardEtaHtml = '<span style="font-size:11px;color:#f87171;font-weight:600;">&#10007; ' + durTxt + '</span>';
           }
         } else if (matchSession && matchSession.started_ts && pct > 5) {
           const elMs = Date.now() - new Date(matchSession.started_ts).getTime();
@@ -2653,11 +2660,11 @@ function renderHTML(data, theme) {
           const remMin = Math.max(0, Math.round((elMin / prog) - elMin));
           if (remMin > 0) {
             const etaTxt = remMin >= 60
-              ? "~" + Math.floor(remMin / 60) + "h " + (remMin % 60) + "min rest."
-              : "~" + remMin + "min rest.";
-            cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">' + etaTxt + '</span>';
+              ? "~" + Math.floor(remMin / 60) + "h " + (remMin % 60) + "min"
+              : "~" + remMin + "min";
+            cardEtaHtml = '<span style="font-size:11px;color:#60a5fa;font-weight:600;">&#9202; ' + etaTxt + ' rest.</span>';
           } else {
-            cardEtaHtml = '<span style="opacity:0.7;font-size:11px;">finalizando...</span>';
+            cardEtaHtml = '<span style="font-size:11px;color:#60a5fa;font-weight:600;">&#9202; finalizando...</span>';
           }
         }
 
@@ -2680,9 +2687,10 @@ function renderHTML(data, theme) {
               <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${pct}%;background:${barColor};"></div></div>
               <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${pct}%</span>
             </div>
-            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
-              <span>${actionCount} acc${duration ? ' &middot; ' + duration : ''}${cardEtaHtml ? ' &middot; ' + cardEtaHtml : ''}</span>
-              ${lastAction ? '<span>' + lastAction + '</span>' : ''}
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--text-muted);">
+              <span>${actionCount} acc${duration ? ' &middot; ' + duration : ''}</span>
+              ${cardEtaHtml || ''}
+              ${lastAction ? '<span style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + lastAction + '</span>' : ''}
             </div>${tasks.length > 0 ? `
             <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
               ${tasks.map(t => {
