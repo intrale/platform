@@ -1,6 +1,6 @@
 {
-  "updated_ts": "2026-03-19T15:12:59Z",
-  "updated_by": "scrum (cleanup duplicate SPR-044)",
+  "updated_ts": "2026-03-20T10:48:58.726Z",
+  "updated_by": "sprint-sync (auto-close)",
   "horizon_sprints": 5,
   "sprints": [
     {
@@ -337,41 +337,70 @@
       "stories": [
         {
           "issue": 1659,
-          "title": "Bug: Start-Agente paths largos worktrees",
+          "slug": "fix-start-agente-paths-largos",
+          "title": "Bug: Start-Agente paths largos",
+          "status": "done",
           "effort": "simple",
           "stream": "E",
-          "status": "planned"
+          "agent": {
+            "result": "ok",
+            "pr": 1712
+          }
         },
         {
           "issue": 1651,
+          "slug": "dashboard-auto-sync",
           "title": "Dashboard auto-sync sprint-plan",
+          "status": "done",
           "effort": "simple",
           "stream": "E",
-          "status": "planned"
+          "agent": {
+            "result": "ok",
+            "pr": 1715
+          }
         },
         {
           "issue": 1647,
+          "slug": "dashboard-sizing-sprints",
           "title": "Mostrar sizing sprints en dashboard",
+          "status": "done",
           "effort": "simple",
           "stream": "E",
-          "status": "planned"
-        },
-        {
-          "issue": 1660,
-          "title": "Validacion cruzada roadmap vs registry",
-          "effort": "simple",
-          "stream": "E",
-          "status": "planned"
+          "agent": {
+            "result": "ok",
+            "pr": 1713
+          }
         },
         {
           "issue": 1638,
+          "slug": "cache-http-etag-productos",
           "title": "Cache HTTP ETag endpoint productos",
+          "status": "done",
           "effort": "simple",
           "stream": "E",
-          "status": "planned"
+          "agent": {
+            "result": "ok",
+            "pr": 1714
+          }
+        },
+        {
+          "issue": 1660,
+          "slug": "validacion-cruzada-roadmap-registry",
+          "title": "Validacion cruzada roadmap vs registry",
+          "status": "planned",
+          "effort": "simple",
+          "stream": "E"
         }
       ],
-      "started_at": "2026-03-19T15:12:30Z"
+      "started_at": "2026-03-19T15:12:30Z",
+      "execution": {
+        "concurrency_limit": 3,
+        "pipeline_mode": "scripts",
+        "waiting_sweep_ts": 1774003734662,
+        "sentinel_ts": 1774003734662
+      },
+      "closed_at": "2026-03-20T10:48:58Z",
+      "velocity": 0
     },
     {
       "id": "SPR-045",
