@@ -1339,10 +1339,14 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   for (const n of nodes) { _out[n] = new Set(); _in[n] = new Set(); }
   for (const e of edgeList) { if (_out[e.from]) _out[e.from].add(e.to); if (_in[e.to]) _in[e.to].add(e.from); }
   for (const root of nodes.filter(n => /^Agente\s+\d+/i.test(n))) {
-    // Find last node in this agent's chain
+    // Find last SKILL node in this agent's chain (not the agent itself, not Start)
     const myEdges = edgeList.filter(e => e.agentRoot === root);
     let last = root;
-    if (myEdges.length > 0) last = myEdges[myEdges.length - 1].to;
+    if (myEdges.length > 0) {
+      // Walk the chain to find the real last skill node
+      const chain = myEdges.filter(e => e.from !== "Start" && e.to !== "Done" && e.to !== "Error");
+      last = chain.length > 0 ? chain[chain.length - 1].to : root;
+    }
     const sess = sessionsList.find(s => s.agent_name === root);
     const isDone = sess && (sess._status === "done" || sess.status === "done" || sess._status === "stale" || sess.status === "stale");
     const isError = sess && (sess._status === "error" || sess.status === "error");
