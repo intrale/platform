@@ -533,6 +533,40 @@ function collectData() {
     ? (ciRuns[0].conclusion === "success" ? "ok" : ciRuns[0].conclusion === "failure" ? "fail" : "running")
     : "unknown";
 
+  // Normalizar nombres de agentes: "Agente (#NNNN)" → "Agente N" usando sprint plan
+  // Esto evita nodos duplicados en el flujo cuando sesiones/registry usan formatos diferentes
+  if (sprintPlan) {
+    const issueToAgentNum = {};
+    [...(sprintPlan.agentes || []), ...(sprintPlan._queue || []), ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || [])].forEach(a => {
+      if (a.issue && a.numero) issueToAgentNum[String(a.issue)] = a.numero;
+    });
+    for (const s of sessions) {
+      // Normalizar agent_name
+      if (s.agent_name) {
+        const issueMatch = s.agent_name.match(/#(\d+)/);
+        if (issueMatch && issueToAgentNum[issueMatch[1]]) {
+          s.agent_name = "Agente " + issueToAgentNum[issueMatch[1]];
+        }
+      }
+      // Si no tiene agent_name pero tiene branch con issue del sprint, asignar
+      if (!s.agent_name && s.branch) {
+        const branchIssue = s.branch.match(/^agent\/(\d+)/);
+        if (branchIssue && issueToAgentNum[branchIssue[1]]) {
+          s.agent_name = "Agente " + issueToAgentNum[branchIssue[1]];
+        }
+      }
+      // Normalizar transiciones
+      if (Array.isArray(s.agent_transitions)) {
+        for (const t of s.agent_transitions) {
+          const fromMatch = t.from.match(/Agente\s*\(#(\d+)\)/i);
+          if (fromMatch && issueToAgentNum[fromMatch[1]]) t.from = "Agente " + issueToAgentNum[fromMatch[1]];
+          const toMatch = t.to.match(/Agente\s*\(#(\d+)\)/i);
+          if (toMatch && issueToAgentNum[toMatch[1]]) t.to = "Agente " + issueToAgentNum[toMatch[1]];
+        }
+      }
+    }
+  }
+
   // Classify sessions into execution categories
   // Todas las sesiones en `sessions` ya pasaron el filtro zombie (30min).
   // No descartar stale aquí: ○ (stale 15-30min) debe ser visible en EJECUCIÓN.
