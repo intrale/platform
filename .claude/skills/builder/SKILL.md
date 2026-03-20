@@ -39,38 +39,50 @@ Verificar que Java 21 esta disponible:
 
 Segun el argumento recibido:
 
-### Todo el proyecto (sin argumento o --clean)
+### Sin argumento — Build inteligente (por defecto)
+
+Usar `scripts/smart-build.sh` para detectar módulos afectados y compilar solo esos:
+
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
+  chmod +x scripts/smart-build.sh && \
+  bash scripts/smart-build.sh 2>&1 | tail -80
+```
+
+El script detecta automáticamente:
+- Archivos cambiados vs `origin/main`
+- Módulos afectados: `backend`, `users`, `app`, `tools`
+- Transitividad: cambio en `backend/` → recompila también `:users:check`
+- Archivos compartidos (`buildSrc/`, `gradle/`, `*.gradle.kts`) → build completo
+
+### Módulo explícito (argumento `backend`, `users`, `app`, `tools`)
+
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
+  ./gradlew :<modulo>:check 2>&1 | tail -50
+```
+
+- `backend` → `:backend:check`
+- `users` → `:users:check`
+- `app` → `:app:composeApp:check`
+- `tools` → `:tools:forbidden-strings-processor:check`
+
+### `--clean` (build completo limpio)
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
   ./gradlew clean build 2>&1 | tail -80
 ```
 
-### Modulo `backend`
+### `--all` (build completo sin limpiar)
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :backend:build 2>&1 | tail -50
+  bash scripts/smart-build.sh --all 2>&1 | tail -80
 ```
 
-### Modulo `users`
+### `--fast` (solo compilación sin checks)
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :users:build 2>&1 | tail -50
-```
-
-### Modulo `app`
-```bash
-export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  ./gradlew :app:composeApp:build 2>&1 | tail -50
-```
-
-Si se paso `--clean`, anteponer `clean` a la tarea:
-```bash
-./gradlew clean :modulo:build
-```
-
-Si se paso `--fast`, usar solo `compileKotlin` en vez de `build`:
-```bash
-./gradlew :modulo:compileKotlin 2>&1 | tail -50
+  ./gradlew :<modulo>:compileKotlin 2>&1 | tail -50
 ```
 
 ## Paso 3: Verificaciones (si --verify o sin --fast)

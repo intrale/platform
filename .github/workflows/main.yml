@@ -3,6 +3,14 @@ name: CI-CD Plataforma
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'backend/**'
+      - 'users/**'
+      - 'buildSrc/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'settings.gradle.kts'
   repository_dispatch:
 jobs:
   deploy-lambda:
