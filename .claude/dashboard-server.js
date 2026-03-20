@@ -1941,10 +1941,18 @@ function buildGanttChart(roadmap) {
     // Column separator
     svg += `<line x1="${x}" y1="0" x2="${x}" y2="${svgH}" stroke="var(--border)" stroke-width="0.5" stroke-opacity="0.4"/>`;
 
-    // Status icon + Sprint label (ID) + Size badge
+    // Status icon + Sprint label (ID)
     const statusIcon = spr.status === "done" ? "✅" : (spr.status === "active" || spr.status === "in_progress") ? "▶️" : "⏳";
-    const sizeLabel = spr.size ? ` [${spr.size}]` : "";
-    svg += `<text x="${x + colW / 2}" y="24" text-anchor="middle" font-size="18" font-weight="700" fill="var(--white)" opacity="0.9">${statusIcon} ${escHtml(spr.id)}${escHtml(sizeLabel)}</text>`;
+    svg += `<text x="${x + colW / 2}" y="24" text-anchor="middle" font-size="18" font-weight="700" fill="var(--white)" opacity="0.9">${statusIcon} ${escHtml(spr.id)}</text>`;
+    // Size badge: simple→S (verde), medio→M (azul), grande→L (ámbar)
+    const sprintSizeMap = { "simple": "S", "medio": "M", "grande": "L" };
+    const sprintSizeCode = sprintSizeMap[spr.size] || "";
+    if (sprintSizeCode) {
+      const sprintSizeColor = sprintSizeCode === "L" ? "#f59e0b" : sprintSizeCode === "M" ? "#60a5fa" : "#34d399";
+      const sbx = x + colW - 26;
+      svg += `<rect x="${sbx}" y="8" width="18" height="14" fill="${sprintSizeColor}" fill-opacity="0.2" rx="3" stroke="${sprintSizeColor}" stroke-width="1"/>`;
+      svg += `<text x="${sbx + 9}" y="19" text-anchor="middle" font-size="9" font-weight="700" fill="${sprintSizeColor}">${sprintSizeCode}</text>`;
+    }
     // Date range
     const start = (spr.start || "").substring(5); // MM-DD
     const end = (spr.end || "").substring(5);
@@ -2020,6 +2028,15 @@ function buildGanttChart(roadmap) {
       // Issue number chip
       svg += `<text x="${barX + 4}" y="${barY + 15}" font-size="12" fill="${fillColor}" font-weight="700" opacity="0.85" style="pointer-events:none;">#${iss.number}</text>`;
 
+      // Size badge — esquina superior derecha de la barra: S (verde), M (azul), L (ámbar)
+      if (iss.size) {
+        const sizeBadgeColor = iss.size === "L" ? "#f59e0b" : iss.size === "M" ? "#60a5fa" : "#34d399";
+        const sbx = barX + barW - 16;
+        const sby = barY + 2;
+        svg += `<rect x="${sbx}" y="${sby}" width="14" height="11" fill="${sizeBadgeColor}" fill-opacity="0.2" rx="2" stroke="${sizeBadgeColor}" stroke-width="0.8" style="pointer-events:none;"/>`;
+        svg += `<text x="${sbx + 7}" y="${sby + 8.5}" text-anchor="middle" font-size="8" font-weight="700" fill="${sizeBadgeColor}" style="pointer-events:none;">${escHtml(iss.size)}</text>`;
+      }
+
       svg += `</a>`;
       svg += `</g>`;
     }
@@ -2063,6 +2080,17 @@ function buildGanttChart(roadmap) {
     svg += `<rect x="${legendX}" y="${legendY}" width="8" height="8" fill="${color}" rx="2"/>`;
     svg += `<text x="${legendX + 11}" y="${legendY + 7}" font-size="7.5" fill="var(--text-dim)">${STREAM_LABELS[s]}</text>`;
     legendX += 55;
+  }
+
+  // Size legend: S/M/L — separador + ítems
+  legendX += 8;
+  svg += `<line x1="${legendX}" y1="${legendY}" x2="${legendX}" y2="${legendY + 8}" stroke="var(--border)" stroke-width="0.5" stroke-opacity="0.5"/>`;
+  legendX += 6;
+  const sizeItems = [["S", "#34d399", "Simple"], ["M", "#60a5fa", "Medio"], ["L", "#f59e0b", "Grande"]];
+  for (const [code, color, label] of sizeItems) {
+    svg += `<rect x="${legendX}" y="${legendY}" width="8" height="8" fill="${color}" fill-opacity="0.2" rx="2" stroke="${color}" stroke-width="0.8"/>`;
+    svg += `<text x="${legendX + 11}" y="${legendY + 7}" font-size="7.5" fill="var(--text-dim)">${code}=${label}</text>`;
+    legendX += 58;
   }
 
   const updatedLabel = roadmap.updated_ts ? roadmap.updated_ts.substring(0, 10) : "";
