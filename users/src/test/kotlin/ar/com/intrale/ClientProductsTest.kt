@@ -291,6 +291,44 @@ class ClientProductsTest {
     }
 
     @Test
+    fun `GET retorna header Cache-Control max-age=60 en respuesta 200`() = runBlocking {
+        seedProduct(name = "Costillas", status = "PUBLISHED", basePrice = 1100.0)
+
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        )
+
+        assertTrue(response is ClientProductListResponse)
+        assertEquals("max-age=60", response.responseHeaders["Cache-Control"])
+    }
+
+    @Test
+    fun `GET con If-None-Match coincidente retorna Cache-Control en respuesta 304`() = runBlocking {
+        seedProduct(name = "Paleta", status = "PUBLISHED", basePrice = 750.0)
+
+        val firstResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET"),
+            textBody = ""
+        ) as ClientProductListResponse
+        val etag = firstResponse.responseHeaders["ETag"]!!
+
+        val secondResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf("Authorization" to token, "X-Http-Method" to "GET", "If-None-Match" to etag),
+            textBody = ""
+        )
+
+        assertTrue(secondResponse is NotModifiedResponse)
+        assertEquals("max-age=60", secondResponse.responseHeaders["Cache-Control"])
+    }
+
+    @Test
     fun `computeETag es determinista para la misma lista de productos`() {
         val payloads = listOf(
             ClientProductPayload(id = "1", name = "Test", basePrice = 100.0, status = "PUBLISHED", isAvailable = true)
@@ -492,5 +530,39 @@ class ClientProductsTest {
         ) as ClientProductListResponse
 
         assertEquals(0, response.pagination!!.offset)
+    }
+
+    @Test
+    fun `GET con filtros y ETag coincidente retorna 304`() = runBlocking {
+        seedProduct(name = "Asado premium", status = "PUBLISHED", categoryId = "carnes")
+        seedProduct(name = "Lechuga fresca", status = "PUBLISHED", categoryId = "verduras")
+
+        val firstResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf(
+                "Authorization" to token,
+                "X-Http-Method" to "GET",
+                "X-Query-category" to "carnes"
+            ),
+            textBody = ""
+        ) as ClientProductListResponse
+        val etag = firstResponse.responseHeaders["ETag"]!!
+
+        val secondResponse = function.securedExecute(
+            business = "la-carne",
+            function = "products",
+            headers = mapOf(
+                "Authorization" to token,
+                "X-Http-Method" to "GET",
+                "X-Query-category" to "carnes",
+                "If-None-Match" to etag
+            ),
+            textBody = ""
+        )
+
+        assertTrue(secondResponse is NotModifiedResponse)
+        assertEquals(HttpStatusCode.NotModified, secondResponse.statusCode)
+        assertEquals("max-age=60", secondResponse.responseHeaders["Cache-Control"])
     }
 }
