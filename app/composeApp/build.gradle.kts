@@ -198,6 +198,11 @@ kotlin {
             }
         }
         binaries.executable()
+        // binaryen v123 crashea con SIGSEGV en GitHub Actions runners.
+        // Pinear a v118 (estable) hasta que upstream lo resuelva.
+        applyBinaryen {
+            binaryenVersion.set("version_118")
+        }
     }
     
     sourceSets {
