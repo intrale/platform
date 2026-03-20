@@ -405,7 +405,7 @@
     {
       "id": "SPR-045",
       "tema": "Cross/infra — CI build inteligente ciclo continuo",
-      "status": "planned",
+      "status": "done",
       "size": "medio",
       "stories": [
         {
@@ -413,35 +413,35 @@
           "title": "Auto-reparacion CI relanzar agente",
           "effort": "medio",
           "stream": "E",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 1657,
           "title": "Build inteligente modulos afectados",
           "effort": "medio",
           "stream": "E",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 1658,
           "title": "Ciclo continuo sprints cierre reporte",
           "effort": "medio",
           "stream": "E",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 1093,
           "title": "QA video Registros especializados",
           "effort": "medio",
           "stream": "E",
-          "status": "planned"
+          "status": "done"
         }
       ]
     },
     {
       "id": "SPR-046",
       "tema": "Negocio — carry-over SPR-042 + features",
-      "status": "planned",
+      "status": "active",
       "size": "medio",
       "stories": [
         {
