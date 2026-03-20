@@ -1,0 +1,65 @@
+appId: com.intrale.app.client
+---
+# Flujo: Registro Delivery (#1093)
+- launchApp:
+    clearState: true
+
+# Saltar onboarding (4 paginas, aparece en primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 15000
+- tapOn:
+    text: "Saltar"
+
+# Esperar Home y navegar a registro
+- extendedWaitUntil:
+    visible:
+      text: "Registrarme"
+    timeout: 10000
+- tapOn:
+    text: "Registrarme"
+
+# Esperar pantalla de seleccion de perfil
+- extendedWaitUntil:
+    visible:
+      text: "Registro Delivery"
+    timeout: 10000
+
+# Navegar al formulario de Delivery
+- tapOn:
+    text: "Registro Delivery"
+
+# Esperar formulario de registro Delivery
+- extendedWaitUntil:
+    visible:
+      text: "Registrar repartidor"
+    timeout: 10000
+
+# Screenshot del formulario vacio
+- takeScreenshot: signup-delivery-empty
+
+# Ingresar email de prueba
+- tapOn:
+    id: "field_Correo electrónico"
+- inputText: "delivery-qa-test@intrale.com"
+
+# Screenshot con email ingresado
+- takeScreenshot: signup-delivery-filled
+
+# Ingresar negocio (campo de busqueda)
+- tapOn:
+    id: "field_Negocio"
+- inputText: "intrale"
+- waitForAnimationToEnd
+
+# Screenshot con negocio ingresado
+- takeScreenshot: signup-delivery-business
+
+# Intentar enviar formulario
+- tapOn:
+    text: "Registrar repartidor"
+- waitForAnimationToEnd
+
+# Screenshot del resultado
+- takeScreenshot: signup-delivery-submitted

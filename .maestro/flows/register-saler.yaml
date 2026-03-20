@@ -1,0 +1,49 @@
+appId: com.intrale.app.client
+---
+# Flujo: Registro de Vendedor (#1093)
+# Nota: RegisterSaler no tiene navegacion directa desde la UI del client app.
+# Se accede via login como BusinessAdmin y luego via deep navigation interna.
+- launchApp:
+    clearState: true
+
+# Saltar onboarding (4 paginas, aparece en primer uso)
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 15000
+- tapOn:
+    text: "Saltar"
+
+# Navegar al login
+- extendedWaitUntil:
+    visible:
+      text: "Registrarme"
+    timeout: 10000
+
+# Screenshot del home mostrando opciones disponibles
+- takeScreenshot: register-saler-home-options
+
+# Navegar a registro para ver selector de perfiles
+- tapOn:
+    text: "Registrarme"
+
+# Esperar pantalla de seleccion de perfil
+- extendedWaitUntil:
+    visible:
+      text: "Registro Platform Admin"
+    timeout: 10000
+
+# Screenshot mostrando que RegisterSaler no esta en el selector de perfiles
+# (Solo muestra Platform Admin y Delivery)
+- takeScreenshot: register-saler-not-in-profile-selector
+
+# Volver atras
+- pressKey: back
+
+- extendedWaitUntil:
+    visible:
+      text: "Registrarme"
+    timeout: 10000
+
+# Screenshot final del home
+- takeScreenshot: register-saler-back-to-home
