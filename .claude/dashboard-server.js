@@ -350,16 +350,16 @@ function collectData() {
         if (!s) continue;
         // Solo sesiones parent (ignorar sub-agentes)
         if (s.type && s.type !== "parent") continue;
-        // Sesiones done: conservar recientes (< 30min) para el flujo de agentes
-        if (s.status === "done") {
+        const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+        let isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
+        // Sesiones done: conservar si son del sprint activo (para el flujo), sino 30min max
+        if (s.status === "done" && !isSprintSession) {
           const doneAge = now - new Date(s.last_activity_ts || s.started_ts).getTime();
           const DONE_KEEP_MS = 30 * 60 * 1000; // 30 min
           if (doneAge > DONE_KEEP_MS) continue;
         }
         const status = getSessionStatus(s);
         const elapsed = now - new Date(s.last_activity_ts).getTime();
-        const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
-        let isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
         // Fallback: detectar sprint session por modified_files path (worktrees con branch "unknown")
         if (!isSprintSession && Array.isArray(s.modified_files) && s.modified_files.length > 0) {
           for (const issueNum of sprintIssueSet) {
