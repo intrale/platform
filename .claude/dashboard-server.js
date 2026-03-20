@@ -1465,13 +1465,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   if (Object.keys(layers).length === 0) layers[0] = [];
   const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
 
-  // Spacing dinámico: target ~1200px de ancho total para caber sin escalar
-  const targetW = 1200;
-  const colSpacing = Math.max(130, Math.min(260, Math.round((targetW - 240) / Math.max(numLayers, 1))));
-  // rowSpacing adaptativo: más nodos → más espacio para issue labels + issue number
+  // Spacing: usar todo el ancho disponible, scroll horizontal si es necesario
   const maxNodesInLayer = Math.max(1, ...Object.values(layers).map(l => l.length));
-  const rowSpacing = maxNodesInLayer <= 4 ? 210 : maxNodesInLayer <= 6 ? 190 : 175;
-  const padding = 120;
+  const colSpacing = numLayers <= 5 ? 260 : numLayers <= 8 ? 200 : 170;
+  const rowSpacing = maxNodesInLayer <= 3 ? 240 : maxNodesInLayer <= 5 ? 210 : 180;
+  const padding = 130;
   const mainZoneW = numLayers * colSpacing + padding * 2;
   // Main peripheral zone: positioned below the agent flow
   const mainNodesList = [...mainOnlyNodes];
