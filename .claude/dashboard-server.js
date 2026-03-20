@@ -1799,8 +1799,14 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const isActive = activeAgents.has(name);
     const isDone = doneAgents.has(name);
     const isQueued = queuedAgents.has(name);
-    // Color del nodo: gris para cola, color por agente-owner para activos
-    const baseColor = agentColorMap[name] || (nodeOwner[name] && agentColorMap[nodeOwner[name]]) || (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086";
+    const isSkillNode = !(/^Agente\s+/i.test(name)) && name !== "Start" && name !== "Done" && name !== "Error" && name !== "Main";
+    // Para skills: encontrar todos los agentes que pasaron por este nodo
+    const passingAgents = isSkillNode
+      ? [...new Set(edgeList.filter(e => e.to === name || e.from === name).map(e => e.agentRoot).filter(r => r && r !== "Main"))]
+      : [];
+    const passingColors = passingAgents.map(a => agentColorMap[a] || "#6C7086").filter((c, i, arr) => arr.indexOf(c) === i);
+    // Color del nodo: skills usan color neutral propio, agentes usan su color
+    const baseColor = isSkillNode ? "#8b95a5" : (agentColorMap[name] || (nodeOwner[name] && agentColorMap[nodeOwner[name]]) || (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086");
     const color = isQueued ? "#6C7086" : baseColor;
     // Resolve icon: usar robot SVG para agentes raíz (#1544)
     // Primero intentar robotMap (sprint-plan), luego patrón "Agente N"
@@ -1840,13 +1846,40 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const opacityStyle = isQueued ? `opacity:${opacity};` : '';
     svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;${opacityStyle}" ${filterAttr}>`;
     // Fondo del nodo
-    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"/>`;
-    // Halo pulsante para nodos activos
-    if (isActive) {
-      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 8}" fill="none" stroke="${color}" stroke-width="2"><animate attributeName="r" values="${effectiveR + 4};${effectiveR + 14};${effectiveR + 4}" dur="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.8;0.1;0.8" dur="2s" repeatCount="indefinite"/></circle>`;
+    if (isSkillNode && passingColors.length > 1) {
+      // Multi-agent border: arcos segmentados, uno por agente que pasó
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.08)" stroke="none"/>`;
+      const arcR = effectiveR;
+      const totalAgents = passingColors.length;
+      const gap = 4; // grados de separación entre arcos
+      const arcDeg = (360 - gap * totalAgents) / totalAgents;
+      for (let ai = 0; ai < totalAgents; ai++) {
+        const startAngle = ai * (arcDeg + gap) - 90; // empezar desde arriba
+        const endAngle = startAngle + arcDeg;
+        const startRad = startAngle * Math.PI / 180;
+        const endRad = endAngle * Math.PI / 180;
+        const x1a = pos.x + arcR * Math.cos(startRad);
+        const y1a = pos.y + arcR * Math.sin(startRad);
+        const x2a = pos.x + arcR * Math.cos(endRad);
+        const y2a = pos.y + arcR * Math.sin(endRad);
+        const largeArc = arcDeg > 180 ? 1 : 0;
+        svg += `<path d="M${x1a.toFixed(1)},${y1a.toFixed(1)} A${arcR},${arcR} 0 ${largeArc} 1 ${x2a.toFixed(1)},${y2a.toFixed(1)}" fill="none" stroke="${passingColors[ai]}" stroke-width="3.5" stroke-linecap="round"/>`;
+      }
+    } else if (isSkillNode && passingColors.length === 1) {
+      // Single agent: borde con el color de ese agente
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.08)" stroke="${passingColors[0]}" stroke-width="3"/>`;
+    } else {
+      // Agent/Start/Done/Error nodes: borde sólido con su propio color
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"/>`;
+    }
+    // Halo pulsante para nodos activos (agentes Y skills)
+    if (isActive || (isSkillNode && passingAgents.some(a => activeAgents.has(a)))) {
+      const pulseColor = isSkillNode ? (passingColors[0] || color) : color;
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 8}" fill="none" stroke="${pulseColor}" stroke-width="2"><animate attributeName="r" values="${effectiveR + 4};${effectiveR + 14};${effectiveR + 4}" dur="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.8;0.1;0.8" dur="2s" repeatCount="indefinite"/></circle>`;
     }
     // Círculo de color semitransparente detrás del icono para contraste
-    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${(effectiveR - 3).toFixed(1)}" fill="${color}" fill-opacity="${hasRobot ? '0.15' : '0.30'}"/>`;
+    const fillColor = isSkillNode ? "#8b95a5" : color;
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${(effectiveR - 3).toFixed(1)}" fill="${fillColor}" fill-opacity="${hasRobot ? '0.15' : '0.20'}"/>`;
     // Icon: filter brighten para garantizar visibilidad sobre fondo oscuro
     if (iconUrl) {
       svg += `<image href="${iconUrl}" x="${(pos.x - effectiveImgSize / 2).toFixed(1)}" y="${(pos.y - effectiveImgSize / 2).toFixed(1)}" width="${effectiveImgSize.toFixed(0)}" height="${effectiveImgSize.toFixed(0)}" style="pointer-events:none;" filter="url(#icon-brighten)"/>`;
