@@ -520,14 +520,7 @@ function collectData() {
       alerts.push({ type: "warning", message: "Tarea sin owner: " + t.subject });
     }
   }
-  for (const s of sessions) {
-    if (s._status === "idle") {
-      const elapsed = Date.now() - new Date(s.last_activity_ts).getTime();
-      if (elapsed > 10 * 60 * 1000) {
-        alerts.push({ type: "info", message: (s.agent_name || s.id) + " idle " + formatAge(s.last_activity_ts) });
-      }
-    }
-  }
+  // Idle alerts removed from global alerts — shown only in agent cards (Ejecución panel)
 
   const ciStatus = ciRuns.length > 0
     ? (ciRuns[0].conclusion === "success" ? "ok" : ciRuns[0].conclusion === "failure" ? "fail" : "running")
@@ -617,11 +610,27 @@ function collectData() {
     // Skip sessions not related to the active sprint (unless it's Main session or no sprint)
     const isMainSession = !s.branch || !s.branch.startsWith("agent/");
     if (_flowIssues.size > 0 && !isMainSession && issueNum && !_flowIssues.has(issueNum)) continue;
+    // Resolve sprint agent name to "Agente N" (used by transitions and node registration)
+    const isSprintAgent = s.branch && s.branch.startsWith("agent/") && s.agent_name;
+    let agentRootName = null;
+    if (isSprintAgent) {
+      const normalized = normalizeSkillName(s.agent_name);
+      if (/^Agente\s+\d+/i.test(normalized)) {
+        agentRootName = normalized;
+      } else if (issueNum) {
+        try {
+          const spFile = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+          if (fs.existsSync(spFile)) {
+            const sp = JSON.parse(fs.readFileSync(spFile, "utf8"));
+            const all = [...(sp.agentes||[]), ...(sp._queue||[]), ...(sp._completed||[]), ...(sp._incomplete||[])];
+            const match = all.find(a => String(a.issue) === issueNum);
+            if (match && match.numero) agentRootName = "Agente " + match.numero;
+          }
+        } catch(e) {}
+        if (!agentRootName) agentRootName = "Agente " + issueNum;
+      }
+    }
     if (Array.isArray(s.agent_transitions)) {
-      // For sprint agent sessions, replace "Claude" origin with the agent name
-      // so each agent appears as its own root node in the flow graph
-      const isSprintAgent = s.branch && s.branch.startsWith("agent/") && s.agent_name;
-      const agentRootName = isSprintAgent ? normalizeSkillName(s.agent_name) : null;
       for (const t of s.agent_transitions) {
         let normFrom = normalizeSkillName(t.from);
         // Replace "Claude"/"Main" with the agent's own name for sprint agents
@@ -640,8 +649,12 @@ function collectData() {
         agentNodes.add(normalizeSkillName(mapped));
       }
     }
-    // Add session agent itself
-    if (s.agent_name) agentNodes.add(normalizeSkillName(s.agent_name));
+    // Add session agent itself (use resolved agentRootName for sprint agents)
+    if (isSprintAgent && agentRootName) {
+      agentNodes.add(agentRootName);
+    } else if (s.agent_name) {
+      agentNodes.add(normalizeSkillName(s.agent_name));
+    }
 
     // Synthetic Main transitions: si la sesión Main tiene skills o tools Agent
     // pero no tiene agent_transitions, generar edges sintéticos
@@ -884,6 +897,22 @@ function normalizeSkillName(name) {
   if (!name) return "Claude";
   const raw = String(name).trim();
   if (!raw) return "Claude";
+  // Normalize "Agente (#NNNN)" → "Agente N" using sprint-plan issue→numero mapping
+  // This handles sessions that register as "Agente (#1656)" instead of "Agente 1"
+  const issueMatch = raw.match(/^Agente\s*\(#?(\d+)\)$/i);
+  if (issueMatch) {
+    const issueNum = issueMatch[1];
+    try {
+      const spFile = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+      if (fs.existsSync(spFile)) {
+        const sp = JSON.parse(fs.readFileSync(spFile, "utf8"));
+        const all = [...(sp.agentes||[]), ...(sp._queue||[]), ...(sp._completed||[]), ...(sp._incomplete||[])];
+        const match = all.find(a => String(a.issue) === issueNum);
+        if (match && match.numero) return "Agente " + match.numero;
+      }
+    } catch(e) {}
+    return "Agente " + issueNum; // fallback: use issue number
+  }
   // Direct match in AGENT_ICON_MAP (canonical names)
   if (typeof AGENT_ICON_MAP !== "undefined" && AGENT_ICON_MAP[raw]) return raw;
   // Buscar en SKILL_TO_AGENT (con y sin slash)
@@ -1278,7 +1307,9 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   const transitions = Array.isArray(agentTransitions) ? agentTransitions : [];
   const nodesWithEdges = new Set();
   for (const t of transitions) { nodesWithEdges.add(normalizeSkillName(t.from)); nodesWithEdges.add(normalizeSkillName(t.to)); }
-  const nodes = [...nodeSet].filter(n => nodesWithEdges.has(n));
+  // Infrastructure skills invoked automatically — exclude from flow graph
+  const INFRA_SKILLS_FILTER = new Set(["Ops", "Checkup", "Cleanup", "Monitor", "Cost"]);
+  const nodes = [...nodeSet].filter(n => nodesWithEdges.has(n) && !INFRA_SKILLS_FILTER.has(n));
 
   if (nodes.length === 0) {
     return '<div class="empty-state">Sin flujo de agentes registrado</div>';
@@ -1377,17 +1408,12 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       : (t._session ? (sessionToRoot[t._session] || "Main") : "Main");
     if (rootName === "Claude") rootName = "Main";
     if (!agentEdges[rootName]) agentEdges[rootName] = [];
-    const pairKey = t.from + "->" + t.to;
-    if (rootName === "Main") {
-      // Main: dedup globally — never duplicate edges from Main
-      if (mainEdgeSet.has(pairKey)) continue;
-      mainEdgeSet.add(pairKey);
-    } else {
-      // Other agents: dedup within same agent only
-      if (agentEdges[rootName].some(e => e.from === t.from && e.to === t.to)) continue;
-    }
+    // Dedup: same agent, same from→to pair = skip (covers retries/multiple sessions)
+    const globalPairKey = rootName + ":" + t.from + "->" + t.to;
+    if (mainEdgeSet.has(globalPairKey)) continue;
+    mainEdgeSet.add(globalPairKey);
     agentEdges[rootName].push({ from: t.from, to: t.to, ts: t.ts, _session: t._session });
-    edgeSet.add(pairKey);
+    edgeSet.add(t.from + "->" + t.to);
   }
 
   // Build edgeList with per-agent sequence numbers
@@ -1395,15 +1421,29 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   let edgeSeq = 0;
   for (const [rootName, edges] of Object.entries(agentEdges)) {
     const agentMatch = rootName.match(/^Agente\s+(\d+)$/i);
+    if (!agentMatch && rootName !== "Main") continue; // Skip unresolved roots (duplicates)
     const agentNum = agentMatch ? agentMatch[1] : "0";
     const session = edges[0] && edges[0]._session ? (sessionMap[edges[0]._session] || null) : null;
     const branchMatch = session ? (session.branch || "").match(/(\d+)/) : null;
     const issueNum = branchMatch ? branchMatch[1] : null;
-    edges.forEach((e, i) => {
+    const seenInAgent = new Set();
+    let stepNum = 0;
+    edges.forEach((e) => {
+      const dk = e.from + "->" + e.to;
+      if (seenInAgent.has(dk)) return; // skip duplicate edge within same agent
+      seenInAgent.add(dk);
       edgeSeq++;
+      stepNum++;
       const isRecent = e.ts ? (now - new Date(e.ts).getTime() < 5 * 60 * 1000) : false;
-      edgeList.push({ from: e.from, to: e.to, seq: edgeSeq, agentSeq: agentNum + "." + (i + 1), agentRoot: rootName, issueNum, isRecent });
+      edgeList.push({ from: e.from, to: e.to, seq: edgeSeq, agentSeq: agentNum + "." + stepNum, agentRoot: rootName, issueNum, isRecent });
     });
+  }
+
+  // Remove orphan nodes (no edges after filtering unresolved roots)
+  const nodesInEdges = new Set();
+  for (const e of edgeList) { nodesInEdges.add(e.from); nodesInEdges.add(e.to); }
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (!nodesInEdges.has(nodes[i])) nodes.splice(i, 1);
   }
 
   // --- Terminal nodes: Done (success) and Error (failure) ---
@@ -1413,10 +1453,12 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   for (const root of nodes.filter(n => /^Agente\s+\d+/i.test(n))) {
     // Find last SKILL node in this agent's chain (not the agent itself, not Start)
     const myEdges = edgeList.filter(e => e.agentRoot === root);
+    // Infrastructure skills that are auto-invoked (not part of dev pipeline)
+    const INFRA_SKILLS = new Set(["Ops", "Checkup", "Cleanup", "Monitor", "Cost", "Scrum"]);
     let last = root;
     if (myEdges.length > 0) {
-      // Walk the chain to find the real last skill node
-      const chain = myEdges.filter(e => e.from !== "Start" && e.to !== "Done" && e.to !== "Error");
+      // Walk the chain to find the real last skill node, excluding infra skills
+      const chain = myEdges.filter(e => e.from !== "Start" && e.to !== "Done" && e.to !== "Error" && !INFRA_SKILLS.has(normalizeSkillName(e.to)));
       last = chain.length > 0 ? chain[chain.length - 1].to : root;
     }
     const sess = sessionsList.find(s => s.agent_name === root);
@@ -1489,10 +1531,33 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     for (const n of nodes) {
       if (agentPattern.test(n)) layer[n] = 1;
     }
-    // Push all non-agent, non-terminal, non-Start nodes to layer >= 2
+    // Semantic layer assignment based on skill role in the pipeline
+    // Layer 0: Start
+    // Layer 1: Agents
+    // Layer 2: Discovery (PO, UX, Guru, Doc)
+    // Layer 3: Developers (BackendDev, AndroidDev, WebDev, Builder, etc.)
+    // Layer 4: Gates (Tester, QA, Security, Review)
+    // Layer 5: Delivery (Delivery, Ops, Scrum)
+    // Layer 6: Done/Error (set below)
+    const SKILL_LAYER = {
+      // Discovery & planning
+      "PO": 2, "UX": 2, "Guru": 2, "Doc": 2, "Planner": 2, "Historia": 2, "Refinar": 2, "Priorizar": 2,
+      // Development
+      "BackendDev": 3, "AndroidDev": 3, "WebDev": 3, "Hotfix": 3, "Perf": 3,
+      // Gates & validation
+      "Tester": 4, "QA": 4, "Security": 4, "Review": 4, "Auth": 4,
+      // Delivery & ops
+      "Delivery": 5, "DeliveryManager": 5, "Builder": 5, "Ops": 5, "Scrum": 5, "Checkup": 5, "Cleanup": 5, "Monitor": 5, "Cost": 5,
+    };
     for (const n of nodes) {
       if (n === "Start" || n === "Done" || n === "Error" || agentPattern.test(n)) continue;
-      if (layer[n] <= 1) layer[n] = 2;
+      const normalized = normalizeSkillName(n);
+      if (SKILL_LAYER[normalized] !== undefined) {
+        layer[n] = SKILL_LAYER[normalized];
+      } else if (layer[n] <= 1) {
+        // Unknown skills default to layer 3 (dev)
+        layer[n] = 3;
+      }
     }
   }
 
@@ -1528,19 +1593,71 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   if (Object.keys(layers).length === 0) layers[0] = [];
   const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
 
-  // Spacing: usar todo el ancho disponible, scroll horizontal si es necesario
+  // Spacing: usar todo el ancho disponible
   const maxNodesInLayer = Math.max(1, ...Object.values(layers).map(l => l.length));
-  const colSpacing = numLayers <= 5 ? 260 : numLayers <= 8 ? 200 : 170;
-  const rowSpacing = maxNodesInLayer <= 3 ? 240 : maxNodesInLayer <= 5 ? 210 : 180;
+  const colSpacing = numLayers <= 5 ? 300 : numLayers <= 8 ? 240 : 200;
+  // Minimum row spacing: 2*nodeR + gap for rings + labels
+  const minRowSpacing = nodeR * 2 + 80; // ~192px min between node centers
+  const rowSpacing = Math.max(minRowSpacing, maxNodesInLayer <= 3 ? 260 : maxNodesInLayer <= 5 ? 230 : 200);
   const padding = 70;
   const mainZoneW = numLayers * colSpacing + padding * 2;
   // Main peripheral zone: positioned below the agent flow
   const mainNodesList = [...mainOnlyNodes];
-  const mainZoneH = mainNodesList.length > 0 ? 200 : 0; // extra height for Main zone
+  const mainZoneH = mainNodesList.length > 0 ? 200 : 0;
   const mainRowSpacing = 140;
   const svgW = Math.max(900, mainZoneW);
   const agentZoneH = Math.max(500, maxNodesInLayer * rowSpacing + padding * 2);
   const svgH = agentZoneH + mainZoneH;
+
+  // --- Barycenter ordering to minimize edge crossings ---
+  // Build adjacency for ordering: neighbors in adjacent layers
+  const edgeAdj = {}; // node → Set of connected nodes
+  for (const n of nodes) edgeAdj[n] = new Set();
+  for (const e of edgeList) {
+    if (edgeAdj[e.from]) edgeAdj[e.from].add(e.to);
+    if (edgeAdj[e.to]) edgeAdj[e.to].add(e.from);
+  }
+
+  // Initial order: assign temporary Y positions (index within layer)
+  const nodeOrder = {}; // node → index within its layer
+  for (const [, layerNodes] of Object.entries(layers)) {
+    layerNodes.forEach((n, i) => { nodeOrder[n] = i; });
+  }
+
+  // Iterate barycenter sweeps (forward + backward) to reduce crossings
+  const sortedLayerKeys = Object.keys(layers).map(Number).sort((a, b) => a - b);
+  for (let sweep = 0; sweep < 4; sweep++) {
+    // Forward sweep: order each layer based on avg position of left neighbors
+    for (let li = 1; li < sortedLayerKeys.length; li++) {
+      const lk = String(sortedLayerKeys[li]);
+      const prevLk = String(sortedLayerKeys[li - 1]);
+      const prevNodes = layers[prevLk] || [];
+      if (!layers[lk] || layers[lk].length <= 1) continue;
+      layers[lk].sort((a, b) => {
+        const aNeighbors = [...(edgeAdj[a] || [])].filter(n => prevNodes.includes(n));
+        const bNeighbors = [...(edgeAdj[b] || [])].filter(n => prevNodes.includes(n));
+        const aBar = aNeighbors.length > 0 ? aNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / aNeighbors.length : nodeOrder[a] || 0;
+        const bBar = bNeighbors.length > 0 ? bNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / bNeighbors.length : nodeOrder[b] || 0;
+        return aBar - bBar;
+      });
+      layers[lk].forEach((n, i) => { nodeOrder[n] = i; });
+    }
+    // Backward sweep: order each layer based on avg position of right neighbors
+    for (let li = sortedLayerKeys.length - 2; li >= 0; li--) {
+      const lk = String(sortedLayerKeys[li]);
+      const nextLk = String(sortedLayerKeys[li + 1]);
+      const nextNodes = layers[nextLk] || [];
+      if (!layers[lk] || layers[lk].length <= 1) continue;
+      layers[lk].sort((a, b) => {
+        const aNeighbors = [...(edgeAdj[a] || [])].filter(n => nextNodes.includes(n));
+        const bNeighbors = [...(edgeAdj[b] || [])].filter(n => nextNodes.includes(n));
+        const aBar = aNeighbors.length > 0 ? aNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / aNeighbors.length : nodeOrder[a] || 0;
+        const bBar = bNeighbors.length > 0 ? bNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / bNeighbors.length : nodeOrder[b] || 0;
+        return aBar - bBar;
+      });
+      layers[lk].forEach((n, i) => { nodeOrder[n] = i; });
+    }
+  }
 
   // Posicionar nodos del flujo de agentes (zona principal, centrada verticalmente)
   const positions = {};
@@ -1548,10 +1665,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const col = Number(layerIdx);
     const x = padding + col * colSpacing + colSpacing / 2;
     const count = layerNodes.length;
-    const totalH = (count - 1) * rowSpacing;
+    const layerRowSpacing = count <= 1 ? rowSpacing : Math.max(minRowSpacing, agentZoneH / (count + 1));
+    const totalH = (count - 1) * layerRowSpacing;
     const startY = agentZoneH / 2 - totalH / 2;
     layerNodes.forEach((name, i) => {
-      positions[name] = { x, y: startY + i * rowSpacing };
+      positions[name] = { x, y: startY + i * layerRowSpacing };
     });
   }
 
@@ -1645,10 +1763,10 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
   // --- Grid-based A* routing para flechas sin colisiones ---
   // Resolución fina para ruteo preciso
-  const gridCell = Math.max(12, Math.round(nodeR * 0.5));
+  const gridCell = Math.max(8, Math.round(nodeR * 0.3)); // finer grid for better edge separation
   const gridW = Math.ceil(svgW / gridCell);
   const gridH = Math.ceil(svgH / gridCell);
-  // Grid de ocupación: 0=libre, 1=nodo (bloqueante duro), 2=flecha previa (penalizada)
+  // Grid de ocupación: 0=libre, 1=nodo (bloqueante duro), 2+=flecha previa (penalizada, acumulativo)
   const grid = Array.from({ length: gridH }, () => new Uint8Array(gridW));
 
   // Helper: marcar celda si está en rango
@@ -1659,26 +1777,49 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
   }
 
   // Marcar celdas ocupadas por nodos — área circular + zona del label + issue number
-  const blockRadius = nodeR + 18; // margen amplio alrededor del nodo (evitar colisiones)
-  const labelExtraBelow = 50; // espacio del label + issue number debajo del nodo
+  // Pre-compute per-node ring count for accurate blocking radius
+  const nodeRingCount = {};
+  const ringStep = 5; // must match: ringWidth(3) + ringGap(2)
+  for (const name of nodes) {
+    const isSkillNode = !(/^Agente\s+/i.test(name)) && name !== "Start" && name !== "Done" && name !== "Error" && name !== "Main";
+    if (isSkillNode) {
+      const pa = [...new Set(edgeList.filter(e => e.to === name || e.from === name).map(e => e.agentRoot).filter(r => r && r !== "Main"))];
+      nodeRingCount[name] = pa.length > 1 ? pa.length : 0;
+    } else {
+      nodeRingCount[name] = 0;
+    }
+  }
+  const baseBlockMargin = 25;
+  const softMargin = 30;
+  const labelExtraBelow = 55;
   for (const name of nodes) {
     const p = positions[name];
     if (!p) continue;
+    const rings = nodeRingCount[name] || 0;
+    // Use actual visual radius: robots are nodeR+4, rings add (N-1)*ringStep on top
+    const isRobot = /^Agente\s+/i.test(name);
+    const visualR = (isRobot ? nodeR + 4 : nodeR) + (rings > 1 ? (rings - 1) * ringStep : 0);
+    const blockRadius = visualR + baseBlockMargin; // hard block = outermost ring + margin
     const gcx = Math.round(p.x / gridCell);
     const gcy = Math.round(p.y / gridCell);
-    const rCells = Math.ceil(blockRadius / gridCell);
+    const hardR = Math.ceil(blockRadius / gridCell);
+    const softR = Math.ceil((blockRadius + softMargin) / gridCell);
     const labelCells = Math.ceil((blockRadius + labelExtraBelow) / gridCell);
-    // Círculo bloqueante alrededor del nodo
-    for (let dy = -rCells; dy <= labelCells; dy++) {
-      for (let dx = -rCells; dx <= rCells; dx++) {
+    for (let dy = -softR; dy <= labelCells; dy++) {
+      for (let dx = -softR; dx <= softR; dx++) {
         const px = dx * gridCell, py = dy * gridCell;
-        // Arriba y a los lados: área circular
-        if (dy <= rCells) {
-          const dist = Math.sqrt(px * px + Math.min(py, 0) ** 2);
-          if (dist <= blockRadius) markCell(gcx + dx, gcy + dy, 1);
+        // Full circular distance (not clamped — rings are circular in ALL directions)
+        const dist = Math.sqrt(px * px + py * py);
+        // Hard block: full circle around node including all rings
+        if (dist <= blockRadius) {
+          markCell(gcx + dx, gcy + dy, 1);
         }
-        // Debajo del nodo: rectángulo para el label + issue number (ancho amplio)
-        if (dy > 0 && dy <= labelCells && Math.abs(dx) <= Math.ceil(75 / gridCell)) {
+        // Soft penalty: margin zone — expensive but passable if no alternative
+        else if (dist <= blockRadius + softMargin) {
+          markCell(gcx + dx, gcy + dy, 3);
+        }
+        // Label zone below: hard block (rectangular, extends further down)
+        if (dy > 0 && dy <= labelCells && Math.abs(dx) <= Math.ceil(85 / gridCell)) {
           markCell(gcx + dx, gcy + dy, 1);
         }
       }
@@ -1697,14 +1838,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const savedT = grid[tgy][tgx]; grid[tgy][tgx] = 0;
 
     const key = (x, y) => y * gridW + x;
-    const open = [{ x: sgx, y: sgy, g: 0, f: 0 }];
+    const open = [{ x: sgx, y: sgy, g: 0, f: 0, px: sgx, py: sgy }];
     const gScore = new Map(); gScore.set(key(sgx, sgy), 0);
     const cameFrom = new Map();
     const dirs = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
     let found = false;
-    let maxIter = Math.min(4000, gridW * gridH);
+    let maxIter = Math.min(15000, gridW * gridH * 3);
     while (open.length > 0 && maxIter-- > 0) {
+      // Binary insertion would be faster, but sort is OK for this scale
       open.sort((a, b) => a.f - b.f);
       const cur = open.shift();
       if (cur.x === tgx && cur.y === tgy) { found = true; break; }
@@ -1712,15 +1854,20 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       for (const [ddx, ddy] of dirs) {
         const nx = cur.x + ddx, ny = cur.y + ddy;
         if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
-        if (grid[ny][nx] === 1) continue; // nodo bloqueante
+        if (grid[ny][nx] === 1) continue; // nodo bloqueante hard
         const cost = (ddx !== 0 && ddy !== 0) ? 1.41 : 1;
-        const edgePenalty = grid[ny][nx] === 2 ? 8 : 0; // penalizar fuerte celdas con flechas previas
-        const ng = cur.g + cost + edgePenalty;
+        const cellVal = grid[ny][nx];
+        // Light nudge for edge separation — never enough to cause big detours
+        const edgePenalty = cellVal >= 2 ? cellVal * 1.5 : 0;
+        // Direction change penalty: discourage zigzag, prefer smooth curves
+        const prevDx = cur.x - cur.px, prevDy = cur.y - cur.py;
+        const turnPenalty = (prevDx !== 0 || prevDy !== 0) && (ddx !== prevDx || ddy !== prevDy) ? 0.5 : 0;
+        const ng = cur.g + cost + edgePenalty + turnPenalty;
         const k = key(nx, ny);
         if (!gScore.has(k) || ng < gScore.get(k)) {
           gScore.set(k, ng);
           const h = Math.abs(nx - tgx) + Math.abs(ny - tgy);
-          open.push({ x: nx, y: ny, g: ng, f: ng + h });
+          open.push({ x: nx, y: ny, g: ng, f: ng + h, px: cur.x, py: cur.y });
           cameFrom.set(k, key(cur.x, cur.y));
         }
       }
@@ -1730,7 +1877,13 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     grid[sgy][sgx] = savedS;
     grid[tgy][tgx] = savedT;
 
-    if (!found) return null; // fallback a línea recta
+    if (!found) {
+      // Fallback: curved detour instead of straight line (avoids visual collisions)
+      const midX = (sx + tx) / 2;
+      const midY = (sy + ty) / 2;
+      const detourY = midY < svgH / 2 ? midY - 80 : midY + 80; // detour away from center
+      return [{ x: sx, y: sy }, { x: midX, y: detourY }, { x: tx, y: ty }];
+    }
 
     // Reconstruir path
     const path = [];
@@ -1741,13 +1894,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       ck = cameFrom.get(ck);
     }
 
-    // Marcar celdas de esta flecha como ocupadas (peso 2) con ancho de 3 celdas
+    // Marcar celdas de esta flecha como ocupadas con ancho de 5 celdas
     for (const pt of path) {
       const gx = Math.round(pt.x / gridCell), gy = Math.round(pt.y / gridCell);
-      for (let ddy = -1; ddy <= 1; ddy++) {
-        for (let ddx = -1; ddx <= 1; ddx++) {
+      for (let ddy = -2; ddy <= 2; ddy++) {
+        for (let ddx = -2; ddx <= 2; ddx++) {
           const nx = gx + ddx, ny = gy + ddy;
-          if (ny >= 0 && ny < gridH && nx >= 0 && nx < gridW && grid[ny][nx] === 0) grid[ny][nx] = 2;
+          if (ny >= 0 && ny < gridH && nx >= 0 && nx < gridW && grid[ny][nx] !== 1) {
+            grid[ny][nx] = Math.min(255, grid[ny][nx] + 2);
+          }
         }
       }
     }
@@ -1805,7 +1960,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     return d;
   }
 
-  // Draw edges con A* routing
+  // Draw edges con A* routing — track label positions for collision avoidance
+  const placedLabels = [];
   for (const e of edgeList) {
     const from = positions[e.from];
     const to = positions[e.to];
@@ -1821,10 +1977,15 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const pairCount = pairEdges.length;
     const perpOff = pairCount > 1 ? (pairIdx - (pairCount - 1) / 2) * 12 : 0;
     const px = -uy * perpOff, py = ux * perpOff; // perpendicular vector
-    const x1 = from.x + ux * (nodeR + 6) + px;
-    const y1 = from.y + uy * (nodeR + 6) + py;
-    const x2 = to.x - ux * (nodeR + 10) + px;
-    const y2 = to.y - uy * (nodeR + 10) + py;
+    // Use actual visual radius per node (includes rings)
+    const fromRings = nodeRingCount[e.from] || 0;
+    const fromVisualR = (/^Agente\s+/i.test(e.from) ? nodeR + 4 : nodeR) + (fromRings > 1 ? (fromRings - 1) * ringStep : 0);
+    const toRings = nodeRingCount[e.to] || 0;
+    const toVisualR = (/^Agente\s+/i.test(e.to) ? nodeR + 4 : nodeR) + (toRings > 1 ? (toRings - 1) * ringStep : 0);
+    const x1 = from.x + ux * (fromVisualR + 8) + px;
+    const y1 = from.y + uy * (fromVisualR + 8) + py;
+    const x2 = to.x - ux * (toVisualR + 12) + px;
+    const y2 = to.y - uy * (toVisualR + 12) + py;
 
     const route = gridRoute(x1, y1, x2, y2);
     const pathD = pathToSvg(route, { x: x1, y: y1 }, { x: x2, y: y2 });
@@ -1844,12 +2005,37 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const edgeRootAttr = isStartEdge ? ' data-flow-root="sprint"' : (e.agentRoot === "Main") ? ' data-flow-root="main"' : ' data-flow-root="agent"';
     svg += '<g' + edgeRootAttr + '>';
     svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
-    // Edge label: per-agent sequence (e.g. "1.2" = Agent 1, step 2)
+    // Edge label: placed at path midpoint (not endpoint midpoint) for accuracy
     const label = e.agentSeq || String(e.seq);
     const labelR = label.length > 3 ? 16 : 14;
-    const mx = ((x1 + x2) / 2).toFixed(1), my = ((y1 + y2) / 2).toFixed(1);
-    svg += `<circle cx="${mx}" cy="${my}" r="${labelR}" fill="var(--bg, #0a0b10)" stroke="${ec}" stroke-width="1.5"/>`;
-    svg += `<text x="${mx}" y="${(parseFloat(my) + 5).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 12 : 14}" font-weight="700" fill="${ec}">${label}</text>`;
+    // Use actual path midpoint if route exists, otherwise endpoint midpoint
+    let lx, ly;
+    if (route && route.length >= 3) {
+      const midIdx = Math.floor(route.length / 2);
+      lx = route[midIdx].x;
+      ly = route[midIdx].y;
+    } else {
+      lx = (x1 + x2) / 2;
+      ly = (y1 + y2) / 2;
+    }
+    // Nudge label to avoid overlapping with previously placed labels
+    const labelCollisionR = labelR * 2.5;
+    for (const prev of placedLabels) {
+      const ddx = lx - prev.x, ddy = ly - prev.y;
+      const dd = Math.sqrt(ddx * ddx + ddy * ddy);
+      if (dd < labelCollisionR) {
+        // Push perpendicular to the edge direction
+        const edx = x2 - x1, edy = y2 - y1;
+        const elen = Math.sqrt(edx * edx + edy * edy) || 1;
+        const perpX = -edy / elen, perpY = edx / elen;
+        const nudge = labelCollisionR - dd + 8;
+        lx += perpX * nudge;
+        ly += perpY * nudge;
+      }
+    }
+    placedLabels.push({ x: lx, y: ly });
+    svg += `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="${labelR}" fill="var(--bg, #0a0b10)" stroke="${ec}" stroke-width="1.5"/>`;
+    svg += `<text x="${lx.toFixed(1)}" y="${(ly + 5).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 12 : 14}" font-weight="700" fill="${ec}">${label}</text>`;
     svg += '</g>';
   }
 
@@ -1916,23 +2102,14 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;${opacityStyle}" ${filterAttr}>`;
     // Fondo del nodo
     if (isSkillNode && passingColors.length > 1) {
-      // Multi-agent border: arcos segmentados, uno por agente que pasó
+      // Multi-agent: concentric rings, one per agent (outermost = first agent)
+      const ringWidth = 3;
+      const ringGap = 2;
+      const ringStep = ringWidth + ringGap; // 5px per ring
       svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.08)" stroke="none"/>`;
-      const arcR = effectiveR;
-      const totalAgents = passingColors.length;
-      const gap = 4; // grados de separación entre arcos
-      const arcDeg = (360 - gap * totalAgents) / totalAgents;
-      for (let ai = 0; ai < totalAgents; ai++) {
-        const startAngle = ai * (arcDeg + gap) - 90; // empezar desde arriba
-        const endAngle = startAngle + arcDeg;
-        const startRad = startAngle * Math.PI / 180;
-        const endRad = endAngle * Math.PI / 180;
-        const x1a = pos.x + arcR * Math.cos(startRad);
-        const y1a = pos.y + arcR * Math.sin(startRad);
-        const x2a = pos.x + arcR * Math.cos(endRad);
-        const y2a = pos.y + arcR * Math.sin(endRad);
-        const largeArc = arcDeg > 180 ? 1 : 0;
-        svg += `<path d="M${x1a.toFixed(1)},${y1a.toFixed(1)} A${arcR},${arcR} 0 ${largeArc} 1 ${x2a.toFixed(1)},${y2a.toFixed(1)}" fill="none" stroke="${passingColors[ai]}" stroke-width="3.5" stroke-linecap="round"/>`;
+      for (let ai = 0; ai < passingColors.length; ai++) {
+        const ringR = effectiveR + (ai * ringStep);
+        svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${ringR.toFixed(1)}" fill="none" stroke="${passingColors[ai]}" stroke-width="${ringWidth}" stroke-opacity="0.85"/>`;
       }
     } else if (isSkillNode && passingColors.length === 1) {
       // Single agent: borde con el color de ese agente
@@ -2766,7 +2943,7 @@ function renderHTML(data, theme) {
           if (matchSession.last_tool === "AskUserQuestion") {
             statusReason = "Esperando respuesta del usuario (" + idleMin + "m)";
           } else if (idleMin > 10) {
-            statusReason = "Sin actividad hace " + idleMin + "m \u2014 posible espera de permiso o rate limit";
+            statusReason = "Sin actividad hace " + idleMin + "m";
           } else {
             statusReason = "Idle hace " + idleMin + "m \u2014 \u00FAltima acci\u00F3n: " + (matchSession.last_tool || "desconocida");
           }
