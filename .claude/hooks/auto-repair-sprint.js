@@ -428,7 +428,7 @@ async function repairInconsistencia(token, inconsistencia, dryRun) {
             // CI rojo en PR de agente: mantener en agentes (no mover a _completed)
             if (!dryRun) {
                 await commentOnIssue(issue,
-                                    );
+                                     "CI rojo detectado — completion bloqueada hasta que CI pase. Auto-repair en curso.");
                 updateSprintPlan(issue, "ci-failed");
                 result.status = "ok";
                 result.details = { notified: true, blocked_completion: true };
