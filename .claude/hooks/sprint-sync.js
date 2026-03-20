@@ -320,6 +320,44 @@ function archiveSprintMetrics(sprintId, velocity) {
     } catch (e) { return { ok: false, message: e.message }; }
 }
 
+// --- Forward-sync: preservar _pid y _launched_at de agentes activos ---
+
+function saveAgentPidState() {
+    var saved = {};
+    try {
+        var plan = JSON.parse(fs.readFileSync(sprintData.SPRINT_PLAN_FILE, "utf8"));
+        if (plan && Array.isArray(plan.agentes)) {
+            plan.agentes.forEach(function(ag) {
+                if (ag._pid || ag._launched_at) {
+                    saved[ag.issue] = { _pid: ag._pid, _launched_at: ag._launched_at, status: ag.status };
+                }
+            });
+        }
+    } catch (e) { /* sprint-plan.json may not exist yet */ }
+    return saved;
+}
+
+function restoreAgentPidState(saved) {
+    if (!saved || Object.keys(saved).length === 0) return;
+    try {
+        var plan = JSON.parse(fs.readFileSync(sprintData.SPRINT_PLAN_FILE, "utf8"));
+        var restored = 0;
+        (plan.agentes || []).forEach(function(ag) {
+            var s = saved[ag.issue];
+            if (s) {
+                if (s._pid) ag._pid = s._pid;
+                if (s._launched_at) ag._launched_at = s._launched_at;
+                if (s.status) ag.status = s.status;
+                restored++;
+            }
+        });
+        if (restored > 0) {
+            fs.writeFileSync(sprintData.SPRINT_PLAN_FILE, JSON.stringify(plan, null, 2));
+            log("Forward-sync: restaurados _pid/_launched_at de " + restored + " agente(s)");
+        }
+    } catch (e) { log("Forward-sync restore error: " + e.message); }
+}
+
 // --- runSync: funcion principal ---
 
 async function runSync(opts) {
@@ -332,6 +370,8 @@ async function runSync(opts) {
     log("Iniciando reconciliacion" + (force ? " (forzada)" : ""));
 
     var allChanges = [];
+    // Forward-sync: capturar _pid/_launched_at ANTES de cualquier regeneracion
+    var savedPidState = saveAgentPidState();
 
     try {
         var ghCmd = getGhCmd();
@@ -389,10 +429,12 @@ async function runSync(opts) {
         var realChanges = allChanges.filter(function(c) { return c.indexOf("roadmap:") === 0; });
         if (realChanges.length > 0) {
             sprintData.writeRoadmap(roadmap, "sprint-sync"); // Esto tambien regenera sprint-plan.json
+            restoreAgentPidState(savedPidState);
             log("roadmap.json actualizado (" + realChanges.length + " cambios)");
         } else {
             // Regenerar sprint-plan.json por si acaso (sin tocar roadmap)
             sprintData.generateSprintPlanCache(roadmap);
+            restoreAgentPidState(savedPidState);
         }
 
         // 4. Actualizar estado
@@ -425,6 +467,7 @@ async function runSync(opts) {
                 freshSprint.closed_at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
                 freshSprint.velocity = doneCount;
                 sprintData.writeRoadmap(roadmap, "sprint-sync (auto-close)");
+                restoreAgentPidState(savedPidState);
 
                 // Generate sprint report PDF + send to Telegram
                 var reportScript = path.join(__dirname, "..", "..", "scripts", "sprint-report.js");
@@ -465,8 +508,12 @@ async function runSync(opts) {
 
 function syncRoadmapOnly(planOverride) {
     try {
+        var saved = saveAgentPidState();
         var roadmap = sprintData.readRoadmap();
-        if (roadmap) sprintData.generateSprintPlanCache(roadmap);
+        if (roadmap) {
+            sprintData.generateSprintPlanCache(roadmap);
+            restoreAgentPidState(saved);
+        }
     } catch (e) { log("syncRoadmapOnly error: " + e.message); }
 }
 
