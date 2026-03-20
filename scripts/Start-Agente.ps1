@@ -288,6 +288,24 @@ function PreRegister-Trust {
     }
 }
 
+# Notificar via Telegram (fail-open: si falla, solo loguear) (#1659)
+function Send-TelegramMessage {
+    param([Parameter(Mandatory)][string]$Mensaje)
+    try {
+        $configFile = Join-Path $MainRepo ".claude\hooks\telegram-config.json"
+        if (-not (Test-Path $configFile)) { return }
+        $tgConfig = Get-Content $configFile -Raw | ConvertFrom-Json
+        $token  = $tgConfig.bot_token
+        $chatId = $tgConfig.chat_id
+        if (-not $token -or -not $chatId) { return }
+        $uri  = "https://api.telegram.org/bot$token/sendMessage"
+        $body = @{ chat_id = $chatId; text = $Mensaje; parse_mode = "HTML" }
+        Invoke-RestMethod -Uri $uri -Method Post -Body $body -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+        Write-Host ">> Telegram: no se pudo notificar (fail-open): $_" -ForegroundColor DarkGray
+    }
+}
+
 function Start-UnAgente {
     param(
         [Parameter(Mandatory)] $Agente
@@ -461,6 +479,14 @@ function Start-UnAgente {
                     return $null
                 }
             }
+        }
+        # Eliminar .claude/worktrees/ antes de copiar para evitar paths > 260 chars en Windows (#1659)
+        # Estos subdirectorios contienen build artifacts con rutas largas — seguros de eliminar
+        $claudeWorktreesDir = Join-Path $claudeSrc "worktrees"
+        if (Test-Path $claudeWorktreesDir) {
+            Write-Host ">> Eliminando .claude/worktrees/ (residuos con paths largos)..." -ForegroundColor DarkGray
+            Remove-Item $claudeWorktreesDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host ">> .claude/worktrees/ eliminado." -ForegroundColor DarkGray
         }
         Copy-Item -Path $claudeSrc -Destination $claudeDst -Recurse -Force
         Write-Host ">> .claude/ copiado (sin junction)"
@@ -693,6 +719,8 @@ if ($Numero -eq "all") {
     }
 
     $agentesLanzados = 0
+    $agentesExitosos = 0
+    $agentesFallidos = 0
     $resultados = [ordered]@{}
 
     foreach ($agente in $Plan.agentes) {
@@ -701,23 +729,40 @@ if ($Numero -eq "all") {
             Write-Host ">> Esperando ${Delay}s antes de lanzar agente $($agente.numero)/$($Plan.agentes.Count)..." -ForegroundColor Yellow
             Start-Sleep -Seconds $Delay
         }
-
-        $proc = Start-UnAgenteConRetry -Agente $agente
-        if ($proc) {
-            $safePid = try { $proc.Id } catch { "?" }
-            $resultados["agente_$($agente.numero)"] = "OK (PID $safePid)"
-        } else {
-            $resultados["agente_$($agente.numero)"] = "FALLO"
-        }
         $agentesLanzados++
+
+        try {
+            $proc = Start-UnAgenteConRetry -Agente $agente
+            if ($proc) {
+                $safePid = try { $proc.Id } catch { "?" }
+                $resultados["agente_$($agente.numero)"] = "OK (PID $safePid)"
+                $agentesExitosos++
+            } else {
+                $resultados["agente_$($agente.numero)"] = "FALLO (sin proceso)"
+                $agentesFallidos++
+                Send-TelegramMessage "⚠️ Agente $($agente.numero) (#$($agente.issue)) no se pudo lanzar"
+            }
+        } catch {
+            $errMsg = $_.ToString()
+            Write-Host ">> ERROR: Agente $($agente.numero) (#$($agente.issue)) falló: $errMsg" -ForegroundColor Red
+            $resultados["agente_$($agente.numero)"] = "FALLO: $($errMsg.Substring(0, [Math]::Min(80, $errMsg.Length)))"
+            $agentesFallidos++
+            Send-TelegramMessage "⚠️ Agente $($agente.numero) (#$($agente.issue)) no se pudo lanzar: $errMsg"
+            continue
+        }
     }
 
     Write-Host ""
+    $balanceColor = if ($agentesFallidos -gt 0) { "Yellow" } else { "Green" }
+    Write-Host ">> Resultado: $agentesExitosos lanzados, $agentesFallidos fallidos." -ForegroundColor $balanceColor
     Write-Host ">> Todos los agentes procesados. Resumen:" -ForegroundColor Green
     foreach ($key in $resultados.Keys) {
         $estado = $resultados[$key]
         $color = if ($estado -like "OK*") { "Green" } else { "Red" }
         Write-Host ">>   $key : $estado" -ForegroundColor $color
+    }
+    if ($agentesFallidos -gt 0) {
+        Send-TelegramMessage "⚠️ Sprint $($Plan.sprint_id): $agentesExitosos agentes lanzados, $agentesFallidos errores. Ejecutar Start-Agente.ps1 manualmente para reintentar."
     }
     Write-Host ">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)" -ForegroundColor Cyan
     Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
@@ -756,6 +801,13 @@ else {
         exit 1
     }
 
-    Start-UnAgente -Agente $agente
+    try {
+        Start-UnAgente -Agente $agente
+    } catch {
+        $errMsg = $_.ToString()
+        Write-Host ">> ERROR: Agente $num (#$($agente.issue)) falló: $errMsg" -ForegroundColor Red
+        Send-TelegramMessage "⚠️ Agente $num (#$($agente.issue)) no se pudo lanzar: $errMsg"
+        exit 1
+    }
     Write-Host ">> Dashboard web auto-disponible en http://localhost:3100 (via activity-logger.js)" -ForegroundColor Cyan
 }
