@@ -120,6 +120,28 @@ try {
     Write-Host ">> OPS: Check no disponible (fail-open)" -ForegroundColor DarkGray
 }
 
+# Pre-launch validation: detectar agentes zombie y estado inconsistente
+Write-Host ">> Validando estado pre-lanzamiento..." -ForegroundColor Cyan
+try {
+    $validationJson = & node "$MainRepo\.claude\hooks\pre-launch-validation.js" 2>$null
+    $validation = $validationJson | ConvertFrom-Json
+    if ($validation.warnings) {
+        foreach ($warn in $validation.warnings) {
+            Write-Host ">>   WARN: $warn" -ForegroundColor Yellow
+        }
+    }
+    if (-not $validation.ok) {
+        Write-Host ">> ERRORES CRÍTICOS:" -ForegroundColor Red
+        foreach ($err in $validation.errors) {
+            Write-Host ">>   ERROR: $err" -ForegroundColor Red
+        }
+        exit 1
+    }
+    Write-Host ">> Pre-launch OK" -ForegroundColor Green
+} catch {
+    Write-Host ">> Pre-launch validation no disponible (continuando): $_" -ForegroundColor DarkGray
+}
+
 # --- Pre-sprint cleanup de worktrees huérfanos ---
 # Los worktrees de sprints anteriores se acumulan y saturan git,
 # causando que los agentes no puedan arrancar (SPR-028 incident 2026-03-14)
@@ -540,6 +562,13 @@ function Start-UnAgente {
                 $targetAgent._launched_at = $launchedAt
             } else {
                 $targetAgent | Add-Member -NotePropertyName '_launched_at' -NotePropertyValue $launchedAt -Force
+            }
+            # _lock_until: proteger sprint-plan.json por 10 minutos para que el sync no lo sobreescriba
+            $lockUntil = [datetime]::UtcNow.AddMinutes(10).ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            if ($freshPlan.PSObject.Properties.Match('_lock_until').Count) {
+                $freshPlan._lock_until = $lockUntil
+            } else {
+                $freshPlan | Add-Member -NotePropertyName '_lock_until' -NotePropertyValue $lockUntil -Force
             }
             # Verificar integridad antes de escribir: asegurar que no se pierdan agentes
             $originalAgentCount = ((Get-Content $PlanFile -Raw | ConvertFrom-Json).agentes | Measure-Object).Count
