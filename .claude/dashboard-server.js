@@ -253,12 +253,53 @@ function linkifyIssueRefs(text) {
   });
 }
 
-// --- Data Collection ---
+// --- Auto-regeneración de sprint-plan.json (#1651) ---
+// Si no existe o tiene sprint_id divergente del roadmap activo, regenerar desde roadmap.
+// Garantiza que el dashboard refleje el sprint activo sin intervención manual.
+let _sprintPlanRegenState = { sprintId: null, lastCheckTs: 0 };
+const SPRINT_PLAN_REGEN_INTERVAL_MS = 30 * 1000; // recheck cada 30s
+
+function ensureSprintPlanExists() {
+  try {
+    const now = Date.now();
+    if (now - _sprintPlanRegenState.lastCheckTs < SPRINT_PLAN_REGEN_INTERVAL_MS) return;
+    _sprintPlanRegenState.lastCheckTs = now;
+
+    const roadmap = readJson(ROADMAP_FILE);
+    if (!roadmap || !Array.isArray(roadmap.sprints)) return;
+    const activeSprint = roadmap.sprints.find(s => s.status === 'active');
+    if (!activeSprint) return;
+
+    const existing = readJson(SPRINT_PLAN_FILE);
+    if (existing && existing.sprint_id === activeSprint.id && existing._generated_from === 'roadmap.json') {
+      _sprintPlanRegenState.sprintId = activeSprint.id;
+      return; // Ya sincronizado
+    }
+
+    // Regenerar desde roadmap (#1651)
+    let sprintDataMod;
+    try { sprintDataMod = require(path.join(REPO_ROOT, 'scripts', 'sprint-data')); } catch (e) { return; }
+    sprintDataMod.generateSprintPlanCache(roadmap);
+    _sprintPlanRegenState.sprintId = activeSprint.id;
+    sprintPlanMtime = 0;       // forzar invalidación de cache HTML
+    sprintPlanWatchMtime = 0;  // forzar broadcast SSE inmediato
+
+    const reason = !existing ? 'no existía' :
+      existing._generated_from !== 'roadmap.json' ? 'no era del roadmap' :
+      'sprint_id divergente (' + (existing.sprint_id || '?') + ' vs ' + activeSprint.id + ')';
+    console.log('[dashboard-server] sprint-plan.json regenerado — ' + reason);
+    try { fs.appendFileSync(SERVER_LOG_FILE, '[' + new Date().toISOString() + '] dashboard-server: sprint-plan.json regenerado — ' + reason + '\n'); } catch {}
+  } catch (e) {
+    try { fs.appendFileSync(SERVER_LOG_FILE, '[' + new Date().toISOString() + '] dashboard-server: ensureSprintPlanExists error: ' + e.message + '\n'); } catch {}
+  }
+}
 function collectData() {
   const now = Date.now();
   // Invalidar cache si sprint-plan.json cambió (mtime-based freshness, #1417)
   let currentSprintPlanMtime = 0;
   try { currentSprintPlanMtime = fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch {}
+  // Si sprint-plan.json no existe, regenerar desde roadmap (#1651)
+  if (currentSprintPlanMtime === 0) ensureSprintPlanExists();
   const sprintPlanUnchanged = currentSprintPlanMtime === sprintPlanMtime;
   if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS && sprintPlanUnchanged) return cachedData;
   sprintPlanMtime = currentSprintPlanMtime;
@@ -525,6 +566,16 @@ function collectData() {
     for (const a of (_flowPlan._queue || [])) _flowIssues.add(String(a.issue));
     for (const a of (_flowPlan._completed || [])) _flowIssues.add(String(a.issue));
     for (const a of (_flowPlan._incomplete || [])) _flowIssues.add(String(a.issue));
+  // Agent Registry como fuente primaria para agentes activos del sprint (#1651)
+  // Si el registry tiene agentes activos no reflejados aún en sprint-plan, incluirlos en el flujo.
+  const _registryRawFlow = readJson(AGENT_REGISTRY_FILE);
+  if (_registryRawFlow && _registryRawFlow.agents) {
+    for (const ra of Object.values(_registryRawFlow.agents)) {
+      if (ra.status !== 'done' && ra.status !== 'zombie' && ra.issue) {
+        _flowIssues.add(String(ra.issue).replace('#', ''));
+      }
+    }
+  }
   }
   for (const s of sessions) {
     const issueMatch = (s.branch || "").match(/(\d+)/);
@@ -3941,8 +3992,11 @@ function startServer() {
     console.log("[dashboard-server] Escuchando en http://localhost:" + PORT);
     writePid();
 
+    ensureSprintPlanExists(); // Regenerar sprint-plan.json si falta o diverge (#1651)
+
     setInterval(broadcastSSE, SSE_INTERVAL_MS);
     setInterval(checkSprintPlanFreshness, 1000); // Watcher freshness sprint-plan.json (#1434)
+    setInterval(ensureSprintPlanExists, 30 * 1000); // Auto-sync sprint-plan desde roadmap (#1651)
     setInterval(checkAutoStop, 5 * 60 * 1000);
 
     startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, takeScreenshotSectionsFn: takeScreenshotSections, port: PORT });
