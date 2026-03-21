@@ -5,6 +5,9 @@ import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.kotlin.dsl.findByType
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+import org.jetbrains.kotlin.gradle.targets.wasm.binaryen.BinaryenPlugin as WasmBinaryenPlugin
+import org.jetbrains.kotlin.gradle.targets.wasm.binaryen.BinaryenEnvSpec as WasmBinaryenEnvSpec
 
 data class LegacyMatch(
     val path: String,
@@ -159,5 +162,13 @@ tasks.matching { it.name == "check" }.configureEach {
 
 tasks.matching { it.name == "build" }.configureEach {
     dependsOn("verifyNoLegacyStrings")
+}
+
+// Pinear binaryen v118 para evitar SIGSEGV en GitHub Actions (binaryen v123 crashea con exit 139)
+// Ver: https://github.com/intrale/platform/issues/1751
+// TODO: volver a versión default cuando binaryen resuelva el crash upstream
+@OptIn(ExperimentalWasmDsl::class)
+plugins.withType<WasmBinaryenPlugin> {
+    extensions.getByType<WasmBinaryenEnvSpec>().version.set("version_118")
 }
 
