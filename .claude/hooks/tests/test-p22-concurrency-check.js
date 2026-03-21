@@ -104,15 +104,13 @@ describe("P-22: agent-concurrency-check — lógica de concurrencia", () => {
         assert.ok(source.includes("plan._queue"), "debe soportar campo _queue como fallback");
     });
 
-    it("hook usa lock file para escritura atómica", () => {
+    it("hook delega escritura a saveRoadmapFromPlan (#1736)", () => {
         const source = fs.readFileSync(
             path.join(__dirname, "..", "agent-concurrency-check.js"),
             "utf8"
         );
-        assert.ok(source.includes("LOCK_FILE"), "debe definir LOCK_FILE");
-        assert.ok(source.includes("acquireLock"), "debe tener acquireLock");
-        assert.ok(source.includes("releaseLock"), "debe tener releaseLock");
-        assert.ok(source.includes("finally"), "debe liberar lock en bloque finally");
+        assert.ok(source.includes("saveRoadmapFromPlan"), "debe usar saveRoadmapFromPlan");
+        assert.ok(source.includes("getSprintData"), "debe cargar sprint-data via getSprintData");
     });
 
     it("hook detecta anomalía de concurrencia (agentes > límite)", () => {
@@ -373,16 +371,12 @@ describe("P-22b: Bug 1345 — captura de errores y estado completo", () => {
         );
     });
 
-    it("Bug 4: lock se adquiere ANTES de loadPlan (protege lectura+escritura)", () => {
+    it("Bug 4 (#1736): savePlan delega a saveRoadmapFromPlan sin lock propio", () => {
         const source = fs.readFileSync(
             path.join(__dirname, "..", "agent-concurrency-check.js"),
             "utf8"
         );
-        const lockIdx = source.indexOf("acquireLock()");
-        const loadPlanIdx = source.indexOf("plan = loadPlan()");
-        assert.ok(lockIdx !== -1, "debe llamar a acquireLock()");
-        assert.ok(loadPlanIdx !== -1, "debe llamar a loadPlan()");
-        assert.ok(lockIdx < loadPlanIdx, "acquireLock() debe llamarse ANTES que loadPlan() — protege lectura+escritura");
+        assert.ok(source.includes("saveRoadmapFromPlan(plan"), "savePlan debe delegar a saveRoadmapFromPlan");
     });
 
     it("Bug 4: warn cuando fail-open por timeout de lock", () => {
