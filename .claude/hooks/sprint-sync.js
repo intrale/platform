@@ -538,6 +538,10 @@ async function runSync(opts) {
                 freshSprint.closed_at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
                 freshSprint.velocity = doneCount;
                 sprintData.writeRoadmap(roadmap, "sprint-sync (auto-close)");
+
+                // #1734: archivar sesiones del sprint en sessions-archive/SPR-NNN/
+                var sprintIssueNums = (freshSprint.stories || []).map(function(s) { return s.issue || s.number; }).filter(Boolean);
+                archiveSprintSessions(freshSprint.id, sprintIssueNums);
                 restoreAgentPidState(savedPidState);
 
                 // Generate sprint report PDF + send to Telegram
@@ -575,6 +579,56 @@ async function runSync(opts) {
     }
 }
 
+
+// --- Archivar sesiones del sprint al cerrar (#1734) ---
+// Mueve sesiones del sprint desde sessions/ a sessions-archive/SPR-NNN/
+function archiveSprintSessions(sprintId, sprintIssueNumbers) {
+    try {
+        if (!sprintId) return { ok: false, reason: "sin sprintId" };
+        var REPO_ROOT = sprintData.REPO_ROOT;
+        var archiveDir = path.join(REPO_ROOT, ".claude", "sessions-archive", sprintId);
+        var issueSet = new Set((sprintIssueNumbers || []).map(String));
+        var moved = 0;
+        var errors = 0;
+        var sessionsDirs = [path.join(REPO_ROOT, ".claude", "sessions")];
+        try {
+            var parent = path.dirname(REPO_ROOT);
+            var base = path.basename(REPO_ROOT);
+            fs.readdirSync(parent).filter(function(d) {
+                return d.startsWith(base + ".agent-") || d.startsWith(base + ".codex-");
+            }).forEach(function(wt) {
+                var wtDir = path.join(parent, wt, ".claude", "sessions");
+                if (fs.existsSync(wtDir)) sessionsDirs.push(wtDir);
+            });
+        } catch(e) {}
+        for (var i = 0; i < sessionsDirs.length; i++) {
+            var sessDir = sessionsDirs[i];
+            if (!fs.existsSync(sessDir)) continue;
+            var files;
+            try { files = fs.readdirSync(sessDir).filter(function(f) { return f.endsWith(".json"); }); }
+            catch(e) { continue; }
+            for (var j = 0; j < files.length; j++) {
+                var sFile = files[j];
+                var sPath = path.join(sessDir, sFile);
+                try {
+                    var sess = JSON.parse(fs.readFileSync(sPath, "utf8"));
+                    var bmParts = (sess.branch || "").split("/"); var bm = (bmParts.length >= 2 && ["agent","feature","bugfix"].indexOf(bmParts[0]) >= 0) ? bmParts : null;
+                    if (!((sess.sprint_id === sprintId) || (bm && issueSet.has(bm[1].split("-")[0])))) continue;
+                    if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+                    var dest = path.join(archiveDir, sFile);
+                    if (!fs.existsSync(dest)) fs.copyFileSync(sPath, dest);
+                    fs.unlinkSync(sPath);
+                    moved++;
+                } catch(e) { errors++; }
+            }
+        }
+        log("archiveSprintSessions " + sprintId + ": " + moved + " sesiones archivadas, " + errors + " errores");
+        return { ok: true, moved: moved, errors: errors };
+    } catch(e) {
+        log("archiveSprintSessions error: " + e.message);
+        return { ok: false, error: e.message };
+    }
+}
 // --- syncRoadmapOnly: backward-compat (ahora regenera sprint-plan.json desde roadmap) ---
 
 function syncRoadmapOnly(planOverride) {

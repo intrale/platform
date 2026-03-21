@@ -26,11 +26,12 @@ function resolveMainRepoRoot() {
 
 const REPO_ROOT = resolveMainRepoRoot();
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
-const SESSIONS_ARCHIVE_DIR = path.join(REPO_ROOT, ".claude", "sessions", "archive");
+// #1734: archivo permanente por sprint bajo sessions-archive/SPR-NNN/ o sessions-archive/general/
+const SESSIONS_ARCHIVE_ROOT = path.join(REPO_ROOT, ".claude", "sessions-archive");
 const LOG_FILE = path.join(REPO_ROOT, ".claude", "hooks", "hook-debug.log");
 const GC_STATE_FILE = path.join(REPO_ROOT, ".claude", "hooks", "session-gc-state.json");
 
-// Retención de archivos en archive/ (30 días)
+// Retención de archivos en sessions-archive/ (30 días)
 const ARCHIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // Umbrales de GC
@@ -64,6 +65,18 @@ function shouldRunGC() {
     } catch(e) {
         return false;
     }
+}
+
+
+// Determinar directorio de archivo por sprint (#1734)
+// Si la sesión tiene sprint_id → sessions-archive/<sprint_id>/
+// Fallback → sessions-archive/general/
+function getArchiveDir(session) {
+    const sprintId = session && session.sprint_id;
+    if (sprintId && sprintId.startsWith("SPR-") && sprintId.length > 4) {
+        return path.join(SESSIONS_ARCHIVE_ROOT, sprintId);
+    }
+    return path.join(SESSIONS_ARCHIVE_ROOT, "general");
 }
 
 function runGC() {
@@ -121,10 +134,11 @@ function runGC() {
             }
 
             if (shouldDelete) {
-                // Archivar antes de eliminar (#1661 — preservar historial)
+                // Archivar antes de eliminar (#1734 — historial permanente por sprint)
                 try {
-                    if (!fs.existsSync(SESSIONS_ARCHIVE_DIR)) fs.mkdirSync(SESSIONS_ARCHIVE_DIR, { recursive: true });
-                    const archivePath = path.join(SESSIONS_ARCHIVE_DIR, file);
+                    const archiveDir = getArchiveDir(session);
+                    if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+                    const archivePath = path.join(archiveDir, file);
                     fs.copyFileSync(filePath, archivePath);
                 } catch(archErr) {
                     log("Error archivando " + file + ": " + archErr.message);
@@ -144,17 +158,22 @@ function runGC() {
         log("GC completado: " + deleted + " archivadas+eliminadas, " + errors + " errores. Total archivos=" + files.length);
     }
 
-    // Limpiar archivos en archive/ mayores a 30 días (#1661)
+    // Limpiar archivos en sessions-archive/ mayores a 30 días (#1734)
     try {
-        if (fs.existsSync(SESSIONS_ARCHIVE_DIR)) {
-            const archiveFiles = fs.readdirSync(SESSIONS_ARCHIVE_DIR).filter(f => f.endsWith(".json"));
+        if (fs.existsSync(SESSIONS_ARCHIVE_ROOT)) {
             let archiveDeleted = 0;
-            for (const af of archiveFiles) {
-                const afPath = path.join(SESSIONS_ARCHIVE_DIR, af);
-                const mtime = fs.statSync(afPath).mtimeMs;
-                if (now - mtime > ARCHIVE_MAX_AGE_MS) {
-                    fs.unlinkSync(afPath);
-                    archiveDeleted++;
+            const subDirs = fs.readdirSync(SESSIONS_ARCHIVE_ROOT);
+            for (const sub of subDirs) {
+                const subPath = path.join(SESSIONS_ARCHIVE_ROOT, sub);
+                try { if (!fs.statSync(subPath).isDirectory()) continue; } catch(e) { continue; }
+                const archiveFiles = fs.readdirSync(subPath).filter(f => f.endsWith(".json"));
+                for (const af of archiveFiles) {
+                    const afPath = path.join(subPath, af);
+                    const mtime = fs.statSync(afPath).mtimeMs;
+                    if (now - mtime > ARCHIVE_MAX_AGE_MS) {
+                        fs.unlinkSync(afPath);
+                        archiveDeleted++;
+                    }
                 }
             }
             if (archiveDeleted > 0) log("Archive cleanup: " + archiveDeleted + " archivos >30d eliminados");
