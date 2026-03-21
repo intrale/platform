@@ -1,0 +1,23 @@
+{
+  "_comment": "Timeouts en minutos por skill. Si el agente no registra actividad durante este tiempo mientras el skill está activo, se considera colgado y se re-encola.",
+  "default": 10,
+  "po": 10,
+  "review": 10,
+  "security": 10,
+  "tester": 15,
+  "builder": 20,
+  "delivery": 15,
+  "qa": 30,
+  "guru": 15,
+  "scrum": 10,
+  "ops": 10,
+  "monitor": 10,
+  "planner": 15,
+  "doc": 10,
+  "historia": 10,
+  "refinar": 10,
+  "priorizar": 10,
+  "android-dev": 20,
+  "backend-dev": 20,
+  "web-dev": 20
+}
