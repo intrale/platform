@@ -847,6 +847,51 @@ function collectData() {
     }
   } catch {}
 
+  // Skill duration stats — agrupa skill_invocations de sesiones y historial (#1754)
+  const skillDurationStats = {};
+  try {
+    // Leer de agent-metrics.json (sesiones con skill_invocations)
+    const allMetricsSessions = (agentMetrics && Array.isArray(agentMetrics.sessions)) ? agentMetrics.sessions : [];
+    for (const ms of allMetricsSessions) {
+      if (!Array.isArray(ms.skill_invocations)) continue;
+      for (const inv of ms.skill_invocations) {
+        if (!inv.skill || typeof inv.duration_ms !== "number") continue;
+        const name = inv.skill.replace(/^\//, "");
+        if (!skillDurationStats[name]) skillDurationStats[name] = { count: 0, total_ms: 0, min_ms: Infinity, max_ms: 0 };
+        skillDurationStats[name].count++;
+        skillDurationStats[name].total_ms += inv.duration_ms;
+        if (inv.duration_ms < skillDurationStats[name].min_ms) skillDurationStats[name].min_ms = inv.duration_ms;
+        if (inv.duration_ms > skillDurationStats[name].max_ms) skillDurationStats[name].max_ms = inv.duration_ms;
+      }
+    }
+    // También leer de agent-metrics-history.jsonl (registros tipo skill_timing)
+    const historyFile = path.join(CLAUDE_DIR, "hooks", "agent-metrics-history.jsonl");
+    if (fs.existsSync(historyFile)) {
+      const lines = fs.readFileSync(historyFile, "utf8").split("\n").filter(l => l.trim());
+      for (const line of lines) {
+        try {
+          const rec = JSON.parse(line);
+          if (rec.type !== "skill_timing" || !Array.isArray(rec.skill_invocations)) continue;
+          for (const inv of rec.skill_invocations) {
+            if (!inv.skill || typeof inv.duration_ms !== "number") continue;
+            const name = inv.skill.replace(/^\//, "");
+            if (!skillDurationStats[name]) skillDurationStats[name] = { count: 0, total_ms: 0, min_ms: Infinity, max_ms: 0 };
+            skillDurationStats[name].count++;
+            skillDurationStats[name].total_ms += inv.duration_ms;
+            if (inv.duration_ms < skillDurationStats[name].min_ms) skillDurationStats[name].min_ms = inv.duration_ms;
+            if (inv.duration_ms > skillDurationStats[name].max_ms) skillDurationStats[name].max_ms = inv.duration_ms;
+          }
+        } catch {}
+      }
+    }
+    // Calcular promedios y limpiar infinito
+    for (const name of Object.keys(skillDurationStats)) {
+      const s = skillDurationStats[name];
+      s.avg_ms = s.count > 0 ? Math.round(s.total_ms / s.count) : 0;
+      if (s.min_ms === Infinity) s.min_ms = 0;
+    }
+  } catch {}
+
   // Group activities for feed (collapse consecutive same-agent same-tool)
   const groupedActivities = groupActivities(activities.slice(-RECENT_ACTIVITY_COUNT * 2).reverse(), FEED_LIMIT);
 
@@ -904,6 +949,7 @@ function collectData() {
     agentIssueMap,
     queuedAgents: Array.from(queuedAgents),
     skillUsage,
+    skillDurationStats,
     agentMetrics,
     roadmap,
     registryAgents,
@@ -3264,6 +3310,40 @@ function renderHTML(data, theme, section) {
     agentBarsHtml = '<div class="empty-state">Sin datos de uso</div>';
   }
 
+  // Tabla de duración por skill (#1754)
+  let skillDurationHtml = "";
+  const skillDurationEntries = Object.entries(data.skillDurationStats || {})
+    .map(([name, s]) => ({ name, count: s.count || 0, avg_ms: s.avg_ms || 0, min_ms: s.min_ms || 0, max_ms: s.max_ms || 0 }))
+    .filter(e => e.count > 0)
+    .sort((a, b) => b.avg_ms - a.avg_ms);
+  if (skillDurationEntries.length > 0) {
+    skillDurationHtml = `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Duraci&oacute;n por skill</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse;">
+        <tr style="color:var(--text-muted);">
+          <th style="text-align:left;padding:3px 4px;">Skill</th>
+          <th style="text-align:right;padding:3px 4px;" title="Invocaciones">N</th>
+          <th style="text-align:right;padding:3px 4px;">Prom.</th>
+          <th style="text-align:right;padding:3px 4px;">M&aacute;x.</th>
+        </tr>
+        ${skillDurationEntries.map(e => {
+          const avgMin = Math.round(e.avg_ms / 60000);
+          const maxMin = Math.round(e.max_ms / 60000);
+          const avgStr = avgMin < 1 ? "<1m" : avgMin >= 60 ? Math.floor(avgMin/60) + "h" + (avgMin%60) + "m" : avgMin + "m";
+          const maxStr = maxMin < 1 ? "<1m" : maxMin >= 60 ? Math.floor(maxMin/60) + "h" + (maxMin%60) + "m" : maxMin + "m";
+          // Color por duración promedio: verde <5m, amarillo <20m, rojo >=20m
+          const avgColor = avgMin < 5 ? "var(--green)" : avgMin < 20 ? "var(--yellow)" : "var(--red)";
+          return `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:3px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90px;">/${escHtml(e.name)}</td>
+            <td style="padding:3px 4px;text-align:right;color:var(--text-muted);">${e.count}</td>
+            <td style="padding:3px 4px;text-align:right;color:${avgColor};font-weight:600;">${avgStr}</td>
+            <td style="padding:3px 4px;text-align:right;color:var(--text-muted);">${maxStr}</td>
+          </tr>`;
+        }).join("")}
+      </table>
+    </div>`;
+  }
+
   const metricsHtml = `
     <div class="metrics-grid">
       <div class="metric-item">
@@ -3281,7 +3361,8 @@ function renderHTML(data, theme, section) {
     </div>
     <div style="margin-top:12px;">
       ${agentBarsHtml}
-    </div>`;
+    </div>
+    ${skillDurationHtml}`;
 
   // --- PERMISOS ---
   const permStats = data.permissionStats || { auto: 0, approved: 0, denied: 0, pending: 0 };

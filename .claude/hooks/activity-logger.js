@@ -561,6 +561,19 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
             if (AGENT_MAP[skillName] && !session.agent_name) {
                 session.agent_name = AGENT_MAP[skillName];
             }
+
+            // Tracking de duración por skill (#1754): cerrar invocación pendiente e iniciar nueva
+            if (!session.skill_invocations) session.skill_invocations = [];
+            if (session.skill_pending) {
+                const pending = session.skill_pending;
+                pending.ended_ts = ts;
+                pending.duration_ms = Math.max(0, new Date(ts).getTime() - new Date(pending.started_ts).getTime());
+                session.skill_invocations.push(pending);
+                session.skill_pending = null;
+            }
+            if (skillName !== "/") {
+                session.skill_pending = { skill: skillName, started_ts: ts };
+            }
         }
 
         // Fallback agent_name desde branch (solo si aún es null y tiene >2 acciones)
