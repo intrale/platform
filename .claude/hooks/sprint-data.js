@@ -242,25 +242,32 @@ function getConcurrencyLimit(sp) {
 // --- Backward-compat: generar sprint-plan.json desde roadmap.json ---
 
 function generateSprintPlanCache(rm) {
-    // Verificar si sprint-plan.json está protegido por _lock_until
-    try {
-        var existing = readJson(SPRINT_PLAN_FILE);
-        if (existing && existing._lock_until) {
-            var lockUntil = new Date(existing._lock_until).getTime();
-            if (!isNaN(lockUntil) && Date.now() < lockUntil) {
-                log("generateSprintPlanCache SKIP: plan protegido hasta " + existing._lock_until);
-                return;
-            }
-        }
-    } catch (e) {}
+    // #1736: sprint-plan.json es cache regenerable desde roadmap.json
+    // CRITICO: preservar estado runtime (_pid, _launched_at, status) del plan existente
+    // para evitar perder PIDs que el watcher asignó.
 
     var sp = getActiveSprint(rm);
     if (!sp) return;
+
+    // Leer plan existente para preservar runtime state
+    var existingPlan = null;
+    var existingAgentsByIssue = {};
+    try {
+        existingPlan = readJson(SPRINT_PLAN_FILE);
+        if (existingPlan) {
+            // Indexar agentes existentes por issue para merge rápido
+            (existingPlan.agentes || []).forEach(function(a) {
+                existingAgentsByIssue[String(a.issue)] = a;
+            });
+        }
+    } catch (e) {}
+
     var stories = sp.stories || [], exec = sp.execution || {};
     var agentes = [], _queue = [], _completed = [], _incomplete = [];
 
     for (var i = 0; i < stories.length; i++) {
         var story = stories[i];
+        var issueKey = String(story.issue);
         var entry = {
             issue: story.issue, slug: story.slug || null, titulo: story.title,
             stream: story.stream,
@@ -268,13 +275,23 @@ function generateSprintPlanCache(rm) {
         };
 
         if (story.status === "in_progress" && story.agent) {
+            // Preservar _pid y _launched_at del plan existente si el roadmap no los tiene
+            var existingAgent = existingAgentsByIssue[issueKey];
+            var pid = story.agent.pid || (existingAgent ? existingAgent._pid : null);
+            var launchedAt = story.agent.launched_at || (existingAgent ? existingAgent._launched_at : null);
+            var promotedAt = story.agent.promoted_at || (existingAgent ? existingAgent._promoted_at : null);
+            var prompt = story.agent.prompt || (existingAgent ? existingAgent.prompt : "");
+            var retryCount = story.agent.retry_count || (existingAgent ? existingAgent._retry_count : 0);
+            var status = story.agent.waiting_since ? "waiting" :
+                         (existingAgent ? existingAgent.status : "active");
+
             agentes.push(Object.assign({}, entry, {
-                numero: i + 1, prompt: story.agent.prompt || "",
-                status: story.agent.waiting_since ? "waiting" : "active",
-                _promoted_at: story.agent.promoted_at || null,
-                _launched_at: story.agent.launched_at || null,
-                _pid: story.agent.pid || null,
-                _retry_count: story.agent.retry_count || 0,
+                numero: i + 1, prompt: prompt,
+                status: status,
+                _promoted_at: promotedAt,
+                _launched_at: launchedAt,
+                _pid: pid,
+                _retry_count: retryCount,
                 waiting_since: story.agent.waiting_since || undefined,
                 waiting_reason: story.agent.waiting_reason || undefined
             }));
@@ -299,6 +316,10 @@ function generateSprintPlanCache(rm) {
         }
     }
 
+    // Preservar metadata de timing del plan existente
+    var waitingSweep = exec.waiting_sweep_ts || (existingPlan ? existingPlan._waiting_sweep_ts : null);
+    var sentinelTs = exec.sentinel_ts || (existingPlan ? existingPlan._sentinel_ts : null);
+
     var plan = {
         sprint_id: sp.id, size: sp.size, tema: sp.tema,
         estado: sp.status === "active" ? "activo" : sp.status,
@@ -307,8 +328,8 @@ function generateSprintPlanCache(rm) {
         pipeline_mode: exec.pipeline_mode || "scripts",
         total_stories: stories.length,
         agentes: agentes, _queue: _queue, _completed: _completed, _incomplete: _incomplete,
-        _waiting_sweep_ts: exec.waiting_sweep_ts || null,
-        _sentinel_ts: exec.sentinel_ts || null,
+        _waiting_sweep_ts: waitingSweep,
+        _sentinel_ts: sentinelTs,
         _generated_from: "roadmap.json",
         _generated_at: new Date().toISOString()
     };
