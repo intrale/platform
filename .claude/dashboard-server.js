@@ -41,6 +41,7 @@ function resolveMainRepoRoot() {
 const REPO_ROOT = resolveMainRepoRoot();
 const CLAUDE_DIR = path.join(REPO_ROOT, ".claude");
 const SESSIONS_DIR = path.join(CLAUDE_DIR, "sessions");
+const SESSIONS_ARCHIVE_ROOT = path.join(CLAUDE_DIR, "sessions-archive"); // #1734: historial permanente por sprint
 const LOG_FILE = path.join(CLAUDE_DIR, "activity-log.jsonl");
 const PID_FILE = path.join(CLAUDE_DIR, "hooks", "dashboard-server.pid");
 const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
@@ -338,6 +339,19 @@ function collectData() {
       if (fs.existsSync(wtSessions)) sessionDirs.push(wtSessions);
     }
   } catch(e) { /* ignore */ }
+  // #1734: incluir sessions-archive/SPR-NNN/ del sprint activo y los mas recientes
+  try {
+    if (fs.existsSync(SESSIONS_ARCHIVE_ROOT)) {
+      const archiveSubs = fs.readdirSync(SESSIONS_ARCHIVE_ROOT).filter(d => d.startsWith("SPR-") && d.length > 4);
+      const activeSprint = sprintPlan && sprintPlan.sprint_id;
+      const relevantSprints = new Set(archiveSubs.slice(-3));
+      if (activeSprint) relevantSprints.add(activeSprint);
+      for (const sprintId of relevantSprints) {
+        const archDir = path.join(SESSIONS_ARCHIVE_ROOT, sprintId);
+        if (fs.existsSync(archDir)) sessionDirs.push(archDir);
+      }
+    }
+  } catch(e) { /* ignore */ }
   const seenSessionIds = new Set();
   try {
     for (const sessDir of sessionDirs) {
@@ -353,7 +367,8 @@ function collectData() {
         const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
         let isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
         // Sesiones done: conservar si son del sprint activo (para el flujo), sino 30min max
-        if (s.status === "done" && !isSprintSession) {
+        const fromArchive = sessDir.includes("sessions-archive"); // #1734
+        if (s.status === "done" && !isSprintSession && !fromArchive) {
           const doneAge = now - new Date(s.last_activity_ts || s.started_ts).getTime();
           const DONE_KEEP_MS = 30 * 60 * 1000; // 30 min
           if (doneAge > DONE_KEEP_MS) continue;
