@@ -307,9 +307,39 @@ async function main() {
     log("=== Post-Claude Pipeline ===");
     const postResult = runPostPipeline(config, claudeResult);
 
+    // ─── Escribir resultado estructurado para agent-retry-diagnostics.js (#1749) ──
+    // Se escribe SIEMPRE (éxito y fallo) para que el módulo de diagnóstico pueda
+    // determinar con precisión qué falló en el reintento.
+    try {
+        const buildResult = (postResult.results || {})["build-check"];
+        const deliveryResult = (postResult.results || {})["auto-delivery"];
+        const pipelineResultData = {
+            timestamp: new Date().toISOString(),
+            issue: config.issue,
+            slug: config.slug,
+            toolCalls: claudeResult.toolCount,
+            exitCode: claudeResult.exitCode,
+            ok: postResult.ok,
+            failedGate: postResult.failedGate || null,
+            buildOk: buildResult ? buildResult.ok : null,
+            buildError: buildResult && !buildResult.ok
+                ? (buildResult.output || "").substring(0, 500).trim()
+                : null,
+            deliveryOk: deliveryResult ? deliveryResult.ok : null,
+        };
+        fs.writeFileSync(
+            path.join(LOGS_DIR, "agent-" + config.issue + "-pipeline-result.json"),
+            JSON.stringify(pipelineResultData, null, 2),
+            "utf8"
+        );
+        log("Pipeline result escrito: agent-" + config.issue + "-pipeline-result.json");
+    } catch (e) {
+        log("WARN: No se pudo escribir pipeline-result.json: " + (e.message || "").substring(0, 100));
+    }
+
     if (!postResult.ok) {
         log("Pipeline fallo en gate: " + postResult.failedGate);
-        // Guardar diagnostico
+        // Guardar diagnostico (legacy — mantenido para compatibilidad)
         const diag = {
             timestamp: new Date().toISOString(),
             agent: config.agentNum,
