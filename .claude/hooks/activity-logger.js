@@ -49,12 +49,18 @@ const AGENT_MAP = {
 };
 
 // Mapeo de issue number a "Agente N" desde sprint-plan.json
+// Busca en todas las listas: agentes activos, cola, completados e incompletos (#1733)
 function getSprintAgentName(issueNum) {
     try {
         const planPath = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
         const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
-        if (!Array.isArray(plan.agentes)) return null;
-        const entry = plan.agentes.find(a => a.issue === issueNum);
+        const all = [
+            ...(Array.isArray(plan.agentes) ? plan.agentes : []),
+            ...(Array.isArray(plan._queue) ? plan._queue : []),
+            ...(Array.isArray(plan._completed) ? plan._completed : []),
+            ...(Array.isArray(plan._incomplete) ? plan._incomplete : []),
+        ];
+        const entry = all.find(a => a.issue === issueNum);
         return entry ? "Agente " + entry.numero : null;
     } catch(e) { return null; }
 }
@@ -501,6 +507,14 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
                 current_task: null,
                 current_tasks: [],
             };
+            // Resolver agent_name al crear la sesión: usar número del plan (#1733)
+            if (!session.agent_name && session.branch) {
+                const branchM = session.branch.match(/^agent\/(\d+)/);
+                if (branchM) {
+                    const n = parseInt(branchM[1], 10);
+                    session.agent_name = getSprintAgentName(n) || ("Agente " + n);
+                }
+            }
         }
 
         session.last_activity_ts = ts;
@@ -555,7 +569,7 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
             if (branchMatch) {
                 const issueNum = parseInt(branchMatch[1], 10);
                 const sprintName = getSprintAgentName(issueNum);
-                session.agent_name = sprintName || ("Agente (#" + issueNum + ")");
+                session.agent_name = sprintName || ("Agente " + issueNum); // formato consistente sin "(#)" (#1733)
             } else if (session.branch !== "main" && session.branch !== "develop" && session.branch !== "unknown") {
                 const slug = session.branch.replace(/^[^/]+\//, "").substring(0, 20);
                 session.agent_name = "Agente (" + slug + ")";
@@ -711,6 +725,7 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
                         agentRegistry.registerAgent({
                             session_id: sid,
                             issue: issueNum ? "#" + issueNum : null,
+                            agent_name: session.agent_name || null,
                             skill: session.agent_name || null,
                             branch: session.branch,
                             worktree: WORKTREE_ROOT !== REPO_ROOT ? WORKTREE_ROOT : null,

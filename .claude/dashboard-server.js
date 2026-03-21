@@ -526,6 +526,22 @@ function collectData() {
     ? (ciRuns[0].conclusion === "success" ? "ok" : ciRuns[0].conclusion === "failure" ? "fail" : "running")
     : "unknown";
 
+  // Helper para resolver nombre de agente desde issue en el registry (#1733)
+  function resolveRegistryAgentName(issueStr) {
+    try {
+      const issueNum = parseInt(String(issueStr).replace(/^#/, ""), 10);
+      if (isNaN(issueNum)) return "Agente (?)";
+      if (sprintPlan) {
+        const all = [
+          ...(sprintPlan.agentes || []), ...(sprintPlan._queue || []),
+          ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || []),
+        ];
+        const match = all.find(a => a.issue === issueNum);
+        if (match && match.numero) return "Agente " + match.numero;
+      }
+      return "Agente " + issueNum; // fallback: usar número de issue como aproximación
+    } catch(e) { return "Agente (?)"; }
+  }
   // Normalizar nombres de agentes: "Agente (#NNNN)" → "Agente N" usando sprint plan
   // Esto evita nodos duplicados en el flujo cuando sesiones/registry usan formatos diferentes
   if (sprintPlan) {
@@ -556,6 +572,32 @@ function collectData() {
           const toMatch = t.to.match(/Agente\s*\(#(\d+)\)/i);
           if (toMatch && issueToAgentNum[toMatch[1]]) t.to = "Agente " + issueToAgentNum[toMatch[1]];
         }
+      }
+    }
+  }
+
+    // Normalizar también agentes del registry: usar agent_name o resolver desde issue (#1733)
+  if (sprintPlan && registryAgents) {
+    const issueToAgentNum = {};
+    [...(sprintPlan.agentes || []), ...(sprintPlan._queue || []),
+     ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || [])].forEach(a => {
+      if (a.issue && a.numero) issueToAgentNum[String(a.issue)] = a.numero;
+    });
+    for (const ra of registryAgents) {
+      // Normalizar skill si tiene formato "Agente (#N)"
+      if (ra.skill && /#d+/.test(ra.skill)) {
+        const m = ra.skill.match(/#(d+)/);
+        if (m && issueToAgentNum[m[1]]) ra.skill = "Agente " + issueToAgentNum[m[1]];
+      }
+      // Normalizar agent_name si tiene formato "Agente (#N)"
+      if (ra.agent_name && /#d+/.test(ra.agent_name)) {
+        const m = ra.agent_name.match(/#(d+)/);
+        if (m && issueToAgentNum[m[1]]) ra.agent_name = "Agente " + issueToAgentNum[m[1]];
+      }
+      // Si no tiene agent_name pero tiene issue del sprint, asignarlo
+      if (!ra.agent_name && ra.issue) {
+        const issueNum = String(ra.issue).replace(/^#/, "");
+        if (issueToAgentNum[issueNum]) ra.agent_name = "Agente " + issueToAgentNum[issueNum];
       }
     }
   }
@@ -4024,7 +4066,7 @@ function handleRequest(req, res) {
           .filter(a => a.status === "active" && !sessionIds.has(a.session_id))
           .map(a => ({
             id: a.session_id,
-            agent: a.skill || "Agente (#" + (a.issue || "?") + ")",
+            agent: a.agent_name || a.skill || (a.issue ? resolveRegistryAgentName(a.issue) : "Agente (?)"),
             lastTool: null,
             lastTarget: a.branch || "",
             actions: 0,

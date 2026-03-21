@@ -96,6 +96,46 @@ function saveRegistry(registry) {
     }
 }
 
+
+// Resuelve el nombre canónico del agente desde sprint-plan.json dado un issue string (#1733)
+// Retorna "Agente N" (posición en el sprint) o null si no se encuentra.
+function resolveAgentName(issueStr) {
+    try {
+        const issueNum = parseInt(String(issueStr).replace(/^#/, ""), 10);
+        if (isNaN(issueNum)) return null;
+        // Resolver el repo root (main repo, no worktree)
+        let repoRoot = null;
+        try {
+            const { execSync } = require("child_process");
+            const gitCommon = execSync("git rev-parse --git-common-dir", { timeout: 3000, windowsHide: true })
+                .toString().trim().split(String.fromCharCode(92)).join("/");
+            if (gitCommon === ".git") {
+                repoRoot = process.cwd();
+            } else {
+                const gitIdx = gitCommon.indexOf("/.git");
+                if (gitIdx !== -1) repoRoot = gitCommon.substring(0, gitIdx);
+            }
+        } catch(e) {}
+        const sprintPlanPaths = [
+            repoRoot ? path.join(repoRoot, "scripts", "sprint-plan.json") : null,
+            path.join(__dirname, "..", "..", "scripts", "sprint-plan.json"),
+            "C:/Workspaces/Intrale/platform/scripts/sprint-plan.json",
+        ].filter(Boolean);
+        for (const p of sprintPlanPaths) {
+            if (!fs.existsSync(p)) continue;
+            const plan = JSON.parse(fs.readFileSync(p, "utf8"));
+            const all = [
+                ...(Array.isArray(plan.agentes) ? plan.agentes : []),
+                ...(Array.isArray(plan._queue) ? plan._queue : []),
+                ...(Array.isArray(plan._completed) ? plan._completed : []),
+                ...(Array.isArray(plan._incomplete) ? plan._incomplete : []),
+            ];
+            const match = all.find(a => a.issue === issueNum);
+            if (match && match.numero) return "Agente " + match.numero;
+        }
+        return null;
+    } catch(e) { return null; }
+}
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
 /**
@@ -118,6 +158,7 @@ function registerAgent(entry) {
             session_id: entry.session_id,
             issue: entry.issue || null,
             skill: entry.skill || null,
+            agent_name: entry.agent_name || (entry.issue ? resolveAgentName(entry.issue) : null) || null,
             branch: entry.branch || null,
             worktree: entry.worktree || null,
             pid: entry.pid || null,
@@ -267,6 +308,7 @@ function sweepRegistry() {
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
+    resolveAgentName,
     REGISTRY_FILE,
     ZOMBIE_THRESHOLD_MS,
     IDLE_THRESHOLD_MS,
