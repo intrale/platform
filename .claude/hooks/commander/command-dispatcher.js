@@ -126,6 +126,14 @@ function parseCommand(text) {
         return { type: "reset_sprint", confirmed: trimmed === "/reset-sprint confirm" };
     }
 
+    // Comandos de dashboard por seccion (#1765)
+    var dashSecs = ["overview","flow","activity","roadmap","cicd","logs"];
+    var dashCmd = trimmed.startsWith("/dash-") ? trimmed.substring(6) : null;
+    var dashM = dashCmd && dashSecs.indexOf(dashCmd) !== -1 ? [null, dashCmd] : null;
+    if (dashM) {
+        return { type: "dash_section", section: dashM[1] };
+    }
+
     if (trimmed.startsWith("/")) {
         const parts = trimmed.substring(1).split(/\s+/);
         const cmd = parts[0].toLowerCase();
@@ -777,6 +785,35 @@ async function handleResetSprint(confirmed) {
     _log("reset-sprint: completado sprint=" + sprintId + " prs=" + summary.prsClosed.length + " moved=" + summary.issuesMovedToQueue.length);
 }
 
+async function handleDashSection(section) {
+    const http = require("http");
+    const DASH_PORT = 3100;
+    var labels = {overview:"Overview",flow:"Flujo de Agentes",activity:"Actividad",roadmap:"Roadmap",cicd:"CI/CD",logs:"Logs"};
+    var label = labels[section] || section;
+    var route = "/" + section;
+    await _tgApi.sendMessage("📸 Capturando " + label + "...");
+    _log("handleDashSection: " + route);
+    var buf = await new Promise(function(resolve) {
+        var url = "http://localhost:" + DASH_PORT + "/screenshot?route=" + encodeURIComponent(route) + "&w=800&h=600";
+        var req = http.get(url, { timeout: 20000 }, function(res) {
+            if (res.statusCode !== 200) { resolve(null); return; }
+            var chunks = [];
+            res.on("data", function(c) { chunks.push(c); });
+            res.on("end", function() { resolve(Buffer.concat(chunks)); });
+        });
+        req.on("error", function() { resolve(null); });
+        req.on("timeout", function() { req.destroy(); resolve(null); });
+    });
+    if (buf && buf.length > 1000) {
+        var ts = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+        var caption = "📊 <b>Intrale Monitor — " + _tgApi.escHtml(label) + "</b>\n" + ts;
+        await _tgApi.sendTelegramPhoto(buf, caption, false);
+        _log("handleDashSection: OK " + section + " (" + buf.length + "b)");
+    } else {
+        await _tgApi.sendMessage("⚠️ Dashboard no disponible en localhost:" + DASH_PORT + ".");
+    }
+}
+
 module.exports = {
     init,
     setSkills,
@@ -799,5 +836,6 @@ module.exports = {
     handleFreetext,
     handleDetalle,
     handleResetSprint,
+    handleDashSection,
     CLEANUP_TTL_MS,
 };
