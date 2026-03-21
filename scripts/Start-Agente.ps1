@@ -163,8 +163,10 @@ function Invoke-WorktreeCleanup {
         foreach ($q in $Plan._queue) { $currentSlugs += "agent-$($q.issue)-$($q.slug)" }
     }
 
-    $removed = 0
-    $kept    = 0
+    $removed      = 0
+    $kept         = 0
+    $removedList  = @()
+    $keptList     = @()
     $orphanBranches = @()
 
     foreach ($wt in $siblings) {
@@ -178,7 +180,29 @@ function Invoke-WorktreeCleanup {
 
         if ($currentSlugs -contains $suffix) {
             $kept++
+            $keptList += $wt.Name
             continue
+        }
+
+        # Verificar si el proceso del agente está activo (#1752)
+        # Si existe agent-{issue}.pid y el proceso vive, conservar el worktree aunque no esté en el plan
+        $issueNum = ($suffix -split '-')[1]
+        $pidFile  = Join-Path $MainRepo ".claude\hooks\agent-$issueNum.pid"
+        if (Test-Path $pidFile) {
+            try {
+                $pidValue = (Get-Content $pidFile -Raw -ErrorAction SilentlyContinue).Trim()
+                if ($pidValue -match '^\d+$') {
+                    $proc = Get-Process -Id ([int]$pidValue) -ErrorAction SilentlyContinue
+                    if ($proc) {
+                        Write-Host ">>   Activo (PID $pidValue): conservado $($wt.Name)" -ForegroundColor DarkGray
+                        $kept++
+                        $keptList += $wt.Name
+                        continue
+                    }
+                }
+            } catch {
+                # Fail-open: si no se puede verificar el PID, proceder con eliminación
+            }
         }
 
         # Extraer nombre de rama para limpieza remota posterior
@@ -216,6 +240,7 @@ function Invoke-WorktreeCleanup {
             }
 
             $removed++
+            $removedList += $wt.Name
             Write-Host ">>   Eliminado: $($wt.Name)" -ForegroundColor DarkGray
         } catch {
             # Último recurso: intentar eliminar archivos individualmente
@@ -224,6 +249,7 @@ function Invoke-WorktreeCleanup {
                     Get-ChildItem $wt.FullName -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending | Remove-Item -Force -ErrorAction SilentlyContinue
                     Remove-Item $wt.FullName -Recurse -Force -ErrorAction Stop
                     $removed++
+                    $removedList += $wt.Name
                     Write-Host ">>   Eliminado (fallback): $($wt.Name)" -ForegroundColor DarkGray
                 }
             } catch {
@@ -267,9 +293,22 @@ function Invoke-WorktreeCleanup {
     }
 
     if ($removed -gt 0) {
-        Write-Host ">> Cleanup: $removed worktree(s) huérfano(s) eliminado(s) ($kept del sprint actual conservados)" -ForegroundColor Green
+        Write-Host ">> Cleanup: $removed worktree(s) huérfano(s) eliminado(s) ($kept conservados)" -ForegroundColor Green
     } elseif ($siblings.Count -gt 0) {
-        Write-Host ">> Cleanup: $($siblings.Count) worktree(s) encontrados, todos del sprint actual" -ForegroundColor Green
+        Write-Host ">> Cleanup: $($siblings.Count) worktree(s) encontrados, todos conservados" -ForegroundColor Green
+    }
+
+    # Paso 6: Registrar cleanup en activity-log para trazabilidad (#1752)
+    try {
+        $activityLog  = Join-Path $MainRepo ".claude\activity-log.jsonl"
+        $ts           = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        # ConvertTo-Json de array vacío devuelve null — forzar [] en ese caso
+        $removedJson  = if ($removedList.Count -gt 0) { ConvertTo-Json @($removedList) -Compress } else { "[]" }
+        $keptJson     = if ($keptList.Count -gt 0)    { ConvertTo-Json @($keptList)    -Compress } else { "[]" }
+        $logEntry     = "{""ts"":""$ts"",""type"":""worktree-cleanup"",""removed"":$removedJson,""kept"":$keptJson,""pruned"":true}"
+        Add-Content -Path $activityLog -Value $logEntry -ErrorAction SilentlyContinue
+    } catch {
+        # Fail-open: el log no es crítico para el lanzamiento
     }
 }
 
