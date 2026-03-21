@@ -1,4 +1,4 @@
-// agent-concurrency-check.js — Hook Stop: valida concurrencia de agentes y auto-lanza siguiente (#1277, #1356)
+﻿// agent-concurrency-check.js — Hook Stop: valida concurrencia de agentes y auto-lanza siguiente (#1277, #1356)
 // Se ejecuta al finalizar cualquier sesión Claude.
 // Solo actúa si la sesión corresponde a un agente de sprint (rama agent/* en sprint-plan.json).
 //
@@ -154,6 +154,10 @@ function isPidAlive(pid) {
 
 let tgClient = null;
 try { tgClient = require("./telegram-client"); } catch (e) { tgClient = null; }
+
+// Diagnostico de causa de muerte de agentes (#1749)
+let retryDiagnostics = null;
+try { retryDiagnostics = require("./agent-retry-diagnostics"); } catch (e) { log("agent-retry-diagnostics no disponible: " + e.message); }
 
 async function notify(text) {
     if (tgClient) {
@@ -944,6 +948,20 @@ async function processInput() {
 
             if (neverWorked) {
                 // Agente que nunca trabajó → devolver a _queue (no penalizar)
+                // Enriquecer prompt con contexto del fallo (#1749)
+                if (retryDiagnostics) {
+                    try {
+                        const retCount = (finishingAgent._retry_count || 0) + 1;
+                        finishingAgent._retry_count = retCount;
+                        const diag = retryDiagnostics.analyzeDeath(finishingAgent, REPO_ROOT, HOOKS_DIR);
+                        const basePrompt = finishingAgent.prompt || generateDefaultPrompt(finishingAgent.issue, finishingAgent.slug);
+                        finishingAgent.prompt = retryDiagnostics.buildRetryPrompt(basePrompt, finishingAgent, diag);
+                        const diagEntry = retryDiagnostics.buildDiagnosticsEntry(finishingAgent, diag);
+                        if (!Array.isArray(finishingAgent._retry_diagnostics)) finishingAgent._retry_diagnostics = [];
+                        finishingAgent._retry_diagnostics.push(diagEntry);
+                        log("Diagnostico concurrency #" + finishingAgent.issue + ": " + diag.cause);
+                    } catch (e) { log("WARN: retryDiagnostics error: " + e.message); }
+                }
                 const queue = getQueue(plan);
                 queue.push(finishingAgent);
                 setQueue(plan, queue);
