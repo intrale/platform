@@ -623,9 +623,65 @@ async function updateProjectV2(issue, statusName) {
 // buildCompletedEntry: importado desde validation-utils (#1458)
 // La versión local fue eliminada — usar buildCompletedEntry(agente, null, resultado) desde el módulo compartido.
 
+// ─── Health Check (lectura pura, ignora _lock_until) ──────────────
+//
+// FASE 1 del ciclo: verifica PIDs de agentes activos y alerta por Telegram si
+// alguno murió, SIN modificar el plan en disco. Ignora completamente _lock_until
+// porque no escribe nada.
+//
+// Garantiza detección temprana incluso cuando Start-Agente.ps1 tiene el plan
+// bloqueado (SPR-044/SPR-045: agentes murieron sin detección durante _lock_until).
+
+const _healthAlertedAt = new Map(); // issue → timestamp ms (cooldown anti-spam)
+const HEALTH_ALERT_COOLDOWN_MS = 10 * 60 * 1000; // 10 min entre alertas por agente
+
+async function runHealthCheck() {
+    const plan = loadPlan();
+    if (!plan) return;
+    if (plan.sprint_cerrado) return;
+    const estado = plan.estado || plan.status;
+    if (estado && estado !== "activo" && estado !== "active") return;
+
+    const activeAgents = (plan.agentes || []).filter(ag => ag.status !== "waiting");
+    if (activeAgents.length === 0) return;
+
+    const now = Date.now();
+    for (const ag of activeAgents) {
+        let alive;
+        try { alive = isAgentAlive(ag); } catch (e) {
+            log("HealthCheck: error verificando #" + ag.issue + ": " + e.message);
+            continue;
+        }
+        if (alive) continue;
+
+        // Cooldown: no spamear Telegram si ya alertamos recientemente
+        const lastAlert = _healthAlertedAt.get(ag.issue) || 0;
+        if (now - lastAlert < HEALTH_ALERT_COOLDOWN_MS) {
+            log("HealthCheck: #" + ag.issue + " muerto (alerta enviada hace " +
+                Math.round((now - lastAlert) / 60000) + " min — cooldown activo)");
+            continue;
+        }
+
+        _healthAlertedAt.set(ag.issue, now);
+        log("HealthCheck: agente #" + ag.issue + " muerto — enviando alerta (read-only, sin modificar plan)");
+        await notify(
+            "💀 <b>Agente #" + ag.issue + " muerto (health check)</b>\n" +
+            "Slug: " + escHtml(ag.slug) + "\n" +
+            "<i>Reconciliación pendiente en próximo ciclo…</i>"
+        );
+    }
+}
+
 // ─── Ciclo principal ──────────────────────────────────────────────────────────
 
 async function runCycle() {
+    // FASE 1: Health check (lectura pura, ignora _lock_until)
+    // Permite detección y alerta temprana aunque el plan esté bloqueado (#1732)
+    try { await runHealthCheck(); } catch (e) {
+        log("HealthCheck error (no fatal): " + e.message);
+    }
+
+    // FASE 2: Reconciliación (respeta _lock_until via savePlan)
     // 1. Leer sprint-plan.json
     const plan = loadPlan();
     if (!plan) {
@@ -777,47 +833,80 @@ async function runCycle() {
                         );
                     }
                 } else {
-                    // Fix: verificar si el issue ya fue cerrado en GitHub antes de marcar como failed
-                    // Un issue cerrado indica trabajo exitoso por otra vía (PR mergeada manualmente, etc.)
-                    let issueAlreadyClosed = false;
-                    try {
-                        const issueState = execSync(
-                            GH + " issue view " + ag.issue + " --repo intrale/platform --json state --jq .state",
-                            { encoding: "utf8", timeout: 15000 }
-                        ).trim();
-                        issueAlreadyClosed = (issueState === "CLOSED");
-                    } catch (e) {
-                        log("WARN: No se pudo verificar estado del issue #" + ag.issue + ": " + e.message);
-                    }
+                    // Retry automático antes de _incomplete (#1732):
+                    // Agentes que sí trabajaron (worktree + tiempo > 2 min) pero murieron sin PR.
+                    // Se relanzan hasta MAX_RETRIES veces antes de marcar como _incomplete.
+                    const retryCount = ag._retry_count || 0;
 
-                    if (issueAlreadyClosed) {
-                        // Issue cerrado → completado exitosamente por otra vía
-                        const successEntry = buildCompletedEntry(ag, null, "completed");
-                        successEntry.detectado_por = "agent-watcher";
-                        successEntry.motivo = "Issue cerrado en GitHub — trabajo exitoso";
-                        freshPlan._completed.push(successEntry);
-                        log("Agente #" + ag.issue + " → _completed (issue cerrado en GitHub)");
+                    if (retryCount < MAX_RETRIES) {
+                        // Relanzar: re-agregar al plan como "promoted" con contador actualizado
+                        ag._retry_count = retryCount + 1;
+                        ag.status = "promoted";
+                        ag._promoted_at = new Date().toISOString();
+                        ag._launched_at = new Date().toISOString();
+                        ag._pid = null;
+                        freshPlan.agentes.push(ag);
+                        planDirty = true;
+
+                        log("Reconciliación: agente #" + ag.issue + " muerto sin PR — relanzando (intento " +
+                            ag._retry_count + "/" + MAX_RETRIES + ")");
+                        savePlan(freshPlan);
+                        planDirty = false;
+
+                        const relaunchResult = launchAgent(ag);
+                        // Persistir el _pid asignado por launchAgent
+                        if (ag._pid) savePlan(freshPlan);
+
                         await notify(
-                            "✅ <b>Agente #" + ag.issue + " completado (watcher)</b>\n" +
-                            "Issue cerrado en GitHub — trabajo exitoso\n" +
-                            "Slug: " + escHtml(ag.slug)
+                            "🔄 <b>Agente #" + ag.issue + " relanzado (intento " + ag._retry_count + "/" + MAX_RETRIES + ")</b>\n" +
+                            "Sin PR detectada · Slug: " + escHtml(ag.slug) + "\n" +
+                            "Resultado: " + (relaunchResult ? "spawn exitoso" : "spawn fallido")
                         );
                     } else {
-                        const motivo = prStatus.status === "unknown"
-                            ? "No se pudo verificar PR (gh CLI falló)"
-                            : prStatus.status === "closed_no_merge"
-                                ? "PR cerrada sin merge"
-                                : "Sin PR — el agente no completó /delivery";
-                        entry.detectado_por = "agent-watcher";
-                        entry.motivo = motivo;
-                        freshPlan._incomplete.push(entry);
-                        log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
+                        // Excedió reintentos: verificar si el issue fue cerrado en GitHub
+                        let issueAlreadyClosed = false;
+                        const ghCmd = findGhCli();
+                        if (ghCmd) {
+                            try {
+                                const issueState = execSync(
+                                    '"' + ghCmd + '" issue view ' + ag.issue + ' --repo intrale/platform --json state --jq .state',
+                                    { encoding: "utf8", timeout: 15000, windowsHide: true }
+                                ).trim();
+                                issueAlreadyClosed = (issueState === "CLOSED");
+                            } catch (e) {
+                                log("WARN: No se pudo verificar estado del issue #" + ag.issue + ": " + e.message);
+                            }
+                        }
 
-                        await notify(
-                            "⚠️ <b>Agente #" + ag.issue + " terminó sin PR (watcher)</b>\n" +
-                            "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
-                            "Motivo: " + escHtml(motivo)
-                        );
+                        if (issueAlreadyClosed) {
+                            // Issue cerrado → completado exitosamente por otra vía
+                            const successEntry = buildCompletedEntry(ag, null, "completed");
+                            successEntry.detectado_por = "agent-watcher";
+                            successEntry.motivo = "Issue cerrado en GitHub — trabajo exitoso";
+                            freshPlan._completed.push(successEntry);
+                            log("Agente #" + ag.issue + " → _completed (issue cerrado en GitHub)");
+                            await notify(
+                                "✅ <b>Agente #" + ag.issue + " completado (watcher)</b>\n" +
+                                "Issue cerrado en GitHub — trabajo exitoso\n" +
+                                "Slug: " + escHtml(ag.slug)
+                            );
+                        } else {
+                            const motivo = prStatus.status === "unknown"
+                                ? "No se pudo verificar PR (gh CLI falló)"
+                                : prStatus.status === "closed_no_merge"
+                                    ? "PR cerrada sin merge"
+                                    : "Sin PR tras " + MAX_RETRIES + " reintentos — el agente no completó /delivery";
+                            entry.detectado_por = "agent-watcher";
+                            entry.motivo = motivo;
+                            freshPlan._incomplete.push(entry);
+                            log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
+
+                            await notify(
+                                "⚠️ <b>Agente #" + ag.issue + " terminó sin PR (watcher)</b>\n" +
+                                "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
+                                "Motivo: " + escHtml(motivo)
+                            );
+                        }
                     }
                 }
             }
