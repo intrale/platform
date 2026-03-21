@@ -576,32 +576,6 @@ function collectData() {
     }
   }
 
-    // Normalizar también agentes del registry: usar agent_name o resolver desde issue (#1733)
-  if (sprintPlan && registryAgents) {
-    const issueToAgentNum = {};
-    [...(sprintPlan.agentes || []), ...(sprintPlan._queue || []),
-     ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || [])].forEach(a => {
-      if (a.issue && a.numero) issueToAgentNum[String(a.issue)] = a.numero;
-    });
-    for (const ra of registryAgents) {
-      // Normalizar skill si tiene formato "Agente (#N)"
-      if (ra.skill && /#d+/.test(ra.skill)) {
-        const m = ra.skill.match(/#(d+)/);
-        if (m && issueToAgentNum[m[1]]) ra.skill = "Agente " + issueToAgentNum[m[1]];
-      }
-      // Normalizar agent_name si tiene formato "Agente (#N)"
-      if (ra.agent_name && /#d+/.test(ra.agent_name)) {
-        const m = ra.agent_name.match(/#(d+)/);
-        if (m && issueToAgentNum[m[1]]) ra.agent_name = "Agente " + issueToAgentNum[m[1]];
-      }
-      // Si no tiene agent_name pero tiene issue del sprint, asignarlo
-      if (!ra.agent_name && ra.issue) {
-        const issueNum = String(ra.issue).replace(/^#/, "");
-        if (issueToAgentNum[issueNum]) ra.agent_name = "Agente " + issueToAgentNum[issueNum];
-      }
-    }
-  }
-
   // Classify sessions into execution categories
   // Todas las sesiones en `sessions` ya pasaron el filtro zombie (30min).
   // No descartar stale aquí: ○ (stale 15-30min) debe ser visible en EJECUCIÓN.
@@ -909,6 +883,29 @@ function collectData() {
       registryAgents = agentRegistry.getAllAgents();
       registryActiveCount = agentRegistry.countActiveAgents();
     } catch (e) { /* no bloquear dashboard */ }
+  }
+
+  // Normalizar también agentes del registry: usar agent_name o resolver desde issue (#1733)
+  if (sprintPlan && registryAgents) {
+    const issueToAgentNum2 = {};
+    [...(sprintPlan.agentes || []), ...(sprintPlan._queue || []),
+     ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || [])].forEach(a => {
+      if (a.issue && a.numero) issueToAgentNum2[String(a.issue)] = a.numero;
+    });
+    for (const ra of registryAgents) {
+      if (ra.skill && /#\d+/.test(ra.skill)) {
+        const m = ra.skill.match(/#(\d+)/);
+        if (m && issueToAgentNum2[m[1]]) ra.skill = "Agente " + issueToAgentNum2[m[1]];
+      }
+      if (ra.agent_name && /#\d+/.test(ra.agent_name)) {
+        const m = ra.agent_name.match(/#(\d+)/);
+        if (m && issueToAgentNum2[m[1]]) ra.agent_name = "Agente " + issueToAgentNum2[m[1]];
+      }
+      if (!ra.agent_name && ra.issue) {
+        const issueNum = String(ra.issue).replace(/^#/, "");
+        if (issueToAgentNum2[issueNum]) ra.agent_name = "Agente " + issueToAgentNum2[issueNum];
+      }
+    }
   }
 
   // Usar el conteo del registry como fuente de verdad para agentes activos.
