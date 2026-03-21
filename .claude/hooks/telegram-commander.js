@@ -873,6 +873,13 @@ async function pollingLoop() {
                             tgApi.sendMessage("❌ Error: <code>" + tgApi.escHtml(e.message) + "</code>").catch(() => {});
                         });
                         break;
+                    case "dash_section":
+                        // Comandos /dash-* — screenshot de sección del dashboard (#1765)
+                        dispatcher.handleDashSection(cmd.section).catch(e => {
+                            log("Error en handleDashSection: " + e.message);
+                            tgApi.sendMessage("❌ Error capturando sección: <code>" + tgApi.escHtml(e.message) + "</code>").catch(() => {});
+                        });
+                        break;
                     case "unknown_command":
                         await tgApi.sendMessage("❓ Comando <code>/" + tgApi.escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
                         break;
