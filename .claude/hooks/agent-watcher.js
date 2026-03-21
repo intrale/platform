@@ -45,7 +45,7 @@ const HOOKS_DIR = path.join(REPO_ROOT, ".claude", "hooks");
 const SCRIPTS_DIR = path.join(REPO_ROOT, "scripts");
 const PLAN_FILE = path.join(SCRIPTS_DIR, "sprint-plan.json");
 const PIDS_FILE = path.join(SCRIPTS_DIR, "sprint-pids.json");
-const LOCK_FILE = PLAN_FILE + ".lock";
+// LOCK_FILE eliminado: sprint-plan.json es ahora cache read-only (#1736)
 const PID_FILE = path.join(HOOKS_DIR, "agent-watcher.pid");
 const LOG_FILE = path.join(HOOKS_DIR, "agent-watcher.log");
 const START_SCRIPT = path.join(SCRIPTS_DIR, "Start-Agente.ps1");
@@ -53,10 +53,17 @@ const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 const WORKTREES_PARENT = path.dirname(REPO_ROOT);
 const SKILLS_TIMEOUT_FILE = path.join(HOOKS_DIR, "skills-timeout.json"); // #1753
 
+
+// Sprint data access (roadmap como fuente de verdad, #1736)
+let _sprintDataModule = null;
+function getSprintData() {
+    if (!_sprintDataModule) _sprintDataModule = require("./sprint-data");
+    return _sprintDataModule;
+}
 const POLL_INTERVAL_MS = parseInt(process.env.WATCHER_POLL_INTERVAL || "120000", 10); // #1522: 2 min para reconciliación
 const GRACE_PERIOD_MIN = parseInt(process.env.WATCHER_GRACE_PERIOD_MIN || "15", 10); // #1553: grace period antes de evaluar PR
-const LOCK_TIMEOUT_MS = 8000;
-const LOCK_RETRY_MS = 300;
+// LOCK_TIMEOUT_MS eliminado (#1736)
+// LOCK_RETRY_MS eliminado (#1736)
 const DEFAULT_CONCURRENCY_LIMIT = 3;
 const MAX_RETRIES = 3; // Límite de reintentos para agentes que nunca trabajaron (#1498)
 
@@ -149,6 +156,14 @@ function isClaudeProcess(pid) {
 
 function loadPlan() {
     try {
+        if (!fs.existsSync(PLAN_FILE)) {
+            log("sprint-plan.json no encontrado — regenerando desde roadmap.json (#1736)");
+            try {
+                var sd = getSprintData();
+                var rm = sd.readRoadmap();
+                if (rm) sd.generateSprintPlanCache(rm);
+            } catch(e) { log("regenerar sprint-plan error: " + e.message); }
+        }
         if (!fs.existsSync(PLAN_FILE)) return null;
         return JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
     } catch (e) {
@@ -158,64 +173,17 @@ function loadPlan() {
 }
 
 function savePlan(plan) {
-    // Respetar _lock_until: no sobreescribir si el plan fue protegido por Start-Agente.ps1
+    // Persistir en roadmap.json — fuente de verdad (#1736)
+    // sprint-plan.json se regenera automaticamente por sprint-data.writeRoadmap()
     try {
-        var existing = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
-        if (existing._lock_until && new Date(existing._lock_until).getTime() > Date.now()) {
-            // Preservar lock y solo actualizar campos que el watcher necesita (_pid, status)
-            // No reorganizar agentes/queue
-            log("savePlan: plan protegido hasta " + existing._lock_until + " — merge conservador");
-            var changed = false;
-            for (var ag of (existing.agentes || [])) {
-                var updated = (plan.agentes || []).find(function(a) { return a.issue === ag.issue; });
-                if (updated && updated._pid && !ag._pid) { ag._pid = updated._pid; changed = true; }
-            }
-            if (changed) {
-                fs.writeFileSync(PLAN_FILE, JSON.stringify(existing, null, 2) + "\n", "utf8");
-            }
-            return;
-        }
-    } catch (e) {}
-
-    const tmpFile = PLAN_FILE + ".tmp." + process.pid;
-    fs.writeFileSync(tmpFile, JSON.stringify(plan, null, 2) + "\n", "utf8");
-    try {
-        if (fs.existsSync(PLAN_FILE)) fs.unlinkSync(PLAN_FILE);
-        fs.renameSync(tmpFile, PLAN_FILE);
-    } catch (e) {
-        try { fs.unlinkSync(tmpFile); } catch (e2) {}
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        getSprintData().saveRoadmapFromPlan(plan, "agent-watcher");
+    } catch(e) {
+        log("savePlan (roadmap) error: " + e.message);
     }
 }
 
-function acquireLock() {
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-        try {
-            fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: "wx" });
-            return true;
-        } catch (e) {
-            try {
-                const lockPid = parseInt(fs.readFileSync(LOCK_FILE, "utf8"), 10);
-                if (lockPid && lockPid !== process.pid) {
-                    try { process.kill(lockPid, 0); } catch (ke) {
-                        fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: "w" });
-                        return true;
-                    }
-                }
-            } catch (e2) {}
-            const wait = Date.now() + LOCK_RETRY_MS;
-            while (Date.now() < wait) {}
-        }
-    }
-    log("acquireLock timeout — procediendo sin lock (fail-open)");
-    return false;
-}
-
-function releaseLock() {
-    try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
-}
-
+// acquireLock eliminado: sprint-plan.json es cache read-only (#1736)
+// releaseLock eliminado: sprint-plan.json es cache read-only (#1736)
 function getQueue(plan) {
     if (Array.isArray(plan._queue) && plan._queue.length > 0) return plan._queue;
     if (Array.isArray(plan.cola) && plan.cola.length > 0) return plan.cola;
@@ -837,7 +805,7 @@ async function runCycle() {
         log("HealthCheck error (no fatal): " + e.message);
     }
 
-    // FASE 2: Reconciliación (respeta _lock_until via savePlan)
+    // FASE 2: Reconciliación (persiste en roadmap.json via saveRoadmapFromPlan, #1736)
     // 1. Leer sprint-plan.json
     const plan = loadPlan();
     if (!plan) {
@@ -858,9 +826,9 @@ async function runCycle() {
     }
 
     const concurrencyLimit = plan.concurrency_limit || DEFAULT_CONCURRENCY_LIMIT;
-    const locked = acquireLock();
-    try {
-        // Releer dentro del lock para consistencia
+    // Lock eliminado: sprint-data.js maneja concurrencia del roadmap (#1736)
+    {
+        // Releer para consistencia (sprint-plan.json es cache regenerado desde roadmap, #1736)
         const freshPlan = loadPlan();
         if (!freshPlan) { log("Plan inválido después de adquirir lock"); return; }
 
@@ -1230,8 +1198,6 @@ async function runCycle() {
             global._idleSince = null;
         }
 
-    } finally {
-        if (locked) releaseLock();
     }
 }
 

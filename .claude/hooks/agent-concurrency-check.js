@@ -87,12 +87,19 @@ const HOOKS_DIR = path.join(REPO_ROOT, ".claude", "hooks");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 const PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
-const LOCK_FILE = PLAN_FILE + ".lock";
+// LOCK_FILE eliminado: sprint-plan.json es cache read-only, verifier usa try/catch (#1736)
 const START_SCRIPT = path.join(REPO_ROOT, "scripts", "Start-Agente.ps1");
 
+
+// Sprint data access (roadmap como fuente de verdad, #1736)
+let _sprintDataModule = null;
+function getSprintData() {
+    if (!_sprintDataModule) _sprintDataModule = require("./sprint-data");
+    return _sprintDataModule;
+}
 const DEFAULT_CONCURRENCY_LIMIT = 3;
-const LOCK_TIMEOUT_MS = 8000;
-const LOCK_RETRY_MS = 300;
+// LOCK_TIMEOUT_MS eliminado (#1736)
+// LOCK_RETRY_MS eliminado (#1736)
 
 const WORKTREES_PARENT = path.dirname(REPO_ROOT); // C:\Workspaces\Intrale
 const SWEEP_INTERVAL_MS = 60 * 1000;       // max 1 vez por minuto
@@ -180,37 +187,8 @@ function escHtml(str) {
 
 // ─── Lock file para escritura atómica de sprint-plan.json ───────────────────
 
-function acquireLock() {
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-        try {
-            fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: "wx" });
-            return true;
-        } catch (e) {
-            // Verificar si el lock es de un proceso muerto
-            try {
-                const lockPid = parseInt(fs.readFileSync(LOCK_FILE, "utf8"), 10);
-                if (lockPid && lockPid !== process.pid) {
-                    try { process.kill(lockPid, 0); } catch (killErr) {
-                        // Proceso muerto — robar el lock
-                        fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: "w" });
-                        return true;
-                    }
-                }
-            } catch (e2) {}
-            // Esperar antes de reintentar (sync spin — el hook es corto)
-            const wait = Date.now() + LOCK_RETRY_MS;
-            while (Date.now() < wait) {}
-        }
-    }
-    log("acquireLock timeout — procediendo sin lock (fail-open)");
-    return false;
-}
-
-function releaseLock() {
-    try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
-}
-
+// acquireLock eliminado (#1736)
+// releaseLock eliminado (#1736)
 // ─── Detección de sesiones zombie (#1408) ────────────────────────────────────
 
 // Verifica si un PID de proceso sigue vivo en Windows
@@ -265,6 +243,14 @@ function markZombieSessions() {
 
 function loadPlan() {
     try {
+        if (!fs.existsSync(PLAN_FILE)) {
+            log("sprint-plan.json no encontrado, regenerando desde roadmap.json (#1736)");
+            try {
+                var sd = getSprintData();
+                var rm = sd.readRoadmap();
+                if (rm) sd.generateSprintPlanCache(rm);
+            } catch(e) { log("regenerar sprint-plan error: " + e.message); }
+        }
         if (!fs.existsSync(PLAN_FILE)) return null;
         return JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
     } catch (e) {
@@ -274,35 +260,11 @@ function loadPlan() {
 }
 
 function savePlan(plan) {
-    // Respetar _lock_until: no reorganizar si el plan fue protegido
+    // Persistir en roadmap.json (fuente de verdad, #1736)
     try {
-        var existing = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
-        if (existing._lock_until && new Date(existing._lock_until).getTime() > Date.now()) {
-            // Solo merge conservador de _pid/status, no reorganizar agentes/queue
-            var changed = false;
-            for (var ag of (existing.agentes || [])) {
-                var updated = (plan.agentes || []).find(function(a) { return a.issue === ag.issue; });
-                if (updated) {
-                    if (updated._pid && !ag._pid) { ag._pid = updated._pid; changed = true; }
-                    if (updated.status && updated.status !== ag.status) { ag.status = updated.status; changed = true; }
-                }
-            }
-            if (changed) fs.writeFileSync(PLAN_FILE, JSON.stringify(existing, null, 2) + "\n", "utf8");
-            return;
-        }
-    } catch (e) {}
-
-    // Escribir a archivo temporal, luego renombrar (atómico en NTFS best-effort)
-    const tmpFile = PLAN_FILE + ".tmp." + process.pid;
-    fs.writeFileSync(tmpFile, JSON.stringify(plan, null, 2) + "\n", "utf8");
-    try {
-        // En Windows, rename falla si el destino existe — borrar primero
-        if (fs.existsSync(PLAN_FILE)) fs.unlinkSync(PLAN_FILE);
-        fs.renameSync(tmpFile, PLAN_FILE);
-    } catch (e) {
-        // Fallback: sobrescribir directamente
-        try { fs.unlinkSync(tmpFile); } catch (e2) {}
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        getSprintData().saveRoadmapFromPlan(plan, "concurrency-check");
+    } catch(e) {
+        log("savePlan (roadmap) error: " + e.message);
     }
 }
 
@@ -550,7 +512,6 @@ function generateVerifierScript(agente, worktreePath) {
         repoRoot: REPO_ROOT,
         hooksDir: HOOKS_DIR,
         planFile: PLAN_FILE,
-        lockFile: LOCK_FILE,
         logFile: LOG_FILE,
         issue: agente.issue,
         slug: agente.slug,
@@ -565,19 +526,7 @@ function generateVerifierScript(agente, worktreePath) {
         '\n' +
         'function log(m) { try { fs.appendFileSync(P.logFile, "[" + new Date().toISOString() + "] Verifier[#" + P.issue + "]: " + m + "\\n"); } catch(e) {} }\n' +
         '\n' +
-        'function acquireLock() {\n' +
-        '    const dead = Date.now() + 8000;\n' +
-        '    while (Date.now() < dead) {\n' +
-        '        try { fs.writeFileSync(P.lockFile, String(process.pid), { flag: "wx" }); return true; } catch(e) {\n' +
-        '            try { const lp = parseInt(fs.readFileSync(P.lockFile, "utf8"), 10);\n' +
-        '                if (lp && lp !== process.pid) { try { process.kill(lp, 0); } catch(ke) { fs.writeFileSync(P.lockFile, String(process.pid), {flag:"w"}); return true; } }\n' +
-        '            } catch(e2) {}\n' +
-        '            const w = Date.now() + 300; while (Date.now() < w) {}\n' +
-        '        }\n' +
-        '    }\n' +
-        '    return false;\n' +
-        '}\n' +
-        'function releaseLock() { try { fs.unlinkSync(P.lockFile); } catch(e) {} }\n' +
+        // acquireLock/releaseLock removed from verifier - sprint-plan.json is cache (#1736)
         '\n' +
         'async function sendAlert(text) {\n' +
         '    let tgClient = null;\n' +
@@ -604,7 +553,6 @@ function generateVerifierScript(agente, worktreePath) {
         '        return;\n' +
         '    }\n' +
         '    log("FALLO — worktree ausente tras " + (P.checkDelayMs/1000) + "s, revirtiendo #" + P.issue + " a _queue");\n' +
-        '    const locked = acquireLock();\n' +
         '    try {\n' +
         '        if (!fs.existsSync(P.planFile)) { log("plan no encontrado"); return; }\n' +
         '        const plan = JSON.parse(fs.readFileSync(P.planFile, "utf8"));\n' +
@@ -618,7 +566,7 @@ function generateVerifierScript(agente, worktreePath) {
         '        try { if (fs.existsSync(P.planFile)) fs.unlinkSync(P.planFile); fs.renameSync(tmp, P.planFile); }\n' +
         '        catch(e) { try { fs.unlinkSync(tmp); } catch(e2) {} fs.writeFileSync(P.planFile, JSON.stringify(plan, null, 2) + "\\n"); }\n' +
         '        log("Agente #" + P.issue + " revertido a _queue (frente)");\n' +
-        '    } finally { if (locked) releaseLock(); }\n' +
+        '    } catch(vErr) { log("revert error: " + vErr.message); }\n' +
         '    await sendAlert("⚠️ <b>Spawn fallido: agente #" + P.issue + "</b>\\nWorktree no creado en " + (P.checkDelayMs/1000) + "s.\\nSlug: " + P.slug + "\\nAgente devuelto a cola para reintento automático.");\n' +
         '    try { fs.unlinkSync(__filename); } catch(e) {}\n' +
         '}\n' +
@@ -678,7 +626,7 @@ async function sweepWaitingAgents(plan) {
             const entry = buildCompletedEntry(ag, null, "ok");
             plan._completed.push(entry);
             log("Sweep: #" + ag.issue + " → _completed (PR mergeada detectada)");
-            callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al completar agente
+            // callSyncRoadmapOnly reemplazado por saveRoadmapFromPlan (#1736)
             freed++;
             await notify(
                 "✅ <b>Agente #" + ag.issue + " completado (sweep periódico)</b>\n" +
@@ -839,12 +787,8 @@ async function processInput() {
     // Bug 4: Adquirir lock ANTES de leer+modificar para prevenir race conditions (#1345)
     // Si dos agentes terminan simultáneamente, el segundo espera al primero.
     // fail-open: si el lock no se puede adquirir (timeout), se continúa con advertencia.
-    const locked = acquireLock();
-    if (!locked) {
-        log("ADVERTENCIA: Operando sin lock — posible race condition si otro hook terminó simultáneamente");
-    }
     let plan;
-    try {
+    {
         plan = loadPlan();
         if (!plan) {
             log("No se pudo cargar sprint-plan.json");
@@ -889,7 +833,7 @@ async function processInput() {
                 nextAgente._retry_count = 0;
                 plan.agentes = (plan.agentes || []).concat([nextAgente]);
                 setQueue(plan, newQueue);
-                callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al promover
+                // callSyncRoadmapOnly reemplazado por saveRoadmapFromPlan (#1736)
                 savePlan(plan);
                 await updateProjectV2(nextAgente.issue, "In Progress");
                 const launched = launchAgent(nextAgente);
@@ -967,13 +911,13 @@ async function processInput() {
                     "<i>Acción requerida: revisar y relanzar manualmente si es necesario</i>"
                 );
                 // Guardar sin promover de cola
-                callSyncRoadmapOnly(plan);
+                // callSyncRoadmapOnly reemplazado por saveRoadmapFromPlan (#1736)
                 savePlan(plan);
                 return;
             }
             plan._completed.push(completedEntry);
             log("Agente #" + finishingAgent.issue + " → _completed (PR mergeada, duracion=" + completedEntry.duracion_min + "m)");
-            callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al completar agente
+            // callSyncRoadmapOnly reemplazado por saveRoadmapFromPlan (#1736)
             await notify(
                 "✅ <b>Agente #" + finishingAgent.issue + " completado</b>\n" +
                 "PR mergeada · Slug: " + escHtml(finishingAgent.slug) + "\n" +
@@ -1109,7 +1053,7 @@ async function processInput() {
             // Mover de cola a agentes
             plan.agentes.push(nextAgente);
             setQueue(plan, newQueue);
-            callSyncRoadmapOnly(plan); // #1433: actualizar roadmap al promover de cola
+            // callSyncRoadmapOnly reemplazado por saveRoadmapFromPlan (#1736)
 
             savePlan(plan);
             log("Movido issue #" + nextAgente.issue + " de cola a agentes (número " + nextAgente.numero + ", status=promoted)");
@@ -1161,7 +1105,5 @@ async function processInput() {
             );
         }
 
-    } finally {
-        if (locked) releaseLock();
     }
 }

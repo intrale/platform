@@ -450,6 +450,73 @@ function snapshotMetricsOnClose(sprintId) {
     }
 }
 
+
+/**
+ * Actualiza roadmap.json a partir del estado actual de un plan (formato sprint-plan.json).
+ * Reemplaza el uso directo de savePlan() en agent-watcher y agent-concurrency-check (#1736).
+ * Despues de escribir el roadmap, generateSprintPlanCache regenera el cache automaticamente.
+ */
+function saveRoadmapFromPlan(plan, caller) {
+    if (!plan) { log('saveRoadmapFromPlan: plan es null'); return false; }
+    var rm = readRoadmap();
+    if (!rm) { log('saveRoadmapFromPlan: roadmap no encontrado'); return false; }
+    var sp = getActiveSprint(rm);
+    if (!sp) { log('saveRoadmapFromPlan: no hay sprint activo en roadmap'); return false; }
+    function findOrCreate(item) {
+        var n = Number(item.issue);
+        var st = findStory(sp, n);
+        if (!st) {
+            st = { issue: n, title: item.titulo || ('Issue #' + n),
+                effort: item.size === 'S' ? 'simple' : item.size === 'M' ? 'medio' : 'grande',
+                stream: item.stream || 'E', slug: item.slug || null };
+            sp.stories.push(st);
+        }
+        return st;
+    }
+    for (var i = 0; i < (plan.agentes || []).length; i++) {
+        var ag = plan.agentes[i]; var st = findOrCreate(ag);
+        st.status = 'in_progress'; st.slug = st.slug || ag.slug;
+        if (!st.agent) st.agent = {};
+        st.agent.pid = ag._pid || null;
+        st.agent.promoted_at = ag._promoted_at || st.agent.promoted_at || null;
+        st.agent.launched_at = ag._launched_at || st.agent.launched_at || null;
+        st.agent.waiting_since = ag.waiting_since || null;
+        st.agent.waiting_reason = ag.waiting_reason || null;
+        st.agent.retry_count = ag._retry_count || st.agent.retry_count || 0;
+        if (ag.prompt) st.agent.prompt = ag.prompt;
+    }
+    for (var j = 0; j < (plan._queue || []).length; j++) {
+        var q = plan._queue[j]; var st = findOrCreate(q);
+        if (st.status !== 'in_progress' && st.status !== 'done' && st.status !== 'failed') st.status = 'planned';
+        st.slug = st.slug || q.slug;
+    }
+    for (var k = 0; k < (plan._completed || []).length; k++) {
+        var c = plan._completed[k]; var st = findOrCreate(c);
+        st.status = 'done'; st.slug = st.slug || c.slug;
+        if (!st.agent) st.agent = {};
+        st.agent.completed_at = c.completado_at || st.agent.completed_at || null;
+        st.agent.result = c.resultado || 'ok';
+        st.agent.pr = c.pr || st.agent.pr || null;
+        st.agent.duration_min = c.duracion_min || st.agent.duration_min || 0;
+        st.agent.detected_by = c.detectado_por || st.agent.detected_by || null;
+        st.agent.pid = null; st.agent.waiting_since = null;
+    }
+    for (var m = 0; m < (plan._incomplete || []).length; m++) {
+        var inc = plan._incomplete[m]; var st = findOrCreate(inc);
+        st.status = 'failed'; st.slug = st.slug || inc.slug;
+        if (!st.agent) st.agent = {};
+        st.agent.result = 'failed';
+        st.agent.failure_reason = inc.motivo || st.agent.failure_reason || null;
+        st.agent.detected_by = inc.detectado_por || st.agent.detected_by || null;
+        st.agent.duration_min = inc.duracion_min || st.agent.duration_min || 0;
+        st.agent.pid = null; st.agent.waiting_since = null;
+    }
+    ensureExecution(sp);
+    if (plan._waiting_sweep_ts) sp.execution.waiting_sweep_ts = plan._waiting_sweep_ts;
+    if (plan._sentinel_ts) sp.execution.sentinel_ts = plan._sentinel_ts;
+    if (plan.concurrency_limit) sp.execution.concurrency_limit = plan.concurrency_limit;
+    return writeRoadmap(rm, caller || 'saveRoadmapFromPlan');
+}
 module.exports = {
     ROADMAP_FILE: ROADMAP_FILE, SPRINT_PLAN_FILE: SPRINT_PLAN_FILE,
     REPO_ROOT: REPO_ROOT, SCRIPTS_DIR: SCRIPTS_DIR, HOOKS_DIR: HOOKS_DIR,
@@ -459,6 +526,7 @@ module.exports = {
     getNextInQueue: getNextInQueue, getStoryBranch: getStoryBranch,
     ensureExecution: ensureExecution, getConcurrencyLimit: getConcurrencyLimit,
     generateSprintPlanCache: generateSprintPlanCache, migrateFromSprintPlan: migrateFromSprintPlan,
+    saveRoadmapFromPlan: saveRoadmapFromPlan,
     validateRoadmap: validateRoadmap, acquireLock: acquireLock, releaseLock: releaseLock,
     readJson: readJson, writeJson: writeJson, log: log,
     snapshotMetricsOnClose: snapshotMetricsOnClose
