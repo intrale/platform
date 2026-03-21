@@ -316,6 +316,65 @@ function archiveSprintMetrics(sprintId, velocity) {
         var sprintSessions = metricsData.sessions.filter(function(s) { return s.sprint_id === sprintId; });
         var payload = { sprint_id: sprintId, archived_at: new Date().toISOString(), velocity: velocity || 0, sessions: sprintSessions };
         sprintData.writeJson(archiveFile, payload);
+        
+        // Generar snapshot de sprint con métricas agregadas (#1716)
+        var aggregated = {
+            sprint_id: sprintId,
+            snapshot_at: new Date().toISOString(),
+            total_sessions: sprintSessions.length,
+            summary: {
+                total_duration_min: 0,
+                total_tokens_input: 0,
+                total_tokens_output: 0,
+                total_cost_usd: 0.0,
+                total_tool_calls: 0,
+                total_modified_files: 0,
+                total_tasks_created: 0,
+                total_tasks_completed: 0,
+                success_rate: 0.0
+            },
+            sessions_by_agent: {},
+            skills_breakdown: {}
+        };
+        
+        // Agregar métricas desde sesiones
+        sprintSessions.forEach(function(s) {
+            aggregated.summary.total_duration_min += (s.duration_min || 0);
+            aggregated.summary.total_tokens_input += (s.tokens_input || 0);
+            aggregated.summary.total_tokens_output += (s.tokens_output || 0);
+            aggregated.summary.total_tool_calls += (s.total_tool_calls || 0);
+            aggregated.summary.total_modified_files += (s.modified_files_count || 0);
+            aggregated.summary.total_tasks_created += (s.tasks_created || 0);
+            aggregated.summary.total_tasks_completed += (s.tasks_completed || 0);
+            var agentName = s.agent_name || "Unknown";
+            if (!aggregated.sessions_by_agent[agentName]) {
+                aggregated.sessions_by_agent[agentName] = { count: 0, duration_min: 0, tokens_input: 0, tokens_output: 0, tool_calls: 0, skills: [] };
+            }
+            aggregated.sessions_by_agent[agentName].count++;
+            aggregated.sessions_by_agent[agentName].duration_min += (s.duration_min || 0);
+            aggregated.sessions_by_agent[agentName].tokens_input += (s.tokens_input || 0);
+            aggregated.sessions_by_agent[agentName].tokens_output += (s.tokens_output || 0);
+            aggregated.sessions_by_agent[agentName].tool_calls += (s.total_tool_calls || 0);
+            if (Array.isArray(s.skills_invoked)) {
+                s.skills_invoked.forEach(function(sk) {
+                    if (!aggregated.skills_breakdown[sk]) aggregated.skills_breakdown[sk] = { count: 0, duration_min: 0 };
+                    aggregated.skills_breakdown[sk].count++;
+                    aggregated.skills_breakdown[sk].duration_min += (s.duration_min || 0);
+                });
+            }
+        });
+        if (aggregated.summary.total_sessions > 0) {
+            var successCount = sprintSessions.filter(function(s) { return (s.tasks_created || 0) > 0 && s.tasks_created === s.tasks_completed; }).length;
+            aggregated.summary.success_rate = (successCount / aggregated.summary.total_sessions * 100).toFixed(1);
+        }
+        
+        // Guardar snapshot a docs/sprints/SPR-NNN-metrics.json
+        try {
+            var snapshotDir = path.join(REPO_ROOT, "docs", "sprints");
+            if (!fs.existsSync(snapshotDir)) fs.mkdirSync(snapshotDir, { recursive: true });
+            var snapshotFile = path.join(snapshotDir, sprintId + "-metrics.json");
+            fs.writeFileSync(snapshotFile, JSON.stringify(aggregated, null, 2) + "\n", "utf8");
+        } catch (sse) { /* ignorar errores al guardar snapshot */ }
         return { ok: true, archiveFile: archiveFile, sessionsArchived: sprintSessions.length };
     } catch (e) { return { ok: false, message: e.message }; }
 }

@@ -4063,6 +4063,75 @@ function handleRequest(req, res) {
     const client = { res, alive: true };
     sseClients.add(client);
     req.on("close", () => { client.alive = false; sseClients.delete(client); });
+  } else if (pathname === "/api/history") {
+    // Endpoint de historial de métricas (#1716)
+    const SESSIONS_HISTORY_FILE = path.join(REPO_ROOT, ".claude", "hooks", "sessions-history.jsonl");
+    const sprintFilter = url.searchParams.get("sprint");
+    
+    try {
+      let sessions = [];
+      if (fs.existsSync(SESSIONS_HISTORY_FILE)) {
+        const lines = fs.readFileSync(SESSIONS_HISTORY_FILE, "utf8").split("\n").filter(l => l.trim());
+        sessions = lines.map(line => {
+          try { return JSON.parse(line); } catch(e) { return null; }
+        }).filter(s => s !== null);
+      }
+      
+      // Filtrar por sprint si se especifica
+      if (sprintFilter) {
+        sessions = sessions.filter(s => s.sprint_id === sprintFilter);
+      }
+      
+      // Agrupar por sprint y agregar metrics
+      const bySprintId = {};
+      sessions.forEach(s => {
+        const sid = s.sprint_id || "unknown";
+        if (!bySprintId[sid]) {
+          bySprintId[sid] = {
+            sprint_id: sid,
+            sessions: [],
+            summary: {
+              total_sessions: 0,
+              total_duration_min: 0,
+              total_tokens_input: 0,
+              total_tokens_output: 0,
+              total_cost_usd: 0,
+              total_tool_calls: 0,
+              agents: {}
+            }
+          };
+        }
+        bySprintId[sid].sessions.push(s);
+        bySprintId[sid].summary.total_sessions++;
+        bySprintId[sid].summary.total_duration_min += (s.duration_min || 0);
+        bySprintId[sid].summary.total_tokens_input += (s.tokens.input || 0);
+        bySprintId[sid].summary.total_tokens_output += (s.tokens.output || 0);
+        bySprintId[sid].summary.total_cost_usd += parseFloat(s.cost_usd || 0);
+        bySprintId[sid].summary.total_tool_calls += (s.model_usage && s.model_usage.tool_calls || 0);
+        
+        const agent = s.agent_name || "Unknown";
+        if (!bySprintId[sid].summary.agents[agent]) {
+          bySprintId[sid].summary.agents[agent] = { count: 0, duration_min: 0, cost_usd: 0 };
+        }
+        bySprintId[sid].summary.agents[agent].count++;
+        bySprintId[sid].summary.agents[agent].duration_min += (s.duration_min || 0);
+        bySprintId[sid].summary.agents[agent].cost_usd += parseFloat(s.cost_usd || 0);
+      });
+      
+      const result = sprintFilter && bySprintId[sprintFilter] 
+        ? bySprintId[sprintFilter]
+        : { sprints: Object.values(bySprintId), total_sprints: Object.keys(bySprintId).length };
+      
+      const json = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        data: result
+      });
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+      res.end(json);
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: e.message }));
+    }
   } else if (pathname === "/api/status") {
     const data = collectData();
     const json = JSON.stringify({

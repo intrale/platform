@@ -79,6 +79,7 @@ process.stdin.on("error", () => { if (!done) { done = true; processInput(); } })
 setTimeout(() => { if (!done) { done = true; try { process.stdin.destroy(); } catch(e) {} processInput(); } }, 3000);
 
 const AGENT_METRICS_FILE = path.join(REPO_ROOT, ".claude", "hooks", "agent-metrics.json");
+const SESSIONS_HISTORY_FILE = path.join(REPO_ROOT, ".claude", "hooks", "sessions-history.jsonl");
 
 // Detecta si el proceso corre en un worktree sibling (no es el repo principal)
 function detectWorktreeRoot() {
@@ -224,6 +225,41 @@ function flushMetrics(sessionId) {
         metrics.updated_ts = endedTs;
         fs.writeFileSync(AGENT_METRICS_FILE, JSON.stringify(metrics, null, 2) + "\n", "utf8");
         log("Metricas flushed para sesion " + shortId + " (sprint: " + (entry.sprint_id || "unknown") + ")");
+
+
+        // Persistir sesión en historial inmutable sessions-history.jsonl (#1716)
+        try {
+            const historyRecord = {
+                session_id: shortId,
+                sprint_id: entry.sprint_id || null,
+                agent_name: entry.agent_name || null,
+                issue: (() => {
+                    const m = (entry.branch || "").match(/^agent\/(\d+)/);
+                    return m ? parseInt(m[1], 10) : null;
+                })(),
+                branch: entry.branch || null,
+                started_at: entry.started_ts || endedTs,
+                completed_at: endedTs,
+                duration_min: entry.duration_min || 0,
+                result: entry.tasks_created > 0 && entry.tasks_created === entry.tasks_completed ? "ok" : (entry.tasks_created === 0 ? "ok" : "partial"),
+                pr: null,  // TODO: extract from session or sprint-plan
+                transitions: session.agent_transitions || [],
+                skills_invoked: entry.skills_invoked || [],
+                tokens: {
+                    input: entry.tokens_input || 0,
+                    output: entry.tokens_output || 0,
+                    cache_read: 0  // Not tracked yet
+                },
+                cost_usd: (() => {
+                    const total = (entry.tokens_input || 0) + (entry.tokens_output || 0);
+                    // Claude API pricing estimate: ~$3 per 1M input tokens, ~$15 per 1M output tokens
+                    return (total > 0 ? ((entry.tokens_input || 0) * 0.000003 + (entry.tokens_output || 0) * 0.000015) : (entry.tokens_estimated || 0) * 0.000001).toFixed(4);
+                })(),
+                model_usage: { tool_calls: entry.total_tool_calls, modified_files: entry.modified_files_count }
+            };
+            fs.appendFileSync(SESSIONS_HISTORY_FILE, JSON.stringify(historyRecord) + "\n", "utf8");
+            log("Session " + shortId + " persistida a sessions-history.jsonl");
+        } catch (e) { log("Error persistiendo sesión a history: " + e.message); }
 
         // Consolidar al repo principal si estamos en un worktree (#1419)
         const mainRepoRoot = detectWorktreeRoot();
