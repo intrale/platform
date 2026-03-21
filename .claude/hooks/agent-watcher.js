@@ -1,4 +1,4 @@
-// agent-watcher.js — Watcher externo para promoción automática de agentes
+﻿// agent-watcher.js — Watcher externo para promoción automática de agentes
 // desde _queue[] cuando agentes en worktrees terminan (#1441, #1522)
 //
 // Problema que resuelve:
@@ -207,6 +207,10 @@ function escHtml(str) {
 
 let tgClient = null;
 try { tgClient = require("./telegram-client"); } catch (e) {}
+
+// Diagnostico de causa de muerte de agentes (#1749)
+let retryDiagnostics = null;
+try { retryDiagnostics = require("./agent-retry-diagnostics"); } catch (e) { log("agent-retry-diagnostics no disponible: " + e.message); }
 
 // Validación centralizada de completación (#1458)
 const { buildCompletedEntry, validateCompletionCriteria, MIN_DURATION_MINUTES } = require("./validation-utils");
@@ -475,13 +479,24 @@ function launchAgent(agente) {
             agente.prompt = generateDefaultPrompt(agente.issue, agente.slug);
         }
 
-        // Paso 1: Setup worktree
+        // Paso 1: Setup worktree (o reusar existente si _reuse_worktree=true, #1749)
         let wtDir;
-        try {
-            wtDir = setupWorktree(agente);
-        } catch (e) {
-            log("launchAgent: setupWorktree falló para #" + agente.issue + ": " + e.message);
-            return false;
+        if (agente._reuse_worktree) {
+            wtDir = getExpectedWorktreePath(agente);
+            if (!fs.existsSync(path.join(wtDir, ".git"))) {
+                log("launchAgent: _reuse_worktree=true pero worktree no existe en " + wtDir + " -- recreando");
+                agente._reuse_worktree = false;
+            } else {
+                log("launchAgent: reutilizando worktree existente " + path.basename(wtDir));
+            }
+        }
+        if (!agente._reuse_worktree) {
+            try {
+                wtDir = setupWorktree(agente);
+            } catch (e) {
+                log("launchAgent: setupWorktree fallo para #" + agente.issue + ": " + e.message);
+                return false;
+            }
         }
 
         // Paso 2: Escribir prompt
@@ -963,6 +978,24 @@ async function runCycle() {
                     const retryCount = ag._retry_count || 0;
 
                     if (retryCount < MAX_RETRIES) {
+                        // Diagnosticar causa de muerte antes de relanzar (#1749)
+                        if (retryDiagnostics) {
+                            try {
+                                const diagnosis = retryDiagnostics.analyzeDeath(ag, REPO_ROOT, HOOKS_DIR);
+                                log("Diagnostico #" + ag.issue + ": causa=" + diagnosis.cause + " localCommits=" + diagnosis.localCommitCount + " remoteBranch=" + diagnosis.hasRemoteBranch);
+                                const basePrompt = ag.prompt || generateDefaultPrompt(ag.issue, ag.slug);
+                                ag.prompt = retryDiagnostics.buildRetryPrompt(basePrompt, ag, diagnosis);
+                                if (retryDiagnostics.shouldReuseWorktree(diagnosis)) {
+                                    ag._reuse_worktree = true;
+                                    log("Diagnostico #" + ag.issue + ": se reutilizara worktree (" + diagnosis.localCommitCount + " commits)");
+                                }
+                                const diagEntry = retryDiagnostics.buildDiagnosticsEntry(ag, diagnosis);
+                                if (!Array.isArray(ag._retry_diagnostics)) ag._retry_diagnostics = [];
+                                ag._retry_diagnostics.push(diagEntry);
+                            } catch (e) {
+                                log("WARN: agent-retry-diagnostics error: " + e.message);
+                            }
+                        }
                         // Relanzar: re-agregar al plan como "promoted" con contador actualizado
                         ag._retry_count = retryCount + 1;
                         ag.status = "promoted";
@@ -981,11 +1014,16 @@ async function runCycle() {
                         // Persistir el _pid asignado por launchAgent
                         if (ag._pid) savePlan(freshPlan);
 
+                        const diagCause = (ag._retry_diagnostics && ag._retry_diagnostics.length > 0)
+                            ? ag._retry_diagnostics[ag._retry_diagnostics.length - 1].cause
+                            : "unknown";
                         await notify(
                             "🔄 <b>Agente #" + ag.issue + " relanzado (intento " + ag._retry_count + "/" + MAX_RETRIES + ")</b>\n" +
                             "Sin PR detectada · Slug: " + escHtml(ag.slug) + "\n" +
-                            "Resultado: " + (relaunchResult ? "spawn exitoso" : "spawn fallido")
-                        );
+                            "Causa: " + escHtml(diagCause) + "\n" +
+                            "Resultado: " + (relaunchResult ? "spawn exitoso" : "spawn fallido") +
+                            (ag._reuse_worktree ? " · Worktree reutilizado" : "")
+                        )
                     } else {
                         // Excedió reintentos: verificar si el issue fue cerrado en GitHub
                         let issueAlreadyClosed = false;
@@ -1022,14 +1060,16 @@ async function runCycle() {
                                     : "Sin PR tras " + MAX_RETRIES + " reintentos — el agente no completó /delivery";
                             entry.detectado_por = "agent-watcher";
                             entry.motivo = motivo;
+                            if (ag._retry_diagnostics) entry._retry_diagnostics = ag._retry_diagnostics;
                             freshPlan._incomplete.push(entry);
                             log("Agente #" + ag.issue + " → _incomplete (" + prStatus.status + "): " + motivo);
 
-                            await notify(
-                                "⚠️ <b>Agente #" + ag.issue + " terminó sin PR (watcher)</b>\n" +
-                                "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
-                                "Motivo: " + escHtml(motivo)
-                            );
+                            const exhaustedMsg = (retryDiagnostics && ag._retry_diagnostics && ag._retry_diagnostics.length > 0)
+                                ? retryDiagnostics.buildExhaustedSummary(ag, ag._retry_diagnostics)
+                                : "&#x26A0;&#xFE0F; <b>Agente #" + ag.issue + " termino sin PR (watcher)</b>\n" +
+                                  "Slug: " + escHtml(ag.slug) + " · PR: " + prStatus.status + "\n" +
+                                  "Motivo: " + escHtml(motivo);
+                            await notify(exhaustedMsg)
                         }
                     }
                 }
