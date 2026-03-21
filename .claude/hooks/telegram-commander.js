@@ -867,6 +867,12 @@ async function pollingLoop() {
                             tgApi.sendMessage("❌ Error: <code>" + tgApi.escHtml(e.message) + "</code>").catch(() => {});
                         });
                         break;
+                    case "reset_sprint":
+                        dispatcher.handleResetSprint(cmd.confirmed).catch(e => {
+                            log("Error en handleResetSprint: " + e.message);
+                            tgApi.sendMessage("❌ Error: <code>" + tgApi.escHtml(e.message) + "</code>").catch(() => {});
+                        });
+                        break;
                     case "unknown_command":
                         await tgApi.sendMessage("❓ Comando <code>/" + tgApi.escHtml(cmd.command) + "</code> no reconocido.\nUsá /help para ver los skills disponibles.");
                         break;

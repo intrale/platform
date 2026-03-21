@@ -122,6 +122,10 @@ function parseCommand(text) {
         return { type: "sprint", agentNumber: arg ? parseInt(arg, 10) : null };
     }
 
+    if (trimmed === "/reset-sprint" || trimmed === "/reset-sprint confirm") {
+        return { type: "reset_sprint", confirmed: trimmed === "/reset-sprint confirm" };
+    }
+
     if (trimmed.startsWith("/")) {
         const parts = trimmed.substring(1).split(/\s+/);
         const cmd = parts[0].toLowerCase();
@@ -236,6 +240,8 @@ async function handleHelp() {
         msg += "    <i>" + _tgApi.escHtml(skill.description) + "</i>\n";
     }
     msg += "\n<b>Comandos especiales:</b>\n";
+    msg += "  /reset-sprint — Resetear sprint al estado original\n";
+    msg += "  /reset-sprint confirm — Confirmar y ejecutar el reset\n";
     msg += "  /sprint — Ejecutar sprint completo (secuencial)\n";
     msg += "  /sprint N — Ejecutar solo agente N del plan\n";
     msg += "  /sprint interval N — Cambiar intervalo del monitor periódico (N minutos)\n";
@@ -581,6 +587,196 @@ async function handleDetalle() {
     }
 }
 
+
+// ─── Handler: /reset-sprint ──────────────────────────────────────────────────
+
+function _buildGhEnv() {
+    const ghDirs = ["/c/Workspaces/gh-cli/bin", "/usr/local/bin", "/usr/bin"];
+    const ghDir = ghDirs.find(function(d) {
+        try { return fs.existsSync(d + "/gh") || fs.existsSync(d + "/gh.exe"); } catch (e) { return false; }
+    }) || ghDirs[0];
+    return Object.assign({}, process.env, { PATH: ghDir + ":" + (process.env.PATH || "") });
+}
+
+function _ghExec(args, timeout) {
+    var execSync = require("child_process").execSync;
+    return execSync("gh " + args, { encoding: "utf8", timeout: timeout || 20000, env: _buildGhEnv() });
+}
+
+function _findSprintPrs(issueNumbers) {
+    try {
+        var prJson = _ghExec("pr list --repo intrale/platform --state open --json number,headRefName,title --limit 50");
+        var prs = JSON.parse(prJson);
+        return prs.filter(function(pr) {
+            var match = pr.headRefName && pr.headRefName.match(/^agent\/(\d+)-/);
+            return match && issueNumbers.indexOf(parseInt(match[1], 10)) !== -1;
+        });
+    } catch (e) {
+        _log("_findSprintPrs: error: " + e.message);
+        return [];
+    }
+}
+
+async function handleResetSprint(confirmed) {
+    var sprintPlanFile = path.join(_repoRoot, "scripts", "sprint-plan.json");
+    var agentRegistryFile = path.join(_hooksDir, "agent-registry.json");
+    var sprintAuditFile = path.join(_repoRoot, "scripts", "sprint-audit.jsonl");
+
+    var plan;
+    try {
+        plan = JSON.parse(fs.readFileSync(sprintPlanFile, "utf8"));
+    } catch (e) {
+        await _tgApi.sendMessage("❌ No se pudo leer sprint-plan.json: <code>" + _tgApi.escHtml(e.message) + "</code>");
+        return;
+    }
+
+    var sprintId = plan.sprint_id || "sprint desconocido";
+
+    // Reunir todos los issues del sprint
+    var allIssues = {};
+    var collectIssues = function(arr) {
+        (arr || []).forEach(function(a) { if (a.issue) allIssues[Number(a.issue)] = true; });
+    };
+    collectIssues(plan.agentes);
+    collectIssues(plan._incomplete);
+    collectIssues(plan._queue);
+    collectIssues(plan._completed);
+    var issueNumbers = Object.keys(allIssues).map(Number);
+
+    if (!confirmed) {
+        var openPrs = _findSprintPrs(issueNumbers);
+        var toQueue = (plan.agentes || []).length + (plan._incomplete || []).length;
+
+        var msg = "⚠️ <b>¿Resetear " + _tgApi.escHtml(sprintId) + "?</b> (" + issueNumbers.length + " issues";
+        if (openPrs.length > 0) msg += ", " + openPrs.length + " PR" + (openPrs.length === 1 ? "" : "s") + " abierta" + (openPrs.length === 1 ? "" : "s");
+        msg += ")\n\n";
+        msg += "Esto cerrará PRs, eliminará ramas y volverá todo a <code>_queue</code>.\n";
+        if (toQueue > 0) msg += "\u2022 " + toQueue + " issues → <code>_queue</code>\n";
+        if (openPrs.length > 0) msg += "\u2022 PRs a cerrar: " + openPrs.map(function(p) { return "#" + p.number; }).join(", ") + "\n";
+        msg += "\u2022 agent-registry vaciado\n\n";
+        msg += "Enviar <code>/reset-sprint confirm</code> para confirmar.";
+        await _tgApi.sendLongMessage(msg);
+        return;
+    }
+
+    await _tgApi.sendMessage("🔄 Reseteando <b>" + _tgApi.escHtml(sprintId) + "</b>...");
+
+    var summary = { prsClosed: [], branchesDeleted: [], issuesMovedToQueue: [], issuesReopened: [], errors: [] };
+
+    // 1. Cerrar PRs del sprint + eliminar ramas
+    var openPrs = _findSprintPrs(issueNumbers);
+    for (var i = 0; i < openPrs.length; i++) {
+        var pr = openPrs[i];
+        try {
+            _ghExec("pr close " + pr.number + " --repo intrale/platform --delete-branch");
+            summary.prsClosed.push(pr.number);
+            summary.branchesDeleted.push(pr.headRefName);
+            _log("reset-sprint: cerrada PR #" + pr.number + " + rama " + pr.headRefName);
+        } catch (e) {
+            try {
+                _ghExec("pr close " + pr.number + " --repo intrale/platform");
+                summary.prsClosed.push(pr.number);
+                _log("reset-sprint: cerrada PR #" + pr.number + " (sin rama)");
+            } catch (e2) {
+                summary.errors.push("PR #" + pr.number + ": " + e2.message.substring(0, 80));
+            }
+        }
+    }
+
+    // 2. Mover agentes + _incomplete a _queue (sin metadata de resultado)
+    var keepFields = ["issue", "slug", "titulo", "stream", "size", "numero", "prompt"];
+    var existingQueueIssues = {};
+    (plan._queue || []).forEach(function(q) { if (q.issue) existingQueueIssues[q.issue] = true; });
+
+    var toMigrate = (plan.agentes || []).concat(plan._incomplete || []);
+    toMigrate.forEach(function(a) {
+        if (!a.issue || existingQueueIssues[a.issue]) return;
+        var clean = {};
+        keepFields.forEach(function(f) { if (a[f] !== undefined) clean[f] = a[f]; });
+        plan._queue = plan._queue || [];
+        plan._queue.push(clean);
+        existingQueueIssues[a.issue] = true;
+        summary.issuesMovedToQueue.push(a.issue);
+    });
+
+    // 3. Limpiar campos de estado
+    plan.agentes = [];
+    plan._completed = [];
+    plan._incomplete = [];
+    if ("_lock_until" in plan) plan._lock_until = null;
+    plan.started_at = new Date().toISOString();
+    delete plan._waiting_sweep_ts;
+    delete plan._sentinel_ts;
+
+    fs.writeFileSync(sprintPlanFile, JSON.stringify(plan, null, 2), "utf8");
+    _log("reset-sprint: sprint-plan.json actualizado");
+
+    // 4. Vaciar agent-registry.json
+    try {
+        var emptyRegistry = { agents: {}, updated_at: new Date().toISOString() };
+        fs.writeFileSync(agentRegistryFile, JSON.stringify(emptyRegistry, null, 2), "utf8");
+        _log("reset-sprint: agent-registry.json vaciado");
+    } catch (e) {
+        summary.errors.push("agent-registry: " + e.message.substring(0, 80));
+    }
+
+    // 5. Verificar que los issues estén OPEN en GitHub (reabrir si fueron cerrados)
+    for (var j = 0; j < issueNumbers.length; j++) {
+        var issueNum = issueNumbers[j];
+        try {
+            var stateJson = _ghExec("issue view " + issueNum + " --repo intrale/platform --json state", 10000);
+            if (JSON.parse(stateJson).state === "CLOSED") {
+                _ghExec("issue reopen " + issueNum + " --repo intrale/platform", 10000);
+                summary.issuesReopened.push(issueNum);
+                _log("reset-sprint: reabierto issue #" + issueNum);
+            }
+        } catch (e) {
+            _log("reset-sprint: error verificando issue #" + issueNum + ": " + e.message);
+        }
+    }
+
+    // 6. Registrar en sprint-audit.jsonl
+    var auditEntry = {
+        ts: new Date().toISOString(),
+        action: "reset_sprint",
+        sprint_id: sprintId,
+        triggered_via: "telegram",
+        prs_closed: summary.prsClosed,
+        branches_deleted: summary.branchesDeleted,
+        issues_moved_to_queue: summary.issuesMovedToQueue,
+        issues_reopened: summary.issuesReopened,
+        errors: summary.errors
+    };
+    try { fs.appendFileSync(sprintAuditFile, JSON.stringify(auditEntry) + "\n", "utf8"); } catch (e) {
+        _log("reset-sprint: error escribiendo audit: " + e.message);
+    }
+
+    // 7. Enviar resumen por Telegram
+    var rmsg = "✅ <b>" + _tgApi.escHtml(sprintId) + " reseteado</b>\n";
+    if (summary.prsClosed.length > 0) {
+        rmsg += "\u2022 " + summary.prsClosed.length + " PR" + (summary.prsClosed.length === 1 ? "" : "s") + " cerrada" + (summary.prsClosed.length === 1 ? "" : "s");
+        rmsg += " (#" + summary.prsClosed.join(", #") + ") + ramas eliminadas\n";
+    } else {
+        rmsg += "\u2022 Sin PRs abiertas para cerrar\n";
+    }
+    if (summary.issuesMovedToQueue.length > 0) {
+        rmsg += "\u2022 " + summary.issuesMovedToQueue.length + " issues \u2192 <code>_queue</code> (#" + summary.issuesMovedToQueue.join(", #") + ")\n";
+    }
+    rmsg += "\u2022 agent-registry vaciado\n";
+    if (summary.issuesReopened.length > 0) {
+        rmsg += "\u2022 " + summary.issuesReopened.length + " issues reabiertos en GitHub (#" + summary.issuesReopened.join(", #") + ")\n";
+    }
+    if (summary.errors.length > 0) {
+        rmsg += "\n\u26a0\ufe0f Errores:\n";
+        summary.errors.slice(0, 5).forEach(function(err) {
+            rmsg += "  \u2022 <code>" + _tgApi.escHtml(err) + "</code>\n";
+        });
+    }
+    rmsg += "\n\ud83d\ude80 Listo para: <code>/start-sprint</code>";
+    await _tgApi.sendLongMessage(rmsg);
+    _log("reset-sprint: completado sprint=" + sprintId + " prs=" + summary.prsClosed.length + " moved=" + summary.issuesMovedToQueue.length);
+}
+
 module.exports = {
     init,
     setSkills,
@@ -602,5 +798,6 @@ module.exports = {
     handleSkill,
     handleFreetext,
     handleDetalle,
+    handleResetSprint,
     CLEANUP_TTL_MS,
 };
