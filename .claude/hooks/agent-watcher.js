@@ -51,6 +51,7 @@ const LOG_FILE = path.join(HOOKS_DIR, "agent-watcher.log");
 const START_SCRIPT = path.join(SCRIPTS_DIR, "Start-Agente.ps1");
 const SESSIONS_DIR = path.join(REPO_ROOT, ".claude", "sessions");
 const WORKTREES_PARENT = path.dirname(REPO_ROOT);
+const SKILLS_TIMEOUT_FILE = path.join(HOOKS_DIR, "skills-timeout.json"); // #1753
 
 const POLL_INTERVAL_MS = parseInt(process.env.WATCHER_POLL_INTERVAL || "120000", 10); // #1522: 2 min para reconciliación
 const GRACE_PERIOD_MIN = parseInt(process.env.WATCHER_GRACE_PERIOD_MIN || "15", 10); // #1553: grace period antes de evaluar PR
@@ -623,6 +624,156 @@ async function updateProjectV2(issue, statusName) {
 // buildCompletedEntry: importado desde validation-utils (#1458)
 // La versión local fue eliminada — usar buildCompletedEntry(agente, null, resultado) desde el módulo compartido.
 
+
+// ─── Skill Timeout Detection (#1753) ─────────────────────────────────────────
+//
+// Detecta agentes con PID vivo pero heartbeat estancado (skill colgado).
+// Carga la configuracion desde skills-timeout.json y mata el proceso si el
+// agente supera el timeout del skill activo. El ciclo siguiente de reconciliacion
+// detecta el PID muerto y aplica la logica de retry existente (MAX_RETRIES).
+
+function loadSkillsTimeout() {
+    try {
+        if (fs.existsSync(SKILLS_TIMEOUT_FILE)) {
+            const cfg = JSON.parse(fs.readFileSync(SKILLS_TIMEOUT_FILE, "utf8"));
+            return cfg;
+        }
+    } catch (e) {
+        log("loadSkillsTimeout: error leyendo config — usando defaults: " + e.message);
+    }
+    return { default: 10, qa: 30 };
+}
+
+function getCurrentSkillFromSession(agente) {
+    try {
+        if (!fs.existsSync(SESSIONS_DIR)) return null;
+        const branch = "agent/" + agente.issue + "-" + (agente.slug || "");
+        const files = fs.readdirSync(SESSIONS_DIR).filter(function(f) { return f.endsWith(".json"); });
+        for (const file of files) {
+            try {
+                const session = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
+                if (session.branch !== branch) continue;
+                if (session.status === "done") continue;
+                const skills = session.skills_invoked || [];
+                if (skills.length === 0) return null;
+                const lastSkill = skills[skills.length - 1];
+                return lastSkill.replace(/^\//, "");
+            } catch (e) {}
+        }
+    } catch (e) {
+        log("getCurrentSkillFromSession #" + agente.issue + ": " + e.message);
+    }
+    return null;
+}
+
+function killProcess(pid) {
+    try {
+        execSync("taskkill /F /PID " + parseInt(pid, 10), { timeout: 5000, windowsHide: true, stdio: "ignore" });
+        return true;
+    } catch (e) {
+        return !isPidAlive(pid);
+    }
+}
+
+const _timeoutAlertedAt = new Map();
+const TIMEOUT_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+
+async function runSkillTimeoutCheck() {
+    const plan = loadPlan();
+    if (!plan) return;
+    if (plan.sprint_cerrado) return;
+    const estado = plan.estado || plan.status;
+    if (estado && estado !== "activo" && estado !== "active") return;
+
+    const activeAgents = (plan.agentes || []).filter(function(ag) {
+        return ag.status !== "waiting" && ag.status !== "promoted";
+    });
+    if (activeAgents.length === 0) return;
+
+    let registry = { agents: {} };
+    try {
+        const regFile = path.join(HOOKS_DIR, "agent-registry.json");
+        if (fs.existsSync(regFile)) {
+            registry = JSON.parse(fs.readFileSync(regFile, "utf8"));
+        }
+    } catch (e) {
+        log("runSkillTimeoutCheck: error leyendo registry: " + e.message);
+        return;
+    }
+
+    const timeoutCfg = loadSkillsTimeout();
+    const DEFAULT_TIMEOUT_MIN = timeoutCfg.default || 10;
+    const now = Date.now();
+
+    for (const ag of activeAgents) {
+        const pid = ag._pid;
+        if (!pid || !isClaudeProcess(pid)) continue;
+
+        const branch = "agent/" + ag.issue + "-" + (ag.slug || "");
+        let registryEntry = null;
+        for (const entry of Object.values(registry.agents || {})) {
+            if (entry.branch === branch && entry.status === "active") {
+                registryEntry = entry;
+                break;
+            }
+        }
+        if (!registryEntry || !registryEntry.last_heartbeat) continue;
+
+        const lastHb = new Date(registryEntry.last_heartbeat).getTime();
+        if (isNaN(lastHb)) continue;
+
+        const currentSkill = getCurrentSkillFromSession(ag);
+        if (!currentSkill) continue;
+
+        const timeoutMin = timeoutCfg[currentSkill] !== undefined
+            ? timeoutCfg[currentSkill]
+            : DEFAULT_TIMEOUT_MIN;
+        const elapsedMin = (now - lastHb) / 60000;
+
+        if (elapsedMin < timeoutMin) continue;
+
+        const lastAlert = _timeoutAlertedAt.get(ag.issue) || 0;
+        if (now - lastAlert < TIMEOUT_ALERT_COOLDOWN_MS) {
+            log("SkillTimeout: #" + ag.issue + " colgado en " + currentSkill + " (cooldown activo)");
+            continue;
+        }
+        _timeoutAlertedAt.set(ag.issue, now);
+
+        const retryCount = ag._retry_count || 0;
+        log("SkillTimeout: #" + ag.issue + " — skill=" + currentSkill +
+            " · elapsed=" + Math.round(elapsedMin) + "min" +
+            " · timeout=" + timeoutMin + "min" +
+            " · retry=" + retryCount + "/" + MAX_RETRIES +
+            " — matando PID " + pid);
+
+        const killed = killProcess(pid);
+        log("SkillTimeout: #" + ag.issue + " PID " + pid + " → " + (killed ? "terminado" : "no se pudo terminar"));
+
+        try {
+            const freshPlan = loadPlan();
+            if (freshPlan && Array.isArray(freshPlan.agentes)) {
+                const planAg = freshPlan.agentes.find(function(a) { return a.issue === ag.issue; });
+                if (planAg) {
+                    planAg._skill_at_timeout = currentSkill;
+                    planAg._timeout_elapsed_min = Math.round(elapsedMin);
+                    planAg._pid = null;
+                    savePlan(freshPlan);
+                    log("SkillTimeout: plan actualizado para #" + ag.issue + " (_skill_at_timeout=" + currentSkill + ")");
+                }
+            }
+        } catch (e) {
+            log("SkillTimeout: error actualizando plan: " + e.message);
+        }
+
+        await notify(
+            "⏱️ <b>Agente #" + ag.issue + ": skill colgado — timeout</b>\n" +
+            "Skill: <code>" + currentSkill + "</code> · Inactivo: " + Math.round(elapsedMin) + " min\n" +
+            "Timeout configurado: " + timeoutMin + " min\n" +
+            "PID " + pid + " terminado · Reintento " + (retryCount + 1) + "/" + MAX_RETRIES + " en próximo ciclo"
+        );
+    }
+}
+
 // ─── Health Check (lectura pura, ignora _lock_until) ──────────────
 //
 // FASE 1 del ciclo: verifica PIDs de agentes activos y alerta por Telegram si
@@ -675,6 +826,11 @@ async function runHealthCheck() {
 // ─── Ciclo principal ──────────────────────────────────────────────────────────
 
 async function runCycle() {
+    // FASE 1.5: Skill timeout check (#1753)
+    try { await runSkillTimeoutCheck(); } catch (e) {
+        log("SkillTimeoutCheck error (no fatal): " + e.message);
+    }
+
     // FASE 1: Health check (lectura pura, ignora _lock_until)
     // Permite detección y alerta temprana aunque el plan esté bloqueado (#1732)
     try { await runHealthCheck(); } catch (e) {
