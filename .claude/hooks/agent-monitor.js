@@ -321,7 +321,8 @@ function persistCicloEstado(estado, extraFields) {
         const plan = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
         plan.estado = estado;
         if (extraFields) Object.assign(plan, extraFields);
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        // #1736: escribir al roadmap, no directo al cache
+try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor"); } catch(e) {}
         log("persistCicloEstado: " + estado);
     } catch (e) {
         log("persistCicloEstado error: " + e.message);
@@ -502,7 +503,8 @@ async function handleAllDone(elapsedMin) {
                 planToClose.estado = "finalizado";
                 planToClose.closed_at = new Date().toISOString();
                 planToClose.ciclo_estado = "planificando";
-                fs.writeFileSync(PLAN_FILE, JSON.stringify(planToClose, null, 2) + "\n", "utf8");
+                // #1736: escribir al roadmap, no directo al cache
+                try { require("./sprint-data.js").saveRoadmapFromPlan(planToClose, "agent-monitor"); } catch(e) {}
             }
         } catch (e) { log("Error actualizando plan al cerrar: " + e.message); }
 
@@ -539,7 +541,8 @@ async function handleAllDone(elapsedMin) {
                 if (fs.existsSync(PLAN_FILE)) {
                     const planNext = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
                     planNext.ciclo_estado = "arrancando";
-                    fs.writeFileSync(PLAN_FILE, JSON.stringify(planNext, null, 2) + "\n", "utf8");
+                    // #1736: escribir al roadmap, no directo al cache
+                    try { require("./sprint-data.js").saveRoadmapFromPlan(planNext, "agent-monitor"); } catch(e) {}
                 }
             } catch (e) {}
         } else {
@@ -576,7 +579,8 @@ async function handleAllDone(elapsedMin) {
             if (fs.existsSync(PLAN_FILE)) {
                 const planFinal = JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
                 delete planFinal.ciclo_estado;
-                fs.writeFileSync(PLAN_FILE, JSON.stringify(planFinal, null, 2) + "\n", "utf8");
+                // #1736: escribir al roadmap, no directo al cache
+                try { require("./sprint-data.js").saveRoadmapFromPlan(planFinal, "agent-monitor"); } catch(e) {}
             }
         } catch (e) {}
 
@@ -905,9 +909,9 @@ function promoteFromQueue(plan) {
     });
     currentPlan.agentes = agentes;
 
-    // Persistir cambios en sprint-plan.json
+    // #1736: escribir al roadmap, no directo al cache
     try {
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(currentPlan, null, 2) + "\n", "utf8");
+        require("./sprint-data.js").saveRoadmapFromPlan(currentPlan, "agent-monitor");
     } catch (e) {
         log("promoteFromQueue: error escribiendo sprint-plan.json: " + e.message);
     }
@@ -955,7 +959,8 @@ function moveToCompleted(plan, issueNumber) {
     }
 
     try {
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        // #1736: escribir al roadmap, no directo al cache
+try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor"); } catch(e) {}
     } catch (e) {
         log("moveToCompleted: error escribiendo sprint-plan.json: " + e.message);
     }
@@ -1191,7 +1196,8 @@ function updateSprintPlanStatus(plan) {
     if (!plan || !PLAN_FILE) return;
 
     try {
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        // #1736: escribir al roadmap, no directo al cache
+try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor"); } catch(e) {}
         log("Sprint plan status actualizado: " + plan.agentes.map(a => a.numero + ":" + a.status).join(" "));
     } catch (e) {
         log("Error actualizando sprint-plan.json: " + e.message);

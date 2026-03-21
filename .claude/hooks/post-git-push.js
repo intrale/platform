@@ -92,7 +92,11 @@ async function markAgentWaitingInPlan(branch) {
         if (Array.isArray(plan._queue)) plan._queue = newQueue;
         else plan.cola = newQueue;
 
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        // #1736: escribir al roadmap (fuente de verdad), no directo al cache
+        try {
+            const sd = require(path.join(PROJECT_DIR, ".claude", "hooks", "sprint-data.js"));
+            sd.saveRoadmapFromPlan(plan, "post-git-push");
+        } catch(e) { logHook("saveRoadmapFromPlan error: " + e.message); }
         logHook("Agente #" + agent.issue + " en waiting (CI) — slot liberado, promoviendo #" + nextAgent.issue + " de cola");
 
         const launched = launchAgentFromPlan(nextAgent);
@@ -109,7 +113,11 @@ async function markAgentWaitingInPlan(branch) {
             "Cola restante: " + newQueue.length + " issue(s)"
         );
     } else {
-        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2) + "\n", "utf8");
+        // #1736: escribir al roadmap (fuente de verdad), no directo al cache
+        try {
+            const sd = require(path.join(PROJECT_DIR, ".claude", "hooks", "sprint-data.js"));
+            sd.saveRoadmapFromPlan(plan, "post-git-push");
+        } catch(e) { logHook("saveRoadmapFromPlan error: " + e.message); }
         if (queue.length === 0) {
             logHook("Agente #" + agent.issue + " en waiting (CI) — cola vacía, sin promoción");
         } else {

@@ -278,7 +278,8 @@ function updateSprintPlan(issueNumber, newStatus) {
                     if (!Array.isArray(plan.agentes)) plan.agentes = [];
                     plan.agentes.push(agent);
                     log("updateSprintPlan: #" + issueNumber + " bloqueado por CI rojo");
-                    fs.writeFileSync(SPRINT_PLAN_FILE, JSON.stringify(plan, null, 2), "utf8");
+                    // #1736: escribir al roadmap, no directo al cache
+try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "auto-repair-sprint"); } catch(e) { log("saveRoadmapFromPlan: " + e.message); }
                     return true;
                 }
 
@@ -299,7 +300,8 @@ function updateSprintPlan(issueNumber, newStatus) {
         }
 
         if (updated) {
-            fs.writeFileSync(SPRINT_PLAN_FILE, JSON.stringify(plan, null, 2), "utf8");
+            // #1736: escribir al roadmap, no directo al cache
+try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "auto-repair-sprint"); } catch(e) { log("saveRoadmapFromPlan: " + e.message); }
             log("sprint-plan.json actualizado para issue #" + issueNumber + " → " + newStatus);
         }
         return updated;
@@ -316,7 +318,8 @@ function closeSprintInPlan() {
         plan.sprint_cerrado = true;
         plan.sprint_cerrado_at = new Date().toISOString();
         plan.sprint_cerrado_by = "auto-repair-sprint.js";
-        fs.writeFileSync(SPRINT_PLAN_FILE, JSON.stringify(plan, null, 2), "utf8");
+        // #1736: escribir al roadmap, no directo al cache
+try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "auto-repair-sprint"); } catch(e) { log("saveRoadmapFromPlan: " + e.message); }
         log("Sprint " + plan.sprint_id + " marcado como cerrado en sprint-plan.json");
         return true;
     } catch (e) {

@@ -411,7 +411,8 @@ function restoreAgentPidState(saved) {
             }
         });
         if (restored > 0) {
-            fs.writeFileSync(sprintData.SPRINT_PLAN_FILE, JSON.stringify(plan, null, 2));
+            // #1736: escribir al roadmap, regenera cache automáticamente
+            sprintData.saveRoadmapFromPlan(plan, "sprint-sync-fwd");
             log("Forward-sync: restaurados _pid/_launched_at de " + restored + " agente(s)");
         }
     } catch (e) { log("Forward-sync restore error: " + e.message); }

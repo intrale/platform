@@ -45,8 +45,9 @@ function readSprintPlan() {
 }
 
 function writeSprintPlan(plan) {
-    try { fs.writeFileSync(SPRINT_PLAN_FILE, JSON.stringify(plan, null, 2), "utf8"); }
-    catch (e) { log("Error escribiendo sprint-plan.json: " + e.message); }
+    // #1736: escribir al roadmap (fuente de verdad), regenera cache automáticamente
+    try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "ci-auto-repair"); }
+    catch (e) { log("Error escribiendo al roadmap: " + e.message); }
 }
 
 function findAgentByBranch(plan, branch) {
