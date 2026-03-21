@@ -185,6 +185,47 @@ function sendTelegramPhoto(photoBuffer, caption, silent) {
   });
 }
 
+// Envia imagen como documento (sin compresion) para mayor calidad (#1740)
+function sendTelegramDocument(fileBuffer, filename, caption, silent) {
+  if (!tgConfig.bot_token || !tgConfig.chat_id) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const boundary = '----FormBoundary' + Date.now().toString(36);
+    let body = '';
+    body += '--' + boundary + '\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n' + tgConfig.chat_id + '\r\n';
+    if (caption) {
+      body += '--' + boundary + '\r\nContent-Disposition: form-data; name="caption"\r\n\r\n' + caption + '\r\n';
+      body += '--' + boundary + '\r\nContent-Disposition: form-data; name="parse_mode"\r\n\r\nHTML\r\n';
+    }
+    if (silent) {
+      body += '--' + boundary + '\r\nContent-Disposition: form-data; name="disable_notification"\r\n\r\ntrue\r\n';
+    }
+    const pre = Buffer.from(body + '--' + boundary + '\r\nContent-Disposition: form-data; name="document"; filename="' + filename + '"\r\nContent-Type: application/octet-stream\r\n\r\n');
+    const post = Buffer.from('\r\n--' + boundary + '--\r\n');
+    const payload = Buffer.concat([pre, fileBuffer, post]);
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: '/bot' + tgConfig.bot_token + '/sendDocument',
+      method: 'POST',
+      headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'Content-Length': payload.length },
+      timeout: 20000
+    }, (res) => {
+      let d = '';
+      res.on('data', (c) => d += c);
+      res.on('end', () => {
+        try {
+          const r = JSON.parse(d);
+          if (r.ok) { console.log('[heartbeat] Doc OK msg_id=' + r.result.message_id); resolve(r); }
+          else { console.log('[heartbeat] Doc error: ' + d.substring(0, 200)); reject(new Error(d)); }
+        } catch(e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout sendDocument')); });
+    req.on('error', (e) => reject(e));
+    req.write(payload);
+    req.end();
+  });
+}
+
 function sendTelegramMediaGroup(photos, caption, silent) {
   if (!tgConfig.bot_token || !tgConfig.chat_id) return Promise.resolve(null);
   return new Promise((resolve, reject) => {
@@ -352,7 +393,7 @@ async function sendHeartbeat() {
           console.log('[heartbeat] Intentando screenshot único (600x800)...');
           const screenshot = await takeScreenshotFn(600, 800);
           if (screenshot && isPngValid(screenshot) && screenshot.length > 1000) {
-            await sendTelegramPhoto(screenshot, caption, true);
+            await sendTelegramDocument(screenshot, 'dashboard.png', caption, true);
             console.log('[heartbeat] Screenshot único enviado OK (' + screenshot.length + 'b)');
             heartbeatSkipCount = 0;
             return;
