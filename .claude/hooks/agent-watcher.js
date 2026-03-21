@@ -433,70 +433,155 @@ function generateDefaultPrompt(issue, slug) {
     );
 }
 
-// ─── Lanzar agente via Start-Agente.ps1 ──────────────────────────────────────
+// ─── Lanzar agente directamente via Node.js (#1756) ─────────────────────────
+// Fix: reemplazar cadena execFile(PowerShell) → Start-Agente.ps1 → Start-Process
+// por lanzamiento directo: setupWorktree() + spawn(node, agent-runner.js)
+// La cadena anterior fallaba silenciosamente porque Start-Agente.ps1 crasheaba
+// al no encontrar cmd.exe en el entorno del watcher (ENOENT).
 
-// Candidatos de path absoluto para PowerShell — el proceso background puede no tener PATH completo (#1497)
-const PS_CANDIDATES = [
-    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-    "C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe",
-];
+const AGENT_RUNNER = path.join(SCRIPTS_DIR, "pipeline", "agent-runner.js");
+const GH_CLI_PATH = "C:\\Workspaces\\gh-cli\\bin";
+const JAVA_HOME_PATH = "C:\\Users\\Administrator\\.jdks\\temurin-21.0.7";
 
-function findPowerShell() {
-    for (const candidate of PS_CANDIDATES) {
-        if (fs.existsSync(candidate)) return candidate;
+function setupWorktree(agente) {
+    const wtName = "platform.agent-" + agente.issue + "-" + agente.slug;
+    const wtDir = path.join(path.dirname(REPO_ROOT), wtName);
+    const branch = "agent/" + agente.issue + "-" + agente.slug;
+
+    // Si worktree existe, limpiar primero
+    if (fs.existsSync(wtDir)) {
+        log("setupWorktree: limpiando worktree existente " + wtName);
+        // Eliminar .claude/ (puede ser directorio real o junction)
+        const claudeDir = path.join(wtDir, ".claude");
+        if (fs.existsSync(claudeDir)) {
+            try { fs.rmSync(claudeDir, { recursive: true, force: true }); } catch (e) {}
+        }
+        try {
+            execSync("git worktree remove " + JSON.stringify(wtDir.replace(/\\/g, "/")) + " --force", {
+                encoding: "utf8", timeout: 15000, windowsHide: true
+            });
+        } catch (e) {}
+        // Fallback: eliminar directorio si persiste
+        if (fs.existsSync(wtDir)) {
+            try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (e) {}
+        }
+        try { execSync("git worktree prune", { timeout: 5000, windowsHide: true }); } catch (e) {}
     }
-    // Último recurso: confiar en PATH (puede fallar en background)
-    return "powershell.exe";
+
+    // Eliminar rama local si existe (para poder recrear desde origin/main)
+    try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch (e) {}
+
+    // Crear worktree desde origin/main
+    const relPath = "../" + wtName;
+    log("setupWorktree: git worktree add " + relPath + " -b " + branch);
+    execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
+        encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
+    });
+
+    if (!fs.existsSync(path.join(wtDir, ".git"))) {
+        throw new Error("Worktree creado pero .git no existe en " + wtDir);
+    }
+
+    // Copiar .claude/ del repo principal
+    const claudeSrc = path.join(REPO_ROOT, ".claude");
+    const claudeDst = path.join(wtDir, ".claude");
+    fs.cpSync(claudeSrc, claudeDst, { recursive: true, force: true });
+    log("setupWorktree: .claude/ copiado (" + fs.readdirSync(claudeDst).length + " entries)");
+
+    // Limpiar archivos stale del worktree
+    const staleFiles = ["agent-done.json", "claude_err.txt", "claude_err2.txt"];
+    for (const f of staleFiles) {
+        const fp = path.join(wtDir, f);
+        if (fs.existsSync(fp)) {
+            try { fs.unlinkSync(fp); log("setupWorktree: limpiado " + f); } catch (e) {}
+        }
+    }
+
+    return wtDir;
 }
 
 function launchAgent(agente) {
     try {
-        if (!fs.existsSync(START_SCRIPT)) {
-            log("Start-Agente.ps1 no encontrado: " + START_SCRIPT);
-            return false;
-        }
         if (!agente.prompt) {
             agente.prompt = generateDefaultPrompt(agente.issue, agente.slug);
         }
 
-        const psExe = findPowerShell();
-        const ps1 = START_SCRIPT.replace(/\//g, "\\");
-        const args = ["-NonInteractive", "-File", ps1, String(agente.numero), "-Force"];
-
-        const logsDir = path.join(SCRIPTS_DIR, "logs");
-        try { if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true }); } catch (e) {}
-
-        const spawnLogPath = path.join(logsDir, "watcher_spawn_" + agente.numero + ".log");
-        const spawnErrPath = path.join(logsDir, "watcher_spawn_" + agente.numero + ".err");
-        let logFd, errFd, stdio = "ignore";
+        // Paso 1: Setup worktree
+        let wtDir;
         try {
-            logFd = fs.openSync(spawnLogPath, "w");
-            errFd = fs.openSync(spawnErrPath, "w");
-            stdio = ["ignore", logFd, errFd];
+            wtDir = setupWorktree(agente);
         } catch (e) {
-            log("WARN: No se pudo abrir logs de spawn: " + e.message);
+            log("launchAgent: setupWorktree falló para #" + agente.issue + ": " + e.message);
+            return false;
         }
 
-        log("Usando PowerShell: " + psExe);
+        // Paso 2: Escribir prompt
+        const logsDir = path.join(SCRIPTS_DIR, "logs");
+        try { if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true }); } catch (e) {}
+        const promptFile = path.join(logsDir, "prompt_" + agente.numero + ".txt");
+        fs.writeFileSync(promptFile, agente.prompt, "utf8");
 
-        // Usar execFile con path absoluto para evitar ENOENT en procesos background (#1497).
-        // spawn("powershell.exe") falla cuando el proceso no hereda PATH completo del sistema.
-        const child = execFile(psExe, args, {
+        // Paso 3: Preparar log files
+        const spawnLogPath = path.join(logsDir, "watcher_spawn_" + agente.numero + ".log");
+        const spawnErrPath = path.join(logsDir, "watcher_spawn_" + agente.numero + ".err");
+        const logFd = fs.openSync(spawnLogPath, "w");
+        const errFd = fs.openSync(spawnErrPath, "w");
+
+        // Paso 4: Obtener GH_TOKEN
+        let ghToken = process.env.GH_TOKEN || "";
+        if (!ghToken || ghToken.length < 10) {
+            try {
+                const cred = execSync(
+                    'printf "protocol=https\\nhost=github.com\\n" | git credential fill',
+                    { encoding: "utf8", timeout: 5000, windowsHide: true }
+                );
+                const match = cred.match(/password=(.+)/);
+                if (match) ghToken = match[1].trim();
+            } catch (e) {}
+        }
+
+        // Paso 5: Lanzar agent-runner.js directamente como proceso Node.js detached
+        const agentModel = agente.model || "sonnet";
+        const branch = "agent/" + agente.issue + "-" + agente.slug;
+
+        const runnerArgs = [
+            AGENT_RUNNER,
+            "--workdir", wtDir,
+            "--prompt-file", promptFile,
+            "--model", agentModel,
+            "--issue", String(agente.issue),
+            "--agent-num", String(agente.numero),
+            "--slug", agente.slug,
+            "--branch", branch,
+            "--log-file", path.join(logsDir, "agente_" + agente.numero + ".log")
+        ];
+
+        // Entorno completo con PATH extendido, JAVA_HOME y GH_TOKEN
+        const envPath = (process.env.PATH || "") + ";" + GH_CLI_PATH + ";" + path.join(JAVA_HOME_PATH, "bin");
+        const childEnv = Object.assign({}, process.env, {
+            PATH: envPath,
+            JAVA_HOME: JAVA_HOME_PATH,
+            GH_TOKEN: ghToken,
+            CLAUDE_PROJECT_DIR: wtDir,
+        });
+
+        log("launchAgent: spawn node agent-runner.js (model=" + agentModel + ", worktree=" + path.basename(wtDir) + ")");
+
+        const { spawn: nodeSpawn } = require("child_process");
+        const child = nodeSpawn("node", runnerArgs, {
             detached: true,
-            stdio,
+            stdio: ["ignore", logFd, errFd],
+            env: childEnv,
+            cwd: wtDir,
             windowsHide: false,
         });
         child.unref();
-        if (logFd !== undefined) { try { fs.closeSync(logFd); } catch (e) {} }
-        if (errFd !== undefined) { try { fs.closeSync(errFd); } catch (e) {} }
+        fs.closeSync(logFd);
+        fs.closeSync(errFd);
 
         const childPid = child.pid;
-        log("Agente #" + agente.issue + " lanzado (numero=" + agente.numero + ", PID hijo=" + childPid + ")");
-        log("  stdout → " + spawnLogPath);
+        log("Agente #" + agente.issue + " lanzado (PID=" + childPid + ", runner directo)");
 
-        // Guardar PID en el agente (sprint-plan.json) y en PID file por agente (#1499).
-        // El PID del PowerShell launcher se usa como referencia inicial; Start-Agente.ps1
-        // escribirá el PID real de claude.exe en sprint-pids.json cuando arranque.
         if (childPid) {
             agente._pid = childPid;
             const agentPidFile = path.join(HOOKS_DIR, "agent-" + agente.issue + ".pid");
@@ -504,7 +589,7 @@ function launchAgent(agente) {
                 fs.writeFileSync(agentPidFile, String(childPid), "utf8");
                 log("PID " + childPid + " guardado en " + path.basename(agentPidFile));
             } catch (pidErr) {
-                log("WARN: No se pudo escribir PID file de agente: " + pidErr.message);
+                log("WARN: No se pudo escribir PID file: " + pidErr.message);
             }
         }
 
@@ -739,7 +824,7 @@ async function runCycle() {
         }
 
         // 4. Reconciliation: detectar agentes "promoted" sin _pid por >60s (#1522)
-        const PROMOTED_TIMEOUT_MS = 60 * 1000; // 60 segundos
+        const PROMOTED_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos (#fix: 60s era demasiado corto)
         const MAX_RETRY_COUNT = 3;
         const promotedAgents = (freshPlan.agentes || []).filter(ag => ag.status === "promoted" && !ag._pid);
 
