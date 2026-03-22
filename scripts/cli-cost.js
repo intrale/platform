@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // cli-cost.js — Reporte de costo de tokens con datos reales + estimados
 // Uso: node scripts/cli-cost.js [--sprint SPR-NNN] [--json]
+//      node scripts/cli-cost.js trends [--last N] [--json]   → tendencias cross-sprint (#1807)
 // Fuentes: api-usage-history.jsonl (real) + agent-metrics.json (estimado) (#1661, #1683)
 
 "use strict";
@@ -13,6 +14,21 @@ const LOGS_DIR = path.join(__dirname, "logs");
 const API_HISTORY_FILE = path.join(LOGS_DIR, "api-usage-history.jsonl");
 
 const args = process.argv.slice(2);
+
+// Subcomando "trends": delegar a sprint-trends.js (#1807)
+if (args[0] === "trends") {
+    const trends = require(path.join(__dirname, "sprint-trends.js"));
+    const lastIdx = args.indexOf("--last");
+    const nSprints = lastIdx >= 0 && args[lastIdx + 1] ? parseInt(args[lastIdx + 1]) : 10;
+    if (args.includes("--json")) {
+        const history = trends.loadHistory(nSprints);
+        console.log(JSON.stringify(history, null, 2));
+    } else {
+        console.log(trends.buildTrendsText(nSprints));
+    }
+    process.exit(0);
+}
+
 const JSON_OUTPUT = args.includes("--json");
 const sprintArg = args.indexOf("--sprint") !== -1 ? args[args.indexOf("--sprint") + 1] : null;
 

@@ -928,6 +928,45 @@ async function main() {
         log("Error generando sección de costos: " + e.message + " (no bloquea)");
     }
 
+    // --- Sección de Tendencias Cross-Sprint (#1807) ---
+    log("--- Generando sección de tendencias cross-sprint ---");
+    try {
+        const sprintTrends = require(path.join(__dirname, "sprint-trends.js"));
+
+        // Leer api-usage-history para calcular costos del sprint actual
+        const apiHistoryPath = path.join(__dirname, "logs", "api-usage-history.jsonl");
+        let apiHistory = [];
+        try {
+            if (fs.existsSync(apiHistoryPath)) {
+                apiHistory = fs.readFileSync(apiHistoryPath, "utf8").trim().split("\n")
+                    .filter(l => l.trim())
+                    .map(l => { try { return JSON.parse(l); } catch (e) { return null; } })
+                    .filter(Boolean);
+            }
+        } catch (e) { log("No se pudo leer api-usage-history: " + e.message); }
+
+        // Persistir registro del sprint actual en sprint-history.jsonl
+        const record = sprintTrends.persistSprintRecord(plan, issueInfos, prs, apiHistory);
+        if (record) {
+            log(`Sprint ${record.sprint} persistido en sprint-history.jsonl`);
+        }
+
+        // Generar sección HTML de tendencias
+        const trendsHtml = sprintTrends.buildTrendsHtmlSection(5);
+        if (trendsHtml) {
+            const trendsSection = `
+<div style="page-break-before:always;"></div>
+${trendsHtml}`;
+            html = html.replace("</body>", trendsSection + "\n</body>");
+            log("Sección de tendencias embebida en reporte");
+        }
+
+        // Verificar alertas y notificar Telegram si métricas degradaron
+        sprintTrends.checkAndSendAlerts(plan.sprint_id || null);
+    } catch (e) {
+        log("Error generando tendencias cross-sprint: " + e.message + " (no bloquea)");
+    }
+
     // --- Sección de Próximos Sprints / Propuestas (desde roadmap.json) ---
     // --- Sección de Propuestas de Nuevas Historias (basado en aprendizaje del sprint) ---
     log("--- Generando propuestas de nuevas historias ---");
