@@ -1,0 +1,1795 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Propuesta: Comunicacion Inter-Agente — Intrale Platform</title>
+<style>
+  :root {
+    --bg: #0a0b10;
+    --surface: #12141d;
+    --surface2: #1a1d2b;
+    --border: #2a2d3e;
+    --text: #e2e4ed;
+    --text-muted: #8b8fa3;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --code-bg: #0d0f18;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 0;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #12141d 0%, #1a1d3a 50%, #12141d 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 3rem 2rem;
+    text-align: center;
+  }
+
+  .header h1 {
+    font-size: 2.2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 0.5rem;
+  }
+
+  .header .subtitle {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+  }
+
+  .header .meta {
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+
+  h2 {
+    font-size: 1.6rem;
+    color: var(--accent);
+    margin: 2.5rem 0 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1.25rem;
+    color: var(--accent2);
+    margin: 1.8rem 0 0.8rem;
+  }
+
+  h4 {
+    font-size: 1.05rem;
+    color: var(--text);
+    margin: 1.2rem 0 0.5rem;
+  }
+
+  p { margin-bottom: 1rem; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .card-accent {
+    border-left: 4px solid var(--accent);
+  }
+
+  .card-warning {
+    border-left: 4px solid var(--warning);
+    background: rgba(251, 191, 36, 0.05);
+  }
+
+  .card-success {
+    border-left: 4px solid var(--success);
+    background: rgba(74, 222, 128, 0.05);
+  }
+
+  .card-danger {
+    border-left: 4px solid var(--danger);
+    background: rgba(248, 113, 113, 0.05);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.92rem;
+  }
+
+  th {
+    background: var(--surface2);
+    color: var(--accent);
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    font-weight: 600;
+  }
+
+  td {
+    padding: 0.65rem 1rem;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tr:nth-child(even) td {
+    background: rgba(255,255,255,0.02);
+  }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent2);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem;
+    overflow-x: auto;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+
+  pre code {
+    background: none;
+    padding: 0;
+    color: var(--text);
+  }
+
+  .comment { color: #6a737d; }
+  .keyword { color: #ff79c6; }
+  .string { color: #f1fa8c; }
+  .prop { color: #8be9fd; }
+  .val { color: #bd93f9; }
+  .fn { color: #50fa7b; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .badge-simple { background: rgba(74,222,128,0.15); color: var(--success); }
+  .badge-medio { background: rgba(251,191,36,0.15); color: var(--warning); }
+  .badge-grande { background: rgba(248,113,113,0.15); color: var(--danger); }
+  .badge-experimental { background: rgba(108,140,255,0.15); color: var(--accent); }
+
+  .diagram {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    font-family: 'Cascadia Code', monospace;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-muted);
+  }
+
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin: 2rem 0;
+  }
+
+  .toc h3 {
+    margin-top: 0;
+    color: var(--text);
+  }
+
+  .toc ol {
+    padding-left: 1.5rem;
+  }
+
+  .toc li {
+    margin: 0.4rem 0;
+  }
+
+  .phase-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+
+  .phase-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem;
+  }
+
+  .phase-card h4 {
+    margin-top: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .phase-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+
+  ul { padding-left: 1.5rem; margin-bottom: 1rem; }
+  li { margin: 0.3rem 0; }
+
+  .separator {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 3rem 0;
+  }
+
+  .footer {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 768px) {
+    .container { padding: 1rem; }
+    .header { padding: 2rem 1rem; }
+    .header h1 { font-size: 1.6rem; }
+    pre { font-size: 0.78rem; padding: 0.8rem; }
+    .phase-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Comunicacion Inter-Agente</h1>
+  <div class="subtitle">Propuesta tecnica para mensajeria y coordinacion entre agentes Claude CLI en worktrees aislados</div>
+  <div class="meta">Intrale Platform | 2026-03-22 | Propuesta RFC</div>
+</div>
+
+<div class="container">
+
+<!-- TOC -->
+<div class="toc">
+  <h3>Contenido</h3>
+  <ol>
+    <li><a href="#estado-actual">Estado actual del modelo operativo</a></li>
+    <li><a href="#mecanismos-nativos">Mecanismos nativos de Claude Code reutilizables</a></li>
+    <li><a href="#arquitectura">Arquitectura propuesta: Message Bus Inter-Agente</a></li>
+    <li><a href="#message-bus">Fase 1: Message Bus + Inbox/Outbox</a></li>
+    <li><a href="#hook-recepcion">Fase 2: Hook de recepcion + reaccion automatica</a></li>
+    <li><a href="#handoff">Fase 3: Handoff de contexto entre agentes</a></li>
+    <li><a href="#dependencias">Fase 4: Coordinacion de dependencias</a></li>
+    <li><a href="#integracion">Fase 5: Integracion Dashboard + Telegram</a></li>
+    <li><a href="#riesgos">Riesgos y mitigaciones</a></li>
+    <li><a href="#resumen">Resumen de implementacion</a></li>
+  </ol>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="estado-actual">1. Estado actual del modelo operativo</h2>
+
+<div class="card card-accent">
+  <h4>Como funcionan los agentes hoy</h4>
+  <p>Cada agente es una instancia <code>claude</code> CLI independiente ejecutandose en un git worktree aislado. La orquestacion se realiza via <code>Start-Agente.ps1</code> que:</p>
+  <ul>
+    <li>Lee <code>scripts/sprint-plan.json</code> para obtener las asignaciones</li>
+    <li>Crea worktrees en <code>C:\Workspaces\Intrale\platform.agent-{issue}-{slug}</code></li>
+    <li>Copia <code>.claude/</code> del repo principal al worktree</li>
+    <li>Lanza <code>Run-AgentStream.ps1</code> con pipeline post-Claude automatico</li>
+    <li>Registra PIDs en <code>scripts/sprint-pids.json</code></li>
+  </ul>
+</div>
+
+<h3>Infraestructura existente de estado compartido</h3>
+
+<table>
+  <tr>
+    <th>Archivo</th>
+    <th>Proposito</th>
+    <th>Escritor</th>
+    <th>Lectores</th>
+  </tr>
+  <tr>
+    <td><code>agent-registry.json</code></td>
+    <td>Agentes activos en tiempo real (PID, rama, issue, estado)</td>
+    <td>activity-logger.js</td>
+    <td>agent-monitor.js, dashboard-server.js</td>
+  </tr>
+  <tr>
+    <td><code>sprint-plan.json</code></td>
+    <td>Plan del sprint: agentes, cola, completados</td>
+    <td>telegram-commander.js</td>
+    <td>Start-Agente.ps1, agent-monitor.js</td>
+  </tr>
+  <tr>
+    <td><code>agent-metrics.json</code></td>
+    <td>Metricas historicas de agentes</td>
+    <td>agent-monitor.js</td>
+    <td>dashboard-server.js</td>
+  </tr>
+  <tr>
+    <td><code>activity-log.jsonl</code></td>
+    <td>Feed de tool calls en tiempo real</td>
+    <td>activity-logger.js</td>
+    <td>dashboard-server.js</td>
+  </tr>
+  <tr>
+    <td><code>pending-questions.json</code></td>
+    <td>Permisos pendientes de aprobacion</td>
+    <td>permission-gate.js</td>
+    <td>telegram-commander.js, dashboard</td>
+  </tr>
+</table>
+
+<h3>Diagrama del modelo actual</h3>
+<div class="diagram">
+  +-----------------+     +-----------------+     +-----------------+
+  |   Agente 1      |     |   Agente 2      |     |   Agente 3      |
+  |  (worktree)     |     |  (worktree)     |     |  (worktree)     |
+  |  /backend-dev   |     |  /android-dev   |     |  /web-dev       |
+  +-------+---------+     +-------+---------+     +-------+---------+
+          |                        |                        |
+          | PostToolUse            | PostToolUse            | PostToolUse
+          v                        v                        v
+  +-------+------------------------+------------------------+---------+
+  |                    activity-logger.js                              |
+  |            (escribe en REPO_ROOT/.claude/hooks/)                  |
+  +-------+------------------------+------------------------+---------+
+          |                        |                        |
+          v                        v                        v
+  +------------------+   +------------------+   +---------------------+
+  | agent-registry   |   | activity-log     |   | sessions/*.json     |
+  | .json            |   | .jsonl           |   |                     |
+  +--------+---------+   +--------+---------+   +----------+----------+
+           |                       |                        |
+           +----------+------------+------------------------+
+                      |
+                      v
+          +-----------+-----------+
+          |  dashboard-server.js  |
+          |  :3100 (SSE + HTML)   |
+          +-----------+-----------+
+                      |
+                      v
+          +-----------+-----------+
+          | telegram-commander.js |
+          |  (notificaciones)     |
+          +-----------------------+
+
+  PROBLEMA: No hay flechas horizontales entre Agente 1, 2 y 3.
+  Cada agente opera en aislamiento total.
+</div>
+
+<div class="card card-warning">
+  <h4>Limitaciones del modelo actual</h4>
+  <ul>
+    <li><strong>Sin comunicacion directa:</strong> Si Agente 1 (backend-dev) termina una API, Agente 2 (android-dev) no se entera hasta que el PR se mergea.</li>
+    <li><strong>Sin coordinacion de dependencias:</strong> Si issue Y depende de issue X, Agente 2 debe esperar pasivamente o fallar al intentar compilar.</li>
+    <li><strong>Handoff manual:</strong> El pipeline Dev &rarr; Tester &rarr; Review &rarr; QA se ejecuta secuencialmente, cada etapa relanza un agente nuevo sin contexto previo.</li>
+    <li><strong>Deteccion tardia de conflictos:</strong> Dos agentes editando archivos relacionados solo se detecta al momento del merge.</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="mecanismos-nativos">2. Mecanismos nativos de Claude Code reutilizables</h2>
+
+<p>Claude Code CLI ofrece varias primitivas que podemos aprovechar para construir comunicacion inter-agente sin reinventar la rueda:</p>
+
+<h3>2.1 Agent Teams (Experimental)</h3>
+
+<div class="card card-accent">
+  <p>Claude Code v2.1.32+ incluye <strong>Agent Teams</strong>, un sistema experimental de coordinacion multi-agente con:</p>
+  <ul>
+    <li><strong>Lista de tareas compartida</strong> con estados (pendiente, en progreso, completada) y dependencias</li>
+    <li><strong>Buzon de mensajes</strong> nativo para comunicacion directa entre agentes</li>
+    <li><strong>Lider de equipo</strong> que coordina, asigna y sintetiza resultados</li>
+    <li><strong>Mensajeria directa</strong>: los companieros de equipo pueden enviarse mensajes entre si, no solo al lider</li>
+  </ul>
+  <p><strong>Habilitacion:</strong> variable <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> en settings.json o entorno.</p>
+  <p><strong>Evaluacion para Intrale:</strong> Agent Teams asume un lider que coordina y companieros que se generan desde la misma sesion. Nuestro modelo usa worktrees separados lanzados por <code>Start-Agente.ps1</code>, lo cual es incompatible con el modelo de equipos nativos. Sin embargo, los <strong>conceptos arquitecturales</strong> (buzones, tareas compartidas, mensajeria) son directamente aplicables a nuestra propuesta.</p>
+</div>
+
+<h3>2.2 Hooks reutilizables</h3>
+
+<table>
+  <tr>
+    <th>Hook</th>
+    <th>Uso para inter-agent</th>
+    <th>Tipo</th>
+  </tr>
+  <tr>
+    <td><code>PostToolUse</code></td>
+    <td>Ya usado por <code>activity-logger.js</code>. Extender para checkear inbox despues de cada tool call.</td>
+    <td>command</td>
+  </tr>
+  <tr>
+    <td><code>Stop</code></td>
+    <td>Cuando un agente termina, enviar mensaje de finalizacion al bus. Ya usado por <code>stop-notify.js</code> y <code>agent-concurrency-check.js</code>.</td>
+    <td>command</td>
+  </tr>
+  <tr>
+    <td><code>SessionStart</code></td>
+    <td>Al iniciar, registrar agente en el bus y leer mensajes pendientes.</td>
+    <td>command</td>
+  </tr>
+  <tr>
+    <td><code>TeammateIdle</code></td>
+    <td>Disponible en Agent Teams. En nuestro modelo, emulable via <code>Stop</code> + logica custom.</td>
+    <td>command</td>
+  </tr>
+  <tr>
+    <td><code>TaskCompleted</code></td>
+    <td>Disponible en Agent Teams. En nuestro modelo, emulable cuando un agente marca issue como done.</td>
+    <td>command</td>
+  </tr>
+  <tr>
+    <td><code>SubagentStop</code></td>
+    <td>Detecta cuando un subagente dentro de una sesion termina. Util para handoffs internos.</td>
+    <td>command</td>
+  </tr>
+</table>
+
+<h3>2.3 Subagentes personalizados</h3>
+
+<div class="card">
+  <p>Los subagentes (archivos <code>.claude/agents/*.md</code>) permiten crear agentes especializados con:</p>
+  <ul>
+    <li>Herramientas restringidas (solo Read/Grep para explorar, o full toolkit para modificar)</li>
+    <li>Modelos especificos (Haiku para tareas rapidas, Sonnet/Opus para complejas)</li>
+    <li>Skills precargados y hooks propios</li>
+    <li><strong>Isolation worktree:</strong> el campo <code>isolation: worktree</code> ejecuta el subagente en un worktree temporal</li>
+    <li><strong>Memoria persistente:</strong> el campo <code>memory: project</code> permite acumular conocimiento entre sesiones</li>
+  </ul>
+  <p><strong>Aplicacion:</strong> Podemos crear un subagente <code>messenger</code> que cada agente invoque para enviar/recibir mensajes, abstrayendo la complejidad del bus.</p>
+</div>
+
+<h3>2.4 Lo que Claude Code NO ofrece (y debemos construir)</h3>
+
+<div class="card card-danger">
+  <ul>
+    <li><strong>No hay IPC nativo</strong> entre instancias <code>claude</code> CLI separadas. Agent Teams solo funciona dentro del mismo proceso lider.</li>
+    <li><strong>No hay file watcher nativo.</strong> Los hooks son event-driven pero ligados al ciclo de tool calls, no a cambios en el filesystem.</li>
+    <li><strong>No hay shared memory.</strong> Cada instancia tiene su propio contexto. La unica forma de compartir informacion es via archivos en disco.</li>
+  </ul>
+  <p><strong>Conclusion:</strong> Debemos construir un <strong>message bus basado en archivos JSON</strong> en el directorio compartido <code>.claude/hooks/</code> del repo principal, con hooks que actuen como event handlers.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="arquitectura">3. Arquitectura propuesta: Message Bus Inter-Agente</h2>
+
+<h3>Diagrama de arquitectura</h3>
+<div class="diagram">
+  +-----------------+     +-----------------+     +-----------------+
+  |   Agente 1      |     |   Agente 2      |     |   Agente 3      |
+  |  /backend-dev   |     |  /android-dev   |     |  /web-dev       |
+  |  worktree-1     |     |  worktree-2     |     |  worktree-3     |
+  +---+----+--------+     +---+----+--------+     +---+----+--------+
+      |    ^                   |    ^                   |    ^
+      |    | inbox-check       |    | inbox-check       |    | inbox-check
+      |    | (PostToolUse)     |    | (PostToolUse)     |    | (PostToolUse)
+      v    |                   v    |                   v    |
+  +---+----+-------------------+----+-------------------+----+--------+
+  |                                                                    |
+  |                    MESSAGE BUS (archivo JSON)                      |
+  |           REPO_ROOT/.claude/hooks/agent-messages.jsonl             |
+  |                                                                    |
+  |  +------------+  +------------+  +------------+  +-------------+  |
+  |  | inbox:     |  | inbox:     |  | inbox:     |  | broadcast   |  |
+  |  | agente-1   |  | agente-2   |  | agente-3   |  | (all)       |  |
+  |  +------------+  +------------+  +------------+  +-------------+  |
+  |                                                                    |
+  +----+----------------------------+----------------------------------+
+       |                            |
+       v                            v
+  +----+--------+          +--------+-----------+
+  | dashboard   |          | telegram-commander |
+  | :3100       |          | (alertas criticas) |
+  | /messages   |          +--------------------+
+  +-------------+
+</div>
+
+<h3>Principios de diseno</h3>
+
+<div class="card card-success">
+  <ol>
+    <li><strong>Archivos como transporte:</strong> Usar JSONL (un mensaje por linea) para evitar parsing de JSON completo en cada lectura.</li>
+    <li><strong>REPO_ROOT como punto de convergencia:</strong> Todos los worktrees resuelven al repo principal via <code>git rev-parse --git-common-dir</code> (patron ya usado en activity-logger.js).</li>
+    <li><strong>Polling oportunista, no dedicado:</strong> Checkear inbox dentro de hooks existentes (PostToolUse) para zero overhead adicional.</li>
+    <li><strong>Lockfiles para atomicidad:</strong> Usar <code>.lock</code> files para escrituras concurrentes, patron ya probado en telegram-commander.js.</li>
+    <li><strong>Mensajes inmutables:</strong> Una vez escrito, un mensaje no se modifica. Los ACKs son mensajes nuevos.</li>
+    <li><strong>TTL automatico:</strong> Mensajes expiran despues de 4 horas (configurable). Cleanup en cada ciclo de polling.</li>
+  </ol>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="message-bus">4. Fase 1: Message Bus + Inbox/Outbox</h2>
+
+<p><span class="badge badge-simple">Simple</span> Estimacion: ~300 lineas de codigo</p>
+
+<h3>4.1 Formato de mensaje</h3>
+
+<pre><code><span class="comment">// Cada linea en agent-messages.jsonl</span>
+{
+  <span class="prop">"id"</span>: <span class="string">"msg_1711108200000_backend-dev_001"</span>,
+  <span class="prop">"timestamp"</span>: <span class="string">"2026-03-22T14:30:00.000Z"</span>,
+  <span class="prop">"type"</span>: <span class="string">"request"</span>,         <span class="comment">// request | response | broadcast | alert | signal | handoff</span>
+  <span class="prop">"sender"</span>: {
+    <span class="prop">"agent_id"</span>: <span class="string">"backend-dev"</span>,
+    <span class="prop">"issue"</span>: <span class="val">1780</span>,
+    <span class="prop">"skill"</span>: <span class="string">"/backend-dev"</span>,
+    <span class="prop">"worktree"</span>: <span class="string">"platform.agent-1780-auth-api"</span>
+  },
+  <span class="prop">"recipient"</span>: <span class="string">"android-dev"</span>,  <span class="comment">// agent_id o "*" para broadcast</span>
+  <span class="prop">"subject"</span>: <span class="string">"api-ready"</span>,      <span class="comment">// tag semantico para filtrar</span>
+  <span class="prop">"payload"</span>: {
+    <span class="prop">"message"</span>: <span class="string">"API de autenticacion lista en rama agent/1780-auth-api"</span>,
+    <span class="prop">"branch"</span>: <span class="string">"agent/1780-auth-api"</span>,
+    <span class="prop">"files_changed"</span>: [<span class="string">"backend/src/.../SignIn.kt"</span>, <span class="string">"backend/src/.../SignUp.kt"</span>],
+    <span class="prop">"pr_number"</span>: <span class="val">1785</span>
+  },
+  <span class="prop">"ttl_ms"</span>: <span class="val">14400000</span>,          <span class="comment">// 4 horas</span>
+  <span class="prop">"ack"</span>: <span class="val">false</span>,                <span class="comment">// se marca true cuando el receptor lo lee</span>
+  <span class="prop">"priority"</span>: <span class="string">"normal"</span>        <span class="comment">// normal | high | critical</span>
+}
+</code></pre>
+
+<h3>4.2 Tipos de mensaje</h3>
+
+<table>
+  <tr>
+    <th>Tipo</th>
+    <th>Descripcion</th>
+    <th>Ejemplo de uso</th>
+    <th>Recipient</th>
+  </tr>
+  <tr>
+    <td><code>request</code></td>
+    <td>Solicitud que espera respuesta</td>
+    <td>QA pide a Dev que corrija un bug encontrado</td>
+    <td>Agente especifico</td>
+  </tr>
+  <tr>
+    <td><code>response</code></td>
+    <td>Respuesta a un request previo</td>
+    <td>Dev confirma que corrigio el bug</td>
+    <td>Agente que envio el request</td>
+  </tr>
+  <tr>
+    <td><code>broadcast</code></td>
+    <td>Mensaje a todos los agentes activos</td>
+    <td>Merge conflict detectado en main</td>
+    <td><code>*</code></td>
+  </tr>
+  <tr>
+    <td><code>alert</code></td>
+    <td>Alerta critica (se reenvia a Telegram)</td>
+    <td>Build roto, tests fallando</td>
+    <td><code>*</code> + Telegram</td>
+  </tr>
+  <tr>
+    <td><code>signal</code></td>
+    <td>Senal de coordinacion (Fase 4)</td>
+    <td>Issue X completado, Issue Y puede empezar</td>
+    <td>Agente especifico</td>
+  </tr>
+  <tr>
+    <td><code>handoff</code></td>
+    <td>Transferencia de contexto (Fase 3)</td>
+    <td>Dev pasa contexto a Tester con resumen del trabajo</td>
+    <td>Agente especifico</td>
+  </tr>
+</table>
+
+<h3>4.3 Modulo: agent-messaging.js</h3>
+
+<pre><code><span class="comment">// .claude/hooks/agent-messaging.js — Message Bus Inter-Agente</span>
+<span class="comment">// Modulo compartido: require() desde cualquier hook</span>
+
+<span class="keyword">const</span> fs = require(<span class="string">"fs"</span>);
+<span class="keyword">const</span> path = require(<span class="string">"path"</span>);
+<span class="keyword">const</span> { execSync } = require(<span class="string">"child_process"</span>);
+
+<span class="comment">// Resolver REPO_ROOT (patron de activity-logger.js)</span>
+<span class="keyword">function</span> <span class="fn">resolveMainRepoRoot</span>() {
+    <span class="keyword">const</span> candidate = process.env.CLAUDE_PROJECT_DIR || <span class="string">"C:\\Workspaces\\Intrale\\platform"</span>;
+    <span class="keyword">try</span> {
+        <span class="keyword">const</span> gitCommon = execSync(<span class="string">"git rev-parse --git-common-dir"</span>, {
+            cwd: candidate, timeout: 3000, windowsHide: <span class="val">true</span>
+        }).toString().trim().replace(<span class="string">/\\/g</span>, <span class="string">"/"</span>);
+        <span class="keyword">if</span> (gitCommon === <span class="string">".git"</span>) <span class="keyword">return</span> candidate;
+        <span class="keyword">const</span> gitIdx = gitCommon.indexOf(<span class="string">"/.git"</span>);
+        <span class="keyword">if</span> (gitIdx !== -1) <span class="keyword">return</span> gitCommon.substring(0, gitIdx);
+        <span class="keyword">return</span> path.resolve(gitCommon, <span class="string">".."</span>);
+    } <span class="keyword">catch</span>(e) { <span class="keyword">return</span> candidate; }
+}
+
+<span class="keyword">const</span> REPO_ROOT = <span class="fn">resolveMainRepoRoot</span>();
+<span class="keyword">const</span> MESSAGES_FILE = path.join(REPO_ROOT, <span class="string">".claude"</span>, <span class="string">"hooks"</span>, <span class="string">"agent-messages.jsonl"</span>);
+<span class="keyword">const</span> LOCK_FILE = MESSAGES_FILE + <span class="string">".lock"</span>;
+<span class="keyword">const</span> ACK_FILE = path.join(REPO_ROOT, <span class="string">".claude"</span>, <span class="string">"hooks"</span>, <span class="string">"agent-messages-ack.json"</span>);
+<span class="keyword">const</span> DEFAULT_TTL_MS = 4 * 60 * 60 * 1000; <span class="comment">// 4 horas</span>
+<span class="keyword">const</span> LOCK_TIMEOUT_MS = 3000;
+<span class="keyword">const</span> LOCK_RETRY_MS = 50;
+
+<span class="comment">// ─── Lockfile atomico ─────────────────────────────────────────────────────</span>
+
+<span class="keyword">function</span> <span class="fn">acquireLock</span>() {
+    <span class="keyword">const</span> deadline = Date.now() + LOCK_TIMEOUT_MS;
+    <span class="keyword">while</span> (Date.now() < deadline) {
+        <span class="keyword">try</span> {
+            fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: <span class="string">"wx"</span> });
+            <span class="keyword">return</span> <span class="val">true</span>;
+        } <span class="keyword">catch</span> (e) {
+            <span class="comment">// Lock existe: verificar si el proceso dueno sigue vivo</span>
+            <span class="keyword">try</span> {
+                <span class="keyword">const</span> ownerPid = parseInt(fs.readFileSync(LOCK_FILE, <span class="string">"utf8"</span>), 10);
+                <span class="keyword">try</span> { process.kill(ownerPid, 0); } <span class="keyword">catch</span> {
+                    <span class="comment">// Proceso muerto: robar lock</span>
+                    fs.unlinkSync(LOCK_FILE);
+                    <span class="keyword">continue</span>;
+                }
+            } <span class="keyword">catch</span> {}
+            <span class="comment">// Busy wait</span>
+            <span class="keyword">const</span> start = Date.now();
+            <span class="keyword">while</span> (Date.now() - start < LOCK_RETRY_MS) {}
+        }
+    }
+    <span class="keyword">return</span> <span class="val">false</span>;
+}
+
+<span class="keyword">function</span> <span class="fn">releaseLock</span>() {
+    <span class="keyword">try</span> { fs.unlinkSync(LOCK_FILE); } <span class="keyword">catch</span> {}
+}
+
+<span class="comment">// ─── Identificacion del agente actual ─────────────────────────────────────</span>
+
+<span class="keyword">function</span> <span class="fn">getCurrentAgentId</span>() {
+    <span class="comment">// Determinar agente desde la rama git del worktree</span>
+    <span class="keyword">try</span> {
+        <span class="keyword">const</span> branch = execSync(<span class="string">"git rev-parse --abbrev-ref HEAD"</span>, {
+            cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+            timeout: 3000, windowsHide: <span class="val">true</span>
+        }).toString().trim();
+        <span class="comment">// agent/1780-auth-api → extraer skill del sprint-plan</span>
+        <span class="keyword">const</span> match = branch.match(<span class="string">/^agent\/(\d+)-(.+)$/</span>);
+        <span class="keyword">if</span> (match) {
+            <span class="keyword">return</span> { agent_id: match[2], issue: parseInt(match[1], 10), branch };
+        }
+    } <span class="keyword">catch</span> {}
+    <span class="keyword">return</span> { agent_id: <span class="string">"unknown"</span>, issue: 0, branch: <span class="string">"main"</span> };
+}
+
+<span class="comment">// ─── Enviar mensaje ───────────────────────────────────────────────────────</span>
+
+<span class="keyword">function</span> <span class="fn">sendMessage</span>(recipient, type, subject, payload, opts = {}) {
+    <span class="keyword">const</span> sender = <span class="fn">getCurrentAgentId</span>();
+    <span class="keyword">const</span> msg = {
+        id: <span class="string">`msg_</span>${Date.now()}<span class="string">_</span>${sender.agent_id}<span class="string">_</span>${String(Math.random()).slice(2,6)}<span class="string">`</span>,
+        timestamp: <span class="keyword">new</span> Date().toISOString(),
+        type,
+        sender: {
+            agent_id: sender.agent_id,
+            issue: sender.issue,
+            skill: opts.skill || <span class="string">""</span>,
+            worktree: path.basename(process.env.CLAUDE_PROJECT_DIR || <span class="string">""</span>)
+        },
+        recipient,
+        subject,
+        payload: payload || {},
+        ttl_ms: opts.ttl_ms || DEFAULT_TTL_MS,
+        ack: <span class="val">false</span>,
+        priority: opts.priority || <span class="string">"normal"</span>
+    };
+
+    <span class="keyword">if</span> (!<span class="fn">acquireLock</span>()) {
+        console.error(<span class="string">"agent-messaging: no se pudo adquirir lock"</span>);
+        <span class="keyword">return</span> <span class="val">null</span>;
+    }
+    <span class="keyword">try</span> {
+        fs.appendFileSync(MESSAGES_FILE, JSON.stringify(msg) + <span class="string">"\n"</span>);
+    } <span class="keyword">finally</span> {
+        <span class="fn">releaseLock</span>();
+    }
+    <span class="keyword">return</span> msg.id;
+}
+
+<span class="comment">// ─── Leer inbox ──────────────────────────────────────────────────────────</span>
+
+<span class="keyword">function</span> <span class="fn">readInbox</span>(agentId, opts = {}) {
+    <span class="keyword">if</span> (!fs.existsSync(MESSAGES_FILE)) <span class="keyword">return</span> [];
+    <span class="keyword">const</span> now = Date.now();
+    <span class="keyword">const</span> acks = <span class="fn">loadAcks</span>();
+    <span class="keyword">const</span> lines = fs.readFileSync(MESSAGES_FILE, <span class="string">"utf8"</span>).split(<span class="string">"\n"</span>).filter(Boolean);
+
+    <span class="keyword">return</span> lines
+        .map(l => { <span class="keyword">try</span> { <span class="keyword">return</span> JSON.parse(l); } <span class="keyword">catch</span> { <span class="keyword">return</span> <span class="val">null</span>; } })
+        .filter(m => m
+            && (m.recipient === agentId || m.recipient === <span class="string">"*"</span>)
+            && !acks[m.id]
+            && (now - <span class="keyword">new</span> Date(m.timestamp).getTime()) < (m.ttl_ms || DEFAULT_TTL_MS)
+        )
+        .filter(m => !opts.type || m.type === opts.type)
+        .filter(m => !opts.subject || m.subject === opts.subject);
+}
+
+<span class="comment">// ─── ACK de mensajes ────────────────────────────────────────────────────</span>
+
+<span class="keyword">function</span> <span class="fn">loadAcks</span>() {
+    <span class="keyword">try</span> { <span class="keyword">return</span> JSON.parse(fs.readFileSync(ACK_FILE, <span class="string">"utf8"</span>)); }
+    <span class="keyword">catch</span> { <span class="keyword">return</span> {}; }
+}
+
+<span class="keyword">function</span> <span class="fn">ackMessage</span>(messageId) {
+    <span class="keyword">if</span> (!<span class="fn">acquireLock</span>()) <span class="keyword">return</span>;
+    <span class="keyword">try</span> {
+        <span class="keyword">const</span> acks = <span class="fn">loadAcks</span>();
+        acks[messageId] = Date.now();
+        fs.writeFileSync(ACK_FILE, JSON.stringify(acks));
+    } <span class="keyword">finally</span> {
+        <span class="fn">releaseLock</span>();
+    }
+}
+
+<span class="comment">// ─── Broadcast ───────────────────────────────────────────────────────────</span>
+
+<span class="keyword">function</span> <span class="fn">broadcast</span>(subject, payload, opts = {}) {
+    <span class="keyword">return</span> <span class="fn">sendMessage</span>(<span class="string">"*"</span>, <span class="string">"broadcast"</span>, subject, payload, opts);
+}
+
+<span class="comment">// ─── Cleanup (llamar periodicamente) ─────────────────────────────────────</span>
+
+<span class="keyword">function</span> <span class="fn">cleanup</span>() {
+    <span class="keyword">if</span> (!fs.existsSync(MESSAGES_FILE)) <span class="keyword">return</span>;
+    <span class="keyword">if</span> (!<span class="fn">acquireLock</span>()) <span class="keyword">return</span>;
+    <span class="keyword">try</span> {
+        <span class="keyword">const</span> now = Date.now();
+        <span class="keyword">const</span> lines = fs.readFileSync(MESSAGES_FILE, <span class="string">"utf8"</span>).split(<span class="string">"\n"</span>).filter(Boolean);
+        <span class="keyword">const</span> alive = lines.filter(l => {
+            <span class="keyword">try</span> {
+                <span class="keyword">const</span> m = JSON.parse(l);
+                <span class="keyword">return</span> (now - <span class="keyword">new</span> Date(m.timestamp).getTime()) < (m.ttl_ms || DEFAULT_TTL_MS);
+            } <span class="keyword">catch</span> { <span class="keyword">return</span> <span class="val">false</span>; }
+        });
+        fs.writeFileSync(MESSAGES_FILE, alive.join(<span class="string">"\n"</span>) + (alive.length ? <span class="string">"\n"</span> : <span class="string">""</span>));
+
+        <span class="comment">// Limpiar ACKs de mensajes que ya no existen</span>
+        <span class="keyword">const</span> msgIds = <span class="keyword">new</span> Set(alive.map(l => {
+            <span class="keyword">try</span> { <span class="keyword">return</span> JSON.parse(l).id; } <span class="keyword">catch</span> { <span class="keyword">return</span> <span class="val">null</span>; }
+        }).filter(Boolean));
+        <span class="keyword">const</span> acks = <span class="fn">loadAcks</span>();
+        <span class="keyword">for</span> (<span class="keyword">const</span> k <span class="keyword">of</span> Object.keys(acks)) {
+            <span class="keyword">if</span> (!msgIds.has(k)) <span class="keyword">delete</span> acks[k];
+        }
+        fs.writeFileSync(ACK_FILE, JSON.stringify(acks));
+    } <span class="keyword">finally</span> {
+        <span class="fn">releaseLock</span>();
+    }
+}
+
+module.exports = {
+    sendMessage, readInbox, ackMessage, broadcast, cleanup,
+    getCurrentAgentId, MESSAGES_FILE
+};
+</code></pre>
+
+<h3>4.4 Estructura de archivos</h3>
+
+<table>
+  <tr>
+    <th>Archivo</th>
+    <th>Formato</th>
+    <th>Proposito</th>
+  </tr>
+  <tr>
+    <td><code>.claude/hooks/agent-messages.jsonl</code></td>
+    <td>JSONL (append-only)</td>
+    <td>Cola de mensajes — un mensaje por linea</td>
+  </tr>
+  <tr>
+    <td><code>.claude/hooks/agent-messages.jsonl.lock</code></td>
+    <td>PID text</td>
+    <td>Lock de escritura exclusiva</td>
+  </tr>
+  <tr>
+    <td><code>.claude/hooks/agent-messages-ack.json</code></td>
+    <td>JSON {msgId: timestamp}</td>
+    <td>ACKs de mensajes leidos por cada agente</td>
+  </tr>
+  <tr>
+    <td><code>.claude/hooks/agent-messaging.js</code></td>
+    <td>Node.js module</td>
+    <td>API del message bus (require desde otros hooks)</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="hook-recepcion">5. Fase 2: Hook de recepcion + reaccion automatica</h2>
+
+<p><span class="badge badge-medio">Medio</span> Estimacion: ~250 lineas de codigo</p>
+
+<h3>5.1 Hook inbox-checker.js (PostToolUse)</h3>
+
+<p>Se agrega como hook <code>PostToolUse</code> (matcher vacio = todos los tools). Se ejecuta despues de cada tool call y checkea el inbox del agente actual. Si hay mensajes, los inyecta como <code>additionalContext</code> para que Claude los procese naturalmente.</p>
+
+<pre><code><span class="comment">// .claude/hooks/inbox-checker.js — PostToolUse hook</span>
+<span class="comment">// Checkea inbox del agente y devuelve mensajes como contexto adicional</span>
+
+<span class="keyword">const</span> messaging = require(<span class="string">"./agent-messaging"</span>);
+
+<span class="keyword">const</span> CHECK_INTERVAL_MS = 60000; <span class="comment">// No checkear mas seguido que cada 60s</span>
+<span class="keyword">const</span> STATE_FILE = require(<span class="string">"path"</span>).join(__dirname, <span class="string">"inbox-checker-state.json"</span>);
+
+<span class="keyword">async function</span> <span class="fn">main</span>() {
+    <span class="keyword">const</span> input = JSON.parse(require(<span class="string">"fs"</span>).readFileSync(<span class="string">"/dev/stdin"</span>, <span class="string">"utf8"</span>));
+
+    <span class="comment">// Throttle: no checkear en cada tool call</span>
+    <span class="keyword">let</span> lastCheck = 0;
+    <span class="keyword">try</span> {
+        <span class="keyword">const</span> state = JSON.parse(require(<span class="string">"fs"</span>).readFileSync(STATE_FILE, <span class="string">"utf8"</span>));
+        lastCheck = state.lastCheck || 0;
+    } <span class="keyword">catch</span> {}
+
+    <span class="keyword">if</span> (Date.now() - lastCheck < CHECK_INTERVAL_MS) {
+        process.exit(0); <span class="comment">// Demasiado pronto, skip</span>
+    }
+
+    <span class="comment">// Guardar timestamp</span>
+    require(<span class="string">"fs"</span>).writeFileSync(STATE_FILE, JSON.stringify({ lastCheck: Date.now() }));
+
+    <span class="comment">// Determinar identidad</span>
+    <span class="keyword">const</span> agent = messaging.getCurrentAgentId();
+    <span class="keyword">if</span> (agent.agent_id === <span class="string">"unknown"</span>) process.exit(0);
+
+    <span class="comment">// Leer inbox</span>
+    <span class="keyword">const</span> messages = messaging.readInbox(agent.agent_id);
+    <span class="keyword">if</span> (messages.length === 0) process.exit(0);
+
+    <span class="comment">// ACK todos los mensajes leidos</span>
+    messages.forEach(m => messaging.ackMessage(m.id));
+
+    <span class="comment">// Formatear como contexto para Claude</span>
+    <span class="keyword">const</span> formatted = messages.map(m =>
+        <span class="string">`[MENSAJE INTER-AGENTE] De: </span>${m.sender.agent_id}<span class="string"> (issue #</span>${m.sender.issue}<span class="string">)\n`</span> +
+        <span class="string">`Tipo: </span>${m.type}<span class="string"> | Asunto: </span>${m.subject}<span class="string"> | Prioridad: </span>${m.priority}<span class="string">\n`</span> +
+        <span class="string">`Mensaje: </span>${m.payload.message || JSON.stringify(m.payload)}<span class="string">`</span>
+    ).join(<span class="string">"\n---\n"</span>);
+
+    <span class="comment">// Devolver como additionalContext via JSON stdout</span>
+    <span class="keyword">const</span> output = {
+        hookSpecificOutput: {
+            hookEventName: <span class="string">"PostToolUse"</span>,
+            additionalContext: <span class="string">`\n=== MENSAJES RECIBIDOS (</span>${messages.length}<span class="string">) ===\n</span>${formatted}<span class="string">\n`</span> +
+                <span class="string">`\nIMPORTANTE: Tenes mensajes de otros agentes. `</span> +
+                <span class="string">`Evalua si alguno requiere accion inmediata (requests, alerts) `</span> +
+                <span class="string">`o si es informativo (broadcasts, signals). `</span> +
+                <span class="string">`Para responder, usa la funcion sendAgentMessage().`</span>
+        }
+    };
+
+    console.log(JSON.stringify(output));
+}
+
+<span class="fn">main</span>().<span class="keyword">catch</span>(e => { console.error(e.message); process.exit(1); });
+</code></pre>
+
+<h3>5.2 Hook stop-messenger.js (Stop)</h3>
+
+<p>Se agrega al hook <code>Stop</code>. Cuando un agente termina su turno, envia un broadcast notificando que completó (o fallo).</p>
+
+<pre><code><span class="comment">// .claude/hooks/stop-messenger.js — Stop hook</span>
+<span class="comment">// Envia broadcast cuando un agente termina</span>
+
+<span class="keyword">const</span> fs = require(<span class="string">"fs"</span>);
+<span class="keyword">const</span> messaging = require(<span class="string">"./agent-messaging"</span>);
+
+<span class="keyword">async function</span> <span class="fn">main</span>() {
+    <span class="keyword">const</span> input = JSON.parse(fs.readFileSync(<span class="string">"/dev/stdin"</span>, <span class="string">"utf8"</span>));
+    <span class="keyword">const</span> agent = messaging.getCurrentAgentId();
+    <span class="keyword">if</span> (agent.agent_id === <span class="string">"unknown"</span>) process.exit(0);
+
+    <span class="comment">// Determinar si fue exitoso checkeando si hay PR creado</span>
+    <span class="keyword">let</span> prNumber = <span class="val">null</span>;
+    <span class="keyword">try</span> {
+        <span class="keyword">const</span> { execSync } = require(<span class="string">"child_process"</span>);
+        <span class="keyword">const</span> prOutput = execSync(
+            <span class="string">`gh pr list --head </span>${agent.branch}<span class="string"> --json number --jq ".[0].number"`</span>,
+            { timeout: 10000, windowsHide: <span class="val">true</span>, encoding: <span class="string">"utf8"</span> }
+        ).trim();
+        <span class="keyword">if</span> (prOutput) prNumber = parseInt(prOutput, 10);
+    } <span class="keyword">catch</span> {}
+
+    <span class="comment">// Obtener archivos modificados</span>
+    <span class="keyword">let</span> changedFiles = [];
+    <span class="keyword">try</span> {
+        <span class="keyword">const</span> { execSync } = require(<span class="string">"child_process"</span>);
+        changedFiles = execSync(<span class="string">"git diff --name-only origin/main...HEAD"</span>, {
+            timeout: 5000, windowsHide: <span class="val">true</span>, encoding: <span class="string">"utf8"</span>,
+            cwd: process.env.CLAUDE_PROJECT_DIR
+        }).trim().split(<span class="string">"\n"</span>).filter(Boolean);
+    } <span class="keyword">catch</span> {}
+
+    messaging.broadcast(<span class="string">"agent-completed"</span>, {
+        message: <span class="string">`Agente </span>${agent.agent_id}<span class="string"> (issue #</span>${agent.issue}<span class="string">) finalizo.`</span>,
+        branch: agent.branch,
+        pr_number: prNumber,
+        files_changed: changedFiles,
+        status: prNumber ? <span class="string">"pr-created"</span> : <span class="string">"completed-no-pr"</span>
+    });
+
+    <span class="comment">// Cleanup periodico (1 de cada 10 veces)</span>
+    <span class="keyword">if</span> (Math.random() < 0.1) messaging.cleanup();
+}
+
+<span class="fn">main</span>().<span class="keyword">catch</span>(() => process.exit(0));
+</code></pre>
+
+<h3>5.3 Configuracion en settings.json</h3>
+
+<pre><code><span class="comment">// Agregar a .claude/settings.json</span>
+{
+  <span class="prop">"hooks"</span>: {
+    <span class="prop">"PostToolUse"</span>: [
+      {
+        <span class="prop">"matcher"</span>: <span class="string">""</span>,
+        <span class="prop">"hooks"</span>: [
+          <span class="comment">// ... hooks existentes (post-tool-orchestrator, activity-logger, etc.) ...</span>
+          {
+            <span class="prop">"type"</span>: <span class="string">"command"</span>,
+            <span class="prop">"command"</span>: <span class="string">"node /c/Workspaces/Intrale/platform/.claude/hooks/inbox-checker.js"</span>,
+            <span class="prop">"timeout"</span>: <span class="val">5000</span>
+          }
+        ]
+      }
+    ],
+    <span class="prop">"Stop"</span>: [
+      {
+        <span class="prop">"matcher"</span>: <span class="string">""</span>,
+        <span class="prop">"hooks"</span>: [
+          <span class="comment">// ... hooks existentes (stop-notify, agent-concurrency-check, etc.) ...</span>
+          {
+            <span class="prop">"type"</span>: <span class="string">"command"</span>,
+            <span class="prop">"command"</span>: <span class="string">"node /c/Workspaces/Intrale/platform/.claude/hooks/stop-messenger.js"</span>,
+            <span class="prop">"timeout"</span>: <span class="val">10000</span>
+          }
+        ]
+      }
+    ],
+    <span class="prop">"SessionStart"</span>: [
+      {
+        <span class="prop">"matcher"</span>: <span class="string">""</span>,
+        <span class="prop">"hooks"</span>: [
+          {
+            <span class="prop">"type"</span>: <span class="string">"command"</span>,
+            <span class="prop">"command"</span>: <span class="string">"node /c/Workspaces/Intrale/platform/.claude/hooks/session-inbox.js"</span>,
+            <span class="prop">"timeout"</span>: <span class="val">5000</span>
+          }
+        ]
+      }
+    ]
+  }
+}
+</code></pre>
+
+<h3>5.4 Reacciones automaticas</h3>
+
+<table>
+  <tr>
+    <th>Mensaje recibido</th>
+    <th>Reaccion del agente</th>
+    <th>Implementacion</th>
+  </tr>
+  <tr>
+    <td><code>agent-completed</code> (broadcast)</td>
+    <td>Si el agente completado era dependencia, desbloquear trabajo</td>
+    <td>additionalContext inyecta la info; Claude decide si actuar</td>
+  </tr>
+  <tr>
+    <td><code>merge-conflict</code> (alert)</td>
+    <td>Rebase automatico contra main</td>
+    <td>additionalContext sugiere "ejecuta git pull --rebase origin main"</td>
+  </tr>
+  <tr>
+    <td><code>bug-found</code> (request de QA)</td>
+    <td>Corregir el bug reportado</td>
+    <td>additionalContext incluye detalles del bug; Claude corrige</td>
+  </tr>
+  <tr>
+    <td><code>api-ready</code> (signal de backend)</td>
+    <td>Frontend puede integrar la API</td>
+    <td>additionalContext informa endpoints disponibles y branch</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="handoff">6. Fase 3: Handoff de contexto entre agentes</h2>
+
+<p><span class="badge badge-medio">Medio</span> Estimacion: ~400 lineas de codigo</p>
+
+<h3>6.1 Concepto de Handoff</h3>
+
+<div class="card card-accent">
+  <p>Cuando un agente termina su fase del pipeline (Dev &rarr; Tester &rarr; Review &rarr; QA &rarr; Delivery), puede "pasar" un resumen estructurado al siguiente agente. Esto elimina la necesidad de que el agente receptor explore todo el PR desde cero.</p>
+</div>
+
+<h3>6.2 Formato de handoff</h3>
+
+<pre><code>{
+  <span class="prop">"id"</span>: <span class="string">"msg_1711108200000_backend-dev_handoff"</span>,
+  <span class="prop">"type"</span>: <span class="string">"handoff"</span>,
+  <span class="prop">"sender"</span>: { <span class="prop">"agent_id"</span>: <span class="string">"backend-dev"</span>, <span class="prop">"issue"</span>: <span class="val">1780</span>, <span class="prop">"skill"</span>: <span class="string">"/backend-dev"</span> },
+  <span class="prop">"recipient"</span>: <span class="string">"tester"</span>,
+  <span class="prop">"subject"</span>: <span class="string">"handoff-dev-to-tester"</span>,
+  <span class="prop">"payload"</span>: {
+    <span class="prop">"issue"</span>: <span class="val">1780</span>,
+    <span class="prop">"issue_title"</span>: <span class="string">"Implementar endpoint de autenticacion 2FA"</span>,
+    <span class="prop">"branch"</span>: <span class="string">"agent/1780-auth-2fa"</span>,
+    <span class="prop">"pr_number"</span>: <span class="val">1785</span>,
+
+    <span class="prop">"summary"</span>: <span class="string">"Se implemento el endpoint POST /auth/2fa/verify que recibe..."</span>,
+
+    <span class="prop">"files_changed"</span>: [
+      { <span class="prop">"path"</span>: <span class="string">"backend/src/.../TwoFactorVerify.kt"</span>, <span class="prop">"action"</span>: <span class="string">"created"</span>, <span class="prop">"description"</span>: <span class="string">"Function principal"</span> },
+      { <span class="prop">"path"</span>: <span class="string">"backend/src/.../TwoFactorService.kt"</span>, <span class="prop">"action"</span>: <span class="string">"modified"</span>, <span class="prop">"description"</span>: <span class="string">"Agregado metodo verify()"</span> },
+      { <span class="prop">"path"</span>: <span class="string">"users/src/test/.../TwoFactorTest.kt"</span>, <span class="prop">"action"</span>: <span class="string">"created"</span>, <span class="prop">"description"</span>: <span class="string">"Tests unitarios"</span> }
+    ],
+
+    <span class="prop">"test_results"</span>: {
+      <span class="prop">"ran"</span>: <span class="val">true</span>,
+      <span class="prop">"passed"</span>: <span class="val">12</span>,
+      <span class="prop">"failed"</span>: <span class="val">0</span>,
+      <span class="prop">"command"</span>: <span class="string">"./gradlew :users:test"</span>
+    },
+
+    <span class="prop">"areas_of_concern"</span>: [
+      <span class="string">"El timeout de TOTP es de 30s — verificar edge cases"</span>,
+      <span class="string">"No se testeo con Cognito real (solo mocks)"</span>
+    ],
+
+    <span class="prop">"context_for_next"</span>: {
+      <span class="prop">"tester"</span>: <span class="string">"Enfocarse en: validacion de codigos expirados, rate limiting, y flujo completo login+2fa"</span>,
+      <span class="prop">"review"</span>: <span class="string">"Revisar: patron de errores en TwoFactorVerify.kt, logging de intentos fallidos"</span>,
+      <span class="prop">"qa"</span>: <span class="string">"QA E2E: flujo completo de activacion y verificacion 2FA desde la app"</span>
+    }
+  }
+}
+</code></pre>
+
+<h3>6.3 Generacion automatica de handoff</h3>
+
+<p>El hook <code>stop-messenger.js</code> (Fase 2) se extiende para generar automaticamente el handoff cuando detecta que es un agente Dev que termino exitosamente:</p>
+
+<pre><code><span class="comment">// Extension de stop-messenger.js para handoff automatico</span>
+
+<span class="keyword">function</span> <span class="fn">generateHandoff</span>(agent, prNumber, changedFiles) {
+    <span class="comment">// Leer el sprint-plan para saber quien es el siguiente en el pipeline</span>
+    <span class="keyword">const</span> planFile = path.join(REPO_ROOT, <span class="string">"scripts"</span>, <span class="string">"sprint-plan.json"</span>);
+    <span class="keyword">let</span> plan;
+    <span class="keyword">try</span> { plan = JSON.parse(fs.readFileSync(planFile, <span class="string">"utf8"</span>)); } <span class="keyword">catch</span> { <span class="keyword">return</span>; }
+
+    <span class="comment">// Buscar el agente actual en el plan</span>
+    <span class="keyword">const</span> agente = (plan.agentes || []).find(a => a.issue === agent.issue);
+    <span class="keyword">if</span> (!agente) <span class="keyword">return</span>;
+
+    <span class="comment">// Pipeline: dev → tester → review → qa → delivery</span>
+    <span class="keyword">const</span> PIPELINE = [<span class="string">"dev"</span>, <span class="string">"tester"</span>, <span class="string">"review"</span>, <span class="string">"qa"</span>, <span class="string">"delivery"</span>];
+    <span class="keyword">const</span> currentStage = agente.skill?.replace(<span class="string">"/"</span>, <span class="string">""</span>).replace(<span class="string">/-dev$/</span>, <span class="string">""</span>);
+    <span class="keyword">const</span> stageIdx = PIPELINE.indexOf(currentStage);
+    <span class="keyword">if</span> (stageIdx === -1 || stageIdx >= PIPELINE.length - 1) <span class="keyword">return</span>;
+
+    <span class="keyword">const</span> nextStage = PIPELINE[stageIdx + 1];
+
+    <span class="comment">// Leer ultimo commit message como resumen</span>
+    <span class="keyword">let</span> summary = <span class="string">""</span>;
+    <span class="keyword">try</span> {
+        summary = execSync(<span class="string">"git log -1 --pretty=%B"</span>, {
+            cwd: process.env.CLAUDE_PROJECT_DIR,
+            timeout: 5000, windowsHide: <span class="val">true</span>, encoding: <span class="string">"utf8"</span>
+        }).trim();
+    } <span class="keyword">catch</span> {}
+
+    messaging.sendMessage(nextStage, <span class="string">"handoff"</span>, <span class="string">`handoff-</span>${currentStage}<span class="string">-to-</span>${nextStage}<span class="string">`</span>, {
+        issue: agent.issue,
+        branch: agent.branch,
+        pr_number: prNumber,
+        summary,
+        files_changed: changedFiles.map(f => ({ path: f, action: <span class="string">"modified"</span> })),
+        context_for_next: {
+            [nextStage]: <span class="string">`Revisar PR #</span>${prNumber}<span class="string"> en rama </span>${agent.branch}<span class="string">. `</span> +
+                         <span class="string">`Archivos modificados: </span>${changedFiles.length}<span class="string">.`</span>
+        }
+    });
+}
+</code></pre>
+
+<h3>6.4 Flujo de handoff en el pipeline</h3>
+
+<div class="diagram">
+  Dev termina issue #1780
+       |
+       | Stop hook → stop-messenger.js
+       |
+       v
+  +-------------------+
+  | broadcast:        |
+  | "agent-completed" |    + genera handoff
+  +---+---------------+     para "tester"
+      |                         |
+      v                         v
+  Todos los agentes       +-------------------+
+  reciben broadcast       | handoff:          |
+                          | dev → tester      |
+                          | {summary, files,  |
+                          |  pr, concerns}    |
+                          +---+---------------+
+                              |
+                              v
+                     Tester inicia
+                     (inbox-checker.js detecta handoff)
+                              |
+                              v
+                     additionalContext inyectado:
+                     "Tenes un handoff de backend-dev
+                      para issue #1780. PR #1785.
+                      Resumen: ..."
+                              |
+                              v
+                     Claude (Tester) sabe exactamente
+                     que testear sin explorar desde cero
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="dependencias">7. Fase 4: Coordinacion de dependencias</h2>
+
+<p><span class="badge badge-grande">Grande</span> Estimacion: ~500 lineas de codigo</p>
+
+<h3>7.1 Signal/Wait pattern</h3>
+
+<div class="card card-accent">
+  <p>Cuando el sprint-plan define dependencias entre issues (ej: issue #1790 depende de #1780), el agente asignado a #1790 debe esperar a que #1780 se complete. El sistema signal/wait permite esto sin polling activo.</p>
+</div>
+
+<h3>7.2 Definicion de dependencias en sprint-plan.json</h3>
+
+<pre><code>{
+  <span class="prop">"sprint"</span>: <span class="string">"SPR-044"</span>,
+  <span class="prop">"agentes"</span>: [
+    {
+      <span class="prop">"numero"</span>: <span class="val">1</span>,
+      <span class="prop">"issue"</span>: <span class="val">1780</span>,
+      <span class="prop">"skill"</span>: <span class="string">"/backend-dev"</span>,
+      <span class="prop">"slug"</span>: <span class="string">"auth-2fa-api"</span>,
+      <span class="prop">"status"</span>: <span class="string">"running"</span>,
+      <span class="prop">"depends_on"</span>: []          <span class="comment">// Sin dependencias</span>
+    },
+    {
+      <span class="prop">"numero"</span>: <span class="val">2</span>,
+      <span class="prop">"issue"</span>: <span class="val">1790</span>,
+      <span class="prop">"skill"</span>: <span class="string">"/android-dev"</span>,
+      <span class="prop">"slug"</span>: <span class="string">"auth-2fa-ui"</span>,
+      <span class="prop">"status"</span>: <span class="string">"waiting"</span>,
+      <span class="prop">"depends_on"</span>: [<span class="val">1780</span>]      <span class="comment">// Espera a que #1780 termine</span>
+    },
+    {
+      <span class="prop">"numero"</span>: <span class="val">3</span>,
+      <span class="prop">"issue"</span>: <span class="val">1795</span>,
+      <span class="prop">"skill"</span>: <span class="string">"/web-dev"</span>,
+      <span class="prop">"slug"</span>: <span class="string">"dashboard-metrics"</span>,
+      <span class="prop">"status"</span>: <span class="string">"running"</span>,
+      <span class="prop">"depends_on"</span>: []          <span class="comment">// Independiente</span>
+    }
+  ]
+}
+</code></pre>
+
+<h3>7.3 Hook dependency-checker.js</h3>
+
+<pre><code><span class="comment">// .claude/hooks/dependency-checker.js — SessionStart hook</span>
+<span class="comment">// Verifica si las dependencias del agente estan satisfechas</span>
+
+<span class="keyword">const</span> fs = require(<span class="string">"fs"</span>);
+<span class="keyword">const</span> path = require(<span class="string">"path"</span>);
+<span class="keyword">const</span> messaging = require(<span class="string">"./agent-messaging"</span>);
+
+<span class="keyword">const</span> REPO_ROOT = messaging.resolveMainRepoRoot
+    ? require(<span class="string">"./agent-messaging"</span>).REPO_ROOT
+    : path.resolve(__dirname, <span class="string">".."</span>, <span class="string">".."</span>);
+<span class="keyword">const</span> PLAN_FILE = path.join(REPO_ROOT, <span class="string">"scripts"</span>, <span class="string">"sprint-plan.json"</span>);
+
+<span class="keyword">async function</span> <span class="fn">main</span>() {
+    <span class="keyword">const</span> agent = messaging.getCurrentAgentId();
+    <span class="keyword">if</span> (agent.agent_id === <span class="string">"unknown"</span>) process.exit(0);
+
+    <span class="keyword">let</span> plan;
+    <span class="keyword">try</span> { plan = JSON.parse(fs.readFileSync(PLAN_FILE, <span class="string">"utf8"</span>)); } <span class="keyword">catch</span> { process.exit(0); }
+
+    <span class="keyword">const</span> agente = (plan.agentes || []).find(a => a.issue === agent.issue);
+    <span class="keyword">if</span> (!agente || !agente.depends_on || agente.depends_on.length === 0) process.exit(0);
+
+    <span class="comment">// Verificar cada dependencia</span>
+    <span class="keyword">const</span> completados = (plan.completados || []).map(c => c.issue);
+    <span class="keyword">const</span> pending = agente.depends_on.filter(dep => !completados.includes(dep));
+
+    <span class="keyword">if</span> (pending.length > 0) {
+        <span class="comment">// Dependencias no satisfechas: informar a Claude</span>
+        <span class="keyword">const</span> output = {
+            hookSpecificOutput: {
+                hookEventName: <span class="string">"SessionStart"</span>,
+                additionalContext:
+                    <span class="string">`ATENCION: Este issue (#</span>${agent.issue}<span class="string">) tiene dependencias no resueltas:\n`</span> +
+                    pending.map(d => <span class="string">`  - Issue #</span>${d}<span class="string"> (aun no completado)`</span>).join(<span class="string">"\n"</span>) +
+                    <span class="string">`\n\nOpciones:\n`</span> +
+                    <span class="string">`1. Esperar: checkear inbox periodicamente por signal "dependency-resolved"\n`</span> +
+                    <span class="string">`2. Trabajar en lo que se pueda sin la dependencia\n`</span> +
+                    <span class="string">`3. Enviar request al agente que trabaja en la dependencia pidiendo status`</span>
+            }
+        };
+        console.log(JSON.stringify(output));
+    }
+}
+
+<span class="fn">main</span>().<span class="keyword">catch</span>(() => process.exit(0));
+</code></pre>
+
+<h3>7.4 Emision de signal cuando una dependencia se resuelve</h3>
+
+<p>El <code>agent-concurrency-check.js</code> (ya existente en el hook Stop) se extiende para detectar cuando un agente termina y emitir signals a agentes que dependen de el:</p>
+
+<pre><code><span class="comment">// Extension de agent-concurrency-check.js</span>
+
+<span class="keyword">function</span> <span class="fn">notifyDependents</span>(completedIssue) {
+    <span class="keyword">const</span> plan = JSON.parse(fs.readFileSync(PLAN_FILE, <span class="string">"utf8"</span>));
+    <span class="keyword">const</span> dependents = (plan.agentes || []).filter(a =>
+        a.depends_on && a.depends_on.includes(completedIssue)
+    );
+
+    <span class="keyword">for</span> (<span class="keyword">const</span> dep <span class="keyword">of</span> dependents) {
+        <span class="comment">// Verificar si TODAS las dependencias estan satisfechas</span>
+        <span class="keyword">const</span> completados = (plan.completados || []).map(c => c.issue);
+        completados.push(completedIssue); <span class="comment">// Incluir el que acaba de completar</span>
+        <span class="keyword">const</span> allSatisfied = dep.depends_on.every(d => completados.includes(d));
+
+        messaging.sendMessage(
+            dep.slug || String(dep.issue),
+            <span class="string">"signal"</span>,
+            allSatisfied ? <span class="string">"dependency-resolved"</span> : <span class="string">"dependency-progress"</span>,
+            {
+                message: allSatisfied
+                    ? <span class="string">`Todas las dependencias de issue #</span>${dep.issue}<span class="string"> estan resueltas. Podes avanzar.`</span>
+                    : <span class="string">`Issue #</span>${completedIssue}<span class="string"> completado (</span>${completados.length}<span class="string">/</span>${dep.depends_on.length}<span class="string"> dependencias resueltas).`</span>,
+                completed_issue: completedIssue,
+                all_satisfied: allSatisfied,
+                remaining: dep.depends_on.filter(d => !completados.includes(d))
+            },
+            { priority: allSatisfied ? <span class="string">"high"</span> : <span class="string">"normal"</span> }
+        );
+    }
+}
+</code></pre>
+
+<h3>7.5 Diagrama de coordinacion de dependencias</h3>
+
+<div class="diagram">
+  sprint-plan.json
+  #1780 (backend) ──depends──► #1790 (android)
+         |
+  t=0    | Agente 1 inicia                Agente 2 inicia
+         | /backend-dev                   /android-dev
+         |                                     |
+         |                                SessionStart hook:
+         |                                dependency-checker.js detecta
+         |                                #1790 depende de #1780 (pending)
+         |                                     |
+         |                                additionalContext:
+         |                                "ATENCION: dependencia #1780
+         |                                 no resuelta. Opciones: ..."
+         |                                     |
+         |                                Claude trabaja en lo que puede
+         |                                (layouts, strings, etc.)
+         |                                     |
+  t=N    | Agente 1 termina                    |
+         | Stop hook:                          |
+         | → broadcast "agent-completed"       |
+         | → signal "dependency-resolved"      |
+         |   al agente de #1790                |
+         |                                     |
+         |              ┌──────────────────────┘
+         |              |
+         |              v
+         |         inbox-checker.js detecta signal:
+         |         "Todas las dependencias resueltas.
+         |          Podes avanzar."
+         |              |
+         |              v
+         |         Claude integra la API de backend
+         |         en la UI de Android
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="integracion">8. Fase 5: Integracion Dashboard + Telegram</h2>
+
+<p><span class="badge badge-simple">Simple</span> Estimacion: ~200 lineas de codigo</p>
+
+<h3>8.1 Dashboard: panel de mensajes</h3>
+
+<p>Agregar nueva seccion al dashboard-server.js en <code>/messages</code> con panel dedicado:</p>
+
+<pre><code><span class="comment">// Agregar a collectData() en dashboard-server.js</span>
+
+<span class="keyword">function</span> <span class="fn">collectMessages</span>() {
+    <span class="keyword">const</span> MESSAGES_FILE = path.join(HOOKS_DIR, <span class="string">"agent-messages.jsonl"</span>);
+    <span class="keyword">if</span> (!fs.existsSync(MESSAGES_FILE)) <span class="keyword">return</span> [];
+    <span class="keyword">const</span> now = Date.now();
+    <span class="keyword">return</span> fs.readFileSync(MESSAGES_FILE, <span class="string">"utf8"</span>)
+        .split(<span class="string">"\n"</span>).filter(Boolean)
+        .map(l => { <span class="keyword">try</span> { <span class="keyword">return</span> JSON.parse(l); } <span class="keyword">catch</span> { <span class="keyword">return</span> <span class="val">null</span>; } })
+        .filter(m => m && (now - <span class="keyword">new</span> Date(m.timestamp).getTime()) < 4 * 3600000)
+        .reverse(); <span class="comment">// mas recientes primero</span>
+}
+</code></pre>
+
+<table>
+  <tr>
+    <th>Ruta dashboard</th>
+    <th>Contenido</th>
+    <th>data-panel</th>
+  </tr>
+  <tr>
+    <td><code>/messages</code></td>
+    <td>Feed de mensajes inter-agente con filtros por tipo y agente</td>
+    <td><code>messages</code></td>
+  </tr>
+  <tr>
+    <td><code>/api/messages</code></td>
+    <td>API JSON de mensajes (para integraciones)</td>
+    <td>N/A</td>
+  </tr>
+</table>
+
+<h4>Visualizacion propuesta del panel</h4>
+
+<div class="diagram">
+  +------------------------------------------------------------------+
+  | MENSAJES INTER-AGENTE                          [Todos v] [24h v] |
+  +------------------------------------------------------------------+
+  |                                                                  |
+  | 14:30  backend-dev → * (broadcast)                               |
+  |   [COMPLETED] Agente backend-dev (issue #1780) finalizo.         |
+  |   PR #1785 | 3 archivos | branch: agent/1780-auth-2fa            |
+  |                                                                  |
+  | 14:31  backend-dev → tester (handoff)                            |
+  |   [HANDOFF] Dev → Tester para issue #1780                        |
+  |   Resumen: Implementado endpoint POST /auth/2fa/verify...        |
+  |   Areas de atencion: timeout TOTP, mocks vs Cognito real         |
+  |                                                                  |
+  | 14:32  system → android-dev (signal)                             |
+  |   [DEPENDENCY] Todas las dependencias de #1790 resueltas         |
+  |                                                                  |
+  | 13:45  qa → backend-dev (request)                                |
+  |   [BUG] Error en validacion de token expirado                    |
+  |   Prioridad: HIGH                                                |
+  |                                                                  |
+  | 13:50  backend-dev → qa (response)                               |
+  |   [FIX] Corregido en commit abc1234. Re-testear.                 |
+  |                                                                  |
+  +------------------------------------------------------------------+
+</div>
+
+<h3>8.2 Telegram: alertas de mensajes criticos</h3>
+
+<p>Extender el <code>inbox-checker.js</code> para reenviar mensajes con <code>priority: "critical"</code> o tipo <code>alert</code> a Telegram:</p>
+
+<pre><code><span class="comment">// En inbox-checker.js, despues de procesar mensajes</span>
+
+<span class="keyword">const</span> criticalMessages = messages.filter(m =>
+    m.priority === <span class="string">"critical"</span> || m.type === <span class="string">"alert"</span>
+);
+
+<span class="keyword">if</span> (criticalMessages.length > 0) {
+    <span class="keyword">let</span> tgClient;
+    <span class="keyword">try</span> { tgClient = require(<span class="string">"./telegram-client"</span>); } <span class="keyword">catch</span> {}
+    <span class="keyword">if</span> (tgClient) {
+        <span class="keyword">for</span> (<span class="keyword">const</span> m <span class="keyword">of</span> criticalMessages) {
+            <span class="keyword">await</span> tgClient.sendMessage(
+                <span class="string">`&#x1F6A8; <b>Alerta Inter-Agente</b>\n`</span> +
+                <span class="string">`De: </span>${m.sender.agent_id}<span class="string"> (issue #</span>${m.sender.issue}<span class="string">)\n`</span> +
+                <span class="string">`Tipo: </span>${m.type}<span class="string"> | Asunto: </span>${m.subject}<span class="string">\n`</span> +
+                <span class="string">`</span>${m.payload.message || <span class="string">""</span>}<span class="string">`</span>,
+                { parse_mode: <span class="string">"HTML"</span> }
+            );
+        }
+    }
+}
+</code></pre>
+
+<h3>8.3 Nuevo comando Telegram: /messages</h3>
+
+<p>Agregar al <code>command-dispatcher.js</code> un comando <code>/messages</code> que muestre los ultimos mensajes del bus:</p>
+
+<pre><code><span class="comment">// En command-dispatcher.js</span>
+<span class="keyword">case</span> <span class="string">"messages"</span>:
+<span class="keyword">case</span> <span class="string">"msgs"</span>: {
+    <span class="keyword">const</span> messaging = require(<span class="string">"../agent-messaging"</span>);
+    <span class="keyword">const</span> all = messaging.readInbox(<span class="string">"*"</span>); <span class="comment">// Leer todos los broadcasts</span>
+    <span class="keyword">if</span> (all.length === 0) {
+        <span class="keyword">return</span> { text: <span class="string">"No hay mensajes recientes."</span> };
+    }
+    <span class="keyword">const</span> text = all.slice(0, 10).map(m =>
+        <span class="string">`</span>${m.sender.agent_id}<span class="string"> → </span>${m.recipient}<span class="string"> [</span>${m.type}<span class="string">] </span>${m.subject}<span class="string">`</span>
+    ).join(<span class="string">"\n"</span>);
+    <span class="keyword">return</span> { text: <span class="string">`Ultimos mensajes:\n</span>${text}<span class="string">`</span> };
+}
+</code></pre>
+
+<h3>8.4 Integracion con agent-registry.json</h3>
+
+<p>Extender el registro de agentes para incluir stats de mensajeria:</p>
+
+<pre><code>{
+  <span class="prop">"agents"</span>: {
+    <span class="prop">"backend-dev-1780"</span>: {
+      <span class="prop">"skill"</span>: <span class="string">"/backend-dev"</span>,
+      <span class="prop">"issue"</span>: <span class="val">1780</span>,
+      <span class="prop">"status"</span>: <span class="string">"active"</span>,
+      <span class="prop">"messaging"</span>: {                     <span class="comment">// NUEVO</span>
+        <span class="prop">"messages_sent"</span>: <span class="val">3</span>,
+        <span class="prop">"messages_received"</span>: <span class="val">1</span>,
+        <span class="prop">"last_message_at"</span>: <span class="string">"2026-03-22T14:30:00Z"</span>,
+        <span class="prop">"pending_inbox"</span>: <span class="val">0</span>,
+        <span class="prop">"handoffs_sent"</span>: <span class="val">1</span>
+      }
+    }
+  }
+}
+</code></pre>
+
+<h3>8.5 SSE: broadcast de mensajes nuevos</h3>
+
+<p>Extender el broadcast SSE del dashboard para incluir conteo de mensajes nuevos:</p>
+
+<pre><code><span class="comment">// En el broadcast SSE de dashboard-server.js</span>
+{
+  <span class="prop">"reload"</span>: <span class="val">true</span>,
+  <span class="prop">"ts"</span>: <span class="string">"2026-03-22T14:30:05Z"</span>,
+  <span class="prop">"activeSessions"</span>: <span class="val">3</span>,
+  <span class="prop">"newMessages"</span>: <span class="val">2</span>,           <span class="comment">// NUEVO: mensajes en la ultima ventana</span>
+  <span class="prop">"pendingHandoffs"</span>: <span class="val">1</span>,      <span class="comment">// NUEVO: handoffs sin procesar</span>
+  <span class="prop">"unresolvedRequests"</span>: <span class="val">0</span>    <span class="comment">// NUEVO: requests sin response</span>
+}
+</code></pre>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="riesgos">9. Riesgos y mitigaciones</h2>
+
+<table>
+  <tr>
+    <th>Riesgo</th>
+    <th>Severidad</th>
+    <th>Mitigacion</th>
+  </tr>
+  <tr>
+    <td><strong>Race conditions en escritura concurrente</strong><br>Multiples agentes escribiendo al JSONL simultaneamente pueden corromper datos.</td>
+    <td><span class="badge badge-grande">Alta</span></td>
+    <td>
+      <strong>Lockfile con PID + dead-owner detection.</strong> El patron ya esta probado en <code>telegram-commander.js</code> (LOCK_FILE con <code>{ flag: "wx" }</code>). Ademas, JSONL es append-only, lo que minimiza la ventana de corrupcion. Si el lock falla despues del timeout (3s), el mensaje se descarta silenciosamente.
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Overhead de polling en PostToolUse</strong><br>Cada tool call ejecuta inbox-checker.js, potencialmente desacelerando al agente.</td>
+    <td><span class="badge badge-medio">Media</span></td>
+    <td>
+      <strong>Throttle de 60 segundos.</strong> El checker almacena lastCheck en un archivo de estado y hace early return si no pasaron 60s. El costo real es: 1 lectura de estado + 1 comparacion de timestamp = ~1ms. Ademas, el timeout del hook es 5s.
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Crecimiento ilimitado del JSONL</strong><br>Con multiples agentes enviando mensajes, el archivo puede crecer mucho.</td>
+    <td><span class="badge badge-simple">Baja</span></td>
+    <td>
+      <strong>TTL de 4 horas + cleanup periodico.</strong> La funcion <code>cleanup()</code> se ejecuta probabilisticamente (10% de las veces) en el hook Stop. Mensajes expirados se eliminan. Estimacion: con 3 agentes activos enviando 1 msg/5min, el JSONL tendra ~144 lineas en 4 horas (~50KB).
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Limites de contexto al inyectar mensajes</strong><br>Muchos mensajes pendientes podrian consumir contexto valioso del agente.</td>
+    <td><span class="badge badge-medio">Media</span></td>
+    <td>
+      <strong>Limitar a 5 mensajes por check.</strong> Si hay mas de 5 mensajes pendientes, solo mostrar los 5 mas recientes con prioridad alta primero. El resto se marca como "N mensajes adicionales en inbox".
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Mensajes perdidos si un agente muere</strong><br>Un agente que muere antes de procesar su inbox pierde esos mensajes.</td>
+    <td><span class="badge badge-simple">Baja</span></td>
+    <td>
+      <strong>Los mensajes persisten en el JSONL.</strong> Los ACKs son independientes. Si el agente se relanza, leera los mismos mensajes pendientes. El patron es "at-least-once delivery": un mensaje puede leerse mas de una vez, pero nunca se pierde.
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Confusion de Claude al recibir mensajes</strong><br>Claude podria no saber como reaccionar a mensajes inter-agente.</td>
+    <td><span class="badge badge-medio">Media</span></td>
+    <td>
+      <strong>Instrucciones claras en additionalContext.</strong> Cada mensaje inyectado incluye instrucciones especificas: "Evalua si requiere accion inmediata". Ademas, extender los skills para incluir instrucciones de como manejar mensajes.
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Loops de mensajes</strong><br>Agente A envia a B, B responde a A, A vuelve a responder, etc.</td>
+    <td><span class="badge badge-medio">Media</span></td>
+    <td>
+      <strong>Rate limit por par sender-recipient.</strong> Maximo 3 mensajes del mismo sender al mismo recipient en 10 minutos. Despues, el bus rechaza con warning.
+    </td>
+  </tr>
+</table>
+
+<h3>Comparacion: Polling vs File Watcher vs Agent Teams nativo</h3>
+
+<table>
+  <tr>
+    <th>Enfoque</th>
+    <th>Latencia</th>
+    <th>Complejidad</th>
+    <th>Compatibilidad</th>
+  </tr>
+  <tr>
+    <td><strong>Polling en PostToolUse (propuesto)</strong></td>
+    <td>~60s (throttle) + tempo hasta proximo tool call</td>
+    <td>Baja: reutiliza hooks existentes</td>
+    <td>100% compatible con worktrees actuales</td>
+  </tr>
+  <tr>
+    <td>File watcher (fs.watch)</td>
+    <td>~1s</td>
+    <td>Media: requiere proceso daemon separado</td>
+    <td>Requiere daemon adicional por worktree</td>
+  </tr>
+  <tr>
+    <td>Agent Teams nativo</td>
+    <td>Inmediata (buzon nativo)</td>
+    <td>Alta: requiere redisenar lanzamiento de agentes</td>
+    <td>Incompatible con worktrees separados. Requiere lider+teammates en misma sesion.</td>
+  </tr>
+  <tr>
+    <td>HTTP hooks (localhost server)</td>
+    <td>~100ms</td>
+    <td>Media: requiere server HTTP siempre activo</td>
+    <td>Compatible. Podria usar dashboard-server.js en :3100</td>
+  </tr>
+</table>
+
+<div class="card card-success">
+  <h4>Recomendacion</h4>
+  <p><strong>Fase 1-3: Polling en PostToolUse</strong> — es la opcion mas simple, no requiere infraestructura adicional, y reutiliza patrones probados. La latencia de ~60s es aceptable para coordinacion de sprint.</p>
+  <p><strong>Fase 4+: Considerar HTTP hooks via dashboard-server.js.</strong> Si la coordinacion de dependencias requiere latencia menor, el dashboard server (:3100) ya corre como daemon. Se podria agregar un endpoint <code>POST /api/messages</code> para push inmediato.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<h2 id="resumen">10. Resumen de implementacion</h2>
+
+<div class="phase-grid">
+  <div class="phase-card">
+    <h4><span class="phase-num">1</span> Message Bus</h4>
+    <p><span class="badge badge-simple">Simple</span></p>
+    <ul>
+      <li><code>agent-messaging.js</code> — modulo compartido</li>
+      <li>JSONL append-only con lockfile</li>
+      <li>send / readInbox / ack / broadcast / cleanup</li>
+      <li>~300 lineas de codigo</li>
+    </ul>
+    <p><strong>Prereqs:</strong> Ninguno</p>
+  </div>
+
+  <div class="phase-card">
+    <h4><span class="phase-num">2</span> Hook de recepcion</h4>
+    <p><span class="badge badge-medio">Medio</span></p>
+    <ul>
+      <li><code>inbox-checker.js</code> — PostToolUse</li>
+      <li><code>stop-messenger.js</code> — Stop</li>
+      <li><code>session-inbox.js</code> — SessionStart</li>
+      <li>additionalContext injection</li>
+      <li>~250 lineas de codigo</li>
+    </ul>
+    <p><strong>Prereqs:</strong> Fase 1</p>
+  </div>
+
+  <div class="phase-card">
+    <h4><span class="phase-num">3</span> Handoff de contexto</h4>
+    <p><span class="badge badge-medio">Medio</span></p>
+    <ul>
+      <li>Formato handoff estructurado</li>
+      <li>Generacion automatica en Stop</li>
+      <li>Lectura de handoff en SessionStart</li>
+      <li>Pipeline Dev &rarr; Tester &rarr; QA aware</li>
+      <li>~400 lineas de codigo</li>
+    </ul>
+    <p><strong>Prereqs:</strong> Fase 1, 2</p>
+  </div>
+
+  <div class="phase-card">
+    <h4><span class="phase-num">4</span> Dependencias</h4>
+    <p><span class="badge badge-grande">Grande</span></p>
+    <ul>
+      <li><code>depends_on</code> en sprint-plan.json</li>
+      <li><code>dependency-checker.js</code> — SessionStart</li>
+      <li>Signal/wait via message bus</li>
+      <li>Integracion con agent-concurrency-check</li>
+      <li>~500 lineas de codigo</li>
+    </ul>
+    <p><strong>Prereqs:</strong> Fase 1, 2, 3</p>
+  </div>
+
+  <div class="phase-card">
+    <h4><span class="phase-num">5</span> Dashboard + Telegram</h4>
+    <p><span class="badge badge-simple">Simple</span></p>
+    <ul>
+      <li>Panel <code>/messages</code> en dashboard</li>
+      <li>API <code>/api/messages</code></li>
+      <li>Comando Telegram <code>/messages</code></li>
+      <li>Alertas criticas automaticas</li>
+      <li>SSE con conteo de mensajes</li>
+      <li>~200 lineas de codigo</li>
+    </ul>
+    <p><strong>Prereqs:</strong> Fase 1</p>
+  </div>
+</div>
+
+<h3>Estimacion total</h3>
+
+<table>
+  <tr>
+    <th>Fase</th>
+    <th>Esfuerzo</th>
+    <th>Lineas est.</th>
+    <th>Archivos nuevos</th>
+    <th>Archivos modificados</th>
+  </tr>
+  <tr>
+    <td>1. Message Bus</td>
+    <td><span class="badge badge-simple">Simple</span></td>
+    <td>~300</td>
+    <td>agent-messaging.js</td>
+    <td>Ninguno</td>
+  </tr>
+  <tr>
+    <td>2. Hook recepcion</td>
+    <td><span class="badge badge-medio">Medio</span></td>
+    <td>~250</td>
+    <td>inbox-checker.js, stop-messenger.js, session-inbox.js</td>
+    <td>settings.json (3 nuevos hooks)</td>
+  </tr>
+  <tr>
+    <td>3. Handoff</td>
+    <td><span class="badge badge-medio">Medio</span></td>
+    <td>~400</td>
+    <td>Ninguno (extension de Fase 2)</td>
+    <td>stop-messenger.js, inbox-checker.js</td>
+  </tr>
+  <tr>
+    <td>4. Dependencias</td>
+    <td><span class="badge badge-grande">Grande</span></td>
+    <td>~500</td>
+    <td>dependency-checker.js</td>
+    <td>sprint-plan.json (schema), agent-concurrency-check.js</td>
+  </tr>
+  <tr>
+    <td>5. Dashboard + TG</td>
+    <td><span class="badge badge-simple">Simple</span></td>
+    <td>~200</td>
+    <td>Ninguno</td>
+    <td>dashboard-server.js, command-dispatcher.js, inbox-checker.js</td>
+  </tr>
+  <tr>
+    <td><strong>TOTAL</strong></td>
+    <td></td>
+    <td><strong>~1650</strong></td>
+    <td><strong>5 archivos</strong></td>
+    <td><strong>7 archivos</strong></td>
+  </tr>
+</table>
+
+<h3>Diagrama final: arquitectura completa</h3>
+
+<div class="diagram">
+  +-----------------+          +-----------------+          +-----------------+
+  |   Agente 1      |          |   Agente 2      |          |   Agente 3      |
+  |  /backend-dev   |          |  /android-dev   |          |  /web-dev       |
+  |  worktree-1     |          |  worktree-2     |          |  worktree-3     |
+  |                 |          |                 |          |                 |
+  | [PostToolUse]   |          | [PostToolUse]   |          | [PostToolUse]   |
+  | inbox-checker --|--+  +----|--inbox-checker   |   +-----|--inbox-checker  |
+  |                 |  |  |    |                 |   |      |                 |
+  | [Stop]          |  |  |    | [SessionStart]  |   |      | [Stop]          |
+  | stop-messenger--|--+  |    | dependency-     |   |      | stop-messenger--|--+
+  |                 |  |  |    | checker---------|---+      |                 |  |
+  +-----------------+  |  |    +-----------------+          +-----------------+  |
+                       |  |                                                     |
+       +---------------+--+-----------------------------------------------------+
+       |               |  |
+       v               v  v
+  +----+---------------+--+---------------------------------------------------+
+  |                         MESSAGE BUS                                        |
+  |              .claude/hooks/agent-messages.jsonl                             |
+  |                                                                            |
+  |  Types: request | response | broadcast | alert | signal | handoff          |
+  |  Lock:  agent-messages.jsonl.lock (PID-based)                              |
+  |  ACKs:  agent-messages-ack.json                                            |
+  |  TTL:   4 horas | Cleanup: probabilistico en Stop                         |
+  +----+----------------------------+------------------------------------------+
+       |                            |
+       |     ┌──────────────────────+──────────────────┐
+       |     |                                         |
+       v     v                                         v
+  +----+-----+--------+                     +----------+-----------+
+  | dashboard-server   |                     | telegram-commander   |
+  | :3100              |                     |                      |
+  |                    |                     | /messages — ver msgs |
+  | /messages — panel  |                     | alertas criticas     |
+  | /api/messages      |                     | auto-forward         |
+  | SSE: newMessages   |                     +----------------------+
+  +--------------------+
+</div>
+
+<hr class="separator">
+
+<h3>Proximos pasos sugeridos</h3>
+
+<div class="card card-success">
+  <ol>
+    <li><strong>Crear issue GitHub</strong> para tracking: "feat(infra): implementar comunicacion inter-agente" con label <code>area:infra</code></li>
+    <li><strong>Implementar Fase 1</strong> (Message Bus) como PR independiente — es autocontenido y no modifica archivos existentes</li>
+    <li><strong>Implementar Fase 2 + 5</strong> en paralelo — los hooks de recepcion y la integracion con dashboard/Telegram son independientes entre si</li>
+    <li><strong>Evaluar Agent Teams nativo</strong> como alternativa a largo plazo — cuando salga de experimental, podria reemplazar parte de esta propuesta</li>
+    <li><strong>Considerar migracion gradual:</strong> empezar con broadcasts simples (Fase 1+2), medir impacto, y escalar a handoffs y dependencias segun necesidad</li>
+  </ol>
+</div>
+
+</div>
+
+<div class="footer">
+  Propuesta tecnica generada el 2026-03-22 | Intrale Platform | Claude Opus 4.6 (1M context)
+</div>
+
+</body>
+</html>
