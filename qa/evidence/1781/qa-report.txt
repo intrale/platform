@@ -1,0 +1,35 @@
+=== QA Full Cycle #1781 — 2026-03-22 (FINAL) ===
+
+[1/6] DynamoDB Local: PASS
+  JAR standalone en :8000 (sin Docker)
+  ListTables responde OK
+
+[2/6] Backend Ktor: PASS
+  ./gradlew :users:run levanta en 10s
+  Health: {"status":"UP","statusCode":{"value":200}}
+  Puerto: 80
+
+[3/6] Emulador Android: PASS
+  AVD: virtualAndroid (SDK 35, x86_64, WHPX)
+  Boot: 100s (cold boot)
+  Animaciones desactivadas para estabilidad
+
+[4/6] APK Install: PASS
+  ./gradlew :app:composeApp:installClientDebug -PLOCAL_BASE_URL=http://10.0.2.2:80/
+  BUILD SUCCESSFUL (4m06s)
+
+[5/6] Video Evidencia: PASS
+  App carga correctamente con backend local
+  Video 43KB, 20s, reproducible
+  Evidencia: qa/evidence/1781/qa-video-final.mp4
+
+[6/6] TODOS LOS PASOS: PASS
+
+=== CONFIGURACION VALIDADA ===
+- DynamoDB Local: JAR standalone (sin Docker)
+- Backend: ./gradlew :users:run (puerto 80)
+- App Android: LOCAL_BASE_URL=http://10.0.2.2:80/
+- Emulador: virtualAndroid, animaciones off
+- Video: screenrecord 20s + adb pull
+
+=== AMBIENTE LOCAL QA FUNCIONAL ===
