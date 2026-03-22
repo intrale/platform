@@ -46,6 +46,22 @@ const AGENT_MAP = {
     "/builder": "Builder",
     "/review": "Review",
     "/qa": "QA",
+    "/po": "PO",
+    "/ux": "UX Specialist",
+    "/scrum": "Scrum Master",
+    "/ops": "Ops",
+    "/backend-dev": "BackendDev",
+    "/android-dev": "AndroidDev",
+    "/ios-dev": "iOSDev",
+    "/web-dev": "WebDev",
+    "/desktop-dev": "DesktopDev",
+    "/branch": "Branch",
+    "/security": "Security",
+    "/cleanup": "Cleanup",
+    "/perf": "Perf",
+    "/cost": "Cost",
+    "/hotfix": "Hotfix",
+    "/config": "Config",
 };
 
 // Mapeo de issue number a "Agente N" desde sprint-plan.json
@@ -547,16 +563,25 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
         // Detectar skill invocado y mapear a agente
         if (toolName === "Skill") {
             const skillName = "/" + (toolInput.skill || "");
-            if (skillName !== "/" && !session.skills_invoked.includes(skillName)) {
-                // Registrar transición entre agentes
-                if (!session.agent_transitions) session.agent_transitions = [];
-                const prevAgent = session.skills_invoked.length > 0
-                    ? (AGENT_MAP[session.skills_invoked[session.skills_invoked.length - 1]] || session.skills_invoked[session.skills_invoked.length - 1])
-                    : (session.agent_name || "Claude");
+            if (skillName !== "/") {
                 const nextAgent = AGENT_MAP[skillName] || skillName;
-                session.agent_transitions.push({ from: prevAgent, to: nextAgent, ts });
-
-                session.skills_invoked.push(skillName);
+                // Registrar transición (siempre, incluso si skill ya fue invocado antes)
+                if (!session.agent_transitions) session.agent_transitions = [];
+                // Nodo origen: último skill realmente invocado (no la lista deduplicada)
+                const prevAgent = session._last_skill
+                    ? (AGENT_MAP[session._last_skill] || session._last_skill)
+                    : (session.agent_name || "Claude");
+                // Evitar transición duplicada consecutiva (mismo from->to)
+                const lastT = session.agent_transitions[session.agent_transitions.length - 1];
+                if (!lastT || lastT.from !== prevAgent || lastT.to !== nextAgent) {
+                    session.agent_transitions.push({ from: prevAgent, to: nextAgent, ts });
+                }
+                // Trackear último skill invocado (para from del próximo)
+                session._last_skill = skillName;
+                // Registrar skill (deduplicado para la lista)
+                if (!session.skills_invoked.includes(skillName)) {
+                    session.skills_invoked.push(skillName);
+                }
             }
             if (AGENT_MAP[skillName] && !session.agent_name) {
                 session.agent_name = AGENT_MAP[skillName];
