@@ -1,6 +1,6 @@
 {
-  "updated_ts": "2026-03-22T14:00:00.000Z",
-  "updated_by": "manual-reset",
+  "updated_ts": "2026-03-22T14:26:37.589Z",
+  "updated_by": "concurrency-check",
   "horizon_sprints": 5,
   "sprints": [
     {
@@ -12,21 +12,111 @@
       "closed_at": "2026-03-22T11:00:00Z",
       "velocity": 15,
       "stories": [
-        { "issue": 1732, "title": "Health check agentes sin corromper plan", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1752, "title": "Limpieza automatica worktrees huerfanos", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1756, "title": "Fix agentes mueren al lanzar watcher", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1755, "title": "Comando /reset-sprint Telegram", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1751, "title": "Fix CI binaryen v118 SIGSEGV", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1753, "title": "Timeout y retry configurable para skills", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1716, "title": "Persistencia historica metricas agentes", "effort": "medio", "stream": "E", "status": "done" },
-        { "issue": 1736, "title": "Sprint-plan.json como cache regenerable", "effort": "medio", "stream": "E", "status": "done" },
-        { "issue": 1733, "title": "Normalizar nombres agentes en dashboard", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1754, "title": "Metricas duracion agentes por skill", "effort": "medio", "stream": "E", "status": "done" },
-        { "issue": 1734, "title": "Sesiones de sprint historial permanente", "effort": "medio", "stream": "E", "status": "done" },
-        { "issue": 1765, "title": "Dashboard multi-ruta y comandos Telegram", "effort": "medio", "stream": "E", "status": "done" },
-        { "issue": 1749, "title": "Pipeline diagnostico y retry inteligente", "effort": "medio", "stream": "E", "status": "done" },
-        { "issue": 1740, "title": "Calidad screenshots dashboard Telegram", "effort": "simple", "stream": "E", "status": "done" },
-        { "issue": 1779, "title": "Fix falsos positivos validador duracion", "effort": "simple", "stream": "E", "status": "done" }
+        {
+          "issue": 1732,
+          "title": "Health check agentes sin corromper plan",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1752,
+          "title": "Limpieza automatica worktrees huerfanos",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1756,
+          "title": "Fix agentes mueren al lanzar watcher",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1755,
+          "title": "Comando /reset-sprint Telegram",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1751,
+          "title": "Fix CI binaryen v118 SIGSEGV",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1753,
+          "title": "Timeout y retry configurable para skills",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1716,
+          "title": "Persistencia historica metricas agentes",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1736,
+          "title": "Sprint-plan.json como cache regenerable",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1733,
+          "title": "Normalizar nombres agentes en dashboard",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1754,
+          "title": "Metricas duracion agentes por skill",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1734,
+          "title": "Sesiones de sprint historial permanente",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1765,
+          "title": "Dashboard multi-ruta y comandos Telegram",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1749,
+          "title": "Pipeline diagnostico y retry inteligente",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1740,
+          "title": "Calidad screenshots dashboard Telegram",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        },
+        {
+          "issue": 1779,
+          "title": "Fix falsos positivos validador duracion",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done"
+        }
       ]
     },
     {
@@ -36,12 +126,105 @@
       "size": "medio",
       "started_at": "2026-03-22T14:00:00Z",
       "stories": [
-        { "issue": 1781, "title": "Ambiente local QA: backend + emulador Android + video E2E", "effort": "grande", "stream": "E", "status": "planned" },
-        { "issue": 1782, "title": "Fix Java 11 a 21 mismatch en app build", "effort": "simple", "stream": "E", "status": "planned" },
-        { "issue": 1783, "title": "Script validate-env.sh prerequisitos ambiente local", "effort": "simple", "stream": "E", "status": "planned" },
-        { "issue": 1785, "title": "Documentar guia build flavors Android", "effort": "simple", "stream": "E", "status": "planned" },
-        { "issue": 1735, "title": "Prompt template inteligente segun labels", "effort": "medio", "stream": "E", "status": "planned" }
-      ]
+        {
+          "issue": 1781,
+          "title": "Ambiente local QA: backend + emulador Android + video E2E",
+          "effort": "grande",
+          "stream": "E",
+          "status": "failed",
+          "slug": "ambiente-local-qa-backend-emulador-andro",
+          "agent": {
+            "pid": null,
+            "promoted_at": "2026-03-22T14:04:22.446Z",
+            "launched_at": "2026-03-22T14:04:22.446Z",
+            "waiting_since": null,
+            "waiting_reason": null,
+            "retry_count": 3,
+            "prompt": "[REINTENTO 2/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\n[REINTENTO 1/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\n[REINTENTO 0/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\nImplementar issue #1781. Leer el issue completo con: gh issue view 1781 --repo intrale/platform. Completar los cambios descritos en el body del issue. Usar /delivery para commit+PR al terminar. Closes #1781",
+            "result": "failed",
+            "failure_reason": "No se pudo verificar PR (gh CLI falló)",
+            "detected_by": "agent-watcher",
+            "duration_min": 0
+          }
+        },
+        {
+          "issue": 1782,
+          "title": "Fix Java 11 a 21 mismatch en app build",
+          "effort": "simple",
+          "stream": "E",
+          "status": "failed",
+          "slug": "fix-java-11-a-21-mismatch-en-app-build",
+          "agent": {
+            "result": "failed",
+            "failure_reason": "Sin PR — el agente no completó /delivery",
+            "detected_by": null,
+            "duration_min": 0,
+            "pid": null,
+            "waiting_since": null
+          }
+        },
+        {
+          "issue": 1783,
+          "title": "Script validate-env.sh prerequisitos ambiente local",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done",
+          "slug": "script-validate-env-sh-prerequisitos-amb",
+          "agent": {
+            "completed_at": "2026-03-22T13:33:22.399Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null,
+            "pid": null,
+            "waiting_since": null
+          }
+        },
+        {
+          "issue": 1785,
+          "title": "Documentar guia build flavors Android",
+          "effort": "simple",
+          "stream": "E",
+          "status": "done",
+          "slug": "documentar-guia-build-flavors-android",
+          "agent": {
+            "pid": null,
+            "promoted_at": "2026-03-22T14:13:52.408Z",
+            "launched_at": "2026-03-22T14:13:52.408Z",
+            "waiting_since": null,
+            "waiting_reason": "build",
+            "retry_count": 3,
+            "prompt": "[REINTENTO 2/3] El intento anterior fallo sin ejecutar ningun tool call. Problema de arranque o entorno. Verificar con /ops antes de comenzar la implementacion.\n[REINTENTO 1/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\n[REINTENTO 0/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\nImplementar issue #1785. Leer el issue completo con: gh issue view 1785 --repo intrale/platform. Al iniciar: invocar /po para revisar criterios de aceptación del issue #1785. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /security para validar seguridad del diff. Usar /delivery para commit+PR al terminar. Closes #1785",
+            "completed_at": "2026-03-22T14:26:34.507Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null
+          }
+        },
+        {
+          "issue": 1735,
+          "title": "Prompt template inteligente segun labels",
+          "effort": "medio",
+          "stream": "E",
+          "status": "failed",
+          "slug": "prompt-template-inteligente-segun-labels",
+          "agent": {
+            "result": "failed",
+            "failure_reason": "Sin PR — el agente no completó /delivery",
+            "detected_by": null,
+            "duration_min": 0,
+            "pid": null,
+            "waiting_since": null
+          }
+        }
+      ],
+      "execution": {
+        "concurrency_limit": 3,
+        "pipeline_mode": "scripts",
+        "waiting_sweep_ts": 1774189589466,
+        "sentinel_ts": 1774189589466
+      }
     },
     {
       "id": "SPR-0052",
@@ -49,12 +232,48 @@
       "status": "planned",
       "size": "medio",
       "stories": [
-        { "issue": 675, "title": "Gestion repartidores del negocio", "effort": "medio", "stream": "C", "status": "planned" },
-        { "issue": 678, "title": "Config horarios y zonas entrega", "effort": "medio", "stream": "C", "status": "planned" },
-        { "issue": 679, "title": "Config medios de pago", "effort": "simple", "stream": "C", "status": "planned" },
-        { "issue": 672, "title": "Config productos destacados promociones", "effort": "medio", "stream": "C", "status": "planned" },
-        { "issue": 1633, "title": "QA E2E Home dashboard negocio", "effort": "medio", "stream": "C", "status": "planned" },
-        { "issue": 1634, "title": "QA E2E Publicacion productos", "effort": "medio", "stream": "C", "status": "planned" }
+        {
+          "issue": 675,
+          "title": "Gestion repartidores del negocio",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 678,
+          "title": "Config horarios y zonas entrega",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 679,
+          "title": "Config medios de pago",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 672,
+          "title": "Config productos destacados promociones",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1633,
+          "title": "QA E2E Home dashboard negocio",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1634,
+          "title": "QA E2E Publicacion productos",
+          "effort": "medio",
+          "stream": "C",
+          "status": "planned"
+        }
       ]
     },
     {
@@ -63,12 +282,48 @@
       "status": "planned",
       "size": "medio",
       "stories": [
-        { "issue": 717, "title": "Visualizacion carrito de compras", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 718, "title": "Confirmacion pedido resumen compra", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 597, "title": "Pantalla carrito resumen pedido", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 723, "title": "Repetir pedido anterior", "effort": "simple", "stream": "B", "status": "planned" },
-        { "issue": 724, "title": "Notificaciones pedidos mensajes", "effort": "medio", "stream": "B", "status": "planned" },
-        { "issue": 726, "title": "Integracion 2FA cliente", "effort": "simple", "stream": "B", "status": "planned" }
+        {
+          "issue": 717,
+          "title": "Visualizacion carrito de compras",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 718,
+          "title": "Confirmacion pedido resumen compra",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 597,
+          "title": "Pantalla carrito resumen pedido",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 723,
+          "title": "Repetir pedido anterior",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 724,
+          "title": "Notificaciones pedidos mensajes",
+          "effort": "medio",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 726,
+          "title": "Integracion 2FA cliente",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        }
       ]
     },
     {
@@ -77,30 +332,124 @@
       "status": "planned",
       "size": "medio",
       "stories": [
-        { "issue": 732, "title": "Listado pedidos disponibles para tomar", "effort": "medio", "stream": "D", "status": "planned" },
-        { "issue": 734, "title": "Flujo basico estados de entrega", "effort": "medio", "stream": "D", "status": "planned" },
-        { "issue": 735, "title": "Placeholder ubicacion mapa repartidores", "effort": "simple", "stream": "D", "status": "planned" },
-        { "issue": 737, "title": "Historial pedidos del repartidor", "effort": "medio", "stream": "D", "status": "planned" },
-        { "issue": 740, "title": "Notificaciones nuevos pedidos y estados", "effort": "medio", "stream": "D", "status": "planned" }
+        {
+          "issue": 732,
+          "title": "Listado pedidos disponibles para tomar",
+          "effort": "medio",
+          "stream": "D",
+          "status": "planned"
+        },
+        {
+          "issue": 734,
+          "title": "Flujo basico estados de entrega",
+          "effort": "medio",
+          "stream": "D",
+          "status": "planned"
+        },
+        {
+          "issue": 735,
+          "title": "Placeholder ubicacion mapa repartidores",
+          "effort": "simple",
+          "stream": "D",
+          "status": "planned"
+        },
+        {
+          "issue": 737,
+          "title": "Historial pedidos del repartidor",
+          "effort": "medio",
+          "stream": "D",
+          "status": "planned"
+        },
+        {
+          "issue": 740,
+          "title": "Notificaciones nuevos pedidos y estados",
+          "effort": "medio",
+          "stream": "D",
+          "status": "planned"
+        }
       ]
     }
   ],
   "deferred": [
-    { "number": 741, "title": "Contacto comercio delivery", "reason": "delivery" },
-    { "number": 742, "title": "2FA delivery", "reason": "delivery" },
-    { "number": 615, "title": "INTAKE NEGOCIO", "reason": "intake" },
-    { "number": 607, "title": "INTAKE NEGOCIO", "reason": "intake" },
-    { "number": 727, "title": "INTAKE DELIVERY", "reason": "intake" },
-    { "number": 681, "title": "INTAKE CLIENTE", "reason": "intake" },
-    { "number": 1096, "title": "QA video Cliente perfil", "reason": "QA" },
-    { "number": 1097, "title": "QA video Cliente pedidos", "reason": "QA" },
-    { "number": 1100, "title": "QA video Negocio categorias", "reason": "QA" },
-    { "number": 1101, "title": "QA video Negocio union", "reason": "QA" },
-    { "number": 1118, "title": "QA compliance categorias", "reason": "QA" },
-    { "number": 1121, "title": "QA compliance carrito", "reason": "QA" },
-    { "number": 1122, "title": "QA compliance perfil", "reason": "QA" },
-    { "number": 1123, "title": "QA compliance home delivery", "reason": "QA" },
-    { "number": 1124, "title": "QA compliance detalle delivery", "reason": "QA" },
-    { "number": 1125, "title": "QA compliance perfil delivery", "reason": "QA" }
+    {
+      "number": 741,
+      "title": "Contacto comercio delivery",
+      "reason": "delivery"
+    },
+    {
+      "number": 742,
+      "title": "2FA delivery",
+      "reason": "delivery"
+    },
+    {
+      "number": 615,
+      "title": "INTAKE NEGOCIO",
+      "reason": "intake"
+    },
+    {
+      "number": 607,
+      "title": "INTAKE NEGOCIO",
+      "reason": "intake"
+    },
+    {
+      "number": 727,
+      "title": "INTAKE DELIVERY",
+      "reason": "intake"
+    },
+    {
+      "number": 681,
+      "title": "INTAKE CLIENTE",
+      "reason": "intake"
+    },
+    {
+      "number": 1096,
+      "title": "QA video Cliente perfil",
+      "reason": "QA"
+    },
+    {
+      "number": 1097,
+      "title": "QA video Cliente pedidos",
+      "reason": "QA"
+    },
+    {
+      "number": 1100,
+      "title": "QA video Negocio categorias",
+      "reason": "QA"
+    },
+    {
+      "number": 1101,
+      "title": "QA video Negocio union",
+      "reason": "QA"
+    },
+    {
+      "number": 1118,
+      "title": "QA compliance categorias",
+      "reason": "QA"
+    },
+    {
+      "number": 1121,
+      "title": "QA compliance carrito",
+      "reason": "QA"
+    },
+    {
+      "number": 1122,
+      "title": "QA compliance perfil",
+      "reason": "QA"
+    },
+    {
+      "number": 1123,
+      "title": "QA compliance home delivery",
+      "reason": "QA"
+    },
+    {
+      "number": 1124,
+      "title": "QA compliance detalle delivery",
+      "reason": "QA"
+    },
+    {
+      "number": 1125,
+      "title": "QA compliance perfil delivery",
+      "reason": "QA"
+    }
   ]
 }
