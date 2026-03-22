@@ -64,6 +64,18 @@ done
 declare -a STARTED_EMULATORS=()
 QA_SNAPSHOT="qa-ready"
 
+# QA_TEST_CASES_FILE: ruta opcional a JSON con test cases del issue
+# Formato: [{"id":"TC-01","title":"..."},{"id":"TC-02","title":"..."},...]
+# Si está definido, se ejecuta cada flow individualmente con tracking de timestamps.
+# Si no está definido, se usa el modo libre original.
+QA_TEST_CASES_FILE="${QA_TEST_CASES_FILE:-}"
+
+# Helper: convierte segundos a formato HH:MM:SS
+seconds_to_hms() {
+    local s=$1
+    printf "%02d:%02d:%02d" $((s/3600)) $(((s%3600)/60)) $((s%60))
+}
+
 # JAVA_HOME obligatorio para Gradle y Maestro (forzar siempre Temurin 21)
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 
@@ -285,6 +297,7 @@ trap cleanup EXIT
 
 # Iniciar screenrecord en cada emulador en paralelo antes de ejecutar Maestro
 echo "  Iniciando grabación de video en $QA_SHARDS emulador(es)..."
+SERIAL_MAIN="emulator-${AVD_PORTS[${AVD_NAMES[0]}]}"
 for avd_name in "${AVD_NAMES[@]}"; do
     port=${AVD_PORTS[$avd_name]}
     serial="emulator-${port}"
@@ -295,23 +308,152 @@ for avd_name in "${AVD_NAMES[@]}"; do
         > "$RECORDINGS_DIR/screenrecord-${port}.log" 2>&1 &
 done
 
-# Ejecutar Maestro con shards (distribuye flows automáticamente si hay múltiples)
-if [ "$QA_SHARDS" -gt 1 ]; then
-    echo "  Distribuiendo flows entre $QA_SHARDS shards (emuladores en paralelo)..."
-else
-    echo "  Ejecutando flows en modo secuencial (1 emulador)..."
-fi
 MAESTRO_EXIT=0
 
-if maestro test "$MAESTRO_DIR" \
-    --shards "$QA_SHARDS" \
-    --format junit \
-    --output "$RECORDINGS_DIR/maestro-results.xml" \
-    2>&1 | tee "$RECORDINGS_DIR/maestro-output.log"; then
-    echo "  ✓ Todos los flows pasaron"
+# ── Modo guión: ejecutar flows uno a uno con tracking de timestamps ──────────
+if [ -n "$QA_TEST_CASES_FILE" ] && [ -f "$QA_TEST_CASES_FILE" ]; then
+    echo "  Modo guión activado: ejecutando flows por test case..."
+
+    # En modo guión se fuerza 1 shard para ejecución secuencial y timestamps precisos
+    if [ "$QA_SHARDS" -gt 1 ]; then
+        echo "  Nota: QA_SHARDS reducido a 1 en modo guión (ejecución secuencial requerida)"
+    fi
+
+    # Obtener lista de flows ordenados alfabéticamente
+    FLOW_FILES=()
+    while IFS= read -r f; do
+        [ -f "$f" ] && FLOW_FILES+=("$f")
+    done < <(find "$MAESTRO_DIR" -name "*.yaml" | sort)
+    FLOW_COUNT=${#FLOW_FILES[@]}
+
+    # Leer cantidad de test cases del JSON (requiere node)
+    TC_COUNT=0
+    if command -v node &>/dev/null; then
+        TC_COUNT=$(node -e "
+          try {
+            const fs = require('fs');
+            const t = JSON.parse(fs.readFileSync('$QA_TEST_CASES_FILE','utf8'));
+            console.log(t.length);
+          } catch(e) { console.log(0); }
+        " 2>/dev/null || echo "0")
+    fi
+
+    echo "  Test cases del issue: $TC_COUNT | Flows disponibles: $FLOW_COUNT"
+
+    # Timestamp de inicio de grabación (referencia para calcular offsets)
+    RECORDING_START=$(date +%s)
+    TC_RESULTS_JSON="["
+    FIRST_TC=1
+
+    for i in $(seq 0 $((FLOW_COUNT - 1))); do
+        FLOW_FILE="${FLOW_FILES[$i]}"
+        FLOW_NAME=$(basename "$FLOW_FILE" .yaml)
+
+        # Obtener id y título del test case correspondiente (o generar uno genérico)
+        TC_ID=$(printf "TC-%02d" $((i+1)))
+        TC_TITLE="$FLOW_NAME"
+        if command -v node &>/dev/null && [ "$TC_COUNT" -gt 0 ]; then
+            READ_TC=$(node -e "
+              try {
+                const fs = require('fs');
+                const t = JSON.parse(fs.readFileSync('$QA_TEST_CASES_FILE','utf8'));
+                const tc = t[$i];
+                if (tc) {
+                  console.log((tc.id||'TC-$(printf "%02d" $((i+1)))') + '\t' + (tc.title||'$FLOW_NAME'));
+                } else {
+                  console.log('TC-$(printf "%02d" $((i+1)))\t$FLOW_NAME');
+                }
+              } catch(e) { console.log('TC-$(printf "%02d" $((i+1)))\t$FLOW_NAME'); }
+            " 2>/dev/null || echo "${TC_ID}	${FLOW_NAME}")
+            TC_ID=$(echo "$READ_TC" | cut -f1)
+            TC_TITLE=$(echo "$READ_TC" | cut -f2-)
+        fi
+
+        # Timestamp inicio del test case
+        NOW=$(date +%s)
+        TC_START_SEC=$(( NOW - RECORDING_START ))
+        TS_START=$(seconds_to_hms "$TC_START_SEC")
+
+        echo ""
+        echo "  [$TC_ID] $TC_TITLE"
+        echo "    Flow: $FLOW_NAME | Inicio: $TS_START"
+
+        # Ejecutar el flow individualmente
+        TC_EXIT=0
+        maestro test "$FLOW_FILE" \
+            --format junit \
+            --output "$RECORDINGS_DIR/maestro-tc-${i}.xml" \
+            2>&1 | tee "$RECORDINGS_DIR/maestro-tc-${i}.log" || TC_EXIT=$?
+
+        # Pausa visual entre test cases (~1s para separación en el video)
+        sleep 1
+
+        # Timestamp fin del test case
+        NOW=$(date +%s)
+        TC_END_SEC=$(( NOW - RECORDING_START ))
+        TS_END=$(seconds_to_hms "$TC_END_SEC")
+
+        TC_RESULT=$([ $TC_EXIT -eq 0 ] && echo "PASS" || echo "FAIL")
+        [ $TC_EXIT -ne 0 ] && MAESTRO_EXIT=1
+
+        echo "    → $TC_RESULT ($TS_START → $TS_END)"
+
+        # Acumular resultado en JSON (escapar caracteres problemáticos del título)
+        TC_TITLE_SAFE=$(echo "$TC_TITLE" | sed 's/"/\\"/g' | tr -d '\n\r')
+        TC_ID_SAFE=$(echo "$TC_ID" | sed 's/"/\\"/g')
+        if [ "$FIRST_TC" = "1" ]; then
+            FIRST_TC=0
+        else
+            TC_RESULTS_JSON="${TC_RESULTS_JSON},"
+        fi
+        TC_RESULTS_JSON="${TC_RESULTS_JSON}
+    {\"id\":\"${TC_ID_SAFE}\",\"title\":\"${TC_TITLE_SAFE}\",\"timestamp_start\":\"${TS_START}\",\"timestamp_end\":\"${TS_END}\",\"result\":\"${TC_RESULT}\"}"
+    done
+
+    TC_RESULTS_JSON="${TC_RESULTS_JSON}
+  ]"
+
+    # Calcular veredicto global
+    QA_VERDICT=$([ $MAESTRO_EXIT -eq 0 ] && echo "APROBADO" || echo "RECHAZADO")
+
+    # Generar qa-steps-report.json
+    cat > "$RECORDINGS_DIR/qa-steps-report.json" << STEPS_EOF
+{
+  "test_cases": ${TC_RESULTS_JSON},
+  "verdict": "${QA_VERDICT}"
+}
+STEPS_EOF
+    echo ""
+    echo "  qa-steps-report.json generado con $FLOW_COUNT test cases → $QA_VERDICT"
+
+    # Usar el último XML como maestro-results.xml de referencia
+    LAST_IDX=$((FLOW_COUNT - 1))
+    cp "$RECORDINGS_DIR/maestro-tc-${LAST_IDX}.xml" "$RECORDINGS_DIR/maestro-results.xml" 2>/dev/null || true
+
+    if [ $MAESTRO_EXIT -eq 0 ]; then
+        echo "  ✓ Todos los test cases pasaron"
+    else
+        echo "  ✗ Algunos test cases fallaron (ver logs)"
+    fi
+
+# ── Modo libre: comportamiento original con shards ───────────────────────────
 else
-    echo "  ✗ Algunos flows fallaron (ver logs)"
-    MAESTRO_EXIT=1
+    if [ "$QA_SHARDS" -gt 1 ]; then
+        echo "  Distribuiendo flows entre $QA_SHARDS shards (emuladores en paralelo)..."
+    else
+        echo "  Ejecutando flows en modo secuencial (1 emulador)..."
+    fi
+
+    if maestro test "$MAESTRO_DIR" \
+        --shards "$QA_SHARDS" \
+        --format junit \
+        --output "$RECORDINGS_DIR/maestro-results.xml" \
+        2>&1 | tee "$RECORDINGS_DIR/maestro-output.log"; then
+        echo "  ✓ Todos los flows pasaron"
+    else
+        echo "  ✗ Algunos flows fallaron (ver logs)"
+        MAESTRO_EXIT=1
+    fi
 fi
 
 # Detener grabación en todos los emuladores
