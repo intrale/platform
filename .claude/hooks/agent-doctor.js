@@ -673,6 +673,92 @@ function buildDiagnosisNotification(agentInfo, diagnosis, recovery) {
     return lines.join("\n");
 }
 
+// --- Cleanup de terminales zombie ---
+
+/**
+ * Detecta y mata terminales PowerShell de agentes que ya no tienen proceso claude activo.
+ * Una terminal es "zombie" si Run-AgentStream.ps1 sigue abierto pero claude.exe ya terminó.
+ * También limpia procesos node.exe de tests heredados de worktrees eliminados.
+ *
+ * @param {string} repoRoot  Path al repo principal
+ * @returns {{ killed: number, details: string[] }}
+ */
+function cleanupZombieTerminals(repoRoot) {
+    var result = { killed: 0, details: [] };
+    try {
+        // 1. Terminales PowerShell de Run-AgentStream sin proceso claude activo
+        var psOut = "";
+        try {
+            psOut = execSync('wmic process where "name=\'powershell.exe\'" get ProcessId,CommandLine,CreationDate /FORMAT:CSV',
+                { encoding: "utf8", timeout: 10000 });
+        } catch (e) { return result; }
+
+        var agentTerminals = [];
+        for (var line of psOut.split("\n")) {
+            if (!line.includes("Run-AgentStream")) continue;
+            var parts = line.split(",");
+            var pid = parseInt(parts[parts.length - 1]);
+            if (!pid) continue;
+            var createdRaw = (parts[parts.length - 2] || "").substring(0, 14);
+            var ageMin = 0;
+            if (createdRaw && createdRaw.length >= 14) {
+                var d = createdRaw;
+                var created = new Date(d.substring(0,4)+"-"+d.substring(4,6)+"-"+d.substring(6,8)+"T"+d.substring(8,10)+":"+d.substring(10,12)+":"+d.substring(12,14));
+                ageMin = Math.round((Date.now() - created.getTime()) / 60000);
+            }
+            agentTerminals.push({ pid: pid, age: ageMin, line: line });
+        }
+
+        // Verificar si hay procesos claude.exe activos
+        var claudeActive = false;
+        try {
+            var claudeOut = execSync('tasklist /FI "IMAGENAME eq claude.exe" /NH', { encoding: "utf8", timeout: 5000 });
+            claudeActive = claudeOut.indexOf("claude.exe") !== -1;
+        } catch (e) {}
+
+        // Si no hay claude activo y hay terminales de agente > 5 min, son zombies
+        if (!claudeActive) {
+            for (var term of agentTerminals) {
+                if (term.age < 5) continue; // grace period de 5 min
+                try {
+                    execSync("taskkill /PID " + term.pid + " /T /F", { shell: "cmd.exe", stdio: "ignore", timeout: 5000 });
+                    result.killed++;
+                    result.details.push("Killed zombie terminal PID " + term.pid + " (age " + term.age + " min)");
+                } catch (e) {}
+            }
+        }
+
+        // 2. Procesos node.exe de tests heredados de worktrees que ya no existen
+        try {
+            var nodeOut = execSync('wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+                { encoding: "utf8", timeout: 10000 });
+            for (var nline of nodeOut.split("\n")) {
+                if (!nline.includes("test-p") || !nline.includes(".claude")) continue;
+                // Verificar si el worktree del test aún existe
+                var wtMatch = nline.match(/platform\.[^\\\/\s]+/);
+                if (wtMatch) {
+                    var wtPath = path.join(path.dirname(repoRoot), wtMatch[0]);
+                    if (!fs.existsSync(wtPath)) {
+                        var nparts = nline.split(",");
+                        var npid = parseInt(nparts[nparts.length - 1]);
+                        if (npid) {
+                            try {
+                                execSync("taskkill /PID " + npid + " /F", { shell: "cmd.exe", stdio: "ignore", timeout: 5000 });
+                                result.killed++;
+                                result.details.push("Killed orphan test PID " + npid);
+                            } catch (e) {}
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+
+    } catch (e) {
+        result.details.push("Error en cleanup: " + e.message);
+    }
+    return result;
+}
+
 // --- Exports ---
 
 module.exports = {
@@ -684,4 +770,5 @@ module.exports = {
     handleDeadAgent:            handleDeadAgent,
     buildDoctorRetryPrompt:     buildDoctorRetryPrompt,
     buildDiagnosisNotification: buildDiagnosisNotification,
+    cleanupZombieTerminals:     cleanupZombieTerminals,
 };
