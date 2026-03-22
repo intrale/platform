@@ -1,0 +1,117 @@
+appId: com.intrale.app.business
+---
+# Flujo E2E: Validación #1633 — Dashboard de negocio — Carga exitosa (happy path)
+# Criterio: El dashboard muestra el panel con métricas de productos, pedidos y delivery
+
+- launchApp:
+    clearState: true
+
+- waitForAnimationToEnd
+
+# Saltar onboarding si aparece
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Ir a login
+- tapOn:
+    text: "Ya tengo cuenta"
+    optional: true
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 1633-dashboard-01-welcome
+
+# Esperar pantalla de login
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 15000
+
+- takeScreenshot: 1633-dashboard-02-login
+
+# Ingresar credenciales del BusinessAdmin
+- tapOn:
+    id: "field_Usuario"
+- inputText: "admin@intrale.com"
+
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "Admin1234!"
+
+- takeScreenshot: 1633-dashboard-03-login-filled
+
+# Enviar formulario
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 1633-dashboard-04-after-login
+
+# Esperar que aparezca el dashboard (Panel de administración)
+- extendedWaitUntil:
+    visible:
+      text: "Panel de administración"
+    timeout: 20000
+
+- takeScreenshot: 1633-dashboard-05-dashboard-loaded
+
+# Verificar encabezado del dashboard
+- assertVisible:
+    text: "Panel de administración"
+    label: "Subtítulo del dashboard visible"
+
+# Verificar texto introductorio
+- assertVisible:
+    text: "Gestioná productos, pedidos y tu equipo desde un solo lugar."
+    label: "Descripción del dashboard visible"
+
+- takeScreenshot: 1633-dashboard-06-header-verified
+
+# Verificar que las tarjetas de métricas aparecen
+- assertVisible:
+    text: "Productos"
+    label: "Tarjeta de Productos visible"
+
+- assertVisible:
+    text: "Pedidos"
+    label: "Tarjeta de Pedidos visible"
+
+- assertVisible:
+    text: "Delivery"
+    label: "Tarjeta de Delivery visible"
+
+- takeScreenshot: 1633-dashboard-07-cards-visible
+
+# Verificar que las tarjetas tienen acciones (CTAs)
+- assertVisible:
+    text: "Ver catálogo"
+    label: "CTA Ver catálogo visible"
+
+- assertVisible:
+    text: "Pedidos pendientes"
+    label: "CTA Pedidos pendientes visible"
+
+- takeScreenshot: 1633-dashboard-08-actions-verified
+
+# Scroll para ver más tarjetas
+- scrollUntilVisible:
+    element:
+      text: "Datos del negocio"
+    direction: DOWN
+
+- assertVisible:
+    text: "Datos del negocio"
+    label: "Tarjeta configuración de negocio visible"
+
+- takeScreenshot: 1633-dashboard-09-scroll-bottom
+
+# Verificar sección de configuración
+- assertVisible:
+    text: "Configuración"
+    label: "Tarjeta de Configuración visible"
+
+- takeScreenshot: 1633-dashboard-10-full-dashboard

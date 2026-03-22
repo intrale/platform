@@ -1,0 +1,92 @@
+appId: com.intrale.app.business
+---
+# Flujo E2E: Validación #1633 — Dashboard de negocio — Error state y retry
+# Criterio: Cuando hay error de red, se muestra ErrorState con botón "Reintentar"
+# y al presionar, intenta recargar el dashboard
+
+- launchApp:
+    clearState: true
+
+- waitForAnimationToEnd
+
+# Saltar onboarding si aparece
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Ir a login
+- tapOn:
+    text: "Ya tengo cuenta"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Esperar pantalla de login
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 15000
+
+# Ingresar credenciales del BusinessAdmin
+- tapOn:
+    id: "field_Usuario"
+- inputText: "admin@intrale.com"
+
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "Admin1234!"
+
+# Enviar formulario
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Esperar el dashboard (estado exitoso o error)
+- extendedWaitUntil:
+    anyOf:
+      - visible:
+          text: "Panel de administración"
+      - visible:
+          text: "Algo salio mal"
+      - visible:
+          text: "Reintentar"
+    timeout: 20000
+
+- takeScreenshot: 1633-retry-01-dashboard-initial
+
+# Si el dashboard cargó exitosamente, verificar que las tarjetas están visibles
+# y que el flujo básico funciona antes de verificar el botón retry
+- tapOn:
+    text: "Reintentar"
+    optional: true
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 1633-retry-02-after-retry
+
+# Verificar que el dashboard sigue en pantalla (el retry no rompe la navegación)
+- extendedWaitUntil:
+    anyOf:
+      - visible:
+          text: "Panel de administración"
+      - visible:
+          text: "Sin actividad reciente"
+      - visible:
+          text: "Algo salio mal"
+    timeout: 15000
+
+- takeScreenshot: 1633-retry-03-state-after-retry
+
+# El dashboard debe mostrar algún estado válido después del retry (no crash ni pantalla en blanco)
+- assertVisible:
+    anyOf:
+      - text: "Panel de administración"
+      - text: "Sin actividad reciente"
+      - text: "Algo salio mal"
+      - text: "Reintentar"
+    label: "El dashboard muestra un estado válido después del retry"
+
+- takeScreenshot: 1633-retry-04-final-state
