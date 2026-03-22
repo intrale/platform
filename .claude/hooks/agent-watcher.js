@@ -1348,6 +1348,16 @@ async function main() {
             // Un error en un ciclo no mata el watcher — solo se loguea
             log("Error en ciclo periódico (no fatal): " + e.message);
         }
+        // Cleanup de terminales zombie cada ciclo (best-effort)
+        if (agentDoctor && agentDoctor.cleanupZombieTerminals) {
+            try {
+                const cleanup = agentDoctor.cleanupZombieTerminals(REPO_ROOT);
+                if (cleanup.killed > 0) {
+                    log("Zombie cleanup: " + cleanup.killed + " procesos terminados");
+                    cleanup.details.forEach(d => log("  " + d));
+                }
+            } catch (e) {}
+        }
     }, POLL_INTERVAL_MS);
 
     // Señales de terminación
