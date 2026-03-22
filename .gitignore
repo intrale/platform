@@ -52,6 +52,9 @@ qa/generated/
 
 # QA E2E — evidencias versionadas (NO ignorar)
 !qa/evidence/
+# QA E2E — videos locales (pesados, se suben a Google Drive)
+qa/evidence/**/*.mp4
+qa/evidence/**/*.mp4.tmp
 .maestro/tests/
 
 # Claude Code — estado de sesión y logs (no commitear)

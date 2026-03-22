@@ -1,20 +1,29 @@
 #!/usr/bin/env node
-// qa-video-share.js — Distribuye videos de evidencia QA a stakeholders vía Telegram
+// qa-video-share.js — Distribuye videos de evidencia QA a stakeholders vía Google Drive + Telegram
 //
 // Uso:
 //   node qa/scripts/qa-video-share.js \
 //     --issue 1112 \
+//     --title "Login — happy path" \
+//     --sprint "SPR-0051" \
 //     --videos "qa/recordings/maestro-shard-5554.mp4,qa/recordings/maestro-shard-5556.mp4" \
 //     --verdict "APROBADO" \
 //     --passed 3 --total 3
 //
-// Estrategia en 2 niveles:
-//   1. Video <= 50MB → sendVideo directo por Telegram Bot API (costo $0, sin config extra)
-//   2. Video > 50MB  → subir a Cloudflare R2 + enviar link por Telegram
+// Estrategia en 3 niveles:
+//   1. Google Drive (si google_credentials_path configurado en telegram-config.json):
+//      → Sube video a "Intrale QA / SPR-XXXX / #issue-titulo /"
+//      → Permisos "anyone with link" (reader)
+//      → Envía link por Telegram (mensaje descriptivo)
+//      → Guarda video_url en qa-report.json
+//   2. Video <= 50MB y Drive no disponible → sendVideo directo por Telegram Bot API
+//   3. Video > 50MB sin Drive → subir a Cloudflare R2 + enviar link (si R2 configurado)
 //      (requiere R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET en env)
 //
-// Dependencias: ninguna (Node.js puro, https nativo)
-// Config Telegram: lee de .claude/hooks/telegram-config.json (campos bot_token, chat_id/sponsor_chat_id)
+// Dependencias: ninguna (Node.js puro, https/crypto nativos)
+// Config Telegram: lee de .claude/hooks/telegram-config.json
+// Config Drive: google_credentials_path + google_drive_folder_id en telegram-config.json
+//               O GOOGLE_CREDENTIALS_PATH + GOOGLE_DRIVE_FOLDER_ID en env
 
 const fs = require("fs");
 const path = require("path");
@@ -35,11 +44,15 @@ const CONFIG_PATH = path.join(HOOKS_DIR, "telegram-config.json");
 
 let BOT_TOKEN = "";
 let CHAT_ID = "";
+let DRIVE_FOLDER_ID = "";
+let DRIVE_CREDENTIALS_PATH = "";
 try {
     const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
     BOT_TOKEN = cfg.bot_token || "";
     // Preferir sponsor_chat_id si existe, fallback a chat_id
     CHAT_ID = cfg.sponsor_chat_id || cfg.chat_id || "";
+    DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || cfg.google_drive_folder_id || "";
+    DRIVE_CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || cfg.google_credentials_path || "";
 } catch (e) {
     console.error("[qa-video-share] No se pudo leer telegram-config.json:", e.message);
     process.exit(1);
@@ -57,20 +70,30 @@ const R2_CONFIG = {
 
 function parseArgs() {
     const args = process.argv.slice(2);
-    const result = { issue: "0", videos: "", verdict: "DESCONOCIDO", passed: "0", total: "0" };
+    const result = {
+        issue: "0",
+        title: "",
+        sprint: "",
+        videos: "",
+        verdict: "DESCONOCIDO",
+        passed: "0",
+        total: "0",
+    };
     for (let i = 0; i < args.length; i++) {
         switch (args[i]) {
-            case "--issue": result.issue = args[++i] || "0"; break;
-            case "--videos": result.videos = args[++i] || ""; break;
+            case "--issue":   result.issue   = args[++i] || "0"; break;
+            case "--title":   result.title   = args[++i] || ""; break;
+            case "--sprint":  result.sprint  = args[++i] || ""; break;
+            case "--videos":  result.videos  = args[++i] || ""; break;
             case "--verdict": result.verdict = args[++i] || "DESCONOCIDO"; break;
-            case "--passed": result.passed = args[++i] || "0"; break;
-            case "--total": result.total = args[++i] || "0"; break;
+            case "--passed":  result.passed  = args[++i] || "0"; break;
+            case "--total":   result.total   = args[++i] || "0"; break;
         }
     }
     return result;
 }
 
-// --- Telegram: sendVideo (multipart/form-data, patron de telegram-image-utils.js) ---
+// --- Telegram: sendVideo (multipart/form-data) ---
 
 function sendTelegramVideo(videoBuffer, filename, caption) {
     return new Promise((resolve, reject) => {
@@ -113,7 +136,7 @@ function sendTelegramVideo(videoBuffer, filename, caption) {
                 "Content-Type": "multipart/form-data; boundary=" + boundary,
                 "Content-Length": fullBody.length,
             },
-            timeout: 120000, // 2 min para videos grandes
+            timeout: 120000,
         }, (res) => {
             let d = "";
             res.on("data", (c) => d += c);
@@ -169,6 +192,296 @@ function sendTelegramMessage(text) {
     });
 }
 
+// --- Google Drive: Service Account JWT + REST API (Node.js puro) ---
+
+function driveAvailable() {
+    if (!DRIVE_CREDENTIALS_PATH) return false;
+    const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
+    return fs.existsSync(resolved);
+}
+
+function loadDriveCredentials() {
+    const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
+    return JSON.parse(fs.readFileSync(resolved, "utf8"));
+}
+
+// Generar JWT firmado para Service Account
+function createServiceAccountJWT(credentials) {
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+        iss: credentials.client_email,
+        scope: "https://www.googleapis.com/auth/drive",
+        aud: "https://oauth2.googleapis.com/token",
+        exp: now + 3600,
+        iat: now,
+    })).toString("base64url");
+    const unsigned = header + "." + payload;
+    const sign = crypto.createSign("RSA-SHA256");
+    sign.update(unsigned);
+    const signature = sign.sign(credentials.private_key, "base64url");
+    return unsigned + "." + signature;
+}
+
+// Obtener access token via JWT grant
+function getGoogleAccessToken(credentials) {
+    return new Promise((resolve, reject) => {
+        const jwt = createServiceAccountJWT(credentials);
+        const payload = "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
+            "&assertion=" + encodeURIComponent(jwt);
+        const req = https.request({
+            hostname: "oauth2.googleapis.com",
+            path: "/token",
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Length": Buffer.byteLength(payload),
+            },
+            timeout: 15000,
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.access_token) resolve(r.access_token);
+                    else reject(new Error("Token error: " + d));
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("token request timeout")); });
+        req.on("error", (e) => reject(e));
+        req.write(payload);
+        req.end();
+    });
+}
+
+// Listar carpetas hijas con un nombre dado dentro de un padre
+function driveListFolder(accessToken, name, parentId) {
+    return new Promise((resolve, reject) => {
+        const q = encodeURIComponent(
+            "mimeType='application/vnd.google-apps.folder'" +
+            " and name='" + name.replace(/'/g, "\\'") + "'" +
+            " and '" + parentId + "' in parents" +
+            " and trashed=false"
+        );
+        const req = https.request({
+            hostname: "www.googleapis.com",
+            path: "/drive/v3/files?q=" + q + "&fields=files(id,name)&spaces=drive",
+            method: "GET",
+            headers: { Authorization: "Bearer " + accessToken },
+            timeout: 15000,
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    resolve((r.files || []));
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("list folder timeout")); });
+        req.on("error", (e) => reject(e));
+        req.end();
+    });
+}
+
+// Crear carpeta en Drive
+function driveCreateFolder(accessToken, name, parentId) {
+    return new Promise((resolve, reject) => {
+        const metadata = JSON.stringify({
+            name: name,
+            mimeType: "application/vnd.google-apps.folder",
+            parents: [parentId],
+        });
+        const req = https.request({
+            hostname: "www.googleapis.com",
+            path: "/drive/v3/files?fields=id,name",
+            method: "POST",
+            headers: {
+                Authorization: "Bearer " + accessToken,
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(metadata),
+            },
+            timeout: 15000,
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.id) resolve(r);
+                    else reject(new Error("createFolder error: " + d));
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("create folder timeout")); });
+        req.on("error", (e) => reject(e));
+        req.write(metadata);
+        req.end();
+    });
+}
+
+// Obtener o crear carpeta (idempotente)
+async function driveGetOrCreateFolder(accessToken, name, parentId) {
+    const existing = await driveListFolder(accessToken, name, parentId);
+    if (existing.length > 0) {
+        return existing[0].id;
+    }
+    const created = await driveCreateFolder(accessToken, name, parentId);
+    return created.id;
+}
+
+// Subir video a Drive (multipart upload)
+function driveUploadFile(accessToken, videoBuffer, filename, folderId) {
+    return new Promise((resolve, reject) => {
+        const boundary = "----DriveBoundary" + Date.now().toString(36);
+        const CRLF = "\r\n";
+        const metadata = JSON.stringify({ name: filename, parents: [folderId] });
+
+        const preamble = Buffer.from(
+            "--" + boundary + CRLF +
+            "Content-Type: application/json; charset=UTF-8" + CRLF + CRLF +
+            metadata + CRLF +
+            "--" + boundary + CRLF +
+            "Content-Type: video/mp4" + CRLF + CRLF
+        );
+        const postamble = Buffer.from(CRLF + "--" + boundary + "--" + CRLF);
+        const body = Buffer.concat([preamble, videoBuffer, postamble]);
+
+        const req = https.request({
+            hostname: "www.googleapis.com",
+            path: "/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink",
+            method: "POST",
+            headers: {
+                Authorization: "Bearer " + accessToken,
+                "Content-Type": "multipart/related; boundary=" + boundary,
+                "Content-Length": body.length,
+            },
+            timeout: 600000, // 10 min para videos grandes
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.id) resolve(r);
+                    else reject(new Error("Drive upload error: " + d));
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("Drive upload timeout")); });
+        req.on("error", (e) => reject(e));
+        req.write(body);
+        req.end();
+    });
+}
+
+// Hacer el archivo público (anyone with link, reader)
+function driveSetPublic(accessToken, fileId) {
+    return new Promise((resolve, reject) => {
+        const permission = JSON.stringify({ type: "anyone", role: "reader" });
+        const req = https.request({
+            hostname: "www.googleapis.com",
+            path: "/drive/v3/files/" + fileId + "/permissions",
+            method: "POST",
+            headers: {
+                Authorization: "Bearer " + accessToken,
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(permission),
+            },
+            timeout: 15000,
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    resolve(r);
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("setPublic timeout")); });
+        req.on("error", (e) => reject(e));
+        req.write(permission);
+        req.end();
+    });
+}
+
+// Obtener webViewLink de un archivo (para link compartible)
+function driveGetFileLink(accessToken, fileId) {
+    return new Promise((resolve, reject) => {
+        const req = https.request({
+            hostname: "www.googleapis.com",
+            path: "/drive/v3/files/" + fileId + "?fields=webViewLink",
+            method: "GET",
+            headers: { Authorization: "Bearer " + accessToken },
+            timeout: 10000,
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    resolve(r.webViewLink || "");
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("getFileLink timeout")); });
+        req.on("error", (e) => reject(e));
+        req.end();
+    });
+}
+
+// Subir video completo a Google Drive: auth + carpetas + upload + permisos
+async function uploadToDrive(videoBuffer, filename, issueNumber, issueTitle, sprintId) {
+    const credentials = loadDriveCredentials();
+    const accessToken = await getGoogleAccessToken(credentials);
+
+    // Carpeta raíz configurada (ej. ID de "Intrale QA" en Drive)
+    const rootFolderId = DRIVE_FOLDER_ID;
+
+    // Estructura: rootFolderId / SPR-XXXX / #issue-titulo /
+    const sprintFolder = sprintId || "QA";
+    const issueFolder = issueTitle
+        ? "#" + issueNumber + "-" + issueTitle.replace(/[/\\?%*:|"<>]/g, "-").slice(0, 40)
+        : "#" + issueNumber;
+
+    console.log("[qa-video-share] Drive: creando estructura " + sprintFolder + " / " + issueFolder);
+    const sprintFolderId = await driveGetOrCreateFolder(accessToken, sprintFolder, rootFolderId);
+    const issueFolderId = await driveGetOrCreateFolder(accessToken, issueFolder, sprintFolderId);
+
+    console.log("[qa-video-share] Drive: subiendo " + filename + " (" + formatSize(videoBuffer.length) + ")...");
+    const uploaded = await driveUploadFile(accessToken, videoBuffer, filename, issueFolderId);
+    await driveSetPublic(accessToken, uploaded.id);
+
+    // Preferir webViewLink (abre el video en el navegador)
+    let driveLink = uploaded.webViewLink;
+    if (!driveLink) {
+        driveLink = await driveGetFileLink(accessToken, uploaded.id);
+    }
+    if (!driveLink) {
+        driveLink = "https://drive.google.com/file/d/" + uploaded.id + "/view";
+    }
+    return driveLink;
+}
+
+// Actualizar video_url en qa-report.json
+function updateQaReport(issueNumber, videoUrl) {
+    const PROJECT_ROOT = path.resolve(__dirname, "../..");
+    const reportPath = path.join(PROJECT_ROOT, "qa", "evidence", String(issueNumber), "qa-report.json");
+    if (!fs.existsSync(reportPath)) return;
+    try {
+        const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+        report.video_url = videoUrl;
+        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n", "utf8");
+        console.log("[qa-video-share] qa-report.json actualizado con video_url");
+    } catch (e) {
+        console.error("[qa-video-share] No se pudo actualizar qa-report.json:", e.message);
+    }
+}
+
 // --- Cloudflare R2: upload con presigned URL (S3-compatible, Node.js puro) ---
 
 function r2Available() {
@@ -213,7 +526,6 @@ function uploadToR2(videoBuffer, objectKey) {
             "AWS4-HMAC-SHA256", amzDate, credentialScope, sha256Hex(canonicalRequest),
         ].join("\n");
 
-        // Signing key
         let signingKey = hmacSha256("AWS4" + R2_CONFIG.secretAccessKey, dateStamp);
         signingKey = hmacSha256(signingKey, region);
         signingKey = hmacSha256(signingKey, service);
@@ -254,7 +566,7 @@ function uploadToR2(videoBuffer, objectKey) {
     });
 }
 
-// Generar presigned GET URL para R2 (AWS Signature V4 query string)
+// Generar presigned GET URL para R2
 function generateR2PresignedUrl(objectKey) {
     const host = R2_CONFIG.accountId + ".r2.cloudflarestorage.com";
     const region = "auto";
@@ -317,6 +629,19 @@ function formatSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + "MB";
 }
 
+// --- Leer sprint activo desde roadmap.json (fallback si no se pasa --sprint) ---
+
+function readActiveSprint() {
+    try {
+        const roadmapPath = path.resolve(__dirname, "../../scripts/roadmap.json");
+        const roadmap = JSON.parse(fs.readFileSync(roadmapPath, "utf8"));
+        const active = (roadmap.sprints || []).find(s => s.status === "active");
+        return active ? active.id : "";
+    } catch (e) {
+        return "";
+    }
+}
+
 // --- Main ---
 
 async function main() {
@@ -333,13 +658,22 @@ async function main() {
         process.exit(0);
     }
 
+    // Resolución del sprint: parámetro > roadmap.json
+    const sprintId = data.sprint || readActiveSprint();
+
     const verdictIcon = data.verdict === "APROBADO" ? "\u2705" : "\u274C";
-    const timestamp = new Date().toLocaleString("es-AR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+    const timestamp = new Date().toLocaleString("es-AR", {
+        day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+    });
 
     console.log("[qa-video-share] Distribuyendo " + videoPaths.length + " video(s) para issue #" + data.issue);
+    if (driveAvailable()) {
+        console.log("[qa-video-share] Modo: Google Drive → Telegram link");
+    }
 
     let sent = 0;
     let failed = 0;
+    let firstDriveUrl = "";
 
     for (const videoPath of videoPaths) {
         const fullPath = path.resolve(videoPath.trim());
@@ -352,66 +686,53 @@ async function main() {
         const stats = fs.statSync(fullPath);
         const filename = path.basename(fullPath);
         const sizeStr = formatSize(stats.size);
-
         const hasNarration = filename.includes("-narrated");
-        const audioTag = hasNarration ? " \uD83D\uDD0A Con narracion" : " \uD83D\uDD07 Sin audio";
-        const caption =
-            verdictIcon + " *QA Evidence* \u2014 Issue #" + data.issue + "\n" +
-            "\uD83C\uDFAC `" + filename + "` (" + sizeStr + ")" + audioTag + "\n" +
-            "\uD83D\uDCCA Tests: " + data.passed + "/" + data.total + " pasaron\n" +
-            "\uD83D\uDD52 " + timestamp;
+        const audioTag = hasNarration ? " \uD83D\uDD0A con narracion" : "";
 
-        if (stats.size <= TELEGRAM_MAX_VIDEO_SIZE) {
-            // Nivel 1: envio directo por Telegram
-            console.log("[qa-video-share] " + filename + " (" + sizeStr + ") -> Telegram sendVideo");
+        // ── Nivel 1: Google Drive ──────────────────────────────────────────
+        if (driveAvailable()) {
+            console.log("[qa-video-share] " + filename + " (" + sizeStr + ") -> Google Drive");
             try {
                 const videoBuffer = fs.readFileSync(fullPath);
-                await withRetry(() => sendTelegramVideo(videoBuffer, filename, caption), "sendVideo " + filename);
-                console.log("[qa-video-share] " + filename + " enviado OK");
-                sent++;
-            } catch (e) {
-                console.error("[qa-video-share] Fallo sendVideo " + filename + ": " + e.message);
-                // Fallback: enviar mensaje de texto
-                try {
-                    await sendTelegramMessage(caption + "\n\n\u26A0 _Video no se pudo enviar directamente (" + sizeStr + ")_");
-                    sent++;
-                } catch (e2) {
-                    failed++;
-                }
-            }
-        } else if (r2Available()) {
-            // Nivel 2: subir a R2 y enviar link
-            console.log("[qa-video-share] " + filename + " (" + sizeStr + ") -> R2 upload + link Telegram");
-            const objectKey = "qa/issue-" + data.issue + "/" + filename;
-            try {
-                const videoBuffer = fs.readFileSync(fullPath);
-                await withRetry(() => uploadToR2(videoBuffer, objectKey), "R2 upload " + filename);
-                const presignedUrl = generateR2PresignedUrl(objectKey);
-                const linkCaption =
-                    caption + "\n\n" +
-                    "\uD83D\uDD17 [Descargar video](" + presignedUrl + ")\n" +
-                    "_Link valido por 7 dias_";
-                await withRetry(() => sendTelegramMessage(linkCaption), "sendMessage link " + filename);
-                console.log("[qa-video-share] " + filename + " subido a R2, link enviado OK");
-                sent++;
-            } catch (e) {
-                console.error("[qa-video-share] Fallo R2+Telegram " + filename + ": " + e.message);
-                failed++;
-            }
-        } else {
-            // R2 no configurado y video > 50MB: enviar solo texto
-            console.log("[qa-video-share] " + filename + " (" + sizeStr + ") excede 50MB, R2 no configurado -> texto");
-            try {
-                await sendTelegramMessage(
-                    caption + "\n\n" +
-                    "\u26A0 _Video excede 50MB. Configurar Cloudflare R2 para compartir videos grandes._\n" +
-                    "_Ruta local: `" + fullPath + "`_"
+                const driveLink = await withRetry(
+                    () => uploadToDrive(videoBuffer, filename, data.issue, data.title, sprintId),
+                    "Drive upload " + filename
                 );
+
+                // Guardar primer link de Drive para qa-report.json
+                if (!firstDriveUrl) {
+                    firstDriveUrl = driveLink;
+                    updateQaReport(data.issue, driveLink);
+                }
+
+                // Mensaje Telegram con formato del issue #1805
+                const issueLabel = data.title
+                    ? "QA #" + data.issue + ": " + data.title
+                    : "QA #" + data.issue;
+                const repoReportPath = "qa/evidence/" + data.issue + "/qa-report.json";
+                const message =
+                    "\uD83D\uDCF9 *" + issueLabel + "*\n" +
+                    verdictIcon + " " + data.verdict + " | " + data.passed + "/" + data.total + " test cases" + audioTag + "\n" +
+                    "\uD83C\uDFAC Video: [Ver en Google Drive](" + driveLink + ")\n" +
+                    "\uD83D\uDCCB Reporte: `" + repoReportPath + "`\n" +
+                    "\uD83D\uDD52 " + timestamp;
+
+                await withRetry(() => sendTelegramMessage(message), "sendMessage Drive link " + filename);
+                console.log("[qa-video-share] " + filename + " subido a Drive, link enviado OK");
                 sent++;
             } catch (e) {
-                failed++;
+                console.error("[qa-video-share] Drive fallo para " + filename + ": " + e.message);
+                console.log("[qa-video-share] Fallback: enviando por Telegram directo...");
+                // Fallback al flujo directo
+                await sendFallback(filename, fullPath, stats, sizeStr, data, verdictIcon, timestamp);
+                sent++;
             }
+            continue;
         }
+
+        // ── Fallback cuando Drive no está configurado ──────────────────────
+        await sendFallback(filename, fullPath, stats, sizeStr, data, verdictIcon, timestamp);
+        sent++;
     }
 
     // Resumen final
@@ -419,6 +740,55 @@ async function main() {
 
     if (failed > 0 && sent === 0) {
         process.exit(1);
+    }
+}
+
+// Flujo de envío fallback (Telegram directo o R2)
+async function sendFallback(filename, fullPath, stats, sizeStr, data, verdictIcon, timestamp) {
+    const hasNarration = filename.includes("-narrated");
+    const audioTag = hasNarration ? " \uD83D\uDD0A Con narracion" : " \uD83D\uDD07 Sin audio";
+    const caption =
+        verdictIcon + " *QA Evidence* \u2014 Issue #" + data.issue + "\n" +
+        "\uD83C\uDFAC `" + filename + "` (" + sizeStr + ")" + audioTag + "\n" +
+        "\uD83D\uDCCA Tests: " + data.passed + "/" + data.total + " pasaron\n" +
+        "\uD83D\uDD52 " + timestamp;
+
+    if (stats.size <= TELEGRAM_MAX_VIDEO_SIZE) {
+        // Envio directo por Telegram
+        console.log("[qa-video-share] " + filename + " (" + sizeStr + ") -> Telegram sendVideo");
+        try {
+            const videoBuffer = fs.readFileSync(fullPath);
+            await withRetry(() => sendTelegramVideo(videoBuffer, filename, caption), "sendVideo " + filename);
+            console.log("[qa-video-share] " + filename + " enviado OK");
+        } catch (e) {
+            console.error("[qa-video-share] Fallo sendVideo " + filename + ": " + e.message);
+            try {
+                await sendTelegramMessage(caption + "\n\n\u26A0 _Video no se pudo enviar directamente (" + sizeStr + ")_");
+            } catch (e2) {
+                throw e2;
+            }
+        }
+    } else if (r2Available()) {
+        // R2 para videos > 50MB
+        console.log("[qa-video-share] " + filename + " (" + sizeStr + ") -> R2 upload + link Telegram");
+        const objectKey = "qa/issue-" + data.issue + "/" + filename;
+        const videoBuffer = fs.readFileSync(fullPath);
+        await withRetry(() => uploadToR2(videoBuffer, objectKey), "R2 upload " + filename);
+        const presignedUrl = generateR2PresignedUrl(objectKey);
+        const linkCaption =
+            caption + "\n\n" +
+            "\uD83D\uDD17 [Descargar video](" + presignedUrl + ")\n" +
+            "_Link valido por 7 dias_";
+        await withRetry(() => sendTelegramMessage(linkCaption), "sendMessage link " + filename);
+        console.log("[qa-video-share] " + filename + " subido a R2, link enviado OK");
+    } else {
+        // Video > 50MB, sin Drive ni R2: texto solamente
+        console.log("[qa-video-share] " + filename + " (" + sizeStr + ") excede 50MB, Drive/R2 no configurado -> texto");
+        await sendTelegramMessage(
+            caption + "\n\n" +
+            "\u26A0 _Video " + sizeStr + " requiere configurar Google Drive o Cloudflare R2._\n" +
+            "_Ruta local: `" + fullPath + "`_"
+        );
     }
 }
 
