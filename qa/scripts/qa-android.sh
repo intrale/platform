@@ -426,6 +426,8 @@ if command -v node &>/dev/null && [ -f "$SCRIPT_DIR/qa-video-share.js" ]; then
         echo "[10] Enviando videos a stakeholders via Telegram..."
         node "$SCRIPT_DIR/qa-video-share.js" \
             --issue "${ISSUE_NUMBER:-0}" \
+            --title "${ISSUE_TITLE:-}" \
+            --sprint "${SPRINT_ID:-}" \
             --videos "$VIDEOS_LIST" \
             --verdict "$VERDICT" \
             --passed "${PASSED:-0}" \
