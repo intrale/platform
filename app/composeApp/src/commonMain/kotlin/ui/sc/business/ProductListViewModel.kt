@@ -29,7 +29,9 @@ data class ProductListItem(
     val categoryName: String,
     val status: ProductStatus,
     val isAvailable: Boolean = true,
-    val stockQuantity: Int? = null
+    val stockQuantity: Int? = null,
+    val isFeatured: Boolean = false,
+    val promotionPrice: Double? = null
 ) {
     val priceLabel: String = formatPrice(basePrice, unit)
     val categoryLabel: String = categoryName.ifBlank { categoryId }
@@ -158,7 +160,9 @@ class ProductListViewModel(
             categoryId = item.categoryId,
             status = item.status,
             isAvailable = item.isAvailable,
-            stockQuantity = item.stockQuantity
+            stockQuantity = item.stockQuantity,
+            isFeatured = item.isFeatured,
+            promotionPrice = item.promotionPrice
         )
 
     private fun ProductDTO.toItem(categories: List<CategoryDTO>): ProductListItem? {
@@ -174,7 +178,9 @@ class ProductListViewModel(
             categoryName = categoryName,
             status = status,
             isAvailable = isAvailable,
-            stockQuantity = stockQuantity
+            stockQuantity = stockQuantity,
+            isFeatured = isFeatured,
+            promotionPrice = promotionPrice
         )
     }
 }

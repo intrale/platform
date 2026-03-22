@@ -39,7 +39,9 @@ class ProductRepository {
             categoryId = record.categoryId,
             status = record.status,
             isAvailable = record.isAvailable,
-            stockQuantity = record.stockQuantity
+            stockQuantity = record.stockQuantity,
+            isFeatured = record.isFeatured,
+            promotionPrice = record.promotionPrice
         )
         products[key(business, productId)] = updated
         return updated

@@ -223,6 +223,17 @@ class ProductFormScreen(
                     onValueChange = viewModel::updateStockQuantity
                 )
 
+                FeaturedSelector(
+                    isFeatured = viewModel.uiState.isFeatured,
+                    onSelect = viewModel::updateFeatured
+                )
+
+                PromotionPriceField(
+                    value = viewModel.uiState.promotionPrice,
+                    helperText = Txt(MessageKey.product_form_promotion_price_helper),
+                    onValueChange = viewModel::updatePromotionPrice
+                )
+
                 viewModel.errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
                     Text(
                         text = message,
@@ -255,7 +266,9 @@ class ProductFormScreen(
                                             categoryId = product.categoryId,
                                             status = product.status,
                                             isAvailable = product.isAvailable,
-                                            stockQuantity = product.stockQuantity
+                                            stockQuantity = product.stockQuantity,
+                                            isFeatured = product.isFeatured,
+                                            promotionPrice = product.promotionPrice
                                         )
                                     )
                                     coroutineScope.launch {
@@ -513,6 +526,58 @@ private fun StockQuantityField(
         },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        textStyle = MaterialTheme.typography.bodyLarge,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+private fun FeaturedSelector(
+    isFeatured: Boolean,
+    onSelect: (Boolean) -> Unit
+) {
+    FilterChip(
+        selected = isFeatured,
+        onClick = { onSelect(!isFeatured) },
+        label = {
+            Text(
+                text = Txt(MessageKey.product_form_featured),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    )
+}
+
+@Composable
+private fun PromotionPriceField(
+    value: String,
+    helperText: String,
+    onValueChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { newValue ->
+            if (newValue.isEmpty() || newValue.all { it.isDigit() || it == '.' || it == ',' }) {
+                onValueChange(newValue)
+            }
+        },
+        label = {
+            Text(
+                Txt(MessageKey.product_form_promotion_price),
+                style = MaterialTheme.typography.labelMedium
+            )
+        },
+        supportingText = {
+            Text(
+                text = helperText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        leadingIcon = { Text("$", style = MaterialTheme.typography.bodyLarge) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
         textStyle = MaterialTheme.typography.bodyLarge,
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier.fillMaxWidth()

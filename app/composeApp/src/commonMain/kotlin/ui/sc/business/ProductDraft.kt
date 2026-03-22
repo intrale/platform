@@ -11,5 +11,7 @@ data class ProductDraft(
     val categoryId: String = "",
     val status: ProductStatus = ProductStatus.Draft,
     val isAvailable: Boolean = true,
-    val stockQuantity: Int? = null
+    val stockQuantity: Int? = null,
+    val isFeatured: Boolean = false,
+    val promotionPrice: Double? = null
 )
