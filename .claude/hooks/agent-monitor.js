@@ -73,7 +73,7 @@ let tgClient;
 try { tgClient = require("./telegram-client"); } catch (e) { tgClient = null; }
 
 // Validación centralizada de completación (#1458)
-const { validateCompletionCriteria, checkPRStatusViaGh } = require("./validation-utils");
+const { validateCompletionCriteria, checkPRStatusViaGh, getDurationFromRegistry } = require("./validation-utils");
 
 let opsLearnings;
 try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
@@ -940,12 +940,18 @@ function moveToCompleted(plan, issueNumber) {
     let prStatus = { status: "unknown" };
     try { prStatus = checkPRStatusViaGh(branch); } catch (e) {}
 
-    // Calcular duración desde started_at si está disponible
+    // Calcular duración con cadena de fallbacks (#1779)
     let duracion_min = 0;
     if (finished.started_at) {
         const started = new Date(finished.started_at).getTime();
-        if (started) duracion_min = Math.round((Date.now() - started) / 60000);
+        if (started && !isNaN(started)) duracion_min = Math.round((Date.now() - started) / 60000);
     }
+    // Fallback a agent-registry heartbeat (#1779)
+    if (!duracion_min && finished.issue) {
+        duracion_min = getDurationFromRegistry(finished.issue);
+    }
+    // Guard contra NaN (#1779)
+    if (isNaN(duracion_min) || duracion_min < 0) duracion_min = 0;
 
     const validation = validateCompletionCriteria(duracion_min, prStatus, branch);
     if (validation.suspicious) {

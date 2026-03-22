@@ -1,9 +1,11 @@
-// validation-utils.js — Validación centralizada de completación de agentes (#1458)
+// validation-utils.js — Validación centralizada de completación de agentes (#1458, #1779)
 // Módulo compartido que centraliza buildCompletedEntry y la lógica de validación
 // antes de marcar un agente como completado (evita falsos positivos en cascada).
 "use strict";
 
 const { execSync } = require("child_process");
+const fs = require("fs");
+const pathMod = require("path");
 
 // ─── Constante compartida ─────────────────────────────────────────────────────
 
@@ -68,6 +70,38 @@ function checkPRStatusViaGh(branch) {
     }
 }
 
+
+/**
+ * Obtiene duracion de un agente desde el agent-registry usando heartbeats (#1779).
+ * @param {number|string} issueNumber
+ * @returns {number} duracion en minutos, 0 si no disponible
+ */
+function getDurationFromRegistry(issueNumber) {
+    try {
+        var rPath = require("path").join(
+            process.env.CLAUDE_PROJECT_DIR || "C:\Workspaces\Intrale\platform",
+            ".claude", "hooks", "agent-registry.json"
+        );
+        var data = JSON.parse(require("fs").readFileSync(rPath, "utf8"));
+        var agents = data.agents || {};
+        var bestDur = 0;
+        for (var sid in agents) {
+            if (!agents.hasOwnProperty(sid)) continue;
+            var ag = agents[sid];
+            if (String(ag.issue) !== String(issueNumber)) continue;
+            var s = new Date(ag.started_at || 0).getTime();
+            var h = new Date(ag.last_heartbeat || ag.completed_at || 0).getTime();
+            if (s && h && h > s && !isNaN(s) && !isNaN(h)) {
+                var d = Math.round((h - s) / 60000);
+                if (d > bestDur) bestDur = d;
+            }
+        }
+        return bestDur;
+    } catch (e) {
+        return 0;
+    }
+}
+
 /**
  * Construye el objeto de entrada para _completed o _incomplete.
  * Calcula duracion_min a partir de:
@@ -85,13 +119,24 @@ function buildCompletedEntry(agente, session, resultado) {
         if (started && last && last > started) {
             duracion_min = Math.round((last - started) / 60000);
         }
-    } else if (agente && agente.started_at) {
+    }
+
+    // Fallback a agente.started_at si session no dio resultado (#1779)
+    if (!duracion_min && agente && agente.started_at) {
         const started = new Date(agente.started_at).getTime();
         const now = Date.now();
-        if (started && now > started) {
+        if (started && !isNaN(started) && now > started) {
             duracion_min = Math.round((now - started) / 60000);
         }
     }
+
+    // Fallback a agent-registry heartbeat (#1779)
+    if (!duracion_min && agente && agente.issue) {
+        duracion_min = getDurationFromRegistry(agente.issue);
+    }
+
+    // Guard contra NaN (#1779)
+    if (isNaN(duracion_min) || duracion_min < 0) duracion_min = 0;
 
     return {
         issue: agente.issue,
@@ -121,6 +166,9 @@ function buildCompletedEntry(agente, session, resultado) {
  * @returns {{ valid: boolean, suspicious: boolean, reason: string, criteria: string[], failedCriteria: string[] }}
  */
 function validateCompletionCriteria(duracion_min, prStatus, branch, repoRoot) {
+    // Guard contra NaN en entrada (#1779)
+    if (isNaN(duracion_min)) duracion_min = 0;
+
     const criteria = [];
     const failedCriteria = [];
 
@@ -132,7 +180,8 @@ function validateCompletionCriteria(duracion_min, prStatus, branch, repoRoot) {
     }
 
     // Criterio 2: PR mergeada
-    if (prStatus && prStatus.status === "merged") {
+    const prMerged = prStatus && prStatus.status === "merged";
+    if (prMerged) {
         criteria.push("pr_merged");
     } else {
         const prDesc = prStatus ? prStatus.status : "unknown";
@@ -150,7 +199,8 @@ function validateCompletionCriteria(duracion_min, prStatus, branch, repoRoot) {
         // null = no determinable → no suma ni resta
     }
 
-    const valid = criteria.length >= 2;
+    // (#1779) PR mergeada es evidencia definitiva
+    const valid = prMerged || criteria.length >= 2;
     return {
         valid,
         suspicious: !valid,
@@ -165,5 +215,6 @@ module.exports = {
     buildCompletedEntry,
     validateCompletionCriteria,
     checkPRStatusViaGh,
-    checkBranchHasOwnCommits
+    checkBranchHasOwnCommits,
+    getDurationFromRegistry
 };
