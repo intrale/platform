@@ -1,0 +1,305 @@
+name: Security SAST
+
+# Análisis de seguridad estático — modo warning (no bloquea PRs en primera iteración)
+# Ejecuta: OWASP Dependency Check, Semgrep, detect-secrets
+# Publica reporte como PR comment con el resumen de hallazgos
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  # ── OWASP Dependency Check (vulnerabilidades en dependencias) ─────
+  dependency-check:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Modo warning — no bloquea el PR
+    outputs:
+      result: ${{ job.status }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache NVD data
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/dependency-check-data
+          key: nvd-data-v1
+          restore-keys: |
+            nvd-data-
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Run OWASP Dependency Check
+        run: ./gradlew dependencyCheckAggregate --no-daemon
+        continue-on-error: true
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+      - name: Upload OWASP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: build/reports/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ── Semgrep — análisis estático de código Kotlin ─────────────────
+  semgrep:
+    name: Semgrep Static Analysis
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Modo warning — no bloquea el PR
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep scan (Kotlin + Java + auto)
+        run: |
+          semgrep scan \
+            --config "p/kotlin" \
+            --config "p/java" \
+            --config "p/secrets" \
+            --config "p/owasp-top-ten" \
+            --sarif-output semgrep.sarif \
+            --quiet \
+            --no-error \
+            . || true
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+        continue-on-error: true
+
+      - name: Extract Semgrep summary
+        if: always()
+        run: |
+          if [ -f semgrep.sarif ]; then
+            FINDINGS=$(python3 -c "
+          import json, sys
+          data = json.load(open('semgrep.sarif'))
+          runs = data.get('runs', [])
+          count = sum(len(r.get('results', [])) for r in runs)
+          print(count)
+          " 2>/dev/null || echo "0")
+            echo "SEMGREP_FINDINGS=$FINDINGS" >> $GITHUB_ENV
+            echo "Semgrep findings: $FINDINGS"
+          else
+            echo "SEMGREP_FINDINGS=0" >> $GITHUB_ENV
+          fi
+
+      - name: Upload Semgrep SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ── detect-secrets — secretos hardcodeados ───────────────────────
+  detect-secrets:
+    name: detect-secrets Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Modo warning — no bloquea el PR
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets --quiet
+
+      - name: Run detect-secrets scan
+        run: |
+          detect-secrets scan \
+            --all-files \
+            --exclude-files '\.gradle/' \
+            --exclude-files 'build/' \
+            --exclude-files '\.git/' \
+            --exclude-files 'gradle/wrapper/' \
+            --exclude-files '\.idea/' \
+            > secrets-baseline.json || true
+        continue-on-error: true
+
+      - name: Count secrets found
+        run: |
+          if [ -f secrets-baseline.json ]; then
+            SECRET_COUNT=$(python3 -c "
+          import json, sys
+          data = json.load(open('secrets-baseline.json'))
+          count = sum(len(v) for v in data.get('results', {}).values())
+          print(count)
+          " 2>/dev/null || echo "0")
+            echo "SECRETS_FOUND=$SECRET_COUNT" >> $GITHUB_ENV
+            echo "Secrets potenciales encontrados: $SECRET_COUNT"
+            if [ "$SECRET_COUNT" -gt 0 ]; then
+              echo "--- Archivos con posibles secretos ---"
+              python3 -c "
+          import json
+          data = json.load(open('secrets-baseline.json'))
+          for f, hits in data.get('results', {}).items():
+              print(f'  {f}: {len(hits)} hallazgo(s)')
+          " || true
+            fi
+          else
+            echo "SECRETS_FOUND=0" >> $GITHUB_ENV
+          fi
+
+      - name: Upload secrets baseline
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secrets-baseline
+          path: secrets-baseline.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ── Reporte consolidado como PR comment ──────────────────────────
+  sast-report:
+    name: Publicar reporte SAST en PR
+    runs-on: ubuntu-latest
+    needs: [dependency-check, semgrep, detect-secrets]
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download OWASP report
+        uses: actions/download-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: reports/owasp/
+        continue-on-error: true
+
+      - name: Download Semgrep SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: semgrep-sarif
+          path: reports/semgrep/
+        continue-on-error: true
+
+      - name: Download secrets baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: secrets-baseline
+          path: reports/secrets/
+        continue-on-error: true
+
+      - name: Generar y publicar reporte en PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const depCheckResult = '${{ needs.dependency-check.result }}';
+            const semgrepResult = '${{ needs.semgrep.result }}';
+            const detectSecretsResult = '${{ needs.detect-secrets.result }}';
+
+            // Contar secretos si el baseline está disponible
+            let secretsCount = 0;
+            try {
+              const baseline = JSON.parse(fs.readFileSync('reports/secrets/secrets-baseline.json', 'utf8'));
+              secretsCount = Object.values(baseline.results || {}).reduce((acc, v) => acc + v.length, 0);
+            } catch {}
+
+            // Contar findings de Semgrep si el SARIF está disponible
+            let semgrepFindings = 0;
+            try {
+              const sarif = JSON.parse(fs.readFileSync('reports/semgrep/semgrep.sarif', 'utf8'));
+              semgrepFindings = (sarif.runs || []).reduce((acc, r) => acc + (r.results || []).length, 0);
+            } catch {}
+
+            const icon = (result) => {
+              if (result === 'success') return '✅';
+              if (result === 'failure') return '⚠️';
+              if (result === 'skipped') return '⏭️';
+              return '❓';
+            };
+
+            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            const securityTabUrl = `${{ github.server_url }}/${{ github.repository }}/security/code-scanning`;
+
+            const body = [
+              `## 🔒 Security SAST — Reporte de análisis`,
+              ``,
+              `> ⚠️ **Modo warning** — este scan es informativo y **no bloquea el merge** en esta primera iteración.`,
+              ``,
+              `| Herramienta | Estado | Hallazgos | Detalles |`,
+              `|-------------|--------|-----------|----------|`,
+              `| 🔍 OWASP Dependency Check | ${icon(depCheckResult)} \`${depCheckResult}\` | Vulnerabilidades en dependencias | [Ver reporte](${runUrl}) |`,
+              `| 🛡️ Semgrep (análisis estático) | ${icon(semgrepResult)} \`${semgrepResult}\` | ${semgrepFindings} hallazgo(s) | [Ver en Security tab](${securityTabUrl}) |`,
+              `| 🔑 detect-secrets (secretos) | ${icon(detectSecretsResult)} \`${detectSecretsResult}\` | ${secretsCount} posible(s) secreto(s) | [Ver reporte](${runUrl}) |`,
+              ``,
+              `📄 Reportes completos disponibles en los [artifacts del workflow](${runUrl}).`,
+              ``,
+              `<details>`,
+              `<summary>ℹ️ ¿Qué hace cada herramienta?</summary>`,
+              ``,
+              `- **OWASP Dependency Check**: Escanea las dependencias del proyecto contra la base de datos NVD en busca de CVEs conocidos.`,
+              `- **Semgrep**: Análisis estático de código Kotlin/Java con reglas OWASP Top 10 y detección de patrones inseguros.`,
+              `- **detect-secrets**: Detecta posibles secretos hardcodeados (API keys, tokens, contraseñas) en el código fuente.`,
+              ``,
+              `</details>`,
+              ``,
+              `<sub>Generado automáticamente por el pipeline SAST · [Documentación](docs/security-sast.md)</sub>`,
+            ].join('\n');
+
+            // Buscar comentario existente para actualizar (sticky comment)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(c =>
+              c.user.login === 'github-actions[bot]' &&
+              c.body.includes('Security SAST — Reporte de análisis')
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body,
+              });
+              console.log('Comentario de seguridad actualizado.');
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              console.log('Comentario de seguridad creado.');
+            }

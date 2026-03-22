@@ -28,6 +28,7 @@ jwks-rsa = "0.22.0"
 
 shadow = "8.1.1"
 kover = "0.9.1"
+owasp-dependency-check = "12.2.0"
 
 java-otp = "0.4.0"
 commons-codec = "1.15"
@@ -147,6 +148,7 @@ ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }
 kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+dependencyCheck = { id = "org.owasp.dependencycheck", version.ref = "owasp-dependency-check" }
 
 # Multiplatform plugins
 androidApplication = { id = "com.android.application", version.ref = "agp" }

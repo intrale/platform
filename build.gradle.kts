@@ -47,6 +47,14 @@ plugins {
     alias(libs.plugins.composeMultiplatform) apply false
     alias(libs.plugins.composeCompiler) apply false
     alias(libs.plugins.kotlinMultiplatform) apply false
+
+    // SAST: OWASP Dependency Check (modo warning — no bloquea el build)
+    alias(libs.plugins.dependencyCheck)
+}
+
+dependencyCheck {
+    // failBuildOnCVSS = 11.0 → nunca falla (CVSS máximo es 10.0) — modo warning
+    failBuildOnCVSS = 11.0f
 }
 
 tasks.register("verifyNoLegacyStrings") {
