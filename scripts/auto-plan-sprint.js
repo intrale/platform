@@ -325,19 +325,55 @@ function selectIssues(allIssues) {
     return selected;
 }
 
-// ─── Generar prompt estándar por issue (#1277) ───────────────────────────────
+// ─── Generar prompt adaptado según labels del issue (#1277, #1735) ───────────
+//
+// Reglas de adaptación:
+//   app:*       → /ux (revisión visual) + /qa (E2E con video) obligatorios
+//   area:backend → /security explícito y obligatorio
+//   bug          → /tester con énfasis en regresiones
+//   area:infra   → pipeline simplificado (sin /ux ni /qa)
+//   default      → pipeline base con /tester, /builder, /security, /review
 
-function generateDefaultPrompt(issue, slug) {
-    return (
-        `Implementar issue #${issue}. ` +
-        `Leer el issue completo con: gh issue view ${issue} --repo intrale/platform. ` +
-        `Al iniciar: invocar /po para revisar criterios de aceptación del issue #${issue}. ` +
-        `Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. ` +
-        `Completar los cambios descritos en el body del issue. ` +
-        `Antes de /delivery: invocar /tester para verificar que los tests pasan. ` +
-        `Antes de /delivery: invocar /security para validar seguridad del diff. ` +
-        `Usar /delivery para commit+PR al terminar. Closes #${issue}`
-    );
+function generateDefaultPrompt(issue, slug, labels) {
+    labels = Array.isArray(labels) ? labels : [];
+
+    const hasApp = labels.some(l => l.startsWith("app:"));
+    const isBug = labels.includes("bug");
+    const isInfra = labels.includes("area:infra") || labels.includes("tipo:infra");
+
+    const parts = [
+        `Implementar issue #${issue}. Leer el issue completo con: gh issue view ${issue} --repo intrale/platform.`,
+        `Al iniciar: invocar /ops para verificar estado del entorno.`,
+        `Al iniciar: invocar /po para revisar criterios de aceptación del issue #${issue}.`
+    ];
+
+    if (!isInfra) {
+        parts.push(`Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica.`);
+    }
+
+    parts.push(`Completar los cambios descritos en el body del issue.`);
+
+    if (hasApp) {
+        parts.push(`Antes de /delivery: invocar /ux para revisión visual de los cambios en la interfaz (obligatorio por labels app:*).`);
+    }
+
+    if (isBug) {
+        parts.push(`Antes de /delivery: invocar /tester con énfasis en verificar que no hay regresiones relacionadas al bug.`);
+    } else {
+        parts.push(`Antes de /delivery: invocar /tester para verificar que los tests pasan.`);
+    }
+
+    parts.push(`Antes de /delivery: invocar /builder para validar que el build no está roto.`);
+    parts.push(`Antes de /delivery: invocar /security para validar seguridad del diff.`);
+    parts.push(`Antes de /delivery: invocar /review para validar el diff.`);
+
+    if (hasApp) {
+        parts.push(`Antes de /delivery: invocar /qa para E2E con video (obligatorio por labels app:*).`);
+    }
+
+    parts.push(`Usar /delivery para commit+PR al terminar. Closes #${issue}`);
+
+    return parts.join(" ");
 }
 
 // ─── Generar sprint-plan.json ─────────────────────────────────────────────────
@@ -354,7 +390,7 @@ function generateSprintPlan(selectedIssues) {
         score: issue.score || 0,
         labels: issue.labels,
         dependencies: extractDependencies(issue),
-        prompt: generateDefaultPrompt(issue.number, generateSlug(issue.title))
+        prompt: generateDefaultPrompt(issue.number, generateSlug(issue.title), issue.labels)
     }));
 
     const plan = {
@@ -374,7 +410,7 @@ function generateSprintPlan(selectedIssues) {
             stream: detectStream(issue),
             score: issue.score || 0,
             labels: issue.labels,
-            prompt: generateDefaultPrompt(issue.number, generateSlug(issue.title))
+            prompt: generateDefaultPrompt(issue.number, generateSlug(issue.title), issue.labels)
         }))
     };
 
