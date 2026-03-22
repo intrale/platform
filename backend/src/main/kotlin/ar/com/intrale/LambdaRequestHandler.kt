@@ -118,12 +118,22 @@ abstract class LambdaRequestHandler  : RequestHandler<APIGatewayProxyRequestEven
                                         "X-Http-Method" to httpMethod,
                                         "X-Function-Path" to functionPath
                                     ) + queryParams
-                                    function.execute(
+                                    val startTime = System.currentTimeMillis()
+                                    val result = function.execute(
                                         businessName,
                                         functionPath,
                                         headers,
                                         requestBody
                                     )
+                                    val latency = System.currentTimeMillis() - startTime
+                                    CloudWatchEmfLogger.emitInvocation(
+                                        functionName = functionKey,
+                                        business = businessName,
+                                        httpMethod = httpMethod,
+                                        statusCode = result.statusCode?.value ?: 500,
+                                        latencyMs = latency
+                                    )
+                                    result
                                 } catch (e: Exception) {
                                     logger.info(e.message)
                                     ExceptionResponse(e.message.toString())
