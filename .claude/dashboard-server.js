@@ -1774,6 +1774,25 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     });
   }
 
+  // Post-layout: swap positions + extra vertical spread for gate/delivery nodes
+  const swapNodes = ["Security", "Review", "DeliveryManager"];
+  const swapPositions = swapNodes.map(n => positions[n] ? { x: positions[n].x, y: positions[n].y } : null);
+  if (swapPositions.every(p => p)) {
+    positions["Security"].x = swapPositions[2].x; positions["Security"].y = swapPositions[2].y;
+    positions["Review"].x = swapPositions[0].x; positions["Review"].y = swapPositions[0].y;
+    positions["DeliveryManager"].x = swapPositions[1].x; positions["DeliveryManager"].y = swapPositions[1].y;
+  }
+  // Extra vertical spread: push gate nodes (Tester/Review/DeliveryManager) further apart
+  const spreadNodes = ["Tester", "Review", "DeliveryManager"];
+  const spreadPresent = spreadNodes.filter(n => positions[n]);
+  if (spreadPresent.length >= 2) {
+    spreadPresent.sort((a, b) => positions[a].y - positions[b].y);
+    const topY = padding + nodeR + 30;
+    const bottomY = agentZoneH - padding - nodeR - 30;
+    const step = (bottomY - topY) / (spreadPresent.length - 1);
+    spreadPresent.forEach((n, i) => { positions[n].y = topY + i * step; });
+  }
+
   // Posicionar nodos Main-only en zona periférica inferior
   if (mainNodesList.length > 0) {
     const mainStartY = agentZoneH + 40; // separación de la zona de agentes
@@ -1890,8 +1909,8 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
       nodeRingCount[name] = 0;
     }
   }
-  const baseBlockMargin = 25;
-  const softMargin = 30;
+  const baseBlockMargin = 15;
+  const softMargin = 15;
   const labelExtraBelow = 55;
   for (const name of nodes) {
     const p = positions[name];
@@ -1972,11 +1991,11 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
         if (grid[ny][nx] === 1) continue; // nodo bloqueante hard
         const cost = (ddx !== 0 && ddy !== 0) ? 1.41 : 1;
         const cellVal = grid[ny][nx];
-        // Light nudge for edge separation — never enough to cause big detours
-        const edgePenalty = cellVal >= 2 ? cellVal * 1.5 : 0;
-        // Direction change penalty: discourage zigzag, prefer smooth curves
+        // Minimal penalties — prefer straightest path possible
+        const edgePenalty = cellVal >= 2 ? cellVal * 0.3 : 0;
+        // Strong penalty for direction changes — keeps paths straight
         const prevDx = cur.x - cur.px, prevDy = cur.y - cur.py;
-        const turnPenalty = (prevDx !== 0 || prevDy !== 0) && (ddx !== prevDx || ddy !== prevDy) ? 0.5 : 0;
+        const turnPenalty = (prevDx !== 0 || prevDy !== 0) && (ddx !== prevDx || ddy !== prevDy) ? 2.0 : 0;
         const ng = cur.g + cost + edgePenalty + turnPenalty;
         const k = key(nx, ny);
         if (!gScore.has(k) || ng < gScore.get(k)) {
@@ -2102,10 +2121,28 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const x2 = to.x - ux * (toVisualR + 12) + px;
     const y2 = to.y - uy * (toVisualR + 12) + py;
 
-    // Start→Agent edges: always straight lines (layer 0→1, no routing needed)
-    const isStartToAgent = e.from === "Start" && /^Agente\s+/i.test(e.to);
+    // Try straight line first — only use A* routing if the line intersects a node
     let route, pathD;
-    if (isStartToAgent) {
+    const straightLineClear = (function() {
+      // Check if straight line from (x1,y1) to (x2,y2) crosses any node
+      for (const nodeName of nodes) {
+        if (nodeName === e.from || nodeName === e.to) continue;
+        const np = positions[nodeName];
+        if (!np) continue;
+        const nRings = nodeRingCount[nodeName] || 0;
+        const nR = (/^Agente\s+/i.test(nodeName) ? nodeR + 4 : nodeR) + (nRings > 1 ? (nRings - 1) * ringStep : 0) + 35;
+        // Distance from point to line segment
+        const ldx = x2 - x1, ldy = y2 - y1;
+        const len2 = ldx * ldx + ldy * ldy;
+        if (len2 < 1) return true;
+        var t = Math.max(0, Math.min(1, ((np.x - x1) * ldx + (np.y - y1) * ldy) / len2));
+        const closestX = x1 + t * ldx, closestY = y1 + t * ldy;
+        const dd = Math.sqrt((np.x - closestX) ** 2 + (np.y - closestY) ** 2);
+        if (dd < nR) return false;
+      }
+      return true;
+    })();
+    if (straightLineClear) {
       route = [{ x: x1, y: y1 }, { x: x2, y: y2 }];
       pathD = "M" + x1.toFixed(1) + "," + y1.toFixed(1) + " L" + x2.toFixed(1) + "," + y2.toFixed(1);
     } else {
@@ -2126,7 +2163,7 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
     const isStartEdge = e.from === "Start" || e.to === "Start";
     const edgeRootAttr = isStartEdge ? ' data-flow-root="sprint"' : (e.agentRoot === "Main") ? ' data-flow-root="main"' : ' data-flow-root="agent"';
-    svg += '<g' + edgeRootAttr + '>';
+    svg += '<g class="flow-edge-group"' + edgeRootAttr + ' data-from="' + escHtml(e.from) + '" data-to="' + escHtml(e.to) + '" data-agent-root="' + escHtml(e.agentRoot || '') + '">';
     svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
     // Edge label: placed at path midpoint (not endpoint midpoint) for accuracy
     const label = e.agentSeq || String(e.seq);
@@ -2222,7 +2259,10 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
 
     const activeClass = (isAgentNode && isActive && !isDone) || isSkillActiveNow ? ' node-active' : '';
     const opacityStyle = isQueued ? `opacity:${opacity};` : '';
+    const safeName4click = escHtml(name).replace(/'/g, "&#39;");
     svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;${opacityStyle}" ${filterAttr}>`;
+    // Hit area rect for click capture + inline onclick
+    svg += `<rect x="${(pos.x - effectiveR - 15).toFixed(0)}" y="${(pos.y - effectiveR - 15).toFixed(0)}" width="${((effectiveR + 15) * 2).toFixed(0)}" height="${((effectiveR + 15) * 2).toFixed(0)}" fill="rgba(0,0,0,0.001)" stroke="none" onclick="flowClickNode('${safeName4click}')"/>`;
     // Fondo del nodo
     if (isSkillNode && passingColors.length > 1) {
       // Multi-agent: concentric rings, one per agent (outermost = first agent)
@@ -3714,7 +3754,8 @@ function renderHTML(data, theme, section) {
 
     /* Flow graph */
     .flow-graph-svg { overflow: visible; }
-    .flow-node:hover circle { stroke-width: 3; filter: brightness(1.3); }
+    .flow-node:hover circle { filter: brightness(1.4) drop-shadow(0 0 10px rgba(255,255,255,0.35)); }
+    .flow-node:hover text { fill: var(--white) !important; }
 
     /* Feed */
     .feed-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; max-height: 400px; overflow-y: auto; }
@@ -3953,16 +3994,8 @@ function renderHTML(data, theme, section) {
       toggleMainFlow(show);
     })();
 
-    // Flow graph tooltips
+    // Flow graph: hover effect handled by CSS (no JS transform/scale)
     document.querySelectorAll('.flow-node').forEach(function(node) {
-      node.addEventListener('mouseenter', function(e) {
-        var agent = this.getAttribute('data-agent');
-        this.style.transform = 'scale(1.1)';
-        this.style.transformOrigin = 'center';
-      });
-      node.addEventListener('mouseleave', function() {
-        this.style.transform = '';
-      });
     });
 
     // SSE auto-refresh con polling real-time (#1212)
@@ -3996,6 +4029,106 @@ function renderHTML(data, theme, section) {
         var secs = Math.floor((Date.now() - lastUpdate) / 1000);
         document.getElementById('update-time').textContent = 'Actualizado hace ' + secs + 's';
       }, 1000);
+    }
+
+    // --- Flow graph: click-to-filter ---
+    var flowFilterActive = false;
+    window.flowClickNode = function(name) {
+      console.log('[flow] flowClickNode called with:', name);
+      if (flowFilterActive) window.flowResetFilter();
+      localStorage.setItem('flowFilterNode', name);
+      // BFS to find all connected nodes
+      var adj = {};
+      document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+        var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+        if (!f || !t) return;
+        if (!adj[f]) adj[f] = [];
+        if (!adj[t]) adj[t] = [];
+        adj[f].push(t);
+        adj[t].push(f);
+      });
+      // Determine if clicked node is an agent root (Agente N) or a skill
+      var isAgent = /^Agente\s+/i.test(name);
+      var isStart = name === 'Start';
+      // Collect relevant agent roots for filtering
+      var relevantRoots = {};
+      if (isAgent) {
+        relevantRoots[name] = true;
+      } else if (isStart) {
+        // Start connects to all agents
+        document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+          var root = g.getAttribute('data-agent-root');
+          if (root) relevantRoots[root] = true;
+        });
+      } else {
+        // Skill node: find which agent roots pass through this skill
+        document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+          var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+          var root = g.getAttribute('data-agent-root');
+          if (root && (f === name || t === name)) relevantRoots[root] = true;
+        });
+      }
+      // Collect all edges belonging to relevant agent roots
+      var visibleEdges = new Set();
+      var visited = {};
+      visited[name] = true;
+      if (isStart) visited['Start'] = true;
+      document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+        var root = g.getAttribute('data-agent-root');
+        if (relevantRoots[root]) {
+          visibleEdges.add(g);
+          var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+          visited[f] = true;
+          visited[t] = true;
+        }
+      });
+      // Also include Start→Agent edges for relevant agents
+      document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+        var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+        if (f === 'Start' && relevantRoots[t]) { visibleEdges.add(g); visited['Start'] = true; }
+      });
+      console.log('[flow] filter:', name, '| roots:', Object.keys(relevantRoots), '| nodes:', Object.keys(visited).length, '| edges:', visibleEdges.size);
+      flowFilterActive = true;
+      document.querySelectorAll('.flow-node').forEach(function(el) {
+        var n = el.getAttribute('data-agent');
+        el.style.opacity = visited[n] ? '1' : '0.08';
+      });
+      document.querySelectorAll('.flow-edge-group').forEach(function(el) {
+        el.style.opacity = visibleEdges.has(el) ? '1' : '0.05';
+      });
+      var btn = document.getElementById('flow-reset-btn');
+      if (btn) btn.style.display = '';
+    };
+    window.flowResetFilter = function() {
+      flowFilterActive = false;
+      localStorage.removeItem('flowFilterNode');
+      document.querySelectorAll('.flow-node').forEach(function(el) { el.style.opacity = ''; });
+      document.querySelectorAll('.flow-edge-group').forEach(function(el) { el.style.opacity = ''; });
+      var btn = document.getElementById('flow-reset-btn');
+      if (btn) btn.style.display = 'none';
+      var show = localStorage.getItem('showMainFlow') === '1';
+      toggleMainFlow(show);
+    };
+    // Restore filter after page reload (SSE triggers location.reload every 30s)
+    (function() {
+      var saved = localStorage.getItem('flowFilterNode');
+      if (saved) { setTimeout(function() { flowClickNode(saved); }, 200); }
+    })();
+    // SVG click delegation — only on the SVG element, not the whole document
+    var flowSvg = document.querySelector('.flow-graph-svg');
+    if (flowSvg) {
+      flowSvg.addEventListener('click', function(ev) {
+        var el = ev.target;
+        for (var i = 0; i < 5 && el && el !== flowSvg; i++) {
+          var agent = el.getAttribute && el.getAttribute('data-agent');
+          if (agent) {
+            ev.stopPropagation();
+            flowClickNode(agent);
+            return;
+          }
+          el = el.parentNode;
+        }
+      });
     }
 
     // Section filter — muestra solo el panel de la ruta especificada (#1765)
