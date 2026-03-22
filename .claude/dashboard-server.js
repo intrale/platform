@@ -3845,6 +3845,7 @@ function renderHTML(data, theme, section) {
     <div class="panel" data-panel="exec" style="margin-bottom:16px;">
       <div class="panel-title">Ejecuci&oacute;n &amp; Agentes</div>
       ${unifiedAgentsHtml}
+    </div>
 
     <!-- Fila 1: Flujo de agentes (ancho completo) #1378 -->
     <div class="grid-flow" data-panel="sessions">
@@ -4005,17 +4006,18 @@ function renderLogsHTML(theme) {
     'body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;}',
     '.header{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100;}',
     '.header-title{font-size:14px;font-weight:700;color:var(--white);}',
-    '.container{max-width:1200px;margin:0 auto;padding:16px;}',
+    '.container{max-width:100%;margin:0 auto;padding:16px;}',
     '.panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;}',
     '.panel-title{font-size:12px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px;}',
-    '.grid2{display:grid;grid-template-columns:320px 1fr;gap:16px;}',
+    '.grid2{display:grid;grid-template-columns:260px 1fr;gap:16px;height:calc(100vh - 80px);}',
     'table{width:100%;border-collapse:collapse;font-size:12px;}',
     'th{padding:6px 10px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);}',
     'td{padding:6px 10px;border-bottom:1px solid var(--border);color:var(--text);}',
     'tr:hover td{background:var(--surface2);}',
     'tr.selected td{background:rgba(96,165,250,.1);border-left:2px solid var(--blue);}',
     '.status-active{color:var(--green);font-weight:600;}.status-idle{color:var(--yellow);}.status-done,.status-dead{color:var(--text-muted);}',
-    '.log-container{background:var(--surface2);border:1px solid var(--border);border-radius:6px;height:480px;overflow-y:auto;padding:10px;font-family:monospace;font-size:11px;line-height:1.6;}',
+    '.log-container{background:var(--surface2);border:1px solid var(--border);border-radius:6px;flex:1;overflow-y:auto;padding:10px;font-family:monospace;font-size:11px;line-height:1.6;min-height:200px;}',
+    '.grid2>.panel{display:flex;flex-direction:column;overflow:hidden;}',
     '.log-line{padding:1px 0;white-space:pre-wrap;word-break:break-all;}',
     '.log-line.log-error{color:var(--red);}.log-line.log-warn{color:var(--yellow);}.log-line.log-info{color:var(--blue);}',
     '.controls{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;}',
@@ -4037,7 +4039,7 @@ function renderLogsHTML(theme) {
     '<div class="container">',
     '  <div class="grid2">',
     '    <div class="panel">',
-    '      <div class="panel-title">Agentes activos</div>',
+    '      <div class="panel-title">Fuentes de logs</div>',
     '      <table><thead><tr><th>#</th><th>Issue</th><th>Branch</th><th>Estado</th></tr></thead>',
     '        <tbody id="agents-body"><tr><td colspan="4" class="empty-state">Cargando...</td></tr></tbody>',
     '      </table>',
@@ -4061,12 +4063,13 @@ function renderLogsHTML(theme) {
     'function esc(s){return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}',
     'function togglePause(){paused=!paused;var b=document.getElementById("btn-pause");b.textContent=paused?"\u25b6 Reanudar":"\u23f8 Pausar";b.className=paused?"btn paused":"btn";}',
     'function clearLogs(){allLines=[];document.getElementById("log-box").innerHTML="";}'  ,
-    'function exportLogs(){var bl=new Blob([allLines.join("\n")],{type:"text/plain"});var a=document.createElement("a");a.href=URL.createObjectURL(bl);a.download="logs-"+(selAgent||"all")+".txt";a.click();}',
+    'function exportLogs(){var bl=new Blob([allLines.join("\\n")],{type:"text/plain"});var a=document.createElement("a");a.href=URL.createObjectURL(bl);a.download="logs-"+(selAgent||"all")+".txt";a.click();}',
     'function cls(l){var lo=l.toLowerCase();if(lo.includes("error")||lo.includes("fail"))return "log-error";if(lo.includes("warn"))return "log-warn";if(lo.includes("info")||lo.includes("[cmd")||lo.includes("[done"))return "log-info";return "";}',
     'function applyFilter(){var kw=(document.getElementById("filter-kw").value||"").toLowerCase();var tf=(document.getElementById("filter-type").value||"").toLowerCase();document.querySelectorAll("#log-box .log-line").forEach(function(el){var t=(el.textContent||"").toLowerCase();el.style.display=((!kw||t.includes(kw))&&(!tf||el.classList.contains("log-"+tf)))?"":"none";});}',
     'function renderLogs(lines){var b=document.getElementById("log-box");var atBot=b.scrollHeight-b.scrollTop-b.clientHeight<60;if(!lines||!lines.length){b.innerHTML="";return;}var f=document.createDocumentFragment();var kw=(document.getElementById("filter-kw").value||"").toLowerCase();var tf=(document.getElementById("filter-type").value||"").toLowerCase();lines.forEach(function(l){var cc=cls(l);var d=document.createElement("div");d.className="log-line "+cc;d.textContent=l;if((kw&&!l.toLowerCase().includes(kw))||(tf&&!cc.includes(tf)))d.style.display="none";f.appendChild(d);});b.innerHTML="";b.appendChild(f);if(atBot)b.scrollTop=b.scrollHeight;}',
-    'function selA(id){selAgent=id;document.querySelectorAll("#agents-body tr").forEach(function(tr){tr.className=tr.getAttribute("data-id")===id?"selected":"";});document.getElementById("log-title").textContent="Logs: agente "+id;fetchLogs(id);}',
-    'function fetchAgents(){fetch("/api/logs?agents=1").then(function(r){return r.json();}).then(function(d){var tb=document.getElementById("agents-body");if(!d.agents||!d.agents.length){tb.innerHTML="<tr><td colspan=4 class=empty-state>Sin agentes</td></tr>";return;}var h="";d.agents.forEach(function(a){var sc=a.status==="active"?"status-active":(a.status==="idle"?"status-idle":"status-done");var issue=a.issue?"<a href=https://github.com/intrale/platform/issues/"+a.issue+" target=_blank style=color:var(--blue);>#"+a.issue+"</a>":"-";h+="<tr class=\\""+(a.id===selAgent?"selected":"")+"\\" data-id=\\""+esc(a.id)+"\\" onclick=\\"selA("+JSON.stringify(a.id)+")\\" style=cursor:pointer>"+"<td>"+esc(a.numero||a.id)+"</td><td>"+issue+"</td>"+"<td style=font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap title=\\""+esc(a.branch||"")+"\\">"+esc(a.branch||"-")+"</td>"+"<td><span class=\\""+sc+"\\">"+esc(a.status||"?")+"</span></td></tr>";});tb.innerHTML=h;}).catch(function(){});}',
+    'function selA(id){selAgent=id;document.querySelectorAll("#agents-body tr").forEach(function(tr){tr.className=tr.getAttribute("data-id")===id?"selected":"";});var labels={"_hooks":"Hooks (debug)","_activity":"Activity log","_watcher":"Agent watcher"};document.getElementById("log-title").textContent="Logs: "+(labels[id]||"agente "+id);fetchLogs(id);}',
+    'function fetchAgents(){fetch("/api/logs?agents=1").then(function(r){return r.json();}).then(function(d){var tb=document.getElementById("agents-body");var h="";var sysLogs=d.systemLogs||[];if(sysLogs.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--blue);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">SISTEMA</td></tr>";sysLogs.forEach(function(s){h+="<tr class=\\""+(s.id===selAgent?"selected":"")+"\\" data-id=\\""+esc(s.id)+"\\" onclick=\\"selA(\'"+s.id+"\')\\" style=cursor:pointer>"+"<td>\u2699</td><td>-</td>"+"<td style=font-size:11px;>"+esc(s.label)+"</td>"+"<td><span style=\\"color:var(--blue);\\">system</span></td></tr>";});}if(d.agents&&d.agents.length){var active=d.agents.filter(function(a){return a.status==="active"||a.status==="idle";});var done=d.agents.filter(function(a){return a.status!=="active"&&a.status!=="idle";});if(active.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--green);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">AGENTES ACTIVOS</td></tr>";active.forEach(function(a){h+=agentRow(a);});}if(done.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">COMPLETADOS / HIST\\u00d3RICOS</td></tr>";done.forEach(function(a){h+=agentRow(a);});}}if(!h)h="<tr><td colspan=4 class=empty-state>Sin agentes</td></tr>";tb.innerHTML=h;}).catch(function(){});}',
+    'function agentRow(a){var sc=a.status==="active"?"status-active":(a.status==="idle"?"status-idle":"status-done");var issue=a.issue?"<a href=https://github.com/intrale/platform/issues/"+a.issue+" target=_blank style=color:var(--blue);>#"+a.issue+"</a>":"-";return "<tr class=\\""+(a.id===selAgent?"selected":"")+"\\" data-id=\\""+esc(a.id)+"\\" onclick=\\"selA(\'"+a.id+"\')\\" style=cursor:pointer>"+"<td>"+esc(a.numero||a.id)+"</td><td>"+issue+"</td>"+"<td style=font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap title=\\""+esc(a.branch||"")+"\\">"+esc(a.label||a.branch||"-")+"</td>"+"<td><span class=\\""+sc+"\\">"+esc(a.status||"?")+"</span></td></tr>";}',
     'function fetchLogs(id){if(paused||!id)return;fetch("/api/logs?agent="+encodeURIComponent(id)+"&n=50").then(function(r){return r.json();}).then(function(d){if(d.lines){allLines=d.lines;renderLogs(d.lines);}document.getElementById("upd").textContent="Actualizado "+new Date().toLocaleTimeString("es-AR",{hour12:false});}).catch(function(){});}',
     'setInterval(function(){fetchAgents();if(selAgent&&!paused)fetchLogs(selAgent);},2000);',
     'fetchAgents();'
@@ -4376,6 +4379,7 @@ function handleRequest(req, res) {
         ...(sprintData.agentes || []).map(a => ({ ...a, _sec: 'active' })),
         ...(sprintData._queue || []).map(a => ({ ...a, _sec: 'queue' })),
         ...(sprintData._incomplete || []).map(a => ({ ...a, _sec: 'incomplete' })),
+        ...(sprintData._completed || []).map(a => ({ ...a, _sec: 'done' })),
       ];
       const regAgents = (registryRaw.agents) || {};
       const agents = allAgentes.map((a, i) => {
@@ -4383,12 +4387,37 @@ function handleRequest(req, res) {
         const status = regEntry.status || a._sec || 'queue';
         return { id: String(a.issue || (i + 1)), numero: a.numero || (i + 1), issue: a.issue, branch: a.branch || ('agent/' + a.issue + '-' + (a.slug || '')), status };
       });
+      // Logs de sistema (siempre disponibles)
+      const systemLogs = [
+        { id: '_hooks', numero: '-', issue: null, branch: null, status: 'system', label: 'Hooks (debug)' },
+        { id: '_activity', numero: '-', issue: null, branch: null, status: 'system', label: 'Activity log' },
+        { id: '_watcher', numero: '-', issue: null, branch: null, status: 'system', label: 'Agent watcher' },
+      ];
+      // Logs históricos de agentes (archivos agente_*.log en scripts/logs/)
+      const logsDir = path.join(REPO_ROOT, 'scripts', 'logs');
+      const seenIds = new Set(agents.map(a => a.id));
+      try {
+        const logFiles = fs.readdirSync(logsDir).filter(f => f.startsWith('agente_') && f.endsWith('.log'));
+        for (const f of logFiles) {
+          const m = f.match(/agente_(\d+)\.log/);
+          if (m && !seenIds.has(m[1])) {
+            const stat = fs.statSync(path.join(logsDir, f));
+            agents.push({ id: m[1], numero: '-', issue: parseInt(m[1], 10), branch: 'agent/' + m[1], status: 'done', label: 'Agente #' + m[1] + ' (hist.)', size: stat.size });
+          }
+        }
+      } catch {}
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
-      res.end(JSON.stringify({ agents }));
+      res.end(JSON.stringify({ agents, systemLogs }));
     } else if (agentId) {
+      // Logs de sistema por ID especial
+      const sysLogMap = {
+        '_hooks': path.join(REPO_ROOT, '.claude', 'hooks', 'hook-debug.log'),
+        '_activity': path.join(REPO_ROOT, '.claude', 'activity-log.jsonl'),
+        '_watcher': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-watcher.log'),
+      };
       const logsDir = path.join(REPO_ROOT, 'scripts', 'logs');
       const logFile = path.join(logsDir, 'agente_' + agentId + '.log');
-      const targetFile = fs.existsSync(logFile) ? logFile : SERVER_LOG_FILE;
+      const targetFile = sysLogMap[agentId] || (fs.existsSync(logFile) ? logFile : SERVER_LOG_FILE);
       let lines = [];
       try {
         const rawContent = fs.readFileSync(targetFile, 'utf8');

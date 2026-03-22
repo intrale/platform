@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intrale Platform — Modelo Operativo vs Claude Agent Teams</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #0a0b10;
+    --surface: #12141d;
+    --surface-2: #1a1d2b;
+    --surface-3: #222638;
+    --border: #2a2e42;
+    --text: #e2e4ed;
+    --text-muted: #8b8fa8;
+    --text-dim: #5c6080;
+    --accent: #6c8aff;
+    --accent-2: #a78bfa;
+    --green: #34d399;
+    --green-dim: #065f46;
+    --red: #f87171;
+    --red-dim: #7f1d1d;
+    --yellow: #fbbf24;
+    --yellow-dim: #78350f;
+    --orange: #fb923c;
+    --cyan: #22d3ee;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 0;
+  }
+
+  .page-break { page-break-after: always; }
+
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #12141d 0%, #1a1040 50%, #12141d 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 60px 40px 50px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .header::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at 50% 0%, rgba(108,138,255,0.12) 0%, transparent 60%);
+    pointer-events: none;
+  }
+  .header h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, #e2e4ed, #6c8aff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .header .subtitle {
+    font-size: 1.1rem;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-bottom: 20px;
+  }
+  .header .meta {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .header .meta span { margin: 0 12px; }
+
+  /* Container */
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 40px 40px 80px;
+  }
+
+  /* TOC */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px 36px;
+    margin-bottom: 48px;
+  }
+  .toc h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .toc ol {
+    list-style: none;
+    counter-reset: toc-counter;
+    columns: 2;
+    column-gap: 40px;
+  }
+  .toc li {
+    counter-increment: toc-counter;
+    padding: 6px 0;
+    font-size: 0.95rem;
+  }
+  .toc li::before {
+    content: counter(toc-counter) ".";
+    color: var(--accent);
+    font-weight: 600;
+    margin-right: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .toc a {
+    color: var(--text);
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+  .toc a:hover { color: var(--accent); }
+
+  /* Sections */
+  .section {
+    margin-bottom: 56px;
+  }
+  .section-number {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--accent);
+    background: rgba(108,138,255,0.1);
+    border: 1px solid rgba(108,138,255,0.2);
+    border-radius: 6px;
+    padding: 2px 10px;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+  h2 {
+    font-size: 1.7rem;
+    font-weight: 700;
+    margin-bottom: 20px;
+    letter-spacing: -0.3px;
+  }
+  h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin: 28px 0 14px;
+    color: var(--accent-2);
+  }
+  p {
+    margin-bottom: 14px;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin: 20px 0;
+  }
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin: 20px 0;
+  }
+  .card-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 0.9rem;
+  }
+  thead th {
+    background: var(--surface-2);
+    color: var(--accent);
+    font-weight: 600;
+    text-align: left;
+    padding: 14px 16px;
+    border-bottom: 2px solid var(--border);
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tbody tr:hover {
+    background: rgba(108,138,255,0.03);
+  }
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* Badges */
+  .badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-green { background: var(--green-dim); color: var(--green); }
+  .badge-red { background: var(--red-dim); color: var(--red); }
+  .badge-yellow { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-blue { background: rgba(108,138,255,0.15); color: var(--accent); }
+
+  /* Pros/Cons */
+  .pro-con-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin: 20px 0;
+  }
+  .pro-list, .con-list {
+    list-style: none;
+    padding: 0;
+  }
+  .pro-list li, .con-list li {
+    padding: 8px 0;
+    font-size: 0.9rem;
+    padding-left: 24px;
+    position: relative;
+  }
+  .pro-list li::before {
+    content: '+';
+    position: absolute;
+    left: 0;
+    color: var(--green);
+    font-weight: 700;
+    font-size: 1.1rem;
+  }
+  .con-list li::before {
+    content: '-';
+    position: absolute;
+    left: 2px;
+    color: var(--red);
+    font-weight: 700;
+    font-size: 1.1rem;
+  }
+
+  /* Diagram */
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin: 24px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    color: var(--text-muted);
+  }
+  .diagram .highlight { color: var(--accent); font-weight: 500; }
+  .diagram .green { color: var(--green); }
+  .diagram .yellow { color: var(--yellow); }
+  .diagram .red { color: var(--red); }
+  .diagram .cyan { color: var(--cyan); }
+
+  /* Phase cards */
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin: 16px 0;
+    border-left: 4px solid var(--accent);
+  }
+  .phase.simple { border-left-color: var(--green); }
+  .phase.medium { border-left-color: var(--yellow); }
+  .phase.large { border-left-color: var(--orange); }
+  .phase-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .phase-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+  }
+  .phase-effort {
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 3px 12px;
+    border-radius: 20px;
+  }
+  .phase ul {
+    list-style: none;
+    padding: 0;
+  }
+  .phase li {
+    padding: 4px 0 4px 20px;
+    position: relative;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+  }
+  .phase li::before {
+    content: '>';
+    position: absolute;
+    left: 0;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+  }
+
+  /* Recommendation box */
+  .recommendation {
+    background: linear-gradient(135deg, rgba(108,138,255,0.08) 0%, rgba(167,139,250,0.08) 100%);
+    border: 1px solid rgba(108,138,255,0.25);
+    border-radius: 16px;
+    padding: 36px 40px;
+    margin: 32px 0;
+  }
+  .recommendation h3 {
+    color: var(--accent);
+    font-size: 1.3rem;
+    margin-top: 0;
+  }
+
+  /* Metric boxes */
+  .metrics-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .metric-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    text-align: center;
+  }
+  .metric-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .metric-label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* Code */
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85em;
+    background: var(--surface-2);
+    padding: 2px 7px;
+    border-radius: 4px;
+    color: var(--cyan);
+  }
+
+  /* Separator */
+  hr {
+    border: none;
+    height: 1px;
+    background: var(--border);
+    margin: 48px 0;
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+  }
+
+  /* Print */
+  @media print {
+    body { background: #fff; color: #1a1a1a; }
+    .header { background: #f0f0f5; }
+    .header h1 { color: #1a1a1a; -webkit-text-fill-color: #1a1a1a; }
+    .card, .diagram, .toc, .phase, .metric-box { border-color: #ddd; background: #fafafa; }
+    table thead th { background: #f0f0f5; color: #333; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ -->
+<!-- HEADER                                                        -->
+<!-- ============================================================ -->
+<div class="header">
+  <h1>Modelo Operativo Intrale vs Claude Agent Teams</h1>
+  <div class="subtitle">Analisis comparativo de arquitecturas de orquestacion de agentes IA</div>
+  <div class="meta">
+    <span>Intrale Platform</span>
+    <span>|</span>
+    <span>22 de marzo de 2026</span>
+    <span>|</span>
+    <span>Reporte interno</span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ============================================================ -->
+<!-- TOC                                                           -->
+<!-- ============================================================ -->
+<div class="toc">
+  <h2>Contenido</h2>
+  <ol>
+    <li><a href="#s1">Arquitectura comparada</a></li>
+    <li><a href="#s2">Fortalezas y debilidades</a></li>
+    <li><a href="#s3">Ventajas del modelo actual</a></li>
+    <li><a href="#s4">Ventajas de Agent Teams</a></li>
+    <li><a href="#s5">Comparativa de costos</a></li>
+    <li><a href="#s6">Tiempos de ejecucion</a></li>
+    <li><a href="#s7">Propuesta de migracion</a></li>
+    <li><a href="#s8">Recomendacion final</a></li>
+  </ol>
+</div>
+
+<!-- ============================================================ -->
+<!-- 1. ARQUITECTURA COMPARADA                                     -->
+<!-- ============================================================ -->
+<div class="section" id="s1">
+  <div class="section-number">Seccion 1</div>
+  <h2>Arquitectura comparada</h2>
+
+  <p>Ambos modelos buscan resolver el mismo problema: coordinar multiples agentes IA trabajando en paralelo sobre un codebase. Sin embargo, lo hacen con filosofias radicalmente diferentes.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-title"><span style="color:var(--accent)">&#9632;</span> Intrale (modelo actual)</div>
+      <p style="font-size:0.88rem; color:var(--text-muted)">Orquestacion artesanal construida sobre primitivas de SO y git. Cada agente es un proceso <code>claude</code> CLI en un git worktree aislado, gestionado por <code>Start-Agente.ps1</code> + <code>Run-AgentStream.ps1</code>. La comunicacion ocurre via archivos JSON compartidos, hooks pre/post tool use (~40 hooks), y un dashboard web con SSE.</p>
+    </div>
+    <div class="card">
+      <div class="card-title"><span style="color:var(--accent-2)">&#9632;</span> Claude Agent Teams</div>
+      <p style="font-size:0.88rem; color:var(--text-muted)">Orquestacion nativa integrada en Claude Code v2.1.32+. Un lider crea y coordina companeros de equipo con una task list compartida y sistema de mensajeria (buzones). Cada companero tiene su propia ventana de contexto y se comunica directamente con los demas sin pasar por el lider.</p>
+    </div>
+  </div>
+
+  <h3>Diagrama de arquitectura</h3>
+  <div class="diagram">
+<span class="highlight">INTRALE (actual)</span>                          <span class="highlight">AGENT TEAMS (nativo)</span>
+
+ Start-Agente.ps1                              Claude Code Session (Lider)
+    |                                               |
+    +---> Worktree 1 (agent/1234-feat)              +---> Teammate 1 (frontend)
+    |     claude CLI + hooks (~40)                   |     contexto propio
+    |     skill: /backend-dev                        |     task list compartida
+    |     log: scripts/logs/agente_1.log             |     buzon directo
+    |                                                |
+    +---> Worktree 2 (agent/1235-fix)               +---> Teammate 2 (backend)
+    |     claude CLI + hooks (~40)                   |     contexto propio
+    |     skill: /android-dev                        |     task list compartida
+    |                                                |
+    +---> Worktree 3 (agent/1236-refactor)          +---> Teammate 3 (tests)
+          claude CLI + hooks (~40)                         contexto propio
+          skill: /web-dev
+
+ <span class="yellow">Comunicacion:</span>                                 <span class="yellow">Comunicacion:</span>
+ - Archivos JSON compartidos                    - Mensajeria nativa entre agentes
+ - sprint-plan.json (estado)                    - Task list con file locking
+ - agent-registry.json (registro)               - Broadcast a todos
+ - Dashboard SSE (localhost:3100)                - Notificaciones de inactividad
+ - Telegram bot (alertas remotas)
+
+ <span class="green">Pipeline por agente:</span>                          <span class="green">Lifecycle:</span>
+ Dev -> Tester -> Review -> QA -> Delivery       Spawn -> Work -> Message -> Shutdown
+  </div>
+
+  <h3>Comparacion por dimension</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Dimension</th>
+        <th>Intrale (actual)</th>
+        <th>Agent Teams</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Orquestacion</strong></td>
+        <td>Scripts PowerShell/Bash + watcher externo (<code>agent-watcher.js</code>). El scrum master humano o <code>/scrum</code> skill decide que agentes lanzar.</td>
+        <td>El lider (sesion Claude) orquesta nativamente. Crea teammates, asigna tareas, sintetiza resultados. El humano supervisa.</td>
+      </tr>
+      <tr>
+        <td><strong>Aislamiento</strong></td>
+        <td>Git worktrees: aislamiento total a nivel de filesystem. Cada agente tiene su propia copia del repo. No pueden pisar archivos del otro.</td>
+        <td>Ventanas de contexto separadas, pero comparten el mismo directorio de trabajo. Riesgo de conflictos si dos teammates editan el mismo archivo.</td>
+      </tr>
+      <tr>
+        <td><strong>Comunicacion</strong></td>
+        <td>Indirecta via archivos JSON + hooks. No hay comunicacion directa entre agentes. El pipeline secuencial (Dev->Tester->Review) simula coordinacion.</td>
+        <td>Directa: mensajes punto a punto, broadcast, task list compartida con estados. Los teammates pueden desafiarse mutuamente.</td>
+      </tr>
+      <tr>
+        <td><strong>Observabilidad</strong></td>
+        <td>Dashboard web completo (SSE, Gantt, flow graph, metricas, CI/CD), screenshots via Puppeteer, reportes a Telegram.</td>
+        <td>Vista in-process (Shift+Down) o paneles tmux/iTerm2. Sin dashboard web dedicado. Sin integracion con Telegram.</td>
+      </tr>
+      <tr>
+        <td><strong>Recuperacion</strong></td>
+        <td><code>agent-watcher.js</code> detecta agentes muertos y relanza. Diagnostico automatico con retry inteligente cuando un agente pierde su slot.</td>
+        <td>Limitada: si un teammate se detiene por error, hay que intervenirlo manualmente o generar un reemplazo. Sin watcher automatico.</td>
+      </tr>
+      <tr>
+        <td><strong>Permisos</strong></td>
+        <td>Sistema granular con ~50 allow + 7 deny. Hooks <code>PreToolUse</code>/<code>PostToolUse</code> validan cada operacion. Clasificacion por severidad.</td>
+        <td>Los teammates heredan los permisos del lider. Se puede cambiar post-generacion pero no por teammate al generarlos. Menos granular.</td>
+      </tr>
+      <tr>
+        <td><strong>Modelos</strong></td>
+        <td>Mixto optimizado: Haiku para skills simples (/delivery, /review, /tester), Opus para desarrollo (/backend-dev, /android-dev). Configurado por skill.</td>
+        <td>Se puede especificar modelo por teammate ("Usa Sonnet para cada companero"). Soporta sonnet, opus, haiku.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- 2. FORTALEZAS Y DEBILIDADES                                   -->
+<!-- ============================================================ -->
+<div class="section" id="s2">
+  <div class="section-number">Seccion 2</div>
+  <h2>Fortalezas y debilidades</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Aspecto</th>
+        <th>Intrale</th>
+        <th>Agent Teams</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Aislamiento de codigo</td>
+        <td><span class="badge badge-green">Fuerte</span> Worktrees garantizan cero conflictos</td>
+        <td><span class="badge badge-red">Debil</span> Directorio compartido, riesgo de sobreescrituras</td>
+      </tr>
+      <tr>
+        <td>Comunicacion inter-agente</td>
+        <td><span class="badge badge-red">Debil</span> Solo via archivos, sin dialogo</td>
+        <td><span class="badge badge-green">Fuerte</span> Mensajeria nativa, debates, consensus</td>
+      </tr>
+      <tr>
+        <td>Pipeline de calidad</td>
+        <td><span class="badge badge-green">Fuerte</span> Dev->Tester->Review->QA->Delivery automatizado</td>
+        <td><span class="badge badge-yellow">Parcial</span> Task dependencies, pero sin pipeline formalizado</td>
+      </tr>
+      <tr>
+        <td>Observabilidad</td>
+        <td><span class="badge badge-green">Fuerte</span> Dashboard web, SSE, Gantt, metricas, Telegram</td>
+        <td><span class="badge badge-red">Debil</span> Solo vista de terminal (in-process o tmux)</td>
+      </tr>
+      <tr>
+        <td>Costo de mantenimiento</td>
+        <td><span class="badge badge-red">Alto</span> ~40 hooks, scripts custom, dashboard 4700 lineas</td>
+        <td><span class="badge badge-green">Bajo</span> Feature nativa, zero mantenimiento propio</td>
+      </tr>
+      <tr>
+        <td>Flexibilidad de roles</td>
+        <td><span class="badge badge-green">Fuerte</span> 27 skills especializados con SKILL.md propio</td>
+        <td><span class="badge badge-yellow">Parcial</span> Roles via prompt de generacion, no persistentes</td>
+      </tr>
+      <tr>
+        <td>Recuperacion ante fallos</td>
+        <td><span class="badge badge-green">Fuerte</span> Watcher automatico + retry inteligente</td>
+        <td><span class="badge badge-red">Debil</span> Manual: instruir al lider o generar reemplazo</td>
+      </tr>
+      <tr>
+        <td>Facilidad de setup</td>
+        <td><span class="badge badge-red">Dificil</span> Requiere conocimiento del sistema, PowerShell, Node.js</td>
+        <td><span class="badge badge-green">Facil</span> "Crea un equipo de 3 agentes" en lenguaje natural</td>
+      </tr>
+      <tr>
+        <td>Escalabilidad</td>
+        <td><span class="badge badge-yellow">Limitada</span> Max 3 agentes por sprint (hook enforced)</td>
+        <td><span class="badge badge-yellow">Limitada</span> Recomendado 3-5, costo escala linealmente</td>
+      </tr>
+      <tr>
+        <td>Integracion CI/CD</td>
+        <td><span class="badge badge-green">Fuerte</span> GitHub Actions, deploy Lambda, build gates</td>
+        <td><span class="badge badge-red">Ninguna</span> No tiene integracion CI/CD nativa</td>
+      </tr>
+      <tr>
+        <td>Reportes y auditing</td>
+        <td><span class="badge badge-green">Fuerte</span> Sprint auditing, session history, metricas, PDF</td>
+        <td><span class="badge badge-red">Debil</span> Solo transcripciones de sesion en JSONL</td>
+      </tr>
+      <tr>
+        <td>Soporte Windows</td>
+        <td><span class="badge badge-green">Nativo</span> PowerShell + Bash (MSYS2)</td>
+        <td><span class="badge badge-red">Limitado</span> Split panes no soportados en Windows Terminal</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- 3. VENTAJAS DEL MODELO ACTUAL                                 -->
+<!-- ============================================================ -->
+<div class="section" id="s3">
+  <div class="section-number">Seccion 3</div>
+  <h2>Ventajas del modelo actual sobre Agent Teams</h2>
+
+  <div class="card">
+    <h3 style="margin-top:0">1. Aislamiento total via git worktrees</h3>
+    <p>Cada agente trabaja en una copia completa del repositorio. No existe riesgo de que dos agentes editen el mismo archivo. Agent Teams advierte explicitamente: <em>"Two teammates editing the same file leads to overwrites."</em> En un monorepo como Intrale donde backend, app y tools comparten dependencias, este aislamiento es critico.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">2. Pipeline de calidad formalizado y automatizado</h3>
+    <p>El flujo Dev -> Tester -> Review -> QA -> Delivery es ejecutado automaticamente por skills encadenados. Cada gate tiene un skill dedicado con reglas estrictas (SKILL.md), modelo optimizado, y herramientas restringidas. Agent Teams no tiene concepto de pipeline; las task dependencies son secuenciales pero no garantizan gates de calidad.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">3. Observabilidad de nivel produccion</h3>
+    <p>El dashboard en <code>localhost:3100</code> provee: flow graph SVG force-directed, Gantt chart de sprints, metricas KPI en vivo, feed de actividad con SSE cada 5 segundos, tabla de CI/CD, y screenshots automaticos via Puppeteer para Telegram. Agent Teams solo ofrece vista de terminal.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">4. Recuperacion autonoma</h3>
+    <p>El <code>agent-watcher.js</code> monitorea agentes muertos, diagnostica la causa, y relanza automaticamente. Incluye retry inteligente cuando un agente pierde su slot de ejecucion. Agent Teams requiere intervencion manual: detectar que un teammate se detuvo, instruir al lider, o generar un reemplazo.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">5. Optimizacion de costos por modelo</h3>
+    <p>Cada uno de los 27 skills tiene un modelo asignado en su SKILL.md. Skills simples como <code>/delivery</code>, <code>/review</code>, <code>/tester</code> usan Haiku (barato y rapido). Solo los skills de desarrollo (<code>/backend-dev</code>, <code>/android-dev</code>) usan Opus. Esto es mas granular que la asignacion por teammate de Agent Teams.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">6. Integracion con ecosistema externo</h3>
+    <p>Telegram bot para comandos remotos y reportes, GitHub CLI para CI/CD checks, screenshots automaticos para QA evidence, sprint auditing con JSONL persistente. Agent Teams es autocontenido en la terminal sin integraciones externas.</p>
+  </div>
+</div>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- 4. VENTAJAS DE AGENT TEAMS                                    -->
+<!-- ============================================================ -->
+<div class="section" id="s4">
+  <div class="section-number">Seccion 4</div>
+  <h2>Ventajas de Agent Teams sobre el modelo actual</h2>
+
+  <div class="card">
+    <h3 style="margin-top:0">1. Comunicacion directa entre agentes</h3>
+    <p>Los teammates se envian mensajes directamente, debaten hipotesis, y se desafian mutuamente. Esto habilita patrones como <em>hipotesis competidoras</em> donde multiples agentes investigan causas raiz y refutan teorias del otro. En Intrale, los agentes son silos: el output de uno se convierte en input del siguiente, pero nunca dialogan.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">2. Cero costo de mantenimiento de infraestructura</h3>
+    <p>Agent Teams es una feature nativa de Claude Code. No hay hooks que mantener (~40 archivos JS), no hay dashboard que debuggear (4700 lineas), no hay watcher que supervisar. Las actualizaciones de Claude Code mejoran el sistema automaticamente. En Intrale, cada cambio de API de Claude Code puede romper los hooks.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">3. Setup instantaneo con lenguaje natural</h3>
+    <p>Crear un equipo es tan simple como: <em>"Crea un equipo con 3 companeros para refactorizar estos modulos en paralelo."</em> No se necesita conocer PowerShell, git worktrees, ni la estructura de scripts del proyecto. El lider divide el trabajo, asigna tareas, y coordina automaticamente.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">4. Task list compartida con coordinacion automatica</h3>
+    <p>La task list usa file locking para prevenir race conditions. Las dependencias entre tareas se resuelven automaticamente: cuando un teammate completa una tarea de la que dependen otras, las tareas bloqueadas se desbloquean. En Intrale, la coordinacion es secuencial y manual (el pipeline define el orden).</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">5. Aprobacion de plan antes de implementar</h3>
+    <p>Se puede requerir que un teammate planifique en modo read-only antes de implementar. El lider revisa y aprueba el plan. Esto previene re-work costoso. En Intrale, cada agente ejecuta directamente segun su skill sin paso de revision de plan previo.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">6. Hooks nativos para quality gates</h3>
+    <p>Los eventos <code>TeammateIdle</code> y <code>TaskCompleted</code> permiten ejecutar scripts de validacion cuando un teammate termina o una tarea se marca como completada. Exit code 2 bloquea la finalizacion y envia feedback. Esto es mas limpio que los 40 hooks custom de Intrale.</p>
+  </div>
+</div>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- 5. COMPARATIVA DE COSTOS                                      -->
+<!-- ============================================================ -->
+<div class="section" id="s5">
+  <div class="section-number">Seccion 5</div>
+  <h2>Comparativa de costos</h2>
+
+  <div class="metrics-row">
+    <div class="metric-box">
+      <div class="metric-value">$15-25</div>
+      <div class="metric-label">Sprint Intrale (actual)</div>
+    </div>
+    <div class="metric-box">
+      <div class="metric-value">$30-60</div>
+      <div class="metric-label">Sprint Agent Teams (est.)</div>
+    </div>
+    <div class="metric-box">
+      <div class="metric-value">~40</div>
+      <div class="metric-label">Hooks custom (overhead)</div>
+    </div>
+    <div class="metric-box">
+      <div class="metric-value">7x</div>
+      <div class="metric-label">Factor tokens AT vs single</div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Concepto</th>
+        <th>Intrale (actual)</th>
+        <th>Agent Teams (estimado)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Costo por sprint</strong><br><span style="font-size:0.8rem;color:var(--text-dim)">3 agentes, 5 issues</span></td>
+        <td>$15-25 USD<br><span style="font-size:0.8rem;color:var(--text-dim)">Haiku para skills simples, Opus solo para dev</span></td>
+        <td>$30-60 USD<br><span style="font-size:0.8rem;color:var(--text-dim)">Cada teammate consume tokens independientemente + lider</span></td>
+      </tr>
+      <tr>
+        <td><strong>Tokens por agente/dia</strong></td>
+        <td>~200K-400K tokens<br><span style="font-size:0.8rem;color:var(--text-dim)">Optimizado: skills simples en Haiku</span></td>
+        <td>~500K-1M tokens<br><span style="font-size:0.8rem;color:var(--text-dim)">Contexto completo por teammate + coordinacion</span></td>
+      </tr>
+      <tr>
+        <td><strong>Overhead de coordinacion</strong></td>
+        <td>Bajo: hooks son scripts livianos (< 1ms cada uno). El dashboard consume CPU del server local, no tokens API.</td>
+        <td>Alto: el lider consume tokens para coordinar, asignar tareas, sintetizar resultados. Los mensajes entre teammates consumen tokens en cada ventana.</td>
+      </tr>
+      <tr>
+        <td><strong>Costo de mantenimiento</strong></td>
+        <td>Alto en horas/dev: ~40 hooks JS, dashboard 4700 lineas, scripts PowerShell, watcher. Estimado 4-8 horas/semana de mantenimiento.</td>
+        <td>Cero: feature nativa mantenida por Anthropic.</td>
+      </tr>
+      <tr>
+        <td><strong>Optimizacion de modelo</strong></td>
+        <td>Granular por skill: 27 skills con modelo configurado en SKILL.md. Haiku para /delivery (~$0.25/M input), Opus para /backend-dev (~$15/M input).</td>
+        <td>Por teammate: se puede pedir "Usa Sonnet para cada companero". Menos granular ya que un teammate puede ejecutar multiples roles.</td>
+      </tr>
+      <tr>
+        <td><strong>Costo de infraestructura</strong></td>
+        <td>Node.js local (dashboard), Puppeteer (screenshots), Telegram bot (gratis). Sin costo cloud adicional.</td>
+        <td>Cero infraestructura propia. Todo integrado en Claude Code.</td>
+      </tr>
+      <tr>
+        <td><strong>Ahorro potencial</strong></td>
+        <td>Cache de datos cada 2s, skills simples en Haiku, compactacion agresiva.</td>
+        <td>Prompt caching nativo, auto-compactacion. Limpiar equipos cuando terminan para cortar consumo.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="card" style="border-left: 3px solid var(--yellow);">
+    <h3 style="margin-top:0; color:var(--yellow)">Analisis de costo-beneficio</h3>
+    <p>El modelo Intrale es ~50-60% mas barato en tokens API gracias a la optimizacion Haiku/Opus por skill. Sin embargo, el costo oculto de mantenimiento (horas de desarrollo para hooks, dashboard, watcher) no se refleja en los $15-25/sprint. Si se valoriza ese tiempo a $30/hr, el costo real es $135-265/sprint (4-8 horas mantenimiento). Agent Teams elimina ese costo de mantenimiento a cambio de mayor consumo de tokens.</p>
+  </div>
+</div>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- 6. TIEMPOS DE EJECUCION                                       -->
+<!-- ============================================================ -->
+<div class="section" id="s6">
+  <div class="section-number">Seccion 6</div>
+  <h2>Tiempos de ejecucion</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Metrica</th>
+        <th>Intrale (actual)</th>
+        <th>Agent Teams (estimado)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Sprint completo</strong><br><span style="font-size:0.8rem;color:var(--text-dim)">5 issues, 3 agentes</span></td>
+        <td>4-8 horas (wall time)<br><span style="font-size:0.8rem;color:var(--text-dim)">Pipeline secuencial por agente: Dev->Tester->Review->QA->Delivery</span></td>
+        <td>3-6 horas (wall time)<br><span style="font-size:0.8rem;color:var(--text-dim)">Paralelismo real con coordinacion nativa, sin pipeline secuencial</span></td>
+      </tr>
+      <tr>
+        <td><strong>Setup de agentes</strong></td>
+        <td>2-5 minutos<br><span style="font-size:0.8rem;color:var(--text-dim)">Crear worktrees, copiar .claude/, lanzar procesos</span></td>
+        <td>30-60 segundos<br><span style="font-size:0.8rem;color:var(--text-dim)">Lenguaje natural, spawn automatico</span></td>
+      </tr>
+      <tr>
+        <td><strong>Paralelismo real</strong></td>
+        <td><span class="badge badge-green">3 agentes simultaneos</span><br><span style="font-size:0.8rem;color:var(--text-dim)">Cada uno en su worktree, completamente independiente</span></td>
+        <td><span class="badge badge-green">3-5 teammates simultaneos</span><br><span style="font-size:0.8rem;color:var(--text-dim)">Ventanas de contexto independientes, coordinacion nativa</span></td>
+      </tr>
+      <tr>
+        <td><strong>Bottleneck principal</strong></td>
+        <td>Pipeline secuencial: cada agente debe pasar por 5 gates antes de delivery. Si el tester falla, todo el pipeline se reinicia.</td>
+        <td>Coordinacion del lider: el lider puede convertirse en bottleneck si intenta implementar en vez de delegar. La task list puede quedar desactualizada.</td>
+      </tr>
+      <tr>
+        <td><strong>Tiempo de recovery</strong></td>
+        <td>1-3 minutos<br><span style="font-size:0.8rem;color:var(--text-dim)">Watcher detecta muerte y relanza automaticamente</span></td>
+        <td>3-10 minutos<br><span style="font-size:0.8rem;color:var(--text-dim)">Deteccion manual, instruccion al lider, spawn de reemplazo</span></td>
+      </tr>
+      <tr>
+        <td><strong>Entrega (PR creation)</strong></td>
+        <td>1-2 minutos por agente<br><span style="font-size:0.8rem;color:var(--text-dim)">/delivery automatizado: commit + push + PR + labels</span></td>
+        <td>Manual o via instrucciones<br><span style="font-size:0.8rem;color:var(--text-dim)">No tiene concepto de delivery automatizado</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="diagram">
+<span class="highlight">Timeline: Sprint con Intrale (actual)</span>
+
+  T=0h          T=1h          T=2h          T=3h          T=4h          T=5h          T=6h
+  |             |             |             |             |             |             |
+  <span class="green">Agente 1</span>  [====Dev====][==Test==][==Rev==][==QA==][Del]
+  <span class="cyan">Agente 2</span>  [======Dev======][==Test==][Rev][==QA==][Del]
+  <span class="yellow">Agente 3</span>  [========Dev========][==Test==][==Rev==][QA][Del]
+                                                                     <span class="green">^-- Delivery escalonado</span>
+
+<span class="highlight">Timeline: Sprint con Agent Teams (estimado)</span>
+
+  T=0h          T=1h          T=2h          T=3h          T=4h          T=5h
+  |             |             |             |             |             |
+  <span class="green">Teammate 1</span> [=====Implementa + Tests=====][====Revisa 2====][Del]
+  <span class="cyan">Teammate 2</span> [=====Implementa + Tests=====][====Revisa 3====][Del]
+  <span class="yellow">Teammate 3</span> [=====Implementa + Tests=====][====Revisa 1====][Del]
+  <span class="red">Lider</span>      [Coord][---Monitorea---][--Sintetiza--][---PR---]
+                                                      <span class="cyan">^-- Delivery en batch</span>
+  </div>
+</div>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- 7. PROPUESTA DE MIGRACION                                     -->
+<!-- ============================================================ -->
+<div class="section" id="s7">
+  <div class="section-number">Seccion 7</div>
+  <h2>Propuesta de migracion paso a paso</h2>
+
+  <p>La recomendacion es una migracion hibrida e incremental. No se trata de reemplazar todo el sistema actual de golpe, sino de incorporar Agent Teams donde aporta valor y mantener las piezas del modelo actual que son superiores.</p>
+
+  <div class="phase simple">
+    <div class="phase-header">
+      <div class="phase-title">Fase 1 -- Evaluacion y prueba de concepto</div>
+      <div class="phase-effort badge badge-green">Simple</div>
+    </div>
+    <ul>
+      <li>Habilitar <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> en settings.json</li>
+      <li>Ejecutar un sprint de prueba con un issue no critico usando Agent Teams</li>
+      <li>Comparar metricas reales: tokens consumidos, tiempo de ejecucion, calidad del output</li>
+      <li>Documentar limitaciones encontradas en el entorno Windows/MSYS2</li>
+      <li>Validar que CLAUDE.md y skills se cargan correctamente en teammates</li>
+    </ul>
+  </div>
+
+  <div class="phase simple">
+    <div class="phase-header">
+      <div class="phase-title">Fase 2 -- Agent Teams para tareas de investigacion y review</div>
+      <div class="phase-effort badge badge-green">Simple</div>
+    </div>
+    <ul>
+      <li>Usar Agent Teams para code reviews paralelos (seguridad, performance, cobertura)</li>
+      <li>Usar Agent Teams para investigacion de bugs con hipotesis competidoras</li>
+      <li>Mantener el modelo actual para desarrollo e implementacion</li>
+      <li>Crear subagentes reutilizables equivalentes a /review, /security, /perf</li>
+    </ul>
+  </div>
+
+  <div class="phase medium">
+    <div class="phase-header">
+      <div class="phase-title">Fase 3 -- Hibrido: worktrees + Agent Teams quality gates</div>
+      <div class="phase-effort badge badge-yellow">Medio</div>
+    </div>
+    <ul>
+      <li>Mantener worktrees para aislamiento de desarrollo (ventaja critica)</li>
+      <li>Reemplazar los hooks de quality gate por hooks nativos <code>TaskCompleted</code> y <code>TeammateIdle</code></li>
+      <li>Migrar la coordinacion de pipeline a task list nativa con dependencias</li>
+      <li>Reducir los ~40 hooks custom a los esenciales (logging, permisos, Telegram)</li>
+      <li>Crear un adapter que convierta el pipeline Dev->Tester->Review->QA->Delivery a task dependencies</li>
+    </ul>
+  </div>
+
+  <div class="phase medium">
+    <div class="phase-header">
+      <div class="phase-title">Fase 4 -- Migrar observabilidad</div>
+      <div class="phase-effort badge badge-yellow">Medio</div>
+    </div>
+    <ul>
+      <li>Evaluar si el dashboard actual se puede alimentar de la task list nativa de Agent Teams</li>
+      <li>Crear un bridge que lea <code>~/.claude/teams/</code> y <code>~/.claude/tasks/</code> para el dashboard SSE</li>
+      <li>Mantener integracion Telegram (no existe equivalente en Agent Teams)</li>
+      <li>Agregar metricas de Agent Teams al dashboard existente</li>
+    </ul>
+  </div>
+
+  <div class="phase large">
+    <div class="phase-header">
+      <div class="phase-title">Fase 5 -- Modelo nativo con extensiones</div>
+      <div class="phase-effort badge badge-red">Grande</div>
+    </div>
+    <ul>
+      <li>Migrar el flujo completo de sprint a Agent Teams cuando la feature salga de experimental</li>
+      <li>Convertir skills criticos (/backend-dev, /android-dev) a subagentes con isolation: worktree</li>
+      <li>Usar <code>isolation: worktree</code> nativo de subagentes para mantener aislamiento git</li>
+      <li>Reemplazar <code>Start-Agente.ps1</code> por un agente lider que orqueste el sprint completo</li>
+      <li>Mantener: dashboard web (adaptado), Telegram bot, sprint auditing, metricas historicas</li>
+      <li>Eliminar: agent-watcher.js, worktree management manual, hooks de coordinacion</li>
+    </ul>
+  </div>
+
+  <div class="card" style="border-left: 3px solid var(--red);">
+    <h3 style="margin-top:0; color:var(--red)">Riesgos de la migracion</h3>
+    <ul style="list-style:none; padding:0;">
+      <li style="padding:4px 0; font-size:0.9rem;">1. <strong>Agent Teams es experimental</strong>: puede cambiar o ser deprecado. No migrar componentes criticos hasta que sea estable.</li>
+      <li style="padding:4px 0; font-size:0.9rem;">2. <strong>Soporte Windows limitado</strong>: split panes no funcionan en Windows Terminal. El modo in-process es la unica opcion viable.</li>
+      <li style="padding:4px 0; font-size:0.9rem;">3. <strong>Sin resume con teammates</strong>: <code>/resume</code> no restaura teammates. Si la sesion se cae, hay que recrear el equipo.</li>
+      <li style="padding:4px 0; font-size:0.9rem;">4. <strong>Aislamiento de archivos</strong>: sin worktrees, teammates pueden sobreescribirse. Mitigacion: usar <code>isolation: worktree</code> en subagentes.</li>
+      <li style="padding:4px 0; font-size:0.9rem;">5. <strong>Costo de tokens</strong>: estimado 2-3x mas caro por sprint. Monitorear con <code>/cost</code> durante la fase de prueba.</li>
+    </ul>
+  </div>
+</div>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- 8. RECOMENDACION FINAL                                        -->
+<!-- ============================================================ -->
+<div class="section" id="s8">
+  <div class="section-number">Seccion 8</div>
+  <h2>Recomendacion final</h2>
+
+  <div class="recommendation">
+    <h3>Modelo hibrido: mantener las fortalezas, adoptar lo nativo</h3>
+    <p>La recomendacion es un <strong>modelo hibrido</strong> que preserve las ventajas competitivas del sistema actual (aislamiento via worktrees, pipeline de calidad, observabilidad, recuperacion autonoma) e incorpore selectivamente Agent Teams donde aporta valor genuino (comunicacion inter-agente, coordinacion de tareas, setup simplificado).</p>
+  </div>
+
+  <div class="card-grid">
+    <div class="card" style="border-top: 3px solid var(--green);">
+      <div class="card-title" style="color:var(--green)">MANTENER del modelo actual</div>
+      <ul class="pro-list">
+        <li>Git worktrees para aislamiento de codigo (critico para monorepo)</li>
+        <li>Dashboard web con SSE (observabilidad sin equivalente)</li>
+        <li>Integracion Telegram (comandos remotos, reportes)</li>
+        <li>Sprint auditing y metricas historicas</li>
+        <li>Optimizacion Haiku/Opus por skill (ahorro significativo)</li>
+        <li>Pipeline QA con evidencia de video</li>
+        <li>Agent watcher para recovery automatico</li>
+      </ul>
+    </div>
+    <div class="card" style="border-top: 3px solid var(--accent);">
+      <div class="card-title" style="color:var(--accent)">ADOPTAR de Agent Teams</div>
+      <ul class="pro-list">
+        <li>Comunicacion directa para code reviews en equipo</li>
+        <li>Hipotesis competidoras para debugging complejo</li>
+        <li>Task list nativa con dependencias automaticas</li>
+        <li>Hooks <code>TaskCompleted</code> / <code>TeammateIdle</code> (mas limpios)</li>
+        <li>Aprobacion de plan antes de implementar</li>
+        <li>Subagentes con <code>isolation: worktree</code> cuando sea estable</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card" style="border-top: 3px solid var(--red);">
+      <div class="card-title" style="color:var(--red)">ELIMINAR gradualmente</div>
+      <ul class="con-list">
+        <li>Hooks de coordinacion que Agent Teams resuelve nativamente</li>
+        <li>Scripts de worktree management cuando <code>isolation: worktree</code> sea estable</li>
+        <li>Hooks de task state que la task list nativa reemplaza</li>
+      </ul>
+    </div>
+    <div class="card" style="border-top: 3px solid var(--yellow);">
+      <div class="card-title" style="color:var(--yellow)">ESPERAR antes de migrar</div>
+      <ul class="con-list">
+        <li>Que Agent Teams salga de estado experimental</li>
+        <li>Soporte adecuado de Windows Terminal</li>
+        <li>Resume/rewind con teammates funcional</li>
+        <li>Evidencia de estabilidad en sprints largos (4-8 horas)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card" style="background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);">
+    <h3 style="margin-top:0">Veredicto ejecutivo</h3>
+    <p style="font-size: 1.05rem; line-height: 1.8;">
+      <strong>No migrar ahora.</strong> El modelo actual de Intrale es mas maduro, mas robusto, y mas barato en tokens que Agent Teams en su estado experimental. Las ventajas de Agent Teams (comunicacion directa, setup simple) no justifican los riesgos (inestabilidad, falta de resume, costo 2-3x mayor, soporte Windows limitado).
+    </p>
+    <p style="font-size: 1.05rem; line-height: 1.8;">
+      <strong>Adoptar selectivamente</strong> en Fase 1-2 (investigacion y reviews) para ganar experiencia con la herramienta. Preparar la migracion del pipeline para cuando Agent Teams sea GA (Generally Available) y soporte <code>isolation: worktree</code> de forma nativa y estable.
+    </p>
+    <p style="font-size: 1.05rem; line-height: 1.8;">
+      <strong>Horizonte estimado para migracion completa:</strong> 6-12 meses, condicionado a que Anthropic estabilice la feature y resuelva las limitaciones de Windows y resume/rewind.
+    </p>
+  </div>
+</div>
+
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  Intrale Platform &mdash; Reporte generado el 22 de marzo de 2026<br>
+  Basado en documentacion de Claude Code v2.1.32+ y arquitectura operativa Intrale SPR-043
+</div>
+
+</body>
+</html>
