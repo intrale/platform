@@ -1,0 +1,63 @@
+{
+  "suite": "regression-core",
+  "description": "Suite de regresión que se ejecuta al cierre de cada sprint para validar las features principales",
+  "version": "1.0.0",
+  "test_cases": [
+    {
+      "id": "REG-01",
+      "title": "Login y acceso al dashboard",
+      "app": "business",
+      "flow": "login.yaml",
+      "tags": ["auth", "critical"]
+    },
+    {
+      "id": "REG-02",
+      "title": "Catálogo de productos",
+      "app": "client",
+      "flow": "client-catalog.yaml",
+      "tags": ["catalog", "client"]
+    },
+    {
+      "id": "REG-03",
+      "title": "Home del cliente",
+      "app": "client",
+      "flow": "client-home.yaml",
+      "tags": ["home", "client"]
+    },
+    {
+      "id": "REG-04",
+      "title": "Registro de usuario cliente",
+      "app": "client",
+      "flow": "signup.yaml",
+      "tags": ["auth", "signup"]
+    },
+    {
+      "id": "REG-05",
+      "title": "Recuperación de contraseña",
+      "app": "client",
+      "flow": "password-recovery.yaml",
+      "tags": ["auth", "recovery"]
+    },
+    {
+      "id": "REG-06",
+      "title": "Dashboard de negocio — carga",
+      "app": "business",
+      "flow": "validate-1633-business-dashboard-load.yaml",
+      "tags": ["business", "dashboard"]
+    },
+    {
+      "id": "REG-07",
+      "title": "Navegación principal",
+      "app": "client",
+      "flow": "navigation.yaml",
+      "tags": ["navigation", "client"]
+    },
+    {
+      "id": "REG-08",
+      "title": "Detalle de producto",
+      "app": "client",
+      "flow": "client-product-detail.yaml",
+      "tags": ["catalog", "client"]
+    }
+  ]
+}

@@ -214,6 +214,80 @@ function extractTechnicalDebt(agentes, issueInfos) {
     return debt;
 }
 
+// --- Regresión QA E2E ---
+
+/**
+ * Carga el reporte de regresión del sprint actual desde qa/regression/.
+ * Retorna null si no existe (graceful).
+ */
+function loadRegressionResults(sprintId) {
+    try {
+        const { loadRegressionReport } = require(path.join(__dirname, "run-regression.js"));
+        return loadRegressionReport(sprintId);
+    } catch (e) {
+        log("No se pudo cargar run-regression.js: " + e.message);
+        return null;
+    }
+}
+
+/**
+ * Construye la sección HTML de resultados de regresión.
+ */
+function buildRegressionSection(regression) {
+    if (!regression) {
+        return `<p><em>No se ejecutó regresión en este sprint (suite inexistente o emulador no disponible).</em></p>`;
+    }
+
+    const { summary, results = [], sprint_id, timestamp } = regression;
+    const statusIcon = regression.passed ? "✅" : (summary.failed > 0 ? "❌" : "⚠️");
+    const statusText = regression.passed ? "PASADA" : (summary.failed > 0 ? "FALLIDA" : "SKIPPED");
+    const statusColor = regression.passed ? "#22c55e" : (summary.failed > 0 ? "#ef4444" : "#f59e0b");
+
+    let html = `
+<div class="section-box" style="border-left:4px solid ${statusColor};">
+  <h3 style="color:${statusColor};">${statusIcon} Suite de Regresión — ${statusText}</h3>
+  <p><strong>Sprint:</strong> ${escapeHtml(sprint_id || "N/A")} &nbsp;|&nbsp;
+     <strong>Ejecutada:</strong> ${formatDateAR(timestamp)} &nbsp;|&nbsp;
+     <strong>Total:</strong> ${summary.total} &nbsp;|&nbsp;
+     <span style="color:#22c55e;font-weight:bold;">✓ ${summary.passed} pasaron</span> &nbsp;|&nbsp;
+     <span style="color:#ef4444;font-weight:bold;">✗ ${summary.failed} fallaron</span> &nbsp;|&nbsp;
+     <span style="color:#94a3b8;">⊘ ${summary.skipped} skipped</span>
+  </p>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Título</th><th>App</th><th>Flow</th><th>Resultado</th><th>Duración</th></tr>
+    </thead>
+    <tbody>`;
+
+    for (const r of results) {
+        const icon = r.passed ? "✅" : (r.skipped ? "⊘" : "❌");
+        const rowColor = r.passed ? "" : (r.skipped ? "color:#94a3b8;" : "color:#ef4444;");
+        const dur = r.durationMs > 0 ? `${Math.round(r.durationMs / 1000)}s` : "N/A";
+        html += `
+      <tr style="${rowColor}">
+        <td><strong>${escapeHtml(r.id)}</strong></td>
+        <td>${escapeHtml(r.title)}</td>
+        <td><code>${escapeHtml(r.app)}</code></td>
+        <td><code>${escapeHtml(r.flow)}</code></td>
+        <td>${icon} ${r.passed ? "PASS" : (r.skipped ? "SKIP" : "FAIL")}</td>
+        <td>${dur}</td>
+      </tr>`;
+        if (r.error && !r.skipped) {
+            html += `
+      <tr><td colspan="6" style="background:#fff1f2;font-size:12px;color:#991b1b;padding:6px 12px;">
+        <code>${escapeHtml((r.error || "").substring(0, 300))}</code>
+      </td></tr>`;
+        }
+    }
+
+    html += `
+    </tbody>
+  </table>
+</div>`;
+
+    return html;
+}
+
 // --- HTML Template ---
 const CSS = `
   @page { size: A4; margin: 20mm; }
@@ -252,7 +326,7 @@ const CSS = `
   .footer { margin-top: 40px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center; }
 `;
 
-function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData) {
+function buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData, regressionData) {
     const fecha = (plan.started_at || "").split("T")[0] || new Date().toISOString().split("T")[0];
     const tema = plan.tema || "";
     const agentes = plan.agentes || [];
@@ -565,6 +639,13 @@ ${sprintId ? `<strong>Sprint ID:</strong> ${escapeHtml(sprintId)}<br>\n` : ""}<s
   </tbody>
 </table>`;
     }
+
+    // --- Regresión QA E2E ---
+    html += `
+
+<!-- REGRESIÓN QA E2E -->
+<h2>11. Regresión QA E2E</h2>
+${buildRegressionSection(regressionData)}`;
 
     // --- Footer ---
     html += `
@@ -902,11 +983,30 @@ async function main() {
 
     log(`Datos enriquecidos: ${activityProblems.length} problemas en activity, ${prProblems.length} en PRs, ${debtData.length} deuda técnica`);
 
+    // --- Regresión QA E2E (gate de cierre) ---
+    log("--- Ejecutando regresión QA E2E ---");
+    let regressionData = null;
+    try {
+        // Intentar cargar resultado ya existente (si run-regression.js fue invocado antes)
+        regressionData = loadRegressionResults(plan.sprint_id || null);
+        if (!regressionData) {
+            // No existe: ejecutar la suite ahora
+            const { runRegressionSuite } = require(path.join(__dirname, "run-regression.js"));
+            regressionData = await runRegressionSuite({ sprintId: plan.sprint_id || null });
+        } else {
+            log(`Regresión ya ejecutada para ${plan.sprint_id}: usando resultado existente`);
+        }
+    } catch (e) {
+        log("Error en regresión QA E2E: " + e.message + " (no bloquea el reporte)");
+        regressionData = null;
+    }
+    log(`--- Regresión completada: ${regressionData ? JSON.stringify(regressionData.summary) : "skipped"} ---`);
+
     // Generar HTML base del sprint
     const fecha = (plan.started_at || "").split("T")[0] || new Date().toISOString().split("T")[0];
     const htmlFileName = `reporte-sprint-${plan.sprint_id || fecha}.html`;
     const htmlPath = path.join(QA_DIR, htmlFileName);
-    let html = buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData);
+    let html = buildHtml(plan, issueInfos, agentSummaries, prs, ciRuns, worktrees, sprintDurationMin, problemsData, debtData, regressionData);
 
     // --- Sección de Costos (embebida en el mismo PDF) ---
     log("--- Generando sección de costos ---");
