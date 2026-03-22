@@ -98,7 +98,9 @@
       "Skill(cleanup)",
       "Edit",
       "Write",
-      "Skill(checkup)"
+      "Skill(checkup)",
+      "Skill(po)",
+      "Skill(security)"
     ],
     "deny": [
       "Bash(git push --force*)",

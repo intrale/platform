@@ -1,5 +1,5 @@
 {
-  "updated_ts": "2026-03-19T02:35:04Z",
+  "updated_ts": "2026-03-22T19:31:04Z",
   "sessions": [
     {
       "id": "a32950c5",
@@ -274,6 +274,30 @@
       "tokens_output": null,
       "tokens_total": null,
       "tokens_estimated": 43630
+    },
+    {
+      "id": "fd3a8c85",
+      "sprint_id": "SPR-0051",
+      "agent_name": "DeliveryManager",
+      "branch": "main",
+      "started_ts": "2026-03-22T19:23:50Z",
+      "ended_ts": "2026-03-22T19:31:04Z",
+      "duration_min": 7,
+      "tool_counts": {
+        "Skill": 1,
+        "Bash": 13
+      },
+      "total_tool_calls": 14,
+      "modified_files_count": 0,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [
+        "/delivery"
+      ],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 13510
     }
   ]
 }
