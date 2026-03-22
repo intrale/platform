@@ -79,6 +79,10 @@ const { validateCompletionCriteria, checkPRStatusViaGh, getDurationFromRegistry 
 let opsLearnings;
 try { opsLearnings = require("./ops-learnings"); } catch (e) { opsLearnings = null; }
 
+// Recovery inteligente: diagnostico + acciones correctivas para agentes muertos
+let agentDoctor;
+try { agentDoctor = require("./agent-doctor"); } catch (e) { agentDoctor = null; }
+
 function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] AgentMonitor: " + msg + "\n"); } catch (e) {}
 }
@@ -956,13 +960,35 @@ function moveToCompleted(plan, issueNumber) {
 
     const validation = validateCompletionCriteria(duracion_min, prStatus, branch);
     if (validation.suspicious) {
+        // Agent Doctor: intentar recovery antes de marcar como _incomplete
+        if (agentDoctor) {
+            try {
+                const doctorResult = agentDoctor.handleDeadAgent(finished, REPO_ROOT, HOOKS_DIR);
+                log("moveToCompleted Doctor #" + issueNumber + ": causa=" + doctorResult.diagnosis.cause +
+                    " action=" + doctorResult.recovery.action + " success=" + doctorResult.recovery.success);
+                finished._doctor_diagnosis = doctorResult.logEntry;
+
+                if (doctorResult.recovery.success && !doctorResult.shouldRelaunch) {
+                    finished.resultado = "recovered";
+                    finished.motivo = "Recovery por agent-doctor: " + doctorResult.recovery.details;
+                    plan._completed.push(finished);
+                    log("moveToCompleted: #" + issueNumber + " -> _completed (recovered by doctor)");
+                    notify("\uD83C\uDFE5 <b>Doctor: recovery exitoso #" + issueNumber + "</b>\n" + doctorResult.recovery.details, true);
+                    try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor"); } catch(e2) {}
+                    return;
+                }
+            } catch (e) {
+                log("moveToCompleted: agent-doctor error: " + e.message);
+            }
+        }
+
         finished.resultado = "suspicious";
         finished.motivo = validation.reason;
         plan._incomplete.push(finished);
-        log("moveToCompleted: #" + issueNumber + " → _incomplete SUSPICIOUS: " + validation.reason);
+        log("moveToCompleted: #" + issueNumber + " -> _incomplete SUSPICIOUS: " + validation.reason);
     } else {
         plan._completed.push(finished);
-        log("moveToCompleted: #" + issueNumber + " → _completed (PR merged, " + duracion_min + " min)");
+        log("moveToCompleted: #" + issueNumber + " -> _completed (PR merged, " + duracion_min + " min)");
     }
 
     try {

@@ -212,6 +212,10 @@ try { tgClient = require("./telegram-client"); } catch (e) {}
 let retryDiagnostics = null;
 try { retryDiagnostics = require("./agent-retry-diagnostics"); } catch (e) { log("agent-retry-diagnostics no disponible: " + e.message); }
 
+// Recovery inteligente: diagnostico + acciones correctivas antes de relanzar
+let agentDoctor = null;
+try { agentDoctor = require("./agent-doctor"); } catch (e) { log("agent-doctor no disponible: " + e.message); }
+
 // Validación centralizada de completación (#1458)
 const { buildCompletedEntry, validateCompletionCriteria, MIN_DURATION_MINUTES } = require("./validation-utils");
 
@@ -978,8 +982,51 @@ async function runCycle() {
                     const retryCount = ag._retry_count || 0;
 
                     if (retryCount < MAX_RETRIES) {
-                        // Diagnosticar causa de muerte antes de relanzar (#1749)
-                        if (retryDiagnostics) {
+                        // === Agent Doctor: diagnostico + recovery ANTES de relanzar ===
+                        let doctorResult = null;
+                        if (agentDoctor) {
+                            try {
+                                doctorResult = agentDoctor.handleDeadAgent(ag, REPO_ROOT, HOOKS_DIR);
+                                log("Doctor #" + ag.issue + ": causa=" + doctorResult.diagnosis.cause +
+                                    " action=" + doctorResult.recovery.action +
+                                    " success=" + doctorResult.recovery.success +
+                                    " shouldRelaunch=" + doctorResult.shouldRelaunch);
+
+                                // Si el doctor recupero el trabajo (ej: push + PR exitoso), no relanzar
+                                if (doctorResult.recovery.success && !doctorResult.shouldRelaunch) {
+                                    log("Doctor #" + ag.issue + ": recovery exitoso -- NO relanzar");
+                                    const successEntry = buildCompletedEntry(ag, null, "completed");
+                                    successEntry.detectado_por = "agent-doctor";
+                                    successEntry.motivo = "Recovery automatico: " + doctorResult.recovery.details;
+                                    successEntry._doctor_diagnosis = doctorResult.logEntry;
+                                    if (!Array.isArray(freshPlan._completed)) freshPlan._completed = [];
+                                    freshPlan._completed.push(successEntry);
+                                    planDirty = true;
+                                    savePlan(freshPlan);
+                                    planDirty = false;
+                                    await notify(agentDoctor.buildDiagnosisNotification(ag, doctorResult.diagnosis, doctorResult.recovery));
+                                    continue; // No relanzar -- recovery exitoso
+                                }
+
+                                // Aplicar prompt enriquecido del doctor
+                                const basePromptDoc = ag.prompt || generateDefaultPrompt(ag.issue, ag.slug);
+                                ag.prompt = agentDoctor.buildDoctorRetryPrompt(basePromptDoc, ag, doctorResult.diagnosis);
+
+                                // Reutilizar worktree si hay commits locales
+                                if (doctorResult.diagnosis.localCommitCount > 0 && doctorResult.diagnosis.worktreeExists) {
+                                    ag._reuse_worktree = true;
+                                    log("Doctor #" + ag.issue + ": reutilizar worktree (" + doctorResult.diagnosis.localCommitCount + " commits)");
+                                }
+
+                                // Notificar diagnostico via Telegram
+                                await notify(agentDoctor.buildDiagnosisNotification(ag, doctorResult.diagnosis, doctorResult.recovery));
+                            } catch (e) {
+                                log("WARN: agent-doctor error: " + e.message);
+                            }
+                        }
+
+                        // Fallback: diagnostico basico si el doctor no esta disponible
+                        if (!doctorResult && retryDiagnostics) {
                             try {
                                 const diagnosis = retryDiagnostics.analyzeDeath(ag, REPO_ROOT, HOOKS_DIR);
                                 log("Diagnostico #" + ag.issue + ": causa=" + diagnosis.cause + " localCommits=" + diagnosis.localCommitCount + " remoteBranch=" + diagnosis.hasRemoteBranch);
@@ -996,6 +1043,34 @@ async function runCycle() {
                                 log("WARN: agent-retry-diagnostics error: " + e.message);
                             }
                         }
+
+                        // Persistir diagnostico del doctor en historial del agente
+                        if (doctorResult) {
+                            if (!Array.isArray(ag._retry_diagnostics)) ag._retry_diagnostics = [];
+                            ag._retry_diagnostics.push(doctorResult.logEntry);
+                        }
+
+                        // Aplicar cooldown si el doctor lo recomienda (ej: rate limit)
+                        const cooldownMs = doctorResult ? doctorResult.cooldownMs : 0;
+                        if (cooldownMs > 60000) {
+                            log("Doctor #" + ag.issue + ": cooldown de " + Math.round(cooldownMs / 60000) + " min antes de relanzar");
+                            ag._doctor_cooldown_until = new Date(Date.now() + cooldownMs).toISOString();
+                            ag._retry_count = retryCount + 1;
+                            const queue = getQueue(freshPlan);
+                            queue.push(ag);
+                            setQueue(freshPlan, queue);
+                            planDirty = true;
+                            savePlan(freshPlan);
+                            planDirty = false;
+                            await notify(
+                                "\u23F3 <b>Agente #" + ag.issue + " en cooldown</b>\n" +
+                                "Causa: " + escHtml(doctorResult.diagnosis.cause) + "\n" +
+                                "Cooldown: " + Math.round(cooldownMs / 60000) + " min\n" +
+                                "Sera relanzado automaticamente"
+                            );
+                            continue; // No relanzar ahora -- cooldown activo
+                        }
+
                         // Relanzar: re-agregar al plan como "promoted" con contador actualizado
                         ag._retry_count = retryCount + 1;
                         ag.status = "promoted";
@@ -1005,7 +1080,7 @@ async function runCycle() {
                         freshPlan.agentes.push(ag);
                         planDirty = true;
 
-                        log("Reconciliación: agente #" + ag.issue + " muerto sin PR — relanzando (intento " +
+                        log("Reconciliacion: agente #" + ag.issue + " muerto sin PR -- relanzando (intento " +
                             ag._retry_count + "/" + MAX_RETRIES + ")");
                         savePlan(freshPlan);
                         planDirty = false;
@@ -1014,15 +1089,17 @@ async function runCycle() {
                         // Persistir el _pid asignado por launchAgent
                         if (ag._pid) savePlan(freshPlan);
 
-                        const diagCause = (ag._retry_diagnostics && ag._retry_diagnostics.length > 0)
-                            ? ag._retry_diagnostics[ag._retry_diagnostics.length - 1].cause
-                            : "unknown";
+                        const diagCause = (doctorResult && doctorResult.diagnosis)
+                            ? doctorResult.diagnosis.cause
+                            : (ag._retry_diagnostics && ag._retry_diagnostics.length > 0)
+                                ? ag._retry_diagnostics[ag._retry_diagnostics.length - 1].cause
+                                : "unknown";
                         await notify(
-                            "🔄 <b>Agente #" + ag.issue + " relanzado (intento " + ag._retry_count + "/" + MAX_RETRIES + ")</b>\n" +
-                            "Sin PR detectada · Slug: " + escHtml(ag.slug) + "\n" +
+                            "\uD83D\uDD04 <b>Agente #" + ag.issue + " relanzado (intento " + ag._retry_count + "/" + MAX_RETRIES + ")</b>\n" +
+                            "Sin PR detectada \u00B7 Slug: " + escHtml(ag.slug) + "\n" +
                             "Causa: " + escHtml(diagCause) + "\n" +
                             "Resultado: " + (relaunchResult ? "spawn exitoso" : "spawn fallido") +
-                            (ag._reuse_worktree ? " · Worktree reutilizado" : "")
+                            (ag._reuse_worktree ? " \u00B7 Worktree reutilizado" : "")
                         )
                     } else {
                         // Excedió reintentos: verificar si el issue fue cerrado en GitHub

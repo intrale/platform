@@ -988,7 +988,8 @@ const AGENT_MAP_DASHBOARD = {
   "/scrum": "Scrum Master", "/ops": "Ops",
   "/backend-dev": "BackendDev", "/android-dev": "AndroidDev",
   "/ios-dev": "iOSDev", "/web-dev": "WebDev", "/desktop-dev": "DesktopDev",
-  "/branch": "Branch",
+  "/branch": "Branch", "/security": "Security", "/cleanup": "Cleanup",
+  "/perf": "Perf", "/cost": "Cost", "/hotfix": "Hotfix", "/config": "Config",
 };
 
 // Normalizar nombres de skill/agente a nombre canónico (#1542)
@@ -1926,6 +1927,20 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     }
   }
 
+  // Block grid cells to the right of Done/Error terminal nodes
+  // No edge should route past these nodes
+  for (const termName of ["Done", "Error"]) {
+    const tp = positions[termName];
+    if (!tp) continue;
+    const tgcx = Math.round(tp.x / gridCell);
+    // Block everything to the right of the terminal node (hard wall)
+    for (let gy = 0; gy < gridH; gy++) {
+      for (let gx = tgcx + 3; gx < gridW; gx++) {
+        markCell(gx, gy, 1);
+      }
+    }
+  }
+
   // A* pathfinding en la grilla
   function gridRoute(sx, sy, tx, ty) {
     const sgx = Math.max(0, Math.min(gridW - 1, Math.round(sx / gridCell)));
@@ -2087,8 +2102,16 @@ function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGEN
     const x2 = to.x - ux * (toVisualR + 12) + px;
     const y2 = to.y - uy * (toVisualR + 12) + py;
 
-    const route = gridRoute(x1, y1, x2, y2);
-    const pathD = pathToSvg(route, { x: x1, y: y1 }, { x: x2, y: y2 });
+    // Start→Agent edges: always straight lines (layer 0→1, no routing needed)
+    const isStartToAgent = e.from === "Start" && /^Agente\s+/i.test(e.to);
+    let route, pathD;
+    if (isStartToAgent) {
+      route = [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+      pathD = "M" + x1.toFixed(1) + "," + y1.toFixed(1) + " L" + x2.toFixed(1) + "," + y2.toFixed(1);
+    } else {
+      route = gridRoute(x1, y1, x2, y2);
+      pathD = pathToSvg(route, { x: x1, y: y1 }, { x: x2, y: y2 });
+    }
 
     // Color by root agent — Start→Agent edges use the TARGET agent's color
     let ec;
