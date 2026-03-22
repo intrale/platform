@@ -116,13 +116,52 @@ set -a
 source "$ENV_FILE"
 set +a
 
-# JAVA_HOME — usar Temurin 21 si existe
-if [ -d "/c/Users/Administrator/.jdks/temurin-21.0.7" ]; then
-  export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
+# JAVA_HOME — detección dinámica en orden de preferencia
+detect_java_home() {
+  # 1. Buscar Temurin 21 en ubicaciones estándar (varias versiones patch)
+  for candidate in \
+    /c/Users/Administrator/.jdks/temurin-21* \
+    /c/Program\ Files/Eclipse\ Adoptium/jdk-21* \
+    /usr/lib/jvm/temurin-21* \
+    /usr/lib/jvm/java-21*; do
+    if [ -x "$candidate/bin/java" ]; then
+      echo "$candidate"
+      return
+    fi
+  done
+
+  # 2. Usar JAVA_HOME ya seteado si es Java 21
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+    local ver
+    ver=$("$JAVA_HOME/bin/java" -version 2>&1 | head -1 | sed 's/.*version "\([0-9]*\).*/\1/')
+    if [ "$ver" = "21" ]; then
+      echo "$JAVA_HOME"
+      return
+    fi
+  fi
+
+  # 3. Usar java del PATH si es Java 21
+  if command -v java &>/dev/null; then
+    local ver
+    ver=$(java -version 2>&1 | head -1 | sed 's/.*version "\([0-9]*\).*/\1/')
+    if [ "$ver" = "21" ]; then
+      # Devolver directorio del JDK (dos niveles sobre el binario)
+      local java_bin
+      java_bin=$(command -v java)
+      echo "$(cd "$(dirname "$java_bin")/.." && pwd)"
+      return
+    fi
+  fi
+}
+
+DETECTED_JAVA_HOME="$(detect_java_home)"
+if [ -n "$DETECTED_JAVA_HOME" ]; then
+  export JAVA_HOME="$DETECTED_JAVA_HOME"
+  echo "Usando JAVA_HOME: $JAVA_HOME"
 elif [ -n "${JAVA_HOME:-}" ]; then
-  echo "Usando JAVA_HOME existente: $JAVA_HOME"
+  echo "WARN: JAVA_HOME configurado pero no es Java 21 — Gradle puede fallar: $JAVA_HOME"
 else
-  echo "WARN: JAVA_HOME no configurado — Gradle usará el JDK del PATH"
+  echo "WARN: Java 21 no encontrado — Gradle usará el JDK del PATH (puede fallar)"
 fi
 
 # No usar exec — mantener el script vivo para el trap

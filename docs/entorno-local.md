@@ -170,6 +170,87 @@ El script `scripts/init-local-aws.sh` crea automáticamente:
 
 ## Troubleshooting
 
+### Verificar prerequisitos antes de empezar
+
+Antes de levantar el ambiente, ejecutá:
+
+```bash
+./scripts/validate-env.sh
+```
+
+El script verifica Java 21, Docker daemon, ADB y AVDs configurados. Muestra errores críticos (bloquean el ambiente) y advertencias (solo afectan funcionalidad Android).
+
+### Java 21 no encontrado o versión incorrecta
+
+Si `validate-env.sh` reporta error de Java:
+
+1. **Instalar Temurin 21** (recomendado):
+   - Descargar desde [adoptium.net](https://adoptium.net/)
+   - En Windows: el instalador lo ubica en `C:\Program Files\Eclipse Adoptium\jdk-21.x.x`
+
+2. **Setear JAVA_HOME manualmente** si hay múltiples JDKs:
+
+   ```bash
+   # Linux/macOS
+   export JAVA_HOME="/usr/lib/jvm/temurin-21"
+
+   # Windows (Git Bash / MSYS2)
+   export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.x.x"
+   ```
+
+3. **En Windows con IntelliJ/Android Studio**: los JDKs descargados por el IDE suelen estar en
+   `~/.jdks/`. `local-up.sh` los detecta automáticamente.
+
+4. Verificar la versión activa:
+
+   ```bash
+   java -version
+   # Debe mostrar: openjdk version "21.x.x" ...
+   ```
+
+### Docker daemon no está corriendo
+
+Si `validate-env.sh` reporta que el daemon no responde:
+
+- **Windows/macOS**: abrí Docker Desktop y esperá a que el ícono en la barra de tareas deje de girar.
+- **Linux**: `sudo systemctl start docker` (o `sudo service docker start`).
+- Verificar estado: `docker info` — debe responder sin errores.
+
+### ADB no encontrado
+
+Si necesitás probar la app Android:
+
+1. Instalá **Android Studio** o descargá solo **Platform-Tools**:
+   - [developer.android.com/tools/releases/platform-tools](https://developer.android.com/tools/releases/platform-tools)
+
+2. Agregá al PATH:
+
+   ```bash
+   # En ~/.bashrc o ~/.zshrc
+   export ANDROID_HOME="$HOME/Android/Sdk"          # Linux/macOS
+   export ANDROID_HOME="/c/Users/$USER/AppData/Local/Android/Sdk"  # Windows
+   export PATH="$ANDROID_HOME/platform-tools:$PATH"
+   ```
+
+3. Reiniciá la terminal y verificá: `adb version`
+
+### AVD no configurado o 'virtualAndroid' no encontrado
+
+Los scripts `local-app.sh` y `qa-android.sh` buscan un AVD llamado **`virtualAndroid`** por defecto.
+
+Para crearlo:
+
+1. Abrí **Android Studio > Device Manager > Create Device**
+2. Seleccioná: **Pixel 6**, API **34** (Android 14), x86_64
+3. Nombralo exactamente `virtualAndroid`
+4. En "Advanced Settings" → "Cold Boot" (opcional, mejora reproducibilidad en CI)
+
+Verificar AVDs existentes:
+
+```bash
+emulator -list-avds
+```
+
 ### `aws-init` falla o no termina
 
 ```bash
