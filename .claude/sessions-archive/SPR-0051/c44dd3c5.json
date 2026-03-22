@@ -1,0 +1,63 @@
+{
+  "id": "c44dd3c5",
+  "full_id": "c44dd3c5-e650-46b4-8a95-65a6b4b1da5b",
+  "type": "parent",
+  "started_ts": "2026-03-22T13:30:54Z",
+  "last_activity_ts": "2026-03-22T14:02:23Z",
+  "action_count": 14,
+  "status": "done",
+  "branch": "agent/1781-ambiente-local-qa-backend-emulador-andro",
+  "pid": 12432,
+  "last_tool": "Bash",
+  "last_target": "git -C /c/Workspaces/Intrale/platform.agent-1781-ambiente-local-qa-backend-emula",
+  "agent_name": "Agente 1",
+  "skills_invoked": [],
+  "sub_count": 0,
+  "permission_mode": "unknown",
+  "current_task": "Creando qa/scripts/qa-backend-healthcheck.sh",
+  "current_tasks": [
+    {
+      "id": "1",
+      "subject": "Crear script health-check del backend local",
+      "status": "in_progress",
+      "activeForm": "Creando qa/scripts/qa-backend-healthcheck.sh"
+    },
+    {
+      "id": "2",
+      "subject": "Crear script de setup/verificación del AVD Android",
+      "status": "pending",
+      "activeForm": "Creando qa/scripts/qa-setup-avd.sh"
+    },
+    {
+      "id": "3",
+      "subject": "Crear script de prueba de humo completa (smoke test)",
+      "status": "pending",
+      "activeForm": "Creando qa/scripts/qa-smoke-test.sh"
+    },
+    {
+      "id": "4",
+      "subject": "Crear documentación docs/qa-ambiente-local.md",
+      "status": "pending",
+      "activeForm": "Creando docs/qa-ambiente-local.md"
+    },
+    {
+      "id": "5",
+      "subject": "Entregar con /delivery",
+      "status": "pending",
+      "activeForm": "Ejecutando /delivery"
+    }
+  ],
+  "tool_counts": {
+    "Bash": 10,
+    "ToolSearch": 1,
+    "TodoWrite": 2,
+    "Write": 1
+  },
+  "tokens_estimated": 35335,
+  "tasks_completed": 0,
+  "tasks_created": 5,
+  "completed_at": "2026-03-22T13:34:15Z",
+  "modified_files": [
+    "/c/workspaces/intrale/platform.agent-1781-ambiente-local-qa-backend-emulador-andro/docs/qa-ambiente-local.md"
+  ]
+}

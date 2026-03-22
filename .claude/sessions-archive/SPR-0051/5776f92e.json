@@ -1,0 +1,108 @@
+{
+  "id": "5776f92e",
+  "full_id": "5776f92e-adac-4850-abe6-d7ca9a4f9b17",
+  "type": "parent",
+  "started_ts": "2026-03-22T13:17:13Z",
+  "last_activity_ts": "2026-03-22T14:20:25Z",
+  "action_count": 31,
+  "status": "active",
+  "branch": "agent/1782-fix-java-11-a-21-mismatch-en-app-build",
+  "pid": 5484,
+  "last_tool": "Bash",
+  "last_target": "export PATH=\"/c/Workspaces/gh-cli/bin:$PATH\" && BRANCH=\"agent/1782-fix-java-11-a",
+  "agent_name": "Agente 2",
+  "skills_invoked": [
+    "/delivery",
+    "/tester",
+    "/security",
+    "/review",
+    "/ops"
+  ],
+  "sub_count": 0,
+  "permission_mode": "unknown",
+  "current_task": null,
+  "current_tasks": [],
+  "tool_counts": {
+    "Bash": 21,
+    "Edit": 1,
+    "ToolSearch": 1,
+    "TaskOutput": 4,
+    "Skill": 4
+  },
+  "tokens_estimated": 72380,
+  "modified_files": [
+    "c:/workspaces/intrale/platform.agent-1782-fix-java-11-a-21-mismatch-en-app-build/app/composeapp/build.gradle.kts"
+  ],
+  "waiting_state": {
+    "reason": "merge",
+    "detail": "Esperando merge del PR...",
+    "started_at": "2026-03-22T14:19:40Z",
+    "status": "in_progress"
+  },
+  "agent_transitions": [
+    {
+      "from": "Agente 2",
+      "to": "DeliveryManager",
+      "ts": "2026-03-22T13:29:08Z"
+    },
+    {
+      "from": "DeliveryManager",
+      "to": "Tester",
+      "ts": "2026-03-22T13:31:29Z"
+    },
+    {
+      "from": "Claude",
+      "to": "Tester",
+      "ts": "2026-03-22T14:07:25Z"
+    },
+    {
+      "from": "Tester",
+      "to": "Security",
+      "ts": "2026-03-22T14:07:27Z"
+    },
+    {
+      "from": "Tester",
+      "to": "Security",
+      "ts": "2026-03-22T14:07:28Z"
+    },
+    {
+      "from": "Security",
+      "to": "Builder",
+      "ts": "2026-03-22T14:07:29Z"
+    },
+    {
+      "from": "/security",
+      "to": "Review",
+      "ts": "2026-03-22T14:12:32Z"
+    },
+    {
+      "from": "Claude",
+      "to": "Ops",
+      "ts": "2026-03-22T14:14:46Z"
+    }
+  ],
+  "skill_invocations": [
+    {
+      "skill": "/delivery",
+      "started_ts": "2026-03-22T13:29:08Z",
+      "ended_ts": "2026-03-22T13:31:29Z",
+      "duration_ms": 141000
+    },
+    {
+      "skill": "/tester",
+      "started_ts": "2026-03-22T13:31:29Z",
+      "ended_ts": "2026-03-22T14:10:32Z",
+      "duration_ms": 2343000
+    },
+    {
+      "skill": "/security",
+      "started_ts": "2026-03-22T14:10:32Z",
+      "ended_ts": "2026-03-22T14:12:32Z",
+      "duration_ms": 120000
+    }
+  ],
+  "skill_pending": {
+    "skill": "/review",
+    "started_ts": "2026-03-22T14:12:32Z"
+  }
+}

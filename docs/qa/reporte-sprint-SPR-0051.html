@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>SPR-0051 — Reporte Sprint — 2026-03-22 — Intrale Platform</title>
+<style>
+  @page { size: A4; margin: 20mm; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a2e; background: #fff; margin: 0; padding: 30px; line-height: 1.6; }
+  h1 { color: #16213e; border-bottom: 3px solid #0f3460; padding-bottom: 10px; font-size: 28px; }
+  h2 { color: #0f3460; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; margin-top: 30px; font-size: 20px; }
+  h3 { color: #533483; margin-top: 20px; font-size: 16px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; margin-right: 4px; }
+  .badge-open { background: #dcfce7; color: #166534; }
+  .badge-closed { background: #f3e8ff; color: #6b21a8; }
+  .badge-merged { background: #dbeafe; color: #1e40af; }
+  .badge-stream { background: #fef3c7; color: #92400e; }
+  .badge-size { background: #e0e7ff; color: #3730a3; }
+  table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 14px; }
+  th { background: #0f3460; color: #fff; padding: 10px 12px; text-align: left; font-weight: 600; }
+  td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
+  tr:nth-child(even) { background: #f8fafc; }
+  tr:hover { background: #eef2ff; }
+  .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+  .metric-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 20px; border-radius: 12px; text-align: center; }
+  .metric-card.green { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
+  .metric-card.blue { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+  .metric-card.orange { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+  .metric-number { font-size: 36px; font-weight: bold; }
+  .metric-label { font-size: 13px; opacity: 0.9; margin-top: 4px; }
+  .timeline { border-left: 3px solid #0f3460; padding-left: 20px; margin: 20px 0; }
+  .timeline-item { position: relative; margin-bottom: 15px; padding: 10px 15px; background: #f8fafc; border-radius: 8px; border-left: 4px solid #667eea; }
+  .timeline-item.success { border-left-color: #22c55e; }
+  .timeline-item.warning { border-left-color: #f59e0b; }
+  .timeline-item.info { border-left-color: #3b82f6; }
+  .timeline-time { font-size: 12px; color: #64748b; font-weight: bold; }
+  .timeline-title { font-weight: 600; margin: 4px 0; }
+  .timeline-detail { font-size: 13px; color: #475569; }
+  .section-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 20px; margin: 15px 0; }
+  code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #334155; }
+  .footer { margin-top: 40px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>SPR-0051 — Reporte de Sprint — 2026-03-22</h1>
+<p><strong>Proyecto:</strong> Intrale Platform (<code>intrale/platform</code>)<br>
+<strong>Sprint ID:</strong> SPR-0051<br>
+<strong>Fecha:</strong> 2026-03-22<br>
+<strong>Objetivo:</strong> Infra QA — ambiente local backend + emulador + video E2E<br>
+<strong>Duración total:</strong> 0 min</p>
+
+<!-- MÉTRICAS -->
+<h2>1. Métricas del Sprint</h2>
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="metric-number">2</div>
+    <div class="metric-label">Issues del sprint</div>
+  </div>
+  <div class="metric-card green">
+    <div class="metric-number">2</div>
+    <div class="metric-label">Issues cerrados</div>
+  </div>
+  <div class="metric-card blue">
+    <div class="metric-number">2</div>
+    <div class="metric-label">PRs merged</div>
+  </div>
+  <div class="metric-card orange">
+    <div class="metric-number">0</div>
+    <div class="metric-label">Minutos totales</div>
+  </div>
+</div>
+
+<!-- LOGROS DESTACADOS -->
+<h2>2. Logros destacados</h2><ul>
+  <li><strong>#1783</strong> — Script validate-env.sh prerequisitos ambiente local
+    &rarr; PR <a href="https://github.com/intrale/platform/pull/1788">#1788</a> mergeado</li>
+  <li><strong>#1785</strong> — Documentar guia build flavors Android
+    &rarr; PR <a href="https://github.com/intrale/platform/pull/1793">#1793</a> mergeado</li></ul>
+<!-- PROBLEMAS ENCONTRADOS -->
+<h2>3. Problemas encontrados y resoluciones</h2><p><em>No se detectaron problemas significativos durante este sprint.</em></p>
+<!-- DEUDA TÉCNICA -->
+<h2>4. Deuda técnica y próximos pasos</h2><p><em>Todos los issues del sprint fueron completados. No hay deuda técnica pendiente.</em></p>
+
+<!-- ISSUES -->
+<h2>5. Issues del Sprint</h2>
+<table>
+  <thead>
+    <tr><th>#</th><th>Issue</th><th>Título</th><th>Stream</th><th>Size</th><th>Estado</th><th>Duración</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>3</td>
+      <td><a href="https://github.com/intrale/platform/issues/1783">#1783</a></td>
+      <td>Script validate-env.sh prerequisitos ambiente local</td>
+      <td><span class="badge badge-stream">E</span></td>
+      <td><span class="badge badge-size">S</span></td>
+      <td><span class="badge badge-closed">CLOSED</span> — PR <a href="https://github.com/intrale/platform/pull/1788">#1788</a> <span class="badge badge-merged">MERGED</span></td>
+      <td>N/A</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><a href="https://github.com/intrale/platform/issues/1785">#1785</a></td>
+      <td>Documentar guia build flavors Android</td>
+      <td><span class="badge badge-stream">E</span></td>
+      <td><span class="badge badge-size">S</span></td>
+      <td><span class="badge badge-closed">CLOSED</span> — PR <a href="https://github.com/intrale/platform/pull/1793">#1793</a> <span class="badge badge-merged">MERGED</span></td>
+      <td>N/A</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- DETALLE POR AGENTE -->
+<h2>6. Detalle por Agente</h2>
+<div class="section-box">
+  <h3>Agente 3 — #1783 script-validate-env-sh-prerequisitos-amb</h3>
+  <p><em>Sin datos de sesión disponibles</em></p>
+</div>
+<div class="section-box">
+  <h3>Agente 4 — #1785 documentar-guia-build-flavors-android</h3>
+  <p><em>Sin datos de sesión disponibles</em></p>
+</div>
+<!-- TIMELINE -->
+<h2>7. Línea de Tiempo</h2>
+<div class="timeline">
+  <div class="timeline-item info">
+    <div class="timeline-time">2026-03-22</div>
+    <div class="timeline-title">Sprint iniciado — 2 agentes</div>
+    <div class="timeline-detail">Tema: Infra QA — ambiente local backend + emulador + video E2E</div>
+  </div>
+  <div class="timeline-item success">
+    <div class="timeline-time">22/3/2026, 11:35:02</div>
+    <div class="timeline-title">Sprint finalizado — Reporte generado</div>
+    <div class="timeline-detail">2 agentes procesados</div>
+  </div>
+</div>
+
+<!-- WORKTREES -->
+<h2>8. Estado de Worktrees</h2>
+<table>
+  <thead>
+    <tr><th>Ruta</th><th>Rama</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>platform</code></td>
+      <td><code>main</code></td>
+    </tr>
+    <tr>
+      <td><code>platform.agent-1735-prompt-template-inteligente-segun-labels</code></td>
+      <td><code>agent/1735-prompt-template-inteligente-segun-labels</code></td>
+    </tr>
+    <tr>
+      <td><code>platform.agent-1781-ambiente-local-qa-backend-emulador-andro</code></td>
+      <td><code>agent/1781-ambiente-local-qa-backend-emulador-andro</code></td>
+    </tr>
+    <tr>
+      <td><code>platform.agent-1782-fix-java-11-a-21-mismatch-en-app-build</code></td>
+      <td><code>agent/1782-fix-java-11-a-21-mismatch-en-app-build</code></td>
+    </tr>
+    <tr>
+      <td><code>platform.agent-1783-script-validate-env-sh-prerequisitos-amb</code></td>
+      <td><code>agent/1783-script-validate-env-sh-prerequisitos-amb</code></td>
+    </tr>
+    <tr>
+      <td><code>platform.agent-1785-documentar-guia-build-flavors-android</code></td>
+      <td><code>agent/1785-documentar-guia-build-flavors-android</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- PRs -->
+<h2>9. Pull Requests del Sprint</h2>
+<table>
+  <thead>
+    <tr><th>PR</th><th>Título</th><th>Rama</th><th>Estado</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1793">#1793</a></td>
+      <td>docs: guía de build flavors Android (client/business/delivery)</td>
+      <td><code>agent/1785-documentar-guia-build-flavors-android</code></td>
+      <td><span class="badge badge-merged">MERGED</span></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1788">#1788</a></td>
+      <td>feat(infra): script validate-env.sh y detección dinámica de JAVA_HOME</td>
+      <td><code>agent/1783-script-validate-env-sh-prerequisitos-amb</code></td>
+      <td><span class="badge badge-merged">MERGED</span></td>
+    </tr>
+  </tbody>
+</table>
+<!-- CI -->
+<h2>10. Estado de CI</h2>
+<table>
+  <thead>
+    <tr><th>Rama</th><th>Estado</th><th>Conclusión</th><th>Actualizado</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>agent/1785-documentar-guia-build-flavors-android</code></td>
+      <td>completed</td>
+      <td>success</td>
+      <td>22/3/2026, 11:24:17</td>
+    </tr>
+  </tbody>
+</table>
+<div class="footer">
+  <p>Generado automáticamente el 2026-03-22 | Intrale Platform | Sprint Report</p>
+  <p>Modelo: Claude Opus 4.6 | Tema: <code>Infra QA — ambiente local backend + emulador + video E2E</code></p>
+</div>
+
+
+<div style="page-break-before:always;"></div>
+<div style="border-top:3px solid #814dff;margin-top:40px;padding-top:20px;">
+  <h1 style="color:#814dff;font-size:28px;">Reporte de Costos</h1>
+  
+
+<h1>Reporte de Costos — SPR-0051</h1>
+<p><strong>Proyecto:</strong> Intrale Platform (<code>intrale/platform</code>)<br>
+<strong>Fecha:</strong> 2026-03-22<br>
+<strong>Sesiones analizadas:</strong> 2<br>
+<strong>Costo por acción:</strong> $0.00</p>
+
+<div class="formula">
+<strong>Fórmula de estimación:</strong> tokens ≈ (duración_seg × 15) + (tool_calls × 500) | costo ≈ tool_calls × $0.00
+</div>
+
+<!-- MÉTRICAS GLOBALES -->
+<h2>1. Métricas Globales</h2>
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="metric-number">2</div>
+    <div class="metric-label">Sesiones</div>
+  </div>
+  <div class="metric-card green">
+    <div class="metric-number">144</div>
+    <div class="metric-label">Tool Calls</div>
+  </div>
+  <div class="metric-card blue">
+    <div class="metric-number">188.370</div>
+    <div class="metric-label">Tokens Estimados</div>
+  </div>
+  <div class="metric-card orange">
+    <div class="metric-number">$0.43</div>
+    <div class="metric-label">Costo Estimado</div>
+  </div>
+</div>
+
+<!-- PRESUPUESTO SEMANAL -->
+<h2>2. Presupuesto Semanal</h2>
+<div class="section-box">
+  <p><strong>Costo últimos 7 días:</strong> $2.13 / $50.00</p>
+  <div class="budget-gauge">
+    <div class="budget-fill budget-green" style="width: 5%">
+      4%
+    </div>
+  </div>
+  <p><strong>Sesiones esta semana:</strong> 14 | <strong>Duración total:</strong> 129 min</p>
+</div>
+
+<!-- DISTRIBUCIÓN POR HERRAMIENTA -->
+<h2>3. Distribución por Herramienta</h2>
+<div class="section-box">
+  <p style="margin: 4px 0; font-size: 13px;"><strong>Bash</strong> — 125 (87%)</p>
+  <div class="bar-container">
+    <div class="bar-fill bar-bash" style="width: 87%">87%</div>
+  </div>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>WebFetch</strong> — 6 (4%)</p>
+  <div class="bar-container">
+    <div class="bar-fill bar-other" style="width: 4%">4%</div>
+  </div>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>Edit</strong> — 4 (3%)</p>
+  <div class="bar-container">
+    <div class="bar-fill bar-edit" style="width: 3%">3%</div>
+  </div>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>ToolSearch</strong> — 3 (2%)</p>
+  <div class="bar-container">
+    <div class="bar-fill bar-other" style="width: 2%">2%</div>
+  </div>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>Agent</strong> — 3 (2%)</p>
+  <div class="bar-container">
+    <div class="bar-fill bar-other" style="width: 2%">2%</div>
+  </div>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>Write</strong> — 2 (1%)</p>
+  <div class="bar-container">
+    <div class="bar-fill bar-write" style="width: 2%">1%</div>
+  </div>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>TaskOutput</strong> — 1 (1%)</p>
+  <div class="bar-container">
+    <div class="bar-fill bar-other" style="width: 2%">1%</div>
+  </div>
+</div>
+
+<!-- TOP SESIONES -->
+<h2>4. Top Sesiones por Costo</h2>
+<table>
+  <thead>
+    <tr><th>Sesión</th><th>Sprint</th><th>Agente</th><th>Dur.</th><th>Calls</th><th>Tokens Est.</th><th>Costo</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>27c78c22</code></td>
+      <td>SPR-0051</td>
+      <td>main</td>
+      <td>74 min</td>
+      <td>139</td>
+      <td>136.070</td>
+      <td><strong>$0.42</strong></td>
+    </tr>
+    <tr>
+      <td><code>50caa9a2</code></td>
+      <td>SPR-0051</td>
+      <td>Agente 5</td>
+      <td>55 min</td>
+      <td>5</td>
+      <td>52.300</td>
+      <td><strong>$0.01</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- DESGLOSE POR SPRINT -->
+<h2>5. Desglose por Sprint</h2>
+<div class="section-box">
+  <h3>SPR-0051</h3>
+  <p><strong>Sesiones:</strong> 2 | <strong>Duración:</strong> 129 min | <strong>Calls:</strong> 144 | <strong>Tokens:</strong> 188.370 | <strong>Costo:</strong> $0.43</p>
+  <table>
+    <thead>
+      <tr><th>Sesión</th><th>Agente</th><th>Dur.</th><th>Calls</th><th>Tokens</th><th>Costo</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>27c78c22</code></td>
+        <td>main</td>
+        <td>74m</td>
+        <td>139</td>
+        <td>136.070</td>
+        <td>$0.42</td>
+      </tr>
+      <tr>
+        <td><code>50caa9a2</code></td>
+        <td>Agente 5</td>
+        <td>55m</td>
+        <td>5</td>
+        <td>52.300</td>
+        <td>$0.01</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+<div class="footer">
+  <p>Generado automáticamente el 2026-03-22 | Intrale Platform | Cost Report</p>
+  <p>Modelo: Claude Haiku 4.5 | Estimación por proxy (duración + tool calls)</p>
+</div>
+
+
+</div>
+
+<div style="page-break-before:always;"></div>
+<div style="border-top:3px solid #34d399;margin-top:40px;padding-top:20px;">
+  <h1 style="color:#34d399;font-size:28px;">Propuestas de Nuevas Historias</h1>
+  <p style="color:#888;font-size:13px;margin-bottom:20px;">Basadas en el conocimiento adquirido durante la ejecución del sprint SPR-0051. Estas propuestas surgen de problemas detectados, deuda técnica identificada y oportunidades de mejora observadas.</p>
+  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #f87171;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <h3 style="color:#fff;margin:0;font-size:16px;">&#9889; Reintentar: Ambiente local QA: backend + emulador Android + video E2E</h3>
+      <span style="background:#f8717120;color:#f87171;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">ALTA</span>
+    </div>
+    <p style="color:#ccc;font-size:13px;margin:8px 0;">Issue #1781 no se completó. Motivo: No se pudo verificar PR (gh CLI falló).</p>
+    <div style="display:flex;gap:12px;font-size:11px;color:#888;">
+      <span>Tipo: <strong style="color:#aaa;">mejora</strong></span>
+      <span>Esfuerzo: <strong style="color:#aaa;">L</strong></span>
+      <span>Origen: <strong style="color:#aaa;">Sprint SPR-0051 — fallido</strong></span>
+    </div>
+  </div>
+  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #f87171;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <h3 style="color:#fff;margin:0;font-size:16px;">&#9889; Reintentar: Fix Java 11 a 21 mismatch en app build</h3>
+      <span style="background:#f8717120;color:#f87171;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">ALTA</span>
+    </div>
+    <p style="color:#ccc;font-size:13px;margin:8px 0;">Issue #1782 no se completó. Motivo: Sin PR — el agente no completó /delivery.</p>
+    <div style="display:flex;gap:12px;font-size:11px;color:#888;">
+      <span>Tipo: <strong style="color:#aaa;">mejora</strong></span>
+      <span>Esfuerzo: <strong style="color:#aaa;">S</strong></span>
+      <span>Origen: <strong style="color:#aaa;">Sprint SPR-0051 — fallido</strong></span>
+    </div>
+  </div>
+  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #f87171;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <h3 style="color:#fff;margin:0;font-size:16px;">&#9889; Reintentar: Prompt template inteligente segun labels</h3>
+      <span style="background:#f8717120;color:#f87171;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">ALTA</span>
+    </div>
+    <p style="color:#ccc;font-size:13px;margin:8px 0;">Issue #1735 no se completó. Motivo: Sin PR — el agente no completó /delivery.</p>
+    <div style="display:flex;gap:12px;font-size:11px;color:#888;">
+      <span>Tipo: <strong style="color:#aaa;">mejora</strong></span>
+      <span>Esfuerzo: <strong style="color:#aaa;">M</strong></span>
+      <span>Origen: <strong style="color:#aaa;">Sprint SPR-0051 — fallido</strong></span>
+    </div>
+  </div></div>
+</body>
+</html>

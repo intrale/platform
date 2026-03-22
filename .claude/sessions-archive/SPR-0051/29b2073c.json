@@ -1,0 +1,134 @@
+{
+  "id": "29b2073c",
+  "full_id": "29b2073c-79e2-448c-86d3-b9eaba7446d3",
+  "type": "parent",
+  "started_ts": "2026-03-22T14:17:30Z",
+  "last_activity_ts": "2026-03-22T14:26:46.072Z",
+  "action_count": 28,
+  "status": "active",
+  "branch": "agent/1785-documentar-guia-build-flavors-android",
+  "pid": 12488,
+  "last_tool": "TodoWrite",
+  "last_target": "todos[6]",
+  "agent_name": "Agente 4",
+  "skills_invoked": [
+    "/tester",
+    "/delivery",
+    "/security"
+  ],
+  "sub_count": 0,
+  "permission_mode": "unknown",
+  "current_task": null,
+  "current_tasks": [
+    {
+      "id": "1",
+      "subject": "Explorar build.gradle.kts para entender flavors Android",
+      "status": "completed",
+      "activeForm": "Explorando configuración de flavors…"
+    },
+    {
+      "id": "2",
+      "subject": "Leer documentación existente del proyecto",
+      "status": "completed",
+      "activeForm": "Leyendo documentación existente…"
+    },
+    {
+      "id": "3",
+      "subject": "Crear docs/build-flavors-guide.md con guía completa",
+      "status": "completed",
+      "activeForm": "Creando documentación de flavors…"
+    },
+    {
+      "id": "4",
+      "subject": "Ejecutar /tester para verificar tests",
+      "status": "completed",
+      "activeForm": "Verificando tests…"
+    },
+    {
+      "id": "5",
+      "subject": "Ejecutar /security para validar diff",
+      "status": "completed",
+      "activeForm": "Validando seguridad…"
+    },
+    {
+      "id": "6",
+      "subject": "Ejecutar /delivery para commit+PR",
+      "status": "completed",
+      "activeForm": "Realizando delivery…"
+    }
+  ],
+  "tool_counts": {
+    "Bash": 18,
+    "TodoWrite": 6,
+    "Write": 1,
+    "Skill": 2,
+    "ToolSearch": 1
+  },
+  "tokens_estimated": 21875,
+  "tasks_completed": 6,
+  "tasks_created": 6,
+  "modified_files": [
+    "/c/workspaces/intrale/platform/docs/build-flavors-guide.md"
+  ],
+  "agent_transitions": [
+    {
+      "from": "Agente 4",
+      "to": "Tester",
+      "ts": "2026-03-22T14:19:19Z"
+    },
+    {
+      "from": "Tester",
+      "to": "DeliveryManager",
+      "ts": "2026-03-22T14:20:58Z"
+    },
+    {
+      "from": "Claude",
+      "to": "Tester",
+      "ts": "2026-03-22T14:21:15Z"
+    },
+    {
+      "from": "Tester",
+      "to": "Security",
+      "ts": "2026-03-22T14:21:16Z"
+    },
+    {
+      "from": "Claude",
+      "to": "Tester",
+      "ts": "2026-03-22T14:26:43Z"
+    },
+    {
+      "from": "Tester",
+      "to": "Security",
+      "ts": "2026-03-22T14:26:43Z"
+    },
+    {
+      "from": "Tester",
+      "to": "Security",
+      "ts": "2026-03-22T14:26:44Z"
+    },
+    {
+      "from": "Security",
+      "to": "Builder",
+      "ts": "2026-03-22T14:26:46Z"
+    }
+  ],
+  "_last_skill": "/delivery",
+  "skill_invocations": [
+    {
+      "skill": "/tester",
+      "started_ts": "2026-03-22T14:19:19Z",
+      "ended_ts": "2026-03-22T14:20:58Z",
+      "duration_ms": 99000
+    }
+  ],
+  "skill_pending": {
+    "skill": "/delivery",
+    "started_ts": "2026-03-22T14:20:58Z"
+  },
+  "waiting_state": {
+    "reason": "merge",
+    "detail": "Esperando merge del PR...",
+    "started_at": "2026-03-22T14:24:42Z",
+    "status": "in_progress"
+  }
+}
