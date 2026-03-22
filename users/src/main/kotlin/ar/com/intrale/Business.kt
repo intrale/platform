@@ -16,5 +16,6 @@ class Business(
     var fonts: MutableMap<String, String> = mutableMapOf(),
     var address: String? = null,
     var phone: String? = null,
-    var logoUrl: String? = null
+    var logoUrl: String? = null,
+    var paymentMethodsJson: String? = null
 )

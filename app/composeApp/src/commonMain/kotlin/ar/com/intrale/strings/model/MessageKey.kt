@@ -676,4 +676,22 @@ enum class MessageKey {
     business_order_detail_cancel_reason_required,
     business_order_detail_cancel_confirm,
     business_order_detail_cancel_dismiss,
+
+    // Medios de pago — configuración del negocio
+    payment_methods_config_title,
+    payment_methods_config_description,
+    payment_methods_config_access_denied,
+    payment_methods_config_loading,
+    payment_methods_config_missing_business,
+    payment_methods_config_error,
+    payment_methods_config_retry,
+    payment_methods_config_save,
+    payment_methods_config_saved,
+    payment_methods_config_cash,
+    payment_methods_config_transfer,
+    payment_methods_config_mercadopago,
+    payment_methods_config_other,
+    dashboard_card_payment_methods_title,
+    dashboard_card_payment_methods_description,
+    dashboard_card_payment_methods_cta,
 }

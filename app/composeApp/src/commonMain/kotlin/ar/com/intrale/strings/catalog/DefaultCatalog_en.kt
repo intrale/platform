@@ -672,4 +672,22 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.banner_form_saved to "Banner saved successfully",
     MessageKey.banner_form_error to "We couldn't save the banner",
     MessageKey.banner_form_missing_business to "Select a business to continue",
+
+    // Payment methods — business configuration
+    MessageKey.payment_methods_config_title to "Payment methods",
+    MessageKey.payment_methods_config_description to "Configure the payment methods your business accepts",
+    MessageKey.payment_methods_config_access_denied to "You need admin permissions to configure payment methods.",
+    MessageKey.payment_methods_config_loading to "Loading payment methods...",
+    MessageKey.payment_methods_config_missing_business to "Select a business to configure payment methods.",
+    MessageKey.payment_methods_config_error to "We couldn't load payment methods. Please try again.",
+    MessageKey.payment_methods_config_retry to "Retry",
+    MessageKey.payment_methods_config_save to "Save changes",
+    MessageKey.payment_methods_config_saved to "Payment methods saved successfully",
+    MessageKey.payment_methods_config_cash to "Cash",
+    MessageKey.payment_methods_config_transfer to "Bank transfer",
+    MessageKey.payment_methods_config_mercadopago to "Mercado Pago",
+    MessageKey.payment_methods_config_other to "Other",
+    MessageKey.dashboard_card_payment_methods_title to "Payment methods",
+    MessageKey.dashboard_card_payment_methods_description to "Configure which payment methods your business accepts",
+    MessageKey.dashboard_card_payment_methods_cta to "Configure",
 )

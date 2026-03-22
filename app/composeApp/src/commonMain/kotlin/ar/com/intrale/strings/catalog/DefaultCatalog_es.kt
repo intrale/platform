@@ -672,4 +672,22 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.banner_form_saved to "Banner guardado correctamente",
     MessageKey.banner_form_error to "No pudimos guardar el banner",
     MessageKey.banner_form_missing_business to "Selecciona un negocio para continuar",
+
+    // Medios de pago — configuración del negocio
+    MessageKey.payment_methods_config_title to "Medios de pago",
+    MessageKey.payment_methods_config_description to "Configura los medios de pago que acepta tu negocio",
+    MessageKey.payment_methods_config_access_denied to "Necesitas permisos de administrador para configurar medios de pago.",
+    MessageKey.payment_methods_config_loading to "Cargando medios de pago...",
+    MessageKey.payment_methods_config_missing_business to "Selecciona un negocio para configurar medios de pago.",
+    MessageKey.payment_methods_config_error to "No pudimos cargar los medios de pago. Reintenta mas tarde.",
+    MessageKey.payment_methods_config_retry to "Reintentar",
+    MessageKey.payment_methods_config_save to "Guardar cambios",
+    MessageKey.payment_methods_config_saved to "Medios de pago guardados correctamente",
+    MessageKey.payment_methods_config_cash to "Efectivo",
+    MessageKey.payment_methods_config_transfer to "Transferencia",
+    MessageKey.payment_methods_config_mercadopago to "Mercado Pago",
+    MessageKey.payment_methods_config_other to "Otro",
+    MessageKey.dashboard_card_payment_methods_title to "Medios de pago",
+    MessageKey.dashboard_card_payment_methods_description to "Configurá qué metodos de pago acepta tu negocio",
+    MessageKey.dashboard_card_payment_methods_cta to "Configurar",
 )

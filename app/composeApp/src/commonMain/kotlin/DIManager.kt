@@ -216,6 +216,7 @@ import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.BannerFormScreen
 import ui.sc.business.BannerListScreen
 import ui.sc.business.BusinessOnboardingScreen
+import ui.sc.business.PaymentMethodsConfigScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.BusinessOrderDetailScreen
 import ui.sc.business.DashboardScreen
@@ -301,6 +302,7 @@ public const val BUSINESS_CATEGORY_FORM = "businessCategoryForm"
 public const val TWO_FACTOR_SETUP = "twoFactorSetup"
 public const val TWO_FACTOR_VERIFY = "twoFactorVerify"
 public const val BUSINESS_CONFIG = "businessConfig"
+public const val PAYMENT_METHODS_CONFIG = "paymentMethodsConfig"
 public const val TYPOGRAPHY_FONTS = "typographyFonts"
 public const val FORCE_CHANGE_PASSWORD = "forceChangePassword"
 public const val BUSINESS_BANNERS = "businessBanners"
@@ -415,6 +417,9 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoToggleBanner> { DoToggleBanner(instance()) }
     bindSingleton<ToDoAssignOrderDeliveryPerson> { DoAssignOrderDeliveryPerson(instance()) }
     bindSingleton<ToDoGetBusinessDeliveryPeople> { DoGetBusinessDeliveryPeople(instance()) }
+    bindSingleton<ext.business.CommBusinessPaymentMethodsService> { ext.business.ClientBusinessPaymentMethodsService(instance(), instance()) }
+    bindSingleton<asdo.business.ToDoGetBusinessPaymentMethods> { asdo.business.DoGetBusinessPaymentMethods(instance()) }
+    bindSingleton<asdo.business.ToDoUpdateBusinessPaymentMethods> { asdo.business.DoUpdateBusinessPaymentMethods(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
@@ -494,6 +499,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = TWO_FACTOR_SETUP) { TwoFactorSetupScreen() }
     bindSingleton(tag = TWO_FACTOR_VERIFY) { TwoFactorVerifyScreen() }
     bindSingleton(tag = BUSINESS_CONFIG) { BusinessConfigScreen() }
+    bindSingleton(tag = PAYMENT_METHODS_CONFIG) { PaymentMethodsConfigScreen() }
     bindSingleton(tag = TYPOGRAPHY_FONTS) { TypographyScreen() }
     bindSingleton(tag = FORCE_CHANGE_PASSWORD) { ForceChangePasswordScreen() }
     bindSingleton(tag = BUSINESS_BANNERS) { BannerListScreen() }
@@ -564,6 +570,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = REVIEW_JOIN_BUSINESS))
                     add(instance(tag = PERSONALIZATION))
                     add(instance(tag = BUSINESS_CONFIG))
+                    add(instance(tag = PAYMENT_METHODS_CONFIG))
                     add(instance(tag = TYPOGRAPHY_FONTS))
                     add(instance(tag = BUSINESS_ORDERS))
                     add(instance(tag = BUSINESS_ORDER_DETAIL))
@@ -598,6 +605,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = REVIEW_JOIN_BUSINESS))
                     add(instance(tag = PERSONALIZATION))
                     add(instance(tag = BUSINESS_CONFIG))
+                    add(instance(tag = PAYMENT_METHODS_CONFIG))
                     add(instance(tag = TYPOGRAPHY_FONTS))
                     add(instance(tag = BUSINESS_PRODUCTS))
                     add(instance(tag = BUSINESS_PRODUCT_FORM))
