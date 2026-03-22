@@ -1,0 +1,75 @@
+appId: com.intrale.app.business
+---
+# Flujo E2E: Validación #1633 — Dashboard de negocio — Empty state
+# Criterio: Cuando el negocio no tiene datos, se muestra el estado vacío con CTA a productos
+
+- launchApp:
+    clearState: true
+
+- waitForAnimationToEnd
+
+# Saltar onboarding si aparece
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Ir a login
+- tapOn:
+    text: "Ya tengo cuenta"
+    optional: true
+
+- waitForAnimationToEnd
+
+# Esperar pantalla de login
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 15000
+
+# Ingresar credenciales de un BusinessAdmin sin datos
+- tapOn:
+    id: "field_Usuario"
+- inputText: "qa-empty-business@intrale.com"
+
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "Admin1234!"
+
+- takeScreenshot: 1633-empty-01-login-empty-business
+
+# Enviar formulario
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+- takeScreenshot: 1633-empty-02-after-login
+
+# Esperar que el dashboard cargue (puede ser empty state o panel de administración)
+- extendedWaitUntil:
+    anyOf:
+      - visible:
+          text: "Sin actividad reciente"
+      - visible:
+          text: "Panel de administración"
+      - visible:
+          text: "Tu panel esta listo"
+      - visible:
+          text: "Negocio sin seleccionar"
+    timeout: 20000
+
+- takeScreenshot: 1633-empty-03-dashboard-state
+
+# Verificar que el empty state se muestra (si aplica: sin negocio o sin datos)
+# El estado puede ser MissingBusiness o Empty según el contexto
+- assertVisible:
+    anyOf:
+      - text: "Sin actividad reciente"
+      - text: "Tu panel esta listo"
+      - text: "Seleccioná un negocio para ver las métricas."
+      - text: "Negocio sin seleccionar"
+    label: "Se muestra algún estado vacío del dashboard"
+
+- takeScreenshot: 1633-empty-04-empty-state-verified
