@@ -98,56 +98,19 @@ try {
         $process.StartInfo.CreateNoWindow = $false
         $process.StartInfo.WorkingDirectory = $WorkDir
         $process.StartInfo.EnvironmentVariables["CLAUDE_PROJECT_DIR"] = $WorkDir
-
-        # Propagar GH_TOKEN para que auto-delivery.js pueda crear/mergear PRs
-        $ghToken = $env:GH_TOKEN
-        if (-not $ghToken -or $ghToken.Length -lt 10) {
-            try {
-                $credInput = "protocol=https`nhost=github.com`n"
-                $credLines = ($credInput | & git credential fill 2>$null)
-                $pwdLine = @($credLines) | Where-Object { $_ -match '^password=' }
-                if ($pwdLine) { $ghToken = (($pwdLine | Select-Object -First 1) -replace '^password=', '').Trim() }
-            } catch { }
-        }
-        if (-not $ghToken -or $ghToken.Length -lt 10) {
-            try {
-                $ghToken = (& "C:\Workspaces\gh-cli\bin\gh.exe" auth token 2>$null | Out-String).Trim()
-            } catch { }
-        }
-        if ($ghToken -and $ghToken.Length -gt 10) {
-            $process.StartInfo.EnvironmentVariables["GH_TOKEN"] = $ghToken
-            Write-Host "  GH_TOKEN obtenido y propagado al runner" -ForegroundColor DarkGreen
-        } else {
-            Write-Host "  WARN: No se pudo obtener GH_TOKEN — auto-delivery puede fallar" -ForegroundColor DarkYellow
-        }
-
         $process.Start() | Out-Null
 
         # Leer output del runner (incluye output de Claude proxied)
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
             if (-not $line) { continue }
-            # Usar AppendAllText para evitar IOException por file lock cuando otro proceso tiene el log abierto
-            $retries = 3
-            while ($retries -gt 0) {
-                try {
-                    [System.IO.File]::AppendAllText($LogFile, $line + "`n", [System.Text.Encoding]::UTF8)
-                    break
-                } catch {
-                    $retries--
-                    if ($retries -gt 0) { Start-Sleep -Milliseconds 100 }
-                }
-            }
+            $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
             Write-Host "  $line" -ForegroundColor Gray
         }
 
         $stderrOutput = $process.StandardError.ReadToEnd()
         if ($stderrOutput) {
-            try {
-                [System.IO.File]::AppendAllText($LogFile, $stderrOutput, [System.Text.Encoding]::UTF8)
-            } catch {
-                Write-Host "  WARN: No se pudo escribir stderr al log: $_" -ForegroundColor DarkYellow
-            }
+            $stderrOutput | Out-File -FilePath $LogFile -Encoding utf8 -Append
         }
 
         $process.WaitForExit()
@@ -273,28 +236,6 @@ try {
     }
     $diagJson = $deathDiag | ConvertTo-Json -Compress
     "DEATH_DIAG: $diagJson" | Out-File -FilePath $LogFile -Encoding utf8 -Append
-
-    # Recolectar métricas reales de consumo de API (#1683)
-    try {
-        $collectScript = Join-Path $mainRepoScripts "collect-api-usage.js"
-        if (-not (Test-Path $collectScript)) {
-            $collectScript = Join-Path $PSScriptRoot "collect-api-usage.js"
-        }
-        if (Test-Path $collectScript) {
-            $sprintArg = @()
-            $planPath2 = Join-Path $mainRepoScripts "sprint-plan.json"
-            if (Test-Path $planPath2) {
-                try {
-                    $plan2 = Get-Content $planPath2 -Raw | ConvertFrom-Json
-                    if ($plan2.sprint_id) { $sprintArg = @("--sprint", $plan2.sprint_id) }
-                } catch { }
-            }
-            $collectOut = & node $collectScript --log $LogFile --agent $AgentNum --issue $Issue --slug $Slug @sprintArg 2>&1
-            Write-Host "  [metrics] $collectOut" -ForegroundColor DarkCyan
-        }
-    } catch {
-        Write-Host "  [metrics] WARN: $_" -ForegroundColor DarkYellow
-    }
 
     Write-Host ""
     if ($useRunner) {
