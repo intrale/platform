@@ -325,13 +325,13 @@ function selectIssues(allIssues) {
     return selected;
 }
 
-// ─── Generar prompt adaptado según labels del issue (#1277, #1735) ───────────
+// ─── Generar prompt adaptado según labels del issue (#1735) ──────────────────
 //
 // Reglas de adaptación:
-//   app:*       → /ux (revisión visual) + /qa (E2E con video) obligatorios
-//   area:backend → /security explícito y obligatorio
+//   app:*        → /ux (revisión visual) + /qa (E2E con video) obligatorios
+//   area:backend → /security con énfasis explícito en endpoints y autenticación
 //   bug          → /tester con énfasis en regresiones
-//   area:infra   → pipeline simplificado (sin /ux ni /qa)
+//   area:infra   → pipeline simplificado (sin /ux ni /qa ni /guru)
 //   default      → pipeline base con /tester, /builder, /security, /review
 
 function generateDefaultPrompt(issue, slug, labels) {
@@ -340,6 +340,7 @@ function generateDefaultPrompt(issue, slug, labels) {
     const hasApp = labels.some(l => l.startsWith("app:"));
     const isBug = labels.includes("bug");
     const isInfra = labels.includes("area:infra") || labels.includes("tipo:infra");
+    const isBackend = labels.includes("area:backend");
 
     const parts = [
         `Implementar issue #${issue}. Leer el issue completo con: gh issue view ${issue} --repo intrale/platform.`,
@@ -364,7 +365,13 @@ function generateDefaultPrompt(issue, slug, labels) {
     }
 
     parts.push(`Antes de /delivery: invocar /builder para validar que el build no está roto.`);
-    parts.push(`Antes de /delivery: invocar /security para validar seguridad del diff.`);
+
+    if (isBackend) {
+        parts.push(`Antes de /delivery: invocar /security (obligatorio por label area:backend — revisar endpoints, autenticación, autorización y manejo de datos sensibles).`);
+    } else {
+        parts.push(`Antes de /delivery: invocar /security para validar seguridad del diff.`);
+    }
+
     parts.push(`Antes de /delivery: invocar /review para validar el diff.`);
 
     if (hasApp) {
