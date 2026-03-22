@@ -35,12 +35,19 @@ const CAUSES = {
 
 // Patrones de busqueda en logs (orden importa: mas especifico primero)
 const LOG_PATTERNS = [
-    { pattern: /rate_limit|rate.?limited|429|Too Many Requests|overageStatus.*rejected/i, cause: CAUSES.RATE_LIMIT },
-    { pattern: /timed?\s*out|timeout|ETIMEDOUT|excedio.*tiempo/i, cause: CAUSES.TIMEOUT },
-    { pattern: /exit.?code[:\s]+[1-9]\d*/i, cause: CAUSES.EXIT_ERROR },
-    { pattern: /SIGKILL|SIGTERM|SIGABRT|heap out of memory|JavaScript heap/i, cause: CAUSES.CRASH },
-    { pattern: /delivery.*fail|push.*fail|PR.*fail|gh pr create.*error/i, cause: CAUSES.DELIVERY_FAILED },
+    // Orden importa: más específicos primero, genéricos después
+    // 1. Crash (exit codes altos, señales) — antes que rate_limit para evitar falsos positivos
+    { pattern: /SIGKILL|SIGTERM|SIGABRT|heap out of memory|JavaScript heap|exit[=:\s]+3221225786|0xC0000005|Access.?Violation/i, cause: CAUSES.CRASH },
+    // 2. Build failed
     { pattern: /build.*fail|compilation.*error|BUILD FAILED/i, cause: CAUSES.BUILD_FAILED },
+    // 3. Delivery failed
+    { pattern: /delivery.*fail|push.*fail|PR.*fail|gh pr create.*error/i, cause: CAUSES.DELIVERY_FAILED },
+    // 4. Rate limit — solo patrones que indican rate limit REAL (no status=allowed ni HTTP specs)
+    { pattern: /rate.?limit(?:ed|_event).*(?:rejected|denied|blocked)|Too Many Requests|overageStatus['":\s]*rejected/i, cause: CAUSES.RATE_LIMIT },
+    // 5. Timeout
+    { pattern: /timed?\s*out|ETIMEDOUT|excedio.*tiempo/i, cause: CAUSES.TIMEOUT },
+    // 6. Exit error genérico (cualquier exit code != 0)
+    { pattern: /exit.?code[:\s]+[1-9]\d*/i, cause: CAUSES.EXIT_ERROR },
 ];
 
 // Cooldown por causa (ms) antes de relanzar
@@ -189,12 +196,28 @@ function diagnoseDeadAgent(agentInfo, repoRoot, hooksDir) {
     var rateLimitResetMs = 0;
 
     // 1. Analizar log del agente para patrones conocidos
+    // IMPORTANTE: filtrar solo lineas del sistema (timestamps [HH:MM:SS] o lineas cortas de control)
+    // para evitar falsos positivos con contenido de archivos leidos por el agente (#672 false rate_limit)
+    var systemLines = "";
     if (logTail) {
+        systemLines = logTail.split("\n").filter(function(line) {
+            // Lineas del sistema: timestamps [HH:MM:SS], prefijos de pipeline, exit codes
+            if (/^\[?\d{2}:\d{2}:\d{2}\]?\s/.test(line)) return true;
+            // Lineas de resultado: Claude finalizo, exit code, Pipeline, DEATH_DIAG
+            if (/Claude\s+(finalizo|termino)|exit.?code|Pipeline|DEATH_DIAG|=== Post|=== Pipeline|rate_limit_event/i.test(line)) return true;
+            // Lineas del stream JSON con rate_limit_event
+            if (line.includes('"type":"rate_limit_event"')) return true;
+            // Lineas cortas (< 200 chars) que no son contenido de archivos
+            if (line.length < 200 && line.length > 5) return true;
+            return false;
+        }).join("\n");
+    }
+    if (systemLines) {
         for (var i = 0; i < LOG_PATTERNS.length; i++) {
             var lp = LOG_PATTERNS[i];
-            if (lp.pattern.test(logTail)) {
+            if (lp.pattern.test(systemLines)) {
                 cause = lp.cause;
-                var match = logTail.match(lp.pattern);
+                var match = systemLines.match(lp.pattern);
                 details = "Patron detectado en log: " + (match ? match[0] : lp.cause);
                 break;
             }
