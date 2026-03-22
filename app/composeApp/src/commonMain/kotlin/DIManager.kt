@@ -104,6 +104,14 @@ import asdo.business.DoAssignOrderDeliveryPerson
 import asdo.business.DoGetBusinessDeliveryPeople
 import asdo.business.ToDoAssignOrderDeliveryPerson
 import asdo.business.ToDoGetBusinessDeliveryPeople
+import asdo.business.DoGetBusinessSchedules
+import asdo.business.DoUpdateBusinessSchedules
+import asdo.business.ToDoGetBusinessSchedules
+import asdo.business.ToDoUpdateBusinessSchedules
+import asdo.business.DoGetBusinessDeliveryZone
+import asdo.business.DoUpdateBusinessDeliveryZone
+import asdo.business.ToDoGetBusinessDeliveryZone
+import asdo.business.ToDoUpdateBusinessDeliveryZone
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoConfirmSignUp
 import asdo.signup.DoSignUp
@@ -157,6 +165,10 @@ import ext.business.ClientAssignOrderDeliveryPersonService
 import ext.business.CommAssignOrderDeliveryPersonService
 import ext.business.ClientGetBusinessDeliveryPeopleService
 import ext.business.CommGetBusinessDeliveryPeopleService
+import ext.business.ClientBusinessSchedulesService
+import ext.business.CommBusinessSchedulesService
+import ext.business.ClientBusinessDeliveryZoneService
+import ext.business.CommBusinessDeliveryZoneService
 import ext.business.ClientGetBusinessDashboardSummaryService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientCategoryService
@@ -215,6 +227,8 @@ import ui.sc.auth.TwoFactorSetupScreen
 import ui.sc.auth.TwoFactorVerifyScreen
 import ui.sc.business.BannerFormScreen
 import ui.sc.business.BannerListScreen
+import ui.sc.business.BusinessSchedulesScreen
+import ui.sc.business.BusinessDeliveryZoneScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.BusinessOrderDetailScreen
@@ -305,6 +319,8 @@ public const val TYPOGRAPHY_FONTS = "typographyFonts"
 public const val FORCE_CHANGE_PASSWORD = "forceChangePassword"
 public const val BUSINESS_BANNERS = "businessBanners"
 public const val BUSINESS_BANNER_FORM = "businessBannerForm"
+public const val BUSINESS_SCHEDULES = "businessSchedules"
+public const val BUSINESS_DELIVERY_ZONE = "businessDeliveryZone"
 
 const val LOGIN_PATH = "/login"
 
@@ -385,6 +401,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommBannerService> { ClientBannerService(instance(), instance()) }
     bindSingleton<CommAssignOrderDeliveryPersonService> { ClientAssignOrderDeliveryPersonService(instance(), instance()) }
     bindSingleton<CommGetBusinessDeliveryPeopleService> { ClientGetBusinessDeliveryPeopleService(instance(), instance()) }
+    bindSingleton<CommBusinessSchedulesService> { ClientBusinessSchedulesService(instance(), instance()) }
+    bindSingleton<CommBusinessDeliveryZoneService> { ClientBusinessDeliveryZoneService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -415,6 +433,10 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoToggleBanner> { DoToggleBanner(instance()) }
     bindSingleton<ToDoAssignOrderDeliveryPerson> { DoAssignOrderDeliveryPerson(instance()) }
     bindSingleton<ToDoGetBusinessDeliveryPeople> { DoGetBusinessDeliveryPeople(instance()) }
+    bindSingleton<ToDoGetBusinessSchedules> { DoGetBusinessSchedules(instance()) }
+    bindSingleton<ToDoUpdateBusinessSchedules> { DoUpdateBusinessSchedules(instance()) }
+    bindSingleton<ToDoGetBusinessDeliveryZone> { DoGetBusinessDeliveryZone(instance()) }
+    bindSingleton<ToDoUpdateBusinessDeliveryZone> { DoUpdateBusinessDeliveryZone(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
@@ -498,6 +520,8 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = FORCE_CHANGE_PASSWORD) { ForceChangePasswordScreen() }
     bindSingleton(tag = BUSINESS_BANNERS) { BannerListScreen() }
     bindSingleton(tag = BUSINESS_BANNER_FORM) { BannerFormScreen() }
+    bindSingleton(tag = BUSINESS_SCHEDULES) { BusinessSchedulesScreen() }
+    bindSingleton(tag = BUSINESS_DELIVERY_ZONE) { BusinessDeliveryZoneScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -573,6 +597,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_CATEGORY_FORM))
                     add(instance(tag = BUSINESS_BANNERS))
                     add(instance(tag = BUSINESS_BANNER_FORM))
+                    add(instance(tag = BUSINESS_SCHEDULES))
+                    add(instance(tag = BUSINESS_DELIVERY_ZONE))
                     add(instance(tag = TWO_FACTOR_SETUP))
                     add(instance(tag = TWO_FACTOR_VERIFY))
                 }
@@ -605,6 +631,8 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_CATEGORY_FORM))
                     add(instance(tag = BUSINESS_BANNERS))
                     add(instance(tag = BUSINESS_BANNER_FORM))
+                    add(instance(tag = BUSINESS_SCHEDULES))
+                    add(instance(tag = BUSINESS_DELIVERY_ZONE))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))
