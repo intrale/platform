@@ -199,8 +199,33 @@ function validateCompletionCriteria(duracion_min, prStatus, branch, repoRoot) {
         // null = no determinable → no suma ni resta
     }
 
+    // (#1800) Verificar pipeline-result: si existe y deliveryOk === false, NO es valid
+    let pipelineFailed = false;
+    if (branch) {
+        try {
+            const issueMatch = branch.match(/(\d+)/);
+            if (issueMatch) {
+                const pipelineFile = require("path").join(
+                    repoRoot || process.cwd(), "scripts", "logs",
+                    "agent-" + issueMatch[1] + "-pipeline-result.json"
+                );
+                if (require("fs").existsSync(pipelineFile)) {
+                    const pr = JSON.parse(require("fs").readFileSync(pipelineFile, "utf8"));
+                    if (pr.deliveryOk === false || pr.ok === false) {
+                        pipelineFailed = true;
+                        const gate = pr.failedGate || "delivery";
+                        failedCriteria.push("pipeline falló en " + gate);
+                    } else if (pr.deliveryOk === true) {
+                        criteria.push("pipeline_ok");
+                    }
+                }
+            }
+        } catch (e) { /* fail-open si no se puede leer */ }
+    }
+
     // (#1779) PR mergeada es evidencia definitiva
-    const valid = prMerged || criteria.length >= 2;
+    // (#1800) Pero si pipeline falló explícitamente, NO es valid (aunque tenga PR)
+    const valid = pipelineFailed ? false : (prMerged || criteria.length >= 2);
     return {
         valid,
         suspicious: !valid,

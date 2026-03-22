@@ -958,7 +958,7 @@ function moveToCompleted(plan, issueNumber) {
     // Guard contra NaN (#1779)
     if (isNaN(duracion_min) || duracion_min < 0) duracion_min = 0;
 
-    const validation = validateCompletionCriteria(duracion_min, prStatus, branch);
+    const validation = validateCompletionCriteria(duracion_min, prStatus, branch, REPO_ROOT);
     if (validation.suspicious) {
         // Agent Doctor: intentar recovery antes de marcar como _incomplete
         if (agentDoctor) {
