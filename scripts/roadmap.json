@@ -1,5 +1,5 @@
 {
-  "updated_ts": "2026-03-22T14:26:37.589Z",
+  "updated_ts": "2026-03-22T17:22:17.608Z",
   "updated_by": "concurrency-check",
   "horizon_sprints": 5,
   "sprints": [
@@ -131,20 +131,22 @@
           "title": "Ambiente local QA: backend + emulador Android + video E2E",
           "effort": "grande",
           "stream": "E",
-          "status": "failed",
+          "status": "done",
           "slug": "ambiente-local-qa-backend-emulador-andro",
           "agent": {
             "pid": null,
             "promoted_at": "2026-03-22T14:04:22.446Z",
-            "launched_at": "2026-03-22T14:04:22.446Z",
+            "launched_at": "2026-03-22T14:51:53.479Z",
             "waiting_since": null,
             "waiting_reason": null,
             "retry_count": 3,
-            "prompt": "[REINTENTO 2/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\n[REINTENTO 1/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\n[REINTENTO 0/3] El intento anterior duro muy poco sin producir resultados. Posible problema de arranque. Verificar entorno con /ops e implementar directamente.\nImplementar issue #1781. Leer el issue completo con: gh issue view 1781 --repo intrale/platform. Completar los cambios descritos en el body del issue. Usar /delivery para commit+PR al terminar. Closes #1781",
-            "result": "failed",
+            "prompt": "Implementar issue #1781. Leer el issue completo con: gh issue view 1781 --repo intrale/platform. Completar los cambios descritos en el body del issue. Usar /delivery para commit+PR al terminar. Closes #1781",
+            "result": "ok",
             "failure_reason": "No se pudo verificar PR (gh CLI falló)",
             "detected_by": "agent-watcher",
-            "duration_min": 0
+            "duration_min": 0,
+            "completed_at": "2026-03-22T17:22:16.667Z",
+            "pr": null
           }
         },
         {
@@ -152,15 +154,17 @@
           "title": "Fix Java 11 a 21 mismatch en app build",
           "effort": "simple",
           "stream": "E",
-          "status": "failed",
+          "status": "done",
           "slug": "fix-java-11-a-21-mismatch-en-app-build",
           "agent": {
-            "result": "failed",
+            "result": "ok",
             "failure_reason": "Sin PR — el agente no completó /delivery",
-            "detected_by": null,
+            "detected_by": "agent-watcher",
             "duration_min": 0,
             "pid": null,
-            "waiting_since": null
+            "waiting_since": null,
+            "completed_at": "2026-03-22T15:29:21.372Z",
+            "pr": null
           }
         },
         {
@@ -207,23 +211,30 @@
           "title": "Prompt template inteligente segun labels",
           "effort": "medio",
           "stream": "E",
-          "status": "failed",
+          "status": "done",
           "slug": "prompt-template-inteligente-segun-labels",
           "agent": {
-            "result": "failed",
+            "result": "ok",
             "failure_reason": "Sin PR — el agente no completó /delivery",
             "detected_by": null,
             "duration_min": 0,
             "pid": null,
-            "waiting_since": null
+            "waiting_since": null,
+            "promoted_at": null,
+            "launched_at": "2026-03-22T14:56:35.952Z",
+            "waiting_reason": "ci",
+            "retry_count": 0,
+            "prompt": "Implementar issue #1735. Leer el issue completo con: gh issue view 1735 --repo intrale/platform. Completar los cambios descritos en el body del issue. Usar /delivery para commit+PR al terminar. Closes #1735",
+            "completed_at": "2026-03-22T15:32:08.714Z",
+            "pr": 1796
           }
         }
       ],
       "execution": {
         "concurrency_limit": 3,
         "pipeline_mode": "scripts",
-        "waiting_sweep_ts": 1774189589466,
-        "sentinel_ts": 1774189589466
+        "waiting_sweep_ts": 1774200136010,
+        "sentinel_ts": 1774200136010
       }
     },
     {
