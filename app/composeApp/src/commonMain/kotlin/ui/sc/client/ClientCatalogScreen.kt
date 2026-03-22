@@ -192,7 +192,9 @@ class ClientCatalogViewModel(
                     emoji = "🛍️",
                     unitPrice = product.basePrice,
                     categoryId = product.categoryId,
-                    isAvailable = product.isAvailable
+                    isAvailable = product.isAvailable,
+                    isFeatured = product.isFeatured,
+                    promotionPrice = product.promotionPrice
                 )
             }
     }

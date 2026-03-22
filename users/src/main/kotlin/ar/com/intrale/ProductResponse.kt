@@ -12,7 +12,9 @@ data class ProductPayload(
     val categoryId: String,
     val status: String,
     val isAvailable: Boolean,
-    val stockQuantity: Int?
+    val stockQuantity: Int?,
+    val isFeatured: Boolean = false,
+    val promotionPrice: Double? = null
 )
 
 class ProductResponse(
@@ -35,5 +37,7 @@ fun ProductRecord.toPayload() = ProductPayload(
     categoryId = categoryId,
     status = status,
     isAvailable = isAvailable,
-    stockQuantity = stockQuantity
+    stockQuantity = stockQuantity,
+    isFeatured = isFeatured,
+    promotionPrice = promotionPrice
 )

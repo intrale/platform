@@ -8,5 +8,7 @@ data class ProductRequest(
     val categoryId: String = "",
     val status: String? = null,
     val isAvailable: Boolean = true,
-    val stockQuantity: Int? = null
+    val stockQuantity: Int? = null,
+    val isFeatured: Boolean = false,
+    val promotionPrice: Double? = null
 )

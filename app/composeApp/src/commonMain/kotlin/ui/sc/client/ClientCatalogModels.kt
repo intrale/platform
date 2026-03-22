@@ -7,7 +7,9 @@ data class ClientProduct(
     val emoji: String,
     val unitPrice: Double,
     val categoryId: String? = null,
-    val isAvailable: Boolean = true
+    val isAvailable: Boolean = true,
+    val isFeatured: Boolean = false,
+    val promotionPrice: Double? = null
 )
 
 sealed interface ClientProductsState {

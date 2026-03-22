@@ -66,7 +66,9 @@ class BusinessProducts(
             categoryId = body.categoryId,
             status = normalizeStatus(body.status),
             isAvailable = body.isAvailable,
-            stockQuantity = body.stockQuantity
+            stockQuantity = body.stockQuantity,
+            isFeatured = body.isFeatured,
+            promotionPrice = body.promotionPrice
         )
         val saved = productRepository.saveProduct(business, record)
         logger.debug("Producto creado id=${saved.id} en negocio=$business")
@@ -90,7 +92,9 @@ class BusinessProducts(
             categoryId = body.categoryId,
             status = normalizeStatus(body.status),
             isAvailable = body.isAvailable,
-            stockQuantity = body.stockQuantity
+            stockQuantity = body.stockQuantity,
+            isFeatured = body.isFeatured,
+            promotionPrice = body.promotionPrice
         )
         val updated = productRepository.updateProduct(business, productId, record)
             ?: return ExceptionResponse("Producto no encontrado", status = HttpStatusCode.NotFound)

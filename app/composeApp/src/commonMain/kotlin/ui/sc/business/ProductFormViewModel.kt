@@ -35,7 +35,9 @@ data class ProductFormUiState(
     val categoryId: String = "",
     val status: ProductStatus = ProductStatus.Draft,
     val isAvailable: Boolean = true,
-    val stockQuantity: String = ""
+    val stockQuantity: String = "",
+    val isFeatured: Boolean = false,
+    val promotionPrice: String = ""
 )
 
 class ProductFormViewModel(
@@ -106,7 +108,9 @@ class ProductFormViewModel(
                 categoryId = draft.categoryId,
                 status = draft.status,
                 isAvailable = draft.isAvailable,
-                stockQuantity = draft.stockQuantity?.toString().orEmpty()
+                stockQuantity = draft.stockQuantity?.toString().orEmpty(),
+                isFeatured = draft.isFeatured,
+                promotionPrice = draft.promotionPrice?.toString().orEmpty()
             )
         }
         mode = if (uiState.id == null) ProductFormMode.Create else ProductFormMode.Edit
@@ -166,6 +170,7 @@ class ProductFormViewModel(
             return Result.failure(IllegalArgumentException(resolveMessage(MessageKey.product_form_error_invalid_price)))
         }
         val stockQty = uiState.stockQuantity.toIntOrNull()
+        val promoPrice = uiState.promotionPrice.replace(",", ".").toDoubleOrNull()
         val request = ProductRequest(
             name = uiState.name.trim(),
             shortDescription = uiState.shortDescription.ifBlank { null },
@@ -174,7 +179,9 @@ class ProductFormViewModel(
             categoryId = uiState.categoryId.trim(),
             status = uiState.status,
             isAvailable = uiState.isAvailable,
-            stockQuantity = stockQty
+            stockQuantity = stockQty,
+            isFeatured = uiState.isFeatured,
+            promotionPrice = promoPrice
         )
         return if (uiState.id == null) {
             createProduct.execute(businessId, request)
@@ -206,6 +213,14 @@ class ProductFormViewModel(
         uiState = uiState.copy(stockQuantity = value)
     }
 
+    fun updateFeatured(isFeatured: Boolean) {
+        uiState = uiState.copy(isFeatured = isFeatured)
+    }
+
+    fun updatePromotionPrice(value: String) {
+        uiState = uiState.copy(promotionPrice = value)
+    }
+
     private fun ProductDTO.toDraft(): ProductDraft = ProductDraft(
         id = id,
         name = name,
@@ -215,6 +230,8 @@ class ProductFormViewModel(
         categoryId = categoryId,
         status = status,
         isAvailable = isAvailable,
-        stockQuantity = stockQuantity
+        stockQuantity = stockQuantity,
+        isFeatured = isFeatured,
+        promotionPrice = promotionPrice
     )
 }

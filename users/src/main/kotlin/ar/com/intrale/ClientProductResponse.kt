@@ -9,7 +9,9 @@ data class ClientProductPayload(
     val status: String,
     val emoji: String? = null,
     val isAvailable: Boolean,
-    val stockQuantity: Int? = null
+    val stockQuantity: Int? = null,
+    val isFeatured: Boolean = false,
+    val promotionPrice: Double? = null
 )
 
 data class PaginationMetadata(
@@ -36,5 +38,7 @@ fun ProductRecord.toClientPayload() = ClientProductPayload(
     basePrice = basePrice,
     status = status,
     isAvailable = isAvailable,
-    stockQuantity = stockQuantity
+    stockQuantity = stockQuantity,
+    isFeatured = isFeatured,
+    promotionPrice = promotionPrice
 )
