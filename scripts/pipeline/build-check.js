@@ -55,12 +55,27 @@ function main() {
     emitTransition(prevRole, "Builder");
     emitSkillInvoked("builder");
 
-    console.log("[build-check] Ejecutando ./gradlew build...");
-
     if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
 
+    // Detectar modulos afectados antes de invocar Gradle
+    const { detectAffectedModules, getChangedFiles } = require("./affected-modules");
+    const changedFiles = getChangedFiles(workDir);
+    const affected = detectAffectedModules(changedFiles);
+
+    if (affected.skipBuild) {
+        console.log("[build-check] SKIP: " + affected.reason);
+        const skipResult = { status: "pass", checks: [{ task: "build", ok: true, errorCount: 0 }], errors: [], skipped: true, skippedReason: affected.reason };
+        fs.writeFileSync(path.join(LOGS_DIR, "build-result.json"), JSON.stringify(skipResult, null, 2), "utf8");
+        emitGateResult("builder", "pass", skipResult);
+        emitTransition("Builder", nextRole);
+        process.exit(0);
+    }
+
+    const buildTask = affected.fullBuild ? "build" : affected.gradleTasks.build.join(" ");
+    console.log("[build-check] " + (affected.fullBuild ? "FULL" : "SELECTIVE") + ": ./gradlew " + buildTask + " (" + affected.reason + ")");
+
     // Build principal
-    const buildResult = runGradleTask("build", workDir);
+    const buildResult = runGradleTask(buildTask, workDir);
     const errors = buildResult.ok ? [] : extractErrors(buildResult.output);
 
     const checks = [{ task: "build", ok: buildResult.ok, errors }];
