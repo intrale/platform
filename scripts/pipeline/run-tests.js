@@ -82,30 +82,33 @@ function main() {
         process.exit(0);
     }
 
-    // Skip tests si el diff no toca codigo fuente
+    // Detectar modulos afectados — skip si no hay codigo fuente en el diff
     try {
-        const diff = execSync("git diff origin/main...HEAD --name-only", {
-            cwd: workDir, encoding: "utf8", timeout: 10000, windowsHide: true,
-        }).trim();
-        const codeFiles = diff.split("\n").filter(f =>
-            /\.(kt|kts|java|gradle)$/.test(f) && !f.startsWith(".claude/"));
-        if (codeFiles.length === 0) {
-            console.log("[run-tests] Skip: diff no contiene codigo fuente (" + diff.split("\n").length + " archivos, solo docs/config)");
-            const skipResult = { status: "pass", total: 0, passed: 0, failed: 0, skipped: 0, time: 0, failures: [], xmlFiles: 0, buildExitCode: 0, skippedReason: "no source code in diff" };
+        const { detectAffectedModules, getChangedFiles } = require("./affected-modules");
+        const changedFiles = getChangedFiles(workDir);
+        const affected = detectAffectedModules(changedFiles);
+        if (affected.skipBuild) {
+            console.log("[run-tests] Skip: " + affected.reason);
+            const skipResult = { status: "pass", total: 0, passed: 0, failed: 0, skipped: 0, time: 0, failures: [], xmlFiles: 0, buildExitCode: 0, skippedReason: affected.reason };
             fs.writeFileSync(path.join(LOGS_DIR, "test-result.json"), JSON.stringify(skipResult, null, 2), "utf8");
             emitGateResult("tester", "pass", skipResult);
             emitTransition("Tester", nextRole);
             process.exit(0);
         }
-    } catch (e) { /* continuar con tests si falla la deteccion */ }
+        var checkTask = affected.fullBuild ? "check" : affected.gradleTasks.check.join(" ");
+        console.log("[run-tests] " + (affected.fullBuild ? "FULL" : "SELECTIVE") + ": ./gradlew " + checkTask + " (" + affected.reason + ")");
+    } catch (e) {
+        var checkTask = "check";
+        console.log("[run-tests] Fallback: ./gradlew check (deteccion fallo: " + e.message + ")");
+    }
 
-    console.log("[run-tests] Ejecutando ./gradlew check...");
+    console.log("[run-tests] Ejecutando ./gradlew " + checkTask + "...");
 
     // Ejecutar tests
     let buildOutput = "";
     let buildExitCode = 0;
     try {
-        buildOutput = execSync("./gradlew check", {
+        buildOutput = execSync("./gradlew " + checkTask, {
             cwd: workDir,
             encoding: "utf8",
             timeout: TEST_TIMEOUT,
