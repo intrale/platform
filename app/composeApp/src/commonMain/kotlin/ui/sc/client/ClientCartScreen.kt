@@ -55,12 +55,8 @@ import ar.com.intrale.strings.model.MessageKey
 import asdo.client.ClientAddress
 import asdo.client.PaymentMethod
 import asdo.client.PaymentMethodType
-import asdo.client.ToDoGetClientProfile
-import asdo.client.ToDoGetPaymentMethods
 import kotlinx.coroutines.launch
-import org.kodein.di.direct
-import org.kodein.di.instance
-import DIManager
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -82,6 +78,8 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
         val coroutineScope = rememberCoroutineScope()
         var confirmClearDialog by remember { mutableStateOf(false) }
         val logger = remember { LoggerFactory.default.newLogger<ClientCartScreen>() }
+
+        val viewModel: ClientCartViewModel = viewModel()
 
         val itemsList = cartItems.values.toList()
         val subtotal = remember(itemsList) { itemsList.sumOf { it.product.unitPrice * it.quantity } }
@@ -118,42 +116,9 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
         val paymentMethodCashHint = Txt(MessageKey.client_cart_payment_method_cash_hint)
         val continueMissingPayment = Txt(MessageKey.client_cart_continue_missing_payment)
 
-        val getClientProfile: ToDoGetClientProfile = remember { DIManager.di.direct.instance() }
-        val getPaymentMethods: ToDoGetPaymentMethods = remember { DIManager.di.direct.instance() }
-        var deliveryState by remember { mutableStateOf(DeliveryAddressState(loading = true)) }
-        var paymentMethodsState by remember { mutableStateOf(PaymentMethodsState(loading = true)) }
-
         LaunchedEffect(Unit) {
-            deliveryState = deliveryState.copy(loading = true)
-            getClientProfile.execute()
-                .onSuccess { data ->
-                    val defaultId = data.profile.defaultAddressId ?: data.addresses.firstOrNull { it.isDefault }?.id
-                    deliveryState = DeliveryAddressState(
-                        addresses = data.addresses,
-                        selectedAddressId = defaultId ?: data.addresses.firstOrNull()?.id,
-                        loading = false
-                    )
-                }
-                .onFailure { throwable ->
-                    logger.error(throwable) { "No se pudieron cargar las direcciones" }
-                    deliveryState = deliveryState.copy(loading = false, error = throwable.message)
-                }
-
-            paymentMethodsState = paymentMethodsState.copy(loading = true)
-            getPaymentMethods.execute()
-                .onSuccess { methods ->
-                    val enabled = methods.filter { it.enabled }
-                    paymentMethodsState = PaymentMethodsState(
-                        methods = enabled,
-                        selectedMethodId = enabled.firstOrNull()?.id,
-                        loading = false
-                    )
-                    ClientCartStore.selectPaymentMethod(enabled.firstOrNull()?.id)
-                }
-                .onFailure { throwable ->
-                    logger.error(throwable) { "No se pudieron cargar los medios de pago" }
-                    paymentMethodsState = paymentMethodsState.copy(loading = false, error = throwable.message)
-                }
+            viewModel.loadAddresses()
+            viewModel.loadPaymentMethods()
         }
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
@@ -201,8 +166,13 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                             loadingMessage = deliveryLoading,
                             emptyMessage = deliveryEmpty,
                             manageLabel = deliveryManage,
-                            state = deliveryState,
-                            onSelect = { deliveryState = deliveryState.copy(selectedAddressId = it) },
+                            state = DeliveryAddressState(
+                                addresses = viewModel.state.addresses,
+                                selectedAddressId = viewModel.state.selectedAddressId,
+                                loading = viewModel.state.loading,
+                                error = viewModel.state.error
+                            ),
+                            onSelect = { viewModel.selectAddress(it) },
                             onManage = { navigate(CLIENT_PROFILE_PATH) }
                         )
                     }
@@ -213,11 +183,13 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                             loadingMessage = paymentMethodLoading,
                             emptyMessage = paymentMethodEmpty,
                             cashHint = paymentMethodCashHint,
-                            state = paymentMethodsState,
-                            onSelect = {
-                                paymentMethodsState = paymentMethodsState.copy(selectedMethodId = it)
-                                ClientCartStore.selectPaymentMethod(it)
-                            }
+                            state = PaymentMethodsState(
+                                methods = viewModel.state.paymentMethods,
+                                selectedMethodId = viewModel.state.selectedPaymentMethodId,
+                                loading = viewModel.state.loadingPaymentMethods,
+                                error = viewModel.state.error
+                            ),
+                            onSelect = { viewModel.selectPaymentMethod(it) }
                         )
                     }
 
@@ -241,17 +213,17 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                                 logger.info { "Continuar pedido" }
                                 coroutineScope.launch {
                                     when {
-                                        deliveryState.loading -> snackbarHostState.showSnackbar(deliveryLoading)
-                                        deliveryState.addresses.isEmpty() -> {
+                                        viewModel.state.loading -> snackbarHostState.showSnackbar(deliveryLoading)
+                                        viewModel.state.addresses.isEmpty() -> {
                                             snackbarHostState.showSnackbar(continueMissingAddress)
                                             navigate(CLIENT_PROFILE_PATH)
                                         }
-                                        paymentMethodsState.loading -> snackbarHostState.showSnackbar(paymentMethodLoading)
-                                        paymentMethodsState.selectedMethodId == null && paymentMethodsState.methods.isNotEmpty() -> {
+                                        viewModel.state.loadingPaymentMethods -> snackbarHostState.showSnackbar(paymentMethodLoading)
+                                        viewModel.state.selectedPaymentMethodId == null && viewModel.state.paymentMethods.isNotEmpty() -> {
                                             snackbarHostState.showSnackbar(continueMissingPayment)
                                         }
                                         else -> {
-                                            val label = deliveryState.selectedAddress()?.label.orEmpty()
+                                            val label = viewModel.state.addresses.firstOrNull { it.id == viewModel.state.selectedAddressId }?.label.orEmpty()
                                             val message = continueWithAddress.replace("{label}", label.ifBlank { "-" })
                                             snackbarHostState.showSnackbar(message)
                                         }

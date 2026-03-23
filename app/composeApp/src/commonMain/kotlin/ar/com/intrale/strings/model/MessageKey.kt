@@ -744,16 +744,4 @@ enum class MessageKey {
     business_delivery_people_status_pending,
     dashboard_menu_business_delivery_people,
     dashboard_card_delivery_cta_manage,
-
-    // Medios de pago del negocio
-    business_payment_methods_title,
-    business_payment_methods_description,
-    business_payment_methods_access_denied,
-    business_payment_methods_loading,
-    business_payment_methods_missing_business,
-    business_payment_methods_error,
-    business_payment_methods_retry,
-    business_payment_methods_section_title,
-    business_payment_methods_save,
-    business_payment_methods_saved,
 }
