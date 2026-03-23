@@ -342,11 +342,27 @@ function generateDefaultPrompt(issue, slug, labels) {
     const isInfra = labels.includes("area:infra") || labels.includes("tipo:infra");
     const isBackend = labels.includes("area:backend");
 
+    const hasUI = hasApp || labels.some(l => l.includes("ui") || l.includes("frontend") || l.includes("screen"));
+    const isQA = labels.some(l => l.includes("testing") || l.includes("qa"));
+
     const parts = [
         `Implementar issue #${issue}. Leer el issue completo con: gh issue view ${issue} --repo intrale/platform.`,
         `Al iniciar: invocar /ops para verificar estado del entorno.`,
-        `Al iniciar: invocar /po para revisar criterios de aceptación del issue #${issue}.`
     ];
+
+    // --- Gate de refinamiento just-in-time (ANTES de codear) ---
+    // El contexto del proyecto pudo haber cambiado desde que se creó el issue.
+    // PO, UX y QA refinan con información actualizada antes de que el dev arranque.
+    parts.push(`ANTES DE CODEAR — Refinamiento just-in-time:`);
+    parts.push(`  1. Invocar /po para revisar y actualizar criterios de aceptación del issue #${issue} con el contexto actual del proyecto.`);
+
+    if (hasUI) {
+        parts.push(`  2. Invocar /ux para revisar el impacto visual y proponer mejoras de UX antes de implementar (issue tiene impacto en UI).`);
+    }
+
+    if (isQA || hasApp) {
+        parts.push(`  ${hasUI ? '3' : '2'}. Invocar /qa para definir el procedimiento de testing actualizado (usar docs/qa-ambiente-local.md como referencia para el ciclo E2E).`);
+    }
 
     if (!isInfra) {
         parts.push(`Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica.`);

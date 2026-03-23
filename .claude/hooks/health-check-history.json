@@ -15,9 +15,9 @@
     {
       "id": "settings_corrupt",
       "category": "corrupt_config",
-      "occurrences": 1,
+      "occurrences": 2,
       "first_seen": "2026-03-23T01:24:44.190Z",
-      "last_seen": "2026-03-23T01:24:44.190Z",
+      "last_seen": "2026-03-23T13:11:07.221Z",
       "resolved_at": null,
       "auto_fixed": false,
       "github_issue": null,
