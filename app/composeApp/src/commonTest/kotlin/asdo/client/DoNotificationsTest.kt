@@ -37,6 +37,11 @@ private class FakeNotificationService(
         markedAllRead = true
         return Result.success(Unit)
     }
+
+    override suspend fun addNotification(notification: ClientNotification): Result<Unit> {
+        if (shouldFail) return Result.failure(RuntimeException("Error"))
+        return Result.success(Unit)
+    }
 }
 
 class DoGetNotificationsTest {

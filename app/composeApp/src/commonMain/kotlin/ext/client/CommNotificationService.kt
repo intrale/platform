@@ -6,4 +6,5 @@ interface CommNotificationService {
     suspend fun listNotifications(): Result<List<ClientNotification>>
     suspend fun markAsRead(notificationId: String): Result<Unit>
     suspend fun markAllAsRead(): Result<Unit>
+    suspend fun addNotification(notification: ClientNotification): Result<Unit>
 }

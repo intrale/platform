@@ -39,8 +39,9 @@ class NotificationService : CommNotificationService {
      * Registra un nuevo evento como notificacion.
      * Llamar desde flujos de pedidos (creacion, cambio de estado, cancelacion, mensaje del negocio).
      */
-    fun addNotification(notification: ClientNotification) {
+    override suspend fun addNotification(notification: ClientNotification): Result<Unit> {
         logger.info { "Agregando notificacion: ${notification.type} - ${notification.title}" }
         _notifications.update { list -> listOf(notification) + list }
+        return Result.success(Unit)
     }
 }

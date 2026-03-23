@@ -1,7 +1,11 @@
 package asdo.client
 
+import ar.com.intrale.shared.client.CreateClientOrderItemRequestDTO
+import ar.com.intrale.shared.client.CreateClientOrderRequestDTO
 import ext.client.CommClientOrdersService
+import ext.client.CommNotificationService
 import ext.client.toClientException
+import kotlinx.datetime.Clock
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 
@@ -31,6 +35,49 @@ class DoGetClientOrderDetail(
         service.fetchOrderDetail(orderId).getOrThrow().toDomain()
     }.recoverCatching { throwable ->
         logger.error(throwable) { "Fallo al obtener detalle del pedido $orderId" }
+        throw throwable.toClientException()
+    }
+}
+
+class DoCreateOrder(
+    private val service: CommClientOrdersService,
+    private val notificationService: CommNotificationService
+) : ToDoCreateOrder {
+
+    private val logger = LoggerFactory.default.newLogger<DoCreateOrder>()
+
+    override suspend fun execute(
+        items: List<CreateOrderItemData>,
+        addressId: String,
+        paymentMethodId: String
+    ): Result<CreateOrderResult> = runCatching {
+        logger.info { "Creando pedido con ${items.size} items, dirección=$addressId, pago=$paymentMethodId" }
+        service.createOrder(
+            items = items,
+            shippingAddressId = addressId,
+            paymentMethodId = paymentMethodId
+        ).getOrThrow().let { dto ->
+            val result = CreateOrderResult(
+                orderId = dto.id,
+                publicId = dto.publicId,
+                shortCode = dto.shortCode,
+                total = dto.total
+            )
+            notificationService.addNotification(
+                ClientNotification(
+                    id = "notif-${Clock.System.now().toEpochMilliseconds()}",
+                    type = NotificationType.ORDER_CREATED,
+                    title = "Pedido #${result.shortCode} creado",
+                    body = "Tu pedido fue recibido y esta siendo procesado",
+                    isRead = false,
+                    timestamp = Clock.System.now().toString(),
+                    orderId = result.orderId
+                )
+            )
+            result
+        }
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al crear pedido" }
         throw throwable.toClientException()
     }
 }

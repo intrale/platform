@@ -488,7 +488,7 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
-    bindSingleton<ToDoCreateOrder> { DoCreateOrder(instance()) }
+    bindSingleton<ToDoCreateOrder> { DoCreateOrder(instance(), instance()) }
     bindSingleton<ToDoRepeatOrder> { DoRepeatOrder() }
     bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
     bindSingleton<ToDoGetNotifications> { DoGetNotifications(instance()) }
