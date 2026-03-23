@@ -16,6 +16,8 @@
 # - QA_AVD_CORES=2 (default) — cores máximos por AVD
 # - QA_AVD_MEMORY=1536 (default liviano) | 2048 (legacy)
 # - QA_NO_AFFINITY=1 — desabilitar CPU affinity (debug)
+# - QA_NARRATION=true (default) | false — narración TTS con OpenAI gpt-4o-mini-tts
+#   Requiere OPENAI_API_KEY configurada. Sin key → narración omitida automáticamente.
 #
 # Optimizaciones:
 # - CPU affinity: emulador limitado a cores 4-7, agentes en cores 0-3
@@ -37,6 +39,7 @@ EMULATOR_BIN="${ANDROID_SDK}/emulator/emulator"
 QA_SHARDS=${QA_SHARDS:-1}           # 1 (liviano) o 3 (legacy paralelo)
 QA_AVD_CORES=${QA_AVD_CORES:-2}     # Cores máximos por AVD
 QA_NO_AFFINITY=${QA_NO_AFFINITY:-0} # 0=usar affinity (default), 1=desabilitar
+QA_NARRATION=${QA_NARRATION:-true}  # true=generar narracion TTS (requiere OPENAI_API_KEY), false=solo video mudo
 
 # Calcular memoria según modo
 if [ "$QA_SHARDS" = "3" ]; then
@@ -493,22 +496,26 @@ done
 
 # ── 7.5. Generar narracion de audio TTS para videos ─────────
 echo ""
-echo "[7.5/9] Generando narracion de audio para videos..."
-if command -v node &>/dev/null && command -v python &>/dev/null; then
+echo "[7.5/9] Generando narracion de audio TTS (OpenAI gpt-4o-mini-tts)..."
+NARRATION_ENABLED=false
+if [ "$QA_NARRATION" = "false" ]; then
+    echo "  Narracion desactivada (QA_NARRATION=false)"
+elif ! command -v node &>/dev/null; then
+    echo "  Saltando narracion: node no disponible"
+else
+    NARRATION_ENABLED=true
     for avd_name in "${AVD_NAMES[@]}"; do
         port=${AVD_PORTS[$avd_name]}
         VIDEO_LOCAL="${RECORDINGS_DIR}/maestro-shard-${port}.mp4"
         if [ -f "$VIDEO_LOCAL" ]; then
             echo "  Procesando shard $port..."
-            node "$SCRIPT_DIR/qa-narration.js" \
+            QA_NARRATION="$QA_NARRATION" node "$SCRIPT_DIR/qa-narration.js" \
                 --video "$VIDEO_LOCAL" \
                 --flows-dir "$MAESTRO_DIR" \
                 --output "${RECORDINGS_DIR}/maestro-shard-${port}-narrated.mp4" \
-                2>&1 | tail -5 || echo "  Narracion fallida para shard $port (continuando sin audio)"
+                2>&1 | tail -8 || echo "  Narracion fallida para shard $port (continuando sin audio)"
         fi
     done
-else
-    echo "  Saltando narracion: node o python no disponibles"
 fi
 
 # ── 8. Reporte final ────────────────────────────────────────
@@ -531,10 +538,29 @@ echo ""
 echo "[9/9] Archivos generados:"
 echo "  Logs:"
 ls -lh "$RECORDINGS_DIR"/*.log 2>/dev/null | awk '{print "    " $9}' || echo "    (ninguno)"
-echo "  Videos (shards paralelos):"
-ls -lh "$RECORDINGS_DIR"/maestro-shard-*.mp4 2>/dev/null | awk '{print "    " $9}' || echo "    (ninguno)"
+echo "  Videos mudos:"
+ls -lh "$RECORDINGS_DIR"/maestro-shard-[0-9]*.mp4 2>/dev/null | grep -v "\-narrated\." | awk '{print "    " $9}' || echo "    (ninguno)"
+echo "  Videos narrados (TTS):"
+ls -lh "$RECORDINGS_DIR"/maestro-shard-*-narrated.mp4 2>/dev/null | awk '{print "    " $9}' || echo "    (ninguno)"
 echo "  JUnit XML:"
 ls -lh "$RECORDINGS_DIR"/maestro-results.xml 2>/dev/null | awk '{print "    " $9}' || echo "    (ninguno)"
+
+# Generar qa-report.json con flag de narración
+NARRATED_COUNT=$(ls "$RECORDINGS_DIR"/maestro-shard-*-narrated.mp4 2>/dev/null | wc -l)
+QA_REPORT_PATH="${RECORDINGS_DIR}/qa-report.json"
+cat > "$QA_REPORT_PATH" <<REPORT_EOF
+{
+  "verdict": "$([ $MAESTRO_EXIT -eq 0 ] && echo "APROBADO" || echo "RECHAZADO")",
+  "passed": ${PASSED:-0},
+  "total": ${TOTAL_TESTS:-0},
+  "shards": $QA_SHARDS,
+  "narration": $([ "$NARRATED_COUNT" -gt 0 ] && echo "true" || echo "false"),
+  "narration_model": "gpt-4o-mini-tts",
+  "narration_voice": "ash",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+REPORT_EOF
+echo "  QA Report: $QA_REPORT_PATH (narration: $([ "$NARRATED_COUNT" -gt 0 ] && echo "true" || echo "false"))"
 
 echo ""
 if [ $MAESTRO_EXIT -eq 0 ]; then
