@@ -740,4 +740,16 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.business_delivery_people_status_pending to "Pendiente",
     MessageKey.dashboard_menu_business_delivery_people to "Repartidores",
     MessageKey.dashboard_card_delivery_cta_manage to "Gestionar repartidores",
+
+    // Medios de pago del negocio
+    MessageKey.business_payment_methods_title to "Medios de pago",
+    MessageKey.business_payment_methods_description to "Configura los medios de pago que acepta tu negocio",
+    MessageKey.business_payment_methods_access_denied to "No tenes permiso para acceder a esta seccion",
+    MessageKey.business_payment_methods_loading to "Cargando medios de pago...",
+    MessageKey.business_payment_methods_missing_business to "No se encontro el negocio asociado",
+    MessageKey.business_payment_methods_error to "Error al cargar los medios de pago",
+    MessageKey.business_payment_methods_retry to "Reintentar",
+    MessageKey.business_payment_methods_section_title to "Medios de pago disponibles",
+    MessageKey.business_payment_methods_save to "Guardar cambios",
+    MessageKey.business_payment_methods_saved to "Cambios guardados correctamente",
 )

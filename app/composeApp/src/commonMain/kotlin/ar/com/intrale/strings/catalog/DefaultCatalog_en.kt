@@ -740,4 +740,16 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.business_delivery_people_status_pending to "Pending",
     MessageKey.dashboard_menu_business_delivery_people to "Delivery drivers",
     MessageKey.dashboard_card_delivery_cta_manage to "Manage drivers",
+
+    // Business payment methods
+    MessageKey.business_payment_methods_title to "Payment methods",
+    MessageKey.business_payment_methods_description to "Configure the payment methods accepted by your business",
+    MessageKey.business_payment_methods_access_denied to "You do not have permission to access this section",
+    MessageKey.business_payment_methods_loading to "Loading payment methods...",
+    MessageKey.business_payment_methods_missing_business to "Business not found",
+    MessageKey.business_payment_methods_error to "Error loading payment methods",
+    MessageKey.business_payment_methods_retry to "Retry",
+    MessageKey.business_payment_methods_section_title to "Available payment methods",
+    MessageKey.business_payment_methods_save to "Save changes",
+    MessageKey.business_payment_methods_saved to "Changes saved successfully",
 )
