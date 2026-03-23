@@ -251,9 +251,8 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                                             snackbarHostState.showSnackbar(continueMissingPayment)
                                         }
                                         else -> {
-                                            val label = deliveryState.selectedAddress()?.label.orEmpty()
-                                            val message = continueWithAddress.replace("{label}", label.ifBlank { "-" })
-                                            snackbarHostState.showSnackbar(message)
+                                            logger.info { "Navegando a checkout" }
+                                            navigate(CLIENT_CHECKOUT_PATH)
                                         }
                                     }
                                 }

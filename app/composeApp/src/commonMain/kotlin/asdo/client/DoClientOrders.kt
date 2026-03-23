@@ -35,6 +35,36 @@ class DoGetClientOrderDetail(
     }
 }
 
+class DoCreateOrder(
+    private val service: CommClientOrdersService
+) : ToDoCreateOrder {
+
+    private val logger = LoggerFactory.default.newLogger<DoCreateOrder>()
+
+    override suspend fun execute(
+        items: List<CreateOrderItemData>,
+        addressId: String,
+        paymentMethodId: String
+    ): Result<CreateOrderResult> = runCatching {
+        logger.info { "Creando pedido con ${items.size} items" }
+        service.createOrder(
+            items = items,
+            shippingAddressId = addressId,
+            paymentMethodId = paymentMethodId
+        ).getOrThrow().let { dto ->
+            CreateOrderResult(
+                orderId = dto.id,
+                publicId = dto.publicId,
+                shortCode = dto.shortCode,
+                total = dto.total
+            )
+        }
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al crear pedido" }
+        throw throwable.toClientException()
+    }
+}
+
 class DoRepeatOrder : ToDoRepeatOrder {
 
     private val logger = LoggerFactory.default.newLogger<DoRepeatOrder>()

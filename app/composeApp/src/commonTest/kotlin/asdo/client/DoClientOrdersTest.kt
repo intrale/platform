@@ -4,6 +4,7 @@ import ext.client.ClientExceptionResponse
 import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
 import ar.com.intrale.shared.client.ClientOrderItemDTO
+import ar.com.intrale.shared.client.CreateClientOrderResponseDTO
 import ext.client.CommClientOrdersService
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -35,12 +36,25 @@ private val sampleDetailDTO = ClientOrderDetailDTO(
     address = null
 )
 
+private val sampleCreateOrderResponse = CreateClientOrderResponseDTO(
+    id = "order-new-1",
+    publicId = "PED-12345",
+    shortCode = "ABC123",
+    total = 150.0
+)
+
 private class FakeClientOrdersService(
     private val listResult: Result<List<ClientOrderDTO>> = Result.success(sampleOrderDTOs),
-    private val detailResult: Result<ClientOrderDetailDTO> = Result.success(sampleDetailDTO)
+    private val detailResult: Result<ClientOrderDetailDTO> = Result.success(sampleDetailDTO),
+    private val createResult: Result<CreateClientOrderResponseDTO> = Result.success(sampleCreateOrderResponse)
 ) : CommClientOrdersService {
     override suspend fun listOrders(): Result<List<ClientOrderDTO>> = listResult
     override suspend fun fetchOrderDetail(orderId: String): Result<ClientOrderDetailDTO> = detailResult
+    override suspend fun createOrder(
+        items: List<CreateOrderItemData>,
+        shippingAddressId: String,
+        paymentMethodId: String
+    ): Result<CreateClientOrderResponseDTO> = createResult
 }
 
 private val sampleDeliveredOrder = ClientOrderDetail(
@@ -209,6 +223,54 @@ class DoRepeatOrderTest {
         val repeatResult = result.getOrThrow()
         assertTrue(repeatResult.addedItems.isEmpty())
         assertTrue(repeatResult.skippedItems.isEmpty())
+    }
+}
+
+// endregion
+
+// region DoCreateOrder
+
+class DoCreateOrderTest {
+
+    private val sampleItems = listOf(
+        CreateOrderItemData(productId = "prod-1", productName = "Producto A", quantity = 2, unitPrice = 50.0),
+        CreateOrderItemData(productId = "prod-2", productName = "Producto B", quantity = 1, unitPrice = 50.0)
+    )
+
+    @Test
+    fun `crear pedido exitoso retorna CreateOrderResult con datos correctos`() = runTest {
+        val sut = DoCreateOrder(FakeClientOrdersService())
+
+        val result = sut.execute(
+            items = sampleItems,
+            addressId = "addr-1",
+            paymentMethodId = "pay-1"
+        )
+
+        assertTrue(result.isSuccess)
+        val orderResult = result.getOrThrow()
+        assertEquals("order-new-1", orderResult.orderId)
+        assertEquals("PED-12345", orderResult.publicId)
+        assertEquals("ABC123", orderResult.shortCode)
+        assertEquals(150.0, orderResult.total)
+    }
+
+    @Test
+    fun `crear pedido con error del servicio retorna ClientExceptionResponse`() = runTest {
+        val sut = DoCreateOrder(
+            FakeClientOrdersService(
+                createResult = Result.failure(RuntimeException("Error de red"))
+            )
+        )
+
+        val result = sut.execute(
+            items = sampleItems,
+            addressId = "addr-1",
+            paymentMethodId = "pay-1"
+        )
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is ClientExceptionResponse)
     }
 }
 

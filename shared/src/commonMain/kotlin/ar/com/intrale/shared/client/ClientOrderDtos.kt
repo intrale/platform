@@ -75,3 +75,27 @@ data class ClientOrderDetailResponse(
 data class ClientOrderRequest(
     val orderId: String? = null
 )
+
+@Serializable
+data class CreateClientOrderItemRequestDTO(
+    val productId: String = "",
+    val productName: String = "",
+    val quantity: Int = 0,
+    val unitPrice: Double = 0.0
+)
+
+@Serializable
+data class CreateClientOrderRequestDTO(
+    val items: List<CreateClientOrderItemRequestDTO> = emptyList(),
+    val shippingAddressId: String = "",
+    val paymentMethodId: String = ""
+)
+
+@Serializable
+data class CreateClientOrderResponseDTO(
+    val statusCode: StatusCodeDTO? = null,
+    val id: String = "",
+    val publicId: String = "",
+    val shortCode: String = "",
+    val total: Double = 0.0
+)
