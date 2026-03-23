@@ -84,4 +84,11 @@
 {"timestamp":"2026-03-19T01:30:19.049Z","sprint_id":"SPR-042","health_level":"warning","inconsistencias_count":2,"repairs_count":0,"metrics":{"total_issues":5,"completed":0,"in_progress":3,"blocked":0,"inconsistencias_total":2,"inconsistencias_critical":2}}
 {"timestamp":"2026-03-19T02:04:33.505Z","sprint_id":"SPR-042","health_level":"warning","inconsistencias_count":2,"repairs_count":0,"metrics":{"total_issues":5,"completed":0,"in_progress":3,"blocked":0,"inconsistencias_total":2,"inconsistencias_critical":2}}
 {"timestamp":"2026-03-19T02:34:59.251Z","sprint_id":"SPR-042","health_level":"warning","inconsistencias_count":2,"repairs_count":0,"metrics":{"total_issues":4,"completed":0,"in_progress":3,"blocked":0,"inconsistencias_total":2,"inconsistencias_critical":2}}
+<<<<<<< Updated upstream
 {"timestamp":"2026-03-22T19:26:02.984Z","sprint_id":"SPR-0051","health_level":"healthy","inconsistencias_count":0,"repairs_count":0,"metrics":{"total_issues":5,"completed":5,"in_progress":0,"blocked":0,"inconsistencias_total":0,"inconsistencias_critical":0}}
+=======
+{"timestamp":"2026-03-22T21:46:35.011Z","sprint_id":"SPR-0051","health_level":"healthy","inconsistencias_count":6,"repairs_count":0,"metrics":{"total_issues":5,"completed":5,"in_progress":0,"blocked":0,"inconsistencias_total":0,"inconsistencias_critical":0}}
+{"timestamp":"2026-03-22T22:17:20.313Z","inconsistencias_count":0,"repairs_count":0}
+{"timestamp":"2026-03-22T22:48:42.166Z","inconsistencias_count":0,"repairs_count":0}
+{"timestamp":"2026-03-23T00:53:01.186Z","sprint_id":"SPR-0052","health_level":"healthy","inconsistencias_count":1,"repairs_count":0,"metrics":{"total_issues":6,"completed":5,"in_progress":0,"blocked":0,"inconsistencias_total":0,"inconsistencias_critical":0}}
+>>>>>>> Stashed changes

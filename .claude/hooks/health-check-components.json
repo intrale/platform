@@ -1,32 +1,32 @@
 {
   "commander": {
-    "consecutivePasses": 31,
-    "currentInterval": 600000,
-    "lastRun": 1774208148598
+    "consecutivePasses": 1,
+    "currentInterval": 120000,
+    "lastRun": 1774229082885
   },
   "approvers": {
-    "consecutivePasses": 31,
-    "currentInterval": 600000,
-    "lastRun": 1774208148598
+    "consecutivePasses": 1,
+    "currentInterval": 120000,
+    "lastRun": 1774229082885
   },
   "telegram": {
-    "consecutivePasses": 31,
-    "currentInterval": 600000,
-    "lastRun": 1774208148598
+    "consecutivePasses": 1,
+    "currentInterval": 120000,
+    "lastRun": 1774229082885
   },
   "settings": {
-    "consecutivePasses": 31,
-    "currentInterval": 600000,
-    "lastRun": 1774208148598
+    "consecutivePasses": 0,
+    "currentInterval": 120000,
+    "lastRun": 1774229082885
   },
   "hooks": {
-    "consecutivePasses": 53,
-    "currentInterval": 600000,
-    "lastRun": 1774208148598
+    "consecutivePasses": 1,
+    "currentInterval": 120000,
+    "lastRun": 1774229082885
   },
   "worktrees": {
-    "consecutivePasses": 31,
-    "currentInterval": 600000,
-    "lastRun": 1774208148598
+    "consecutivePasses": 1,
+    "currentInterval": 120000,
+    "lastRun": 1774229082885
   }
 }

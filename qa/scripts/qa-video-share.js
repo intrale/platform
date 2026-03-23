@@ -194,7 +194,20 @@ function sendTelegramMessage(text) {
 
 // --- Google Drive: Service Account JWT + REST API (Node.js puro) ---
 
+// OAuth config (alternativa a Service Account — funciona con cuentas personales)
+let OAUTH_CLIENT_ID = "";
+let OAUTH_CLIENT_SECRET = "";
+let OAUTH_REFRESH_TOKEN = "";
+try {
+    const cfg2 = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || cfg2.google_oauth_client_id || "";
+    OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || cfg2.google_oauth_client_secret || "";
+    OAUTH_REFRESH_TOKEN = process.env.GOOGLE_OAUTH_REFRESH_TOKEN || cfg2.google_oauth_refresh_token || "";
+} catch (e) {}
+
 function driveAvailable() {
+    // OAuth tiene prioridad sobre Service Account
+    if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) return true;
     if (!DRIVE_CREDENTIALS_PATH) return false;
     const resolved = path.resolve(DRIVE_CREDENTIALS_PATH);
     return fs.existsSync(resolved);
@@ -223,8 +236,41 @@ function createServiceAccountJWT(credentials) {
     return unsigned + "." + signature;
 }
 
-// Obtener access token via JWT grant
+// Obtener access token via OAuth refresh token (cuenta personal)
+function getOAuthAccessToken() {
+    return new Promise((resolve, reject) => {
+        const payload = "client_id=" + encodeURIComponent(OAUTH_CLIENT_ID) +
+            "&client_secret=" + encodeURIComponent(OAUTH_CLIENT_SECRET) +
+            "&refresh_token=" + encodeURIComponent(OAUTH_REFRESH_TOKEN) +
+            "&grant_type=refresh_token";
+        const req = https.request({
+            hostname: "oauth2.googleapis.com", path: "/token", method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(payload) },
+            timeout: 15000,
+        }, (res) => {
+            let d = "";
+            res.on("data", (c) => d += c);
+            res.on("end", () => {
+                try {
+                    const r = JSON.parse(d);
+                    if (r.access_token) resolve(r.access_token);
+                    else reject(new Error("OAuth token error: " + d));
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on("timeout", () => { req.destroy(); reject(new Error("OAuth token timeout")); });
+        req.on("error", (e) => reject(e));
+        req.write(payload);
+        req.end();
+    });
+}
+
+// Obtener access token via JWT grant (Service Account)
 function getGoogleAccessToken(credentials) {
+    // Prioridad: OAuth refresh token > Service Account JWT
+    if (OAUTH_REFRESH_TOKEN && OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) {
+        return getOAuthAccessToken();
+    }
     return new Promise((resolve, reject) => {
         const jwt = createServiceAccountJWT(credentials);
         const payload = "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
