@@ -5,8 +5,11 @@ import asdo.client.ClientOrderAddress
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderItem
 import asdo.client.ClientOrderStatus
+import asdo.client.RepeatOrderResult
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
+import asdo.client.ToDoRepeatOrder
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -53,6 +56,14 @@ private class FakeGetClientOrderDetail(
     private val result: Result<ClientOrderDetail> = Result.success(sampleDetail)
 ) : ToDoGetClientOrderDetail {
     override suspend fun execute(orderId: String): Result<ClientOrderDetail> = result
+}
+
+private class FakeRepeatOrder(
+    private val result: Result<RepeatOrderResult> = Result.success(
+        RepeatOrderResult(addedItems = emptyList(), skippedItems = emptyList())
+    )
+) : ToDoRepeatOrder {
+    override suspend fun execute(order: ClientOrderDetail): Result<RepeatOrderResult> = result
 }
 
 class ClientOrdersViewModelTest {
@@ -253,5 +264,139 @@ class ClientOrdersViewModelTest {
         viewModel.clearError()
 
         assertNull(viewModel.state.errorMessage)
+    }
+}
+
+private val deliveredOrderForRepeat = ClientOrderDetail(
+    id = "ord-delivered", publicId = "PUB-DEL", shortCode = "DEL01",
+    businessName = "Tienda", status = ClientOrderStatus.DELIVERED,
+    createdAt = "2025-01-01", promisedAt = null, total = 150.0, itemCount = 2,
+    items = listOf(
+        ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
+        ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+    ),
+    address = null
+)
+
+class ClientOrdersViewModelRepeatOrderTest {
+
+    @BeforeTest
+    fun setUp() {
+        ClientCartStore.clear()
+    }
+
+    @Test
+    fun `repeatOrderFromDetail exitoso carga items al carrito`() = runTest {
+        val repeatResult = RepeatOrderResult(
+            addedItems = listOf(
+                ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
+                ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            ),
+            skippedItems = emptyList()
+        )
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            repeatOrder = FakeRepeatOrder(Result.success(repeatResult)),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.repeatOrderFromDetail(deliveredOrderForRepeat)
+
+        assertFalse(viewModel.state.repeatOrderLoading)
+        assertNotNull(viewModel.state.repeatOrderResult)
+        assertEquals(2, viewModel.state.repeatOrderResult?.addedItems?.size)
+        assertTrue(viewModel.state.repeatOrderResult?.skippedItems?.isEmpty() == true)
+        assertEquals(2, ClientCartStore.items.value.size)
+        assertEquals(2, ClientCartStore.items.value["item-1"]?.quantity)
+        assertEquals(1, ClientCartStore.items.value["item-2"]?.quantity)
+    }
+
+    @Test
+    fun `repeatOrderFromDetail con items omitidos refleja resultado parcial`() = runTest {
+        val repeatResult = RepeatOrderResult(
+            addedItems = listOf(
+                ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0)
+            ),
+            skippedItems = listOf(
+                ClientOrderItem(id = null, name = "Producto sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0)
+            )
+        )
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            repeatOrder = FakeRepeatOrder(Result.success(repeatResult)),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.repeatOrderFromDetail(deliveredOrderForRepeat)
+
+        assertFalse(viewModel.state.repeatOrderLoading)
+        assertEquals(1, viewModel.state.repeatOrderResult?.addedItems?.size)
+        assertEquals(1, viewModel.state.repeatOrderResult?.skippedItems?.size)
+        assertEquals(1, ClientCartStore.items.value.size)
+    }
+
+    @Test
+    fun `repeatOrderFromDetail con todos los items omitidos no modifica el carrito`() = runTest {
+        val repeatResult = RepeatOrderResult(
+            addedItems = emptyList(),
+            skippedItems = listOf(
+                ClientOrderItem(id = null, name = "Sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0)
+            )
+        )
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            repeatOrder = FakeRepeatOrder(Result.success(repeatResult)),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.repeatOrderFromDetail(deliveredOrderForRepeat)
+
+        assertFalse(viewModel.state.repeatOrderLoading)
+        assertTrue(viewModel.state.repeatOrderResult?.addedItems?.isEmpty() == true)
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `repeatOrderFromDetail con error actualiza repeatOrderError`() = runTest {
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            repeatOrder = FakeRepeatOrder(Result.failure(RuntimeException("Error de red"))),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.repeatOrderFromDetail(deliveredOrderForRepeat)
+
+        assertFalse(viewModel.state.repeatOrderLoading)
+        assertNull(viewModel.state.repeatOrderResult)
+        assertNotNull(viewModel.state.repeatOrderError)
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `clearRepeatOrderResult limpia resultado y error`() = runTest {
+        val repeatResult = RepeatOrderResult(
+            addedItems = listOf(
+                ClientOrderItem(id = "item-1", name = "Producto A", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            ),
+            skippedItems = emptyList()
+        )
+        val viewModel = ClientOrdersViewModel(
+            getClientOrders = FakeGetClientOrders(),
+            getClientOrderDetail = FakeGetClientOrderDetail(),
+            repeatOrder = FakeRepeatOrder(Result.success(repeatResult)),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.repeatOrderFromDetail(deliveredOrderForRepeat)
+        assertNotNull(viewModel.state.repeatOrderResult)
+
+        viewModel.clearRepeatOrderResult()
+
+        assertNull(viewModel.state.repeatOrderResult)
+        assertNull(viewModel.state.repeatOrderError)
     }
 }
