@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material3.Card
@@ -25,7 +26,7 @@ import ar.com.intrale.strings.model.MessageKey
 import ui.th.spacing
 
 enum class ClientTab {
-    HOME, ORDERS, PROFILE
+    HOME, ORDERS, NOTIFICATIONS, PROFILE
 }
 
 @Composable
@@ -33,10 +34,12 @@ fun ClientBottomBar(
     activeTab: ClientTab,
     onHomeClick: () -> Unit,
     onOrdersClick: () -> Unit,
+    onNotificationsClick: () -> Unit,
     onProfileClick: () -> Unit
 ) {
     val homeLabel = Txt(MessageKey.client_home_tab_home)
     val ordersLabel = Txt(MessageKey.client_home_tab_orders)
+    val notificationsLabel = Txt(MessageKey.client_home_tab_notifications)
     val profileLabel = Txt(MessageKey.client_home_tab_profile)
 
     Card(
@@ -61,6 +64,12 @@ fun ClientBottomBar(
                 label = ordersLabel,
                 selected = activeTab == ClientTab.ORDERS,
                 onClick = onOrdersClick
+            )
+            ClientBottomItem(
+                icon = Icons.Default.Notifications,
+                label = notificationsLabel,
+                selected = activeTab == ClientTab.NOTIFICATIONS,
+                onClick = onNotificationsClick
             )
             ClientBottomItem(
                 icon = Icons.Default.Person,

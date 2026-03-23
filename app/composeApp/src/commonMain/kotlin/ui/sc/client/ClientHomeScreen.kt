@@ -63,6 +63,7 @@ import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.client.ClientBottomBar
 import ui.sc.client.ClientTab
+import ui.sc.client.CLIENT_NOTIFICATIONS_PATH
 import ui.sc.client.CLIENT_ORDERS_PATH
 import ui.sc.client.CLIENT_PROFILE_PATH
 import ui.sc.shared.Screen
@@ -146,6 +147,9 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                     },
                     onOrdersClick = {
                         navigate(CLIENT_ORDERS_PATH)
+                    },
+                    onNotificationsClick = {
+                        navigate(CLIENT_NOTIFICATIONS_PATH)
                     },
                     onProfileClick = {
                         this@ClientHomeScreen.navigate(CLIENT_PROFILE_PATH)
