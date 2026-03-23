@@ -112,6 +112,10 @@ import asdo.business.DoGetBusinessDeliveryZone
 import asdo.business.DoUpdateBusinessDeliveryZone
 import asdo.business.ToDoGetBusinessDeliveryZone
 import asdo.business.ToDoUpdateBusinessDeliveryZone
+import asdo.business.DoGetBusinessPaymentMethods
+import asdo.business.DoUpdateBusinessPaymentMethods
+import asdo.business.ToDoGetBusinessPaymentMethods
+import asdo.business.ToDoUpdateBusinessPaymentMethods
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoConfirmSignUp
 import asdo.signup.DoSignUp
@@ -169,6 +173,8 @@ import ext.business.ClientBusinessSchedulesService
 import ext.business.CommBusinessSchedulesService
 import ext.business.ClientBusinessDeliveryZoneService
 import ext.business.CommBusinessDeliveryZoneService
+import ext.business.ClientBusinessPaymentMethodsService
+import ext.business.CommBusinessPaymentMethodsService
 import ext.business.ClientGetBusinessDashboardSummaryService
 import ext.business.ClientGetBusinessProductsService
 import ext.business.ClientCategoryService
@@ -229,6 +235,7 @@ import ui.sc.business.BannerFormScreen
 import ui.sc.business.BannerListScreen
 import ui.sc.business.BusinessSchedulesScreen
 import ui.sc.business.BusinessDeliveryZoneScreen
+import ui.sc.business.BusinessPaymentMethodsScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.BusinessOrderDetailScreen
@@ -321,6 +328,7 @@ public const val BUSINESS_BANNERS = "businessBanners"
 public const val BUSINESS_BANNER_FORM = "businessBannerForm"
 public const val BUSINESS_SCHEDULES = "businessSchedules"
 public const val BUSINESS_DELIVERY_ZONE = "businessDeliveryZone"
+public const val BUSINESS_PAYMENT_METHODS = "businessPaymentMethods"
 
 const val LOGIN_PATH = "/login"
 
@@ -403,6 +411,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommGetBusinessDeliveryPeopleService> { ClientGetBusinessDeliveryPeopleService(instance(), instance()) }
     bindSingleton<CommBusinessSchedulesService> { ClientBusinessSchedulesService(instance(), instance()) }
     bindSingleton<CommBusinessDeliveryZoneService> { ClientBusinessDeliveryZoneService(instance(), instance()) }
+    bindSingleton<CommBusinessPaymentMethodsService> { ClientBusinessPaymentMethodsService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }
@@ -437,6 +446,8 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoUpdateBusinessSchedules> { DoUpdateBusinessSchedules(instance()) }
     bindSingleton<ToDoGetBusinessDeliveryZone> { DoGetBusinessDeliveryZone(instance()) }
     bindSingleton<ToDoUpdateBusinessDeliveryZone> { DoUpdateBusinessDeliveryZone(instance()) }
+    bindSingleton<ToDoGetBusinessPaymentMethods> { DoGetBusinessPaymentMethods(instance()) }
+    bindSingleton<ToDoUpdateBusinessPaymentMethods> { DoUpdateBusinessPaymentMethods(instance()) }
 }
 
 private val clientModule = DI.Module("client") {
@@ -522,6 +533,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_BANNER_FORM) { BannerFormScreen() }
     bindSingleton(tag = BUSINESS_SCHEDULES) { BusinessSchedulesScreen() }
     bindSingleton(tag = BUSINESS_DELIVERY_ZONE) { BusinessDeliveryZoneScreen() }
+    bindSingleton(tag = BUSINESS_PAYMENT_METHODS) { BusinessPaymentMethodsScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -599,6 +611,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_BANNER_FORM))
                     add(instance(tag = BUSINESS_SCHEDULES))
                     add(instance(tag = BUSINESS_DELIVERY_ZONE))
+                    add(instance(tag = BUSINESS_PAYMENT_METHODS))
                     add(instance(tag = TWO_FACTOR_SETUP))
                     add(instance(tag = TWO_FACTOR_VERIFY))
                 }
@@ -633,6 +646,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_BANNER_FORM))
                     add(instance(tag = BUSINESS_SCHEDULES))
                     add(instance(tag = BUSINESS_DELIVERY_ZONE))
+                    add(instance(tag = BUSINESS_PAYMENT_METHODS))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = TWO_FACTOR_SETUP))

@@ -255,6 +255,14 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                         )
                     )
                     DashboardActionCard(
+                        title = Txt(MessageKey.dashboard_card_payment_methods_title),
+                        description = Txt(MessageKey.dashboard_card_payment_methods_description),
+                        metric = "",
+                        actions = listOf(
+                            Txt(MessageKey.dashboard_card_payment_methods_cta) to { navigate(BUSINESS_PAYMENT_METHODS_PATH) }
+                        )
+                    )
+                    DashboardActionCard(
                         title = Txt(MessageKey.dashboard_card_settings_title),
                         description = Txt(MessageKey.dashboard_card_settings_description),
                         metric = Txt(MessageKey.dashboard_card_settings_metric),

@@ -719,4 +719,20 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.dashboard_card_delivery_zone_title to "Zona de entrega",
     MessageKey.dashboard_card_delivery_zone_description to "Define donde podes realizar entregas a domicilio",
     MessageKey.dashboard_card_delivery_zone_cta to "Configurar zona",
+
+    // Medios de pago
+    MessageKey.business_payment_methods_title to "Medios de pago",
+    MessageKey.business_payment_methods_description to "Configura los medios de pago que acepta tu negocio",
+    MessageKey.business_payment_methods_access_denied to "No tenes permiso para configurar los medios de pago",
+    MessageKey.business_payment_methods_loading to "Cargando medios de pago...",
+    MessageKey.business_payment_methods_missing_business to "Selecciona un negocio para ver sus medios de pago",
+    MessageKey.business_payment_methods_error to "No pudimos cargar los medios de pago",
+    MessageKey.business_payment_methods_retry to "Reintentar",
+    MessageKey.business_payment_methods_section_title to "Medios de pago disponibles",
+    MessageKey.business_payment_methods_save to "Guardar cambios",
+    MessageKey.business_payment_methods_saved to "Medios de pago guardados correctamente",
+    MessageKey.dashboard_menu_business_payment_methods to "Medios de pago",
+    MessageKey.dashboard_card_payment_methods_title to "Medios de pago",
+    MessageKey.dashboard_card_payment_methods_description to "Activa o desactiva los medios de pago que acepta tu negocio",
+    MessageKey.dashboard_card_payment_methods_cta to "Configurar pagos",
 )

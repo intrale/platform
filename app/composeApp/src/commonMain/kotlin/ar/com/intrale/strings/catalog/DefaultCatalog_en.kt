@@ -719,4 +719,20 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.dashboard_card_delivery_zone_title to "Delivery zone",
     MessageKey.dashboard_card_delivery_zone_description to "Define where you can deliver to customers",
     MessageKey.dashboard_card_delivery_zone_cta to "Configure zone",
+
+    // Payment methods
+    MessageKey.business_payment_methods_title to "Payment methods",
+    MessageKey.business_payment_methods_description to "Configure the payment methods your business accepts",
+    MessageKey.business_payment_methods_access_denied to "You don't have permission to configure payment methods",
+    MessageKey.business_payment_methods_loading to "Loading payment methods...",
+    MessageKey.business_payment_methods_missing_business to "Select a business to view its payment methods",
+    MessageKey.business_payment_methods_error to "We couldn't load the payment methods",
+    MessageKey.business_payment_methods_retry to "Retry",
+    MessageKey.business_payment_methods_section_title to "Available payment methods",
+    MessageKey.business_payment_methods_save to "Save changes",
+    MessageKey.business_payment_methods_saved to "Payment methods saved successfully",
+    MessageKey.dashboard_menu_business_payment_methods to "Payment methods",
+    MessageKey.dashboard_card_payment_methods_title to "Payment methods",
+    MessageKey.dashboard_card_payment_methods_description to "Enable or disable payment methods for your business",
+    MessageKey.dashboard_card_payment_methods_cta to "Configure payments",
 )

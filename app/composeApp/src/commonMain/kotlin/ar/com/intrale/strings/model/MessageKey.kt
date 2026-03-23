@@ -723,4 +723,20 @@ enum class MessageKey {
     dashboard_card_delivery_zone_title,
     dashboard_card_delivery_zone_description,
     dashboard_card_delivery_zone_cta,
+
+    // Medios de pago
+    business_payment_methods_title,
+    business_payment_methods_description,
+    business_payment_methods_access_denied,
+    business_payment_methods_loading,
+    business_payment_methods_missing_business,
+    business_payment_methods_error,
+    business_payment_methods_retry,
+    business_payment_methods_section_title,
+    business_payment_methods_save,
+    business_payment_methods_saved,
+    dashboard_menu_business_payment_methods,
+    dashboard_card_payment_methods_title,
+    dashboard_card_payment_methods_description,
+    dashboard_card_payment_methods_cta,
 }

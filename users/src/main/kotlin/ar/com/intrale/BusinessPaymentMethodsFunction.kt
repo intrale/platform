@@ -12,19 +12,13 @@ data class PaymentMethodRecord(
     val id: String = "",
     val name: String = "",
     val type: String = "",
-    val description: String? = null,
+    val enabled: Boolean = true,
     val isCashOnDelivery: Boolean = false,
-    val enabled: Boolean = false,
-    val integrationData: Map<String, String?> = emptyMap()
-)
-
-data class UpdatePaymentMethodsRequest(
-    val paymentMethods: List<PaymentMethodRecord> = emptyList()
+    val description: String? = null
 )
 
 class BusinessPaymentMethodsResponse(
-    val statusCode_value: Map<String, Any> = mapOf("value" to 200, "description" to "OK"),
-    val paymentMethods: List<Map<String, Any?>> = emptyList(),
+    val paymentMethods: List<Map<String, Any>> = emptyList(),
     status: HttpStatusCode = HttpStatusCode.OK
 ) : Response(statusCode = status)
 
@@ -63,7 +57,7 @@ class BusinessPaymentMethodsFunction(
     private fun handleGet(business: String): Response {
         val key = Business().apply { name = business }
         val existing = tableBusiness.getItem(key)
-        val methods = deserializePaymentMethods(existing?.paymentMethodsJson)
+        val methods = deserializeMethods(existing?.paymentMethodsJson)
         logger.debug("Retornando ${methods.size} medios de pago para negocio=$business")
         return buildResponse(methods)
     }
@@ -76,22 +70,42 @@ class BusinessPaymentMethodsFunction(
             return RequestValidationException("Debe indicar al menos un medio de pago")
         }
 
+        val invalidTypes = body.paymentMethods.filter {
+            !VALID_PAYMENT_TYPES.contains(it.type.uppercase())
+        }
+        if (invalidTypes.isNotEmpty()) {
+            return RequestValidationException(
+                "Tipos de pago invalidos: ${invalidTypes.map { it.type }.joinToString()}. " +
+                "Valores validos: ${VALID_PAYMENT_TYPES.joinToString()}"
+            )
+        }
+
         val key = Business().apply { name = business }
         val existing = tableBusiness.getItem(key)
             ?: return ExceptionResponse("Negocio no encontrado")
 
-        existing.paymentMethodsJson = gson.toJson(body.paymentMethods)
+        val records = body.paymentMethods.map { req ->
+            PaymentMethodRecord(
+                id = req.id.ifBlank { req.type.lowercase() },
+                name = req.name,
+                type = req.type.uppercase(),
+                enabled = req.enabled,
+                isCashOnDelivery = req.isCashOnDelivery,
+                description = req.description
+            )
+        }
+        existing.paymentMethodsJson = gson.toJson(records)
         tableBusiness.updateItem(existing)
 
-        logger.debug("Medios de pago actualizados para negocio=$business")
-        return buildResponse(body.paymentMethods, HttpStatusCode.OK)
+        logger.debug("Medios de pago actualizados para negocio=$business: ${records.size} metodos")
+        return buildResponse(records)
     }
 
-    private fun deserializePaymentMethods(json: String?): List<PaymentMethodRecord> {
+    private fun deserializeMethods(json: String?): List<PaymentMethodRecord> {
         if (json.isNullOrBlank()) return defaultPaymentMethods()
         return try {
             val type = object : TypeToken<List<PaymentMethodRecord>>() {}.type
-            gson.fromJson(json, type) ?: defaultPaymentMethods()
+            gson.fromJson<List<PaymentMethodRecord>>(json, type) ?: defaultPaymentMethods()
         } catch (e: Exception) {
             logger.error("Error deserializando medios de pago", e)
             defaultPaymentMethods()
@@ -99,26 +113,41 @@ class BusinessPaymentMethodsFunction(
     }
 
     private fun defaultPaymentMethods(): List<PaymentMethodRecord> = listOf(
-        PaymentMethodRecord(id = "cash", name = "Efectivo", type = "CASH", isCashOnDelivery = true, enabled = true),
-        PaymentMethodRecord(id = "transfer", name = "Transferencia", type = "TRANSFER", enabled = false),
-        PaymentMethodRecord(id = "mercadopago", name = "Mercado Pago", type = "MERCADOPAGO", enabled = false)
+        PaymentMethodRecord(id = "cash", name = "Efectivo", type = "CASH", enabled = true, isCashOnDelivery = true),
+        PaymentMethodRecord(id = "transfer", name = "Transferencia", type = "TRANSFER", enabled = true, isCashOnDelivery = false)
     )
 
     private fun buildResponse(
         methods: List<PaymentMethodRecord>,
         status: HttpStatusCode = HttpStatusCode.OK
     ): BusinessPaymentMethodsResponse {
-        val list = methods.map { pm ->
+        val methodMaps = methods.map { m ->
             mapOf(
-                "id" to pm.id,
-                "name" to pm.name,
-                "type" to pm.type,
-                "description" to pm.description,
-                "isCashOnDelivery" to pm.isCashOnDelivery,
-                "enabled" to pm.enabled,
-                "integrationData" to pm.integrationData
+                "id" to m.id,
+                "name" to m.name,
+                "type" to m.type,
+                "enabled" to m.enabled,
+                "isCashOnDelivery" to m.isCashOnDelivery,
+                "description" to (m.description ?: "")
             )
         }
-        return BusinessPaymentMethodsResponse(paymentMethods = list, status = status)
+        return BusinessPaymentMethodsResponse(paymentMethods = methodMaps, status = status)
+    }
+
+    companion object {
+        val VALID_PAYMENT_TYPES = setOf("CASH", "TRANSFER", "CARD", "DIGITAL_WALLET", "OTHER")
     }
 }
+
+data class PaymentMethodRequest(
+    val id: String = "",
+    val name: String = "",
+    val type: String = "",
+    val enabled: Boolean = true,
+    val isCashOnDelivery: Boolean = false,
+    val description: String? = null
+)
+
+data class UpdatePaymentMethodsRequest(
+    val paymentMethods: List<PaymentMethodRequest> = emptyList()
+)
