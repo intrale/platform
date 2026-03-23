@@ -740,4 +740,28 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.business_delivery_people_status_pending to "Pending",
     MessageKey.dashboard_menu_business_delivery_people to "Delivery drivers",
     MessageKey.dashboard_card_delivery_cta_manage to "Manage drivers",
+
+    // Business payment methods
+    MessageKey.business_payment_methods_title to "Payment methods",
+    MessageKey.business_payment_methods_access_denied to "You do not have permission to manage payment methods",
+    MessageKey.business_payment_methods_description to "Configure the payment methods accepted by your business",
+    MessageKey.business_payment_methods_error to "Could not load payment methods",
+    MessageKey.business_payment_methods_loading to "Loading payment methods...",
+    MessageKey.business_payment_methods_missing_business to "Select a business first",
+    MessageKey.business_payment_methods_retry to "Retry",
+    MessageKey.business_payment_methods_save to "Save",
+    MessageKey.business_payment_methods_saved to "Payment methods saved",
+    MessageKey.business_payment_methods_section_title to "Accepted methods",
+
+    // Client notifications
+    MessageKey.client_home_tab_notifications to "Alerts",
+    MessageKey.client_notifications_title to "Notifications",
+    MessageKey.client_notifications_empty to "You have no notifications yet",
+    MessageKey.client_notifications_error to "Could not load your notifications",
+    MessageKey.client_notifications_retry to "Retry",
+    MessageKey.client_notifications_mark_all_read to "Mark all as read",
+    MessageKey.client_notifications_type_order_created to "Order created",
+    MessageKey.client_notifications_type_status_changed to "Status updated",
+    MessageKey.client_notifications_type_cancelled to "Order cancelled",
+    MessageKey.client_notifications_type_business_message to "Message from the business",
 )

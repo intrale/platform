@@ -740,4 +740,28 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.business_delivery_people_status_pending to "Pendiente",
     MessageKey.dashboard_menu_business_delivery_people to "Repartidores",
     MessageKey.dashboard_card_delivery_cta_manage to "Gestionar repartidores",
+
+    // Metodos de pago del negocio
+    MessageKey.business_payment_methods_title to "Metodos de pago",
+    MessageKey.business_payment_methods_access_denied to "No tenes permisos para gestionar metodos de pago",
+    MessageKey.business_payment_methods_description to "Configura los metodos de pago aceptados por tu negocio",
+    MessageKey.business_payment_methods_error to "No pudimos cargar los metodos de pago",
+    MessageKey.business_payment_methods_loading to "Cargando metodos de pago...",
+    MessageKey.business_payment_methods_missing_business to "Selecciona un negocio primero",
+    MessageKey.business_payment_methods_retry to "Reintentar",
+    MessageKey.business_payment_methods_save to "Guardar",
+    MessageKey.business_payment_methods_saved to "Metodos de pago guardados",
+    MessageKey.business_payment_methods_section_title to "Metodos aceptados",
+
+    // Notificaciones del cliente
+    MessageKey.client_home_tab_notifications to "Alertas",
+    MessageKey.client_notifications_title to "Notificaciones",
+    MessageKey.client_notifications_empty to "No tenes notificaciones por ahora",
+    MessageKey.client_notifications_error to "No pudimos cargar tus notificaciones",
+    MessageKey.client_notifications_retry to "Reintentar",
+    MessageKey.client_notifications_mark_all_read to "Marcar todas como leidas",
+    MessageKey.client_notifications_type_order_created to "Pedido creado",
+    MessageKey.client_notifications_type_status_changed to "Estado actualizado",
+    MessageKey.client_notifications_type_cancelled to "Pedido cancelado",
+    MessageKey.client_notifications_type_business_message to "Mensaje del negocio",
 )

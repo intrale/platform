@@ -2,42 +2,57 @@ package ui.sc.client
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ShoppingBag
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import ext.client.NotificationsStore
 import ui.th.spacing
 
 enum class ClientTab {
-    HOME, ORDERS, PROFILE
+    HOME, ORDERS, NOTIFICATIONS, PROFILE
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClientBottomBar(
     activeTab: ClientTab,
     onHomeClick: () -> Unit,
     onOrdersClick: () -> Unit,
+    onNotificationsClick: () -> Unit,
     onProfileClick: () -> Unit
 ) {
     val homeLabel = Txt(MessageKey.client_home_tab_home)
     val ordersLabel = Txt(MessageKey.client_home_tab_orders)
+    val notificationsLabel = Txt(MessageKey.client_home_tab_notifications)
     val profileLabel = Txt(MessageKey.client_home_tab_profile)
+    val unreadCount by NotificationsStore.notifications.collectAsState()
+    val unread = unreadCount.count { !it.isRead }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -61,6 +76,13 @@ fun ClientBottomBar(
                 label = ordersLabel,
                 selected = activeTab == ClientTab.ORDERS,
                 onClick = onOrdersClick
+            )
+            ClientBottomItemWithBadge(
+                icon = Icons.Default.Notifications,
+                label = notificationsLabel,
+                selected = activeTab == ClientTab.NOTIFICATIONS,
+                badgeCount = unread,
+                onClick = onNotificationsClick
             )
             ClientBottomItem(
                 icon = Icons.Default.Person,
@@ -94,7 +116,47 @@ private fun ClientBottomItem(
         Text(
             text = label,
             color = tint,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ClientBottomItemWithBadge(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    badgeCount: Int,
+    onClick: () -> Unit
+) {
+    val tint = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White.copy(alpha = 0.8f)
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5),
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        BadgedBox(
+            badge = {
+                if (badgeCount > 0) {
+                    Badge {
+                        Text(text = if (badgeCount > 99) "99+" else badgeCount.toString())
+                    }
+                }
+            }
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = tint
+            )
+        }
+        Text(
+            text = label,
+            color = tint,
+            textAlign = TextAlign.Center,
             style = MaterialTheme.typography.bodyMedium
         )
     }

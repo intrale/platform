@@ -744,4 +744,28 @@ enum class MessageKey {
     business_delivery_people_status_pending,
     dashboard_menu_business_delivery_people,
     dashboard_card_delivery_cta_manage,
+
+    // Metodos de pago del negocio (fix preexistente)
+    business_payment_methods_title,
+    business_payment_methods_access_denied,
+    business_payment_methods_description,
+    business_payment_methods_error,
+    business_payment_methods_loading,
+    business_payment_methods_missing_business,
+    business_payment_methods_retry,
+    business_payment_methods_save,
+    business_payment_methods_saved,
+    business_payment_methods_section_title,
+
+    // Notificaciones del cliente
+    client_home_tab_notifications,
+    client_notifications_title,
+    client_notifications_empty,
+    client_notifications_error,
+    client_notifications_retry,
+    client_notifications_mark_all_read,
+    client_notifications_type_order_created,
+    client_notifications_type_status_changed,
+    client_notifications_type_cancelled,
+    client_notifications_type_business_message,
 }
