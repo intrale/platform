@@ -1,8 +1,10 @@
 package asdo.business
 
 import ar.com.intrale.shared.business.BusinessDeliveryPersonDTO
+import ar.com.intrale.shared.business.DeliveryPersonSummaryDTO
 import ar.com.intrale.shared.business.InviteDeliveryPersonResponseDTO
 import ar.com.intrale.shared.business.ToggleDeliveryPersonStatusResponseDTO
+import ext.business.CommGetBusinessDeliveryPeopleService
 import ext.business.CommInviteDeliveryPersonService
 import ext.business.CommListBusinessDeliveryPeopleService
 import ext.business.CommToggleDeliveryPersonStatusService
@@ -128,6 +130,45 @@ class DoInviteDeliveryPersonTest {
         )
 
         val result = sut.execute("biz-1", "dup@test.com")
+
+        assertTrue(result.isFailure)
+    }
+}
+
+// endregion
+
+// region DoGetBusinessDeliveryPeople (pre-existente, para completar cobertura)
+
+class DoGetBusinessDeliveryPeopleTest {
+
+    private fun fakeService(result: Result<List<DeliveryPersonSummaryDTO>>) =
+        object : CommGetBusinessDeliveryPeopleService {
+            override suspend fun listDeliveryPeople(businessId: String) = result
+        }
+
+    @Test
+    fun `lista exitosa retorna repartidores mapeados al dominio`() = runTest {
+        val dtos = listOf(
+            DeliveryPersonSummaryDTO(email = "a@test.com", fullName = "Ana"),
+            DeliveryPersonSummaryDTO(email = "b@test.com", fullName = "Beto")
+        )
+        val sut = DoGetBusinessDeliveryPeople(fakeService(Result.success(dtos)))
+
+        val result = sut.execute("biz-1")
+
+        assertTrue(result.isSuccess)
+        assertEquals(2, result.getOrThrow().size)
+        assertEquals("a@test.com", result.getOrThrow()[0].email)
+        assertEquals("Ana", result.getOrThrow()[0].fullName)
+    }
+
+    @Test
+    fun `error del servicio retorna failure`() = runTest {
+        val sut = DoGetBusinessDeliveryPeople(
+            fakeService(Result.failure(Exception("network error")))
+        )
+
+        val result = sut.execute("biz-1")
 
         assertTrue(result.isFailure)
     }

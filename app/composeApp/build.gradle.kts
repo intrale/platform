@@ -69,9 +69,16 @@ kover {
                         // Config de app (platform-specific)
                         "ar.com.intrale.appconfig.*",
                         // HTTP clients (requieren integration tests, no unit tests)
-                        "ext.business.ClientBusinessConfigService*",
-                        "ext.business.ClientFontsService*",
-                        "ext.business.ClientGetBusinessOrdersService*",
+                        "ext.*.Client*",
+                        // Comm interfaces (solo declaraciones, sin lógica)
+                        "ext.*.Comm*",
+                        // Modelos ext (puro data mapping, sin lógica testeable)
+                        "ext.business.FontsModelsKt*",
+                        "ext.business.FontsModels*",
+                        // Payment methods (puro data / service externo)
+                        "ext.client.PaymentMethodsService*",
+                        // Delivery comm/state services (puro interfaces y state)
+                        "ext.delivery.DeliveryStateService*",
                         // Storage (platform-specific, depende de settings nativas)
                         "ext.storage.*",
                         // Expect/actual platform
