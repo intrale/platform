@@ -1,0 +1,20 @@
+[
+  {
+    "id": "TC-01",
+    "title": "Carga exitosa del dashboard de negocio (happy path)",
+    "flow": "validate-1633-business-dashboard-load.yaml",
+    "criteria": "El dashboard muestra métricas de productos, pedidos y delivery tras login exitoso"
+  },
+  {
+    "id": "TC-02",
+    "title": "Empty state: negocio sin datos registrados",
+    "flow": "validate-1633-business-dashboard-empty.yaml",
+    "criteria": "Se muestra el estado vacío con CTA cuando el negocio no tiene actividad"
+  },
+  {
+    "id": "TC-03",
+    "title": "Error state y retry del dashboard",
+    "flow": "validate-1633-business-dashboard-retry.yaml",
+    "criteria": "Al ocurrir un error, el botón Reintentar recarga el dashboard sin crash"
+  }
+]
