@@ -30,4 +30,7 @@ object AppRuntimeConfig {
 
     val isDelivery: Boolean
         get() = appType == AppType.DELIVERY
+
+    val twoFactorEnabled: Boolean
+        get() = BuildKonfig.ENABLE_TWO_FACTOR
 }

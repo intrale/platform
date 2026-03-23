@@ -6,11 +6,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -21,14 +23,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
+import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
-import kotlinx.coroutines.launch
-import ui.th.spacing
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
+import ui.th.spacing
 
 const val TWO_FACTOR_SETUP_PATH = "/twoFactorSetup"
 
@@ -47,6 +51,21 @@ class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH) {
         val snackbarHostState = remember { SnackbarHostState() }
         val uriHandler = LocalUriHandler.current
         val clipboardManager = LocalClipboardManager.current
+
+        val loadingText = Txt(MessageKey.two_factor_setup_loading)
+        val manualTitle = Txt(MessageKey.two_factor_setup_manual_title)
+        val manualInstructions = Txt(MessageKey.two_factor_setup_manual_instructions)
+        val step1 = Txt(MessageKey.two_factor_setup_manual_step1)
+        val step2 = Txt(MessageKey.two_factor_setup_manual_step2)
+        val step3 = Txt(MessageKey.two_factor_setup_manual_step3)
+        val accountLabel = Txt(MessageKey.two_factor_setup_account_label)
+        val secretLabel = Txt(MessageKey.two_factor_setup_secret_label)
+        val copySecretLabel = Txt(MessageKey.two_factor_setup_copy_secret)
+        val copyLinkLabel = Txt(MessageKey.two_factor_setup_copy_link)
+        val findAuthenticatorLabel = Txt(MessageKey.two_factor_setup_find_authenticator)
+        val appOpenedTitle = Txt(MessageKey.two_factor_setup_app_opened_title)
+        val appOpenedInstructions = Txt(MessageKey.two_factor_setup_app_opened_instructions)
+        val goVerifyLabel = Txt(MessageKey.two_factor_setup_go_verify)
 
         LaunchedEffect(Unit) {
             logger.debug { "Invocando setup de 2FA" }
@@ -84,43 +103,96 @@ class TwoFactorSetupScreen : Screen(TWO_FACTOR_SETUP_PATH) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
             ) {
-                if (viewModel.state.showQr) {
-                    Text("QR pendiente")
-                    Text(viewModel.state.issuerAccount)
-                    Text(viewModel.state.secretMasked)
-                    Button(onClick = { clipboardManager.setText(AnnotatedString(viewModel.copySecret())) }) {
-                        Text("Copiar clave")
+                when {
+                    viewModel.loading -> {
+                        CircularProgressIndicator()
+                        Text(loadingText)
                     }
-                    Button(onClick = { clipboardManager.setText(AnnotatedString(viewModel.copyLink())) }) {
-                        Text("Copiar enlace")
-                    }
-                    Button(onClick = {
-                        try {
-                            uriHandler.openUri("https://play.google.com/store/search?q=authenticator")
-                        } catch (e: Throwable) {
-                            logger.error(e) { "No fue posible abrir la aplicación de autenticación" }
-                            coroutine.launch {
-                                snackbarHostState.showSnackbar("No fue posible abrir la aplicación de autenticación")
-                            }
+                    viewModel.state.showQr -> {
+                        Text(
+                            text = manualTitle,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = manualInstructions,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = step1,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = step2,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = step3,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "$accountLabel ${viewModel.state.issuerAccount}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "$secretLabel ${viewModel.state.secretMasked}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Button(
+                            onClick = { clipboardManager.setText(AnnotatedString(viewModel.copySecret())) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(copySecretLabel)
                         }
-                    }) {
-                        Text("Buscar autenticador")
-                    }
-                    Button(onClick = {
-                        try {
-                            uriHandler.openUri(viewModel.copyLink())
-                        } catch (e: Throwable) {
-                            logger.error(e) { "No se pudo compartir el enlace" }
-                            coroutine.launch {
-                                snackbarHostState.showSnackbar("No se pudo compartir el enlace")
-                            }
+                        OutlinedButton(
+                            onClick = { clipboardManager.setText(AnnotatedString(viewModel.copyLink())) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(copyLinkLabel)
                         }
-                    }) {
-                        Text("Compartir")
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    uriHandler.openUri("https://play.google.com/store/search?q=authenticator")
+                                } catch (e: Throwable) {
+                                    logger.error(e) { "No fue posible abrir la aplicación de autenticación" }
+                                    coroutine.launch {
+                                        snackbarHostState.showSnackbar(findAuthenticatorLabel)
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(findAuthenticatorLabel)
+                        }
+                        Button(
+                            onClick = { navigate(TWO_FACTOR_VERIFY_PATH) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(goVerifyLabel)
+                        }
+                    }
+                    viewModel.state.deepLinkTried -> {
+                        Text(
+                            text = appOpenedTitle,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = appOpenedInstructions,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Button(
+                            onClick = { navigate(TWO_FACTOR_VERIFY_PATH) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(goVerifyLabel)
+                        }
                     }
                 }
             }
         }
     }
 }
-

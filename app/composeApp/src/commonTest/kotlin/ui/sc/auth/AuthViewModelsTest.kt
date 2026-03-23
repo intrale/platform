@@ -424,6 +424,25 @@ class TwoFactorVerifyViewModelTest {
         vm.state = TwoFactorVerifyViewModel.TwoFactorVerifyUIState("123")
         assertFalse(vm.isValid())
     }
+
+    @Test
+    fun `verify con codigo invalido retorna DoTwoFactorVerifyException`() = runTest {
+        val fakeVerify = FakeTwoFactorVerify(
+            Result.failure(
+                asdo.auth.DoTwoFactorVerifyException(
+                    asdo.auth.TwoFactorVerifyStatusCode(400, "Bad Request"),
+                    "Invalid Two Factor Code"
+                )
+            )
+        )
+        val vm = TwoFactorVerifyViewModel(fakeVerify, testLoggerFactory)
+        vm.state = TwoFactorVerifyViewModel.TwoFactorVerifyUIState("000000")
+
+        val result = vm.verify()
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is asdo.auth.DoTwoFactorVerifyException)
+    }
 }
 
 // endregion
