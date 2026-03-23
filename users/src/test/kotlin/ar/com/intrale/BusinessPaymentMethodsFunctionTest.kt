@@ -102,9 +102,9 @@ class BusinessPaymentMethodsFunctionTest {
 
         val body = UpdatePaymentMethodsRequest(
             paymentMethods = listOf(
-                PaymentMethodRequest(id = "cash", name = "Efectivo", type = "CASH", enabled = true, isCashOnDelivery = true),
-                PaymentMethodRequest(id = "transfer", name = "Transferencia", type = "TRANSFER", enabled = false, isCashOnDelivery = false),
-                PaymentMethodRequest(id = "mp", name = "Mercado Pago", type = "DIGITAL_WALLET", enabled = true, isCashOnDelivery = false)
+                PaymentMethodRecord(id = "cash", name = "Efectivo", type = "CASH", enabled = true, isCashOnDelivery = true),
+                PaymentMethodRecord(id = "transfer", name = "Transferencia", type = "TRANSFER", enabled = false, isCashOnDelivery = false),
+                PaymentMethodRecord(id = "mp", name = "Mercado Pago", type = "DIGITAL_WALLET", enabled = true, isCashOnDelivery = false)
             )
         )
 
@@ -146,7 +146,7 @@ class BusinessPaymentMethodsFunctionTest {
 
         val body = UpdatePaymentMethodsRequest(
             paymentMethods = listOf(
-                PaymentMethodRequest(id = "crypto", name = "Bitcoin", type = "CRYPTO", enabled = true)
+                PaymentMethodRecord(id = "crypto", name = "Bitcoin", type = "CRYPTO", enabled = true)
             )
         )
 
