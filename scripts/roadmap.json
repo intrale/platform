@@ -407,7 +407,7 @@
     {
       "id": "SPR-0053",
       "tema": "Negocio — carry-over pedidos + config delivery",
-      "status": "planned",
+      "status": "done",
       "size": "medio",
       "stories": [
         {
@@ -415,14 +415,14 @@
           "title": "Gestion repartidores del negocio",
           "effort": "medio",
           "stream": "C",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 678,
           "title": "Config horarios y zonas entrega",
           "effort": "medio",
           "stream": "C",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 679,
@@ -436,21 +436,30 @@
           "title": "Config productos destacados promociones",
           "effort": "medio",
           "stream": "C",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 1633,
           "title": "QA E2E Home dashboard negocio",
           "effort": "medio",
           "stream": "C",
-          "status": "planned"
+          "status": "done"
         },
         {
           "issue": 1634,
           "title": "QA E2E Publicacion productos",
           "effort": "medio",
           "stream": "C",
-          "status": "planned"
+          "status": "done"
+        }
+      ],
+      "closed_at": "2026-03-23T13:55:39.804Z",
+      "velocity": 5,
+      "moved_issues": [
+        {
+          "number": 679,
+          "moved_to": "SPR-0054",
+          "reason": "PR con conflictos, reimplementar"
         }
       ]
     },
@@ -460,6 +469,14 @@
       "status": "planned",
       "size": "medio",
       "stories": [
+        {
+          "issue": 679,
+          "title": "Config medios de pago",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned",
+          "moved_from": "SPR-0053"
+        },
         {
           "issue": 717,
           "title": "Visualizacion carrito de compras",
@@ -546,19 +563,102 @@
           "status": "planned"
         }
       ]
+    },
+    {
+      "id": "SPR-0056",
+      "tema": "QA — compliance y evidencia video apps",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 1094,
+          "title": "QA video Cliente onboarding y home",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 1095,
+          "title": "QA video Cliente catalogo y carrito",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 1098,
+          "title": "QA video Negocio onboarding y dashboard",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1099,
+          "title": "QA video Negocio registro y revision",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        },
+        {
+          "issue": 1102,
+          "title": "QA video Delivery home y dashboard",
+          "effort": "simple",
+          "stream": "D",
+          "status": "planned"
+        },
+        {
+          "issue": 1103,
+          "title": "QA video Delivery perfil y pedido",
+          "effort": "simple",
+          "stream": "D",
+          "status": "planned"
+        }
+      ]
+    },
+    {
+      "id": "SPR-0057",
+      "tema": "Delivery — segunda carga features + notificaciones",
+      "status": "planned",
+      "size": "medio",
+      "stories": [
+        {
+          "issue": 741,
+          "title": "Contacto comercio desde app delivery",
+          "effort": "simple",
+          "stream": "D",
+          "status": "planned"
+        },
+        {
+          "issue": 742,
+          "title": "Integracion 2FA delivery",
+          "effort": "simple",
+          "stream": "D",
+          "status": "planned"
+        },
+        {
+          "issue": 1096,
+          "title": "QA video Cliente perfil y direcciones",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 1097,
+          "title": "QA video Cliente pedidos",
+          "effort": "simple",
+          "stream": "B",
+          "status": "planned"
+        },
+        {
+          "issue": 1100,
+          "title": "QA video Negocio categorias y productos",
+          "effort": "simple",
+          "stream": "C",
+          "status": "planned"
+        }
+      ]
     }
   ],
   "deferred": [
-    {
-      "number": 741,
-      "title": "Contacto comercio delivery",
-      "reason": "delivery"
-    },
-    {
-      "number": 742,
-      "title": "2FA delivery",
-      "reason": "delivery"
-    },
     {
       "number": 615,
       "title": "INTAKE NEGOCIO",
@@ -578,21 +678,6 @@
       "number": 681,
       "title": "INTAKE CLIENTE",
       "reason": "intake"
-    },
-    {
-      "number": 1096,
-      "title": "QA video Cliente perfil",
-      "reason": "QA"
-    },
-    {
-      "number": 1097,
-      "title": "QA video Cliente pedidos",
-      "reason": "QA"
-    },
-    {
-      "number": 1100,
-      "title": "QA video Negocio categorias",
-      "reason": "QA"
     },
     {
       "number": 1101,
