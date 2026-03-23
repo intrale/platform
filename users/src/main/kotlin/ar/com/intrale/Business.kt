@@ -18,5 +18,6 @@ class Business(
     var phone: String? = null,
     var logoUrl: String? = null,
     var schedulesJson: String? = null,
-    var deliveryZoneJson: String? = null
+    var deliveryZoneJson: String? = null,
+    var paymentMethodsJson: String? = null
 )

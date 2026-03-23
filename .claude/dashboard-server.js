@@ -4817,6 +4817,7 @@ function checkSprintPlanFreshness() {
 
 // --- Auto-stop ---
 function checkAutoStop() {
+  if (process.env.DASHBOARD_NO_AUTO_STOP === "1") return;
   const data = collectData();
   if (data.activeSessions === 0 && data.idleSessions === 0) {
     const elapsed = Date.now() - lastActivityTs;

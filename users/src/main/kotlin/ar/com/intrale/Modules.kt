@@ -277,8 +277,12 @@ val appModule = DI.Module("appModule") {
         singleton { BusinessDeliveryZoneFunction(instance(), instance(), instance(), instance(), instance()) }
     }
 
-    bind<Function> (tag="business/delivery-people") {
-        singleton { BusinessDeliveryPeopleFunction(instance(), instance(), instance(), instance()) }
+    bind<Function> (tag="business/payment-methods") {
+        singleton { BusinessPaymentMethodsFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="client/payment-methods") {
+        singleton { ClientPaymentMethodsFunction(instance(), instance(), instance()) }
     }
 }
 
