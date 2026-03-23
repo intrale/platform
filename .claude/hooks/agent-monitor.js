@@ -439,6 +439,32 @@ async function syncSprintPlanWithGitHub() {
     const plan = loadPlan();
     if (!plan) return;
 
+    // Limpiar agent-registry: quitar sesiones de sprints anteriores
+    try {
+        const regPath = path.join(HOOKS_DIR, "agent-registry.json");
+        if (fs.existsSync(regPath)) {
+            const reg = JSON.parse(fs.readFileSync(regPath, "utf8"));
+            const agents = reg.agents || {};
+            const sprintIssues = new Set([
+                ...(plan.agentes || []).map(a => String(a.issue)),
+                ...(plan._queue || []).map(a => String(a.issue)),
+                ...(plan._completed || []).map(a => String(a.issue)),
+                ...(plan._incomplete || []).map(a => String(a.issue)),
+            ]);
+            let cleaned = 0;
+            for (const [id, v] of Object.entries(agents)) {
+                const m = (v.branch || "").match(/(\d+)/);
+                const issue = m ? m[1] : null;
+                if (!issue || !sprintIssues.has(issue)) { delete agents[id]; cleaned++; }
+            }
+            if (cleaned > 0) {
+                reg.agents = agents;
+                fs.writeFileSync(regPath, JSON.stringify(reg, null, 2));
+                log("syncSprintPlan: registry limpiado — " + cleaned + " sesiones de sprints anteriores removidas");
+            }
+        }
+    } catch (e) { /* fail-open */ }
+
     const agentes = Array.isArray(plan.agentes) ? plan.agentes : [];
     const incomplete = Array.isArray(plan._incomplete) ? plan._incomplete : [];
     const completed = Array.isArray(plan._completed) ? plan._completed : [];
