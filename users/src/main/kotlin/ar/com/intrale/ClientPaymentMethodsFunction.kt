@@ -8,7 +8,6 @@ import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable
 
 class ClientPaymentMethodsResponse(
     val paymentMethods: List<Map<String, Any>> = emptyList(),
-    val statusCode: Map<String, Any> = mapOf("code" to 200, "description" to "OK"),
     status: HttpStatusCode = HttpStatusCode.OK
 ) : Response(statusCode = status)
 
