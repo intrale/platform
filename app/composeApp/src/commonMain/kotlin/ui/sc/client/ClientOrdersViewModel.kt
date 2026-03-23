@@ -7,14 +7,17 @@ import androidx.compose.runtime.setValue
 import asdo.client.ClientOrder
 import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderStatus
+import asdo.client.RepeatOrderResult
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
+import asdo.client.ToDoRepeatOrder
 import ext.client.toClientException
 import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
+import ui.util.formatPrice
 
 enum class ClientOrdersStatus { Idle, Loading, Loaded, Empty, Error }
 
@@ -25,12 +28,16 @@ data class ClientOrdersUiState(
     val selectedFilter: ClientOrderStatus? = null,
     val selectedOrder: ClientOrderDetail? = null,
     val loadingDetail: Boolean = false,
-    val detailError: String? = null
+    val detailError: String? = null,
+    val repeatOrderLoading: Boolean = false,
+    val repeatOrderResult: RepeatOrderResult? = null,
+    val repeatOrderError: String? = null
 )
 
 class ClientOrdersViewModel(
     private val getClientOrders: ToDoGetClientOrders = DIManager.di.direct.instance(),
     private val getClientOrderDetail: ToDoGetClientOrderDetail = DIManager.di.direct.instance(),
+    private val repeatOrder: ToDoRepeatOrder = DIManager.di.direct.instance(),
     loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
@@ -102,5 +109,38 @@ class ClientOrdersViewModel(
 
     fun clearError() {
         state = state.copy(errorMessage = null)
+    }
+
+    suspend fun repeatOrderFromDetail(order: ClientOrderDetail) {
+        state = state.copy(repeatOrderLoading = true, repeatOrderResult = null, repeatOrderError = null)
+        repeatOrder.execute(order)
+            .onSuccess { result ->
+                if (result.addedItems.isNotEmpty()) {
+                    ClientCartStore.clear()
+                    result.addedItems.forEach { item ->
+                        val product = ClientProduct(
+                            id = item.id!!,
+                            name = item.name,
+                            priceLabel = formatPrice(item.unitPrice),
+                            emoji = "",
+                            unitPrice = item.unitPrice,
+                            isAvailable = true
+                        )
+                        ClientCartStore.setQuantity(product, item.quantity)
+                    }
+                }
+                state = state.copy(repeatOrderLoading = false, repeatOrderResult = result)
+            }
+            .onFailure { throwable ->
+                logger.error(throwable) { "Error al repetir pedido ${order.id}" }
+                state = state.copy(
+                    repeatOrderLoading = false,
+                    repeatOrderError = throwable.message ?: "Error al repetir pedido"
+                )
+            }
+    }
+
+    fun clearRepeatOrderResult() {
+        state = state.copy(repeatOrderResult = null, repeatOrderError = null)
     }
 }

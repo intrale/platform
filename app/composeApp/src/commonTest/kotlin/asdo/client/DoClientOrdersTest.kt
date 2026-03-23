@@ -43,6 +43,24 @@ private class FakeClientOrdersService(
     override suspend fun fetchOrderDetail(orderId: String): Result<ClientOrderDetailDTO> = detailResult
 }
 
+private val sampleDeliveredOrder = ClientOrderDetail(
+    id = "ord-1",
+    publicId = "PUB-001",
+    shortCode = "SC01",
+    businessName = "Tienda",
+    status = ClientOrderStatus.DELIVERED,
+    createdAt = "2025-01-01",
+    promisedAt = null,
+    total = 160.0,
+    itemCount = 3,
+    items = listOf(
+        ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
+        ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0),
+        ClientOrderItem(id = null, name = "Producto sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0)
+    ),
+    address = null
+)
+
 // region DoGetClientOrders
 
 class DoGetClientOrdersTest {
@@ -120,6 +138,77 @@ class DoGetClientOrderDetailTest {
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is ClientExceptionResponse)
+    }
+}
+
+// endregion
+
+// region DoRepeatOrder
+
+class DoRepeatOrderTest {
+
+    @Test
+    fun `repetir pedido con items con ID agrega todos al resultado`() = runTest {
+        val orderWithAllIds = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
+                ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            )
+        )
+        val sut = DoRepeatOrder()
+
+        val result = sut.execute(orderWithAllIds)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(2, repeatResult.addedItems.size)
+        assertTrue(repeatResult.skippedItems.isEmpty())
+        assertEquals("item-1", repeatResult.addedItems[0].id)
+        assertEquals("item-2", repeatResult.addedItems[1].id)
+    }
+
+    @Test
+    fun `repetir pedido omite items sin ID`() = runTest {
+        val sut = DoRepeatOrder()
+
+        val result = sut.execute(sampleDeliveredOrder)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(2, repeatResult.addedItems.size)
+        assertEquals(1, repeatResult.skippedItems.size)
+        assertEquals("Producto sin ID", repeatResult.skippedItems[0].name)
+    }
+
+    @Test
+    fun `repetir pedido con todos los items sin ID retorna lista vacia de agregados`() = runTest {
+        val orderWithNoIds = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = null, name = "Sin ID 1", quantity = 1, unitPrice = 10.0, subtotal = 10.0),
+                ClientOrderItem(id = null, name = "Sin ID 2", quantity = 2, unitPrice = 20.0, subtotal = 40.0)
+            )
+        )
+        val sut = DoRepeatOrder()
+
+        val result = sut.execute(orderWithNoIds)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertTrue(repeatResult.addedItems.isEmpty())
+        assertEquals(2, repeatResult.skippedItems.size)
+    }
+
+    @Test
+    fun `repetir pedido vacio retorna listas vacias`() = runTest {
+        val emptyOrder = sampleDeliveredOrder.copy(items = emptyList())
+        val sut = DoRepeatOrder()
+
+        val result = sut.execute(emptyOrder)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertTrue(repeatResult.addedItems.isEmpty())
+        assertTrue(repeatResult.skippedItems.isEmpty())
     }
 }
 

@@ -34,3 +34,27 @@ class DoGetClientOrderDetail(
         throw throwable.toClientException()
     }
 }
+
+class DoRepeatOrder : ToDoRepeatOrder {
+
+    private val logger = LoggerFactory.default.newLogger<DoRepeatOrder>()
+
+    override suspend fun execute(order: ClientOrderDetail): Result<RepeatOrderResult> = runCatching {
+        logger.info { "Repitiendo pedido ${order.id} con ${order.items.size} items" }
+        val addedItems = mutableListOf<ClientOrderItem>()
+        val skippedItems = mutableListOf<ClientOrderItem>()
+        order.items.forEach { item ->
+            if (item.id != null) {
+                addedItems.add(item)
+            } else {
+                logger.info { "Item '${item.name}' sin ID, omitido" }
+                skippedItems.add(item)
+            }
+        }
+        logger.info { "Pedido repetido: ${addedItems.size} agregados, ${skippedItems.size} omitidos" }
+        RepeatOrderResult(addedItems = addedItems, skippedItems = skippedItems)
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al repetir pedido ${order.id}" }
+        throw throwable.toClientException()
+    }
+}

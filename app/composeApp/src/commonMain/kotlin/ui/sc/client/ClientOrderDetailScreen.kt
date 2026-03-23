@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +75,10 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
         val businessContactTitle = Txt(MessageKey.client_orders_detail_business_contact_title)
         val businessContactButton = Txt(MessageKey.client_orders_detail_business_contact_button)
         val noContactAvailable = Txt(MessageKey.client_orders_detail_no_contact_available)
+        val repeatButton = Txt(MessageKey.client_orders_detail_repeat_button)
+        val repeatSuccess = Txt(MessageKey.client_orders_detail_repeat_success)
+        val repeatPartial = Txt(MessageKey.client_orders_detail_repeat_partial)
+        val repeatNoItems = Txt(MessageKey.client_orders_detail_repeat_no_items)
 
         val statusLabels = remember {
             emptyMap<asdo.client.ClientOrderStatus, String>()
@@ -113,6 +118,28 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
         LaunchedEffect(state.detailError) {
             state.detailError?.let {
                 snackbarHostState.showSnackbar(it)
+            }
+        }
+
+        LaunchedEffect(state.repeatOrderResult) {
+            state.repeatOrderResult?.let { result ->
+                val message = when {
+                    result.addedItems.isEmpty() -> repeatNoItems
+                    result.skippedItems.isNotEmpty() -> repeatPartial
+                    else -> repeatSuccess
+                }
+                snackbarHostState.showSnackbar(message)
+                viewModel.clearRepeatOrderResult()
+                if (result.addedItems.isNotEmpty()) {
+                    navigate(CLIENT_CART_PATH)
+                }
+            }
+        }
+
+        LaunchedEffect(state.repeatOrderError) {
+            state.repeatOrderError?.let {
+                snackbarHostState.showSnackbar(it)
+                viewModel.clearRepeatOrderResult()
             }
         }
 
@@ -180,9 +207,16 @@ class ClientOrderDetailScreen : Screen(CLIENT_ORDER_DETAIL_PATH) {
                         businessContactTitle = businessContactTitle,
                         businessContactButton = businessContactButton,
                         noContactAvailable = noContactAvailable,
+                        repeatButton = repeatButton,
                         statusLabels = resolvedStatusLabels,
                         padding = padding,
-                        onBackClick = { goBack() }
+                        repeatOrderLoading = state.repeatOrderLoading,
+                        onBackClick = { goBack() },
+                        onRepeatOrder = {
+                            coroutineScope.launch {
+                                viewModel.repeatOrderFromDetail(detail)
+                            }
+                        }
                     )
                 }
             }
@@ -206,9 +240,12 @@ private fun OrderDetailContent(
     businessContactTitle: String,
     businessContactButton: String,
     noContactAvailable: String,
+    repeatButton: String,
     statusLabels: Map<asdo.client.ClientOrderStatus, String>,
     padding: PaddingValues,
-    onBackClick: () -> Unit
+    repeatOrderLoading: Boolean,
+    onBackClick: () -> Unit,
+    onRepeatOrder: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -474,6 +511,24 @@ private fun OrderDetailContent(
                             .fillMaxWidth()
                             .padding(MaterialTheme.spacing.x4)
                     )
+                }
+            }
+        }
+
+        if (detail.status == asdo.client.ClientOrderStatus.DELIVERED) {
+            item {
+                Button(
+                    onClick = onRepeatOrder,
+                    enabled = !repeatOrderLoading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (repeatOrderLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(end = MaterialTheme.spacing.x2),
+                            strokeWidth = MaterialTheme.spacing.x0_5
+                        )
+                    }
+                    Text(text = repeatButton)
                 }
             }
         }

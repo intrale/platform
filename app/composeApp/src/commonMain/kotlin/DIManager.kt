@@ -22,9 +22,11 @@ import asdo.client.DoGetClientProfile
 import asdo.client.DoGetPaymentMethods
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
+import asdo.client.DoRepeatOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoRepeatOrder
 import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
@@ -471,6 +473,7 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
+    bindSingleton<ToDoRepeatOrder> { DoRepeatOrder() }
     bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
 }
 
