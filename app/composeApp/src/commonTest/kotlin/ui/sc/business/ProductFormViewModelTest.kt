@@ -44,7 +44,9 @@ private class ProductFormFakeCategories(
 private fun sampleProduct(
     id: String = "new-id",
     isAvailable: Boolean = true,
-    stockQuantity: Int? = null
+    stockQuantity: Int? = null,
+    isFeatured: Boolean = false,
+    promotionPrice: Double? = null
 ) = ProductDTO(
     id = id,
     name = "Producto",
@@ -54,7 +56,9 @@ private fun sampleProduct(
     categoryId = "fruta",
     status = ProductStatus.Draft,
     isAvailable = isAvailable,
-    stockQuantity = stockQuantity
+    stockQuantity = stockQuantity,
+    isFeatured = isFeatured,
+    promotionPrice = promotionPrice
 )
 
 class ProductFormViewModelTest {
@@ -133,5 +137,77 @@ class ProductFormViewModelTest {
         val result = viewModel.save("biz-1")
         assertTrue(result.isSuccess)
         assertFalse(viewModel.uiState.isAvailable)
+    }
+
+    @Test
+    fun `destacado se aplica correctamente desde draft`() = runTest {
+        val fake = FakeProductCrud()
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        viewModel.applyDraft(
+            ProductDraft(
+                id = "p2",
+                name = "Manzana",
+                basePrice = 1200.0,
+                unit = "kg",
+                categoryId = "fruta",
+                isFeatured = true
+            )
+        )
+        assertTrue(viewModel.uiState.isFeatured)
+    }
+
+    @Test
+    fun `precio promocional se aplica correctamente desde draft`() = runTest {
+        val fake = FakeProductCrud()
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        viewModel.applyDraft(
+            ProductDraft(
+                id = "p3",
+                name = "Manzana",
+                basePrice = 1200.0,
+                unit = "kg",
+                categoryId = "fruta",
+                promotionPrice = 900.0
+            )
+        )
+        assertEquals("900.0", viewModel.uiState.promotionPrice)
+    }
+
+    @Test
+    fun `updateFeatured cambia el estado correctamente`() = runTest {
+        val fake = FakeProductCrud()
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        assertFalse(viewModel.uiState.isFeatured)
+        viewModel.updateFeatured(true)
+        assertTrue(viewModel.uiState.isFeatured)
+        viewModel.updateFeatured(false)
+        assertFalse(viewModel.uiState.isFeatured)
+    }
+
+    @Test
+    fun `updatePromotionPrice actualiza el campo correctamente`() = runTest {
+        val fake = FakeProductCrud()
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        viewModel.updatePromotionPrice("850.50")
+        assertEquals("850.50", viewModel.uiState.promotionPrice)
+    }
+
+    @Test
+    fun `guardado exitoso incluye destacado y precio promocional`() = runTest {
+        val saved = sampleProduct(isFeatured = true, promotionPrice = 900.0)
+        val fake = FakeProductCrud(createResult = Result.success(saved))
+        val viewModel = ProductFormViewModel(fake, fake, fake, fake, ProductFormFakeCategories())
+        viewModel.uiState = viewModel.uiState.copy(
+            name = "Manzana roja",
+            basePrice = "1200",
+            unit = "kg",
+            categoryId = "fruta",
+            isFeatured = true,
+            promotionPrice = "900"
+        )
+        val result = viewModel.save("biz-1")
+        assertTrue(result.isSuccess)
+        assertTrue(viewModel.uiState.isFeatured)
+        assertEquals("900.0", viewModel.uiState.promotionPrice)
     }
 }
