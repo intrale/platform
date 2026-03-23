@@ -114,6 +114,7 @@ class BusinessDeliveryPeopleScreen : Screen(BUSINESS_DELIVERY_PEOPLE_PATH) {
         }
 
         if (state.showInviteDialog) {
+            val inviteSuccessMessage = Txt(MessageKey.business_delivery_people_invite_success)
             InviteDialog(
                 email = state.inviteEmail,
                 error = state.inviteError,
@@ -123,7 +124,7 @@ class BusinessDeliveryPeopleScreen : Screen(BUSINESS_DELIVERY_PEOPLE_PATH) {
                     coroutineScope.launch {
                         val result = viewModel.invite()
                         result.onSuccess {
-                            snackbarHostState.showSnackbar(Txt(MessageKey.business_delivery_people_invite_success))
+                            snackbarHostState.showSnackbar(inviteSuccessMessage)
                         }
                     }
                 },
