@@ -37,25 +37,25 @@ class WcagContrastTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `onSurface sobre surface (light) cumple WCAG AA`() {
+    fun `onSurface sobre surface light cumple WCAG AA`() {
         val ratio = contrastRatio(onSurfaceLight, surfaceLight)
         assertTrue(ratio >= 4.5, "onSurface/surface light: $ratio (esperado >= 4.5:1)")
     }
 
     @Test
-    fun `onBackground sobre background (light) cumple WCAG AA`() {
+    fun `onBackground sobre background light cumple WCAG AA`() {
         val ratio = contrastRatio(onBackgroundLight, backgroundLight)
         assertTrue(ratio >= 4.5, "onBackground/background light: $ratio (esperado >= 4.5:1)")
     }
 
     @Test
-    fun `onSurfaceVariant sobre surface (light) cumple WCAG AA`() {
+    fun `onSurfaceVariant sobre surface light cumple WCAG AA`() {
         val ratio = contrastRatio(onSurfaceVariantLight, surfaceLight)
         assertTrue(ratio >= 4.5, "onSurfaceVariant/surface light: $ratio (esperado >= 4.5:1)")
     }
 
     @Test
-    fun `primary sobre surface (light) cumple WCAG AA`() {
+    fun `primary sobre surface light cumple WCAG AA`() {
         val ratio = contrastRatio(primaryLight, surfaceLight)
         assertTrue(ratio >= 4.5, "primary/surface light: $ratio (esperado >= 4.5:1)")
     }
@@ -65,19 +65,19 @@ class WcagContrastTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `onSurface sobre surface (dark) cumple WCAG AA`() {
+    fun `onSurface sobre surface dark cumple WCAG AA`() {
         val ratio = contrastRatio(onSurfaceDark, surfaceDark)
         assertTrue(ratio >= 4.5, "onSurface/surface dark: $ratio (esperado >= 4.5:1)")
     }
 
     @Test
-    fun `onSurfaceVariant sobre surface (dark) cumple WCAG AA`() {
+    fun `onSurfaceVariant sobre surface dark cumple WCAG AA`() {
         val ratio = contrastRatio(onSurfaceVariantDark, surfaceDark)
         assertTrue(ratio >= 4.5, "onSurfaceVariant/surface dark: $ratio (esperado >= 4.5:1)")
     }
 
     @Test
-    fun `primary sobre surface (dark) cumple WCAG AA`() {
+    fun `primary sobre surface dark cumple WCAG AA`() {
         val ratio = contrastRatio(primaryDark, surfaceDark)
         assertTrue(ratio >= 4.5, "primary/surface dark: $ratio (esperado >= 4.5:1)")
     }
