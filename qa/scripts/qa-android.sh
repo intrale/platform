@@ -40,6 +40,7 @@ QA_SHARDS=${QA_SHARDS:-1}           # 1 (liviano) o 3 (legacy paralelo)
 QA_AVD_CORES=${QA_AVD_CORES:-2}     # Cores máximos por AVD
 QA_NO_AFFINITY=${QA_NO_AFFINITY:-0} # 0=usar affinity (default), 1=desabilitar
 QA_NARRATION=${QA_NARRATION:-true}  # true=generar narracion TTS (requiere OPENAI_API_KEY), false=solo video mudo
+QA_FLAVOR=${QA_FLAVOR:-client}      # client | business | delivery — flavor del APK a compilar e instalar
 
 # Calcular memoria según modo
 if [ "$QA_SHARDS" = "3" ]; then
@@ -47,6 +48,25 @@ if [ "$QA_SHARDS" = "3" ]; then
 else
     QA_AVD_MEMORY=${QA_AVD_MEMORY:-1536}  # Default liviano: 1536MB
 fi
+
+# Mapear QA_FLAVOR → tarea Gradle, directorio APK y appId filter para flows Maestro
+case "$QA_FLAVOR" in
+  business)
+    GRADLE_APK_TASK=":app:composeApp:assembleBusinessDebug"
+    APK_OUTPUT_DIR="business"
+    APP_ID_FILTER="com.intrale.app.business"
+    ;;
+  delivery)
+    GRADLE_APK_TASK=":app:composeApp:assembleDeliveryDebug"
+    APK_OUTPUT_DIR="delivery"
+    APP_ID_FILTER="com.intrale.app.delivery"
+    ;;
+  *)  # client (default)
+    GRADLE_APK_TASK=":app:composeApp:assembleClientDebug"
+    APK_OUTPUT_DIR="client"
+    APP_ID_FILTER="com.intrale.app.client"
+    ;;
+esac
 
 # Configuración de múltiples AVDs y puertos (soporta 1 a 3 shards)
 declare -A AVD_PORTS=(
@@ -87,6 +107,7 @@ export PATH="${HOME}/.maestro/bin:${ANDROID_SDK}/platform-tools:${PATH}"
 
 echo "=== QA Android — Maestro E2E con Video ==="
 echo "  Modo: $([ "$QA_SHARDS" = "1" ] && echo "LIVIANO (1 shard)" || echo "PARALELO ($QA_SHARDS shards)")"
+echo "  Flavor: ${QA_FLAVOR} (appId: ${APP_ID_FILTER})"
 echo "  Configuración: ${QA_AVD_CORES} cores, ${QA_AVD_MEMORY}MB RAM por AVD"
 if [ "$QA_NO_AFFINITY" = "0" ]; then
     echo "  CPU affinity: ON (cores 4-7 para emulador, 0-3 para agentes)"
@@ -246,14 +267,14 @@ echo "  Maestro $MAESTRO_VER (con soporte --shards)"
 
 # ── 4. Build APK ────────────────────────────────────────────
 echo ""
-echo "[4/9] Compilando APK client debug..."
+echo "[4/9] Compilando APK ${QA_FLAVOR} debug..."
 cd "$PROJECT_ROOT"
-./gradlew :app:composeApp:assembleClientDebug --no-daemon 2>&1 | tail -5
+./gradlew "$GRADLE_APK_TASK" --no-daemon 2>&1 | tail -5
 
 # ── 5. Instalar APK en todos los AVDs ─────────────────────
-APK_PATH=$(find "${PROJECT_ROOT}/app/composeApp/build/outputs/apk/client/debug" -name "*.apk" -type f 2>/dev/null | head -1)
+APK_PATH=$(find "${PROJECT_ROOT}/app/composeApp/build/outputs/apk/${APK_OUTPUT_DIR}/debug" -name "*.apk" -type f 2>/dev/null | head -1)
 if [ -z "$APK_PATH" ]; then
-    echo "ERROR: No se encontro APK en build/outputs/apk/client/debug/"
+    echo "ERROR: No se encontro APK en build/outputs/apk/${APK_OUTPUT_DIR}/debug/"
     exit 1
 fi
 
@@ -272,6 +293,28 @@ echo "  ✓ APK instalado en todos los AVDs"
 
 # ── 6. Crear directorio de recordings ───────────────────────
 mkdir -p "$RECORDINGS_DIR"
+
+# ── 6.5. Filtrar flows Maestro por flavor ───────────────────────
+# Solo ejecuta flows cuyo appId coincide con el flavor compilado,
+# evitando fallos por apps no instaladas en el emulador.
+echo ""
+echo "[6.5/9] Filtrando flows para flavor '${QA_FLAVOR}' (appId: ${APP_ID_FILTER})..."
+FILTERED_FLOWS_DIR="${RECORDINGS_DIR}/flows-${QA_FLAVOR}"
+mkdir -p "$FILTERED_FLOWS_DIR"
+FLOWS_COPIED=0
+for _flow_file in "${MAESTRO_DIR}"/*.yaml; do
+    [ -f "$_flow_file" ] || continue
+    if grep -q "^appId: ${APP_ID_FILTER}" "$_flow_file" 2>/dev/null; then
+        cp "$_flow_file" "$FILTERED_FLOWS_DIR/"
+        FLOWS_COPIED=$((FLOWS_COPIED+1))
+    fi
+done
+if [ "$FLOWS_COPIED" -gt 0 ]; then
+    echo "  ✓ ${FLOWS_COPIED} flows filtrados para ${QA_FLAVOR}"
+    MAESTRO_DIR="$FILTERED_FLOWS_DIR"
+else
+    echo "  ⚠ Sin flows con appId '${APP_ID_FILTER}' — ejecutando todos los flows disponibles"
+fi
 
 # ── 7. Ejecutar Maestro con shards (distribución paralela si QA_SHARDS > 1) ────
 echo ""

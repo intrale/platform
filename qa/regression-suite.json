@@ -46,6 +46,20 @@
       "tags": ["business", "dashboard"]
     },
     {
+      "id": "REG-06b",
+      "title": "Dashboard de negocio — empty state",
+      "app": "business",
+      "flow": "validate-1633-business-dashboard-empty.yaml",
+      "tags": ["business", "dashboard", "empty-state"]
+    },
+    {
+      "id": "REG-06c",
+      "title": "Dashboard de negocio — error y retry",
+      "app": "business",
+      "flow": "validate-1633-business-dashboard-retry.yaml",
+      "tags": ["business", "dashboard", "error", "retry"]
+    },
+    {
       "id": "REG-07",
       "title": "Navegación principal",
       "app": "client",
