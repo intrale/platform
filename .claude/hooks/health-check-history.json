@@ -1,3 +1,32 @@
 {
+<<<<<<< Updated upstream
   "problems": []
+=======
+  "problems": [
+    {
+      "id": "orphaned_approvers",
+      "category": "zombie",
+      "occurrences": 1,
+      "first_seen": "2026-03-22T21:46:17.107Z",
+      "last_seen": "2026-03-22T21:46:17.107Z",
+      "resolved_at": "2026-03-22T21:48:12.014Z",
+      "auto_fixed": true,
+      "github_issue": null,
+      "last_detail": "4 approvers activos (máximo saludable: 3) → 0 eliminados",
+      "last_notified_at": null
+    },
+    {
+      "id": "settings_corrupt",
+      "category": "corrupt_config",
+      "occurrences": 7,
+      "first_seen": "2026-03-23T01:24:44.190Z",
+      "last_seen": "2026-03-23T13:30:07.462Z",
+      "resolved_at": null,
+      "auto_fixed": false,
+      "github_issue": null,
+      "last_detail": "settings.local.json: JSON inválido",
+      "last_notified_at": null
+    }
+  ]
+>>>>>>> Stashed changes
 }

@@ -1,5 +1,6 @@
 {
   "commander": {
+<<<<<<< Updated upstream
     "consecutivePasses": 31,
     "currentInterval": 600000,
     "lastRun": 1774208148598
@@ -28,5 +29,35 @@
     "consecutivePasses": 31,
     "currentInterval": 600000,
     "lastRun": 1774208148598
+=======
+    "consecutivePasses": 5,
+    "currentInterval": 600000,
+    "lastRun": 1774272606184
+  },
+  "approvers": {
+    "consecutivePasses": 5,
+    "currentInterval": 600000,
+    "lastRun": 1774272606184
+  },
+  "telegram": {
+    "consecutivePasses": 5,
+    "currentInterval": 600000,
+    "lastRun": 1774272606184
+  },
+  "settings": {
+    "consecutivePasses": 0,
+    "currentInterval": 120000,
+    "lastRun": 1774272606184
+  },
+  "hooks": {
+    "consecutivePasses": 7,
+    "currentInterval": 600000,
+    "lastRun": 1774272606184
+  },
+  "worktrees": {
+    "consecutivePasses": 7,
+    "currentInterval": 600000,
+    "lastRun": 1774272606184
+>>>>>>> Stashed changes
   }
 }

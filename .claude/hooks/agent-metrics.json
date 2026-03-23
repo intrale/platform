@@ -1,4 +1,5 @@
 {
+<<<<<<< Updated upstream
   "updated_ts": "2026-03-22T19:31:04Z",
   "sessions": [
     {
@@ -298,6 +299,32 @@
       "tokens_output": null,
       "tokens_total": null,
       "tokens_estimated": 13510
+=======
+  "updated_ts": "2026-03-23T13:26:45Z",
+  "sessions": [
+    {
+      "id": "27c78c22",
+      "sprint_id": "SPR-0053",
+      "agent_name": "Agente (fix-drive-oauth-spri)",
+      "branch": "agent/fix-drive-oauth-sprint-report",
+      "started_ts": "2026-03-23T12:48:32Z",
+      "ended_ts": "2026-03-23T13:26:45Z",
+      "duration_min": 38,
+      "tool_counts": {
+        "Bash": 17,
+        "Edit": 1,
+        "Agent": 1
+      },
+      "total_tool_calls": 19,
+      "modified_files_count": 1,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 43895
+>>>>>>> Stashed changes
     }
   ]
 }

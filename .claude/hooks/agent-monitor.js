@@ -418,6 +418,120 @@ async function supervisePRs() {
     }
 }
 
+// ─── Sync sprint-plan con GitHub (issue state) ──────────────────────────────
+
+const SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 min — sincronizar con GitHub
+let _syncInterval = null;
+
+/**
+ * Sincroniza sprint-plan.json con el estado real de issues en GitHub.
+ * Para cada agente en `agentes` y `_incomplete`, verifica si el issue está CLOSED.
+ * Si está CLOSED y no está en `_completed`, lo mueve con result "ok".
+ * También registra el PR number si hay un PR mergeado para esa branch.
+ */
+async function syncSprintPlanWithGitHub() {
+    const ghCmd = findGhCliForMonitor();
+    if (!ghCmd) {
+        log("syncSprintPlan: gh CLI no disponible, saltando sync");
+        return;
+    }
+
+    const plan = loadPlan();
+    if (!plan) return;
+
+    const agentes = Array.isArray(plan.agentes) ? plan.agentes : [];
+    const incomplete = Array.isArray(plan._incomplete) ? plan._incomplete : [];
+    const completed = Array.isArray(plan._completed) ? plan._completed : [];
+
+    // Recopilar todos los issues a verificar (agentes activos + incompletos)
+    const toCheck = [
+        ...agentes.map(ag => ({ ag, source: "agentes" })),
+        ...incomplete.map(ag => ({ ag, source: "_incomplete" }))
+    ];
+
+    if (toCheck.length === 0) return;
+
+    // Set de issues ya completados para evitar duplicados
+    const completedIssues = new Set(completed.map(ag => ag.issue));
+
+    let planDirty = false;
+    const movedIssues = [];
+
+    for (const { ag, source } of toCheck) {
+        const issueNum = ag.issue;
+        if (!issueNum || completedIssues.has(issueNum)) continue;
+
+        // Verificar estado del issue en GitHub
+        let issueState;
+        try {
+            issueState = execSync(
+                '"' + ghCmd + '" issue view ' + issueNum + ' --repo intrale/platform --json state -q ".state"',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            ).trim();
+        } catch (e) {
+            // Issue no encontrado o error de red — saltear
+            continue;
+        }
+
+        if (issueState !== "CLOSED") continue;
+
+        // Issue cerrado — verificar si hay PR mergeado para la branch del agente
+        const branch = "agent/" + issueNum + "-" + ag.slug;
+        let prNumber = null;
+        try {
+            const prOut = execSync(
+                '"' + ghCmd + '" pr list --repo intrale/platform --state merged --head ' + branch + ' --json number -q ".[0].number"',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            ).trim();
+            if (prOut && !isNaN(parseInt(prOut, 10))) {
+                prNumber = parseInt(prOut, 10);
+            }
+        } catch (e) {
+            // No hay PR o error — continuar sin PR number
+        }
+
+        // Mover a _completed
+        if (!Array.isArray(plan._completed)) plan._completed = [];
+
+        const entry = Object.assign({}, ag);
+        entry.resultado = "ok";
+        entry.completed_at = new Date().toISOString();
+        entry.synced_from_github = true;
+        if (prNumber) entry.pr = prNumber;
+
+        plan._completed.push(entry);
+        completedIssues.add(issueNum);
+        movedIssues.push("#" + issueNum + (prNumber ? " (PR #" + prNumber + ")" : ""));
+
+        // Remover de la fuente original
+        if (source === "agentes") {
+            const idx = plan.agentes.findIndex(a => a.issue === issueNum);
+            if (idx !== -1) plan.agentes.splice(idx, 1);
+        } else if (source === "_incomplete") {
+            const idx = plan._incomplete.findIndex(a => a.issue === issueNum);
+            if (idx !== -1) plan._incomplete.splice(idx, 1);
+        }
+
+        planDirty = true;
+    }
+
+    if (planDirty) {
+        try {
+            require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor-sync");
+        } catch (e) {
+            log("syncSprintPlan: error guardando sprint-plan.json: " + e.message);
+        }
+
+        log("syncSprintPlan: sincronizados " + movedIssues.length + " issues cerrados → _completed: " + movedIssues.join(", "));
+
+        await notify(
+            "🔄 <b>Sprint-plan sincronizado con GitHub</b>\n" +
+            "Issues cerrados movidos a _completed:\n" +
+            movedIssues.map(i => "• " + i).join("\n"),
+            true
+        );
+    }
+}
 
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
 
@@ -818,6 +932,10 @@ function startAgentMonitor(plan, opts) {
     _prLastActivity = {};
     log("PR supervision iniciada: polling cada " + (PR_POLL_INTERVAL_MS / 60000) + " min");
 
+    // Sync sprint-plan con GitHub: detectar issues cerrados por fuera del watcher
+    _syncInterval = setInterval(syncSprintPlanWithGitHub, SYNC_INTERVAL_MS);
+    log("GitHub sync iniciado: polling cada " + (SYNC_INTERVAL_MS / 60000) + " min");
+
     return { watching: !!_pollInterval, guardian: !!_guardianInterval };
 }
 
@@ -828,6 +946,7 @@ function stopAgentMonitor() {
     if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
     if (_guardianInterval) { clearInterval(_guardianInterval); _guardianInterval = null; }
     if (_prSupervisionInterval) { clearInterval(_prSupervisionInterval); _prSupervisionInterval = null; }
+    if (_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
     _running = false;
     log("Agent monitor detenido");
 }
@@ -1249,5 +1368,7 @@ module.exports = {
     STALE_MS, FAILED_TOTAL_MS,
     // #1658 — ciclo continuo
     getOpenAgentPRs, getPRCiStatus, prHasQaLabel,
-    persistCicloEstado, supervisePRs
+    persistCicloEstado, supervisePRs,
+    // Sync sprint-plan con GitHub
+    syncSprintPlanWithGitHub
 };

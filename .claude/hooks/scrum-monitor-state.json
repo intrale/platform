@@ -1,8 +1,16 @@
 {
+<<<<<<< Updated upstream
   "last_check": 1774207558727,
   "last_check_iso": "2026-03-22T19:25:58.727Z",
   "last_health_level": "healthy",
   "last_inconsistencias": 0,
   "sprint_id": "SPR-0051",
+=======
+  "last_check": 1774271575326,
+  "last_check_iso": "2026-03-23T13:12:55.326Z",
+  "last_health_level": "healthy",
+  "last_inconsistencias": 0,
+  "sprint_id": "SPR-0053",
+>>>>>>> Stashed changes
   "sprint_status": "active"
 }
