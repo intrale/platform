@@ -41,6 +41,7 @@ import ui.cp.loading.DashboardSkeletonContent
 import ui.cp.loading.EmptyState
 import ui.cp.loading.ErrorState
 import ui.sc.delivery.DELIVERY_DASHBOARD_PATH
+import ui.sc.business.BUSINESS_DELIVERY_PEOPLE_PATH
 import ui.sc.shared.Screen
 import ui.th.spacing
 
@@ -218,8 +219,8 @@ class DashboardScreen : Screen(DASHBOARD_PATH) {
                             mapOf("count" to summary.activeDrivers.toString())
                         ),
                         actions = listOf(
-                            Txt(MessageKey.dashboard_card_delivery_cta_drivers) to { navigate(DELIVERY_DASHBOARD_PATH) },
-                            Txt(MessageKey.dashboard_card_delivery_cta_invite) to { navigate(DELIVERY_DASHBOARD_PATH) }
+                            Txt(MessageKey.dashboard_card_delivery_cta_manage) to { navigate(BUSINESS_DELIVERY_PEOPLE_PATH) },
+                            Txt(MessageKey.dashboard_card_delivery_cta_invite) to { navigate(BUSINESS_DELIVERY_PEOPLE_PATH) }
                         )
                     )
                     DashboardActionCard(
