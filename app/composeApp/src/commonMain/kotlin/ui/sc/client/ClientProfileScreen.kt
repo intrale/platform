@@ -47,6 +47,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ar.com.intrale.appconfig.AppRuntimeConfig
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import kotlinx.coroutines.launch
@@ -143,6 +144,7 @@ class ClientProfileScreen : Screen(CLIENT_PROFILE_PATH) {
                         onChangePassword = { navigate(CHANGE_PASSWORD_PATH) },
                         onSetupTwoFactor = { navigate(TWO_FACTOR_SETUP_PATH) },
                         onVerifyTwoFactor = { navigate(TWO_FACTOR_VERIFY_PATH) },
+                        twoFactorEnabled = AppRuntimeConfig.twoFactorEnabled,
                         onLogout = {
                             coroutineScope.launch {
                                 viewModel.logout()
@@ -282,6 +284,7 @@ private fun SecurityActionsSection(
     onChangePassword: () -> Unit,
     onSetupTwoFactor: () -> Unit,
     onVerifyTwoFactor: () -> Unit,
+    twoFactorEnabled: Boolean = true,
     onLogout: () -> Unit
 ) {
     val title = Txt(MessageKey.client_profile_security_title)
@@ -310,16 +313,18 @@ private fun SecurityActionsSection(
                 label = changePasswordLabel,
                 onClick = onChangePassword
             )
-            SecurityActionRow(
-                icon = Icons.Default.VerifiedUser,
-                label = setupTwoFactorLabel,
-                onClick = onSetupTwoFactor
-            )
-            SecurityActionRow(
-                icon = Icons.Default.Check,
-                label = verifyTwoFactorLabel,
-                onClick = onVerifyTwoFactor
-            )
+            if (twoFactorEnabled) {
+                SecurityActionRow(
+                    icon = Icons.Default.VerifiedUser,
+                    label = setupTwoFactorLabel,
+                    onClick = onSetupTwoFactor
+                )
+                SecurityActionRow(
+                    icon = Icons.Default.Check,
+                    label = verifyTwoFactorLabel,
+                    onClick = onVerifyTwoFactor
+                )
+            }
             Divider()
             SecurityActionRow(
                 icon = Icons.Default.Logout,

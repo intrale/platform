@@ -37,4 +37,20 @@ class TwoFactorSetupViewModelTest {
         assertEquals("ABCDEF123456", vm.copySecret())
         assertEquals(uri, vm.copyLink())
     }
+
+    @Test
+    fun `deep link exitoso muestra pantalla de app abierta y no QR`() {
+        val vm = TwoFactorSetupViewModel(FakeTwoFactorSetup(), loggerFactory)
+        vm.onDeepLinkResult(true)
+        assertFalse(vm.state.showQr)
+        assertTrue(vm.state.deepLinkTried)
+    }
+
+    @Test
+    fun `deep link fallido muestra configuracion manual`() {
+        val vm = TwoFactorSetupViewModel(FakeTwoFactorSetup(), loggerFactory)
+        vm.onDeepLinkResult(false)
+        assertTrue(vm.state.showQr)
+        assertTrue(vm.state.deepLinkTried)
+    }
 }
