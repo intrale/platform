@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import ar.com.intrale.shared.business.BusinessPaymentMethodDTO
 import ar.com.intrale.shared.business.UpdateBusinessPaymentMethodsRequest
+import ar.com.intrale.shared.business.UpdatePaymentMethodRequestDTO
 import asdo.business.ToDoGetBusinessPaymentMethods
 import asdo.business.ToDoUpdateBusinessPaymentMethods
 import org.kodein.di.direct
@@ -94,7 +95,7 @@ class BusinessPaymentMethodsViewModel(
         state = state.copy(status = BusinessPaymentMethodsStatus.Saving)
         val request = UpdateBusinessPaymentMethodsRequest(
             paymentMethods = state.methods.map { m ->
-                BusinessPaymentMethodDTO(
+                UpdatePaymentMethodRequestDTO(
                     id = m.id,
                     name = m.name,
                     type = m.type,
