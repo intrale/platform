@@ -14,18 +14,8 @@ data class BusinessPaymentMethodDTO(
 )
 
 @Serializable
-data class UpdatePaymentMethodRequestDTO(
-    val id: String = "",
-    val name: String = "",
-    val type: String = "",
-    val enabled: Boolean = true,
-    val isCashOnDelivery: Boolean = false,
-    val description: String? = null
-)
-
-@Serializable
 data class UpdateBusinessPaymentMethodsRequest(
-    val paymentMethods: List<UpdatePaymentMethodRequestDTO> = emptyList()
+    val paymentMethods: List<BusinessPaymentMethodDTO> = emptyList()
 )
 
 @Serializable
