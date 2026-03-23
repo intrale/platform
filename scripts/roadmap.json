@@ -1,5 +1,5 @@
 {
-  "updated_ts": "2026-03-22T17:22:17.608Z",
+  "updated_ts": "2026-03-23T01:27:39.900Z",
   "updated_by": "concurrency-check",
   "horizon_sprints": 5,
   "sprints": [
@@ -122,7 +122,7 @@
     {
       "id": "SPR-0051",
       "tema": "Infra QA — ambiente local backend + emulador + video E2E",
-      "status": "active",
+      "status": "done",
       "size": "medio",
       "started_at": "2026-03-22T14:00:00Z",
       "stories": [
@@ -233,12 +233,179 @@
       "execution": {
         "concurrency_limit": 3,
         "pipeline_mode": "scripts",
-        "waiting_sweep_ts": 1774200136010,
-        "sentinel_ts": 1774200136010
-      }
+        "waiting_sweep_ts": 1774216049490,
+        "sentinel_ts": 1774216049490
+      },
+      "closed_at": "2026-03-22T21:47:34Z",
+      "velocity": 5
     },
     {
       "id": "SPR-0052",
+      "tema": "Cross/Infra — QA avanzado, seguridad, observabilidad y metricas",
+      "status": "done",
+      "size": "grande",
+      "started_at": "2026-03-22T22:00:00Z",
+      "stories": [
+        {
+          "issue": 1803,
+          "title": "QA E2E test cases del issue como guion del video",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done",
+          "slug": "qa-e2e-test-cases-del-issue-como-guion-d",
+          "agent": {
+            "result": "failed",
+            "failure_reason": "Sin PR — el agente no completó /delivery",
+            "detected_by": null,
+            "duration_min": 0,
+            "pid": null,
+            "waiting_since": null
+          }
+        },
+        {
+          "issue": 1804,
+          "title": "QA E2E narracion TTS en videos con OpenAI",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done",
+          "slug": "qa-e2e-narracion-tts-en-videos-con-opena",
+          "agent": {
+            "pid": null,
+            "promoted_at": null,
+            "launched_at": "2026-03-22T22:15:00.098Z",
+            "waiting_since": null,
+            "waiting_reason": "ci",
+            "retry_count": 0,
+            "prompt": "Implementar issue #1804. Leer el issue con: gh issue view 1804 --repo intrale/platform. Completar los cambios del body. Usar /delivery para commit+PR al terminar. Closes #1804",
+            "completed_at": "2026-03-23T01:27:38.915Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null
+          }
+        },
+        {
+          "issue": 1805,
+          "title": "QA E2E subir videos a Google Drive y notificar",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done",
+          "slug": "qa-e2e-subir-videos-a-google-drive-y-not",
+          "agent": {
+            "pid": null,
+            "promoted_at": "2026-03-22T22:33:59.024Z",
+            "launched_at": "2026-03-22T22:17:22.962Z",
+            "waiting_since": null,
+            "waiting_reason": null,
+            "retry_count": 0,
+            "prompt": "[RECOVERY 0/3] El intento anterior fue interrumpido por rate limit. No hay problema con el codigo ni el entorno. Continuar desde donde se quedo. Verificar rama agent/1805-qa-e2e-subir-videos-a-google-drive-y-not para no perder trabajo previo.\nImplementar issue #1805. Leer el issue con: gh issue view 1805 --repo intrale/platform. Completar los cambios del body. Usar /delivery para commit+PR al terminar. Closes #1805",
+            "completed_at": "2026-03-22T22:44:36.841Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null
+          }
+        },
+        {
+          "issue": 1806,
+          "title": "QA E2E regresion automatica como gate de sprint",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done",
+          "slug": "qa-e2e-regresion-automatica-como-gate-de",
+          "agent": {
+            "pid": null,
+            "promoted_at": "2026-03-22T22:29:55.883Z",
+            "launched_at": null,
+            "waiting_since": null,
+            "waiting_reason": null,
+            "retry_count": 0,
+            "prompt": "Implementar issue #1806. Leer el issue con: gh issue view 1806 --repo intrale/platform. Completar los cambios del body. Usar /delivery para commit+PR al terminar. Closes #1806",
+            "completed_at": "2026-03-22T22:52:07.359Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null
+          }
+        },
+        {
+          "issue": 1807,
+          "title": "Metricas agentes cross-sprint tendencias velocidad",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done",
+          "slug": "metricas-agentes-cross-sprint-tendencias",
+          "agent": {
+            "pid": null,
+            "promoted_at": "2026-03-22T22:17:49.484Z",
+            "launched_at": null,
+            "waiting_since": null,
+            "waiting_reason": "build",
+            "retry_count": 0,
+            "prompt": "Implementar issue #1807. Leer el issue completo con: gh issue view 1807 --repo intrale/platform. Al iniciar: invocar /ops para verificar estado del entorno. Al iniciar: invocar /po para revisar criterios de aceptación del issue #1807. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /builder para validar que el build no está roto. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: invocar /review para validar el diff. Usar /delivery para commit+PR al terminar. Closes #1807",
+            "completed_at": "2026-03-22T22:40:25.898Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null
+          }
+        },
+        {
+          "issue": 1784,
+          "title": "Integrar SAST en CI pipeline",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done",
+          "slug": "integrar-sast-en-ci-pipeline",
+          "agent": {
+            "pid": null,
+            "promoted_at": "2026-03-22T22:19:57.873Z",
+            "launched_at": null,
+            "waiting_since": null,
+            "waiting_reason": "build",
+            "retry_count": 0,
+            "prompt": "Implementar issue #1784. Leer el issue completo con: gh issue view 1784 --repo intrale/platform. Al iniciar: invocar /ops para verificar estado del entorno. Al iniciar: invocar /po para revisar criterios de aceptación del issue #1784. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /builder para validar que el build no está roto. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: invocar /review para validar el diff. Usar /delivery para commit+PR al terminar. Closes #1784",
+            "completed_at": "2026-03-22T22:53:43.200Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null
+          }
+        },
+        {
+          "issue": 1786,
+          "title": "Observabilidad backend CloudWatch endpoints Lambda",
+          "effort": "medio",
+          "stream": "E",
+          "status": "done",
+          "slug": "observabilidad-backend-cloudwatch-endpoi",
+          "agent": {
+            "pid": null,
+            "promoted_at": "2026-03-22T22:29:55.883Z",
+            "launched_at": null,
+            "waiting_since": null,
+            "waiting_reason": "build",
+            "retry_count": 0,
+            "prompt": "Implementar issue #1786. Leer el issue completo con: gh issue view 1786 --repo intrale/platform. Al iniciar: invocar /ops para verificar estado del entorno. Al iniciar: invocar /po para revisar criterios de aceptación del issue #1786. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica. Completar los cambios descritos en el body del issue. Antes de /delivery: invocar /tester para verificar que los tests pasan. Antes de /delivery: invocar /builder para validar que el build no está roto. Antes de /delivery: invocar /security para validar seguridad del diff. Antes de /delivery: invocar /review para validar el diff. Usar /delivery para commit+PR al terminar. Closes #1786",
+            "completed_at": "2026-03-22T22:48:44.913Z",
+            "result": "ok",
+            "pr": null,
+            "duration_min": 0,
+            "detected_by": null
+          }
+        }
+      ],
+      "execution": {
+        "concurrency_limit": 3,
+        "pipeline_mode": "scripts",
+        "waiting_sweep_ts": 1774229257996,
+        "sentinel_ts": 1774229257996
+      },
+      "closed_at": "2026-03-23T01:30:00Z",
+      "velocity": 7
+    },
+    {
+      "id": "SPR-0053",
       "tema": "Negocio — carry-over pedidos + config delivery",
       "status": "planned",
       "size": "medio",
@@ -288,7 +455,7 @@
       ]
     },
     {
-      "id": "SPR-0053",
+      "id": "SPR-0054",
       "tema": "Cliente — carrito pedidos seguridad",
       "status": "planned",
       "size": "medio",
@@ -338,7 +505,7 @@
       ]
     },
     {
-      "id": "SPR-0054",
+      "id": "SPR-0055",
       "tema": "Delivery — primera carga features repartidores",
       "status": "planned",
       "size": "medio",

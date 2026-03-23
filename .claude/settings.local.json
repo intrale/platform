@@ -99,8 +99,17 @@
       "Edit",
       "Write",
       "Skill(checkup)",
+<<<<<<< Updated upstream
       "Skill(po)",
       "Skill(security)"
+=======
+      "Skill(security)",
+      "Skill(po)",
+      "WebFetch(domain:plugins.gradle.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:semgrep.dev)",
+      "Bash(wt=*)"
+>>>>>>> Stashed changes
     ],
     "deny": [
       "Bash(git push --force*)",

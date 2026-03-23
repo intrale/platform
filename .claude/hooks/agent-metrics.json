@@ -1,5 +1,9 @@
 {
+<<<<<<< Updated upstream
   "updated_ts": "2026-03-22T19:31:04Z",
+=======
+  "updated_ts": "2026-03-23T01:12:04Z",
+>>>>>>> Stashed changes
   "sessions": [
     {
       "id": "a32950c5",
@@ -298,6 +302,123 @@
       "tokens_output": null,
       "tokens_total": null,
       "tokens_estimated": 13510
+<<<<<<< Updated upstream
+=======
+    },
+    {
+      "id": "a82893e1",
+      "sprint_id": "SPR-0051",
+      "agent_name": "Agente 11",
+      "branch": "agent/678-config-horarios-y-zonas-entrega",
+      "started_ts": "2026-03-22T21:41:05Z",
+      "ended_ts": "2026-03-22T21:48:38Z",
+      "duration_min": 8,
+      "tool_counts": {
+        "TodoWrite": 1
+      },
+      "total_tool_calls": 1,
+      "modified_files_count": 0,
+      "tasks_created": 3,
+      "tasks_completed": 2,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 7295
+    },
+    {
+      "id": "cbc001dc",
+      "sprint_id": null,
+      "agent_name": "Agente 1807",
+      "branch": "agent/1807-metricas-agentes-cross-sprint-tendencias",
+      "started_ts": "2026-03-22T22:36:25Z",
+      "ended_ts": "2026-03-22T22:40:22Z",
+      "duration_min": 4,
+      "tool_counts": {
+        "Bash": 1
+      },
+      "total_tool_calls": 1,
+      "modified_files_count": 0,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 4055
+    },
+    {
+      "id": "87b7bf3d",
+      "sprint_id": "SPR-0052",
+      "agent_name": null,
+      "branch": "unknown",
+      "started_ts": "2026-03-22T22:36:22Z",
+      "ended_ts": "2026-03-22T22:47:09Z",
+      "duration_min": 11,
+      "tool_counts": {
+        "Bash": 13
+      },
+      "total_tool_calls": 13,
+      "modified_files_count": 0,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 16205
+    },
+    {
+      "id": "824d329b",
+      "sprint_id": null,
+      "agent_name": "Agente 1786",
+      "branch": "agent/1786-observabilidad-backend-cloudwatch-endpoi",
+      "started_ts": "2026-03-22T22:46:55Z",
+      "ended_ts": "2026-03-22T22:48:42Z",
+      "duration_min": 2,
+      "tool_counts": {
+        "Bash": 1
+      },
+      "total_tool_calls": 1,
+      "modified_files_count": 0,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 2105
+    },
+    {
+      "id": "27c78c22",
+      "sprint_id": "SPR-0052",
+      "agent_name": "Guru",
+      "branch": "agent/cleanup-zombie-terminals",
+      "started_ts": "2026-03-23T00:52:25Z",
+      "ended_ts": "2026-03-23T01:12:04Z",
+      "duration_min": 20,
+      "tool_counts": {
+        "Bash": 4,
+        "Skill": 1,
+        "ToolSearch": 2,
+        "WebSearch": 3,
+        "WebFetch": 1,
+        "Agent": 1,
+        "Write": 1,
+        "Edit": 3
+      },
+      "total_tool_calls": 16,
+      "modified_files_count": 3,
+      "tasks_created": 0,
+      "tasks_completed": 0,
+      "skills_invoked": [
+        "/guru"
+      ],
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_estimated": 25685
+>>>>>>> Stashed changes
     }
   ]
 }

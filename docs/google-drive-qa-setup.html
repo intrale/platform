@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Configuracion Google Drive para QA Videos</title>
+<style>
+body{background:#0a0b10;color:#e2e4ed;font-family:Inter,system-ui,sans-serif;padding:30px;max-width:800px;margin:0 auto;line-height:1.6}
+h1{color:#34d399;font-size:22px;border-bottom:2px solid #2a2e42;padding-bottom:10px}
+h2{color:#60a5fa;font-size:16px;margin-top:28px}
+code{background:#1a1d2b;padding:2px 6px;border-radius:4px;font-size:12px;color:#f87171}
+pre{background:#12141d;border:1px solid #2a2e42;border-radius:8px;padding:14px;font-size:12px;overflow-x:auto;color:#e2e4ed}
+.step{background:#12141d;border:1px solid #2a2e42;border-radius:10px;padding:16px;margin:12px 0}
+.step-num{display:inline-block;background:#34d399;color:#0a0b10;width:28px;height:28px;text-align:center;line-height:28px;border-radius:50%;font-weight:700;font-size:14px;margin-right:10px}
+a{color:#60a5fa}
+.warn{background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;padding:12px;margin:12px 0;color:#fbbf24;font-size:13px}
+</style></head><body>
+
+<h1>Configuracion Google Drive para Videos QA (OAuth)</h1>
+<p style="color:#8b8fa5">Issue #1805 — Usa tu cuenta personal de Google (no requiere Google Workspace)</p>
+
+<div class="warn">NOTA: Service Accounts no tienen cuota de almacenamiento en Drive personal. Esta guia usa OAuth 2.0 con tu cuenta, que SI tiene los 15GB gratuitos.</div>
+
+<h2>Paso a paso</h2>
+
+<div class="step">
+<span class="step-num">1</span><strong>Crear proyecto en Google Cloud Console</strong>
+<p>Ir a <a href="https://console.cloud.google.com/projectcreate">console.cloud.google.com/projectcreate</a></p>
+<p>Nombre: <code>intrale-qa</code> y click "Crear"</p>
+</div>
+
+<div class="step">
+<span class="step-num">2</span><strong>Habilitar Google Drive API</strong>
+<p>Ir a <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com">APIs > Google Drive API</a> y click "Habilitar"</p>
+</div>
+
+<div class="step">
+<span class="step-num">3</span><strong>Configurar pantalla de consentimiento OAuth</strong>
+<ol>
+<li>Ir a <a href="https://console.cloud.google.com/apis/credentials/consent">OAuth consent screen</a></li>
+<li>Tipo: <strong>Externo</strong> (para cuentas personales)</li>
+<li>Nombre de app: <code>Intrale QA</code></li>
+<li>Email de soporte: tu email</li>
+<li>Scopes: agregar <code>https://www.googleapis.com/auth/drive.file</code></li>
+<li>Test users: agregar tu email</li>
+<li>Guardar</li>
+</ol>
+</div>
+
+<div class="step">
+<span class="step-num">4</span><strong>Crear credenciales OAuth</strong>
+<ol>
+<li>Ir a <a href="https://console.cloud.google.com/apis/credentials">Credenciales</a></li>
+<li>Click "Crear credenciales" > "ID de cliente OAuth"</li>
+<li>Tipo: <strong>App de escritorio</strong> (Desktop app)</li>
+<li>Nombre: <code>intrale-qa-cli</code></li>
+<li>Click "Crear"</li>
+<li>Copiar <strong>Client ID</strong> y <strong>Client Secret</strong></li>
+</ol>
+</div>
+
+<div class="step">
+<span class="step-num">5</span><strong>Ejecutar script de autorizacion</strong>
+<p>En la terminal de Claude Code, ejecuta:</p>
+<pre>! node scripts/google-drive-oauth-setup.js &lt;CLIENT_ID&gt; &lt;CLIENT_SECRET&gt;</pre>
+<p>El script va a:</p>
+<ol>
+<li>Mostrarte una URL — abrila en el browser</li>
+<li>Autorizas con tu cuenta Google</li>
+<li>Google te da un codigo — copialo</li>
+<li>Pegalo en la terminal</li>
+<li>El script guarda el <code>refresh_token</code> en <code>telegram-config.json</code></li>
+</ol>
+</div>
+
+<div class="step">
+<span class="step-num">6</span><strong>Crear carpeta en Google Drive</strong>
+<ol>
+<li>Ir a <a href="https://drive.google.com">drive.google.com</a></li>
+<li>Crear carpeta: <code>Intrale QA</code></li>
+<li>Copiar el ID de la URL: <code>https://drive.google.com/drive/folders/<strong>1AbCdEfG...</strong></code></li>
+<li>Agregar a <code>.claude/hooks/telegram-config.json</code>:</li>
+</ol>
+<pre>{
+  "google_drive_folder_id": "1AbCdEfG..."
+}</pre>
+</div>
+
+<div class="step">
+<span class="step-num">7</span><strong>Verificar</strong>
+<pre>node qa/scripts/qa-video-share.js \
+  --issue 9999 --title "Test upload" \
+  --sprint "SPR-TEST" \
+  --videos "qa/evidence/1781/qa-video-final.mp4" \
+  --verdict "APROBADO" --passed 1 --total 1</pre>
+</div>
+
+<h2>Resultado en telegram-config.json</h2>
+<pre>{
+  "bot_token": "...",
+  "chat_id": "...",
+  "google_oauth_client_id": "123456-abc.apps.googleusercontent.com",
+  "google_oauth_client_secret": "GOCSPX-...",
+  "google_oauth_refresh_token": "1//0abc...",
+  "google_drive_folder_id": "1AbCdEfG..."
+}</pre>
+
+<h2>Diferencia con Service Account</h2>
+<table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0">
+<tr><th style="text-align:left;padding:8px;border-bottom:1px solid #2a2e42">Aspecto</th><th style="padding:8px;border-bottom:1px solid #2a2e42">Service Account</th><th style="padding:8px;border-bottom:1px solid #2a2e42">OAuth (esta guia)</th></tr>
+<tr><td style="padding:8px;border-bottom:1px solid #1a1d2b">Cuota Drive</td><td style="padding:8px;border-bottom:1px solid #1a1d2b;color:#f87171">NO tiene (error 403)</td><td style="padding:8px;border-bottom:1px solid #1a1d2b;color:#34d399">15GB gratis</td></tr>
+<tr><td style="padding:8px;border-bottom:1px solid #1a1d2b">Google Workspace</td><td style="padding:8px;border-bottom:1px solid #1a1d2b">Requiere (pago)</td><td style="padding:8px;border-bottom:1px solid #1a1d2b;color:#34d399">No requiere</td></tr>
+<tr><td style="padding:8px;border-bottom:1px solid #1a1d2b">Setup</td><td style="padding:8px;border-bottom:1px solid #1a1d2b">Mas simple</td><td style="padding:8px;border-bottom:1px solid #1a1d2b">Requiere autorizacion manual (1 vez)</td></tr>
+<tr><td style="padding:8px;border-bottom:1px solid #1a1d2b">Refresh token</td><td style="padding:8px;border-bottom:1px solid #1a1d2b">No necesita</td><td style="padding:8px;border-bottom:1px solid #1a1d2b">Se renueva automaticamente</td></tr>
+</table>
+
+<p style="color:#555872;font-size:11px;margin-top:40px">Generado por Claude Code — 2026-03-23</p>
+</body></html>

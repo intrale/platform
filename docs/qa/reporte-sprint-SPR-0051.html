@@ -53,15 +53,15 @@
 <h2>1. Métricas del Sprint</h2>
 <div class="metric-grid">
   <div class="metric-card">
-    <div class="metric-number">2</div>
+    <div class="metric-number">5</div>
     <div class="metric-label">Issues del sprint</div>
   </div>
   <div class="metric-card green">
-    <div class="metric-number">2</div>
+    <div class="metric-number">5</div>
     <div class="metric-label">Issues cerrados</div>
   </div>
   <div class="metric-card blue">
-    <div class="metric-number">2</div>
+    <div class="metric-number">6</div>
     <div class="metric-label">PRs merged</div>
   </div>
   <div class="metric-card orange">
@@ -72,12 +72,18 @@
 
 <!-- LOGROS DESTACADOS -->
 <h2>2. Logros destacados</h2><ul>
+  <li><strong>#1781</strong> — Ambiente local QA: backend + emulador Android + video E2E
+    &rarr; PR <a href="https://github.com/intrale/platform/pull/1799">#1799</a> mergeado</li>
+  <li><strong>#1782</strong> — Fix Java 11 a 21 mismatch en app build
+    &rarr; PR <a href="https://github.com/intrale/platform/pull/1792">#1792</a> mergeado</li>
   <li><strong>#1783</strong> — Script validate-env.sh prerequisitos ambiente local
     &rarr; PR <a href="https://github.com/intrale/platform/pull/1788">#1788</a> mergeado</li>
   <li><strong>#1785</strong> — Documentar guia build flavors Android
-    &rarr; PR <a href="https://github.com/intrale/platform/pull/1793">#1793</a> mergeado</li></ul>
+    &rarr; PR <a href="https://github.com/intrale/platform/pull/1793">#1793</a> mergeado</li>
+  <li><strong>#1735</strong> — Prompt template inteligente segun labels
+    &rarr; PR <a href="https://github.com/intrale/platform/pull/1796">#1796</a> mergeado</li></ul>
 <!-- PROBLEMAS ENCONTRADOS -->
-<h2>3. Problemas encontrados y resoluciones</h2><p><em>No se detectaron problemas significativos durante este sprint.</em></p>
+<h2>3. Problemas encontrados y resoluciones</h2><h3>Desde Pull Requests</h3><ul><li>PR <strong>#1796</strong> — feat(infra): prompt template inteligente según labels del issue (#1735)<ul><li><small>- **`bug` label** → `/tester` con énfasis en regresiones</small></li><li><small>- Mantiene adaptaciones existentes para app, bug, infra</small></li></ul></li><li>PR <strong>#1795</strong> — feat(infra): prompt template inteligente adaptado según labels del issue<ul><li><small>- **`bug` label** → incluir `/tester` con énfasis en regresiones</small></li><li><small>- Mantener adaptaciones existentes para app, bug e infra</small></li></ul></li></ul>
 <!-- DEUDA TÉCNICA -->
 <h2>4. Deuda técnica y próximos pasos</h2><p><em>Todos los issues del sprint fueron completados. No hay deuda técnica pendiente.</em></p>
 
@@ -88,6 +94,24 @@
     <tr><th>#</th><th>Issue</th><th>Título</th><th>Stream</th><th>Size</th><th>Estado</th><th>Duración</th></tr>
   </thead>
   <tbody>
+    <tr>
+      <td>1</td>
+      <td><a href="https://github.com/intrale/platform/issues/1781">#1781</a></td>
+      <td>Ambiente local QA: backend + emulador Android + video E2E</td>
+      <td><span class="badge badge-stream">E</span></td>
+      <td><span class="badge badge-size">L</span></td>
+      <td><span class="badge badge-closed">CLOSED</span> — PR <a href="https://github.com/intrale/platform/pull/1799">#1799</a> <span class="badge badge-merged">MERGED</span></td>
+      <td>N/A</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><a href="https://github.com/intrale/platform/issues/1782">#1782</a></td>
+      <td>Fix Java 11 a 21 mismatch en app build</td>
+      <td><span class="badge badge-stream">E</span></td>
+      <td><span class="badge badge-size">S</span></td>
+      <td><span class="badge badge-closed">CLOSED</span> — PR <a href="https://github.com/intrale/platform/pull/1792">#1792</a> <span class="badge badge-merged">MERGED</span></td>
+      <td>N/A</td>
+    </tr>
     <tr>
       <td>3</td>
       <td><a href="https://github.com/intrale/platform/issues/1783">#1783</a></td>
@@ -106,11 +130,28 @@
       <td><span class="badge badge-closed">CLOSED</span> — PR <a href="https://github.com/intrale/platform/pull/1793">#1793</a> <span class="badge badge-merged">MERGED</span></td>
       <td>N/A</td>
     </tr>
+    <tr>
+      <td>5</td>
+      <td><a href="https://github.com/intrale/platform/issues/1735">#1735</a></td>
+      <td>Prompt template inteligente segun labels</td>
+      <td><span class="badge badge-stream">E</span></td>
+      <td><span class="badge badge-size">M</span></td>
+      <td><span class="badge badge-closed">CLOSED</span> — PR <a href="https://github.com/intrale/platform/pull/1796">#1796</a> <span class="badge badge-merged">MERGED</span></td>
+      <td>N/A</td>
+    </tr>
   </tbody>
 </table>
 
 <!-- DETALLE POR AGENTE -->
 <h2>6. Detalle por Agente</h2>
+<div class="section-box">
+  <h3>Agente 1 — #1781 ambiente-local-qa-backend-emulador-andro</h3>
+  <p><em>Sin datos de sesión disponibles</em></p>
+</div>
+<div class="section-box">
+  <h3>Agente 2 — #1782 fix-java-11-a-21-mismatch-en-app-build</h3>
+  <p><em>Sin datos de sesión disponibles</em></p>
+</div>
 <div class="section-box">
   <h3>Agente 3 — #1783 script-validate-env-sh-prerequisitos-amb</h3>
   <p><em>Sin datos de sesión disponibles</em></p>
@@ -119,18 +160,22 @@
   <h3>Agente 4 — #1785 documentar-guia-build-flavors-android</h3>
   <p><em>Sin datos de sesión disponibles</em></p>
 </div>
+<div class="section-box">
+  <h3>Agente 5 — #1735 prompt-template-inteligente-segun-labels</h3>
+  <p><em>Sin datos de sesión disponibles</em></p>
+</div>
 <!-- TIMELINE -->
 <h2>7. Línea de Tiempo</h2>
 <div class="timeline">
   <div class="timeline-item info">
     <div class="timeline-time">2026-03-22</div>
-    <div class="timeline-title">Sprint iniciado — 2 agentes</div>
+    <div class="timeline-title">Sprint iniciado — 5 agentes</div>
     <div class="timeline-detail">Tema: Infra QA — ambiente local backend + emulador + video E2E</div>
   </div>
   <div class="timeline-item success">
-    <div class="timeline-time">22/3/2026, 11:35:02</div>
+    <div class="timeline-time">22/3/2026, 06:47:57</div>
     <div class="timeline-title">Sprint finalizado — Reporte generado</div>
-    <div class="timeline-detail">2 agentes procesados</div>
+    <div class="timeline-detail">5 agentes procesados</div>
   </div>
 </div>
 
@@ -146,24 +191,24 @@
       <td><code>main</code></td>
     </tr>
     <tr>
-      <td><code>platform.agent-1735-prompt-template-inteligente-segun-labels</code></td>
-      <td><code>agent/1735-prompt-template-inteligente-segun-labels</code></td>
+      <td><code>platform.agent-1634-qa-e2e-publicacion-productos</code></td>
+      <td><code>agent/1634-qa-e2e-publicacion-productos</code></td>
     </tr>
     <tr>
-      <td><code>platform.agent-1781-ambiente-local-qa-backend-emulador-andro</code></td>
-      <td><code>agent/1781-ambiente-local-qa-backend-emulador-andro</code></td>
+      <td><code>platform.agent-672-config-productos-destacados-promociones</code></td>
+      <td><code>agent/672-config-productos-destacados-promociones</code></td>
     </tr>
     <tr>
-      <td><code>platform.agent-1782-fix-java-11-a-21-mismatch-en-app-build</code></td>
-      <td><code>agent/1782-fix-java-11-a-21-mismatch-en-app-build</code></td>
+      <td><code>platform.agent-678-config-horarios-y-zonas-entrega</code></td>
+      <td><code>agent/678-config-horarios-y-zonas-entrega</code></td>
     </tr>
     <tr>
-      <td><code>platform.agent-1783-script-validate-env-sh-prerequisitos-amb</code></td>
-      <td><code>agent/1783-script-validate-env-sh-prerequisitos-amb</code></td>
+      <td><code>platform.agent-679-config-medios-de-pago</code></td>
+      <td><code>agent/679-config-medios-de-pago</code></td>
     </tr>
     <tr>
-      <td><code>platform.agent-1785-documentar-guia-build-flavors-android</code></td>
-      <td><code>agent/1785-documentar-guia-build-flavors-android</code></td>
+      <td><code>platform.agent-679-tmp</code></td>
+      <td><code>agent/679-config-medios-de-pago</code></td>
     </tr>
   </tbody>
 </table>
@@ -176,31 +221,52 @@
   </thead>
   <tbody>
     <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1799">#1799</a></td>
+      <td>feat(qa): ambiente local QA — backend healthcheck + smoke test + docs</td>
+      <td><code>agent/1781-ambiente-local-qa-backend-emulador-andro</code></td>
+      <td><span class="badge badge-merged">MERGED</span></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1796">#1796</a></td>
+      <td>feat(infra): prompt template inteligente según labels del issue (#1735)</td>
+      <td><code>agent/1735-prompt-template-inteligente-segun-labels</code></td>
+      <td><span class="badge badge-merged">MERGED</span></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1795">#1795</a></td>
+      <td>feat(infra): prompt template inteligente adaptado según labels del issue</td>
+      <td><code>agent/1735-prompt-template-inteligente-segun-labels</code></td>
+      <td><span class="badge badge-closed">CLOSED</span></td>
+    </tr>
+    <tr>
       <td><a href="https://github.com/intrale/platform/pull/1793">#1793</a></td>
       <td>docs: guía de build flavors Android (client/business/delivery)</td>
       <td><code>agent/1785-documentar-guia-build-flavors-android</code></td>
       <td><span class="badge badge-merged">MERGED</span></td>
     </tr>
     <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1792">#1792</a></td>
+      <td>fix: actualizar Java 11→21 en composeApp build</td>
+      <td><code>agent/1782-fix-java-11-a-21-mismatch-en-app-build</code></td>
+      <td><span class="badge badge-merged">MERGED</span></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1791">#1791</a></td>
+      <td>feat(infra): ambiente local QA — health-check, setup AVD y smoke test (#1781)</td>
+      <td><code>agent/1781-ambiente-local-qa-backend-emulador-andro</code></td>
+      <td><span class="badge badge-merged">MERGED</span></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/intrale/platform/pull/1789">#1789</a></td>
+      <td>Agent delivery</td>
+      <td><code>agent/1735-prompt-template-inteligente-segun-labels</code></td>
+      <td><span class="badge badge-closed">CLOSED</span></td>
+    </tr>
+    <tr>
       <td><a href="https://github.com/intrale/platform/pull/1788">#1788</a></td>
       <td>feat(infra): script validate-env.sh y detección dinámica de JAVA_HOME</td>
       <td><code>agent/1783-script-validate-env-sh-prerequisitos-amb</code></td>
       <td><span class="badge badge-merged">MERGED</span></td>
-    </tr>
-  </tbody>
-</table>
-<!-- CI -->
-<h2>10. Estado de CI</h2>
-<table>
-  <thead>
-    <tr><th>Rama</th><th>Estado</th><th>Conclusión</th><th>Actualizado</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>agent/1785-documentar-guia-build-flavors-android</code></td>
-      <td>completed</td>
-      <td>success</td>
-      <td>22/3/2026, 11:24:17</td>
     </tr>
   </tbody>
 </table>
@@ -218,7 +284,7 @@
 <h1>Reporte de Costos — SPR-0051</h1>
 <p><strong>Proyecto:</strong> Intrale Platform (<code>intrale/platform</code>)<br>
 <strong>Fecha:</strong> 2026-03-22<br>
-<strong>Sesiones analizadas:</strong> 2<br>
+<strong>Sesiones analizadas:</strong> 1<br>
 <strong>Costo por acción:</strong> $0.00</p>
 
 <div class="formula">
@@ -229,19 +295,19 @@
 <h2>1. Métricas Globales</h2>
 <div class="metric-grid">
   <div class="metric-card">
-    <div class="metric-number">2</div>
+    <div class="metric-number">1</div>
     <div class="metric-label">Sesiones</div>
   </div>
   <div class="metric-card green">
-    <div class="metric-number">144</div>
+    <div class="metric-number">10</div>
     <div class="metric-label">Tool Calls</div>
   </div>
   <div class="metric-card blue">
-    <div class="metric-number">188.370</div>
+    <div class="metric-number">14.810</div>
     <div class="metric-label">Tokens Estimados</div>
   </div>
   <div class="metric-card orange">
-    <div class="metric-number">$0.43</div>
+    <div class="metric-number">$0.03</div>
     <div class="metric-label">Costo Estimado</div>
   </div>
 </div>
@@ -249,45 +315,25 @@
 <!-- PRESUPUESTO SEMANAL -->
 <h2>2. Presupuesto Semanal</h2>
 <div class="section-box">
-  <p><strong>Costo últimos 7 días:</strong> $2.13 / $50.00</p>
+  <p><strong>Costo últimos 7 días:</strong> $1.70 / $50.00</p>
   <div class="budget-gauge">
     <div class="budget-fill budget-green" style="width: 5%">
-      4%
+      3%
     </div>
   </div>
-  <p><strong>Sesiones esta semana:</strong> 14 | <strong>Duración total:</strong> 129 min</p>
+  <p><strong>Sesiones esta semana:</strong> 12 | <strong>Duración total:</strong> 11 min</p>
 </div>
 
 <!-- DISTRIBUCIÓN POR HERRAMIENTA -->
 <h2>3. Distribución por Herramienta</h2>
 <div class="section-box">
-  <p style="margin: 4px 0; font-size: 13px;"><strong>Bash</strong> — 125 (87%)</p>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>Bash</strong> — 6 (60%)</p>
   <div class="bar-container">
-    <div class="bar-fill bar-bash" style="width: 87%">87%</div>
+    <div class="bar-fill bar-bash" style="width: 60%">60%</div>
   </div>
-  <p style="margin: 4px 0; font-size: 13px;"><strong>WebFetch</strong> — 6 (4%)</p>
+  <p style="margin: 4px 0; font-size: 13px;"><strong>Edit</strong> — 4 (40%)</p>
   <div class="bar-container">
-    <div class="bar-fill bar-other" style="width: 4%">4%</div>
-  </div>
-  <p style="margin: 4px 0; font-size: 13px;"><strong>Edit</strong> — 4 (3%)</p>
-  <div class="bar-container">
-    <div class="bar-fill bar-edit" style="width: 3%">3%</div>
-  </div>
-  <p style="margin: 4px 0; font-size: 13px;"><strong>ToolSearch</strong> — 3 (2%)</p>
-  <div class="bar-container">
-    <div class="bar-fill bar-other" style="width: 2%">2%</div>
-  </div>
-  <p style="margin: 4px 0; font-size: 13px;"><strong>Agent</strong> — 3 (2%)</p>
-  <div class="bar-container">
-    <div class="bar-fill bar-other" style="width: 2%">2%</div>
-  </div>
-  <p style="margin: 4px 0; font-size: 13px;"><strong>Write</strong> — 2 (1%)</p>
-  <div class="bar-container">
-    <div class="bar-fill bar-write" style="width: 2%">1%</div>
-  </div>
-  <p style="margin: 4px 0; font-size: 13px;"><strong>TaskOutput</strong> — 1 (1%)</p>
-  <div class="bar-container">
-    <div class="bar-fill bar-other" style="width: 2%">1%</div>
+    <div class="bar-fill bar-edit" style="width: 40%">40%</div>
   </div>
 </div>
 
@@ -302,19 +348,10 @@
       <td><code>27c78c22</code></td>
       <td>SPR-0051</td>
       <td>main</td>
-      <td>74 min</td>
-      <td>139</td>
-      <td>136.070</td>
-      <td><strong>$0.42</strong></td>
-    </tr>
-    <tr>
-      <td><code>50caa9a2</code></td>
-      <td>SPR-0051</td>
-      <td>Agente 5</td>
-      <td>55 min</td>
-      <td>5</td>
-      <td>52.300</td>
-      <td><strong>$0.01</strong></td>
+      <td>11 min</td>
+      <td>10</td>
+      <td>14.810</td>
+      <td><strong>$0.03</strong></td>
     </tr>
   </tbody>
 </table>
@@ -323,7 +360,7 @@
 <h2>5. Desglose por Sprint</h2>
 <div class="section-box">
   <h3>SPR-0051</h3>
-  <p><strong>Sesiones:</strong> 2 | <strong>Duración:</strong> 129 min | <strong>Calls:</strong> 144 | <strong>Tokens:</strong> 188.370 | <strong>Costo:</strong> $0.43</p>
+  <p><strong>Sesiones:</strong> 1 | <strong>Duración:</strong> 11 min | <strong>Calls:</strong> 10 | <strong>Tokens:</strong> 14.810 | <strong>Costo:</strong> $0.03</p>
   <table>
     <thead>
       <tr><th>Sesión</th><th>Agente</th><th>Dur.</th><th>Calls</th><th>Tokens</th><th>Costo</th></tr>
@@ -332,18 +369,10 @@
       <tr>
         <td><code>27c78c22</code></td>
         <td>main</td>
-        <td>74m</td>
-        <td>139</td>
-        <td>136.070</td>
-        <td>$0.42</td>
-      </tr>
-      <tr>
-        <td><code>50caa9a2</code></td>
-        <td>Agente 5</td>
-        <td>55m</td>
-        <td>5</td>
-        <td>52.300</td>
-        <td>$0.01</td>
+        <td>11m</td>
+        <td>10</td>
+        <td>14.810</td>
+        <td>$0.03</td>
       </tr>
     </tbody>
   </table>
@@ -360,40 +389,16 @@
 <div style="border-top:3px solid #34d399;margin-top:40px;padding-top:20px;">
   <h1 style="color:#34d399;font-size:28px;">Propuestas de Nuevas Historias</h1>
   <p style="color:#888;font-size:13px;margin-bottom:20px;">Basadas en el conocimiento adquirido durante la ejecución del sprint SPR-0051. Estas propuestas surgen de problemas detectados, deuda técnica identificada y oportunidades de mejora observadas.</p>
-  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #f87171;">
+  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #fbbf24;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <h3 style="color:#fff;margin:0;font-size:16px;">&#9889; Reintentar: Ambiente local QA: backend + emulador Android + video E2E</h3>
-      <span style="background:#f8717120;color:#f87171;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">ALTA</span>
+      <h3 style="color:#fff;margin:0;font-size:16px;">&#128027; Resolver problemas detectados en general</h3>
+      <span style="background:#fbbf2420;color:#fbbf24;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">MEDIA</span>
     </div>
-    <p style="color:#ccc;font-size:13px;margin:8px 0;">Issue #1781 no se completó. Motivo: No se pudo verificar PR (gh CLI falló).</p>
+    <p style="color:#ccc;font-size:13px;margin:8px 0;">Se detectaron 2 problema(s) en general durante el sprint: ver logs de ejecución</p>
     <div style="display:flex;gap:12px;font-size:11px;color:#888;">
-      <span>Tipo: <strong style="color:#aaa;">mejora</strong></span>
-      <span>Esfuerzo: <strong style="color:#aaa;">L</strong></span>
-      <span>Origen: <strong style="color:#aaa;">Sprint SPR-0051 — fallido</strong></span>
-    </div>
-  </div>
-  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #f87171;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <h3 style="color:#fff;margin:0;font-size:16px;">&#9889; Reintentar: Fix Java 11 a 21 mismatch en app build</h3>
-      <span style="background:#f8717120;color:#f87171;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">ALTA</span>
-    </div>
-    <p style="color:#ccc;font-size:13px;margin:8px 0;">Issue #1782 no se completó. Motivo: Sin PR — el agente no completó /delivery.</p>
-    <div style="display:flex;gap:12px;font-size:11px;color:#888;">
-      <span>Tipo: <strong style="color:#aaa;">mejora</strong></span>
-      <span>Esfuerzo: <strong style="color:#aaa;">S</strong></span>
-      <span>Origen: <strong style="color:#aaa;">Sprint SPR-0051 — fallido</strong></span>
-    </div>
-  </div>
-  <div style="margin:16px 0;padding:16px;background:#1a1b2e;border-radius:8px;border-left:4px solid #f87171;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <h3 style="color:#fff;margin:0;font-size:16px;">&#9889; Reintentar: Prompt template inteligente segun labels</h3>
-      <span style="background:#f8717120;color:#f87171;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;">ALTA</span>
-    </div>
-    <p style="color:#ccc;font-size:13px;margin:8px 0;">Issue #1735 no se completó. Motivo: Sin PR — el agente no completó /delivery.</p>
-    <div style="display:flex;gap:12px;font-size:11px;color:#888;">
-      <span>Tipo: <strong style="color:#aaa;">mejora</strong></span>
-      <span>Esfuerzo: <strong style="color:#aaa;">M</strong></span>
-      <span>Origen: <strong style="color:#aaa;">Sprint SPR-0051 — fallido</strong></span>
+      <span>Tipo: <strong style="color:#aaa;">bug</strong></span>
+      <span>Esfuerzo: <strong style="color:#aaa;">simple</strong></span>
+      <span>Origen: <strong style="color:#aaa;">Problemas en ejecución</strong></span>
     </div>
   </div></div>
 </body>
