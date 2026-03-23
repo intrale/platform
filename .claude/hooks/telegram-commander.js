@@ -111,9 +111,11 @@ const processedMessageIds = new Set();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
+const COMMANDER_LOG_FILE = path.join(HOOKS_DIR, "telegram-commander.log");
 function log(msg) {
     const line = "[" + new Date().toISOString() + "] Commander: " + msg;
     try { fs.appendFileSync(LOG_FILE, line + "\n"); } catch (e) {}
+    try { fs.appendFileSync(COMMANDER_LOG_FILE, line + "\n"); } catch (e) {}
     console.log(line);
 }
 
