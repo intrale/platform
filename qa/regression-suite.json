@@ -72,6 +72,21 @@
       "app": "client",
       "flow": "client-product-detail.yaml",
       "tags": ["catalog", "client"]
+    },
+    {
+      "id": "REG-09",
+      "title": "Publicación de productos — visibilidad en app cliente",
+      "app": "business+client",
+      "test_class": "ApiProductPublicationE2ETest",
+      "issue": 1634,
+      "tags": ["products", "publication", "client", "critical"],
+      "covers": [
+        "TC-01: Producto PUBLISHED aparece en catálogo cliente",
+        "TC-02: Producto DRAFT no aparece en catálogo cliente",
+        "TC-03: Despublicado deja de verse en cliente",
+        "TC-04: Catálogo vacío responde 200",
+        "TC-05: Sin JWT responde 401"
+      ]
     }
   ]
 }
