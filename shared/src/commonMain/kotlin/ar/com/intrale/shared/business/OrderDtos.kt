@@ -60,7 +60,8 @@ data class BusinessOrderStatusEventDTO(
 data class DeliveryPersonSummaryDTO(
     val email: String = "",
     @SerialName("fullName")
-    val fullName: String = ""
+    val fullName: String = "",
+    val status: String? = null
 )
 
 @Serializable

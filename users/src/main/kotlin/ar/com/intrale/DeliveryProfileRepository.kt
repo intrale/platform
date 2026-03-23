@@ -47,6 +47,23 @@ class DeliveryProfileRepository {
             .map { (_, record) -> record.copy() }
     }
 
+    fun toggleStatus(business: String, email: String, newStatus: DeliveryPersonStatus): DeliveryProfileRecord {
+        val record = profiles.getOrPut(key(business, email)) {
+            DeliveryProfileRecord(profile = DeliveryProfilePayload(email = email))
+        }
+        record.status = newStatus
+        return record.copy()
+    }
+
+    fun invite(business: String, email: String): DeliveryProfileRecord {
+        return profiles.getOrPut(key(business, email)) {
+            DeliveryProfileRecord(
+                profile = DeliveryProfilePayload(email = email),
+                status = DeliveryPersonStatus.PENDING
+            )
+        }.copy()
+    }
+
     fun getAvailability(business: String, email: String): DeliveryAvailabilityPayload {
         return availability.getOrDefault(key(business, email), DeliveryAvailabilityPayload(timezone = "UTC"))
     }
