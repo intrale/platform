@@ -52,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.shared.business.ProductStatus
@@ -105,6 +106,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
         )
         val cartContentDescription = Txt(MessageKey.client_home_cart_icon_content_description)
         val productsTitle = Txt(MessageKey.client_home_products_title)
+        val featuredTitle = Txt(MessageKey.client_home_featured_title)
         val emptyMessage = Txt(MessageKey.client_home_products_empty)
         val errorMessage = Txt(MessageKey.client_home_products_error)
         val retryLabel = Txt(MessageKey.client_home_retry)
@@ -215,6 +217,29 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                         }
 
                         is ClientProductsState.Loaded -> {
+                            val featuredProducts = productsState.products.filter { it.isFeatured }
+                            if (featuredProducts.isNotEmpty()) {
+                                item {
+                                    Text(
+                                        text = featuredTitle,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                items(featuredProducts, key = { "featured_${it.id}" }) { product ->
+                                    ClientProductCard(
+                                        product = product,
+                                        addLabel = Txt(MessageKey.client_home_add_label),
+                                        addContentDescription = Txt(MessageKey.client_home_add_content_description),
+                                        outOfStockLabel = outOfStockLabel,
+                                        onAddClick = { viewModel.addToCart(product) },
+                                        onCardClick = {
+                                            ClientProductSelectionStore.select(product.id)
+                                            navigate(CLIENT_PRODUCT_DETAIL_PATH)
+                                        }
+                                    )
+                                }
+                            }
                             item {
                                 Text(
                                     text = productsTitle,
@@ -465,11 +490,27 @@ private fun ClientProductCard(
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = product.priceLabel,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (product.promotionPrice != null) {
+                    Text(
+                        text = formatPrice(product.promotionPrice),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = product.priceLabel,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            textDecoration = TextDecoration.LineThrough
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        text = product.priceLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             if (product.isAvailable) {
                 IntralePrimaryButton(
@@ -575,7 +616,9 @@ class ClientHomeViewModel : ViewModel() {
                     priceLabel = formatPrice(product.basePrice),
                     emoji = product.emoji ?: "🛍️",
                     unitPrice = product.basePrice,
-                    isAvailable = product.isAvailable
+                    isAvailable = product.isAvailable,
+                    isFeatured = product.isFeatured,
+                    promotionPrice = product.promotionPrice
                 )
             }
     }
