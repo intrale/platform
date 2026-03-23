@@ -276,6 +276,14 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="business/delivery-zone") {
         singleton { BusinessDeliveryZoneFunction(instance(), instance(), instance(), instance(), instance()) }
     }
+
+    bind<Function> (tag="business/payment-methods") {
+        singleton { BusinessPaymentMethodsFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="client/payment-methods") {
+        singleton { ClientPaymentMethodsFunction(instance(), instance(), instance()) }
+    }
 }
 
 private fun Config.stringValue(path: String): String = getValue(path).unwrapped().toString()
