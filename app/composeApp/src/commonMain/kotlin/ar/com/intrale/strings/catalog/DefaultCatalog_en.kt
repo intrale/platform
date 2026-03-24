@@ -790,6 +790,25 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.two_factor_verify_error_invalid to "Invalid or expired code",
     MessageKey.two_factor_verify_code_hint to "Enter the 6-digit code",
 
+    // Checkout
+    MessageKey.client_checkout_title to "Confirm order",
+    MessageKey.client_checkout_subtitle to "Review your order before confirming",
+    MessageKey.client_checkout_section_items to "Products",
+    MessageKey.client_checkout_section_address to "Delivery address",
+    MessageKey.client_checkout_section_payment to "Payment method",
+    MessageKey.client_checkout_section_summary to "Summary",
+    MessageKey.client_checkout_notes_label to "Notes for the store",
+    MessageKey.client_checkout_notes_placeholder to "E.g.: no onion, broken doorbell, etc.",
+    MessageKey.client_checkout_confirm_button to "Confirm order",
+    MessageKey.client_checkout_confirming to "Confirming order...",
+    MessageKey.client_checkout_success_title to "Order confirmed",
+    MessageKey.client_checkout_success_subtitle to "Your order was sent to the store",
+    MessageKey.client_checkout_success_shortcode_label to "Tracking code",
+    MessageKey.client_checkout_success_view_orders to "View my orders",
+    MessageKey.client_checkout_success_back_home to "Go to home",
+    MessageKey.client_checkout_error_generic to "Could not create the order. Try again.",
+    MessageKey.client_checkout_error_retry to "Retry",
+
     // Notification center
     MessageKey.client_notifications_title to "Notifications",
     MessageKey.client_notifications_empty to "No notifications yet.",

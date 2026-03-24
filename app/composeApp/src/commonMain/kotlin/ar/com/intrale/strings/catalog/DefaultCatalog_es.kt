@@ -790,6 +790,25 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.two_factor_verify_error_invalid to "Código inválido o expirado",
     MessageKey.two_factor_verify_code_hint to "Ingresá el código de 6 dígitos",
 
+    // Checkout / Confirmación de pedido
+    MessageKey.client_checkout_title to "Confirmar pedido",
+    MessageKey.client_checkout_subtitle to "Revisá tu pedido antes de confirmar",
+    MessageKey.client_checkout_section_items to "Productos",
+    MessageKey.client_checkout_section_address to "Dirección de entrega",
+    MessageKey.client_checkout_section_payment to "Medio de pago",
+    MessageKey.client_checkout_section_summary to "Resumen",
+    MessageKey.client_checkout_notes_label to "Notas para el negocio",
+    MessageKey.client_checkout_notes_placeholder to "Ej: sin cebolla, timbre roto, etc.",
+    MessageKey.client_checkout_confirm_button to "Confirmar pedido",
+    MessageKey.client_checkout_confirming to "Confirmando pedido...",
+    MessageKey.client_checkout_success_title to "Pedido confirmado",
+    MessageKey.client_checkout_success_subtitle to "Tu pedido fue enviado al negocio",
+    MessageKey.client_checkout_success_shortcode_label to "Código de seguimiento",
+    MessageKey.client_checkout_success_view_orders to "Ver mis pedidos",
+    MessageKey.client_checkout_success_back_home to "Volver al inicio",
+    MessageKey.client_checkout_error_generic to "No se pudo crear el pedido. Intentá de nuevo.",
+    MessageKey.client_checkout_error_retry to "Reintentar",
+
     // Centro de notificaciones
     MessageKey.client_notifications_title to "Notificaciones",
     MessageKey.client_notifications_empty to "No hay notificaciones por el momento.",

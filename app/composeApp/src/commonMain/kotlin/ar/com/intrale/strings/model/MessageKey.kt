@@ -780,6 +780,25 @@ enum class MessageKey {
     two_factor_verify_error_invalid,
     two_factor_verify_code_hint,
 
+    // Checkout / Confirmación de pedido
+    client_checkout_title,
+    client_checkout_subtitle,
+    client_checkout_section_items,
+    client_checkout_section_address,
+    client_checkout_section_payment,
+    client_checkout_section_summary,
+    client_checkout_notes_label,
+    client_checkout_notes_placeholder,
+    client_checkout_confirm_button,
+    client_checkout_confirming,
+    client_checkout_success_title,
+    client_checkout_success_subtitle,
+    client_checkout_success_shortcode_label,
+    client_checkout_success_view_orders,
+    client_checkout_success_back_home,
+    client_checkout_error_generic,
+    client_checkout_error_retry,
+
     // Centro de notificaciones
     client_notifications_title,
     client_notifications_empty,
