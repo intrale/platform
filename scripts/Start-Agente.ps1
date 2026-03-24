@@ -640,7 +640,7 @@ function Start-UnAgente {
     # Leer modelo del plan (default: sonnet)
     $agentModel = if ($Agente.PSObject.Properties["model"] -and $Agente.model) { $Agente.model } else { "sonnet" }
 
-    Write-Host ">> Abriendo terminal con claude (modelo: $agentModel)..."
+    Write-Host ">> Lanzando agente en background (modelo: $agentModel)..."
     $proc = Start-Process powershell -ArgumentList (
         "-ExecutionPolicy", "Bypass",
         "-File", $streamScript,
@@ -652,7 +652,7 @@ function Start-UnAgente {
         "-Slug", $slug,
         "-Branch", $branch,
         "-Model", $agentModel
-    ) -PassThru
+    ) -WindowStyle Hidden -PassThru
 
     # Extraer PID de forma segura — $proc.Id puede fallar si el proceso terminó inmediatamente
     $procId = $null
