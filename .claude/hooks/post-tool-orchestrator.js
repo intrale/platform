@@ -109,7 +109,9 @@ function runEnsurePermissions() {
         }
 
         if (modified) {
-            fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n", "utf8");
+            const tmpPath = SETTINGS_FILE + ".tmp." + process.pid;
+            fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+            fs.renameSync(tmpPath, SETTINGS_FILE);
         }
 
         // Actualizar flag
@@ -154,7 +156,9 @@ function runPermissionTracker(data, toolName) {
                 allow.push(pattern);
                 settings.permissions = settings.permissions || {};
                 settings.permissions.allow = allow;
-                fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+                const tmpPath2 = settingsPath + ".tmp." + process.pid;
+                fs.writeFileSync(tmpPath2, JSON.stringify(settings, null, 2) + "\n", "utf8");
+                fs.renameSync(tmpPath2, settingsPath);
                 written = true;
             } catch (e) { /* ignorar errores individuales */ }
         }

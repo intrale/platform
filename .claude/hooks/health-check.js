@@ -405,8 +405,12 @@ function checkSettings() {
         try {
             const content = fs.readFileSync(f, "utf8");
             JSON.parse(content);
-            // Backup automatico: copiar a .bak cuando es valido
-            try { fs.copyFileSync(f, f + ".bak"); } catch (_) {}
+            // Backup automatico: escritura atomica a .bak cuando es valido
+            try {
+                const bakTmp = f + ".bak.tmp." + process.pid;
+                fs.writeFileSync(bakTmp, content, "utf8");
+                fs.renameSync(bakTmp, f + ".bak");
+            } catch (_) {}
         } catch (e) {
             // Recovery capa 1: intentar .bak
             let recovered = false;
@@ -430,6 +434,20 @@ function checkSettings() {
                     fs.writeFileSync(f, gitContent, "utf8");
                     result.details.push(name + ": RESTAURADO desde git HEAD");
                     log(name + " restaurado desde git HEAD");
+                    recovered = true;
+                } catch (_) {}
+            }
+
+            // Recovery capa 3: regenerar settings.local.json con estructura minima valida
+            if (!recovered && name === "settings.local.json") {
+                try {
+                    const minimal = JSON.stringify({ permissions: { allow: [], deny: [] } }, null, 2);
+                    const tmpPath = f + ".tmp." + process.pid;
+                    fs.writeFileSync(tmpPath, minimal, "utf8");
+                    fs.renameSync(tmpPath, f); // rename atomico
+                    fs.copyFileSync(f, f + ".bak");
+                    result.details.push(name + ": REGENERADO con estructura mínima");
+                    log(name + " regenerado con estructura mínima (permisos se repoblarán)");
                     recovered = true;
                 } catch (_) {}
             }

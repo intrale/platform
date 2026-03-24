@@ -314,24 +314,33 @@ function checkHeadChangeAndRestart() {
         restarted = true;
     }
 
-    // Matar watcher si está corriendo
+    // S1-FIX: Proteger watcher durante hot-reload si hay agentes activos
+    const sprintActive = isSprintActive();
     const wtStatus = checkWatcherPid();
     if (wtStatus.running && wtStatus.pid) {
-        killProcess(wtStatus.pid, "Watcher");
-        restarted = true;
+        if (sprintActive) {
+            log("Hot-reload PARCIAL: watcher preservado (sprint activo con agentes corriendo)");
+        } else {
+            killProcess(wtStatus.pid, "Watcher");
+            restarted = true;
+        }
     }
 
     if (restarted) {
         // P-15: Registrar hot-reload en ops-learnings
+        const affected = ["commander-launcher.js", "telegram-commander.js"];
+        if (!sprintActive) affected.push("agent-watcher.js");
         if (opsLearnings) {
             try {
                 opsLearnings.recordLearning({
                     source: "commander-launcher",
                     category: "hot-reload",
                     severity: "low",
-                    symptom: "HEAD cambió, reiniciando commander/watcher para cargar hooks actualizados",
+                    symptom: sprintActive
+                        ? "HEAD cambió, reiniciando commander (watcher preservado — sprint activo)"
+                        : "HEAD cambió, reiniciando commander/watcher para cargar hooks actualizados",
                     root_cause: "merge en main: " + lastHead.substring(0, 8) + " → " + currentHead.substring(0, 8),
-                    affected: ["commander-launcher.js", "telegram-commander.js", "agent-watcher.js"],
+                    affected: affected,
                     auto_detected: true
                 });
             } catch (e) {}
@@ -344,6 +353,10 @@ function checkHeadChangeAndRestart() {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 function main() {
+    // S2-FIX: Verificar watcher ANTES del cooldown — es critico que el supervisor
+    // de agentes esté vivo siempre que haya sprint activo, independiente del estado del commander
+    checkAndLaunchWatcher();
+
     // P-06: Skip si última verificación exitosa fue hace <60s
     if (isLauncherCooldownActive()) return;
 
@@ -355,8 +368,7 @@ function main() {
     const status = checkLockfile();
 
     if (status.running && !headChanged) {
-        // Commander ya corriendo — verificar watcher y actualizar cooldown
-        checkAndLaunchWatcher();
+        // Commander ya corriendo — watcher ya verificado arriba
         updateLauncherCooldown();
         return;
     }
@@ -365,8 +377,7 @@ function main() {
     // esperar a que Telegram libere la conexión vieja (POLL_TIMEOUT_SEC + margen)
     if (isConflictCooldownActive()) {
         // NO logear — esto se ejecuta en cada tool use y llenaría el log
-        // Pero sí verificar el watcher (es independiente del commander)
-        checkAndLaunchWatcher();
+        // Watcher ya verificado al inicio de main()
         return;
     }
 
@@ -380,7 +391,7 @@ function main() {
     const recheck = checkLockfile();
     if (recheck.running) {
         releaseLaunchingFlag();
-        checkAndLaunchWatcher();
+        // Watcher ya verificado al inicio de main()
         updateLauncherCooldown();
         return;
     }
@@ -404,9 +415,7 @@ function main() {
     }
 
     launchCommander();
-
-    // Verificar watcher después de lanzar commander
-    checkAndLaunchWatcher();
+    // Watcher ya verificado al inicio de main()
 }
 
 /**
