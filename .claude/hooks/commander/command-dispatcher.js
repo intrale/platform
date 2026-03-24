@@ -122,6 +122,10 @@ function parseCommand(text) {
         return { type: "sprint", agentNumber: arg ? parseInt(arg, 10) : null };
     }
 
+    if (trimmed === "/reset" || trimmed === "/reset confirm") {
+        return { type: "reset", confirmed: trimmed === "/reset confirm" };
+    }
+
     if (trimmed === "/reset-sprint" || trimmed === "/reset-sprint confirm") {
         return { type: "reset_sprint", confirmed: trimmed === "/reset-sprint confirm" };
     }
@@ -261,7 +265,8 @@ async function handleHelp() {
     msg += "  /pendientes — Preguntas pendientes sin responder\n";
     msg += "  /retry — Reactivar permisos expirados\n";
     msg += "  /limpiar — Borrar mensajes con más de 4 horas\n";
-    msg += "  /restart — Reinicio operativo completo (state files + verificaciones)\n";
+    msg += "  /restart — Reinicio operativo suave (state files + verificaciones)\n";
+    msg += "  /reset — HARD RESET: mata todo, pull main, reinicia infra desde cero\n";
     const monIntervalMin = Math.round(_sprintManager.getSprintMonitorIntervalMs() / 60000);
     msg += "\n<b>Monitor periódico:</b>\n";
     msg += "  Durante un sprint, se envía automáticamente un dashboard cada " + monIntervalMin + " min.\n";
@@ -450,6 +455,57 @@ async function handleLimpiar() {
     } catch (e) {
         _log("Error en handleLimpiar: " + e.message);
         await _tgApi.sendMessage("⚠️ Error en limpieza: <code>" + _tgApi.escHtml(e.message) + "</code>");
+    }
+}
+
+async function handleReset(confirmed) {
+    if (!confirmed) {
+        await _tgApi.sendMessage(
+            "🔴 <b>RESET COMPLETO</b>\n\n"
+            + "Esto va a:\n"
+            + "• Matar TODOS los procesos (agentes, watcher, commander, dashboard)\n"
+            + "• Limpiar TODOS los worktrees de agentes\n"
+            + "• Resetear TODOS los state files\n"
+            + "• Pull de la última versión de main\n"
+            + "• Reiniciar commander + dashboard\n\n"
+            + "⚠️ Se perderá el progreso de agentes en ejecución.\n\n"
+            + "Confirmar: <code>/reset confirm</code>"
+        );
+        return;
+    }
+    await _tgApi.sendMessage("🔴 <b>RESET COMPLETO</b> — ejecutando...");
+    try {
+        const scriptPath = path.join(_repoRoot, "scripts", "reset-operations.js");
+        if (!fs.existsSync(scriptPath)) {
+            await _tgApi.sendMessage("❌ Script no encontrado: <code>scripts/reset-operations.js</code>");
+            return;
+        }
+        // El script mata al commander actual, así que lo ejecutamos y dejamos que
+        // el nuevo commander arranque solo via el script
+        const { execSync } = require("child_process");
+        const output = execSync("node \"" + scriptPath + "\" --json --notify", {
+            timeout: 60000,
+            encoding: "utf8",
+            stdio: ["pipe", "pipe", "pipe"],
+            cwd: _repoRoot,
+        });
+        // Si llegamos acá es porque el commander no se mató (caso raro)
+        try {
+            const report = JSON.parse(output);
+            let msg = (report.status === "ok" ? "✅" : "⚠️") + " <b>RESET COMPLETO</b> — " + report.elapsed_seconds + "s\n\n";
+            msg += "🔪 " + report.killed + " procesos matados\n";
+            msg += "📁 " + report.worktrees_cleaned + " worktrees limpiados\n";
+            msg += "🗂 " + report.state_files_reset + " state files reseteados\n";
+            msg += "📥 Git: " + report.git.status + "\n";
+            msg += "\n🟢 Sistema listo para operar";
+            await _tgApi.sendMessage(msg);
+        } catch {
+            await _tgApi.sendMessage("✅ Reset ejecutado. Verificar con /status");
+        }
+    } catch (e) {
+        _log("Error en handleReset: " + e.message);
+        // Es probable que el error sea porque el commander fue matado — eso es correcto
+        // El nuevo commander arrancará y tomará los mensajes
     }
 }
 
@@ -831,6 +887,7 @@ module.exports = {
     handlePendientes,
     handleRetry,
     handleLimpiar,
+    handleReset,
     handleRestart,
     handleSkill,
     handleFreetext,
