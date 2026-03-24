@@ -195,33 +195,28 @@ function buildExecutionSummary(sessionId, repoRoot) {
  * Formatea el resumen como mensaje HTML para Telegram.
  */
 function formatTelegramHtml(summary) {
+    // P3-UX: Mensaje compacto sin datos técnicos (herramientas, rama, duración)
+    // Solo: issue + título + tareas + PR + resumen
     const lines = [];
-    lines.push("🤖 <b>Ejecución finalizada</b>");
-    lines.push("");
-    lines.push(`🎯 <b>Agente:</b> ${escapeHtml(summary.agentName)}`);
 
     if (summary.issueNumber) {
-        const title = summary.issueTitle ? ` — ${escapeHtml(summary.issueTitle)}` : "";
-        lines.push(`🔖 <b>Issue:</b> #${summary.issueNumber}${title}`);
+        const title = summary.issueTitle ? escapeHtml(summary.issueTitle) : "";
+        const status = summary.tasksTotal > 0 && summary.tasksCompleted >= summary.tasksTotal ? "Listo" : "Finalizado";
+        lines.push(`✅ <b>#${summary.issueNumber} ${title}</b> — ${status}`);
+    } else {
+        lines.push("✅ <b>Ejecución finalizada</b>");
     }
 
     if (summary.tasksTotal > 0) {
-        lines.push(`✅ <b>Tareas:</b> ${summary.tasksCompleted}/${summary.tasksTotal}`);
-    }
-
-    lines.push(`🛠 <b>Herramientas:</b> ${summary.actionCount} acciones${summary.topTools ? ` (${escapeHtml(summary.topTools)})` : ""}`);
-
-    if (summary.branch) {
-        lines.push(`🌿 <b>Rama:</b> ${escapeHtml(summary.branch)}`);
+        lines.push(`Tareas: ${summary.tasksCompleted}/${summary.tasksTotal}`);
     }
 
     if (summary.pr) {
         const stateEmoji = summary.pr.state === "MERGED" ? "🟣" : summary.pr.state === "OPEN" ? "🟢" : "🔴";
-        lines.push(`🔗 <b>PR:</b> #${summary.pr.number} ${escapeHtml(summary.pr.title)} [${stateEmoji} ${summary.pr.state}]`);
+        lines.push(`PR: #${summary.pr.number} [${stateEmoji} ${summary.pr.state}]`);
     }
 
-    lines.push(`⏱ <b>Duración:</b> ${summary.durationMin} min`);
-
+    // Datos eliminados: herramientas (topTools), rama (redundante con issue), duración
     return lines.join("\n");
 }
 

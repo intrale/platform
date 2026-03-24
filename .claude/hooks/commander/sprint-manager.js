@@ -183,54 +183,58 @@ function fetchDashboardSections(width) {
 }
 
 async function handleMonitorDashboard() {
-    _log("Handling /monitor via dashboard sections");
+    _log("Handling /monitor via overview screenshot");
 
-    const sectionLabels = {
-        kpis: "\ud83d\udcca <b>KPIs</b> \u2014 Agentes, permisos, CI/CD, acciones, alertas",
-        ejecucion: "\ud83d\ude80 <b>Ejecuci\u00f3n & Agentes</b> \u2014 Estado del sprint activo",
-        flujo: "\ud83d\udd00 <b>Flujo de Agentes</b> \u2014 Interacciones entre agentes",
-        feed: "\ud83d\udce1 <b>Feed</b> \u2014 \u00daltimas acciones en tiempo real",
-        permisos: "\ud83d\udd10 <b>Permisos</b> \u2014 Solicitudes pendientes y recientes",
-        metricas: "\ud83d\udcc8 <b>M\u00e9tricas</b> \u2014 Rendimiento de agentes",
-        roadmap: "\ud83d\uddfa\ufe0f <b>Roadmap</b> \u2014 Sprints planificados y progreso",
-        standalone: "\ud83e\udde9 <b>Standalone</b> \u2014 Sesiones fuera del sprint",
-        ci: "\u2699\ufe0f <b>CI/CD</b> \u2014 Estado de GitHub Actions"
-    };
-
-    try {
-        const sections = await fetchDashboardSections(600);
-        if (sections && sections.length > 0) {
-            const timestamp = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-            const headerCaption = "\ud83d\udcca <b>Intrale Monitor</b>\n" + timestamp;
-            const photos = sections.map(s => Buffer.from(s.image, "base64"));
-            const captions = sections.map((s, i) => i === 0 ? headerCaption : (sectionLabels[s.id] || s.id));
-            for (let i = 0; i < photos.length; i += 10) {
-                const batch = photos.slice(i, i + 10);
-                const batchCaptions = captions.slice(i, i + 10);
-                await _tgApi.sendTelegramMediaGroupWithCaptions(batch, batchCaptions);
-            }
-            _log("/monitor sections enviadas: " + sections.length + " [" + sections.map(s => s.id).join(", ") + "]");
-            return true;
-        }
-    } catch (e) {
-        _log("/monitor sections error: " + e.message);
-    }
-
+    // P1-UX: Enviar 1 sola foto del overview + botones para ver mas detalle
+    // En vez de 9 secciones separadas que generan spam
     try {
         const screenshot = await fetchDashboardScreenshot(600, 800);
         if (screenshot && screenshot.length > 1000) {
-            const caption = "\ud83d\udcca <b>Intrale Monitor</b>\n" +
-                new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-            await _tgApi.sendTelegramPhoto(screenshot, caption, false);
-            _log("/monitor screenshot single fallback enviado OK");
+            const timestamp = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+            const caption = "\ud83d\udcca <b>Intrale Monitor</b> \u2014 " + timestamp;
+            // Enviar foto con botones inline para ver secciones individuales bajo demanda
+            await _tgApi.telegramPost("sendPhoto", {
+                chat_id: _tgApi.getChatId(),
+                photo: null, // se envia como multipart
+                caption: caption,
+                parse_mode: "HTML",
+                disable_notification: true,
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: "\ud83d\uddfa Roadmap", callback_data: "dash:roadmap" },
+                            { text: "\ud83d\udcc8 Metricas", callback_data: "dash:activity" },
+                            { text: "\u2699 CI/CD", callback_data: "dash:cicd" }
+                        ],
+                        [
+                            { text: "\ud83d\udd00 Flujo", callback_data: "dash:flow" },
+                            { text: "\ud83d\udcdd Logs", callback_data: "dash:logs" }
+                        ]
+                    ]
+                }
+            });
+            // Fallback: enviar foto directamente si telegramPost con botones falla
+            if (!screenshot._sent) {
+                await _tgApi.sendTelegramPhoto(screenshot, caption, true);
+            }
+            _log("/monitor overview enviado OK (1 foto + botones)");
             return true;
         }
     } catch (e) {
-        _log("/monitor screenshot fallback error: " + e.message);
+        _log("/monitor overview error: " + e.message);
+        // Fallback: intentar enviar foto sin botones
+        try {
+            const screenshot2 = await fetchDashboardScreenshot(600, 800);
+            if (screenshot2 && screenshot2.length > 1000) {
+                const ts = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+                await _tgApi.sendTelegramPhoto(screenshot2, "\ud83d\udcca <b>Monitor</b> \u2014 " + ts, true);
+                return true;
+            }
+        } catch (_) {}
     }
 
-    // Fallback: obtener datos JSON y enviar como texto
-    _log("/monitor fallback a texto");
+    // Fallback texto compacto: sin session IDs, sin datos tecnicos
+    _log("/monitor fallback a texto compacto");
     try {
         const statusData = await new Promise((resolve) => {
             const req = http.get("http://localhost:" + DASHBOARD_PORT + "/api/status", { timeout: 5000 }, (res) => {
@@ -240,34 +244,27 @@ async function handleMonitorDashboard() {
             req.on("error", () => resolve(null));
         });
         if (statusData) {
-            let text = "\ud83d\udcca <b>Intrale Monitor</b>\n\n";
-            text += "\u25cf Agentes: <b>" + statusData.activeSessions + "</b> activos";
-            if (statusData.idleSessions > 0) text += ", " + statusData.idleSessions + " idle";
-            text += "\n\u25cf Tareas: <b>" + statusData.completedTasks + "/" + statusData.totalTasks + "</b> completadas\n";
-            text += "\u25cf CI: <b>" + (statusData.ciStatus === "ok" ? "\u2705 OK" : statusData.ciStatus === "fail" ? "\u274c FAIL" : statusData.ciStatus) + "</b>\n";
-            text += "\u25cf Acciones: <b>" + statusData.totalActions + "</b>\n";
+            let text = "\ud83d\udcca <b>Monitor</b>\n\n";
+            text += "Agentes: <b>" + statusData.activeSessions + "</b> activos\n";
+            text += "Tareas: <b>" + statusData.completedTasks + "/" + statusData.totalTasks + "</b>\n";
+            text += "CI: " + (statusData.ciStatus === "ok" ? "\u2705" : statusData.ciStatus === "fail" ? "\u274c" : "\u2014") + "\n";
             if (statusData.sessions && statusData.sessions.length > 0) {
-                text += "\n<b>Sesiones:</b>\n";
+                text += "\n";
                 for (const s of statusData.sessions) {
-                    const icon = s.status === "active" ? "\ud83d\udfe2" : s.status === "idle" ? "\ud83d\udfe1" : "\u26aa";
-                    text += icon + " <b>" + _tgApi.escHtml(s.agent || s.id) + "</b> (" + _tgApi.escHtml(s.branch || "?") + ") " + s.actions + " acciones\n";
-                    if (s.tasks && s.tasks.length > 0) {
-                        for (const t of s.tasks) {
-                            const tIcon = t.status === "completed" ? "\u2611" : t.status === "in_progress" ? "\u25b6\ufe0f" : "\u2610";
-                            text += "  " + tIcon + " " + _tgApi.escHtml(t.subject) + (t.progress > 0 ? " (" + t.progress + "%)" : "") + "\n";
-                        }
-                    }
+                    if (s.status === "stale") continue;
+                    const icon = s.status === "active" ? "\ud83d\udfe2" : "\ud83d\udfe1";
+                    const name = (s.agent || "Agente").replace(/^Agente\s*/, "#");
+                    text += icon + " " + _tgApi.escHtml(name) + "\n";
                 }
             }
-            text += "\n\ud83d\udcbb " + new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-            await _tgApi.sendLongMessage(text);
+            await _tgApi.sendMessage(text, true);
             return true;
         }
     } catch (e) {
         _log("/monitor fallback text error: " + e.message);
     }
 
-    await _tgApi.sendMessage("\u26a0\ufe0f Dashboard no disponible en localhost:" + DASHBOARD_PORT + ". \u00bfEst\u00e1 corriendo el server?");
+    await _tgApi.sendMessage("\u26a0\ufe0f Dashboard no disponible. Verificar con /status");
     return false;
 }
 
