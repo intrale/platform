@@ -781,6 +781,36 @@ function updateSession(sessionId, ts, toolName, target, toolInput, usage) {
                 }
             } catch (e) { /* no bloquear hook */ }
         }
+
+        // ─── Heartbeat file para agent-coordinator.js ──────────
+        // Escribe agent-{issue}.heartbeat cada 60s como señal de vida.
+        // El coordinator lee estos archivos en vez de depender de PIDs.
+        if (session.branch && /^agent\/\d+/.test(session.branch)) {
+            const issueMatch = session.branch.match(/^agent\/(\d+)/);
+            if (issueMatch) {
+                const issueNum = issueMatch[1];
+                const hbFile = path.join(REPO_ROOT, ".claude", "hooks", "agent-" + issueNum + ".heartbeat");
+                const HEARTBEAT_INTERVAL_MS = 60 * 1000; // escribir max cada 60s
+                let shouldWriteHb = true;
+                try {
+                    if (fs.existsSync(hbFile)) {
+                        const stat = fs.statSync(hbFile);
+                        if (Date.now() - stat.mtimeMs < HEARTBEAT_INTERVAL_MS) shouldWriteHb = false;
+                    }
+                } catch (e) {}
+                if (shouldWriteHb) {
+                    try {
+                        fs.writeFileSync(hbFile, JSON.stringify({
+                            issue: parseInt(issueNum, 10),
+                            session: sessionId.substring(0, 8),
+                            ts: new Date().toISOString(),
+                            branch: session.branch,
+                            pid: session.pid || process.ppid || null
+                        }), "utf8");
+                    } catch (e) { /* no bloquear hook */ }
+                }
+            }
+        }
     } catch(e) { /* no bloquear hook por error de sesion */ }
 }
 

@@ -885,28 +885,42 @@ if ($Numero -eq "all") {
     Write-Host ">> Monitoreo delegado a telegram-commander.js (agent-monitor integrado)." -ForegroundColor Cyan
     Write-Host ">> Reporte post-sprint se generara automaticamente cuando terminen." -ForegroundColor Cyan
 
-    # Agent Watcher — reactivado con grace period de 15 min (#1553)
-    $watcherScript  = Join-Path $MainRepo ".claude\hooks\agent-watcher.js"
-    $watcherPidFile = Join-Path $MainRepo ".claude\hooks\agent-watcher.pid"
+    # Agent Coordinator — reemplaza agent-watcher.js (event-driven, único writer)
+    $coordinatorScript  = Join-Path $MainRepo ".claude\hooks\agent-coordinator.js"
+    $coordinatorPidFile = Join-Path $MainRepo ".claude\hooks\agent-coordinator.pid"
 
-    $watcherRunning = $false
-    if (Test-Path $watcherPidFile) {
-        $existingWatcherPid = Get-Content $watcherPidFile -ErrorAction SilentlyContinue
-        if ($existingWatcherPid) {
-            $watcherProc = Get-Process -Id ([int]$existingWatcherPid) -ErrorAction SilentlyContinue
-            if ($watcherProc) { $watcherRunning = $true }
+    $coordinatorRunning = $false
+    if (Test-Path $coordinatorPidFile) {
+        $existingCoordPid = Get-Content $coordinatorPidFile -ErrorAction SilentlyContinue
+        if ($existingCoordPid) {
+            $coordProc = Get-Process -Id ([int]$existingCoordPid) -ErrorAction SilentlyContinue
+            if ($coordProc) { $coordinatorRunning = $true }
         }
     }
 
-    if ($watcherRunning) {
-        Write-Host ">> Agent Watcher ya activo (PID $existingWatcherPid)" -ForegroundColor Cyan
+    if ($coordinatorRunning) {
+        Write-Host ">> Agent Coordinator ya activo (PID $existingCoordPid)" -ForegroundColor Cyan
     } else {
-        $watcher = Start-Process -FilePath "node" `
-            -ArgumentList $watcherScript `
+        # Matar watcher legacy si está corriendo
+        $legacyWatcherPid = Join-Path $MainRepo ".claude\hooks\agent-watcher.pid"
+        if (Test-Path $legacyWatcherPid) {
+            $oldPid = Get-Content $legacyWatcherPid -ErrorAction SilentlyContinue
+            if ($oldPid) {
+                $oldProc = Get-Process -Id ([int]$oldPid) -ErrorAction SilentlyContinue
+                if ($oldProc) {
+                    Stop-Process -Id ([int]$oldPid) -Force -ErrorAction SilentlyContinue
+                    Write-Host ">> Watcher legacy (PID $oldPid) detenido" -ForegroundColor Yellow
+                }
+            }
+            Remove-Item $legacyWatcherPid -Force -ErrorAction SilentlyContinue
+        }
+
+        $coordinator = Start-Process -FilePath "node" `
+            -ArgumentList $coordinatorScript `
             -WindowStyle Hidden -PassThru `
             -WorkingDirectory $MainRepo
-        $watcherId = try { $watcher.Id } catch { "?" }
-        Write-Host ">> Agent Watcher iniciado (PID $watcherId, grace period 15 min) — fix #1553" -ForegroundColor Green
+        $coordId = try { $coordinator.Id } catch { "?" }
+        Write-Host ">> Agent Coordinator iniciado (PID $coordId, event-driven + heartbeat)" -ForegroundColor Green
     }
 }
 else {
