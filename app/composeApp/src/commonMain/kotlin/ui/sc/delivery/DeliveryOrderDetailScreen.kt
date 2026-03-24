@@ -1,7 +1,10 @@
 package ui.sc.delivery
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,9 +14,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -41,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -49,6 +55,7 @@ import ar.com.intrale.strings.model.MessageKey
 import asdo.delivery.DeliveryOrderDetail
 import asdo.delivery.DeliveryOrderItem
 import asdo.delivery.DeliveryOrderStatus
+import asdo.delivery.DeliveryStatusHistoryEntry
 import kotlinx.coroutines.launch
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -173,9 +180,9 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                             OrderStatusSection(
                                 detail = detail,
                                 isUpdating = state.updatingStatus,
-                                onStartDelivery = {
+                                onAdvanceStatus = {
                                     coroutineScope.launch {
-                                        viewModel.updateStatus(DeliveryOrderStatus.IN_PROGRESS)
+                                        viewModel.advanceToNextStatus()
                                     }
                                 },
                                 onConfirmDelivered = { viewModel.showDeliveredConfirm() },
@@ -188,6 +195,7 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                             detail.notes?.let { notes ->
                                 NotesSection(notes)
                             }
+                            StatusHistorySection(state.statusHistory)
                         }
                     }
                 }
@@ -202,7 +210,7 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
 private fun OrderStatusSection(
     detail: DeliveryOrderDetail,
     isUpdating: Boolean,
-    onStartDelivery: () -> Unit,
+    onAdvanceStatus: () -> Unit,
     onConfirmDelivered: () -> Unit,
     onNotDelivered: () -> Unit
 ) {
@@ -230,6 +238,8 @@ private fun OrderStatusSection(
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
 
+            DeliveryStatusStepper(currentStatus = detail.status)
+
             detail.eta?.let { eta ->
                 Text(
                     text = Txt(MessageKey.delivery_order_detail_eta, mapOf("eta" to eta)),
@@ -250,37 +260,106 @@ private fun OrderStatusSection(
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp))
                 }
-            } else {
-                when (detail.status) {
-                    DeliveryOrderStatus.PENDING -> {
-                        IntralePrimaryButton(
-                            text = Txt(MessageKey.delivery_order_action_start),
-                            onClick = onStartDelivery,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    DeliveryOrderStatus.IN_PROGRESS -> {
-                        IntralePrimaryButton(
-                            text = Txt(MessageKey.delivery_order_action_deliver),
-                            onClick = onConfirmDelivered,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedButton(
-                            onClick = onNotDelivered,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = MaterialTheme.colorScheme.error
-                            ),
-                            border = BorderStroke(
-                                width = 1.dp,
-                                color = MaterialTheme.colorScheme.error
+            } else if (!detail.status.isFinal()) {
+                if (detail.status.canAdvance()) {
+                    val actionLabel = nextStatusActionLabel(detail.status)
+                    if (actionLabel.isNotEmpty()) {
+                        if (detail.status.nextStatus() == DeliveryOrderStatus.DELIVERED) {
+                            IntralePrimaryButton(
+                                text = actionLabel,
+                                onClick = onConfirmDelivered,
+                                modifier = Modifier.fillMaxWidth()
                             )
-                        ) {
-                            Text(text = Txt(MessageKey.delivery_order_action_not_delivered))
+                        } else {
+                            IntralePrimaryButton(
+                                text = actionLabel,
+                                onClick = onAdvanceStatus,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
-                    else -> { /* Sin acciones para DELIVERED, NOT_DELIVERED y UNKNOWN */ }
                 }
+                if (detail.status.canMarkNotDelivered()) {
+                    OutlinedButton(
+                        onClick = onNotDelivered,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        ),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text(text = Txt(MessageKey.delivery_order_action_not_delivered))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeliveryStatusStepper(currentStatus: DeliveryOrderStatus) {
+    val steps = DeliveryOrderStatus.DELIVERY_SEQUENCE
+    val currentIndex = currentStatus.stepIndex()
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = MaterialTheme.spacing.x2),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        steps.forEachIndexed { index, _ ->
+            val isCompleted = index < currentIndex
+            val isCurrent = index == currentIndex
+            val color = when {
+                isCompleted -> MaterialTheme.colorScheme.primary
+                isCurrent -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.outlineVariant
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(if (isCurrent) 28.dp else 20.dp)
+                    .background(
+                        color = if (isCompleted || isCurrent) color else Color.Transparent,
+                        shape = CircleShape
+                    )
+                    .then(
+                        if (!isCompleted && !isCurrent)
+                            Modifier.border(2.dp, color, CircleShape)
+                        else Modifier
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isCompleted) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                } else if (isCurrent) {
+                    Text(
+                        text = "${index + 1}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+
+            if (index < steps.lastIndex) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(2.dp)
+                        .background(
+                            if (index < currentIndex) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant
+                        )
+                )
             }
         }
     }
@@ -542,6 +621,68 @@ private fun NotesSection(notes: String) {
             text = notes,
             style = MaterialTheme.typography.bodyMedium
         )
+    }
+}
+
+@Composable
+private fun StatusHistorySection(history: List<DeliveryStatusHistoryEntry>) {
+    if (history.isEmpty()) return
+
+    SectionCard(title = Txt(MessageKey.delivery_order_detail_section_history)) {
+        history.forEachIndexed { index, entry ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val isLast = index == history.lastIndex
+                Box(
+                    modifier = Modifier
+                        .size(12.dp)
+                        .background(
+                            color = if (isLast) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant,
+                            shape = CircleShape
+                        )
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = orderStatusLabel(entry.status),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal
+                    )
+                    if (entry.timestamp.isNotBlank()) {
+                        Text(
+                            text = formatTimestamp(entry.timestamp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    entry.reason?.let { reason ->
+                        Text(
+                            text = Txt(MessageKey.delivery_order_history_reason, mapOf("reason" to reason)),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+            if (index < history.lastIndex) {
+                Spacer(modifier = Modifier.height(MaterialTheme.spacing.x1))
+            }
+        }
+    }
+}
+
+private fun formatTimestamp(timestamp: String): String {
+    return try {
+        if (timestamp.contains("T")) {
+            timestamp.substringAfter("T").take(5)
+        } else {
+            timestamp.take(5)
+        }
+    } catch (_: Exception) {
+        timestamp
     }
 }
 

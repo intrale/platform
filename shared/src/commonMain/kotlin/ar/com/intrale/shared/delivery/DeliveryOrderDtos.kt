@@ -12,6 +12,13 @@ data class DeliveryOrderItemDTO(
 )
 
 @Serializable
+data class DeliveryStatusHistoryEntryDTO(
+    val status: String = "",
+    val timestamp: String = "",
+    val reason: String? = null
+)
+
+@Serializable
 data class DeliveryOrderDTO(
     val id: String = "",
     @SerialName("publicId")
@@ -43,7 +50,9 @@ data class DeliveryOrderDTO(
     @SerialName("createdAt")
     val createdAt: String? = null,
     @SerialName("updatedAt")
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    @SerialName("statusHistory")
+    val statusHistory: List<DeliveryStatusHistoryEntryDTO>? = null
 )
 
 @Serializable

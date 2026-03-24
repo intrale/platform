@@ -6,8 +6,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import asdo.delivery.DeliveryOrderDetail
 import asdo.delivery.DeliveryOrderStatus
+import asdo.delivery.DeliveryStatusHistoryEntry
 import asdo.delivery.ToDoGetDeliveryOrderDetail
 import asdo.delivery.ToDoUpdateDeliveryOrderStatus
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import ext.delivery.toDeliveryException
 import org.kodein.di.direct
 import org.kodein.di.instance
@@ -34,7 +38,8 @@ data class DeliveryOrderDetailUiState(
     val notDeliveredOtherText: String = "",
     val notDeliveredReasonError: Boolean = false,
     val notDeliveredOtherError: Boolean = false,
-    val notDeliveredSuccess: Boolean = false
+    val notDeliveredSuccess: Boolean = false,
+    val statusHistory: List<DeliveryStatusHistoryEntry> = emptyList()
 )
 
 class DeliveryOrderDetailViewModel(
@@ -67,7 +72,19 @@ class DeliveryOrderDetailViewModel(
         getOrderDetail.execute(orderId)
             .onSuccess { detail ->
                 logger.info { "Detalle del pedido $orderId cargado correctamente" }
-                state = state.copy(status = DeliveryOrderDetailStatus.Loaded, detail = detail)
+                val history = if (detail.statusHistory.isNotEmpty()) {
+                    detail.statusHistory
+                } else {
+                    listOf(DeliveryStatusHistoryEntry(
+                        status = detail.status,
+                        timestamp = detail.updatedAt ?: detail.createdAt ?: "",
+                    ))
+                }
+                state = state.copy(
+                    status = DeliveryOrderDetailStatus.Loaded,
+                    detail = detail,
+                    statusHistory = history
+                )
             }
             .onFailure { throwable ->
                 val deliveryError = throwable.toDeliveryException()
@@ -85,10 +102,16 @@ class DeliveryOrderDetailViewModel(
         updateOrderStatus.execute(orderId, newStatus, reason)
             .onSuccess { result ->
                 logger.info { "Estado del pedido $orderId actualizado a ${result.newStatus}" }
+                val newEntry = DeliveryStatusHistoryEntry(
+                    status = result.newStatus,
+                    timestamp = getCurrentTimestamp(),
+                    reason = reason
+                )
                 state = state.copy(
                     updatingStatus = false,
                     statusUpdateSuccess = true,
-                    detail = state.detail?.copy(status = result.newStatus)
+                    detail = state.detail?.copy(status = result.newStatus),
+                    statusHistory = state.statusHistory + newEntry
                 )
             }
             .onFailure { throwable ->
@@ -99,6 +122,15 @@ class DeliveryOrderDetailViewModel(
                     statusUpdateError = deliveryError.message ?: "Error al actualizar estado"
                 )
             }
+    }
+
+    suspend fun advanceToNextStatus() {
+        val currentStatus = state.detail?.status ?: return
+        val nextStatus = currentStatus.nextStatus() ?: run {
+            logger.warning { "No hay siguiente estado para $currentStatus" }
+            return
+        }
+        updateStatus(nextStatus)
     }
 
     fun showDeliveredConfirm() {
@@ -160,10 +192,16 @@ class DeliveryOrderDetailViewModel(
         updateOrderStatus.execute(orderId, DeliveryOrderStatus.NOT_DELIVERED, reasonText)
             .onSuccess { result ->
                 logger.info { "Pedido ${state.detail?.id} marcado como no entregado, motivo: $reasonText" }
+                val newEntry = DeliveryStatusHistoryEntry(
+                    status = result.newStatus,
+                    timestamp = getCurrentTimestamp(),
+                    reason = reasonText
+                )
                 state = state.copy(
                     updatingStatus = false,
                     notDeliveredSuccess = true,
-                    detail = state.detail?.copy(status = result.newStatus)
+                    detail = state.detail?.copy(status = result.newStatus),
+                    statusHistory = state.statusHistory + newEntry
                 )
             }
             .onFailure { throwable ->
@@ -174,6 +212,12 @@ class DeliveryOrderDetailViewModel(
                     statusUpdateError = deliveryError.message ?: "Error al actualizar estado"
                 )
             }
+    }
+
+    private fun getCurrentTimestamp(): String {
+        val instant = Clock.System.now()
+        val localDateTime = instant.toLocalDateTime(TimeZone.currentSystemDefault())
+        return "${localDateTime.hour.toString().padStart(2, '0')}:${localDateTime.minute.toString().padStart(2, '0')}"
     }
 
     fun clearStatusFeedback() {

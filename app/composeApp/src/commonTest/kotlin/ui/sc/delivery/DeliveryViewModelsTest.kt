@@ -40,12 +40,12 @@ import kotlin.test.assertTrue
 private val sampleSummary = DeliveryOrdersSummary(pending = 3, inProgress = 2, delivered = 5)
 
 private val sampleActiveOrders = listOf(
-    DeliveryOrder(id = "o1", label = "PUB-1", businessName = "Pizzeria", neighborhood = "Centro", status = DeliveryOrderStatus.PENDING, eta = "12:00"),
-    DeliveryOrder(id = "o2", label = "PUB-2", businessName = "Farmacia", neighborhood = "Norte", status = DeliveryOrderStatus.IN_PROGRESS, eta = "11:30"),
-    DeliveryOrder(id = "o3", label = "SC3", businessName = "Panaderia", neighborhood = "Sur", status = DeliveryOrderStatus.IN_PROGRESS, eta = "13:00"),
-    DeliveryOrder(id = "o4", label = "PUB-4", businessName = "Verduleria", neighborhood = "Oeste", status = DeliveryOrderStatus.PENDING, eta = "14:00"),
-    DeliveryOrder(id = "o5", label = "PUB-5", businessName = "Carniceria", neighborhood = "Este", status = DeliveryOrderStatus.PENDING, eta = "15:00"),
-    DeliveryOrder(id = "o6", label = "PUB-6", businessName = "Libreria", neighborhood = "Centro", status = DeliveryOrderStatus.PENDING, eta = "16:00"),
+    DeliveryOrder(id = "o1", label = "PUB-1", businessName = "Pizzeria", neighborhood = "Centro", status = DeliveryOrderStatus.ASSIGNED, eta = "12:00"),
+    DeliveryOrder(id = "o2", label = "PUB-2", businessName = "Farmacia", neighborhood = "Norte", status = DeliveryOrderStatus.HEADING_TO_CLIENT, eta = "11:30"),
+    DeliveryOrder(id = "o3", label = "SC3", businessName = "Panaderia", neighborhood = "Sur", status = DeliveryOrderStatus.HEADING_TO_CLIENT, eta = "13:00"),
+    DeliveryOrder(id = "o4", label = "PUB-4", businessName = "Verduleria", neighborhood = "Oeste", status = DeliveryOrderStatus.ASSIGNED, eta = "14:00"),
+    DeliveryOrder(id = "o5", label = "PUB-5", businessName = "Carniceria", neighborhood = "Este", status = DeliveryOrderStatus.ASSIGNED, eta = "15:00"),
+    DeliveryOrder(id = "o6", label = "PUB-6", businessName = "Libreria", neighborhood = "Centro", status = DeliveryOrderStatus.ASSIGNED, eta = "16:00"),
 )
 
 private val sampleProfileData = DeliveryProfileData(
@@ -89,7 +89,7 @@ private class FakeGetDeliveryOrdersSummary(
 
 private class FakeUpdateDeliveryOrderStatusForHome(
     private val result: Result<DeliveryOrderStatusUpdateResult> = Result.success(
-        DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS)
+        DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.HEADING_TO_CLIENT)
     )
 ) : ToDoUpdateDeliveryOrderStatus {
     override suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus, reason: String?): Result<DeliveryOrderStatusUpdateResult> = result
@@ -211,7 +211,7 @@ class DeliveryHomeViewModelTest {
         assertTrue(activeState is DeliveryActiveOrdersState.Loaded)
         assertEquals(5, activeState.orders.size)
         assertTrue(activeState.orders.none { it.status == DeliveryOrderStatus.DELIVERED })
-        assertEquals(DeliveryOrderStatus.PENDING, activeState.orders.first().status)
+        assertEquals(DeliveryOrderStatus.ASSIGNED, activeState.orders.first().status)
     }
 
     @Test
@@ -242,7 +242,7 @@ class DeliveryHomeViewModelTest {
         )
 
         viewModel.loadData()
-        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+        viewModel.updateStatus("o1", DeliveryOrderStatus.HEADING_TO_CLIENT)
 
         assertTrue(viewModel.state.statusUpdateSuccess)
         assertNull(viewModel.state.updatingOrderId)
@@ -262,7 +262,7 @@ class DeliveryHomeViewModelTest {
         )
 
         viewModel.loadData()
-        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+        viewModel.updateStatus("o1", DeliveryOrderStatus.HEADING_TO_CLIENT)
 
         assertTrue(viewModel.state.statusUpdateError != null)
         assertNull(viewModel.state.updatingOrderId)

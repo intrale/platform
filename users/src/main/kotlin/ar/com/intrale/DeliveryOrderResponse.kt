@@ -1,5 +1,6 @@
 package ar.com.intrale
 
+import ar.com.intrale.shared.delivery.DeliveryStatusHistoryEntryDTO
 import io.ktor.http.HttpStatusCode
 
 data class DeliveryOrdersSummaryResponse(
@@ -34,6 +35,7 @@ data class DeliveryOrderDetailResponse(
     val collectOnDelivery: Boolean? = null,
     val createdAt: String? = null,
     val updatedAt: String? = null,
+    val statusHistory: List<DeliveryStatusHistoryEntryDTO> = emptyList(),
     val responseStatus: HttpStatusCode = HttpStatusCode.OK
 ) : Response(statusCode = responseStatus)
 

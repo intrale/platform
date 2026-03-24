@@ -76,8 +76,8 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
         val retryLabel = Txt(MessageKey.delivery_orders_retry)
 
         val filterAll = Txt(MessageKey.delivery_orders_filter_all)
-        val filterPending = Txt(MessageKey.delivery_order_status_pending)
-        val filterInProgress = Txt(MessageKey.delivery_order_status_in_progress)
+        val filterAssigned = Txt(MessageKey.delivery_order_status_assigned)
+        val filterHeadingToClient = Txt(MessageKey.delivery_order_status_heading_to_client)
         val filterDelivered = Txt(MessageKey.delivery_order_status_delivered)
 
         Scaffold(
@@ -125,14 +125,14 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                             label = { Text(filterAll) }
                         )
                         FilterChip(
-                            selected = state.selectedFilter == DeliveryOrderStatus.PENDING,
-                            onClick = { viewModel.selectFilter(DeliveryOrderStatus.PENDING) },
-                            label = { Text(filterPending) }
+                            selected = state.selectedFilter == DeliveryOrderStatus.ASSIGNED,
+                            onClick = { viewModel.selectFilter(DeliveryOrderStatus.ASSIGNED) },
+                            label = { Text(filterAssigned) }
                         )
                         FilterChip(
-                            selected = state.selectedFilter == DeliveryOrderStatus.IN_PROGRESS,
-                            onClick = { viewModel.selectFilter(DeliveryOrderStatus.IN_PROGRESS) },
-                            label = { Text(filterInProgress) }
+                            selected = state.selectedFilter == DeliveryOrderStatus.HEADING_TO_CLIENT,
+                            onClick = { viewModel.selectFilter(DeliveryOrderStatus.HEADING_TO_CLIENT) },
+                            label = { Text(filterHeadingToClient) }
                         )
                         FilterChip(
                             selected = state.selectedFilter == DeliveryOrderStatus.DELIVERED,
@@ -174,7 +174,7 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                                 },
                                 onStartDelivery = {
                                     coroutineScope.launch {
-                                        viewModel.updateStatus(order.id, DeliveryOrderStatus.IN_PROGRESS)
+                                        viewModel.updateStatus(order.id, DeliveryOrderStatus.HEADING_TO_CLIENT)
                                     }
                                 },
                                 onMarkDelivered = {

@@ -12,8 +12,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val sampleDomainOrders = listOf(
-    DeliveryOrder(id = "o1", label = "PUB-1", businessName = "Pizzeria", neighborhood = "Centro", status = DeliveryOrderStatus.PENDING, eta = "12:00"),
-    DeliveryOrder(id = "o2", label = "PUB-2", businessName = "Farmacia", neighborhood = "Norte", status = DeliveryOrderStatus.IN_PROGRESS, eta = "11:30"),
+    DeliveryOrder(id = "o1", label = "PUB-1", businessName = "Pizzeria", neighborhood = "Centro", status = DeliveryOrderStatus.ASSIGNED, eta = "12:00"),
+    DeliveryOrder(id = "o2", label = "PUB-2", businessName = "Farmacia", neighborhood = "Norte", status = DeliveryOrderStatus.HEADING_TO_CLIENT, eta = "11:30"),
     DeliveryOrder(id = "o3", label = "PUB-3", businessName = "Panaderia", neighborhood = "Sur", status = DeliveryOrderStatus.DELIVERED, eta = "10:00"),
 )
 
@@ -25,7 +25,7 @@ private class FakeGetActiveOrdersForDashboard(
 
 private class FakeUpdateDeliveryOrderStatus(
     private val result: Result<DeliveryOrderStatusUpdateResult> = Result.success(
-        DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS)
+        DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.HEADING_TO_CLIENT)
     )
 ) : ToDoUpdateDeliveryOrderStatus {
     override suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus, reason: String?): Result<DeliveryOrderStatusUpdateResult> = result
@@ -81,12 +81,12 @@ class DeliveryOrdersViewModelTest {
         )
 
         viewModel.loadOrders()
-        viewModel.selectFilter(DeliveryOrderStatus.PENDING)
+        viewModel.selectFilter(DeliveryOrderStatus.ASSIGNED)
 
         assertEquals(DeliveryOrdersStatus.Loaded, viewModel.state.status)
         assertEquals(1, viewModel.state.orders.size)
-        assertEquals(DeliveryOrderStatus.PENDING, viewModel.state.orders[0].status)
-        assertEquals(DeliveryOrderStatus.PENDING, viewModel.state.selectedFilter)
+        assertEquals(DeliveryOrderStatus.ASSIGNED, viewModel.state.orders[0].status)
+        assertEquals(DeliveryOrderStatus.ASSIGNED, viewModel.state.selectedFilter)
     }
 
     @Test
@@ -97,7 +97,7 @@ class DeliveryOrdersViewModelTest {
         )
 
         viewModel.loadOrders()
-        viewModel.selectFilter(DeliveryOrderStatus.PENDING)
+        viewModel.selectFilter(DeliveryOrderStatus.ASSIGNED)
         viewModel.selectFilter(null)
 
         assertEquals(DeliveryOrdersStatus.Loaded, viewModel.state.status)
@@ -110,17 +110,17 @@ class DeliveryOrdersViewModelTest {
         val viewModel = DeliveryOrdersViewModel(
             getActiveOrders = FakeGetActiveOrdersForDashboard(),
             updateOrderStatus = FakeUpdateDeliveryOrderStatus(
-                Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS))
+                Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.HEADING_TO_CLIENT))
             )
         )
 
         viewModel.loadOrders()
-        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+        viewModel.updateStatus("o1", DeliveryOrderStatus.HEADING_TO_CLIENT)
 
         assertTrue(viewModel.state.statusUpdateSuccess)
         assertNull(viewModel.state.updatingOrderId)
         val updatedOrder = viewModel.state.orders.find { it.id == "o1" }
-        assertEquals(DeliveryOrderStatus.IN_PROGRESS, updatedOrder?.status)
+        assertEquals(DeliveryOrderStatus.HEADING_TO_CLIENT, updatedOrder?.status)
     }
 
     @Test
@@ -133,7 +133,7 @@ class DeliveryOrdersViewModelTest {
         )
 
         viewModel.loadOrders()
-        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+        viewModel.updateStatus("o1", DeliveryOrderStatus.HEADING_TO_CLIENT)
 
         assertTrue(viewModel.state.statusUpdateError != null)
         assertNull(viewModel.state.updatingOrderId)

@@ -217,8 +217,8 @@ class DoGetActiveDeliveryOrdersTest {
         assertEquals(2, orders.size)
         assertTrue(orders.none { it.status == DeliveryOrderStatus.DELIVERED })
         assertEquals("PUB-1", orders[0].label)
-        assertEquals(DeliveryOrderStatus.PENDING, orders[0].status)
-        assertEquals(DeliveryOrderStatus.IN_PROGRESS, orders[1].status)
+        assertEquals(DeliveryOrderStatus.ASSIGNED, orders[0].status)
+        assertEquals(DeliveryOrderStatus.HEADING_TO_CLIENT, orders[1].status)
     }
 
     @Test
@@ -276,12 +276,12 @@ class DoUpdateDeliveryOrderStatusTest {
     fun `actualizar estado exitoso retorna resultado mapeado`() = runTest {
         val sut = DoUpdateDeliveryOrderStatus(FakeDeliveryOrdersService())
 
-        val result = sut.execute("o1", DeliveryOrderStatus.IN_PROGRESS)
+        val result = sut.execute("o1", DeliveryOrderStatus.HEADING_TO_CLIENT)
 
         assertTrue(result.isSuccess)
         val updateResult = result.getOrThrow()
         assertEquals("o1", updateResult.orderId)
-        assertEquals(DeliveryOrderStatus.IN_PROGRESS, updateResult.newStatus)
+        assertEquals(DeliveryOrderStatus.HEADING_TO_CLIENT, updateResult.newStatus)
     }
 
     @Test
@@ -315,7 +315,7 @@ class DoGetDeliveryOrderDetailTest {
         assertEquals("PUB-1", detail.label)
         assertEquals("Pizzeria", detail.businessName)
         assertEquals("Centro", detail.neighborhood)
-        assertEquals(DeliveryOrderStatus.PENDING, detail.status)
+        assertEquals(DeliveryOrderStatus.ASSIGNED, detail.status)
         assertEquals("12:00", detail.eta)
         assertEquals("2.5 km", detail.distance)
         assertEquals("Av. Corrientes 1234", detail.address)

@@ -175,7 +175,7 @@ class DeliveryHomeScreen : Screen(DELIVERY_HOME_PATH) {
                                 },
                                 onStartDelivery = {
                                     coroutineScope.launch {
-                                        viewModel.updateStatus(order.id, DeliveryOrderStatus.IN_PROGRESS)
+                                        viewModel.updateStatus(order.id, DeliveryOrderStatus.HEADING_TO_BUSINESS)
                                     }
                                 },
                                 isUpdating = state.updatingOrderId == order.id
@@ -373,7 +373,7 @@ internal fun DeliveryOrderCard(
                 }
             } else {
                 when (order.status) {
-                    DeliveryOrderStatus.PENDING -> {
+                    DeliveryOrderStatus.ASSIGNED -> {
                         onStartDelivery?.let { callback ->
                             IntraleOutlinedButton(
                                 text = Txt(MessageKey.delivery_order_action_start),
@@ -382,7 +382,7 @@ internal fun DeliveryOrderCard(
                             )
                         }
                     }
-                    DeliveryOrderStatus.IN_PROGRESS -> {
+                    DeliveryOrderStatus.HEADING_TO_CLIENT -> {
                         onMarkDelivered?.let { callback ->
                             IntralePrimaryButton(
                                 text = Txt(MessageKey.delivery_order_action_deliver),
@@ -398,7 +398,7 @@ internal fun DeliveryOrderCard(
                             )
                         }
                     }
-                    else -> { /* Sin acciones para DELIVERED y UNKNOWN */ }
+                    else -> { /* Sin acciones para estados intermedios, finales y UNKNOWN */ }
                 }
             }
         }
@@ -448,9 +448,20 @@ internal fun DeliveryLoading() {
 
 @Composable
 internal fun orderStatusLabel(status: DeliveryOrderStatus): String = when (status) {
-    DeliveryOrderStatus.PENDING -> Txt(MessageKey.delivery_order_status_pending)
-    DeliveryOrderStatus.IN_PROGRESS -> Txt(MessageKey.delivery_order_status_in_progress)
+    DeliveryOrderStatus.ASSIGNED -> Txt(MessageKey.delivery_order_status_assigned)
+    DeliveryOrderStatus.HEADING_TO_BUSINESS -> Txt(MessageKey.delivery_order_status_heading_to_business)
+    DeliveryOrderStatus.AT_BUSINESS -> Txt(MessageKey.delivery_order_status_at_business)
+    DeliveryOrderStatus.HEADING_TO_CLIENT -> Txt(MessageKey.delivery_order_status_heading_to_client)
     DeliveryOrderStatus.DELIVERED -> Txt(MessageKey.delivery_order_status_delivered)
     DeliveryOrderStatus.NOT_DELIVERED -> Txt(MessageKey.delivery_order_status_not_delivered)
     DeliveryOrderStatus.UNKNOWN -> ""
+}
+
+@Composable
+internal fun nextStatusActionLabel(status: DeliveryOrderStatus): String = when (status.nextStatus()) {
+    DeliveryOrderStatus.HEADING_TO_BUSINESS -> Txt(MessageKey.delivery_order_action_heading_to_business)
+    DeliveryOrderStatus.AT_BUSINESS -> Txt(MessageKey.delivery_order_action_at_business)
+    DeliveryOrderStatus.HEADING_TO_CLIENT -> Txt(MessageKey.delivery_order_action_heading_to_client)
+    DeliveryOrderStatus.DELIVERED -> Txt(MessageKey.delivery_order_action_deliver)
+    else -> ""
 }

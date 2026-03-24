@@ -13,8 +13,8 @@ class DoGetActiveDeliveryOrders(
     private val logger = LoggerFactory.default.newLogger<DoGetActiveDeliveryOrders>()
 
     private val statusPriority = listOf(
-        DeliveryOrderStatus.PENDING,
-        DeliveryOrderStatus.IN_PROGRESS
+        DeliveryOrderStatus.ASSIGNED,
+        DeliveryOrderStatus.HEADING_TO_CLIENT
     )
 
     override suspend fun execute(): Result<List<DeliveryOrder>> = runCatching {

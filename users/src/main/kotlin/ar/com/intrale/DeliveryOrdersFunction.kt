@@ -86,6 +86,7 @@ class DeliveryOrdersFunction(
                     collectOnDelivery = order.collectOnDelivery,
                     createdAt = order.createdAt,
                     updatedAt = order.updatedAt,
+                    statusHistory = order.statusHistory ?: emptyList(),
                     responseStatus = HttpStatusCode.OK
                 )
             }
@@ -114,8 +115,13 @@ class DeliveryOrdersFunction(
                     Gson().fromJson(textBody, DeliveryOrderStatusUpdateRequest::class.java)
                 }.getOrNull() ?: return RequestValidationException("Invalid status update payload")
 
-                val updated = repository.updateStatus(business, orderId, request.status)
-                    ?: return ExceptionResponse("Order not found", HttpStatusCode.NotFound)
+                val updated = try {
+                    repository.updateStatus(business, orderId, request.status, request.reason)
+                        ?: return ExceptionResponse("Order not found", HttpStatusCode.NotFound)
+                } catch (e: InvalidStateTransitionException) {
+                    logger.warn("Transicion invalida para pedido $orderId: ${e.message}")
+                    return ExceptionResponse(e.message ?: "Transicion de estado no permitida", HttpStatusCode.Conflict)
+                }
 
                 DeliveryOrderStatusUpdateResponse(
                     orderId = updated.id,
@@ -131,8 +137,13 @@ class DeliveryOrdersFunction(
                     Gson().fromJson(textBody, DeliveryStateChangeRequest::class.java)
                 }.getOrNull() ?: return RequestValidationException("Invalid state change payload")
 
-                val updated = repository.updateState(business, orderId, request.state)
-                    ?: return ExceptionResponse("Order not found", HttpStatusCode.NotFound)
+                val updated = try {
+                    repository.updateState(business, orderId, request.state)
+                        ?: return ExceptionResponse("Order not found", HttpStatusCode.NotFound)
+                } catch (e: InvalidStateTransitionException) {
+                    logger.warn("Transicion invalida para pedido $orderId: ${e.message}")
+                    return ExceptionResponse(e.message ?: "Transicion de estado no permitida", HttpStatusCode.Conflict)
+                }
 
                 DeliveryStateChangeResponse(
                     orderId = updated.id,

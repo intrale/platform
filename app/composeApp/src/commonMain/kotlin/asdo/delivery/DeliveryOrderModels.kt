@@ -4,10 +4,48 @@ import ar.com.intrale.shared.delivery.DeliveryOrderDTO
 import ar.com.intrale.shared.delivery.DeliveryOrderItemDTO
 import ar.com.intrale.shared.delivery.DeliveryOrderStatusUpdateResponse
 import ar.com.intrale.shared.delivery.DeliveryOrdersSummaryDTO
+import ar.com.intrale.shared.delivery.DeliveryStatusHistoryEntryDTO
 
 enum class DeliveryOrderStatus {
-    PENDING, IN_PROGRESS, DELIVERED, NOT_DELIVERED, UNKNOWN
+    ASSIGNED, HEADING_TO_BUSINESS, AT_BUSINESS, HEADING_TO_CLIENT,
+    DELIVERED, NOT_DELIVERED, UNKNOWN;
+
+    fun nextStatus(): DeliveryOrderStatus? = when (this) {
+        ASSIGNED -> HEADING_TO_BUSINESS
+        HEADING_TO_BUSINESS -> AT_BUSINESS
+        AT_BUSINESS -> HEADING_TO_CLIENT
+        HEADING_TO_CLIENT -> DELIVERED
+        DELIVERED, NOT_DELIVERED, UNKNOWN -> null
+    }
+
+    fun canAdvance(): Boolean = nextStatus() != null
+
+    fun canMarkNotDelivered(): Boolean = this != DELIVERED && this != NOT_DELIVERED && this != UNKNOWN
+
+    fun isFinal(): Boolean = this == DELIVERED || this == NOT_DELIVERED
+
+    fun stepIndex(): Int = when (this) {
+        ASSIGNED -> 0
+        HEADING_TO_BUSINESS -> 1
+        AT_BUSINESS -> 2
+        HEADING_TO_CLIENT -> 3
+        DELIVERED -> 4
+        NOT_DELIVERED -> 5
+        UNKNOWN -> -1
+    }
+
+    companion object {
+        val DELIVERY_SEQUENCE = listOf(
+            ASSIGNED, HEADING_TO_BUSINESS, AT_BUSINESS, HEADING_TO_CLIENT, DELIVERED
+        )
+    }
 }
+
+data class DeliveryStatusHistoryEntry(
+    val status: DeliveryOrderStatus,
+    val timestamp: String,
+    val reason: String? = null
+)
 
 data class DeliveryOrder(
     val id: String,
@@ -41,7 +79,8 @@ data class DeliveryOrderDetail(
     val paymentMethod: String?,
     val collectOnDelivery: Boolean?,
     val createdAt: String?,
-    val updatedAt: String?
+    val updatedAt: String?,
+    val statusHistory: List<DeliveryStatusHistoryEntry> = emptyList()
 )
 
 data class DeliveryOrderItem(
@@ -81,7 +120,14 @@ fun DeliveryOrderDTO.toDetailDomain(): DeliveryOrderDetail = DeliveryOrderDetail
     paymentMethod = paymentMethod,
     collectOnDelivery = collectOnDelivery,
     createdAt = createdAt,
-    updatedAt = updatedAt
+    updatedAt = updatedAt,
+    statusHistory = statusHistory?.map { entry ->
+        DeliveryStatusHistoryEntry(
+            status = entry.status.toDeliveryOrderStatus(),
+            timestamp = entry.timestamp,
+            reason = entry.reason
+        )
+    } ?: emptyList()
 )
 
 fun DeliveryOrderItemDTO.toDomain(): DeliveryOrderItem = DeliveryOrderItem(
@@ -97,16 +143,20 @@ fun DeliveryOrdersSummaryDTO.toDomain(): DeliveryOrdersSummary = DeliveryOrdersS
 )
 
 fun String.toDeliveryOrderStatus(): DeliveryOrderStatus = when (this.lowercase()) {
-    "pending" -> DeliveryOrderStatus.PENDING
-    "inprogress", "in_progress", "assigned" -> DeliveryOrderStatus.IN_PROGRESS
+    "assigned", "pending" -> DeliveryOrderStatus.ASSIGNED
+    "heading_to_business" -> DeliveryOrderStatus.HEADING_TO_BUSINESS
+    "at_business", "picked_up" -> DeliveryOrderStatus.AT_BUSINESS
+    "heading_to_client", "in_transit", "inprogress", "in_progress" -> DeliveryOrderStatus.HEADING_TO_CLIENT
     "delivered" -> DeliveryOrderStatus.DELIVERED
-    "not_delivered", "notdelivered" -> DeliveryOrderStatus.NOT_DELIVERED
+    "not_delivered", "notdelivered", "cancelled" -> DeliveryOrderStatus.NOT_DELIVERED
     else -> DeliveryOrderStatus.UNKNOWN
 }
 
 fun DeliveryOrderStatus.toApiString(): String = when (this) {
-    DeliveryOrderStatus.PENDING -> "pending"
-    DeliveryOrderStatus.IN_PROGRESS -> "inprogress"
+    DeliveryOrderStatus.ASSIGNED -> "assigned"
+    DeliveryOrderStatus.HEADING_TO_BUSINESS -> "heading_to_business"
+    DeliveryOrderStatus.AT_BUSINESS -> "at_business"
+    DeliveryOrderStatus.HEADING_TO_CLIENT -> "heading_to_client"
     DeliveryOrderStatus.DELIVERED -> "delivered"
     DeliveryOrderStatus.NOT_DELIVERED -> "not_delivered"
     DeliveryOrderStatus.UNKNOWN -> "unknown"

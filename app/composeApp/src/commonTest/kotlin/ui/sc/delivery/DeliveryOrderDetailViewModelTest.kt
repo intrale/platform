@@ -19,7 +19,7 @@ private val sampleDetail = DeliveryOrderDetail(
     label = "PUB-1",
     businessName = "Pizzeria Roma",
     neighborhood = "Centro",
-    status = DeliveryOrderStatus.IN_PROGRESS,
+    status = DeliveryOrderStatus.AT_BUSINESS,
     eta = "12:00",
     distance = "2.5 km",
     address = "Av. Siempre Viva 742",
@@ -45,7 +45,7 @@ private class FakeGetDeliveryOrderDetail(
 
 private class FakeUpdateOrderStatus(
     private val result: Result<DeliveryOrderStatusUpdateResult> = Result.success(
-        DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS)
+        DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.HEADING_TO_CLIENT)
     )
 ) : ToDoUpdateDeliveryOrderStatus {
     var lastReason: String? = null
@@ -116,16 +116,16 @@ class DeliveryOrderDetailViewModelTest {
         val viewModel = DeliveryOrderDetailViewModel(
             getOrderDetail = FakeGetDeliveryOrderDetail(),
             updateOrderStatus = FakeUpdateOrderStatus(
-                Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS))
+                Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.HEADING_TO_CLIENT))
             )
         )
 
         viewModel.loadDetail()
-        viewModel.updateStatus(DeliveryOrderStatus.IN_PROGRESS)
+        viewModel.updateStatus(DeliveryOrderStatus.HEADING_TO_CLIENT)
 
         assertTrue(viewModel.state.statusUpdateSuccess)
         assertFalse(viewModel.state.updatingStatus)
-        assertEquals(DeliveryOrderStatus.IN_PROGRESS, viewModel.state.detail?.status)
+        assertEquals(DeliveryOrderStatus.HEADING_TO_CLIENT, viewModel.state.detail?.status)
     }
 
     @Test
@@ -137,7 +137,7 @@ class DeliveryOrderDetailViewModelTest {
         )
 
         viewModel.loadDetail()
-        viewModel.updateStatus(DeliveryOrderStatus.IN_PROGRESS)
+        viewModel.updateStatus(DeliveryOrderStatus.HEADING_TO_CLIENT)
 
         assertNotNull(viewModel.state.statusUpdateError)
         assertFalse(viewModel.state.updatingStatus)
@@ -152,7 +152,7 @@ class DeliveryOrderDetailViewModelTest {
         )
 
         viewModel.loadDetail()
-        viewModel.updateStatus(DeliveryOrderStatus.IN_PROGRESS)
+        viewModel.updateStatus(DeliveryOrderStatus.HEADING_TO_CLIENT)
         assertTrue(viewModel.state.statusUpdateSuccess)
 
         viewModel.clearStatusFeedback()
@@ -291,5 +291,59 @@ class DeliveryOrderDetailViewModelTest {
         assertFalse(viewModel.state.notDeliveredOtherError)
         assertTrue(viewModel.state.notDeliveredSuccess)
         assertEquals("Perro agresivo en la puerta", fakeUpdate.lastReason)
+    }
+
+    @Test
+    fun `advanceToNextStatus avanza al siguiente estado desde AT_BUSINESS`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.HEADING_TO_CLIENT))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(), // sampleDetail tiene AT_BUSINESS
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.advanceToNextStatus()
+
+        assertTrue(viewModel.state.statusUpdateSuccess)
+        assertEquals(DeliveryOrderStatus.HEADING_TO_CLIENT, viewModel.state.detail?.status)
+    }
+
+    @Test
+    fun `advanceToNextStatus no hace nada si el estado es terminal`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus()
+        val detailTerminal = sampleDetail.copy(status = DeliveryOrderStatus.DELIVERED)
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(Result.success(detailTerminal)),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.advanceToNextStatus()
+
+        assertFalse(viewModel.state.statusUpdateSuccess)
+        assertEquals(DeliveryOrderStatus.DELIVERED, viewModel.state.detail?.status)
+    }
+
+    @Test
+    fun `updateStatus agrega entrada al historial en el state`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.HEADING_TO_CLIENT))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        val initialHistorySize = viewModel.state.statusHistory.size
+        viewModel.updateStatus(DeliveryOrderStatus.HEADING_TO_CLIENT)
+
+        assertEquals(initialHistorySize + 1, viewModel.state.statusHistory.size)
+        assertEquals(DeliveryOrderStatus.HEADING_TO_CLIENT, viewModel.state.statusHistory.last().status)
     }
 }
