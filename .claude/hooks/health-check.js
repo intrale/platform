@@ -902,51 +902,29 @@ async function main() {
     writeState(newState);
 
     if (issues.length > 0 || issuesCreated.length > 0) {
-        let msg = "🏥 <b>Health Check — Problemas detectados</b>\n\n";
+        // P5-UX: Mensaje conciso — 1 línea por problema, sin PIDs ni lockfiles
+        let msg = "🏥 <b>Alerta</b>\n\n";
         msg += issues.map(i => "• " + i).join("\n");
 
-        // Si el commander estaba caído y hay permisos pendientes, incluirlos en el mensaje
+        // Permisos bloqueados: solo contar, no listar detalle
         const pendingPerms = checks.commander && checks.commander.pendingPermissions;
         if (!checks.commander.ok && pendingPerms && pendingPerms.length > 0) {
-            msg += "\n\n🔐 <b>Permisos bloqueados sin commander:</b>\n";
-            pendingPerms.forEach(q => {
-                const ageMin = Math.round((Date.now() - new Date(q.timestamp).getTime()) / 60000);
-                // Escapar HTML para evitar que Telegram rechace el mensaje (parse_mode HTML)
-                const rawMsg = (q.message || "Permiso solicitado").substring(0, 120);
-                const shortMsg = rawMsg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                msg += "• [" + ageMin + " min] " + shortMsg + "\n";
-            });
-            msg += "\n<i>El commander se relanzará automáticamente. Los permisos pendientes serán procesados al reconectarse.</i>";
-            log("Commander caído con " + pendingPerms.length + " permiso(s) pendiente(s)");
+            msg += "\n\n🔐 " + pendingPerms.length + " permiso(s) bloqueado(s) — se procesarán al reconectar";
         }
 
         if (issuesCreated.length > 0) {
-            msg += "\n\n📋 <b>Issues creados en GitHub:</b>\n";
-            msg += issuesCreated.map(ic => "• #" + ic.issue + " (" + ic.id + ")").join("\n");
+            msg += "\n\n📋 Issues: " + issuesCreated.map(ic => "#" + ic.issue).join(", ");
         }
 
         if (problemsResolved.length > 0) {
-            msg += "\n\n✅ <b>Problemas resueltos:</b>\n";
-            msg += problemsResolved.map(pr =>
-                "• " + pr.id + " (tras " + pr.problem.occurrences + " ocurrencia(s))"
-            ).join("\n");
+            msg += "\n✅ Resueltos: " + problemsResolved.length;
         }
-
-        msg += "\n\n<i>Auto-reparaciones aplicadas donde fue posible.</i>";
-        msg += "\n<i>⚡ Próximo check en " + Math.round(nextInterval / 60000) + " min (modo alerta)</i>";
 
         await sendAlert(msg);
         log("ALERTA: " + issues.length + " problema(s), " + issuesCreated.length + " issue(s) creado(s), " + problemsResolved.length + " resuelto(s)");
     } else if (problemsResolved.length > 0) {
-        let msg = "🏥 <b>Health Check — Todo OK</b>\n\n";
-        msg += "✅ <b>Problemas resueltos:</b>\n";
-        msg += problemsResolved.map(pr =>
-            "• " + pr.id + " (tras " + pr.problem.occurrences + " ocurrencia(s))"
-        ).join("\n");
-        msg += "\n\n<i>⏱ Próximo check en " + Math.round(nextInterval / 60000) + " min</i>";
-
-        await sendAlert(msg);
-        log("RESOLUCIÓN: " + problemsResolved.length + " problema(s) resuelto(s)");
+        // P10-UX: Auto-reparaciones exitosas son silenciosas — solo loguear, no notificar
+        log("RESOLUCIÓN silenciosa: " + problemsResolved.length + " problema(s) resuelto(s) — " + problemsResolved.map(pr => pr.id).join(", "));
     } else {
         log("OK: todos los checks pasaron");
     }

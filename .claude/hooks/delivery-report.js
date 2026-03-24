@@ -442,16 +442,25 @@ function sendTelegramText(text) {
 }
 
 function buildTextFallback(data) {
+    // P7-UX: Delivery report mínimo — sin commits individuales ni lista de archivos
     const icon = data.state === "ERROR" ? "\u274C" : "\uD83D\uDE80";
-    const title = data.state === "ERROR" ? "Delivery fallido" : "Delivery completado";
-    let msg = `${icon} *${title}*\n\n`;
-    msg += `*Branch:* \`${data.branch}\`\n`;
-    if (data.pr) msg += `*PR:* ${data.pr}\n`;
-    msg += `*Estado:* ${data.state}\n`;
-    if (data.commits) msg += `\n*Commits:*\n\`\`\`\n${data.commits}\n\`\`\`\n`;
-    if (data.files) msg += `\n*Archivos:*\n\`\`\`\n${data.files}\n\`\`\`\n`;
-    if (data.changes) msg += `\n*Cambios:*\n${data.changes}\n`;
-    msg += `\n_intrale/platform_ | _Claude Code_`;
+    const title = data.state === "ERROR" ? "Delivery fallido" : "Delivery";
+    // Extraer issue number del branch
+    const issueMatch = (data.branch || "").match(/(\d+)/);
+    const issueRef = issueMatch ? "#" + issueMatch[1] : "";
+    // Contar commits y archivos
+    const commitCount = data.commits ? data.commits.split("\n").filter(l => l.trim()).length : 0;
+    const fileCount = data.files ? data.files.split("\n").filter(l => l.trim()).length : 0;
+
+    let msg = `${icon} *${title}*`;
+    if (issueRef) msg += ` ${issueRef}`;
+    msg += `\n`;
+    if (data.prNumber) msg += `PR #${data.prNumber} · `;
+    msg += `${data.state}`;
+    if (commitCount > 0) msg += ` · ${commitCount} commits`;
+    if (fileCount > 0) msg += ` · ${fileCount} archivos`;
+    msg += `\n`;
+    if (data.changes) msg += `\n${data.changes}\n`;
     return msg;
 }
 

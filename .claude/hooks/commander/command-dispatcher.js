@@ -285,49 +285,29 @@ async function handleHelp() {
 }
 
 async function handleStatus() {
+    // P4-UX: Status compacto sin datos técnicos (PID, path, message registry)
     const uptime = process.uptime();
     const hours = Math.floor(uptime / 3600);
     const mins = Math.floor((uptime % 3600) / 60);
-    const secs = Math.floor(uptime % 60);
 
-    let msg = "📊 <b>Commander Status</b>\n\n";
-    msg += "🟢 Online\n";
-    msg += "⏱ Uptime: " + hours + "h " + mins + "m " + secs + "s\n";
-    msg += "🔧 Skills: " + _skills.length + "\n";
-    msg += "🆔 PID: " + process.pid + "\n";
-    msg += "📁 Repo: <code>" + _tgApi.escHtml(_repoRoot) + "</code>\n";
+    let msg = "📊 <b>Estado</b>\n\n";
+    msg += "🟢 Online · " + hours + "h " + mins + "m\n";
+    msg += "⚡ " + _skills.length + " skills\n";
 
     const session = _sessionManager.loadSession();
     if (session && !_sessionManager.isSessionExpired(session)) {
         const elapsed = Date.now() - new Date(session.last_used).getTime();
         const remainingMins = Math.max(0, Math.floor((_sessionManager.SESSION_TTL_MS - elapsed) / 60000));
-        msg += "\n🔗 <b>Sesión activa</b>\n";
-        msg += "🏷 Skill: " + _tgApi.escHtml(session.skill || "(texto libre)") + "\n";
-        msg += "⏳ Expira en: " + remainingMins + " min\n";
-    } else {
-        msg += "\n💬 Sin sesión activa\n";
+        msg += "🔗 Sesion: " + _tgApi.escHtml(session.skill || "texto libre") + " (" + remainingMins + " min)\n";
     }
 
     if (_sprintManager.isSprintRunning()) {
-        msg += "\n🏃 <b>Sprint en curso</b>\n";
-        msg += "📊 Monitor periódico: activo (cada " + Math.round(_sprintManager.getSprintMonitorIntervalMs() / 60000) + " min)\n";
+        msg += "\n🏃 Sprint en curso (monitor cada " + Math.round(_sprintManager.getSprintMonitorIntervalMs() / 60000) + " min)\n";
     } else {
         msg += "\n💤 Sin sprint activo\n";
-        msg += "📊 Intervalo de monitor: " + Math.round(_sprintManager.getSprintMonitorIntervalMs() / 60000) + " min\n";
     }
 
-    const regStats = getRegistryStats();
-    msg += "\n📨 <b>Message registry</b>\n";
-    msg += "📊 Total: " + regStats.total + " mensajes\n";
-    if (regStats.total > 0) {
-        const cats = Object.entries(regStats.byCategory).map(([k, v]) => k + ":" + v).join(", ");
-        msg += "🏷 Categorías: " + _tgApi.escHtml(cats) + "\n";
-        if (regStats.oldest) {
-            const ageH = Math.round((Date.now() - regStats.oldest) / 3600000);
-            msg += "🕐 Más antiguo: hace " + ageH + "h\n";
-        }
-    }
-
+    // Datos eliminados: PID, repo path, message registry stats, categorías
     await _tgApi.sendMessage(msg);
 }
 
@@ -583,7 +563,7 @@ async function handleSkill(skill, args) {
 
     // /monitor sin args: screenshot directo
     if (skill.name === "monitor" && (!args || !args.trim())) {
-        await _tgApi.sendMessage("\ud83d\udcca Capturando dashboard...");
+        // P6-UX: Sin mensaje de eco — responder directamente con el resultado
         await _sprintManager.handleMonitorDashboard();
         return;
     }
@@ -591,7 +571,10 @@ async function handleSkill(skill, args) {
     const skillLabel = "/" + skill.name + (args ? " " + args : "");
     const cmdNum = _cmdContext.peekNextCmdNumber();
     const parallelTag = _cmdContext.getActiveCount() > 0 ? " [Cmd #" + cmdNum + "]" : "";
-    await _tgApi.sendMessage("⚡" + parallelTag + " Ejecutando <code>" + _tgApi.escHtml(skillLabel) + "</code>...");
+    // P6-UX: Eco minimo — solo si hay comandos paralelos (para distinguir respuestas)
+    if (_cmdContext.getActiveCount() > 0) {
+        await _tgApi.sendMessage("⚡" + parallelTag + " " + _tgApi.escHtml(skillLabel));
+    }
 
     const prompt = "/" + skill.name + (args ? " " + args : "");
 
@@ -629,8 +612,7 @@ async function handleFreetext(text) {
 
     const cmdNum = _cmdContext.peekNextCmdNumber();
     const parallelTag = _cmdContext.getActiveCount() > 0 ? " [Cmd #" + cmdNum + "]" : "";
-    await _tgApi.sendMessage("💬" + parallelTag + " Procesando: <code>" + _tgApi.escHtml(text.substring(0, 100)) + (text.length > 100 ? "…" : "") + "</code>");
-
+    // P6-UX: Sin eco del input — responder directamente
     await _cmdContext.executeClaudeQueued(text, [], { useSession: true, skill: null });
 }
 
@@ -847,7 +829,7 @@ async function handleDashSection(section) {
     var labels = {overview:"Overview",flow:"Flujo de Agentes",activity:"Actividad",roadmap:"Roadmap",cicd:"CI/CD",logs:"Logs"};
     var label = labels[section] || section;
     var route = "/" + section;
-    await _tgApi.sendMessage("📸 Capturando " + label + "...");
+    // P6-UX: Sin mensaje de eco para dash sections
     _log("handleDashSection: " + route);
     var buf = await new Promise(function(resolve) {
         var url = "http://localhost:" + DASH_PORT + "/screenshot?route=" + encodeURIComponent(route) + "&w=800&h=600";

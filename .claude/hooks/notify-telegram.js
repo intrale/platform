@@ -343,9 +343,43 @@ async function processInput() {
 
     let displayMessage = message;
 
+    // P10-UX: Quiet hours — solo mensajes críticos fuera de horario
+    try {
+        const qh = config.quiet_hours;
+        if (qh && qh.start && qh.end && classification.category !== "critical") {
+            const nowLocal = new Date().toLocaleString("en-US", { timeZone: qh.timezone || "America/Argentina/Buenos_Aires", hour12: false });
+            const hourNow = parseInt(nowLocal.split(" ")[1].split(":")[0], 10);
+            const startH = parseInt(qh.start.split(":")[0], 10);
+            const endH = parseInt(qh.end.split(":")[0], 10);
+            const inQuietHours = startH > endH
+                ? (hourNow >= startH || hourNow < endH) // ej: 23-08 cruza medianoche
+                : (hourNow >= startH && hourNow < endH);
+            if (inQuietHours) {
+                log("Quiet hours activo — suprimiendo " + classification.category + ": " + (title || "").substring(0, 50));
+                return;
+            }
+        }
+    } catch (_) {}
+
     // Enriquecer con contexto de sesión
     const sessionId = data.session_id || "";
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
+
+    // P8-UX: Heartbeat solo si el estado cambió (hash comparison)
+    if (classification.category === "heartbeat") {
+        const crypto = require("crypto");
+        const hashFile = path.join(__dirname, "heartbeat-state.json");
+        const stateKey = (sessionId || "") + "|" + (data.message || "");
+        const currentHash = crypto.createHash("md5").update(stateKey).digest("hex").substring(0, 12);
+        try {
+            const prev = JSON.parse(fs.readFileSync(hashFile, "utf8"));
+            if (prev.hash === currentHash) {
+                // Estado no cambió — suprimir heartbeat
+                return;
+            }
+        } catch (_) {}
+        try { fs.writeFileSync(hashFile, JSON.stringify({ hash: currentHash, ts: new Date().toISOString() }), "utf8"); } catch (_) {}
+    }
 
     // Para heartbeat y daily, intentar enviar screenshot del dashboard
     if (classification.category === "heartbeat" || classification.category === "daily") {
