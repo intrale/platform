@@ -77,6 +77,14 @@ function telegramSend(text) {
     });
 }
 
+function forceKill(pid) {
+    if (isWindows) {
+        try { execSync("taskkill /PID " + pid + " /F", { timeout: 5000, stdio: "ignore", windowsHide: true }); } catch (_) {}
+    } else {
+        try { process.kill(pid, "SIGKILL"); } catch (_) {}
+    }
+}
+
 // ─── Step 1: Kill ALL processes ─────────────────────────────────────────────
 
 function killAllProcesses() {
@@ -90,7 +98,7 @@ function killAllProcesses() {
                 const pid = parseInt(fs.readFileSync(path.join(HOOKS_DIR, pf), "utf8").trim(), 10);
                 if (pid && !isNaN(pid)) {
                     try {
-                        process.kill(pid, "SIGTERM");
+                        forceKill(pid);
                         killed.push({ type: "agent-pid", file: pf, pid });
                     } catch (_) {} // proceso ya muerto
                 }
@@ -107,7 +115,7 @@ function killAllProcesses() {
             let pid;
             try { pid = JSON.parse(content).pid; } catch { pid = parseInt(content, 10); }
             if (pid && !isNaN(pid)) {
-                try { process.kill(pid, "SIGTERM"); killed.push({ type: "commander", pid }); } catch (_) {}
+                try { forceKill(pid); killed.push({ type: "commander", pid }); } catch (_) {}
             }
             fs.unlinkSync(lockFile);
         }
@@ -119,7 +127,7 @@ function killAllProcesses() {
         if (fs.existsSync(dashPid)) {
             const pid = parseInt(fs.readFileSync(dashPid, "utf8").trim(), 10);
             if (pid && !isNaN(pid)) {
-                try { process.kill(pid, "SIGTERM"); killed.push({ type: "dashboard", pid }); } catch (_) {}
+                try { forceKill(pid); killed.push({ type: "dashboard", pid }); } catch (_) {}
             }
             fs.unlinkSync(dashPid);
         }
@@ -138,7 +146,7 @@ function killAllProcesses() {
                     if (match) {
                         const pid = parseInt(match[1], 10);
                         if (pid !== myPid) {
-                            try { process.kill(pid, "SIGTERM"); killed.push({ type: "claude-orphan", pid }); } catch (_) {}
+                            try { forceKill(pid); killed.push({ type: "claude-orphan", pid }); } catch (_) {}
                         }
                     }
                 }
