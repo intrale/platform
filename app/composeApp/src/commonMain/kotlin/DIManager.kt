@@ -23,6 +23,9 @@ import asdo.client.DoGetPaymentMethods
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
 import asdo.client.DoRepeatOrder
+import asdo.client.DoGetNotifications
+import asdo.client.DoMarkNotificationRead
+import asdo.client.DoMarkAllNotificationsRead
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
@@ -30,6 +33,9 @@ import asdo.client.ToDoRepeatOrder
 import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.client.ToDoGetNotifications
+import asdo.client.ToDoMarkNotificationRead
+import asdo.client.ToDoMarkAllNotificationsRead
 import asdo.delivery.DoDeliveryStateChange
 import asdo.delivery.DoGetActiveDeliveryOrders
 import asdo.delivery.DoGetDeliveryAvailability
@@ -262,6 +268,7 @@ import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientCatalogScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
+import ui.sc.client.ClientNotificationsScreen
 import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientOrderDetailScreen
 import ui.sc.client.ClientOrdersScreen
@@ -297,6 +304,7 @@ public const val CLIENT_PROFILE = "clientProfile"
 public const val CLIENT_ADDRESSES = "clientAddresses"
 public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
 public const val CLIENT_ORDER_DETAIL = "clientOrderDetail"
+public const val CLIENT_NOTIFICATIONS = "clientNotifications"
 public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
 public const val HOME = "home"
 public const val INIT = "init"
@@ -475,6 +483,10 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
     bindSingleton<ToDoRepeatOrder> { DoRepeatOrder() }
     bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
+
+    bindSingleton<ToDoGetNotifications> { DoGetNotifications() }
+    bindSingleton<ToDoMarkNotificationRead> { DoMarkNotificationRead() }
+    bindSingleton<ToDoMarkAllNotificationsRead> { DoMarkAllNotificationsRead() }
 }
 
 private val deliveryModule = DI.Module("delivery") {
@@ -506,6 +518,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
     bindSingleton(tag = CLIENT_ADDRESSES) { AddressListScreen() }
     bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
+    bindSingleton(tag = CLIENT_NOTIFICATIONS) { ClientNotificationsScreen() }
     bindSingleton(tag = CLIENT_PRODUCT_DETAIL) { ClientProductDetailScreen() }
     bindSingleton(tag = HOME) { Home() }
     bindSingleton(tag = INIT) { Login() }
@@ -563,6 +576,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_PROFILE))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
+                    add(instance(tag = CLIENT_NOTIFICATIONS))
                     add(instance(tag = CLIENT_PRODUCT_DETAIL))
                     add(instance(tag = INIT))
                     add(instance(tag = SIGNUP))
