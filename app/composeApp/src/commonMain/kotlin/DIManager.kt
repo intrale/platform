@@ -16,24 +16,22 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
-import asdo.client.DoCreateOrder
+import asdo.client.DoGetClientNotifications
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
 import asdo.client.DoGetClientProfile
-import asdo.client.DoGetNotifications
 import asdo.client.DoGetPaymentMethods
 import asdo.client.DoManageClientAddress
-import asdo.client.DoMarkAllNotificationsAsRead
-import asdo.client.DoMarkNotificationAsRead
+import asdo.client.DoMarkAllNotificationsRead
+import asdo.client.DoMarkNotificationRead
 import asdo.client.DoUpdateClientProfile
 import asdo.client.DoRepeatOrder
-import asdo.client.ToDoCreateOrder
+import asdo.client.ToDoGetClientNotifications
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
-import asdo.client.ToDoGetNotifications
-import asdo.client.ToDoMarkAllNotificationsAsRead
-import asdo.client.ToDoMarkNotificationAsRead
+import asdo.client.ToDoMarkAllNotificationsRead
+import asdo.client.ToDoMarkNotificationRead
 import asdo.client.ToDoRepeatOrder
 import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
@@ -150,14 +148,15 @@ import ext.auth.CommPasswordRecoveryService
 import ext.auth.CommTwoFactorSetupService
 import ext.auth.CommTwoFactorVerifyService
 import ext.client.ClientAddressesService
+import ext.client.ClientNotificationsLocalStore
 import ext.client.ClientOrdersService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
+import ext.client.CommClientNotificationsService
 import ext.client.CommClientOrdersService
 import ext.client.CommClientProfileService
-import ext.client.CommNotificationService
 import ext.client.CommPaymentMethodsService
-import ext.client.NotificationService
+import ext.client.LocalClientNotificationsService
 import ext.client.PaymentMethodsService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
@@ -272,12 +271,11 @@ import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientCatalogScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
-import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientNotificationsScreen
+import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientOrderDetailScreen
 import ui.sc.client.ClientOrdersScreen
 import ui.sc.client.ClientCartScreen
-import ui.sc.client.ClientCheckoutScreen
 import ui.sc.client.ClientProductDetailScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
@@ -305,7 +303,6 @@ public const val CLIENT_HOME = "clientHome"
 public const val CLIENT_CATALOG = "clientCatalog"
 public const val CLIENT_ORDERS = "clientOrders"
 public const val CLIENT_CART = "clientCart"
-public const val CLIENT_CHECKOUT = "clientCheckout"
 public const val CLIENT_PROFILE = "clientProfile"
 public const val CLIENT_ADDRESSES = "clientAddresses"
 public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
@@ -480,7 +477,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
     bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance()) }
-    bindSingleton<CommNotificationService> { NotificationService() }
+    bindSingleton<CommClientNotificationsService> { LocalClientNotificationsService() }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -488,12 +485,11 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
-    bindSingleton<ToDoCreateOrder> { DoCreateOrder(instance(), instance()) }
     bindSingleton<ToDoRepeatOrder> { DoRepeatOrder() }
     bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
-    bindSingleton<ToDoGetNotifications> { DoGetNotifications(instance()) }
-    bindSingleton<ToDoMarkNotificationAsRead> { DoMarkNotificationAsRead(instance()) }
-    bindSingleton<ToDoMarkAllNotificationsAsRead> { DoMarkAllNotificationsAsRead(instance()) }
+    bindSingleton<ToDoGetClientNotifications> { DoGetClientNotifications(instance()) }
+    bindSingleton<ToDoMarkNotificationRead> { DoMarkNotificationRead(instance()) }
+    bindSingleton<ToDoMarkAllNotificationsRead> { DoMarkAllNotificationsRead(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {
@@ -523,7 +519,6 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_NOTIFICATIONS) { ClientNotificationsScreen() }
     bindSingleton(tag = CLIENT_ORDER_DETAIL) { ClientOrderDetailScreen() }
     bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
-    bindSingleton(tag = CLIENT_CHECKOUT) { ClientCheckoutScreen() }
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
     bindSingleton(tag = CLIENT_ADDRESSES) { AddressListScreen() }
     bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
@@ -587,6 +582,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = CLIENT_PRODUCT_DETAIL))
+                    add(instance(tag = CLIENT_NOTIFICATIONS))
                     add(instance(tag = INIT))
                     add(instance(tag = SIGNUP))
                     add(instance(tag = CONFIRM_SIGNUP))

@@ -11,6 +11,7 @@ import asdo.client.RepeatOrderResult
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoRepeatOrder
+import ext.client.ClientNotificationsLocalStore
 import ext.client.toClientException
 import org.kodein.di.direct
 import org.kodein.di.instance
@@ -63,6 +64,7 @@ class ClientOrdersViewModel(
         getClientOrders.execute()
             .onSuccess { orders ->
                 allOrders = orders.sortedByDescending { it.createdAt }
+                registerOrderNotifications(orders)
                 applyFilter()
             }
             .onFailure { throwable ->
@@ -72,6 +74,47 @@ class ClientOrdersViewModel(
                     errorMessage = throwable.message ?: "Error al cargar pedidos"
                 )
             }
+    }
+
+    private fun registerOrderNotifications(orders: List<ClientOrder>) {
+        val existingIds = ClientNotificationsLocalStore.notifications.value.map { it.id }.toSet()
+        orders.forEach { order ->
+            when (order.status) {
+                ClientOrderStatus.PENDING, ClientOrderStatus.CONFIRMED -> {
+                    val id = "order_created_${order.id}"
+                    if (!existingIds.contains(id)) {
+                        ClientNotificationsLocalStore.addOrderCreated(
+                            orderId = order.id,
+                            shortCode = order.shortCode,
+                            businessName = order.businessName
+                        )
+                    }
+                }
+                ClientOrderStatus.CANCELLED -> {
+                    val id = "order_cancelled_${order.id}"
+                    if (!existingIds.contains(id)) {
+                        ClientNotificationsLocalStore.addOrderCancelled(
+                            orderId = order.id,
+                            shortCode = order.shortCode
+                        )
+                    }
+                }
+                ClientOrderStatus.PREPARING,
+                ClientOrderStatus.READY,
+                ClientOrderStatus.DELIVERING,
+                ClientOrderStatus.DELIVERED -> {
+                    val id = "order_status_${order.id}_${order.status}"
+                    if (!existingIds.contains(id)) {
+                        ClientNotificationsLocalStore.addOrderStatusChanged(
+                            orderId = order.id,
+                            shortCode = order.shortCode,
+                            newStatus = order.status.name
+                        )
+                    }
+                }
+                ClientOrderStatus.UNKNOWN -> {}
+            }
+        }
     }
 
     fun selectFilter(filter: ClientOrderStatus?) {
@@ -93,6 +136,17 @@ class ClientOrdersViewModel(
         getClientOrderDetail.execute(orderId)
             .onSuccess { detail ->
                 state = state.copy(selectedOrder = detail, loadingDetail = false)
+                detail.businessMessage?.let { message ->
+                    val id = "business_msg_${detail.id}"
+                    val existingIds = ClientNotificationsLocalStore.notifications.value.map { it.id }.toSet()
+                    if (!existingIds.contains(id)) {
+                        ClientNotificationsLocalStore.addBusinessMessage(
+                            message = message,
+                            businessName = detail.businessName,
+                            orderId = detail.id
+                        )
+                    }
+                }
             }
             .onFailure { throwable ->
                 logger.error(throwable) { "Error al cargar detalle del pedido $orderId" }

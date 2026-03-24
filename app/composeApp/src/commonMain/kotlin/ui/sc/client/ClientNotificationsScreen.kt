@@ -1,6 +1,5 @@
 package ui.sc.client
 
-import DIManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +21,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -29,24 +29,27 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import asdo.client.ClientNotification
 import asdo.client.NotificationType
-import asdo.client.ToDoGetNotifications
-import asdo.client.ToDoMarkAllNotificationsAsRead
-import asdo.client.ToDoMarkNotificationAsRead
+import ext.client.ClientNotificationsLocalStore
 import kotlinx.coroutines.launch
+import DIManager
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import asdo.client.ToDoGetClientNotifications
+import asdo.client.ToDoMarkAllNotificationsRead
+import asdo.client.ToDoMarkNotificationRead
 import org.kodein.di.direct
 import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
@@ -62,161 +65,104 @@ enum class ClientNotificationsStatus { Idle, Loading, Loaded, Empty, Error }
 data class ClientNotificationsUiState(
     val status: ClientNotificationsStatus = ClientNotificationsStatus.Idle,
     val notifications: List<ClientNotification> = emptyList(),
-    val errorMessage: String? = null,
-    val markingAllRead: Boolean = false
-)
-
-class ClientNotificationsViewModel(
-    private val getNotifications: ToDoGetNotifications = DIManager.di.direct.instance(),
-    private val markAsRead: ToDoMarkNotificationAsRead = DIManager.di.direct.instance(),
-    private val markAllAsRead: ToDoMarkAllNotificationsAsRead = DIManager.di.direct.instance(),
-    loggerFactory: LoggerFactory = LoggerFactory.default
-) : ViewModel() {
-
-    private val logger = loggerFactory.newLogger<ClientNotificationsViewModel>()
-
-    var state by mutableStateOf(ClientNotificationsUiState())
-        private set
-
-    override fun getState(): Any = state
-
-    override fun initInputState() {}
-
-    suspend fun loadNotifications() {
-        state = state.copy(status = ClientNotificationsStatus.Loading, errorMessage = null)
-        getNotifications.execute()
-            .onSuccess { notifications ->
-                state = if (notifications.isEmpty()) {
-                    state.copy(status = ClientNotificationsStatus.Empty, notifications = emptyList())
-                } else {
-                    state.copy(status = ClientNotificationsStatus.Loaded, notifications = notifications)
-                }
-            }
-            .onFailure { throwable ->
-                logger.error(throwable) { "Error al cargar notificaciones" }
-                state = state.copy(
-                    status = ClientNotificationsStatus.Error,
-                    errorMessage = throwable.message ?: "Error al cargar notificaciones"
-                )
-            }
-    }
-
-    suspend fun markNotificationAsRead(notificationId: String) {
-        markAsRead.execute(notificationId)
-            .onSuccess {
-                state = state.copy(
-                    notifications = state.notifications.map {
-                        if (it.id == notificationId) it.copy(isRead = true) else it
-                    }
-                )
-            }
-            .onFailure { throwable ->
-                logger.error(throwable) { "Error al marcar notificacion como leida" }
-            }
-    }
-
-    suspend fun markAllNotificationsAsRead() {
-        state = state.copy(markingAllRead = true)
-        markAllAsRead.execute()
-            .onSuccess {
-                state = state.copy(
-                    markingAllRead = false,
-                    notifications = state.notifications.map { it.copy(isRead = true) }
-                )
-            }
-            .onFailure { throwable ->
-                logger.error(throwable) { "Error al marcar todas las notificaciones como leidas" }
-                state = state.copy(markingAllRead = false)
-            }
-    }
-
-    fun clearError() {
-        state = state.copy(errorMessage = null)
-    }
+    val errorMessage: String? = null
+) {
+    val unreadCount: Int get() = notifications.count { !it.isRead }
 }
 
 class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
 
+    override val messageTitle: MessageKey = MessageKey.client_notifications_title
+
     @Composable
     override fun screen() {
         val viewModel: ClientNotificationsViewModel = viewModel { ClientNotificationsViewModel() }
-        val uiState = viewModel.state
+        val state = viewModel.state
         val coroutineScope = rememberCoroutineScope()
 
         val title = Txt(MessageKey.client_notifications_title)
         val emptyMessage = Txt(MessageKey.client_notifications_empty)
+        val loadingMessage = Txt(MessageKey.client_notifications_loading)
+        val errorLabel = Txt(MessageKey.client_notifications_error)
+        val retryLabel = Txt(MessageKey.client_notifications_retry)
         val markAllReadLabel = Txt(MessageKey.client_notifications_mark_all_read)
-        val pushPlaceholder = Txt(MessageKey.client_notifications_push_placeholder)
-        val markReadLabel = Txt(MessageKey.client_notifications_mark_read)
 
-        val unreadCount = uiState.notifications.count { !it.isRead }
-        val unreadLabel = if (unreadCount > 0) {
-            Txt(MessageKey.client_notifications_unread_count, mapOf("count" to unreadCount.toString()))
-        } else null
+        val storeNotifications by ClientNotificationsLocalStore.notifications.collectAsState()
 
         LaunchedEffect(Unit) {
             viewModel.loadNotifications()
         }
 
-        Scaffold(
-            bottomBar = {
-                ClientBottomBar(
-                    activeTab = ClientTab.NOTIFICATIONS,
-                    onHomeClick = { navigate(CLIENT_HOME_PATH) },
-                    onOrdersClick = { navigate(CLIENT_ORDERS_PATH) },
-                    onNotificationsClick = {},
-                    onProfileClick = { navigate(CLIENT_PROFILE_PATH) }
-                )
-            }
-        ) { padding ->
+        LaunchedEffect(storeNotifications) {
+            viewModel.loadNotifications()
+        }
+
+        Scaffold { padding ->
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(horizontal = MaterialTheme.spacing.x4)
             ) {
-                Spacer(modifier = Modifier.height(MaterialTheme.spacing.x4))
-
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = MaterialTheme.spacing.x4,
+                            vertical = MaterialTheme.spacing.x3
+                        ),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (unreadLabel != null) {
-                            Text(
-                                text = unreadLabel,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                    if (uiState.notifications.any { !it.isRead }) {
-                        TextButton(
-                            onClick = {
-                                coroutineScope.launch { viewModel.markAllNotificationsAsRead() }
-                            },
-                            enabled = !uiState.markingAllRead
-                        ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (state.unreadCount > 0) {
+                        TextButton(onClick = { coroutineScope.launch { viewModel.markAllNotificationsAsRead() } }) {
                             Text(text = markAllReadLabel)
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2))
+                HorizontalDivider()
 
-                when (uiState.status) {
+                when (state.status) {
+                    ClientNotificationsStatus.Idle,
                     ClientNotificationsStatus.Loading -> {
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator()
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                            ) {
+                                CircularProgressIndicator()
+                                Text(text = loadingMessage)
+                            }
+                        }
+                    }
+
+                    ClientNotificationsStatus.Error -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+                                modifier = Modifier.padding(MaterialTheme.spacing.x4)
+                            ) {
+                                Text(
+                                    text = state.errorMessage ?: errorLabel,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                TextButton(onClick = { coroutineScope.launch { viewModel.loadNotifications() } }) {
+                                    Text(text = retryLabel)
+                                }
+                            }
                         }
                     }
 
@@ -227,25 +173,18 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
                         ) {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Notifications,
                                     contentDescription = null,
-                                    modifier = Modifier.size(48.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                    modifier = Modifier.size(56.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
                                     text = emptyMessage,
                                     style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = pushPlaceholder,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                    textAlign = TextAlign.Center
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -254,39 +193,25 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
                     ClientNotificationsStatus.Loaded -> {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(vertical = MaterialTheme.spacing.x2),
+                            contentPadding = PaddingValues(
+                                horizontal = MaterialTheme.spacing.x4,
+                                vertical = MaterialTheme.spacing.x2
+                            ),
                             verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
                         ) {
-                            items(uiState.notifications, key = { it.id }) { notification ->
-                                NotificationCard(
+                            items(state.notifications, key = { it.id }) { notification ->
+                                ClientNotificationItem(
                                     notification = notification,
-                                    markReadLabel = markReadLabel,
-                                    onMarkRead = {
-                                        if (!notification.isRead) {
-                                            coroutineScope.launch {
-                                                viewModel.markNotificationAsRead(notification.id)
-                                            }
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            viewModel.markNotificationAsRead(notification.id)
                                         }
                                     }
                                 )
                             }
+                            item { Spacer(modifier = Modifier.height(MaterialTheme.spacing.x8)) }
                         }
                     }
-
-                    ClientNotificationsStatus.Error -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = uiState.errorMessage ?: "Error al cargar notificaciones",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
-
-                    ClientNotificationsStatus.Idle -> Unit
                 }
             }
         }
@@ -294,81 +219,138 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
 }
 
 @Composable
-private fun NotificationCard(
+private fun ClientNotificationItem(
     notification: ClientNotification,
-    markReadLabel: String,
-    onMarkRead: () -> Unit
+    onClick: () -> Unit
 ) {
     val typeLabel = when (notification.type) {
         NotificationType.ORDER_CREATED -> Txt(MessageKey.client_notifications_type_order_created)
-        NotificationType.ORDER_STATUS_CHANGED -> Txt(MessageKey.client_notifications_type_status_changed)
-        NotificationType.ORDER_CANCELLED -> Txt(MessageKey.client_notifications_type_cancelled)
+        NotificationType.ORDER_STATUS_CHANGED -> Txt(MessageKey.client_notifications_type_order_status)
+        NotificationType.ORDER_CANCELLED -> Txt(MessageKey.client_notifications_type_order_cancelled)
         NotificationType.BUSINESS_MESSAGE -> Txt(MessageKey.client_notifications_type_business_message)
+        NotificationType.UNKNOWN -> Txt(MessageKey.client_notifications_type_unknown)
     }
 
-    val backgroundColor = if (notification.isRead) {
-        MaterialTheme.colorScheme.surface
-    } else {
+    val containerColor = if (!notification.isRead) {
         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+    } else {
+        MaterialTheme.colorScheme.surface
     }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onMarkRead),
-        colors = CardDefaults.cardColors(containerColor = backgroundColor)
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = containerColor)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(MaterialTheme.spacing.x3),
-            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
             verticalAlignment = Alignment.Top
         ) {
             if (!notification.isRead) {
                 Box(
                     modifier = Modifier
                         .padding(top = MaterialTheme.spacing.x1)
-                        .size(8.dp)
-                        .background(
-                            color = MaterialTheme.colorScheme.primary,
-                            shape = CircleShape
-                        )
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary)
                 )
             } else {
-                Box(modifier = Modifier.size(8.dp))
+                Spacer(modifier = Modifier.size(10.dp))
             }
 
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5)
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Text(
+                        text = notification.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (!notification.isRead) FontWeight.SemiBold else FontWeight.Normal
+                    )
                     Text(
                         text = typeLabel,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Text(
-                        text = notification.timestamp,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
                 Text(
-                    text = notification.title,
+                    text = notification.message,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (notification.isRead) FontWeight.Normal else FontWeight.SemiBold
-                )
-                Text(
-                    text = notification.body,
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
+    }
+}
+
+class ClientNotificationsViewModel(
+    private val toDoGetClientNotifications: ToDoGetClientNotifications = DIManager.di.direct.instance(),
+    private val toDoMarkNotificationRead: ToDoMarkNotificationRead = DIManager.di.direct.instance(),
+    private val toDoMarkAllNotificationsRead: ToDoMarkAllNotificationsRead = DIManager.di.direct.instance()
+) : ViewModel() {
+
+    private val logger = LoggerFactory.default.newLogger<ClientNotificationsViewModel>()
+
+    var state by mutableStateOf(ClientNotificationsUiState())
+        private set
+
+    override fun getState(): Any = state
+
+    override fun initInputState() { /* Sin inputs */ }
+
+    suspend fun loadNotifications() {
+        state = state.copy(status = ClientNotificationsStatus.Loading, errorMessage = null)
+        state = toDoGetClientNotifications.execute()
+            .fold(
+                onSuccess = { notifications ->
+                    if (notifications.isEmpty()) {
+                        state.copy(status = ClientNotificationsStatus.Empty, notifications = emptyList())
+                    } else {
+                        state.copy(status = ClientNotificationsStatus.Loaded, notifications = notifications)
+                    }
+                },
+                onFailure = { error ->
+                    logger.error(error) { "Error al cargar notificaciones" }
+                    state.copy(
+                        status = ClientNotificationsStatus.Error,
+                        errorMessage = error.message ?: "Error inesperado"
+                    )
+                }
+            )
+    }
+
+    suspend fun markNotificationAsRead(notificationId: String) {
+        toDoMarkNotificationRead.execute(notificationId)
+            .onSuccess {
+                state = state.copy(
+                    notifications = state.notifications.map { n ->
+                        if (n.id == notificationId) n.copy(isRead = true) else n
+                    }
+                )
+            }
+            .onFailure { error ->
+                logger.error(error) { "Error al marcar notificacion $notificationId como leida" }
+            }
+    }
+
+    suspend fun markAllNotificationsAsRead() {
+        toDoMarkAllNotificationsRead.execute()
+            .onSuccess {
+                state = state.copy(
+                    notifications = state.notifications.map { it.copy(isRead = true) }
+                )
+            }
+            .onFailure { error ->
+                logger.error(error) { "Error al marcar todas las notificaciones como leidas" }
+            }
     }
 }

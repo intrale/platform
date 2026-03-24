@@ -789,16 +789,31 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.dashboard_menu_business_delivery_people to "Repartidores",
     MessageKey.dashboard_card_delivery_cta_manage to "Gestionar repartidores",
 
-    // Centro de notificaciones (CNOT-001)
+    // Medios de pago del negocio
+    MessageKey.business_payment_methods_title to "Medios de pago",
+    MessageKey.business_payment_methods_description to "Configura los medios de pago que acepta tu negocio",
+    MessageKey.business_payment_methods_access_denied to "No tenes permiso para acceder a esta seccion",
+    MessageKey.business_payment_methods_loading to "Cargando medios de pago...",
+    MessageKey.business_payment_methods_missing_business to "No se encontro el negocio asociado",
+    MessageKey.business_payment_methods_error to "Error al cargar los medios de pago",
+    MessageKey.business_payment_methods_retry to "Reintentar",
+    MessageKey.business_payment_methods_section_title to "Medios de pago disponibles",
+    MessageKey.business_payment_methods_save to "Guardar cambios",
+    MessageKey.business_payment_methods_saved to "Cambios guardados correctamente",
+
+    // Notificaciones del cliente
     MessageKey.client_notifications_title to "Notificaciones",
-    MessageKey.client_notifications_empty to "No tenes notificaciones",
+    MessageKey.client_notifications_tab to "Notificaciones",
+    MessageKey.client_notifications_empty to "No tenes notificaciones por el momento.",
+    MessageKey.client_notifications_loading to "Cargando notificaciones...",
+    MessageKey.client_notifications_error to "No pudimos cargar tus notificaciones.",
+    MessageKey.client_notifications_retry to "Reintentar",
     MessageKey.client_notifications_mark_all_read to "Marcar todas como leidas",
     MessageKey.client_notifications_mark_read to "Marcar como leida",
     MessageKey.client_notifications_type_order_created to "Pedido creado",
-    MessageKey.client_notifications_type_status_changed to "Estado actualizado",
-    MessageKey.client_notifications_type_cancelled to "Pedido cancelado",
+    MessageKey.client_notifications_type_order_status to "Estado actualizado",
+    MessageKey.client_notifications_type_order_cancelled to "Pedido cancelado",
     MessageKey.client_notifications_type_business_message to "Mensaje del negocio",
-    MessageKey.client_notifications_unread_count to "{count} sin leer",
-    MessageKey.client_notifications_push_placeholder to "Las notificaciones push estaran disponibles proximamente",
-    MessageKey.client_home_tab_notifications to "Notificaciones",
+    MessageKey.client_notifications_type_unknown to "Notificacion",
+    MessageKey.client_notifications_unread_badge to "{count} sin leer",
 )

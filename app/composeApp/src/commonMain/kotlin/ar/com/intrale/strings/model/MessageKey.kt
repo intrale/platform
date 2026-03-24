@@ -767,19 +767,6 @@ enum class MessageKey {
     dashboard_menu_business_delivery_people,
     dashboard_card_delivery_cta_manage,
 
-    // Centro de notificaciones (CNOT-001)
-    client_notifications_title,
-    client_notifications_empty,
-    client_notifications_mark_all_read,
-    client_notifications_mark_read,
-    client_notifications_type_order_created,
-    client_notifications_type_status_changed,
-    client_notifications_type_cancelled,
-    client_notifications_type_business_message,
-    client_notifications_unread_count,
-    client_notifications_push_placeholder,
-    client_home_tab_notifications,
-
     // Medios de pago del negocio
     business_payment_methods_title,
     business_payment_methods_description,
@@ -811,4 +798,20 @@ enum class MessageKey {
     // Autenticación en dos pasos - verificación
     two_factor_verify_error_invalid,
     two_factor_verify_code_hint,
+
+    // Notificaciones del cliente
+    client_notifications_title,
+    client_notifications_tab,
+    client_notifications_empty,
+    client_notifications_loading,
+    client_notifications_error,
+    client_notifications_retry,
+    client_notifications_mark_all_read,
+    client_notifications_mark_read,
+    client_notifications_type_order_created,
+    client_notifications_type_order_status,
+    client_notifications_type_order_cancelled,
+    client_notifications_type_business_message,
+    client_notifications_type_unknown,
+    client_notifications_unread_badge,
 }

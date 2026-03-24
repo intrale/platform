@@ -2,68 +2,54 @@ package ui.sc.client
 
 import asdo.client.ClientNotification
 import asdo.client.NotificationType
-import asdo.client.ToDoGetNotifications
-import asdo.client.ToDoMarkAllNotificationsAsRead
-import asdo.client.ToDoMarkNotificationAsRead
+import asdo.client.ToDoGetClientNotifications
+import asdo.client.ToDoMarkAllNotificationsRead
+import asdo.client.ToDoMarkNotificationRead
+import ext.client.ClientExceptionResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
-import org.kodein.log.LoggerFactory
-import org.kodein.log.frontend.simplePrintFrontend
-
-private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
 
 private val sampleNotifications = listOf(
     ClientNotification(
-        id = "n1",
+        id = "notif-1",
         type = NotificationType.ORDER_CREATED,
         title = "Pedido creado",
-        body = "Tu pedido #001 fue recibido",
+        message = "Tu pedido #001 fue registrado.",
         isRead = false,
-        timestamp = "2026-03-23T10:00:00",
-        orderId = "ord-001"
+        createdAt = "2025-01-01T10:00:00Z",
+        orderId = "ord-1"
     ),
     ClientNotification(
-        id = "n2",
+        id = "notif-2",
         type = NotificationType.ORDER_STATUS_CHANGED,
         title = "Estado actualizado",
-        body = "Tu pedido #001 esta en preparacion",
+        message = "Tu pedido #001 esta en preparacion.",
         isRead = true,
-        timestamp = "2026-03-23T11:00:00",
-        orderId = "ord-001"
+        createdAt = "2025-01-01T11:00:00Z",
+        orderId = "ord-1"
     )
 )
 
 private class FakeGetNotifications(
     private val result: Result<List<ClientNotification>> = Result.success(sampleNotifications)
-) : ToDoGetNotifications {
+) : ToDoGetClientNotifications {
     override suspend fun execute(): Result<List<ClientNotification>> = result
 }
 
-private class FakeMarkAsRead(
-    private val shouldFail: Boolean = false
-) : ToDoMarkNotificationAsRead {
-    val markedIds = mutableListOf<String>()
-    override suspend fun execute(notificationId: String): Result<Unit> {
-        if (shouldFail) return Result.failure(RuntimeException("Error"))
-        markedIds.add(notificationId)
-        return Result.success(Unit)
-    }
+private class FakeMarkNotificationRead(
+    private val result: Result<Unit> = Result.success(Unit)
+) : ToDoMarkNotificationRead {
+    override suspend fun execute(notificationId: String): Result<Unit> = result
 }
 
-private class FakeMarkAllAsRead(
-    private val shouldFail: Boolean = false
-) : ToDoMarkAllNotificationsAsRead {
-    var called = false
-    override suspend fun execute(): Result<Unit> {
-        if (shouldFail) return Result.failure(RuntimeException("Error"))
-        called = true
-        return Result.success(Unit)
-    }
+private class FakeMarkAllNotificationsRead(
+    private val result: Result<Unit> = Result.success(Unit)
+) : ToDoMarkAllNotificationsRead {
+    override suspend fun execute(): Result<Unit> = result
 }
 
 class ClientNotificationsViewModelTest {
@@ -71,41 +57,42 @@ class ClientNotificationsViewModelTest {
     @Test
     fun `loadNotifications exitoso muestra lista de notificaciones`() = runTest {
         val viewModel = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(),
-            markAsRead = FakeMarkAsRead(),
-            markAllAsRead = FakeMarkAllAsRead(),
-            loggerFactory = testLoggerFactory
+            toDoGetClientNotifications = FakeGetNotifications(),
+            toDoMarkNotificationRead = FakeMarkNotificationRead(),
+            toDoMarkAllNotificationsRead = FakeMarkAllNotificationsRead()
         )
 
         viewModel.loadNotifications()
 
         assertEquals(ClientNotificationsStatus.Loaded, viewModel.state.status)
         assertEquals(2, viewModel.state.notifications.size)
+        assertEquals(1, viewModel.state.unreadCount)
         assertNull(viewModel.state.errorMessage)
     }
 
     @Test
-    fun `loadNotifications con lista vacia muestra Empty`() = runTest {
+    fun `loadNotifications con lista vacia muestra estado Empty`() = runTest {
         val viewModel = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(Result.success(emptyList())),
-            markAsRead = FakeMarkAsRead(),
-            markAllAsRead = FakeMarkAllAsRead(),
-            loggerFactory = testLoggerFactory
+            toDoGetClientNotifications = FakeGetNotifications(Result.success(emptyList())),
+            toDoMarkNotificationRead = FakeMarkNotificationRead(),
+            toDoMarkAllNotificationsRead = FakeMarkAllNotificationsRead()
         )
 
         viewModel.loadNotifications()
 
         assertEquals(ClientNotificationsStatus.Empty, viewModel.state.status)
         assertTrue(viewModel.state.notifications.isEmpty())
+        assertEquals(0, viewModel.state.unreadCount)
     }
 
     @Test
-    fun `loadNotifications con error muestra Error`() = runTest {
+    fun `loadNotifications fallido muestra estado Error`() = runTest {
         val viewModel = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(Result.failure(RuntimeException("Sin conexion"))),
-            markAsRead = FakeMarkAsRead(),
-            markAllAsRead = FakeMarkAllAsRead(),
-            loggerFactory = testLoggerFactory
+            toDoGetClientNotifications = FakeGetNotifications(
+                Result.failure(ClientExceptionResponse(message = "Error de red"))
+            ),
+            toDoMarkNotificationRead = FakeMarkNotificationRead(),
+            toDoMarkAllNotificationsRead = FakeMarkAllNotificationsRead()
         )
 
         viewModel.loadNotifications()
@@ -115,72 +102,34 @@ class ClientNotificationsViewModelTest {
     }
 
     @Test
-    fun `markNotificationAsRead actualiza estado de la notificacion`() = runTest {
+    fun `markNotificationAsRead actualiza notificacion a leida`() = runTest {
         val viewModel = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(),
-            markAsRead = FakeMarkAsRead(),
-            markAllAsRead = FakeMarkAllAsRead(),
-            loggerFactory = testLoggerFactory
+            toDoGetClientNotifications = FakeGetNotifications(),
+            toDoMarkNotificationRead = FakeMarkNotificationRead(),
+            toDoMarkAllNotificationsRead = FakeMarkAllNotificationsRead()
         )
-
         viewModel.loadNotifications()
-        assertFalse(viewModel.state.notifications.first { it.id == "n1" }.isRead)
 
-        viewModel.markNotificationAsRead("n1")
+        viewModel.markNotificationAsRead("notif-1")
 
-        assertTrue(viewModel.state.notifications.first { it.id == "n1" }.isRead)
+        val updated = viewModel.state.notifications.find { it.id == "notif-1" }
+        assertNotNull(updated)
+        assertTrue(updated.isRead)
+        assertEquals(0, viewModel.state.unreadCount)
     }
 
     @Test
     fun `markAllNotificationsAsRead marca todas como leidas`() = runTest {
-        val fakeMarkAll = FakeMarkAllAsRead()
         val viewModel = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(),
-            markAsRead = FakeMarkAsRead(),
-            markAllAsRead = fakeMarkAll,
-            loggerFactory = testLoggerFactory
+            toDoGetClientNotifications = FakeGetNotifications(),
+            toDoMarkNotificationRead = FakeMarkNotificationRead(),
+            toDoMarkAllNotificationsRead = FakeMarkAllNotificationsRead()
         )
-
         viewModel.loadNotifications()
+
         viewModel.markAllNotificationsAsRead()
 
-        assertTrue(fakeMarkAll.called)
         assertTrue(viewModel.state.notifications.all { it.isRead })
-        assertFalse(viewModel.state.markingAllRead)
-    }
-
-    @Test
-    fun `clearError limpia mensaje de error`() = runTest {
-        val viewModel = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(Result.failure(RuntimeException("Fallo"))),
-            markAsRead = FakeMarkAsRead(),
-            markAllAsRead = FakeMarkAllAsRead(),
-            loggerFactory = testLoggerFactory
-        )
-
-        viewModel.loadNotifications()
-        assertNotNull(viewModel.state.errorMessage)
-
-        viewModel.clearError()
-
-        assertNull(viewModel.state.errorMessage)
-    }
-
-    @Test
-    fun `loadNotifications pone estado en Loading antes de resolver`() = runTest {
-        val viewModel = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(),
-            markAsRead = FakeMarkAsRead(),
-            markAllAsRead = FakeMarkAllAsRead(),
-            loggerFactory = testLoggerFactory
-        )
-
-        // El estado inicial es Idle
-        assertEquals(ClientNotificationsStatus.Idle, viewModel.state.status)
-
-        viewModel.loadNotifications()
-
-        // Despues de cargar correctamente, es Loaded
-        assertEquals(ClientNotificationsStatus.Loaded, viewModel.state.status)
+        assertEquals(0, viewModel.state.unreadCount)
     }
 }
