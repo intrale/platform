@@ -19,7 +19,12 @@ const path = require("path");
 const GATE_WINDOW_HOURS = 8;
 
 // Gates obligatorios para que el PR se pueda crear
-const REQUIRED_GATES = ["tester", "po", "security"];
+// Core: siempre requeridos para cualquier rama agent/*
+const CORE_GATES = ["po", "tester", "security", "review"];
+// Extended: requeridos adicionalmente para ramas agent/* (issues de producto)
+const EXTENDED_GATES = ["ux", "qa", "builder"];
+// Para ramas fix/*, feature/*, etc. (infra): solo core gates
+// Para ramas agent/*: core + extended = pipeline completo
 
 // Leer stdin con timeout
 const MAX_READ = 8192;
@@ -175,6 +180,12 @@ function handleInput() {
             return;
         }
 
+        // Determinar gates requeridos según tipo de rama
+        const isAgentBranch = branch.startsWith("agent/");
+        const REQUIRED_GATES = isAgentBranch
+            ? [...CORE_GATES, ...EXTENDED_GATES]  // Pipeline completo para issues de producto
+            : CORE_GATES;                          // Solo core para infra/fix
+
         // Leer activity-log.jsonl del repo principal
         const logFile = path.join(repoRoot, ".claude", "activity-log.jsonl");
         const logEntries = parseActivityLog(logFile);
@@ -229,9 +240,13 @@ function handleInput() {
 
         // Faltan gates — bloquear con mensaje instructivo
         const gateInstructions = {
+            po: "Invocar /po para revisar criterios de aceptacion del issue #" + (issueNumber || "N") + ".",
+            ux: "Invocar /ux para revision visual y mejoras de UX.",
+            qa: "Invocar /qa para E2E con video y validacion de testing.",
             tester: "Invocar /tester para verificar que los tests pasan y revisar cobertura.",
-            po: "Invocar /po acceptance #" + (issueNumber || "N") + " para verificar criterios de aceptación.",
-            security: "Invocar /security scan para escanear el diff contra OWASP Top 10."
+            builder: "Invocar /builder para validar que el build compila sin errores.",
+            security: "Invocar /security scan para escanear el diff contra OWASP Top 10.",
+            review: "Invocar /review para code review del diff completo."
         };
 
         const missingList = missingGates.map(g => `  • /${g}: ${gateInstructions[g]}`).join("\n");
