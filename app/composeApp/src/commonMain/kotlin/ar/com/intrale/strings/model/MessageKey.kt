@@ -272,6 +272,7 @@ enum class MessageKey {
     client_cart_delivery_address_loading,
     client_cart_continue_missing_address,
     client_cart_continue_with_address,
+    client_cart_retry,
     client_profile_title,
     client_profile_subtitle,
     client_profile_retry,
