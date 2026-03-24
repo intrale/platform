@@ -268,6 +268,7 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_cart_delivery_address_loading to "Loading saved addresses...",
     MessageKey.client_cart_continue_missing_address to "Add an address in your profile to continue.",
     MessageKey.client_cart_continue_with_address to "We'll use \"{label}\" as the delivery address.",
+    MessageKey.client_cart_retry to "Retry",
     MessageKey.client_cart_payment_method_title to "Payment method",
     MessageKey.client_cart_payment_method_empty to "This store has no payment methods configured.",
     MessageKey.client_cart_payment_method_loading to "Loading payment methods...",

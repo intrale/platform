@@ -50,17 +50,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import asdo.client.ClientAddress
 import asdo.client.PaymentMethod
-import asdo.client.PaymentMethodType
-import asdo.client.ToDoGetClientProfile
-import asdo.client.ToDoGetPaymentMethods
 import kotlinx.coroutines.launch
-import org.kodein.di.direct
-import org.kodein.di.instance
-import DIManager
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.cp.buttons.IntralePrimaryButton
@@ -77,6 +72,8 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
 
     @Composable
     override fun screen() {
+        val viewModel: ClientCartViewModel = viewModel { ClientCartViewModel() }
+        val vmState = viewModel.state
         val cartItems by ClientCartStore.items.collectAsState()
         val snackbarHostState = remember { SnackbarHostState() }
         val coroutineScope = rememberCoroutineScope()
@@ -105,7 +102,6 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
         val removeContentDescription = Txt(MessageKey.client_cart_remove_item)
         val increaseContentDescription = Txt(MessageKey.client_cart_increase_quantity)
         val decreaseContentDescription = Txt(MessageKey.client_cart_decrease_quantity)
-        val continuePlaceholder = Txt(MessageKey.client_cart_continue_placeholder)
         val deliveryTitle = Txt(MessageKey.client_cart_delivery_address_title)
         val deliveryEmpty = Txt(MessageKey.client_cart_delivery_address_empty)
         val deliveryManage = Txt(MessageKey.client_cart_delivery_address_manage)
@@ -117,44 +113,14 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
         val paymentMethodLoading = Txt(MessageKey.client_cart_payment_method_loading)
         val paymentMethodCashHint = Txt(MessageKey.client_cart_payment_method_cash_hint)
         val continueMissingPayment = Txt(MessageKey.client_cart_continue_missing_payment)
-
-        val getClientProfile: ToDoGetClientProfile = remember { DIManager.di.direct.instance() }
-        val getPaymentMethods: ToDoGetPaymentMethods = remember { DIManager.di.direct.instance() }
-        var deliveryState by remember { mutableStateOf(DeliveryAddressState(loading = true)) }
-        var paymentMethodsState by remember { mutableStateOf(PaymentMethodsState(loading = true)) }
+        val retryLabel = Txt(MessageKey.client_cart_retry)
 
         LaunchedEffect(Unit) {
-            deliveryState = deliveryState.copy(loading = true)
-            getClientProfile.execute()
-                .onSuccess { data ->
-                    val defaultId = data.profile.defaultAddressId ?: data.addresses.firstOrNull { it.isDefault }?.id
-                    deliveryState = DeliveryAddressState(
-                        addresses = data.addresses,
-                        selectedAddressId = defaultId ?: data.addresses.firstOrNull()?.id,
-                        loading = false
-                    )
-                }
-                .onFailure { throwable ->
-                    logger.error(throwable) { "No se pudieron cargar las direcciones" }
-                    deliveryState = deliveryState.copy(loading = false, error = throwable.message)
-                }
-
-            paymentMethodsState = paymentMethodsState.copy(loading = true)
-            getPaymentMethods.execute()
-                .onSuccess { methods ->
-                    val enabled = methods.filter { it.enabled }
-                    paymentMethodsState = PaymentMethodsState(
-                        methods = enabled,
-                        selectedMethodId = enabled.firstOrNull()?.id,
-                        loading = false
-                    )
-                    ClientCartStore.selectPaymentMethod(enabled.firstOrNull()?.id)
-                }
-                .onFailure { throwable ->
-                    logger.error(throwable) { "No se pudieron cargar los medios de pago" }
-                    paymentMethodsState = paymentMethodsState.copy(loading = false, error = throwable.message)
-                }
+            viewModel.loadAddresses()
+            viewModel.loadPaymentMethods()
         }
+
+        val isDataLoading = vmState.loading || vmState.loadingPaymentMethods
 
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
             if (itemsList.isEmpty()) {
@@ -201,9 +167,16 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                             loadingMessage = deliveryLoading,
                             emptyMessage = deliveryEmpty,
                             manageLabel = deliveryManage,
-                            state = deliveryState,
-                            onSelect = { deliveryState = deliveryState.copy(selectedAddressId = it) },
-                            onManage = { navigate(CLIENT_PROFILE_PATH) }
+                            retryLabel = retryLabel,
+                            addresses = vmState.addresses,
+                            selectedAddressId = vmState.selectedAddressId,
+                            loading = vmState.loading,
+                            error = vmState.error,
+                            onSelect = { viewModel.selectAddress(it) },
+                            onManage = { navigate(CLIENT_PROFILE_PATH) },
+                            onRetry = {
+                                coroutineScope.launch { viewModel.loadAddresses() }
+                            }
                         )
                     }
 
@@ -213,10 +186,14 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                             loadingMessage = paymentMethodLoading,
                             emptyMessage = paymentMethodEmpty,
                             cashHint = paymentMethodCashHint,
-                            state = paymentMethodsState,
-                            onSelect = {
-                                paymentMethodsState = paymentMethodsState.copy(selectedMethodId = it)
-                                ClientCartStore.selectPaymentMethod(it)
+                            retryLabel = retryLabel,
+                            methods = vmState.paymentMethods,
+                            selectedMethodId = vmState.selectedPaymentMethodId,
+                            loading = vmState.loadingPaymentMethods,
+                            error = if (!vmState.loading && vmState.paymentMethods.isEmpty()) vmState.error else null,
+                            onSelect = { viewModel.selectPaymentMethod(it) },
+                            onRetry = {
+                                coroutineScope.launch { viewModel.loadPaymentMethods() }
                             }
                         )
                     }
@@ -237,21 +214,24 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                         ClientCartActions(
                             continueLabel = continueLabel,
                             clearLabel = clearLabel,
+                            continueEnabled = !isDataLoading,
                             onContinue = {
                                 logger.info { "Continuar pedido" }
                                 coroutineScope.launch {
                                     when {
-                                        deliveryState.loading -> snackbarHostState.showSnackbar(deliveryLoading)
-                                        deliveryState.addresses.isEmpty() -> {
+                                        vmState.loading -> snackbarHostState.showSnackbar(deliveryLoading)
+                                        vmState.addresses.isEmpty() -> {
                                             snackbarHostState.showSnackbar(continueMissingAddress)
                                             navigate(CLIENT_PROFILE_PATH)
                                         }
-                                        paymentMethodsState.loading -> snackbarHostState.showSnackbar(paymentMethodLoading)
-                                        paymentMethodsState.selectedMethodId == null && paymentMethodsState.methods.isNotEmpty() -> {
+                                        vmState.loadingPaymentMethods -> snackbarHostState.showSnackbar(paymentMethodLoading)
+                                        vmState.selectedPaymentMethodId == null && vmState.paymentMethods.isNotEmpty() -> {
                                             snackbarHostState.showSnackbar(continueMissingPayment)
                                         }
                                         else -> {
-                                            val label = deliveryState.selectedAddress()?.label.orEmpty()
+                                            val address = vmState.addresses.firstOrNull { it.id == vmState.selectedAddressId }
+                                                ?: vmState.addresses.firstOrNull()
+                                            val label = address?.label.orEmpty()
                                             val message = continueWithAddress.replace("{label}", label.ifBlank { "-" })
                                             snackbarHostState.showSnackbar(message)
                                         }
@@ -427,11 +407,11 @@ private fun ClientCartSummaryCard(
             SummaryRow(label = subtotalLabel, value = formatPrice(subtotal))
             SummaryRow(label = shippingLabel, value = formatPrice(shipping))
             Divider()
-                    SummaryRow(
-                        label = totalLabel,
-                        value = formatPrice(total),
-                        emphasize = true
-                    )
+            SummaryRow(
+                label = totalLabel,
+                value = formatPrice(total),
+                emphasize = true
+            )
         }
     }
 }
@@ -462,9 +442,14 @@ private fun DeliveryAddressCard(
     loadingMessage: String,
     emptyMessage: String,
     manageLabel: String,
-    state: DeliveryAddressState,
+    retryLabel: String,
+    addresses: List<ClientAddress>,
+    selectedAddressId: String?,
+    loading: Boolean,
+    error: String?,
     onSelect: (String) -> Unit,
-    onManage: () -> Unit
+    onManage: () -> Unit,
+    onRetry: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -484,19 +469,26 @@ private fun DeliveryAddressCard(
             )
 
             when {
-                state.loading -> {
+                loading -> {
                     Text(text = loadingMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
-                state.addresses.isEmpty() -> {
+                error != null && addresses.isEmpty() -> {
+                    Text(text = error, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = onRetry) {
+                        Text(text = retryLabel)
+                    }
+                }
+
+                addresses.isEmpty() -> {
                     Text(text = emptyMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
                 else -> {
-                    state.addresses.forEach { address ->
+                    addresses.forEach { address ->
                         DeliveryAddressRow(
                             address = address,
-                            isSelected = state.selectedAddressId == address.id,
+                            isSelected = selectedAddressId == address.id,
                             onSelect = { address.id?.let(onSelect) }
                         )
                     }
@@ -574,6 +566,7 @@ private fun DeliveryAddressRow(
 private fun ClientCartActions(
     continueLabel: String,
     clearLabel: String,
+    continueEnabled: Boolean,
     onContinue: () -> Unit,
     onClear: () -> Unit
 ) {
@@ -584,12 +577,13 @@ private fun ClientCartActions(
         IntralePrimaryButton(
             text = continueLabel,
             onClick = onContinue,
+            enabled = continueEnabled,
             modifier = Modifier.fillMaxWidth()
         )
         TextButton(onClick = onClear, modifier = Modifier.align(Alignment.CenterHorizontally)) {
             Text(
                 text = clearLabel,
-                color = MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.error,
                 fontWeight = FontWeight.SemiBold
             )
         }
@@ -666,32 +660,19 @@ private fun CartProductThumbnail(emoji: String, contentDescription: String) {
     }
 }
 
-private data class DeliveryAddressState(
-    val addresses: List<ClientAddress> = emptyList(),
-    val selectedAddressId: String? = null,
-    val loading: Boolean = false,
-    val error: String? = null
-) {
-    fun selectedAddress(): ClientAddress? = addresses.firstOrNull { it.id == selectedAddressId } ?: addresses.firstOrNull()
-}
-
-private data class PaymentMethodsState(
-    val methods: List<PaymentMethod> = emptyList(),
-    val selectedMethodId: String? = null,
-    val loading: Boolean = false,
-    val error: String? = null
-) {
-    fun selectedMethod(): PaymentMethod? = methods.firstOrNull { it.id == selectedMethodId }
-}
-
 @Composable
 private fun PaymentMethodCard(
     title: String,
     loadingMessage: String,
     emptyMessage: String,
     cashHint: String,
-    state: PaymentMethodsState,
-    onSelect: (String) -> Unit
+    retryLabel: String,
+    methods: List<PaymentMethod>,
+    selectedMethodId: String?,
+    loading: Boolean,
+    error: String?,
+    onSelect: (String) -> Unit,
+    onRetry: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -711,19 +692,26 @@ private fun PaymentMethodCard(
             )
 
             when {
-                state.loading -> {
+                loading -> {
                     Text(text = loadingMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
-                state.methods.isEmpty() -> {
+                error != null && methods.isEmpty() -> {
+                    Text(text = error, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = onRetry) {
+                        Text(text = retryLabel)
+                    }
+                }
+
+                methods.isEmpty() -> {
                     Text(text = emptyMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
                 else -> {
-                    state.methods.forEach { method ->
+                    methods.forEach { method ->
                         PaymentMethodRow(
                             method = method,
-                            isSelected = state.selectedMethodId == method.id,
+                            isSelected = selectedMethodId == method.id,
                             cashHint = cashHint,
                             onSelect = { onSelect(method.id) }
                         )
