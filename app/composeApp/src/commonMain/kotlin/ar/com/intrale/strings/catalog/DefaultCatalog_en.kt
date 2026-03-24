@@ -789,4 +789,21 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.two_factor_setup_go_verify to "Go to verification",
     MessageKey.two_factor_verify_error_invalid to "Invalid or expired code",
     MessageKey.two_factor_verify_code_hint to "Enter the 6-digit code",
+
+    // Notification center
+    MessageKey.client_notifications_title to "Notifications",
+    MessageKey.client_notifications_empty to "No notifications yet.",
+    MessageKey.client_notifications_tab_label to "Notif.",
+    MessageKey.client_notifications_mark_all_read to "Mark all as read",
+    MessageKey.client_notifications_mark_read to "Mark as read",
+    MessageKey.client_notifications_unread_badge to "Unread",
+    MessageKey.client_notifications_event_order_created to "Order #{code} from {business} received",
+    MessageKey.client_notifications_event_order_confirmed to "Order #{code} from {business} confirmed",
+    MessageKey.client_notifications_event_order_preparing to "Order #{code} from {business} is being prepared",
+    MessageKey.client_notifications_event_order_ready to "Order #{code} from {business} ready for delivery",
+    MessageKey.client_notifications_event_order_delivering to "Order #{code} from {business} is on its way",
+    MessageKey.client_notifications_event_order_delivered to "Order #{code} from {business} delivered",
+    MessageKey.client_notifications_event_order_cancelled to "Order #{code} from {business} cancelled",
+    MessageKey.client_notifications_event_business_message to "Message from {business}: {message}",
+    MessageKey.client_notifications_push_placeholder to "Push notifications will be activated soon.",
 )
