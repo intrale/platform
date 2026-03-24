@@ -641,6 +641,9 @@ function Start-UnAgente {
     $agentModel = if ($Agente.PSObject.Properties["model"] -and $Agente.model) { $Agente.model } else { "sonnet" }
 
     Write-Host ">> Lanzando agente en background (modelo: $agentModel)..."
+    # Lanzar con -WindowStyle Minimized (NO Hidden).
+    # Hidden causa SIGINT (0xC000013A) que mata al proceso claude hijo.
+    # Minimized: ventana minimizada en taskbar, no ocupa pantalla pero consola estable.
     $proc = Start-Process powershell -ArgumentList (
         "-ExecutionPolicy", "Bypass",
         "-File", $streamScript,
@@ -652,7 +655,7 @@ function Start-UnAgente {
         "-Slug", $slug,
         "-Branch", $branch,
         "-Model", $agentModel
-    ) -WindowStyle Hidden -PassThru
+    ) -WindowStyle Minimized -PassThru
 
     # Extraer PID de forma segura — $proc.Id puede fallar si el proceso terminó inmediatamente
     $procId = $null
