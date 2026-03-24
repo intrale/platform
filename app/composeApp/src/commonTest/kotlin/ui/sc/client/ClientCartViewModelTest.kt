@@ -1,6 +1,8 @@
 package ui.sc.client
 
 import asdo.client.ClientAddress
+import asdo.client.ClientPreferences
+import asdo.client.ClientProfile
 import asdo.client.ClientProfileData
 import asdo.client.PaymentMethod
 import asdo.client.PaymentMethodType
@@ -20,18 +22,20 @@ import org.kodein.log.frontend.simplePrintFrontend
 private val testLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
 
 private val sampleAddresses = listOf(
-    ClientAddress(id = "addr-1", label = "Casa", street = "Av. Siempre Viva", number = "742", isDefault = true),
-    ClientAddress(id = "addr-2", label = "Trabajo", street = "Calle Falsa", number = "123", isDefault = false)
+    ClientAddress(id = "addr-1", label = "Casa", street = "San Martín", number = "123", isDefault = true),
+    ClientAddress(id = "addr-2", label = "Trabajo", street = "Rivadavia", number = "456", isDefault = false)
 )
 
 private val sampleProfileData = ClientProfileData(
-    addresses = sampleAddresses
+    profile = ClientProfile(fullName = "Juan Pérez", email = "juan@test.com", defaultAddressId = "addr-1"),
+    addresses = sampleAddresses,
+    preferences = ClientPreferences()
 )
 
 private val samplePaymentMethods = listOf(
-    PaymentMethod(id = "pm-efectivo", name = "Efectivo", type = PaymentMethodType.CASH, description = null, isCashOnDelivery = true, enabled = true),
-    PaymentMethod(id = "pm-transferencia", name = "Transferencia", type = PaymentMethodType.TRANSFER, description = "CBU/Alias", isCashOnDelivery = false, enabled = true),
-    PaymentMethod(id = "pm-disabled", name = "Deshabilitado", type = PaymentMethodType.CARD, description = null, isCashOnDelivery = false, enabled = false)
+    PaymentMethod(id = "pm-1", name = "Efectivo", type = PaymentMethodType.CASH, description = null, isCashOnDelivery = true, enabled = true),
+    PaymentMethod(id = "pm-2", name = "Transferencia", type = PaymentMethodType.TRANSFER, description = "CBU", isCashOnDelivery = false, enabled = true),
+    PaymentMethod(id = "pm-3", name = "Deshabilitado", type = PaymentMethodType.CARD, description = null, isCashOnDelivery = false, enabled = false)
 )
 
 private class FakeGetClientProfile(
@@ -49,14 +53,12 @@ private class FakeGetPaymentMethods(
 class ClientCartViewModelTest {
 
     @BeforeTest
-    fun setUp() {
+    fun limpiarCarrito() {
         ClientCartStore.clear()
     }
 
-    // region loadAddresses
-
     @Test
-    fun `loadAddresses exitoso carga las direcciones en el estado`() = runTest {
+    fun `loadAddresses exitoso actualiza la lista y selecciona la direccion por defecto`() = runTest {
         val viewModel = ClientCartViewModel(
             getClientProfile = FakeGetClientProfile(),
             getPaymentMethods = FakeGetPaymentMethods(),
@@ -65,41 +67,36 @@ class ClientCartViewModelTest {
 
         viewModel.loadAddresses()
 
-        assertEquals(2, viewModel.state.addresses.size)
         assertFalse(viewModel.state.loading)
+        assertEquals(2, viewModel.state.addresses.size)
+        assertEquals("addr-1", viewModel.state.selectedAddressId)
         assertNull(viewModel.state.error)
     }
 
     @Test
-    fun `loadAddresses selecciona la direccion predeterminada`() = runTest {
+    fun `loadAddresses selecciona primera direccion cuando no hay defaultAddressId`() = runTest {
+        val profileSinDefault = sampleProfileData.copy(
+            profile = sampleProfileData.profile.copy(defaultAddressId = null),
+            addresses = listOf(
+                ClientAddress(id = "addr-a", label = "Única", street = "Florida", number = "1", isDefault = false)
+            )
+        )
         val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfile(),
+            getClientProfile = FakeGetClientProfile(Result.success(profileSinDefault)),
             getPaymentMethods = FakeGetPaymentMethods(),
             loggerFactory = testLoggerFactory
         )
 
         viewModel.loadAddresses()
 
-        assertEquals("addr-1", viewModel.state.selectedAddressId)
+        assertEquals("addr-a", viewModel.state.selectedAddressId)
+        assertNull(viewModel.state.error)
     }
 
     @Test
-    fun `loadAddresses actualiza el store con la direccion seleccionada`() = runTest {
+    fun `loadAddresses con error actualiza el estado de error`() = runTest {
         val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfile(),
-            getPaymentMethods = FakeGetPaymentMethods(),
-            loggerFactory = testLoggerFactory
-        )
-
-        viewModel.loadAddresses()
-
-        assertEquals("addr-1", ClientCartStore.selectedAddressId.value)
-    }
-
-    @Test
-    fun `loadAddresses con error guarda el mensaje de error`() = runTest {
-        val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfile(Result.failure(Exception("Sin conexión"))),
+            getClientProfile = FakeGetClientProfile(Result.failure(RuntimeException("Sin conexión"))),
             getPaymentMethods = FakeGetPaymentMethods(),
             loggerFactory = testLoggerFactory
         )
@@ -107,74 +104,62 @@ class ClientCartViewModelTest {
         viewModel.loadAddresses()
 
         assertFalse(viewModel.state.loading)
-        assertNotNull(viewModel.state.error)
         assertTrue(viewModel.state.addresses.isEmpty())
+        assertNotNull(viewModel.state.error)
     }
 
-    // endregion
-
-    // region loadPaymentMethods
-
     @Test
-    fun `loadPaymentMethods carga solo los metodos habilitados`() = runTest {
+    fun `loadPaymentMethods exitoso carga solo los metodos habilitados`() = runTest {
         val viewModel = ClientCartViewModel(
             getClientProfile = FakeGetClientProfile(),
             getPaymentMethods = FakeGetPaymentMethods(),
-            loggerFactory = testLoggerFactory
-        )
-
-        viewModel.loadPaymentMethods()
-
-        assertEquals(2, viewModel.state.paymentMethods.size)
-        assertTrue(viewModel.state.paymentMethods.all { it.enabled })
-    }
-
-    @Test
-    fun `loadPaymentMethods selecciona el primer metodo habilitado`() = runTest {
-        val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfile(),
-            getPaymentMethods = FakeGetPaymentMethods(),
-            loggerFactory = testLoggerFactory
-        )
-
-        viewModel.loadPaymentMethods()
-
-        assertEquals("pm-efectivo", viewModel.state.selectedPaymentMethodId)
-    }
-
-    @Test
-    fun `loadPaymentMethods actualiza el store con el metodo seleccionado`() = runTest {
-        val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfile(),
-            getPaymentMethods = FakeGetPaymentMethods(),
-            loggerFactory = testLoggerFactory
-        )
-
-        viewModel.loadPaymentMethods()
-
-        assertEquals("pm-efectivo", ClientCartStore.selectedPaymentMethodId.value)
-    }
-
-    @Test
-    fun `loadPaymentMethods con error actualiza el estado de carga`() = runTest {
-        val viewModel = ClientCartViewModel(
-            getClientProfile = FakeGetClientProfile(),
-            getPaymentMethods = FakeGetPaymentMethods(Result.failure(Exception("Error de red"))),
             loggerFactory = testLoggerFactory
         )
 
         viewModel.loadPaymentMethods()
 
         assertFalse(viewModel.state.loadingPaymentMethods)
+        assertEquals(2, viewModel.state.paymentMethods.size)
+        assertTrue(viewModel.state.paymentMethods.all { it.enabled })
+        assertNull(viewModel.state.error)
+    }
+
+    @Test
+    fun `loadPaymentMethods selecciona el primer metodo disponible`() = runTest {
+        val viewModel = ClientCartViewModel(
+            getClientProfile = FakeGetClientProfile(),
+            getPaymentMethods = FakeGetPaymentMethods(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadPaymentMethods()
+
+        assertEquals("pm-1", viewModel.state.selectedPaymentMethodId)
+    }
+
+    @Test
+    fun `loadPaymentMethods con error actualiza el estado de error`() = runTest {
+        val viewModel = ClientCartViewModel(
+            getClientProfile = FakeGetClientProfile(),
+            getPaymentMethods = FakeGetPaymentMethods(Result.failure(RuntimeException("Error de red"))),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadPaymentMethods()
+
+        assertFalse(viewModel.state.loadingPaymentMethods)
+        assertTrue(viewModel.state.paymentMethods.isEmpty())
         assertNotNull(viewModel.state.error)
     }
 
     @Test
-    fun `loadPaymentMethods sin metodos habilitados deja selectedPaymentMethodId nulo`() = runTest {
-        val allDisabled = samplePaymentMethods.map { it.copy(enabled = false) }
+    fun `loadPaymentMethods filtra metodos deshabilitados`() = runTest {
+        val soloDeshabilitados = listOf(
+            PaymentMethod(id = "pm-off", name = "Tarjeta", type = PaymentMethodType.CARD, description = null, isCashOnDelivery = false, enabled = false)
+        )
         val viewModel = ClientCartViewModel(
             getClientProfile = FakeGetClientProfile(),
-            getPaymentMethods = FakeGetPaymentMethods(Result.success(allDisabled)),
+            getPaymentMethods = FakeGetPaymentMethods(Result.success(soloDeshabilitados)),
             loggerFactory = testLoggerFactory
         )
 
@@ -184,19 +169,15 @@ class ClientCartViewModelTest {
         assertNull(viewModel.state.selectedPaymentMethodId)
     }
 
-    // endregion
-
-    // region selectAddress / selectPaymentMethod
-
     @Test
-    fun `selectAddress actualiza el estado y el store`() = runTest {
+    fun `selectAddress actualiza el id seleccionado y persiste en el store`() = runTest {
         val viewModel = ClientCartViewModel(
             getClientProfile = FakeGetClientProfile(),
             getPaymentMethods = FakeGetPaymentMethods(),
             loggerFactory = testLoggerFactory
         )
-        viewModel.loadAddresses()
 
+        viewModel.loadAddresses()
         viewModel.selectAddress("addr-2")
 
         assertEquals("addr-2", viewModel.state.selectedAddressId)
@@ -205,20 +186,35 @@ class ClientCartViewModelTest {
     }
 
     @Test
-    fun `selectPaymentMethod actualiza el estado y el store`() = runTest {
+    fun `selectPaymentMethod actualiza el id seleccionado y persiste en el store`() = runTest {
         val viewModel = ClientCartViewModel(
             getClientProfile = FakeGetClientProfile(),
             getPaymentMethods = FakeGetPaymentMethods(),
             loggerFactory = testLoggerFactory
         )
+
         viewModel.loadPaymentMethods()
+        viewModel.selectPaymentMethod("pm-2")
 
-        viewModel.selectPaymentMethod("pm-transferencia")
-
-        assertEquals("pm-transferencia", viewModel.state.selectedPaymentMethodId)
-        assertEquals("pm-transferencia", ClientCartStore.selectedPaymentMethodId.value)
+        assertEquals("pm-2", viewModel.state.selectedPaymentMethodId)
+        assertEquals("pm-2", ClientCartStore.selectedPaymentMethodId.value)
         assertNull(viewModel.state.error)
     }
 
-    // endregion
+    @Test
+    fun `estado inicial no tiene error ni datos cargados`() {
+        val viewModel = ClientCartViewModel(
+            getClientProfile = FakeGetClientProfile(),
+            getPaymentMethods = FakeGetPaymentMethods(),
+            loggerFactory = testLoggerFactory
+        )
+
+        assertFalse(viewModel.state.loading)
+        assertFalse(viewModel.state.loadingPaymentMethods)
+        assertTrue(viewModel.state.addresses.isEmpty())
+        assertTrue(viewModel.state.paymentMethods.isEmpty())
+        assertNull(viewModel.state.selectedAddressId)
+        assertNull(viewModel.state.selectedPaymentMethodId)
+        assertNull(viewModel.state.error)
+    }
 }
