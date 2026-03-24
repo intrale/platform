@@ -120,6 +120,10 @@ import asdo.business.DoInviteDeliveryPerson
 import asdo.business.ToDoListBusinessDeliveryPeople
 import asdo.business.ToDoToggleDeliveryPersonStatus
 import asdo.business.ToDoInviteDeliveryPerson
+import asdo.business.DoGetBusinessPaymentMethods
+import asdo.business.DoUpdateBusinessPaymentMethods
+import asdo.business.ToDoGetBusinessPaymentMethods
+import asdo.business.ToDoUpdateBusinessPaymentMethods
 import asdo.signup.DoRegisterSaler
 import asdo.signup.DoConfirmSignUp
 import asdo.signup.DoSignUp
@@ -179,6 +183,8 @@ import ext.business.ClientBusinessDeliveryZoneService
 import ext.business.CommBusinessDeliveryZoneService
 import ext.business.ClientListBusinessDeliveryPeopleService
 import ext.business.CommListBusinessDeliveryPeopleService
+import ext.business.ClientBusinessPaymentMethodsService
+import ext.business.CommBusinessPaymentMethodsService
 import ext.business.ClientToggleDeliveryPersonStatusService
 import ext.business.CommToggleDeliveryPersonStatusService
 import ext.business.ClientInviteDeliveryPersonService
@@ -244,6 +250,7 @@ import ui.sc.business.BannerListScreen
 import ui.sc.business.BusinessSchedulesScreen
 import ui.sc.business.BusinessDeliveryZoneScreen
 import ui.sc.business.BusinessDeliveryPeopleScreen
+import ui.sc.business.BusinessPaymentMethodsScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.BusinessOrderDetailScreen
@@ -337,6 +344,7 @@ public const val BUSINESS_BANNER_FORM = "businessBannerForm"
 public const val BUSINESS_SCHEDULES = "businessSchedules"
 public const val BUSINESS_DELIVERY_ZONE = "businessDeliveryZone"
 public const val BUSINESS_DELIVERY_PEOPLE = "businessDeliveryPeople"
+public const val BUSINESS_PAYMENT_METHODS = "businessPaymentMethods"
 
 const val LOGIN_PATH = "/login"
 
@@ -422,6 +430,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommListBusinessDeliveryPeopleService> { ClientListBusinessDeliveryPeopleService(instance(), instance()) }
     bindSingleton<CommToggleDeliveryPersonStatusService> { ClientToggleDeliveryPersonStatusService(instance(), instance()) }
     bindSingleton<CommInviteDeliveryPersonService> { ClientInviteDeliveryPersonService(instance(), instance()) }
+    bindSingleton<CommBusinessPaymentMethodsService> { ClientBusinessPaymentMethodsService(instance(), instance()) }
 
     bindSingleton<ToGetBusinesses> { DoGetBusinesses(instance()) }
     bindSingleton<ToGetBusinessDashboardSummary> { DoGetBusinessDashboardSummary(instance()) }

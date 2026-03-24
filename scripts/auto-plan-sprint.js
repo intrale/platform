@@ -345,58 +345,98 @@ function generateDefaultPrompt(issue, slug, labels) {
     const hasUI = hasApp || labels.some(l => l.includes("ui") || l.includes("frontend") || l.includes("screen"));
     const isQA = labels.some(l => l.includes("testing") || l.includes("qa"));
 
-    const parts = [
-        `Implementar issue #${issue}. Leer el issue completo con: gh issue view ${issue} --repo intrale/platform.`,
-        `Al iniciar: invocar /ops para verificar estado del entorno.`,
-    ];
+    // Determinar developer skill según labels
+    let devSkill = "/backend-dev";
+    if (hasApp) devSkill = "/android-dev";
+    if (labels.some(l => l.includes("web") || l.includes("wasm"))) devSkill = "/web-dev";
 
-    // --- Gate de refinamiento just-in-time (ANTES de codear) ---
-    // El contexto del proyecto pudo haber cambiado desde que se creó el issue.
-    // PO, UX y QA refinan con información actualizada antes de que el dev arranque.
-    parts.push(`ANTES DE CODEAR — Refinamiento just-in-time:`);
-    parts.push(`  1. Invocar /po para revisar y actualizar criterios de aceptación del issue #${issue} con el contexto actual del proyecto.`);
+    // Prompt estructurado por fases — cada fase en su propia línea para que Claude
+    // pueda parsearlas como pasos discretos y ejecutarlas en orden.
+    const lines = [];
 
-    if (hasUI) {
-        parts.push(`  2. Invocar /ux para revisar el impacto visual y proponer mejoras de UX antes de implementar (issue tiene impacto en UI).`);
+    lines.push(`Implementar issue #${issue}. Leer el issue completo con: gh issue view ${issue} --repo intrale/platform.`);
+    lines.push(``);
+    lines.push(`EJECUTAR ESTAS FASES EN ORDEN ESTRICTO. No saltear ninguna. Cada fase usa un skill específico.`);
+    lines.push(``);
+
+    // FASE 1: Entorno
+    lines.push(`== FASE 1: ENTORNO ==`);
+    lines.push(`Invocar /ops para verificar estado del entorno.`);
+    lines.push(``);
+
+    // FASE 2: Validación y enriquecimiento del issue (ANTES de codear)
+    lines.push(`== FASE 2: VALIDACION DEL ISSUE (OBLIGATORIO antes de codear) ==`);
+    lines.push(`El issue pudo haber cambiado desde que se creo. Validar y enriquecer ANTES de implementar:`);
+
+    let step = 1;
+    lines.push(`  ${step}. Invocar /po para revisar criterios de aceptacion del issue #${issue}.`);
+    lines.push(`     Si /po detecta criterios incompletos o desactualizados, aplicar las actualizaciones al issue.`);
+    step++;
+
+    if (hasUI || !isInfra) {
+        lines.push(`  ${step}. Invocar /ux para revisar impacto visual y proponer mejoras de UX.`);
+        lines.push(`     Si /ux propone cambios, actualizar el issue con las recomendaciones antes de codear.`);
+        step++;
     }
 
     if (isQA || hasApp) {
-        parts.push(`  ${hasUI ? '3' : '2'}. Invocar /qa para definir el procedimiento de testing actualizado (usar docs/qa-ambiente-local.md como referencia para el ciclo E2E).`);
+        lines.push(`  ${step}. Invocar /qa para definir procedimiento de testing (usar docs/qa-ambiente-local.md).`);
+        lines.push(`     Si /qa identifica escenarios faltantes, agregarlos al issue.`);
+        step++;
     }
 
     if (!isInfra) {
-        parts.push(`Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigación técnica.`);
+        lines.push(`  ${step}. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigacion tecnica.`);
     }
+    lines.push(``);
 
-    parts.push(`Completar los cambios descritos en el body del issue.`);
+    // FASE 3: Implementación
+    lines.push(`== FASE 3: IMPLEMENTACION ==`);
+    lines.push(`Invocar ${devSkill} para implementar los cambios descritos en el body del issue.`);
+    lines.push(`Seguir los criterios de aceptacion validados en FASE 2.`);
+    lines.push(``);
 
+    // FASE 4: Verificación post-implementación
+    lines.push(`== FASE 4: VERIFICACION (OBLIGATORIO antes de /delivery) ==`);
+    lines.push(`Ejecutar TODOS estos gates en orden:`);
+
+    step = 1;
     if (hasApp) {
-        parts.push(`Antes de /delivery: invocar /ux para revisión visual de los cambios en la interfaz (obligatorio por labels app:*).`);
+        lines.push(`  ${step}. /ux — revision visual post-implementacion (obligatorio por labels app:*).`);
+        step++;
     }
 
     if (isBug) {
-        parts.push(`Antes de /delivery: invocar /tester con énfasis en verificar que no hay regresiones relacionadas al bug.`);
+        lines.push(`  ${step}. /tester — verificar que los tests pasan, enfasis en regresiones del bug.`);
     } else {
-        parts.push(`Antes de /delivery: invocar /tester para verificar que los tests pasan.`);
+        lines.push(`  ${step}. /tester — verificar que los tests pasan y hay cobertura adecuada.`);
     }
+    step++;
 
-    parts.push(`Antes de /delivery: invocar /builder para validar que el build no está roto.`);
+    lines.push(`  ${step}. /builder — validar que el build compila sin errores.`);
+    step++;
 
     if (isBackend) {
-        parts.push(`Antes de /delivery: invocar /security (obligatorio por label area:backend — revisar endpoints, autenticación, autorización y manejo de datos sensibles).`);
+        lines.push(`  ${step}. /security — OBLIGATORIO: revisar endpoints, autenticacion, autorizacion y datos sensibles.`);
     } else {
-        parts.push(`Antes de /delivery: invocar /security para validar seguridad del diff.`);
+        lines.push(`  ${step}. /security — validar seguridad del diff.`);
     }
+    step++;
 
-    parts.push(`Antes de /delivery: invocar /review para validar el diff.`);
+    lines.push(`  ${step}. /review — code review del diff completo.`);
+    step++;
 
     if (hasApp) {
-        parts.push(`Antes de /delivery: invocar /qa para E2E con video (obligatorio por labels app:*).`);
+        lines.push(`  ${step}. /qa — E2E con video (obligatorio por labels app:*).`);
+        step++;
     }
+    lines.push(``);
 
-    parts.push(`Usar /delivery para commit+PR al terminar. Closes #${issue}`);
+    // FASE 5: Entrega
+    lines.push(`== FASE 5: ENTREGA ==`);
+    lines.push(`Invocar /delivery para commit+PR+merge. Closes #${issue}`);
 
-    return parts.join(" ");
+    return lines.join("\n");
 }
 
 // ─── Generar sprint-plan.json ─────────────────────────────────────────────────
