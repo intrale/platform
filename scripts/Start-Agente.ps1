@@ -120,6 +120,42 @@ try {
     Write-Host ">> OPS: Check no disponible (fail-open)" -ForegroundColor DarkGray
 }
 
+# --- S4: Pre-sprint cleanup (stashes, temps, state files corruptos) ---
+Write-Host ">> Ejecutando limpieza pre-sprint (S4)..." -ForegroundColor Cyan
+try {
+    $cleanupJson = & node "$MainRepo\.claude\hooks\pre-sprint-cleanup.js" 2>$null
+    $cleanup = $cleanupJson | ConvertFrom-Json
+    if ($cleanup.ok) {
+        Write-Host ">> Cleanup OK: $($cleanup.steps.Count) pasos, $($cleanup.cleaned) items limpiados" -ForegroundColor Green
+    } else {
+        Write-Host ">> Cleanup con errores:" -ForegroundColor Yellow
+        foreach ($e in $cleanup.errors) {
+            Write-Host ">>   $e" -ForegroundColor Yellow
+        }
+    }
+} catch {
+    Write-Host ">> Pre-sprint cleanup no disponible (fail-open): $_" -ForegroundColor DarkGray
+}
+
+# --- S5: Resource check (RAM, procesos, stash) ---
+Write-Host ">> Verificando recursos del sistema (S5)..." -ForegroundColor Cyan
+try {
+    $resourceJson = & node -e "const sh=require('$($MainRepo -replace '\\','/')/.claude/hooks/system-health');console.log(JSON.stringify(sh.canLaunchAgent()))" 2>$null
+    $resource = $resourceJson | ConvertFrom-Json
+    if ($resource.canLaunch) {
+        Write-Host ">> Recursos OK: RAM $($resource.metrics.ram.freeMb)MB libre, $($resource.metrics.procs.node) node procs" -ForegroundColor Green
+    } else {
+        Write-Host ">> RECURSOS INSUFICIENTES:" -ForegroundColor Red
+        foreach ($issue in $resource.issues) {
+            Write-Host ">>   $issue" -ForegroundColor Red
+        }
+        Write-Host ">> Abortando lanzamiento. Liberar recursos y reintentar." -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Write-Host ">> Resource check no disponible (fail-open): $_" -ForegroundColor DarkGray
+}
+
 # Pre-launch validation: detectar agentes zombie y estado inconsistente
 Write-Host ">> Validando estado pre-lanzamiento..." -ForegroundColor Cyan
 try {

@@ -393,6 +393,7 @@ function checkTelegramBot() {
 // ─── Check 4: Settings intactos ────────────────────────────────────────────
 
 function checkSettings() {
+    // S2 Auto-recovery: backup automatico + restore desde .bak o git HEAD
     const result = { ok: true, details: [] };
     const files = [
         path.join(REPO_ROOT, ".claude", "settings.json"),
@@ -404,12 +405,42 @@ function checkSettings() {
         try {
             const content = fs.readFileSync(f, "utf8");
             JSON.parse(content);
+            // Backup automatico: copiar a .bak cuando es valido
+            try { fs.copyFileSync(f, f + ".bak"); } catch (_) {}
         } catch (e) {
-            result.ok = false;
-            result.details.push(name + ": " + (e.code === "ENOENT" ? "FALTA" : "JSON inválido"));
+            // Recovery capa 1: intentar .bak
+            let recovered = false;
+            try {
+                const bakContent = fs.readFileSync(f + ".bak", "utf8");
+                JSON.parse(bakContent); // Validar backup
+                fs.writeFileSync(f, bakContent, "utf8");
+                result.details.push(name + ": RESTAURADO desde .bak");
+                log(name + " restaurado desde .bak");
+                recovered = true;
+            } catch (_) {}
+
+            // Recovery capa 2: intentar git HEAD
+            if (!recovered) {
+                try {
+                    const relPath = path.relative(REPO_ROOT, f).replace(/\\/g, "/");
+                    const gitContent = execSync("git show HEAD:" + relPath, {
+                        cwd: REPO_ROOT, encoding: "utf8", timeout: 5000, windowsHide: true
+                    });
+                    JSON.parse(gitContent); // Validar
+                    fs.writeFileSync(f, gitContent, "utf8");
+                    result.details.push(name + ": RESTAURADO desde git HEAD");
+                    log(name + " restaurado desde git HEAD");
+                    recovered = true;
+                } catch (_) {}
+            }
+
+            if (!recovered) {
+                result.ok = false;
+                result.details.push(name + ": " + (e.code === "ENOENT" ? "FALTA" : "JSON inválido") + " (sin backup)");
+            }
         }
     }
-    if (result.ok) result.details.push("Todos los settings válidos");
+    if (result.ok && result.details.length === 0) result.details.push("Todos los settings válidos");
     return result;
 }
 
@@ -731,6 +762,23 @@ async function main() {
         checks.worktrees = checkDeadWorktrees();
     } else {
         checks.worktrees = { ok: true, dead: [], cleaned: [], strategies: {} };
+    }
+
+    // S7: System health metrics — recolectar y evaluar recursos
+    try {
+        const systemHealth = require("./system-health");
+        const resourceCheck = systemHealth.canLaunchAgent();
+        checks.resources = {
+            ok: resourceCheck.canLaunch,
+            detail: resourceCheck.canLaunch
+                ? "RAM " + resourceCheck.metrics.ram.freeMb + "MB libre, " + resourceCheck.metrics.procs.node + " node procs"
+                : resourceCheck.issues.join("; ")
+        };
+        if (!resourceCheck.canLaunch) {
+            log("S7 WARNING: Recursos insuficientes — " + resourceCheck.issues.join(", "));
+        }
+    } catch (e) {
+        checks.resources = { ok: true, detail: "system-health no disponible" };
     }
 
     // P-07: Actualizar estado por componente

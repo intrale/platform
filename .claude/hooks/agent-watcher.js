@@ -477,8 +477,38 @@ function setupWorktree(agente) {
     return wtDir;
 }
 
+// S3+S5+S6: Circuit breaker, resource check, git-aware verification
+let circuitBreaker;
+try { circuitBreaker = require("./circuit-breaker"); } catch (_) { circuitBreaker = null; }
+let systemHealth;
+try { systemHealth = require("./system-health"); } catch (_) { systemHealth = null; }
+
 function launchAgent(agente) {
     try {
+        // S3: Circuit breaker check — prevenir loops de reintento
+        if (circuitBreaker) {
+            const cbResult = circuitBreaker.canRelaunch(String(agente.issue));
+            if (!cbResult.allowed) {
+                log("launchAgent: BLOQUEADO por circuit breaker para #" + agente.issue + " — " + cbResult.reason);
+                return false;
+            }
+        }
+
+        // S5: Resource check — verificar recursos disponibles
+        if (systemHealth) {
+            const resCheck = systemHealth.canLaunchAgent();
+            if (!resCheck.canLaunch) {
+                log("launchAgent: BLOQUEADO por recursos insuficientes — " + resCheck.issues.join(", "));
+                return false;
+            }
+        }
+
+        // S6: Git-aware check — verificar que REPO_ROOT es un git repo valido
+        if (systemHealth && !systemHealth.isValidGitRepo(REPO_ROOT)) {
+            log("launchAgent: BLOQUEADO — REPO_ROOT no es un git repo valido: " + REPO_ROOT);
+            return false;
+        }
+
         if (!agente.prompt) {
             agente.prompt = generateDefaultPrompt(agente.issue, agente.slug);
         }
@@ -1086,6 +1116,11 @@ async function runCycle() {
                         planDirty = false;
 
                         const relaunchResult = launchAgent(ag);
+                        // S3: Registrar resultado en circuit breaker
+                        if (circuitBreaker) {
+                            if (relaunchResult) circuitBreaker.recordSuccess(String(ag.issue));
+                            else circuitBreaker.recordFailure(String(ag.issue));
+                        }
                         // Persistir el _pid asignado por launchAgent
                         if (ag._pid) savePlan(freshPlan);
 
