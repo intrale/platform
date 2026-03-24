@@ -211,12 +211,16 @@ try { projectUtils = require("./project-utils"); } catch (e) {}
 async function updateProjectV2(issue, statusName) {
     if (!projectUtils) return;
     try {
+        // Asegurar que cmd.exe está en PATH (requerido por execSync interno de projectUtils)
+        if (!process.env.PATH.includes("system32")) {
+            process.env.PATH = "C:\\windows\\system32;" + process.env.PATH;
+        }
         const token = projectUtils.getGitHubToken();
         const statusId = projectUtils.STATUS_OPTIONS[statusName];
         if (!statusId) return;
         await projectUtils.addAndSetStatus(token, issue, statusId);
         log("Project V2: #" + issue + " -> " + statusName);
-    } catch (e) { log("updateProjectV2 error: " + e.message); }
+    } catch (e) { log("updateProjectV2 error (no bloqueante): " + e.message); }
 }
 
 // ─── Validation utils ────────────────────────────────────────────────────────
@@ -250,11 +254,19 @@ function loadPlan() {
 }
 
 function savePlan(plan) {
-    // Único writer: coordinator. Persiste en roadmap.json y regenera cache.
+    // Único writer: coordinator. Persiste en roadmap.json Y sprint-plan.json.
+    // Ambos deben estar sincronizados — loadPlan() lee sprint-plan.json.
     try {
+        // 1. Persistir en roadmap.json (fuente de verdad)
         getSprintData().saveRoadmapFromPlan(plan, "agent-coordinator");
     } catch (e) {
-        log("savePlan error: " + e.message);
+        log("savePlan roadmap error: " + e.message);
+    }
+    try {
+        // 2. Persistir sprint-plan.json (cache que loadPlan() lee)
+        fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 4) + "\n", "utf8");
+    } catch (e) {
+        log("savePlan sprint-plan error: " + e.message);
     }
 }
 
@@ -500,35 +512,67 @@ function setupWorktree(agente) {
     const wtDir = path.join(path.dirname(REPO_ROOT), wtName);
     const branch = "agent/" + agente.issue + "-" + agente.slug;
 
-    if (fs.existsSync(wtDir)) {
-        log("setupWorktree: limpiando worktree existente " + wtName);
-        const claudeDir = path.join(wtDir, ".claude");
-        if (fs.existsSync(claudeDir)) {
-            try { fs.rmSync(claudeDir, { recursive: true, force: true }); } catch (e) {}
-        }
-        try {
-            execSync("git worktree remove " + JSON.stringify(wtDir.replace(/\\/g, "/")) + " --force", {
-                encoding: "utf8", timeout: 15000, windowsHide: true
+    // Si el worktree existe y es válido (.git presente), reutilizarlo
+    if (fs.existsSync(wtDir) && fs.existsSync(path.join(wtDir, ".git"))) {
+        if (agente._reuse_worktree) {
+            log("setupWorktree: reutilizando worktree existente " + wtName);
+        } else {
+            // Limpiar y recrear solo si se pide explícitamente (no _reuse_worktree)
+            log("setupWorktree: limpiando worktree existente " + wtName);
+            const claudeDir = path.join(wtDir, ".claude");
+            // Usar cmd /c rmdir para junctions, fallback a rmSync para copias
+            if (fs.existsSync(claudeDir)) {
+                try { execSync('cmd /c rmdir "' + claudeDir.replace(/\//g, "\\") + '" 2>NUL', { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch (e) {}
+                if (fs.existsSync(claudeDir)) {
+                    try { fs.rmSync(claudeDir, { recursive: true, force: true }); } catch (e) {}
+                }
+            }
+            try {
+                execSync("git worktree remove " + JSON.stringify(wtDir.replace(/\\/g, "/")) + " --force", {
+                    encoding: "utf8", timeout: 15000, windowsHide: true, cwd: REPO_ROOT
+                });
+            } catch (e) {}
+            if (fs.existsSync(wtDir)) {
+                try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (e) {}
+            }
+            try { execSync("git worktree prune", { timeout: 5000, windowsHide: true, cwd: REPO_ROOT }); } catch (e) {}
+
+            try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore", cwd: REPO_ROOT }); } catch (e) {}
+
+            const relPath = "../" + wtName;
+            log("setupWorktree: git worktree add " + relPath + " -b " + branch);
+            execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
+                encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
             });
-        } catch (e) {}
-        if (fs.existsSync(wtDir)) {
-            try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (e) {}
         }
-        try { execSync("git worktree prune", { timeout: 5000, windowsHide: true }); } catch (e) {}
+    } else if (fs.existsSync(wtDir)) {
+        // Directorio existe pero sin .git — huérfano, limpiar
+        log("setupWorktree: directorio huerfano sin .git, limpiando " + wtName);
+        try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (e) {}
+        try { execSync("git worktree prune", { timeout: 5000, windowsHide: true, cwd: REPO_ROOT }); } catch (e) {}
+        try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore", cwd: REPO_ROOT }); } catch (e) {}
+
+        const relPath = "../" + wtName;
+        log("setupWorktree: git worktree add " + relPath + " -b " + branch);
+        execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
+            encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
+        });
+    } else {
+        // No existe — crear nuevo
+        try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore", cwd: REPO_ROOT }); } catch (e) {}
+
+        const relPath = "../" + wtName;
+        log("setupWorktree: git worktree add " + relPath + " -b " + branch);
+        execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
+            encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
+        });
     }
-
-    try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch (e) {}
-
-    const relPath = "../" + wtName;
-    log("setupWorktree: git worktree add " + relPath + " -b " + branch);
-    execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
-        encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
-    });
 
     if (!fs.existsSync(path.join(wtDir, ".git"))) {
         throw new Error("Worktree creado pero .git no existe en " + wtDir);
     }
 
+    // Copiar .claude/ fresco del repo principal
     const claudeSrc = path.join(REPO_ROOT, ".claude");
     const claudeDst = path.join(wtDir, ".claude");
     fs.cpSync(claudeSrc, claudeDst, { recursive: true, force: true });
