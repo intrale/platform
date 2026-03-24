@@ -463,12 +463,17 @@ async function processInput() {
     const contextLine = formatContext(sessionId, MAIN_REPO_ROOT);
     const waitMin = Math.round(effectiveRetryIntervals[0] / 60000);
 
-    const severityLabel = severity === Severity.HIGH ? "\u{1F6A8} HIGH" : severity === Severity.MEDIUM ? "\u26A0\uFE0F MEDIUM" : "\u{1F7E1} LOW";
-    let msgText = "\u{1F510} <b>" + escHtml(agent) + " \u2014 PERMISO REQUERIDO</b>  [" + severityLabel + "]\n";
-    if (contextLine) msgText += contextLine + "\n";
-    msgText += "\n" + action + "\n\n"
-        + "\u23F3 Expira en " + waitMin + " min"
-        + "\n\u{1F4DD} Usar botones o responder: <b>siempre</b> (para persistir)";
+    // P2-UX: Mensaje de permiso compacto con boton "Siempre" desde el inicio
+    let msgText = "\u26A0\uFE0F <b>Permiso requerido</b>\n";
+    msgText += "\n" + action + "\n";
+    msgText += "\n\u23F3 Expira en " + waitMin + " min";
+
+    // Botones con "Siempre" incluido desde el inicio (P6-UX)
+    const permButtons = [[
+        { text: "\u2705 Aprobar", callback_data: "allow:" + requestId },
+        { text: "\u2705 Siempre", callback_data: "always:" + requestId },
+        { text: "\u274C Rechazar", callback_data: "deny:" + requestId }
+    ]];
 
     let sentMsg;
     try {
@@ -476,12 +481,7 @@ async function processInput() {
             chat_id: CHAT_ID,
             text: msgText,
             parse_mode: "HTML",
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: "\u2705 Permitir", callback_data: "allow:" + requestId },
-                    { text: "\u274C Rechazar", callback_data: "deny:" + requestId }
-                ]]
-            }
+            reply_markup: { inline_keyboard: permButtons }
         }, 8000);
         log("Mensaje enviado: msg_id=" + sentMsg.message_id + " requestId=" + requestId);
         registerMessage(sentMsg.message_id, "permission");
@@ -598,45 +598,51 @@ async function processInput() {
 
         log("Timeout " + label + " (" + elapsedTotal + "s). Enviando reintento " + (nextAttempt + 1) + "/" + totalAttempts);
 
-        // Editar mensaje anterior: quitar botones, marcar como expirado
-        try {
-            await telegramPost("editMessageText", {
-                chat_id: CHAT_ID,
-                message_id: currentMsgId,
-                text: msgText + "\n\n\u23F1 <i>Sin respuesta \u2014 reintentando\u2026</i>",
-                parse_mode: "HTML",
-                reply_markup: { inline_keyboard: [] }
-            }, ANSWER_TIMEOUT);
-        } catch(e) { log("Error editando mensaje expirado: " + e.message); }
+        // P2-UX: Editar el mensaje existente en vez de crear uno nuevo (anti-spam)
+        // Solo crear mensaje nuevo en el ultimo intento (para que vibre)
+        const retryLabel = escalation.emoji + " <b>Permiso requerido</b> <i>(" + (nextAttempt + 1) + "/" + totalAttempts + ")</i>\n";
+        let retryText = retryLabel + "\n" + action + "\n"
+            + "\n\u23F3 Expira en " + nextWaitMin + " min";
 
-        // Construir mensaje de reintento
-        let retryText = escalation.emoji + " <b>" + escHtml(agent) + " \u2014 " + escalation.title + "</b>"
-            + "  <i>(" + (nextAttempt + 1) + "/" + totalAttempts + ")</i>\n";
-        if (contextLine) retryText += contextLine + "\n";
-        if (escalation.desc) retryText += "\n" + escalation.desc + "\n";
-        retryText += "\n" + action + "\n\n"
-            + "\u23F3 Expira en " + nextWaitMin + " min"
-            + "\n\u{1F4DD} Usar botones o responder: <b>siempre</b> (para persistir)";
+        const isSecondToLast = (nextAttempt === totalAttempts - 2);
 
-        try {
-            const retryMsg = await telegramPost("sendMessage", {
-                chat_id: CHAT_ID,
-                text: retryText,
-                parse_mode: "HTML",
-                reply_markup: {
-                    inline_keyboard: [[
-                        { text: "\u2705 Permitir", callback_data: "allow:" + requestId },
-                        { text: "\u274C Rechazar", callback_data: "deny:" + requestId }
-                    ]]
-                }
-            }, 8000);
-            currentMsgId = retryMsg.message_id;
-            registerMessage(retryMsg.message_id, "permission");
-            updateQuestionField(requestId, { telegram_message_id: retryMsg.message_id });
-            msgText = retryText;
-            log("Reintento " + (nextAttempt + 1) + "/" + totalAttempts + " enviado: msg_id=" + retryMsg.message_id);
-        } catch(e) {
-            log("Error enviando reintento: " + e.message);
+        if (isSecondToLast) {
+            // Penultimo intento: enviar mensaje NUEVO para que vibre/notifique
+            try {
+                // Marcar el anterior como expirado
+                await telegramPost("editMessageText", {
+                    chat_id: CHAT_ID,
+                    message_id: currentMsgId,
+                    text: msgText + "\n\n\u23F1 <i>Sin respuesta</i>",
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: [] }
+                }, ANSWER_TIMEOUT);
+            } catch(_) {}
+            try {
+                const retryMsg = await telegramPost("sendMessage", {
+                    chat_id: CHAT_ID,
+                    text: retryText,
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: permButtons }
+                }, 8000);
+                currentMsgId = retryMsg.message_id;
+                registerMessage(retryMsg.message_id, "permission");
+                updateQuestionField(requestId, { telegram_message_id: retryMsg.message_id });
+                msgText = retryText;
+            } catch(e) { log("Error enviando reintento: " + e.message); }
+        } else {
+            // Reintentos intermedios: editar el mensaje existente (sin spam)
+            try {
+                await telegramPost("editMessageText", {
+                    chat_id: CHAT_ID,
+                    message_id: currentMsgId,
+                    text: retryText,
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: permButtons }
+                }, ANSWER_TIMEOUT);
+                msgText = retryText;
+                log("Reintento " + (nextAttempt + 1) + "/" + totalAttempts + " editado in-place: msg_id=" + currentMsgId);
+            } catch(e) { log("Error editando reintento: " + e.message); }
         }
     }
 }
