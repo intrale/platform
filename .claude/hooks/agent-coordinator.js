@@ -274,19 +274,40 @@ function getExpectedWorktreePath(agente) {
 }
 
 function generateDefaultPrompt(issue, slug) {
-    return (
-        "Implementar issue #" + issue + ". " +
-        "Leer el issue completo con: gh issue view " + issue + " --repo intrale/platform. " +
-        "Al iniciar: invocar /ops para verificar estado del entorno. " +
-        "Al iniciar: invocar /po para revisar criterios de aceptacion del issue #" + issue + ". " +
-        "Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigacion tecnica. " +
-        "Completar los cambios descritos en el body del issue. " +
-        "Antes de /delivery: invocar /tester para verificar que los tests pasan. " +
-        "Antes de /delivery: invocar /builder para validar que el build no esta roto. " +
-        "Antes de /delivery: invocar /security para validar seguridad del diff. " +
-        "Antes de /delivery: invocar /review para validar el diff. " +
-        "Usar /delivery para commit+PR al terminar. Closes #" + issue
-    );
+    // Prompt estructurado por fases — fallback cuando auto-plan-sprint.js no generó prompt.
+    // Sin labels disponibles, se usa pipeline completo (conservador).
+    return [
+        "Implementar issue #" + issue + ". Leer el issue completo con: gh issue view " + issue + " --repo intrale/platform.",
+        "",
+        "EJECUTAR ESTAS FASES EN ORDEN ESTRICTO. No saltear ninguna. Cada fase usa un skill especifico.",
+        "",
+        "== FASE 1: ENTORNO ==",
+        "Invocar /ops para verificar estado del entorno.",
+        "",
+        "== FASE 2: VALIDACION DEL ISSUE (OBLIGATORIO antes de codear) ==",
+        "El issue pudo haber cambiado desde que se creo. Validar y enriquecer ANTES de implementar:",
+        "  1. Invocar /po para revisar criterios de aceptacion del issue #" + issue + ".",
+        "     Si /po detecta criterios incompletos o desactualizados, aplicar las actualizaciones al issue.",
+        "  2. Invocar /ux para revisar impacto visual y proponer mejoras de UX.",
+        "     Si /ux propone cambios, actualizar el issue con las recomendaciones antes de codear.",
+        "  3. Invocar /qa para definir procedimiento de testing (usar docs/qa-ambiente-local.md).",
+        "     Si /qa identifica escenarios faltantes, agregarlos al issue.",
+        "  4. Si el issue menciona libs, patrones o frameworks nuevos: invocar /guru para investigacion tecnica.",
+        "",
+        "== FASE 3: IMPLEMENTACION ==",
+        "Invocar /backend-dev (o /android-dev si el issue es de app) para implementar los cambios del body del issue.",
+        "Seguir los criterios de aceptacion validados en FASE 2.",
+        "",
+        "== FASE 4: VERIFICACION (OBLIGATORIO antes de /delivery) ==",
+        "Ejecutar TODOS estos gates en orden:",
+        "  1. /tester — verificar que los tests pasan y hay cobertura adecuada.",
+        "  2. /builder — validar que el build compila sin errores.",
+        "  3. /security — validar seguridad del diff.",
+        "  4. /review — code review del diff completo.",
+        "",
+        "== FASE 5: ENTREGA ==",
+        "Invocar /delivery para commit+PR+merge. Closes #" + issue
+    ].join("\n");
 }
 
 // ─── Event log (append-only) ─────────────────────────────────────────────────
