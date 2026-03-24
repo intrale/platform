@@ -923,9 +923,9 @@ function collectData() {
     }
   }
 
-  // Usar el conteo del registry como fuente de verdad para agentes activos.
-  // Si el registry tiene datos, prevalece sobre el conteo de sesiones.
-  const effectiveActiveAgents = registryActiveCount > 0 ? registryActiveCount : activeSessions.length;
+  // Conteo de agentes activos: solo contar sesiones realmente activas (status "active"),
+  // no confiar en el registry que puede tener agentes fantasma con PIDs muertos.
+  const effectiveActiveAgents = activeSessions.filter(s => s._status === "active").length;
 
   const data = {
     timestamp: new Date().toISOString(),
@@ -2886,27 +2886,64 @@ function renderHTML(data, theme, section) {
       </div>
       <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>`;
 
-    // Sección 1: Agentes activos (slot 1-3)
-    if (spAgentes.length > 0) {
-      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--accent-green);letter-spacing:.04em;">&#9654; EN EJECUCIÓN (${spAgentes.length}/${data.sprintPlan.concurrency_limit || 3})</div>`;
+    // Reclasificar agentes del plan: el sprint-plan puede tener agentes en "agentes"
+    // que ya completaron (100%, done) o que nunca arrancaron (status pending/en cola).
+    // Cruzar con el estado real de la sesión para clasificar correctamente.
+    const reallyRunning = [];
+    const reallyQueued = [...spQueue];
+    const reallyDone = [...spCompleted];
+    for (const ag of spAgentes) {
+      const agIssueStr = String(ag.issue);
+      const matchSession = [...data.sprintSessions, ...(data.sessions || [])].find(s => {
+        const issueMatch = (s.branch || "").match(/(\d+)/);
+        return issueMatch && issueMatch[1] === agIssueStr;
+      });
+      const sessionStatus = matchSession ? matchSession._status : null;
+      if (sessionStatus === "done" || sessionStatus === "stale") {
+        // Agente completó pero sigue en el array "agentes" del plan → mover a completados
+        reallyDone.push(ag);
+      } else if (!matchSession || sessionStatus === "pending" || ag.status === "queued" || ag.status === "promoted") {
+        // Sin sesión activa o status pending → está en cola realmente
+        // Pero solo si no tiene un PID activo en el plan
+        if (!ag._pid) {
+          reallyQueued.push(ag);
+        } else {
+          reallyRunning.push(ag);
+        }
+      } else {
+        reallyRunning.push(ag);
+      }
+    }
+
+    // Sección 1: Agentes realmente en ejecución
+    if (reallyRunning.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--accent-green);letter-spacing:.04em;">&#9654; EN EJECUCIÓN (${reallyRunning.length}/${data.sprintPlan.concurrency_limit || 3})</div>`;
       ejecutionHtml += `<div class="exec-table">`;
-      for (const ag of spAgentes) { ejecutionHtml += renderSprintAgentRow(ag, null); }
+      for (const ag of reallyRunning) { ejecutionHtml += renderSprintAgentRow(ag, null); }
       ejecutionHtml += `</div>`;
     }
 
     // Sección 2: Cola
-    if (spQueue.length > 0) {
-      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:#fbbf24;letter-spacing:.04em;">&#9711; EN COLA (${spQueue.length})</div>`;
+    if (reallyQueued.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:#fbbf24;letter-spacing:.04em;">&#9711; EN COLA (${reallyQueued.length})</div>`;
       ejecutionHtml += `<div class="exec-table">`;
-      for (const ag of spQueue) { ejecutionHtml += renderSprintAgentRow(ag, "pending"); }
+      for (const ag of reallyQueued) { ejecutionHtml += renderSprintAgentRow(ag, "pending"); }
       ejecutionHtml += `</div>`;
     }
 
-    // Sección 3: Completados
-    if (spCompleted.length > 0) {
-      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--text-muted);letter-spacing:.04em;">&#10003; COMPLETADOS (${spCompleted.length})</div>`;
+    // Sección 3: Completados (deduplicated — usa reallyDone que incluye reclasificados)
+    // Deduplicar por issue para evitar que un agente aparezca 2 veces
+    const doneIssues = new Set();
+    const dedupedDone = reallyDone.filter(ag => {
+      const key = String(ag.issue);
+      if (doneIssues.has(key)) return false;
+      doneIssues.add(key);
+      return true;
+    });
+    if (dedupedDone.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--text-muted);letter-spacing:.04em;">&#10003; COMPLETADOS (${dedupedDone.length})</div>`;
       ejecutionHtml += `<div class="exec-table">`;
-      for (const ag of spCompleted) { ejecutionHtml += renderSprintAgentRow(ag, "done"); }
+      for (const ag of dedupedDone) { ejecutionHtml += renderSprintAgentRow(ag, "done"); }
       ejecutionHtml += `</div>`;
     }
 
@@ -3041,14 +3078,15 @@ function renderHTML(data, theme, section) {
       <span style="font-size:13px;font-weight:700;color:${sprintPctColor};">${sprintPct}%</span>
       <span style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(sprintTema)}</span>
       ${sprintTimingHtml}
-      <span style="font-size:10px;color:var(--text-dim);">${spCompleted.length}/${allSprintAgentes.length} completados</span>
+      <span style="font-size:10px;color:var(--text-dim);">${dedupedDone.length}/${agentesTotal} completados</span>
     </div>`;
 
-    // Renderizar secciones: en ejecución, en cola, completados
+    // Renderizar secciones: reclasificadas según estado real
+    // (reutilizar reallyRunning/reallyQueued/dedupedDone del bloque de ejecución)
     const sections = [
-      { items: spAgentes, label: "EN EJECUCI\u00D3N", color: "var(--accent-green)", icon: "&#9654;" },
-      { items: spQueue, label: "EN COLA", color: "#fbbf24", icon: "&#9711;" },
-      { items: spCompleted, label: "COMPLETADOS", color: "var(--text-muted)", icon: "&#10003;" },
+      { items: reallyRunning, label: "EN EJECUCI\u00D3N", color: "var(--accent-green)", icon: "&#9654;" },
+      { items: reallyQueued, label: "EN COLA", color: "#fbbf24", icon: "&#9711;" },
+      { items: dedupedDone, label: "COMPLETADOS", color: "var(--text-muted)", icon: "&#10003;" },
       { items: spIncomplete, label: "FALLIDOS", color: "#f87171", icon: "&#10007;" }
     ];
 
@@ -3201,11 +3239,16 @@ function renderHTML(data, theme, section) {
   }
 
   // Sesiones standalone (fuera del sprint)
+  // Solo mostrar sesiones ACTIVAS que no pertenecen al sprint actual
+  // Excluir done/stale/idle para no mostrar residuos de sprints anteriores
   const sprintIssueNums = new Set(allSprintAgentes.map(a => String(a.issue)));
   const standaloneSessions = visibleSessions.filter(s => {
+    if (!s.branch || !s.branch.startsWith("agent/")) return false;
+    // Excluir sesiones terminadas o inactivas — son residuo de ejecuciones anteriores
+    if (s._status === "done" || s._status === "stale" || s._status === "idle") return false;
     const m = (s.branch || "").match(/(\d+)/);
     const issueNum = m ? m[1] : null;
-    return s.branch && s.branch.startsWith("agent/") && (!issueNum || !sprintIssueNums.has(issueNum));
+    return !issueNum || !sprintIssueNums.has(issueNum);
   });
   if (standaloneSessions.length > 0) {
     unifiedAgentsHtml += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--surface3);">
