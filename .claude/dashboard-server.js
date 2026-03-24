@@ -2835,6 +2835,10 @@ function renderHTML(data, theme, section) {
   // No mostrar sprint si está cancelado — evitar mostrar datos obsoletos
   const sprintEstadoCheck = data.sprintPlan ? (data.sprintPlan.estado || "activo").toLowerCase() : "";
   const isSprintCancelled = sprintEstadoCheck === "cancelado";
+  // Variables de reclasificación — definidas fuera del if para que estén disponibles en tarjetas unificadas
+  let reallyRunning = [];
+  let reallyQueued = [...spQueue];
+  let dedupedDone = [...spCompleted];
   if (data.sprintPlan && allSprintAgentes.length > 0 && !isSprintCancelled) {
     const spDate = data.sprintPlan.fecha || "";
     const sprintId = data.sprintPlan.sprint_id || null;
@@ -2897,8 +2901,8 @@ function renderHTML(data, theme, section) {
     // Reclasificar agentes del plan: el sprint-plan puede tener agentes en "agentes"
     // que ya completaron (100%, done) o que nunca arrancaron (status pending/en cola).
     // Cruzar con el estado real de la sesión para clasificar correctamente.
-    const reallyRunning = [];
-    const reallyQueued = [...spQueue];
+    reallyRunning = [];
+    reallyQueued = [...spQueue];
     const reallyDone = [...spCompleted];
     for (const ag of spAgentes) {
       const agIssueStr = String(ag.issue);
@@ -2942,7 +2946,7 @@ function renderHTML(data, theme, section) {
     // Sección 3: Completados (deduplicated — usa reallyDone que incluye reclasificados)
     // Deduplicar por issue para evitar que un agente aparezca 2 veces
     const doneIssues = new Set();
-    const dedupedDone = reallyDone.filter(ag => {
+    dedupedDone = reallyDone.filter(ag => {
       const key = String(ag.issue);
       if (doneIssues.has(key)) return false;
       doneIssues.add(key);
