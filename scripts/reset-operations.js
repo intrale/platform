@@ -226,13 +226,10 @@ function cleanOrphanSessions() {
             try {
                 const fp = path.join(sessDir, f);
                 const s = JSON.parse(fs.readFileSync(fp, "utf8"));
-                // Limpiar sesiones "active" de agentes — son huérfanas si llegamos al reset
-                if (s.status === "active" && s.branch && s.branch.startsWith("agent/")) {
-                    s.status = "done";
-                    s.last_activity_ts = new Date().toISOString();
-                    const tmpPath = fp + ".tmp." + process.pid;
-                    fs.writeFileSync(tmpPath, JSON.stringify(s, null, 2), "utf8");
-                    fs.renameSync(tmpPath, fp);
+                // Eliminar sesiones de agentes — son huérfanas si llegamos al reset
+                // No solo marcar done (el dashboard las retiene 30min), eliminar directamente
+                if (s.branch && s.branch.startsWith("agent/")) {
+                    fs.unlinkSync(fp);
                     cleaned.push(f);
                 }
             } catch (_) {}
