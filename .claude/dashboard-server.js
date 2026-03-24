@@ -4544,8 +4544,8 @@ function handleRequest(req, res) {
         return { id: String(a.issue || (i + 1)), numero: a.numero || (i + 1), issue: a.issue, branch: a.branch || ('agent/' + a.issue + '-' + (a.slug || '')), status };
       });
       // Logs de sistema (siempre disponibles)
-      // Nota: telegram-commander excluido intencionalmente — contiene datos internos de comandos
       const systemLogs = [
+        { id: '_commander', numero: '-', issue: null, branch: null, status: 'system', label: 'Telegram Commander' },
         { id: '_hooks', numero: '-', issue: null, branch: null, status: 'system', label: 'Hooks (debug)' },
         { id: '_activity', numero: '-', issue: null, branch: null, status: 'system', label: 'Activity log' },
         { id: '_watcher', numero: '-', issue: null, branch: null, status: 'system', label: 'Agent watcher' },
@@ -4566,14 +4566,9 @@ function handleRequest(req, res) {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       res.end(JSON.stringify({ agents, systemLogs }));
     } else if (agentId) {
-      // Bloquear acceso a logs de telegram-commander
-      if (agentId === '_commander') {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Logs de telegram-commander no disponibles via /logs' }));
-        return;
-      }
       // Logs de sistema por ID especial
       const sysLogMap = {
+        '_commander': path.join(REPO_ROOT, '.claude', 'hooks', 'telegram-commander.log'),
         '_hooks': path.join(REPO_ROOT, '.claude', 'hooks', 'hook-debug.log'),
         '_activity': path.join(REPO_ROOT, '.claude', 'activity-log.jsonl'),
         '_watcher': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-watcher.log'),
