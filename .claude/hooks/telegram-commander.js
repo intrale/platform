@@ -860,6 +860,12 @@ async function pollingLoop() {
                     case "limpiar":
                         await dispatcher.handleLimpiar();
                         break;
+                    case "reset":
+                        dispatcher.handleReset(cmd.confirmed).catch(e => {
+                            log("Error en handleReset: " + e.message);
+                            tgApi.sendMessage("❌ Error en reset: <code>" + tgApi.escHtml(e.message) + "</code>").catch(() => {});
+                        });
+                        break;
                     case "restart":
                         await dispatcher.handleRestart();
                         break;
