@@ -766,4 +766,27 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.business_payment_methods_section_title to "Medios de pago disponibles",
     MessageKey.business_payment_methods_save to "Guardar cambios",
     MessageKey.business_payment_methods_saved to "Cambios guardados correctamente",
+
+    // Dashboard - Tarjetas de sección
+    MessageKey.dashboard_card_payment_methods_title to "Medios de pago",
+    MessageKey.dashboard_card_payment_methods_description to "Configura cómo recibís pagos",
+    MessageKey.dashboard_card_payment_methods_cta to "Configurar medios",
+
+    // 2FA
+    MessageKey.two_factor_setup_loading to "Configurando autenticación...",
+    MessageKey.two_factor_setup_manual_title to "Configuración manual",
+    MessageKey.two_factor_setup_manual_instructions to "Si la aplicación no abre automáticamente, podés configurar manualmente:",
+    MessageKey.two_factor_setup_manual_step1 to "1. Abrí una app de autenticación (Google Authenticator, Authy, etc.)",
+    MessageKey.two_factor_setup_manual_step2 to "2. Creá una nueva cuenta o importá con QR",
+    MessageKey.two_factor_setup_manual_step3 to "3. Usá el código de 6 dígitos para verificar tu cuenta",
+    MessageKey.two_factor_setup_account_label to "Cuenta:",
+    MessageKey.two_factor_setup_secret_label to "Clave secreta:",
+    MessageKey.two_factor_setup_copy_secret to "Copiar clave",
+    MessageKey.two_factor_setup_copy_link to "Copiar enlace",
+    MessageKey.two_factor_setup_find_authenticator to "Encontrar apps de autenticación",
+    MessageKey.two_factor_setup_app_opened_title to "¿La aplicación se abrió?",
+    MessageKey.two_factor_setup_app_opened_instructions to "Si la app de autenticación se abrió automáticamente, podés proceder a verificar tu cuenta.",
+    MessageKey.two_factor_setup_go_verify to "Ir a verificación",
+    MessageKey.two_factor_verify_error_invalid to "Código inválido o expirado",
+    MessageKey.two_factor_verify_code_hint to "Ingresá el código de 6 dígitos",
 )

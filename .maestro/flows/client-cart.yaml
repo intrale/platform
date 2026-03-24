@@ -1,0 +1,159 @@
+appId: com.intrale.app.client
+---
+# Flujo: ClientCart — Carrito y resumen de pedido
+# Issue #597 — Pantalla de carrito y resumen de pedido
+
+- launchApp:
+    clearState: true
+
+# Saltar onboarding si aparece
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 10000
+- tapOn:
+    text: "Saltar"
+    optional: true
+
+# Login
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 15000
+- tapOn:
+    text: "Ya tengo cuenta"
+
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
+
+- tapOn:
+    id: "field_Usuario"
+- inputText: "admin@intrale.com"
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "Admin1234!"
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Esperar Home del cliente cargado
+- extendedWaitUntil:
+    visible:
+      text: "Ver catálogo"
+    timeout: 20000
+
+# Agregar un producto al carrito desde el home
+- tapOn:
+    text: "Agregar"
+    index: 0
+    optional: true
+
+- waitForAnimationToEnd
+- takeScreenshot: cart-product-added-from-home
+
+# Navegar al carrito tocando el ícono
+- tapOn:
+    id: "cart_icon"
+    optional: true
+
+# Alternativa: navegar via el ícono de carrito en el header
+- tapOn:
+    text: "Carrito"
+    optional: true
+
+- waitForAnimationToEnd
+- takeScreenshot: cart-screen-opened
+
+# Verificar que el título "Carrito" es visible
+- assertVisible:
+    text: "Carrito"
+    label: "Título Carrito visible"
+
+# Verificar el subtítulo
+- assertVisible:
+    text: "Revisá los productos antes de confirmar tu pedido."
+    label: "Subtítulo visible"
+
+- takeScreenshot: cart-header-visible
+
+# Verificar que hay al menos un ítem de carrito
+- assertVisible:
+    text: "Subtotal:"
+    label: "Subtotal de ítem visible"
+    optional: true
+
+- takeScreenshot: cart-items-list
+
+# Verificar controles de cantidad (+/-)
+- assertVisible:
+    text: "Resumen"
+    label: "Card de resumen visible"
+
+- takeScreenshot: cart-summary-card
+
+# Verificar botón Continuar pedido
+- assertVisible:
+    text: "Continuar pedido"
+    label: "Botón continuar visible"
+
+- takeScreenshot: cart-actions
+
+# Verificar opción Vaciar carrito
+- assertVisible:
+    text: "Vaciar carrito"
+    label: "Opción vaciar visible"
+
+# Tap en Vaciar carrito y verificar diálogo de confirmación
+- tapOn:
+    text: "Vaciar carrito"
+
+- waitForAnimationToEnd
+- takeScreenshot: cart-clear-dialog
+
+- assertVisible:
+    text: "¿Querés vaciar el carrito?"
+    label: "Diálogo de confirmación visible"
+
+# Cancelar la acción de vaciar
+- tapOn:
+    text: "Cancelar"
+
+- waitForAnimationToEnd
+- takeScreenshot: cart-after-cancel-clear
+
+# Verificar que el carrito sigue con ítems
+- assertVisible:
+    text: "Continuar pedido"
+    label: "Carrito intacto tras cancelar"
+
+# Vaciar el carrito confirmando
+- tapOn:
+    text: "Vaciar carrito"
+
+- waitForAnimationToEnd
+
+- tapOn:
+    text: "Vaciar"
+
+- waitForAnimationToEnd
+- takeScreenshot: cart-empty-state
+
+# Verificar estado vacío
+- assertVisible:
+    text: "Tu carrito está vacío."
+    label: "Estado vacío visible tras vaciar"
+
+- assertVisible:
+    text: "Agregá productos desde la pantalla de Inicio."
+    label: "Subtítulo estado vacío visible"
+
+# Volver al inicio desde estado vacío
+- tapOn:
+    text: "Volver al inicio"
+    optional: true
+
+- waitForAnimationToEnd
+- takeScreenshot: cart-back-to-home

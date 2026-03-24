@@ -766,4 +766,27 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.business_payment_methods_section_title to "Available payment methods",
     MessageKey.business_payment_methods_save to "Save changes",
     MessageKey.business_payment_methods_saved to "Changes saved successfully",
+
+    // Dashboard - Section cards
+    MessageKey.dashboard_card_payment_methods_title to "Payment methods",
+    MessageKey.dashboard_card_payment_methods_description to "Configure how you receive payments",
+    MessageKey.dashboard_card_payment_methods_cta to "Configure methods",
+
+    // 2FA
+    MessageKey.two_factor_setup_loading to "Setting up authentication...",
+    MessageKey.two_factor_setup_manual_title to "Manual setup",
+    MessageKey.two_factor_setup_manual_instructions to "If the app doesn't open automatically, you can set up manually:",
+    MessageKey.two_factor_setup_manual_step1 to "1. Open an authenticator app (Google Authenticator, Authy, etc.)",
+    MessageKey.two_factor_setup_manual_step2 to "2. Create a new account or import with QR",
+    MessageKey.two_factor_setup_manual_step3 to "3. Use the 6-digit code to verify your account",
+    MessageKey.two_factor_setup_account_label to "Account:",
+    MessageKey.two_factor_setup_secret_label to "Secret key:",
+    MessageKey.two_factor_setup_copy_secret to "Copy key",
+    MessageKey.two_factor_setup_copy_link to "Copy link",
+    MessageKey.two_factor_setup_find_authenticator to "Find authenticator apps",
+    MessageKey.two_factor_setup_app_opened_title to "Did the app open?",
+    MessageKey.two_factor_setup_app_opened_instructions to "If the authenticator app opened automatically, you can proceed to verify your account.",
+    MessageKey.two_factor_setup_go_verify to "Go to verification",
+    MessageKey.two_factor_verify_error_invalid to "Invalid or expired code",
+    MessageKey.two_factor_verify_code_hint to "Enter the 6-digit code",
 )
