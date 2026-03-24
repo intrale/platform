@@ -278,6 +278,7 @@ class ClientProductDetailScreen : Screen(CLIENT_PRODUCT_DETAIL_PATH) {
                     activeTab = ClientTab.HOME,
                     onHomeClick = { navigateClearingBackStack(CLIENT_HOME_PATH) },
                     onOrdersClick = { navigate(CLIENT_ORDERS_PATH) },
+                    onNotificationsClick = { navigate(CLIENT_NOTIFICATIONS_PATH) },
                     onProfileClick = { navigate(CLIENT_PROFILE_PATH) }
                 )
             }

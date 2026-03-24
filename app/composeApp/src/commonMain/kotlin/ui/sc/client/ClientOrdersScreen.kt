@@ -110,6 +110,7 @@ class ClientOrdersScreen : Screen(CLIENT_ORDERS_PATH) {
                     activeTab = ClientTab.ORDERS,
                     onHomeClick = { navigate(CLIENT_HOME_PATH) },
                     onOrdersClick = {},
+                    onNotificationsClick = { navigate(CLIENT_NOTIFICATIONS_PATH) },
                     onProfileClick = { navigate(CLIENT_PROFILE_PATH) }
                 )
             }

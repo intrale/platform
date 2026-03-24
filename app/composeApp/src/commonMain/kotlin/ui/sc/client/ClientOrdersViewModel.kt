@@ -63,6 +63,7 @@ class ClientOrdersViewModel(
         getClientOrders.execute()
             .onSuccess { orders ->
                 allOrders = orders.sortedByDescending { it.createdAt }
+                ClientNotificationStore.updateFromOrders(allOrders)
                 applyFilter()
             }
             .onFailure { throwable ->
