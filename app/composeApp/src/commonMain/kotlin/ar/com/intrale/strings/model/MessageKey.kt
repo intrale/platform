@@ -779,4 +779,21 @@ enum class MessageKey {
     two_factor_setup_go_verify,
     two_factor_verify_error_invalid,
     two_factor_verify_code_hint,
+
+    // Centro de notificaciones
+    client_notifications_title,
+    client_notifications_empty,
+    client_notifications_tab_label,
+    client_notifications_mark_all_read,
+    client_notifications_mark_read,
+    client_notifications_unread_badge,
+    client_notifications_event_order_created,
+    client_notifications_event_order_confirmed,
+    client_notifications_event_order_preparing,
+    client_notifications_event_order_ready,
+    client_notifications_event_order_delivering,
+    client_notifications_event_order_delivered,
+    client_notifications_event_order_cancelled,
+    client_notifications_event_business_message,
+    client_notifications_push_placeholder,
 }
