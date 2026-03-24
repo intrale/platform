@@ -715,6 +715,22 @@ async function main() {
     console.log("[qa-video-share] Distribuyendo " + videoPaths.length + " video(s) para issue #" + data.issue);
     if (driveAvailable()) {
         console.log("[qa-video-share] Modo: Google Drive → Telegram link");
+    } else {
+        // Drive no configurado — bloquear en vez de fallback silencioso.
+        // La evidencia de QA debe quedar persistida en Drive, no solo en Telegram.
+        console.error("[qa-video-share] ERROR: Google Drive no configurado.");
+        console.error("[qa-video-share] Sin Drive, la evidencia de video se pierde.");
+        console.error("[qa-video-share] Configurar OAuth con: node scripts/google-drive-oauth-setup.js <CLIENT_ID> <CLIENT_SECRET>");
+        console.error("[qa-video-share] O definir google_oauth_* en .claude/hooks/telegram-config.json");
+        // Enviar alerta a Telegram y fallar
+        try {
+            await sendTelegramMessage(
+                "⚠️ *QA Evidence BLOQUEADO* — Issue #" + data.issue + "\n" +
+                "Google Drive no configurado. " + videoPaths.length + " video(s) sin persistir.\n" +
+                "Ejecutar setup OAuth para desbloquear pipeline."
+            );
+        } catch (e) {}
+        process.exit(2); // Exit code 2 = Drive no disponible
     }
 
     let sent = 0;
@@ -768,10 +784,16 @@ async function main() {
                 sent++;
             } catch (e) {
                 console.error("[qa-video-share] Drive fallo para " + filename + ": " + e.message);
-                console.log("[qa-video-share] Fallback: enviando por Telegram directo...");
-                // Fallback al flujo directo
-                await sendFallback(filename, fullPath, stats, sizeStr, data, verdictIcon, timestamp);
-                sent++;
+                console.error("[qa-video-share] ERROR: No se pudo subir evidencia a Drive. Pipeline fallido.");
+                // Notificar el fallo a Telegram
+                try {
+                    await sendTelegramMessage(
+                        "❌ *Drive Upload FALLIDO* — Issue #" + data.issue + "\n" +
+                        "Video: `" + filename + "` (" + sizeStr + ")\n" +
+                        "Error: " + e.message.substring(0, 200)
+                    );
+                } catch (e2) {}
+                failed++;
             }
             continue;
         }
