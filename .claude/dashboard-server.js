@@ -310,8 +310,10 @@ function collectData() {
   try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
   // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed + _incomplete)
   // para retener sesiones activas y evitar que se clasifiquen como zombie.
+  // Si el sprint está cancelado, vaciar el set para que las sesiones huérfanas se descarten normalmente.
+  const sprintCancelled = sprintPlan && (sprintPlan.estado || "").toLowerCase() === "cancelado";
   const sprintIssueSet = new Set(
-    sprintPlan ? [
+    (sprintPlan && !sprintCancelled) ? [
       ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
       ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
       ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
@@ -2827,10 +2829,13 @@ function renderHTML(data, theme, section) {
   let sprintPct = 0;
   const completedCount = spCompleted.length;
   const agentesTotal = (data.sprintPlan && data.sprintPlan.total_stories) || allSprintAgentes.length || 1;
-  if (data.sprintPlan && allSprintAgentes.length > 0) {
+  // No mostrar sprint si está cancelado — evitar mostrar datos obsoletos
+  const sprintEstadoCheck = data.sprintPlan ? (data.sprintPlan.estado || "activo").toLowerCase() : "";
+  const isSprintCancelled = sprintEstadoCheck === "cancelado";
+  if (data.sprintPlan && allSprintAgentes.length > 0 && !isSprintCancelled) {
     const spDate = data.sprintPlan.fecha || "";
     const sprintId = data.sprintPlan.sprint_id || null;
-    const sprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
+    const sprintEstado = sprintEstadoCheck;
     const isFinalizado = sprintEstado === "finalizado";
     // Progreso del sprint: basado en issues completados (fuente de verdad)
     // + progreso parcial de agentes activos basado en tareas o acciones
@@ -3043,7 +3048,7 @@ function renderHTML(data, theme, section) {
 
   // --- UNIFIED AGENT CARDS (combina sprint execution + session info) ---
   let unifiedAgentsHtml = "";
-  if (data.sprintPlan && allSprintAgentes.length > 0) {
+  if (data.sprintPlan && allSprintAgentes.length > 0 && !isSprintCancelled) {
     const sprintId = data.sprintPlan.sprint_id || "Sprint";
     const sprintTema = data.sprintPlan.tema || "";
     const sprintPctColor = sprintPct >= 80 ? "var(--green)" : sprintPct >= 40 ? "#fbbf24" : "var(--text-muted)";

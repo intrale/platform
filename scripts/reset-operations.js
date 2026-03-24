@@ -214,6 +214,33 @@ function cleanWorktrees() {
     return cleaned;
 }
 
+// ─── Step 2.5: Clean orphan sessions ─────────────────────────────────────────
+
+function cleanOrphanSessions() {
+    const cleaned = [];
+    const sessDir = path.join(REPO_ROOT, ".claude", "sessions");
+    try {
+        if (!fs.existsSync(sessDir)) return cleaned;
+        const files = fs.readdirSync(sessDir).filter(f => f.endsWith(".json"));
+        for (const f of files) {
+            try {
+                const fp = path.join(sessDir, f);
+                const s = JSON.parse(fs.readFileSync(fp, "utf8"));
+                // Limpiar sesiones "active" de agentes — son huérfanas si llegamos al reset
+                if (s.status === "active" && s.branch && s.branch.startsWith("agent/")) {
+                    s.status = "done";
+                    s.last_activity_ts = new Date().toISOString();
+                    const tmpPath = fp + ".tmp." + process.pid;
+                    fs.writeFileSync(tmpPath, JSON.stringify(s, null, 2), "utf8");
+                    fs.renameSync(tmpPath, fp);
+                    cleaned.push(f);
+                }
+            } catch (_) {}
+        }
+    } catch (_) {}
+    return cleaned;
+}
+
 // ─── Step 3: Reset state files ──────────────────────────────────────────────
 
 function resetStateFiles() {
@@ -327,6 +354,11 @@ async function main() {
     const worktrees = cleanWorktrees();
     log("  → " + worktrees.length + " worktrees eliminados");
 
+    // Step 2.5
+    log("Paso 2.5/5: Limpiando sesiones huérfanas...");
+    const orphanSessions = cleanOrphanSessions();
+    log("  → " + orphanSessions.length + " sesiones marcadas done");
+
     // Step 3
     log("Paso 3/5: Reseteando state files...");
     const stateFiles = resetStateFiles();
@@ -349,6 +381,7 @@ async function main() {
         elapsed_seconds: parseFloat(elapsed),
         killed: killed.length,
         worktrees_cleaned: worktrees.length,
+        orphan_sessions: orphanSessions.length,
         state_files_reset: stateFiles.length,
         git: gitResult,
         infra_started: infra,
