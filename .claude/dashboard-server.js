@@ -641,8 +641,10 @@ function collectData() {
   for (const s of sessions) {
     const issueMatch = (s.branch || "").match(/(\d+)/);
     const issueNum = issueMatch ? issueMatch[1] : null;
-    // Skip sessions not related to the active sprint (unless it's Main session or no sprint)
     const isMainSession = !s.branch || !s.branch.startsWith("agent/");
+    // Skip agent sessions when sprint is cancelled (no flow to show)
+    if (_flowPlanCancelled && !isMainSession) continue;
+    // Skip sessions not related to the active sprint
     if (_flowIssues.size > 0 && !isMainSession && issueNum && !_flowIssues.has(issueNum)) continue;
     // Resolve sprint agent name to "Agente N" (used by transitions and node registration)
     const isSprintAgent = s.branch && s.branch.startsWith("agent/") && s.agent_name;
