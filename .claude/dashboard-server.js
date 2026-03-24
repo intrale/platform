@@ -620,8 +620,9 @@ function collectData() {
   const issuesWithTransitions = new Set();
   // Filter: only sessions belonging to the current sprint's issues
   const _flowPlan = readJson(SPRINT_PLAN_FILE);
+  const _flowPlanCancelled = _flowPlan && (_flowPlan.estado || "").toLowerCase() === "cancelado";
   const _flowIssues = new Set();
-  if (_flowPlan) {
+  if (_flowPlan && !_flowPlanCancelled) {
     for (const a of (_flowPlan.agentes || [])) _flowIssues.add(String(a.issue));
     for (const a of (_flowPlan._queue || [])) _flowIssues.add(String(a.issue));
     for (const a of (_flowPlan._completed || [])) _flowIssues.add(String(a.issue));
