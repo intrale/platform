@@ -6,9 +6,13 @@ import asdo.client.ClientPreferences
 import asdo.client.ClientProfile
 import asdo.client.ClientProfileData
 import asdo.client.ManageAddressAction
+import asdo.client.PaymentMethod
+import asdo.client.PaymentMethodType
 import asdo.client.ToDoGetClientProfile
+import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -52,6 +56,24 @@ private val sampleProfileData = ClientProfileData(
     profile = sampleProfile,
     addresses = sampleAddresses,
     preferences = samplePreferences
+)
+
+private val sampleProduct1 = ClientProduct(
+    id = "prod-1",
+    name = "Manzana roja",
+    priceLabel = "$1200",
+    emoji = "🍎",
+    unitPrice = 1200.0,
+    categoryId = "cat-1"
+)
+
+private val sampleProduct2 = ClientProduct(
+    id = "prod-2",
+    name = "Banana",
+    priceLabel = "$800",
+    emoji = "🍌",
+    unitPrice = 800.0,
+    categoryId = "cat-2"
 )
 
 // --- Fakes ---
@@ -143,6 +165,183 @@ private class MutableProfileStore(
             addresses[index] = address.copy(isDefault = address.id == chosen)
         }
         profile = profile.copy(defaultAddressId = chosen)
+    }
+}
+
+// =============================================================================
+// ClientCartStore
+// =============================================================================
+
+class ClientCartStoreTest {
+
+    @BeforeTest
+    fun setUp() {
+        ClientCartStore.clear()
+    }
+
+    @Test
+    fun `add agrega un producto nuevo con cantidad 1`() {
+        ClientCartStore.add(sampleProduct1)
+
+        val items = ClientCartStore.items.value
+        assertTrue(items.containsKey("prod-1"))
+        assertEquals(1, items["prod-1"]?.quantity)
+        assertEquals(sampleProduct1, items["prod-1"]?.product)
+    }
+
+    @Test
+    fun `add incrementa cantidad si el producto ya existe`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct1)
+
+        val items = ClientCartStore.items.value
+        assertEquals(1, items.size)
+        assertEquals(2, items["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `add permite agregar multiples productos distintos`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct2)
+
+        val items = ClientCartStore.items.value
+        assertEquals(2, items.size)
+        assertEquals(1, items["prod-1"]?.quantity)
+        assertEquals(1, items["prod-2"]?.quantity)
+    }
+
+    @Test
+    fun `increment aumenta la cantidad de un producto existente`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.increment("prod-1")
+
+        assertEquals(2, ClientCartStore.items.value["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `add no agrega producto no disponible al carrito`() {
+        val productoNoDisponible = sampleProduct1.copy(id = "p-nd", isAvailable = false)
+        ClientCartStore.add(productoNoDisponible)
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `increment no modifica el mapa si el producto no existe`() {
+        ClientCartStore.increment("prod-inexistente")
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `decrement reduce la cantidad de un producto existente`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.increment("prod-1")
+        ClientCartStore.decrement("prod-1")
+
+        assertEquals(1, ClientCartStore.items.value["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `decrement elimina el producto cuando la cantidad llega a 1`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.decrement("prod-1")
+
+        assertFalse(ClientCartStore.items.value.containsKey("prod-1"))
+    }
+
+    @Test
+    fun `decrement no modifica el mapa si el producto no existe`() {
+        ClientCartStore.decrement("prod-inexistente")
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `remove elimina un producto del carrito`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct2)
+
+        ClientCartStore.remove("prod-1")
+
+        val items = ClientCartStore.items.value
+        assertEquals(1, items.size)
+        assertFalse(items.containsKey("prod-1"))
+        assertTrue(items.containsKey("prod-2"))
+    }
+
+    @Test
+    fun `remove no falla si el producto no existe`() {
+        ClientCartStore.remove("prod-inexistente")
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+    }
+
+    @Test
+    fun `clear vacia todos los items y la direccion seleccionada`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.add(sampleProduct2)
+        ClientCartStore.selectAddress("addr-1")
+
+        ClientCartStore.clear()
+
+        assertTrue(ClientCartStore.items.value.isEmpty())
+        assertNull(ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `selectAddress establece la direccion seleccionada`() {
+        ClientCartStore.selectAddress("addr-1")
+
+        assertEquals("addr-1", ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `selectAddress permite cambiar la direccion`() {
+        ClientCartStore.selectAddress("addr-1")
+        ClientCartStore.selectAddress("addr-2")
+
+        assertEquals("addr-2", ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `selectAddress permite establecer null`() {
+        ClientCartStore.selectAddress("addr-1")
+        ClientCartStore.selectAddress(null)
+
+        assertNull(ClientCartStore.selectedAddressId.value)
+    }
+
+    @Test
+    fun `setQuantity establece la cantidad especificada`() {
+        ClientCartStore.setQuantity(sampleProduct1, 5)
+
+        assertEquals(5, ClientCartStore.items.value["prod-1"]?.quantity)
+        assertEquals(sampleProduct1, ClientCartStore.items.value["prod-1"]?.product)
+    }
+
+    @Test
+    fun `setQuantity con cantidad 0 elimina el producto`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.setQuantity(sampleProduct1, 0)
+
+        assertFalse(ClientCartStore.items.value.containsKey("prod-1"))
+    }
+
+    @Test
+    fun `setQuantity actualiza cantidad de producto existente`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.setQuantity(sampleProduct1, 3)
+
+        assertEquals(3, ClientCartStore.items.value["prod-1"]?.quantity)
+    }
+
+    @Test
+    fun `setQuantity con cantidad negativa elimina el producto`() {
+        ClientCartStore.add(sampleProduct1)
+        ClientCartStore.setQuantity(sampleProduct1, -1)
+
+        assertFalse(ClientCartStore.items.value.containsKey("prod-1"))
     }
 }
 
@@ -292,5 +491,49 @@ class ClientProfileViewModelComprehensiveTest {
         viewModel.logout()
 
         assertTrue(resetFake.called)
+    }
+}
+
+// =============================================================================
+// ClientCartStore - Payment methods
+// =============================================================================
+
+class ClientCartStorePaymentMethodTest {
+
+    @BeforeTest
+    fun setUp() {
+        ClientCartStore.clear()
+    }
+
+    @Test
+    fun `selectPaymentMethod establece el medio de pago seleccionado`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+
+        assertEquals("pm-1", ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `selectPaymentMethod permite cambiar el medio de pago`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+        ClientCartStore.selectPaymentMethod("pm-2")
+
+        assertEquals("pm-2", ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `selectPaymentMethod permite establecer null`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+        ClientCartStore.selectPaymentMethod(null)
+
+        assertNull(ClientCartStore.selectedPaymentMethodId.value)
+    }
+
+    @Test
+    fun `clear limpia el medio de pago seleccionado`() {
+        ClientCartStore.selectPaymentMethod("pm-1")
+
+        ClientCartStore.clear()
+
+        assertNull(ClientCartStore.selectedPaymentMethodId.value)
     }
 }
