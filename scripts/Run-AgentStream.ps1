@@ -237,6 +237,37 @@ try {
     $diagJson = $deathDiag | ConvertTo-Json -Compress
     "DEATH_DIAG: $diagJson" | Out-File -FilePath $LogFile -Encoding utf8 -Append
 
+    # S4-FIX: Actualizar agent-registry.json al terminar (defensa en profundidad)
+    # El registry vive en el repo principal, no en el worktree
+    try {
+        $mainRepo = (git -C $WorkDir worktree list --porcelain 2>$null | Select-String "^worktree " | Select-Object -First 1) -replace "^worktree ", ""
+        if (-not $mainRepo) { $mainRepo = $WorkDir }
+        $registryPath = Join-Path $mainRepo ".claude" "hooks" "agent-registry.json"
+        if (Test-Path $registryPath) {
+            $registry = Get-Content $registryPath -Raw -Encoding utf8 | ConvertFrom-Json
+            $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            $updated = $false
+            foreach ($key in @($registry.agents.PSObject.Properties.Name)) {
+                $agent = $registry.agents.$key
+                if ($agent.issue -eq "#$Issue" -and $agent.status -eq "active") {
+                    $agent.status = "done"
+                    $agent | Add-Member -NotePropertyName "completed_at" -NotePropertyValue $now -Force
+                    $agent | Add-Member -NotePropertyName "exit_code" -NotePropertyValue $exitCode -Force
+                    $updated = $true
+                }
+            }
+            if ($updated) {
+                $registry | Add-Member -NotePropertyName "updated_at" -NotePropertyValue $now -Force
+                $tmpPath = "$registryPath.tmp.$PID"
+                $registry | ConvertTo-Json -Depth 10 | Out-File -FilePath $tmpPath -Encoding utf8 -NoNewline
+                Move-Item -Path $tmpPath -Destination $registryPath -Force
+                "REGISTRY_CLEANUP: issue=#$Issue marked done at $now" | Out-File -FilePath $LogFile -Encoding utf8 -Append
+            }
+        }
+    } catch {
+        "REGISTRY_CLEANUP_ERROR: $($_.Exception.Message)" | Out-File -FilePath $LogFile -Encoding utf8 -Append
+    }
+
     Write-Host ""
     if ($useRunner) {
         Write-Host "  Resumen: pipeline=$pipelineMode, modelo=$Model" -ForegroundColor Cyan

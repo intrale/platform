@@ -105,6 +105,45 @@ function Test-SprintActivo {
 
 Test-SprintActivo -Plan $Plan
 
+# --- S5-FIX: Limpiar agentes fantasma del registry (PIDs muertos marcados como active) ---
+Write-Host ">> Limpiando agentes fantasma del registry..." -ForegroundColor Cyan
+try {
+    $registryPath = Join-Path $MainRepo ".claude" "hooks" "agent-registry.json"
+    if (Test-Path $registryPath) {
+        $registry = Get-Content $registryPath -Raw -Encoding utf8 | ConvertFrom-Json
+        $cleaned = 0
+        $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        foreach ($key in @($registry.agents.PSObject.Properties.Name)) {
+            $agent = $registry.agents.$key
+            if ($agent.status -eq "active") {
+                $pid = $agent.pid
+                $alive = $false
+                try {
+                    $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+                    if ($proc -and $proc.ProcessName -match "claude|node") { $alive = $true }
+                } catch {}
+                if (-not $alive) {
+                    $agent.status = "done"
+                    $agent | Add-Member -NotePropertyName "completed_at" -NotePropertyValue $now -Force
+                    $agent | Add-Member -NotePropertyName "_cleaned_by" -NotePropertyValue "Start-Agente-S5" -Force
+                    $cleaned++
+                }
+            }
+        }
+        if ($cleaned -gt 0) {
+            $registry | Add-Member -NotePropertyName "updated_at" -NotePropertyValue $now -Force
+            $tmpPath = "$registryPath.tmp.$PID"
+            $registry | ConvertTo-Json -Depth 10 | Out-File -FilePath $tmpPath -Encoding utf8 -NoNewline
+            Move-Item -Path $tmpPath -Destination $registryPath -Force
+            Write-Host ">> Registry: $cleaned agentes fantasma limpiados" -ForegroundColor Yellow
+        } else {
+            Write-Host ">> Registry: sin agentes fantasma" -ForegroundColor Green
+        }
+    }
+} catch {
+    Write-Host ">> Registry cleanup: error ($($_.Exception.Message))" -ForegroundColor DarkGray
+}
+
 # --- Pre-sprint ops check ---
 try {
     $opsResult = & node "$MainRepo\.claude\hooks\ops-check.js" --sprint 2>$null

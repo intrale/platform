@@ -61,7 +61,9 @@ try {
     }
 
     if (modified) {
-        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n", "utf8");
+        const tmpPath = SETTINGS_FILE + ".tmp." + process.pid;
+        fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+        fs.renameSync(tmpPath, SETTINGS_FILE);
     }
 
     // Crear/actualizar flag

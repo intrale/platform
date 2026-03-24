@@ -252,7 +252,10 @@ function persistPattern(pattern, settingsPaths, logFn) {
             allow.push(pattern);
             settings.permissions = settings.permissions || {};
             settings.permissions.allow = allow;
-            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+            // Escritura atomica: write tmp + rename para evitar corrupcion por race condition
+            const tmpPath = settingsPath + ".tmp." + process.pid;
+            fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+            fs.renameSync(tmpPath, settingsPath);
             if (logFn) logFn("Persistido en " + settingsPath + ": " + pattern);
             persisted = true;
         } catch(e) {
