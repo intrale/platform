@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte de Flujos y Casos de Prueba — Carrito y Resumen de Pedido</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'base', themeVariables:{primaryColor:'#e3f2fd',primaryTextColor:'#0d47a1',primaryBorderColor:'#1565c0',lineColor:'#1976d2',secondaryColor:'#fff8e1',tertiaryColor:'#ffebee',fontFamily:'Segoe UI,Arial,sans-serif',fontSize:'11px'}});</script>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5px; line-height: 1.45; color: #1a1a1a; }
+  h1 { font-size: 22px; color: #0d47a1; margin: 0 0 8px; }
+  h2 { font-size: 15px; color: #1565c0; margin: 22px 0 7px; border-bottom: 2px solid #1565c0; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #1976d2; margin: 14px 0 5px; page-break-after: avoid; }
+  h4 { font-size: 11px; color: #333; margin: 8px 0 3px; }
+  p, li { font-size: 10.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.5px; page-break-inside: auto; }
+  th, td { border: 1px solid #ccc; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #e3f2fd; font-weight: 600; color: #0d47a1; }
+  tr:nth-child(even) { background: #fafafa; }
+  .cover { text-align: center; padding: 100px 40px 40px; page-break-after: always; }
+  .cover h1 { font-size: 30px; margin-bottom: 10px; }
+  .cover .subtitle { font-size: 15px; color: #555; margin-bottom: 30px; }
+  .cover .meta { font-size: 11px; color: #777; margin-top: 50px; }
+  .tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 8px; font-weight: 600; margin: 0 1px; }
+  .tag-po { background: #e8f5e9; color: #2e7d32; }
+  .tag-qa { background: #fce4ec; color: #c62828; }
+  .tag-vid { background: #e8eaf6; color: #283593; }
+  .tag-high { background: #ffebee; color: #b71c1c; }
+  .tag-med { background: #fff8e1; color: #f57f17; }
+  .tag-low { background: #e8f5e9; color: #2e7d32; }
+  .tag-smoke { background: #e3f2fd; color: #0d47a1; }
+  .tag-regression { background: #f3e5f5; color: #6a1b9a; }
+  .tag-edge { background: #fff3e0; color: #e65100; }
+  .precond { background: #fff8e1; border-left: 3px solid #ffc107; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .note { background: #e8eaf6; border-left: 3px solid #3f51b5; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .video-std { background: #ede7f6; border-left: 3px solid #673ab7; padding: 5px 8px; margin: 5px 0; font-size: 10px; }
+  .toc { margin: 8px 0; }
+  .toc li { margin: 2px 0; font-size: 11px; }
+  .toc a { color: #1565c0; text-decoration: none; }
+  ul, ol { margin: 3px 0 6px 18px; }
+  .case-id { font-family: monospace; font-weight: 600; color: #0d47a1; font-size: 9px; }
+  .mermaid { margin: 8px 0; text-align: center; }
+  .mermaid svg { max-width: 100%; }
+  .evidence-col { background: #f3e5f5; font-size: 9px; }
+  .video-script { background: #e8eaf6; font-size: 9px; }
+  hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+  @media print {
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    h2:first-of-type { page-break-before: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PORTADA ========== -->
+<div class="cover">
+  <h1>Reporte de Flujos y Casos de Prueba</h1>
+  <div class="subtitle">Funcionalidad: Pantalla de Carrito y Resumen de Pedido</div>
+  <div style="margin:20px 0;">
+    <span class="tag tag-po">PO</span>
+    <span class="tag tag-qa">QA</span>
+    <span class="tag tag-vid">VIDEO</span>
+  </div>
+  <p style="font-size:12px;color:#333;max-width:480px;margin:0 auto;">
+    Documento de flujos, casos de prueba, guiones de video<br>
+    y criterios de evidencia para la pantalla de carrito del cliente.<br>
+    Cubre visualización de ítems, controles de cantidad, resumen de totales,<br>
+    selección de dirección/medio de pago, acciones y estado vacío.
+  </p>
+  <div class="meta">
+    <p><strong>Proyecto:</strong> Intrale Platform</p>
+    <p><strong>Issue:</strong> #597</p>
+    <p><strong>Versión:</strong> 1.0</p>
+    <p><strong>Fecha:</strong> 2026-03-23</p>
+    <p><strong>Generado por:</strong> QA Agent</p>
+    <p><strong>Pantalla:</strong> ClientCartScreen</p>
+    <p><strong>Ruta:</strong> /client/cart</p>
+    <p><strong>App:</strong> com.intrale.app.client</p>
+  </div>
+</div>
+
+<!-- ========== TABLA DE CONTENIDOS ========== -->
+<h2 id="toc">Tabla de Contenidos</h2>
+<ul class="toc">
+  <li><a href="#resumen">1. Resumen Ejecutivo</a></li>
+  <li><a href="#arquitectura">2. Arquitectura de la Pantalla</a></li>
+  <li><a href="#flujo-nav">3. Flujo de Navegación al Carrito</a></li>
+  <li><a href="#flujo-carrito">4. Flujo Principal: Carrito con Ítems</a></li>
+  <li><a href="#flujo-cantidad">5. Flujo: Controles de Cantidad</a></li>
+  <li><a href="#flujo-vaciar">6. Flujo: Vaciar Carrito</a></li>
+  <li><a href="#flujo-vacio">7. Flujo: Estado Vacío</a></li>
+  <li><a href="#casos">8. Casos de Prueba</a></li>
+  <li><a href="#video">9. Guión de Video</a></li>
+  <li><a href="#done">10. Criterios de Done</a></li>
+  <li><a href="#datos">11. Datos de Prueba</a></li>
+</ul>
+
+<!-- ========== RESUMEN EJECUTIVO ========== -->
+<h2 id="resumen">1. Resumen Ejecutivo</h2>
+<p>La historia #597 implementa la pantalla de carrito de compras para el cliente final. Permite revisar los productos seleccionados, ajustar cantidades, ver el resumen de totales, seleccionar dirección de entrega y medio de pago, y avanzar al siguiente paso del flujo de compra.</p>
+
+<h3>Flujos identificados</h3>
+<table>
+  <tr><th>#</th><th>Flujo</th><th>Descripción</th><th>Prioridad</th></tr>
+  <tr><td>F1</td><td>Navegación al carrito</td><td>Desde Inicio, tocar ícono de carrito con badge</td><td><span class="tag tag-high">Alta</span></td></tr>
+  <tr><td>F2</td><td>Visualización de carrito con ítems</td><td>Lista de productos, subtotales, resumen</td><td><span class="tag tag-high">Alta</span></td></tr>
+  <tr><td>F3</td><td>Controles de cantidad (+/-)</td><td>Incrementar, decrementar, eliminar ítem</td><td><span class="tag tag-high">Alta</span></td></tr>
+  <tr><td>F4</td><td>Vaciar carrito</td><td>Diálogo de confirmación, cancelar/confirmar</td><td><span class="tag tag-med">Media</span></td></tr>
+  <tr><td>F5</td><td>Estado vacío</td><td>Sin ítems: mensaje y botón volver al inicio</td><td><span class="tag tag-high">Alta</span></td></tr>
+  <tr><td>F6</td><td>Dirección de entrega</td><td>Selección de dirección guardada</td><td><span class="tag tag-high">Alta</span></td></tr>
+  <tr><td>F7</td><td>Medio de pago</td><td>Selección de método de pago habilitado</td><td><span class="tag tag-high">Alta</span></td></tr>
+  <tr><td>F8</td><td>Continuar pedido</td><td>Validación y avance al siguiente paso</td><td><span class="tag tag-med">Media</span></td></tr>
+</table>
+
+<p><strong>Total casos de prueba:</strong> 26 | <strong>Smoke:</strong> 8 | <strong>Regresión:</strong> 13 | <strong>Edge:</strong> 5</p>
+
+<!-- ========== ARQUITECTURA ========== -->
+<h2 id="arquitectura">2. Arquitectura de la Pantalla</h2>
+
+<h3>Capas de la pantalla</h3>
+<table>
+  <tr><th>Capa</th><th>Clase / Archivo</th><th>Responsabilidad</th></tr>
+  <tr><td>UI</td><td>ClientCartScreen.kt</td><td>Composable principal, estado visual, interacciones</td></tr>
+  <tr><td>Estado Global</td><td>ClientCartStore.kt</td><td>StateFlow de ítems, dirección y medio de pago seleccionados</td></tr>
+  <tr><td>ViewModel</td><td>ClientCartViewModel.kt</td><td>Carga direcciones y métodos de pago, selección</td></tr>
+  <tr><td>Caso de uso</td><td>ToDoGetClientProfile / ToDoGetPaymentMethods</td><td>Obtiene perfil con direcciones y métodos de pago</td></tr>
+  <tr><td>DI</td><td>DIManager (clientModule)</td><td>Registro e inyección de dependencias</td></tr>
+  <tr><td>Navegación</td><td>CommonRouter / screensModule</td><td>Ruta: CLIENT_CART_PATH = "/client/cart"</td></tr>
+</table>
+
+<h3>Mapa de navegación</h3>
+<div class="mermaid">
+graph LR
+    HOME[ClientHomeScreen<br/>/client/home] -- "Ícono carrito (header)" --> CART[ClientCartScreen<br/>/client/cart]
+    CART -- "Volver (back)" --> HOME
+    CART -- "Vaciar confirmado" --> EMPTY[Estado vacío]
+    EMPTY -- "Volver al inicio" --> HOME
+    CART -- "Gestionar direcciones" --> PROFILE[ClientProfileScreen<br/>/client/profile]
+    CART -- "Continuar pedido" --> CHECKOUT[Checkout<br/>(flujo futuro)]
+</div>
+
+<!-- ========== FLUJO NAVEGACIÓN ========== -->
+<h2 id="flujo-nav">3. Flujo de Navegación al Carrito</h2>
+
+<h3>Descripción funcional</h3>
+<p>Desde el <strong>Home del cliente</strong>, el ícono de carrito en el encabezado superior derecho muestra un badge con la cantidad de ítems. Al tocarlo, navega a la pantalla Carrito. Si no hay ítems, el badge no se muestra.</p>
+
+<div class="precond">
+<strong>Precondiciones:</strong>
+<ul>
+  <li>Usuario logueado como cliente</li>
+  <li>Negocio seleccionado en sesión</li>
+  <li>Pantalla Home visible</li>
+</ul>
+</div>
+
+<div class="mermaid">
+flowchart TD
+    HOME[Home del Cliente] --> CHECK_CART{¿Hay ítems<br/>en carrito?}
+    CHECK_CART -- Sí --> BADGE[Mostrar badge<br/>con cantidad]
+    CHECK_CART -- No --> NO_BADGE[Ícono sin badge]
+    BADGE --> TAP_ICON[Tap en ícono carrito]
+    NO_BADGE --> TAP_ICON
+    TAP_ICON --> NAV[navigate /client/cart]
+    NAV --> CART_SCREEN[ClientCartScreen]
+    CART_SCREEN --> SHOW_ITEMS{¿Items en carrito?}
+    SHOW_ITEMS -- Sí --> ITEMS_VIEW[Vista con ítems]
+    SHOW_ITEMS -- No --> EMPTY_VIEW[Estado vacío]
+</div>
+
+<!-- ========== FLUJO CARRITO ========== -->
+<h2 id="flujo-carrito">4. Flujo Principal: Carrito con Ítems</h2>
+
+<h3>Descripción funcional</h3>
+<p>Cuando el carrito tiene productos, la pantalla muestra: encabezado (título + subtítulo), lista de cards de productos, card de dirección de entrega, card de medio de pago, card de resumen de totales, y botones de acción.</p>
+
+<div class="mermaid">
+flowchart TD
+    ENTER[Entrar a Carrito] --> LOAD_DATA[LaunchedEffect: cargar direcciones y métodos de pago]
+    LOAD_DATA --> SHOW_LIST[LazyColumn: header + ítems + dirección + pago + resumen + acciones]
+    SHOW_LIST --> HEADER[Header: título 'Carrito' + subtítulo]
+    SHOW_LIST --> ITEMS[Cards de productos por ítem]
+    ITEMS --> ITEM_CARD[Thumbnail + Nombre + Precio + Subtotal + Controles]
+    SHOW_LIST --> DELIVERY[Card Dirección de Entrega]
+    SHOW_LIST --> PAYMENT[Card Medio de Pago]
+    SHOW_LIST --> SUMMARY[Card Resumen: Subtotal + Envío + Total]
+    SHOW_LIST --> ACTIONS[Botón 'Continuar pedido' + TextButton 'Vaciar carrito']
+</div>
+
+<h3>Cálculo de totales</h3>
+<div class="note">
+  <strong>Subtotal:</strong> Σ (unitPrice × quantity) por cada ítem<br/>
+  <strong>Envío estimado:</strong> 0.0 (placeholder por ahora)<br/>
+  <strong>Total:</strong> Subtotal + Envío estimado
+</div>
+
+<!-- ========== FLUJO CANTIDAD ========== -->
+<h2 id="flujo-cantidad">5. Flujo: Controles de Cantidad</h2>
+
+<h3>Descripción funcional</h3>
+<p>Cada card de producto tiene botones <strong>+</strong> y <strong>-</strong> y un ícono de basura. El botón <strong>-</strong> está deshabilitado cuando quantity = 1 (no baja de 1). El ícono de basura elimina el ítem directamente.</p>
+
+<div class="mermaid">
+flowchart TD
+    ITEM[Card de Producto] --> PLUS_BTN[Tap +]
+    ITEM --> MINUS_BTN[Tap - (enabled si qty > 1)]
+    ITEM --> DELETE_BTN[Tap ícono basura]
+    PLUS_BTN --> INC[ClientCartStore.increment(id)]
+    INC --> RECALC[Recalcular subtotal y total]
+    MINUS_BTN --> DEC[ClientCartStore.decrement(id)]
+    DEC --> CHECK_QTY{qty resultado}
+    CHECK_QTY -- "≥ 1" --> RECALC
+    CHECK_QTY -- "0 (qty era 1)" --> REMOVE_ITEM[Eliminar ítem del mapa]
+    DELETE_BTN --> REMOVE[ClientCartStore.remove(id)]
+    REMOVE --> CHECK_EMPTY{¿Carrito vacío?}
+    CHECK_EMPTY -- Sí --> EMPTY_STATE[Mostrar estado vacío]
+    CHECK_EMPTY -- No --> RECALC
+    RECALC --> UPDATE_UI[Actualizar UI vía StateFlow]
+</div>
+
+<!-- ========== FLUJO VACIAR ========== -->
+<h2 id="flujo-vaciar">6. Flujo: Vaciar Carrito</h2>
+
+<h3>Descripción funcional</h3>
+<p>El TextButton "Vaciar carrito" muestra un AlertDialog de confirmación. El usuario puede cancelar (carrito intacto) o confirmar (carrito se vacía, se muestra estado vacío con snackbar).</p>
+
+<div class="mermaid">
+flowchart TD
+    CLEAR_BTN[Tap 'Vaciar carrito'] --> DIALOG[AlertDialog: '¿Querés vaciar el carrito?']
+    DIALOG --> CANCEL_BTN[Tap 'Cancelar']
+    DIALOG --> CONFIRM_BTN[Tap 'Vaciar']
+    CANCEL_BTN --> DISMISS[Cerrar diálogo, carrito sin cambios]
+    CONFIRM_BTN --> STORE_CLEAR[ClientCartStore.clear()]
+    STORE_CLEAR --> SNACKBAR[Snackbar: 'Tu carrito está vacío.']
+    STORE_CLEAR --> EMPTY_STATE[LazyColumn reemplazado por ClientCartEmptyState]
+</div>
+
+<!-- ========== FLUJO VACÍO ========== -->
+<h2 id="flujo-vacio">7. Flujo: Estado Vacío</h2>
+
+<h3>Descripción funcional</h3>
+<p>Cuando <code>ClientCartStore.items</code> está vacío (ya sea al entrar sin productos o tras vaciar), se muestra el estado vacío centrado: ícono de carrito, mensaje principal, subtítulo, y botón "Volver al inicio".</p>
+
+<div class="mermaid">
+flowchart TD
+    CHECK[itemsList.isEmpty()] -- true --> EMPTY[ClientCartEmptyState]
+    EMPTY --> ICON[Ícono ShoppingCart en círculo]
+    EMPTY --> TITLE[Texto: 'Tu carrito está vacío.']
+    EMPTY --> SUBTITLE[Texto: 'Agregá productos desde la pantalla de Inicio.']
+    EMPTY --> BACK_BTN[Botón 'Volver al inicio']
+    BACK_BTN --> NAVIGATE{goBack() exitoso?}
+    NAVIGATE -- Sí --> POP[Volver a pantalla anterior]
+    NAVIGATE -- No --> HOME[navigate(/client/home)]
+</div>
+
+<!-- ========== CASOS DE PRUEBA ========== -->
+<h2 id="casos">8. Casos de Prueba</h2>
+
+<h3>F1 — Navegación al Carrito</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-1-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Ícono carrito visible en Home</td>
+    <td>1. Loguearse como cliente<br/>2. Llegar al Home</td>
+    <td>Ícono ShoppingCart visible en header superior derecho</td>
+    <td class="evidence-col">► Screenshot header<br/>◉ Ícono visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-1-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Badge muestra cantidad de ítems</td>
+    <td>1. Agregar producto al carrito desde Home<br/>2. Observar ícono</td>
+    <td>Badge con número visible sobre el ícono de carrito</td>
+    <td class="evidence-col">► Screenshot antes/después agregar<br/>◉ Badge con "1"</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-1-003</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Tap en ícono abre pantalla Carrito</td>
+    <td>1. Tap en ícono de carrito</td>
+    <td>Navega a /client/cart. Título "Carrito" visible</td>
+    <td class="evidence-col">► Grabar tap y transición<br/>◉ Título "Carrito"</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-1-004</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Sin ítems: badge no visible</td>
+    <td>1. Vaciar carrito o entrar sin agregar nada<br/>2. Volver al Home</td>
+    <td>Ícono de carrito sin badge</td>
+    <td class="evidence-col">► Screenshot ícono sin badge<br/>◉ No hay número encima</td>
+  </tr>
+</table>
+
+<h3>F2 — Visualización con Ítems</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-2-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Header: título y subtítulo</td>
+    <td>1. Agregar producto desde Home<br/>2. Navegar al Carrito</td>
+    <td>Visible: "Carrito" (H1) y "Revisá los productos antes de confirmar tu pedido."</td>
+    <td class="evidence-col">► Screenshot encabezado<br/>◉ Título y subtítulo</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-2-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Card de producto con campos</td>
+    <td>1. Carrito con al menos 1 producto</td>
+    <td>Card muestra: thumbnail/emoji, nombre en negrita, precio unitario, subtotal del ítem</td>
+    <td class="evidence-col">► Screenshot card producto<br/>◉ Todos los campos visibles</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-2-003</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Subtotal por ítem = precio × cantidad</td>
+    <td>1. Agregar misma producto 3 veces<br/>2. Ir al carrito</td>
+    <td>Subtotal del ítem = unitPrice × 3 (ej: $1200/kg × 3 = $3600)</td>
+    <td class="evidence-col">► Screenshot subtotal<br/>◉ Monto calculado correctamente</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-2-004</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Card de resumen visible</td>
+    <td>1. Carrito con ítems</td>
+    <td>Card "Resumen" con: "Subtotal productos", "Costo de envío estimado", "Total"</td>
+    <td class="evidence-col">► Screenshot resumen<br/>◉ Tres líneas visibles</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-2-005</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Total = suma de subtotales</td>
+    <td>1. Carrito con 2 productos distintos</td>
+    <td>Total = subtotal_prod_A + subtotal_prod_B (envío = $0 por ahora)</td>
+    <td class="evidence-col">► Screenshot resumen con dos ítems<br/>◉ Total correcto</td>
+  </tr>
+</table>
+
+<h3>F3 — Controles de Cantidad</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-3-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Botón + incrementa cantidad</td>
+    <td>1. Carrito con producto qty=1<br/>2. Tap en +</td>
+    <td>Cantidad pasa a 2. Subtotal del ítem se actualiza. Total se actualiza.</td>
+    <td class="evidence-col">► Grabar tap +<br/>◉ Cantidad 2, nuevo subtotal</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-3-002</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Botón - deshabilitado en qty=1</td>
+    <td>1. Producto con qty=1<br/>2. Verificar estado del botón -</td>
+    <td>Botón - aparece deshabilitado (opaco, no clickeable)</td>
+    <td class="evidence-col">► Screenshot botón - en qty=1<br/>◉ Botón gris/deshabilitado</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-3-003</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Botón - reduce cantidad de qty=2 a 1</td>
+    <td>1. Incrementar producto a qty=2<br/>2. Tap en -</td>
+    <td>Cantidad vuelve a 1. Subtotal y total se actualizan.</td>
+    <td class="evidence-col">► Grabar tap -<br/>◉ Cantidad 1, subtotal actualizado</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-3-004</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Ícono basura elimina el ítem</td>
+    <td>1. Carrito con 2+ productos<br/>2. Tap en ícono basura de uno</td>
+    <td>El ítem desaparece del carrito. Total recalculado. Sigue mostrando los demás.</td>
+    <td class="evidence-col">► Grabar tap basura<br/>◉ Ítem eliminado, carrito sigue con los demás</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-3-005</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Eliminar único ítem muestra estado vacío</td>
+    <td>1. Carrito con 1 solo producto<br/>2. Tap en ícono basura</td>
+    <td>Se muestra el estado vacío ("Tu carrito está vacío.")</td>
+    <td class="evidence-col">► Grabar eliminación<br/>◉ Estado vacío visible</td>
+  </tr>
+</table>
+
+<h3>F4 — Vaciar Carrito</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-4-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Tap "Vaciar carrito" muestra diálogo</td>
+    <td>1. Carrito con ítems<br/>2. Tap en "Vaciar carrito"</td>
+    <td>AlertDialog visible con "¿Querés vaciar el carrito?" y botones Cancelar/Vaciar</td>
+    <td class="evidence-col">► Screenshot diálogo<br/>◉ Texto y botones visibles</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-4-002</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Cancelar cierra diálogo sin cambios</td>
+    <td>1. Abrir diálogo<br/>2. Tap "Cancelar"</td>
+    <td>Diálogo se cierra. Carrito conserva todos los ítems.</td>
+    <td class="evidence-col">► Grabar cancelar<br/>◉ Ítems intactos</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-4-003</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Confirmar vacía el carrito</td>
+    <td>1. Abrir diálogo<br/>2. Tap "Vaciar"</td>
+    <td>Estado vacío visible. Snackbar con "Tu carrito está vacío."</td>
+    <td class="evidence-col">► Grabar confirmación y resultado<br/>◉ Estado vacío + snackbar</td>
+  </tr>
+</table>
+
+<h3>F5 — Estado Vacío</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-5-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Estado vacío al entrar sin ítems</td>
+    <td>1. Entrar al carrito sin haber agregado productos</td>
+    <td>Pantalla muestra: ícono carrito, "Tu carrito está vacío.", subtítulo, botón "Volver al inicio"</td>
+    <td class="evidence-col">► Screenshot estado vacío<br/>◉ Mensaje y botón visibles</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-5-002</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Botón "Volver al inicio" navega a Home</td>
+    <td>1. Estado vacío visible<br/>2. Tap en "Volver al inicio"</td>
+    <td>Navega a ClientHomeScreen (/client/home)</td>
+    <td class="evidence-col">► Grabar tap y transición<br/>◉ Home visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-5-003</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Back nativo desde estado vacío vuelve al Home</td>
+    <td>1. Estado vacío visible<br/>2. Gesto back del sistema</td>
+    <td>Navega a pantalla anterior (Home o similar)</td>
+    <td class="evidence-col">► Grabar gesto back<br/>◉ Home visible</td>
+  </tr>
+</table>
+
+<h3>F6 — Dirección de Entrega</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-6-001</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Direcciones cargadas al entrar</td>
+    <td>1. Usuario con al menos 1 dirección guardada<br/>2. Entrar al carrito con ítems</td>
+    <td>Card "Dirección de entrega" muestra las direcciones del usuario, con la predeterminada seleccionada</td>
+    <td class="evidence-col">► Screenshot card dirección<br/>◉ Dirección default seleccionada</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-6-002</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Sin direcciones: mensaje informativo</td>
+    <td>1. Usuario sin direcciones guardadas<br/>2. Entrar al carrito</td>
+    <td>Card "Dirección de entrega" muestra "Aún no seleccionaste una dirección de entrega." y link a gestionar</td>
+    <td class="evidence-col">► Screenshot sin direcciones<br/>◉ Mensaje visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-6-003</td>
+    <td><span class="tag tag-edge">Edge</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Continuar pedido sin dirección redirige al perfil</td>
+    <td>1. Sin direcciones<br/>2. Tap "Continuar pedido"</td>
+    <td>Snackbar: "Agregá una dirección en tu perfil para continuar." y navega a /client/profile</td>
+    <td class="evidence-col">► Grabar tap y resultado<br/>◉ Snackbar + pantalla perfil</td>
+  </tr>
+</table>
+
+<h3>F7 — Medio de Pago</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-7-001</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Métodos de pago habilitados cargados</td>
+    <td>1. Negocio con métodos de pago habilitados<br/>2. Entrar al carrito</td>
+    <td>Card "Medio de pago" muestra los métodos habilitados, primer método seleccionado por defecto</td>
+    <td class="evidence-col">► Screenshot card medios de pago<br/>◉ Métodos visibles, uno seleccionado</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-7-002</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-med">Media</span></td>
+    <td>Selección de medio de pago alternativo</td>
+    <td>1. Dos métodos habilitados<br/>2. Tap en el segundo radio button</td>
+    <td>El segundo método queda seleccionado (radio button activo)</td>
+    <td class="evidence-col">► Grabar selección<br/>◉ Radio del segundo activo</td>
+  </tr>
+</table>
+
+<h3>F8 — Continuar Pedido</h3>
+<table>
+  <tr>
+    <th>ID</th><th>Tipo</th><th>Prioridad</th><th>Caso</th><th>Pasos</th><th>Resultado Esperado</th>
+    <th class="evidence-col">Evidencia Video</th>
+  </tr>
+  <tr>
+    <td class="case-id">CC-8-001</td>
+    <td><span class="tag tag-smoke">Smoke</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Botón "Continuar pedido" visible</td>
+    <td>1. Carrito con ítems</td>
+    <td>Botón degradé azul "Continuar pedido" visible al pie de la pantalla</td>
+    <td class="evidence-col">► Screenshot pie de pantalla<br/>◉ Botón visible</td>
+  </tr>
+  <tr>
+    <td class="case-id">CC-8-002</td>
+    <td><span class="tag tag-regression">Regresión</span></td>
+    <td><span class="tag tag-high">Alta</span></td>
+    <td>Continuar con dirección y pago seleccionados</td>
+    <td>1. Dirección y medio de pago seleccionados<br/>2. Tap "Continuar pedido"</td>
+    <td>Snackbar confirmando la dirección de entrega seleccionada</td>
+    <td class="evidence-col">► Grabar tap y snackbar<br/>◉ Mensaje con dirección</td>
+  </tr>
+</table>
+
+<!-- ========== GUION DE VIDEO ========== -->
+<h2 id="video">9. Guión de Video</h2>
+
+<div class="video-std">
+<strong>Estándar de evidencia en video:</strong><br/>
+Nomenclatura: <code>CC-{FLUJO}-{ID}_{slug}.mp4</code><br/>
+4 fases: Título (3-5s) → Precondiciones (3-5s) → Ejecución → Verificación (5-10s)<br/>
+Overlay obligatorio: <code>[ID] | [Nombre del caso] — [timestamp] ► Paso N/M ◉ Verificar: [resultado]</code>
+</div>
+
+<h3>Video 1: Happy Path — Carrito Completo</h3>
+<div class="video-script">
+<p><strong>Archivo:</strong> CC-HAPPY-001_carrito-completo.mp4</p>
+<p><strong>Precondiciones:</strong> Usuario logueado, al menos 2 productos en catálogo, usuario tiene dirección y método de pago configurados</p>
+<ol>
+  <li>► P1: Mostrar Home del cliente con catálogo de productos</li>
+  <li>► P2: Tap en "Agregar" del primer producto → ◉ V1: Badge con "1" en ícono carrito</li>
+  <li>► P3: Tap en "Agregar" de un segundo producto → ◉ V2: Badge con "2"</li>
+  <li>► P4: Tap en ícono de carrito → ◉ V3: Pantalla Carrito visible con título "Carrito"</li>
+  <li>► P5: Scroll para ver lista de productos → ◉ V4: Dos cards con nombre, precio, subtotal y controles</li>
+  <li>► P6: Tap en "+" del primer producto → ◉ V5: Cantidad pasa a 2, subtotal actualizado</li>
+  <li>► P7: Scroll hasta card "Resumen" → ◉ V6: Subtotal total, envío, Total visibles y correctos</li>
+  <li>► P8: Scroll hasta card "Dirección de entrega" → ◉ V7: Dirección predeterminada seleccionada</li>
+  <li>► P9: Scroll hasta card "Medio de pago" → ◉ V8: Método de pago seleccionado</li>
+  <li>► P10: Tap en "Continuar pedido" → ◉ V9: Snackbar con dirección de entrega</li>
+</ol>
+</div>
+
+<h3>Video 2: Controles de Cantidad y Eliminación</h3>
+<div class="video-script">
+<p><strong>Archivo:</strong> CC-QTY-002_controles-cantidad.mp4</p>
+<ol>
+  <li>► P1: Carrito con 1 producto qty=1 → ◉ V1: Botón "-" deshabilitado</li>
+  <li>► P2: Tap en "+" tres veces → ◉ V2: Cantidad = 4, subtotal × 4</li>
+  <li>► P3: Tap en "-" dos veces → ◉ V3: Cantidad = 2, subtotal × 2</li>
+  <li>► P4: Tap en ícono basura → ◉ V4: Ítem eliminado. Si era único, estado vacío.</li>
+</ol>
+</div>
+
+<h3>Video 3: Vaciar Carrito</h3>
+<div class="video-script">
+<p><strong>Archivo:</strong> CC-CLEAR-003_vaciar-carrito.mp4</p>
+<ol>
+  <li>► P1: Carrito con 2+ productos, scroll al pie</li>
+  <li>► P2: Tap en "Vaciar carrito" → ◉ V1: AlertDialog con texto y botones</li>
+  <li>► P3: Tap "Cancelar" → ◉ V2: Diálogo cerrado, carrito intacto</li>
+  <li>► P4: Tap "Vaciar carrito" nuevamente → Tap "Vaciar" → ◉ V3: Estado vacío + snackbar</li>
+</ol>
+</div>
+
+<h3>Video 4: Estado Vacío y Navegación de Retorno</h3>
+<div class="video-script">
+<p><strong>Archivo:</strong> CC-EMPTY-004_estado-vacio.mp4</p>
+<ol>
+  <li>► P1: Entrar al carrito sin ítems → ◉ V1: Estado vacío con ícono, mensaje y subtítulo</li>
+  <li>► P2: Tap en "Volver al inicio" → ◉ V2: Home del cliente visible</li>
+</ol>
+</div>
+
+<!-- ========== CRITERIOS DE DONE ========== -->
+<h2 id="done">10. Criterios de Done</h2>
+<table>
+  <tr><th>#</th><th>Criterio</th><th>Verificado por</th></tr>
+  <tr><td>1</td><td>Desde Home, tap en ícono de carrito abre ClientCartScreen</td><td>QA Manual + Maestro</td></tr>
+  <tr><td>2</td><td>Badge en ícono muestra cantidad total de ítems</td><td>QA Manual + Maestro</td></tr>
+  <tr><td>3</td><td>Título "Carrito" y subtítulo visibles</td><td>QA Manual + Maestro</td></tr>
+  <tr><td>4</td><td>Lista de ítems con thumbnail, nombre, precio unitario, subtotal, controles</td><td>QA Manual</td></tr>
+  <tr><td>5</td><td>Botón + incrementa cantidad y recalcula totales</td><td>Unit Test + QA Manual</td></tr>
+  <tr><td>6</td><td>Botón - deshabilitado en qty=1; decrementar en qty>1 funciona</td><td>Unit Test + QA Manual</td></tr>
+  <tr><td>7</td><td>Ícono basura elimina el ítem directamente</td><td>Unit Test + QA Manual</td></tr>
+  <tr><td>8</td><td>Card "Resumen" con subtotal, envío estimado y total correctos</td><td>QA Manual</td></tr>
+  <tr><td>9</td><td>Card dirección de entrega carga y muestra direcciones del usuario</td><td>QA Manual</td></tr>
+  <tr><td>10</td><td>Card medio de pago carga y muestra métodos habilitados</td><td>QA Manual</td></tr>
+  <tr><td>11</td><td>Botón "Continuar pedido" visible y muestra snackbar con dirección</td><td>QA Manual</td></tr>
+  <tr><td>12</td><td>Vaciar carrito: diálogo de confirmación funciona (cancelar y confirmar)</td><td>QA Manual + Maestro</td></tr>
+  <tr><td>13</td><td>Estado vacío visible cuando no hay ítems, con botón "Volver al inicio"</td><td>QA Manual + Maestro</td></tr>
+  <tr><td>14</td><td>Estilo visual consistente (cards redondeadas, degradé azul, fondo gris claro)</td><td>QA Manual</td></tr>
+  <tr><td>15</td><td>Tests unitarios pasan (ClientCartStoreTest + ClientCartViewModelTest)</td><td>CI / Gradle</td></tr>
+</table>
+
+<!-- ========== DATOS DE PRUEBA ========== -->
+<h2 id="datos">11. Datos de Prueba</h2>
+
+<h3>Usuario cliente de prueba</h3>
+<table>
+  <tr><th>Campo</th><th>Valor</th></tr>
+  <tr><td>Email</td><td>client@intrale.com (o admin@intrale.com con flavor client)</td></tr>
+  <tr><td>Contraseña</td><td>Admin1234!</td></tr>
+  <tr><td>Tipo de app</td><td>com.intrale.app.client (flavor: client)</td></tr>
+</table>
+
+<h3>Productos para prueba de carrito</h3>
+<table>
+  <tr><th>Producto</th><th>Precio unitario</th><th>Disponible</th><th>Emoji</th></tr>
+  <tr><td>Manzana roja</td><td>$1200 / kg</td><td>✅</td><td>🍎</td></tr>
+  <tr><td>Naranja</td><td>$800 / kg</td><td>✅</td><td>🍊</td></tr>
+  <tr><td>Producto sin stock</td><td>$500</td><td>❌</td><td>📦</td></tr>
+</table>
+
+<h3>Casos de cálculo esperados</h3>
+<table>
+  <tr><th>Ítems</th><th>Subtotal</th><th>Envío (placeholder)</th><th>Total</th></tr>
+  <tr><td>Manzana × 1</td><td>$1.200</td><td>$0</td><td>$1.200</td></tr>
+  <tr><td>Manzana × 2</td><td>$2.400</td><td>$0</td><td>$2.400</td></tr>
+  <tr><td>Manzana × 1 + Naranja × 1</td><td>$2.000</td><td>$0</td><td>$2.000</td></tr>
+  <tr><td>Manzana × 3 + Naranja × 2</td><td>$5.200</td><td>$0</td><td>$5.200</td></tr>
+</table>
+
+<hr/>
+<p style="text-align:center;color:#888;font-size:9px;margin-top:12px;">
+  Generado: 2026-03-23 | Issue #597 | Intrale Platform | Versión 1.0
+</p>
+
+</body>
+</html>
