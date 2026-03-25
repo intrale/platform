@@ -221,6 +221,7 @@ function executeClaude(prompt, extraArgs, options) {
         let stderr = "";
         let _finalResultJson = null;
         let _toolCount = 0;
+        let _lastAssistantText = ""; // Fallback: último texto del assistant (para TTS cuando no hay evento result)
 
         // ─── Procesamiento stream-json en tiempo real ─────────────────────────
         const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
@@ -243,6 +244,7 @@ function executeClaude(prompt, extraArgs, options) {
                                 : "  [" + ts + "] [" + _toolCount + "] " + block.name;
                             console.log("\x1b[33m" + tLabel + "\x1b[0m");
                         } else if (block.type === "text" && block.text) {
+                            _lastAssistantText = block.text; // Capturar para TTS fallback
                             let preview = block.text;
                             if (preview.length > 120) preview = preview.substring(0, 120) + "...";
                             console.log("\x1b[90m  [" + ts + "] > " + preview + "\x1b[0m");
@@ -263,7 +265,11 @@ function executeClaude(prompt, extraArgs, options) {
             if (resolved) return;
             resolved = true;
             clearTimeout(timer);
-            const stdout = _finalResultJson ? JSON.stringify(_finalResultJson) : "";
+            // Preferir evento result; fallback al último texto del assistant (para TTS)
+            let stdout = _finalResultJson ? JSON.stringify(_finalResultJson) : "";
+            if (!stdout && _lastAssistantText) {
+                stdout = JSON.stringify({ type: "result", result: _lastAssistantText });
+            }
             log("claude terminó con código " + code + " (stdout: " + stdout.length + " bytes, stderr: " + stderr.length + " bytes)");
             if (stderr) log("STDERR: " + stderr.substring(0, 500));
 
