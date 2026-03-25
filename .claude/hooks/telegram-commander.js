@@ -371,9 +371,14 @@ async function sendResult(label, result) {
         rawText = result.stdout || "(sin output)";
     }
 
+    // Guardar respuesta completa para TTS bajo demanda
+    lastFullResponse.save(rawText, label);
+
+    // Botón "Escuchar" siempre disponible para pedir audio de la respuesta
+    const listenBtn = { text: "🔊 Escuchar", callback_data: "tts_listen" };
+
     // Resumen inteligente (#1681): si la respuesta es larga, resumir y ofrecer detalle
     if (!responseSummarizer.isShort(rawText)) {
-        lastFullResponse.save(rawText, label);
         const summary = responseSummarizer.summarize(rawText);
         output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(summary);
         try {
@@ -382,7 +387,7 @@ async function sendResult(label, result) {
                 chat_id: tgApi.getChatId(),
                 text: output,
                 parse_mode: "HTML",
-                reply_markup: { inline_keyboard: [[{ text: "📋 Ver detalle", callback_data: "show_detail" }]] }
+                reply_markup: { inline_keyboard: [[{ text: "📋 Ver detalle", callback_data: "show_detail" }, listenBtn]] }
             }, 8000);
             if (r && r.message_id) registerMessage(r.message_id, "command");
         } catch (e) {
@@ -391,7 +396,18 @@ async function sendResult(label, result) {
         }
     } else {
         output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(rawText);
-        await tgApi.sendLongMessage(output);
+        try {
+            const { registerMessage } = require("./telegram-message-registry");
+            const r = await tgApi.telegramPost("sendMessage", {
+                chat_id: tgApi.getChatId(),
+                text: output,
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: [[listenBtn]] }
+            }, 8000);
+            if (r && r.message_id) registerMessage(r.message_id, "command");
+        } catch (e) {
+            await tgApi.sendLongMessage(output);
+        }
     }
 }
 

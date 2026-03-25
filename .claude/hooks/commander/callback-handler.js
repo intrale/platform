@@ -832,6 +832,46 @@ async function routeCallback(cbData, callbackQueryId, message) {
     }
 
     // Detalle bajo demanda (#1681)
+    if (cbData === "tts_listen") {
+        _log("Callback tts_listen recibido — generando audio de la respuesta");
+        try {
+            await _tgApi.telegramPost("answerCallbackQuery", {
+                callback_query_id: callbackQueryId,
+                text: "Generando audio...",
+                show_alert: false
+            }, 5000);
+        } catch (e) {}
+
+        const stored = lastFullResponse.load();
+        if (!stored || !stored.text) {
+            await _tgApi.sendMessage("⏱ La respuesta expiró (TTL: 10 min). Ejecutá el comando nuevamente.");
+            return true;
+        }
+
+        // Activar command-in-progress para silenciar otros mensajes
+        try { require("../telegram-client").setCommandInProgress(true); } catch (e) {}
+
+        // Escribir voice flag para que stop-notify no envíe imagen
+        try {
+            const flagPath = path.join(_hooksDir || __dirname + "/..", "voice-response-active.flag");
+            require("fs").writeFileSync(flagPath, String(Date.now()), "utf8");
+        } catch (e) {}
+
+        try {
+            const multimediaHandler = require("./multimedia-handler");
+            const text = stored.text.substring(0, 2000); // Límite TTS
+            const audioBuffer = await multimediaHandler.callTTS(text);
+            await _tgApi.sendVoiceMessage(audioBuffer);
+            _log("TTS bajo demanda enviado: " + audioBuffer.length + " bytes");
+        } catch (ttsErr) {
+            _log("Error TTS bajo demanda: " + ttsErr.message);
+            await _tgApi.sendMessage("❌ Error generando audio: <code>" + _tgApi.escHtml(ttsErr.message) + "</code>");
+        } finally {
+            try { require("../telegram-client").setCommandInProgress(false); } catch (e) {}
+        }
+        return true;
+    }
+
     if (cbData === "show_detail") {
         _log("Callback show_detail recibido");
         try {

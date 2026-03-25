@@ -558,6 +558,67 @@ async function syncSprintPlanWithGitHub() {
             true
         );
     }
+
+    // ─── Detectar inconsistencia: PR mergeado pero issue sigue abierto ────────
+    // Para cada agente activo o waiting, verificar si tiene PR mergeado
+    // Si sí → cerrar el issue automáticamente y mover a _completed
+    const fixedIssues = [];
+    for (const ag of [...agentes]) {
+        const issueNum = ag.issue;
+        if (!issueNum || completedIssues.has(issueNum)) continue;
+
+        const branch = "agent/" + issueNum + "-" + ag.slug;
+        let prMerged = null;
+        try {
+            const prOut = execSync(
+                '"' + ghCmd + '" pr list --repo intrale/platform --state merged --head ' + branch + ' --json number -q ".[0].number"',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            ).trim();
+            if (prOut && !isNaN(parseInt(prOut, 10))) prMerged = parseInt(prOut, 10);
+        } catch (e) { continue; }
+
+        if (!prMerged) continue;
+
+        // PR mergeado — verificar si issue sigue abierto
+        let issueState;
+        try {
+            issueState = execSync(
+                '"' + ghCmd + '" issue view ' + issueNum + ' --repo intrale/platform --json state -q ".state"',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            ).trim();
+        } catch (e) { continue; }
+
+        if (issueState !== "OPEN") continue;
+
+        // Inconsistencia detectada: PR mergeado pero issue abierto → cerrar issue
+        log("syncSprintPlan: INCONSISTENCIA #" + issueNum + " — PR #" + prMerged + " mergeado pero issue OPEN → cerrando");
+        try {
+            execSync(
+                '"' + ghCmd + '" issue close ' + issueNum + ' --repo intrale/platform --comment "Cerrado automáticamente: PR #' + prMerged + ' ya mergeado."',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            );
+        } catch (e) { log("syncSprintPlan: error cerrando issue #" + issueNum + ": " + e.message); }
+
+        // Mover a _completed
+        const entry = Object.assign({}, ag, { resultado: "ok", completed_at: new Date().toISOString(), pr: prMerged, fixed_by: "sync_inconsistency" });
+        plan._completed.push(entry);
+        completedIssues.add(issueNum);
+        const idx = plan.agentes.findIndex(a => a.issue === issueNum);
+        if (idx !== -1) plan.agentes.splice(idx, 1);
+        planDirty = true;
+        fixedIssues.push("#" + issueNum + " (PR #" + prMerged + ")");
+    }
+
+    if (fixedIssues.length > 0) {
+        try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor-sync"); } catch (e) {}
+        log("syncSprintPlan: inconsistencias corregidas: " + fixedIssues.join(", "));
+        await notify(
+            "🔧 <b>Inconsistencias corregidas</b>\n" +
+            "PR mergeado + issue abierto → issue cerrado:\n" +
+            fixedIssues.map(i => "• " + i).join("\n"),
+            true
+        );
+    }
 }
 
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
