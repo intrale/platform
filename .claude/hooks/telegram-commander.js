@@ -265,7 +265,11 @@ function executeClaude(prompt, extraArgs, options) {
             if (resolved) return;
             resolved = true;
             clearTimeout(timer);
-            // Preferir evento result; fallback al último texto del assistant (para TTS)
+            // Inyectar último texto del assistant si el campo result está vacío
+            // Claude stream-json emite result:"" pero el texto real está en bloques text del assistant
+            if (_finalResultJson && !_finalResultJson.result && _lastAssistantText) {
+                _finalResultJson.result = _lastAssistantText;
+            }
             let stdout = _finalResultJson ? JSON.stringify(_finalResultJson) : "";
             if (!stdout && _lastAssistantText) {
                 stdout = JSON.stringify({ type: "result", result: _lastAssistantText });
