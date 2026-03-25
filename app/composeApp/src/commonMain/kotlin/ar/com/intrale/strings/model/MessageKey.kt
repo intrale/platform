@@ -818,4 +818,17 @@ enum class MessageKey {
     delivery_order_take_already_taken,
     delivery_order_take_error,
     delivery_order_distance_placeholder,
+    // Centro de notificaciones delivery
+    delivery_tab_notifications,
+    delivery_notifications_title,
+    delivery_notifications_empty,
+    delivery_notifications_tab_label,
+    delivery_notifications_mark_all_read,
+    delivery_notifications_mark_read,
+    delivery_notifications_push_placeholder,
+    delivery_notifications_event_new_order,
+    delivery_notifications_event_assigned,
+    delivery_notifications_event_delivered,
+    delivery_notifications_event_not_delivered,
+    delivery_notifications_view_available_orders,
 }

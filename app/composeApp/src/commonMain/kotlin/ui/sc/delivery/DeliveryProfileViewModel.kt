@@ -273,6 +273,7 @@ class DeliveryProfileViewModel(
 
     suspend fun logout() {
         toDoResetLoginCache.execute()
+        DeliveryNotificationStore.clear()
         SessionStore.clear()
     }
 

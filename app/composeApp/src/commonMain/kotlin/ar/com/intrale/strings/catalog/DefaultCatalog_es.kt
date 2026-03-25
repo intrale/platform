@@ -148,7 +148,7 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.business_onboarding_value_monitor_title to "Monitoreá pedidos y panel",
     MessageKey.business_onboarding_value_monitor_description to "Seguí pedidos en tiempo real y ajustá la configuración de tu negocio desde el panel.",
     MessageKey.business_payment_methods_title to "Medios de pago",
-    MessageKey.business_payment_methods_access_denied to "No tenés permisos para acceder a esta sección",
+    MessageKey.business_payment_methods_access_denied to "No tenés permiso para acceder a esta sección",
     MessageKey.business_payment_methods_description to "Configurá los medios de pago disponibles para tus clientes",
     MessageKey.business_payment_methods_loading to "Cargando medios de pago...",
     MessageKey.business_payment_methods_missing_business to "No pudimos encontrar tu negocio",
@@ -796,6 +796,20 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.two_factor_setup_go_verify to "Ir a verificación",
     MessageKey.two_factor_verify_error_invalid to "Código inválido o expirado",
     MessageKey.two_factor_verify_code_hint to "Ingresá el código de 6 dígitos",
+
+    // Centro de notificaciones delivery
+    MessageKey.delivery_tab_notifications to "Notificaciones",
+    MessageKey.delivery_notifications_title to "Notificaciones",
+    MessageKey.delivery_notifications_empty to "No tenes notificaciones por el momento.",
+    MessageKey.delivery_notifications_tab_label to "Notif.",
+    MessageKey.delivery_notifications_mark_all_read to "Marcar todo como leido",
+    MessageKey.delivery_notifications_mark_read to "Marcar como leido",
+    MessageKey.delivery_notifications_push_placeholder to "Las notificaciones push se activaran proximamente.",
+    MessageKey.delivery_notifications_event_new_order to "Nuevo pedido disponible",
+    MessageKey.delivery_notifications_event_assigned to "Pedido asignado",
+    MessageKey.delivery_notifications_event_delivered to "Pedido entregado",
+    MessageKey.delivery_notifications_event_not_delivered to "Pedido no entregado",
+    MessageKey.delivery_notifications_view_available_orders to "Ver pedidos disponibles",
 
     // Centro de notificaciones
     MessageKey.client_notifications_title to "Notificaciones",
