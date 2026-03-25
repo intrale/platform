@@ -60,6 +60,7 @@ const FAILSAFE_MS = 4 * 60 * 60 * 1000; // 4 horas
 const STALE_MS = 15 * 60 * 1000;    // 15 minutos — agente sin actividad = stale
 const FAILED_TOTAL_MS = 45 * 60 * 1000; // 45 minutos — agente sin actividad = failed
 const PR_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 min — supervisión de PRs (#1658)
+const PR_STALE_MS = 15 * 60 * 1000;        // 15 min — PR sin actividad = stale
 
 let _pollInterval = null;
 let _guardianInterval = null;
