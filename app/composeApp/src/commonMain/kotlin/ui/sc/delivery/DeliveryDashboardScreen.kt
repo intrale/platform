@@ -128,6 +128,7 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                             coroutineScope.launch { historyViewModel.loadHistory() }
                         }
                     },
+                    onNotificationsClick = { navigate(DELIVERY_NOTIFICATIONS_PATH) },
                     onProfileClick = { navigate(DELIVERY_PROFILE_PATH) }
                 )
             }

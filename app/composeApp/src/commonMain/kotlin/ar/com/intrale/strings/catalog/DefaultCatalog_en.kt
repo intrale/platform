@@ -804,6 +804,20 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.two_factor_verify_error_invalid to "Invalid or expired code",
     MessageKey.two_factor_verify_code_hint to "Enter the 6-digit code",
 
+    // Delivery notification center
+    MessageKey.delivery_tab_notifications to "Notifications",
+    MessageKey.delivery_notifications_title to "Notifications",
+    MessageKey.delivery_notifications_empty to "No notifications yet.",
+    MessageKey.delivery_notifications_tab_label to "Notif.",
+    MessageKey.delivery_notifications_mark_all_read to "Mark all as read",
+    MessageKey.delivery_notifications_mark_read to "Mark as read",
+    MessageKey.delivery_notifications_push_placeholder to "Push notifications will be activated soon.",
+    MessageKey.delivery_notifications_event_new_order to "New order available",
+    MessageKey.delivery_notifications_event_assigned to "Order assigned",
+    MessageKey.delivery_notifications_event_delivered to "Order delivered",
+    MessageKey.delivery_notifications_event_not_delivered to "Order not delivered",
+    MessageKey.delivery_notifications_view_available_orders to "View available orders",
+
     // Notification center
     MessageKey.client_notifications_title to "Notifications",
     MessageKey.client_notifications_empty to "No notifications yet.",

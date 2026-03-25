@@ -7,7 +7,8 @@ import org.kodein.log.newLogger
 import platform.Foundation.NSURL
 import platform.UIKit.UIApplication
 
-private val logger = LoggerFactory.default.newLogger("OpenExternalMap")
+private object OpenExternalMapLogger
+private val logger = LoggerFactory.default.newLogger<OpenExternalMapLogger>()
 
 @Composable
 actual fun rememberOpenExternalMap(): (address: String) -> Boolean {
