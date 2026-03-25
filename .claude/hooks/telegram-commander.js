@@ -156,6 +156,9 @@ async function executeClaudeQueued(prompt, extraArgs, options) {
     activeCommands.set(cmdId, { label, sessionId: null, startTime: Date.now() });
     log("Comando [Cmd #" + cmdId + "] registrado: " + label + " (activos: " + activeCommands.size + ")");
 
+    // Silenciar mensajes automáticos de otros hooks mientras se procesa el comando
+    try { require("./telegram-client").setCommandInProgress(true); } catch (e) {}
+
     // ─── Traza de inicio en terminal ─────────────────────────────────────────
     const _ts0 = new Date().toISOString().substring(11, 19);
     const _displayLabel = _qOpts.cmdLabel || (_qOpts.skill ? "/" + _qOpts.skill : label.substring(0, 60));
@@ -179,6 +182,7 @@ async function executeClaudeQueued(prompt, extraArgs, options) {
         return result;
     } finally {
         activeCommands.delete(cmdId);
+        try { require("./telegram-client").setCommandInProgress(false); } catch (e) {}
         log("Comando [Cmd #" + cmdId + "] finalizado (activos: " + activeCommands.size + ")");
     }
 }
