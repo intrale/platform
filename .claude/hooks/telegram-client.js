@@ -142,11 +142,6 @@ function setCommandInProgress(active) {
 async function sendMessage(text, opts) {
     opts = opts || {};
 
-    // Bloquear mensajes automáticos mientras se procesa un comando del usuario
-    if (isCommandInProgress() && !opts.isResponse) {
-        return null; // Silenciar — no enviar
-    }
-
     const chatId = opts.chatId || getChatId();
     if (!chatId) throw new Error("No chat_id configured");
 
@@ -194,10 +189,6 @@ async function editMessage(messageId, text, opts) {
  */
 function sendPhoto(imageBuffer, caption, opts) {
     opts = opts || {};
-    // Bloquear fotos automáticas mientras se procesa un comando del usuario
-    if (isCommandInProgress() && !opts.isResponse) {
-        return Promise.resolve(null);
-    }
     const chatId = opts.chatId || getChatId();
     const token = getBotToken();
     if (!token || !chatId) return Promise.reject(new Error("No bot_token or chat_id"));
