@@ -629,6 +629,12 @@ function checkDeadWorktrees() {
 // ─── Notificación a Telegram ───────────────────────────────────────────────
 
 function sendAlert(text) {
+    // Health check solo loguea — no envía a Telegram.
+    // La info está disponible en el dashboard web y logs.
+    const clean = (text || "").replace(/<[^>]+>/g, "").substring(0, 200);
+    try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] HealthCheck: (alert→log) " + clean + "\n"); } catch(e) {}
+    return Promise.resolve(true);
+    // Dead code below
     return new Promise((resolve) => {
         try {
             const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
