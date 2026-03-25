@@ -16,6 +16,7 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
+import asdo.client.DoCreateClientOrder
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
 import asdo.client.DoGetClientProfile
@@ -26,6 +27,7 @@ import asdo.client.DoRepeatOrder
 import asdo.client.DoGetNotifications
 import asdo.client.DoMarkNotificationRead
 import asdo.client.DoMarkAllNotificationsRead
+import asdo.client.ToDoCreateClientOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
@@ -286,6 +288,7 @@ import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientOrderDetailScreen
 import ui.sc.client.ClientOrdersScreen
 import ui.sc.client.ClientCartScreen
+import ui.sc.client.ClientCheckoutScreen
 import ui.sc.client.ClientProductDetailScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
@@ -315,6 +318,7 @@ public const val CLIENT_CATALOG = "clientCatalog"
 public const val CLIENT_ORDERS = "clientOrders"
 public const val CLIENT_CART = "clientCart"
 public const val CLIENT_PROFILE = "clientProfile"
+public const val CLIENT_CHECKOUT = "clientCheckout"
 public const val CLIENT_ADDRESSES = "clientAddresses"
 public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
 public const val CLIENT_ORDER_DETAIL = "clientOrderDetail"
@@ -504,6 +508,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoGetNotifications> { DoGetNotifications() }
     bindSingleton<ToDoMarkNotificationRead> { DoMarkNotificationRead() }
     bindSingleton<ToDoMarkAllNotificationsRead> { DoMarkAllNotificationsRead() }
+    bindSingleton<ToDoCreateClientOrder> { DoCreateClientOrder(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {
@@ -536,6 +541,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_ORDERS) { ClientOrdersScreen() }
     bindSingleton(tag = CLIENT_ORDER_DETAIL) { ClientOrderDetailScreen() }
     bindSingleton(tag = CLIENT_CART) { ClientCartScreen() }
+    bindSingleton(tag = CLIENT_CHECKOUT) { ClientCheckoutScreen() }
     bindSingleton(tag = CLIENT_PROFILE) { ClientProfileScreen() }
     bindSingleton(tag = CLIENT_ADDRESSES) { AddressListScreen() }
     bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
@@ -595,6 +601,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_ORDERS))
                     add(instance(tag = CLIENT_ORDER_DETAIL))
                     add(instance(tag = CLIENT_CART))
+                    add(instance(tag = CLIENT_CHECKOUT))
                     add(instance(tag = CLIENT_PROFILE))
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))

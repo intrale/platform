@@ -229,11 +229,8 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                                             snackbarHostState.showSnackbar(continueMissingPayment)
                                         }
                                         else -> {
-                                            val address = vmState.addresses.firstOrNull { it.id == vmState.selectedAddressId }
-                                                ?: vmState.addresses.firstOrNull()
-                                            val label = address?.label.orEmpty()
-                                            val message = continueWithAddress.replace("{label}", label.ifBlank { "-" })
-                                            snackbarHostState.showSnackbar(message)
+                                            ClientCartStore.selectAddress(deliveryState.selectedAddressId)
+                                            navigate(CLIENT_CHECKOUT_PATH)
                                         }
                                     }
                                 }
