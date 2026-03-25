@@ -88,17 +88,26 @@ function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] AgentMonitor: " + msg + "\n"); } catch (e) {}
 }
 
+// notify(): solo loguea. Las notificaciones informativas del monitor no van a Telegram
+// porque el usuario no necesita actuar. Solo se usa notifyUser() para cosas que
+// requieren atención inmediata del usuario.
 async function notify(text, silent) {
+    // Strip HTML tags para el log
+    const clean = (text || "").replace(/<[^>]+>/g, "").substring(0, 200);
+    log("(notify→log) " + clean);
+}
+
+// notifyUser(): envía a Telegram — SOLO para situaciones donde el usuario debe actuar
+async function notifyUser(text) {
     if (!tgClient) return;
-    // No enviar si el commander está procesando un comando del usuario
     try {
         const flagFile = path.join(HOOKS_DIR, "command-in-progress.flag");
         if (fs.existsSync(flagFile)) {
             const age = Date.now() - fs.statSync(flagFile).mtimeMs;
-            if (age < 180000) return; // 3 min — silenciar
+            if (age < 180000) return;
         }
     } catch (e) {}
-    try { await tgClient.sendMessage(text, { silent: !!silent }); } catch (e) { log("Notify error: " + e.message); }
+    try { await tgClient.sendMessage(text); } catch (e) { log("NotifyUser error: " + e.message); }
 }
 
 // ─── Detección de agentes ────────────────────────────────────────────────────
@@ -743,7 +752,7 @@ async function handleAllDone(elapsedMin) {
                 log("Siguiente sprint planificado");
             } catch (e) {
                 log("Error en auto-plan-sprint: " + e.message);
-                await notify("⚠️ <b>Error planificando sprint</b>\n" + e.message.substring(0, 200));
+                await notifyUser("⚠️ <b>Error planificando sprint</b>\n" + e.message.substring(0, 200));
             }
         } else {
             log("auto-plan-sprint.js no encontrado");
@@ -761,7 +770,7 @@ async function handleAllDone(elapsedMin) {
                 }
             } catch (e) {}
         } else {
-            await notify("🚨 <b>Planificación fallida</b>\nRevisa auto-plan-sprint.log y lanza manualmente.");
+            await notifyUser("🚨 <b>Planificación fallida</b>\nRevisa auto-plan-sprint.log y lanza manualmente.");
             return;
         }
     }
@@ -782,11 +791,11 @@ async function handleAllDone(elapsedMin) {
                 await notify("🏃 <b>Siguiente sprint iniciado</b>\nAgentes arrancando...");
             } catch (e) {
                 log("Error arrancando agentes: " + e.message);
-                await notify("⚠️ <b>Error arrancando agentes</b>\n" + e.message.substring(0, 200));
+                await notifyUser("⚠️ <b>Error arrancando agentes</b>\n" + e.message.substring(0, 200));
             }
         } else {
             log("Start-Agente.ps1 no encontrado");
-            await notify("⚠️ <b>Start-Agente.ps1 no encontrado</b>\nLanzar agentes manualmente.");
+            await notifyUser("⚠️ <b>Start-Agente.ps1 no encontrado</b>\nLanzar agentes manualmente.");
         }
 
         // Limpiar ciclo_estado del plan
