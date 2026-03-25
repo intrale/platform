@@ -229,7 +229,7 @@ class ClientCartScreen : Screen(CLIENT_CART_PATH) {
                                             snackbarHostState.showSnackbar(continueMissingPayment)
                                         }
                                         else -> {
-                                            ClientCartStore.selectAddress(deliveryState.selectedAddressId)
+                                            ClientCartStore.selectAddress(vmState.selectedAddressId)
                                             navigate(CLIENT_CHECKOUT_PATH)
                                         }
                                     }

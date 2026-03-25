@@ -1,9 +1,9 @@
 package ar.com.intrale
 
 import com.auth0.jwt.JWT
+import com.google.gson.Gson
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
-import kotlinx.serialization.json.Json
 import org.slf4j.Logger
 
 class ClientOrders(
@@ -13,7 +13,7 @@ class ClientOrders(
     override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
 ) : SecuredFunction(config, logger, jwtValidator) {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val gson = Gson()
 
     override suspend fun securedExecute(
         business: String,
@@ -34,7 +34,7 @@ class ClientOrders(
             HttpMethod.Post.value.uppercase() -> {
                 logger.info("Creando pedido para cliente $email en negocio $business")
                 val request = runCatching {
-                    json.decodeFromString(CreateClientOrderRequest.serializer(), textBody)
+                    gson.fromJson(textBody, CreateClientOrderRequest::class.java)
                 }.getOrElse {
                     return RequestValidationException("Invalid request body: ${it.message}")
                 }
