@@ -23,6 +23,9 @@ import asdo.client.DoGetPaymentMethods
 import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
 import asdo.client.DoRepeatOrder
+import asdo.client.DoGetNotifications
+import asdo.client.DoMarkNotificationRead
+import asdo.client.DoMarkAllNotificationsRead
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoGetClientProfile
@@ -30,8 +33,14 @@ import asdo.client.ToDoRepeatOrder
 import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.client.ToDoGetNotifications
+import asdo.client.ToDoMarkNotificationRead
+import asdo.client.ToDoMarkAllNotificationsRead
 import asdo.delivery.DoDeliveryStateChange
 import asdo.delivery.DoGetActiveDeliveryOrders
+import asdo.delivery.DoGetDeliveryNotifications
+import asdo.delivery.DoMarkDeliveryNotificationRead
+import asdo.delivery.DoMarkAllDeliveryNotificationsRead
 import asdo.delivery.DoGetDeliveryAvailability
 import asdo.delivery.DoGetDeliveryOrderDetail
 import asdo.delivery.DoGetDeliveryOrdersSummary
@@ -41,6 +50,9 @@ import asdo.delivery.DoUpdateDeliveryOrderStatus
 import asdo.delivery.DoUpdateDeliveryProfile
 import asdo.delivery.ToDoDeliveryStateChange
 import asdo.delivery.ToDoGetActiveDeliveryOrders
+import asdo.delivery.ToDoGetDeliveryNotifications
+import asdo.delivery.ToDoMarkDeliveryNotificationRead
+import asdo.delivery.ToDoMarkAllDeliveryNotificationsRead
 import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryOrderDetail
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
@@ -269,6 +281,7 @@ import ui.sc.business.ReviewJoinBusinessScreen
 import ui.sc.client.ClientCatalogScreen
 import ui.sc.client.ClientEntryScreen
 import ui.sc.client.ClientHomeScreen
+import ui.sc.client.ClientNotificationsScreen
 import ui.sc.client.ClientOnboardingScreen
 import ui.sc.client.ClientOrderDetailScreen
 import ui.sc.client.ClientOrdersScreen
@@ -276,6 +289,7 @@ import ui.sc.client.ClientCartScreen
 import ui.sc.client.ClientProductDetailScreen
 import ui.sc.delivery.DeliveryDashboardScreen
 import ui.sc.delivery.DeliveryHomeScreen
+import ui.sc.delivery.DeliveryNotificationsScreen
 import ui.sc.delivery.DeliveryOrderDetailScreen
 import ui.sc.delivery.DeliveryProfileScreen
 import ui.sc.client.AddressFormScreen
@@ -305,6 +319,7 @@ public const val CLIENT_ADDRESSES = "clientAddresses"
 public const val CLIENT_ADDRESS_FORM = "clientAddressForm"
 public const val CLIENT_ORDER_DETAIL = "clientOrderDetail"
 public const val CLIENT_PRODUCT_DETAIL = "clientProductDetail"
+public const val CLIENT_NOTIFICATIONS = "clientNotifications"
 public const val HOME = "home"
 public const val INIT = "init"
 public const val DASHBOARD = "dashboard"
@@ -319,6 +334,7 @@ public const val DELIVERY_HOME = "deliveryHome"
 public const val DELIVERY_DASHBOARD = "deliveryDashboard"
 public const val DELIVERY_PROFILE = "deliveryProfile"
 public const val DELIVERY_ORDER_DETAIL = "deliveryOrderDetail"
+public const val DELIVERY_NOTIFICATIONS = "deliveryNotifications"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
@@ -484,6 +500,10 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
     bindSingleton<ToDoRepeatOrder> { DoRepeatOrder() }
     bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
+
+    bindSingleton<ToDoGetNotifications> { DoGetNotifications() }
+    bindSingleton<ToDoMarkNotificationRead> { DoMarkNotificationRead() }
+    bindSingleton<ToDoMarkAllNotificationsRead> { DoMarkAllNotificationsRead() }
 }
 
 private val deliveryModule = DI.Module("delivery") {
@@ -502,6 +522,10 @@ private val deliveryModule = DI.Module("delivery") {
     bindSingleton<ToDoUpdateDeliveryOrderStatus> { DoUpdateDeliveryOrderStatus(instance()) }
     bindSingleton<ToDoDeliveryStateChange> { DoDeliveryStateChange(instance()) }
     bindSingleton<ToDoGetDeliveryOrderDetail> { DoGetDeliveryOrderDetail(instance()) }
+
+    bindSingleton<ToDoGetDeliveryNotifications> { DoGetDeliveryNotifications() }
+    bindSingleton<ToDoMarkDeliveryNotificationRead> { DoMarkDeliveryNotificationRead() }
+    bindSingleton<ToDoMarkAllDeliveryNotificationsRead> { DoMarkAllDeliveryNotificationsRead() }
 }
 
 private val screensModule = DI.Module("screens") {
@@ -516,6 +540,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = CLIENT_ADDRESSES) { AddressListScreen() }
     bindSingleton(tag = CLIENT_ADDRESS_FORM) { AddressFormScreen() }
     bindSingleton(tag = CLIENT_PRODUCT_DETAIL) { ClientProductDetailScreen() }
+    bindSingleton(tag = CLIENT_NOTIFICATIONS) { ClientNotificationsScreen() }
     bindSingleton(tag = HOME) { Home() }
     bindSingleton(tag = INIT) { Login() }
     bindSingleton(tag = DASHBOARD) { DashboardScreen() }
@@ -530,6 +555,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = DELIVERY_DASHBOARD) { DeliveryDashboardScreen() }
     bindSingleton(tag = DELIVERY_PROFILE) { DeliveryProfileScreen() }
     bindSingleton(tag = DELIVERY_ORDER_DETAIL) { DeliveryOrderDetailScreen() }
+    bindSingleton(tag = DELIVERY_NOTIFICATIONS) { DeliveryNotificationsScreen() }
     bindSingleton(tag = SELECT_SIGNUP_PROFILE) { SelectSignUpProfileScreen() }
     bindSingleton(tag = CHANGE_PASSWORD) { ChangePasswordScreen() }
     bindSingleton(tag = PASSWORD_RECOVERY) { PasswordRecoveryScreen() }
@@ -573,6 +599,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = CLIENT_ADDRESSES))
                     add(instance(tag = CLIENT_ADDRESS_FORM))
                     add(instance(tag = CLIENT_PRODUCT_DETAIL))
+                    add(instance(tag = CLIENT_NOTIFICATIONS))
                     add(instance(tag = INIT))
                     add(instance(tag = SIGNUP))
                     add(instance(tag = CONFIRM_SIGNUP))
@@ -590,6 +617,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = DELIVERY_DASHBOARD))
                     add(instance(tag = DELIVERY_ORDER_DETAIL))
                     add(instance(tag = DELIVERY_PROFILE))
+                    add(instance(tag = DELIVERY_NOTIFICATIONS))
                     add(instance(tag = SIGNUP_DELIVERY))
                     add(instance(tag = CONFIRM_SIGNUP))
                     add(instance(tag = CHANGE_PASSWORD))

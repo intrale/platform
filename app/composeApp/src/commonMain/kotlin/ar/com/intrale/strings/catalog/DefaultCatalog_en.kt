@@ -813,4 +813,18 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_notifications_event_order_cancelled to "Order #{code} from {business} cancelled",
     MessageKey.client_notifications_event_business_message to "Message from {business}: {message}",
     MessageKey.client_notifications_push_placeholder to "Push notifications will be activated soon.",
+
+    // Delivery notifications
+    MessageKey.delivery_tab_notifications to "Notifications",
+    MessageKey.delivery_notifications_title to "Notifications",
+    MessageKey.delivery_notifications_empty to "You have no notifications at the moment.",
+    MessageKey.delivery_notifications_tab_label to "Notifications",
+    MessageKey.delivery_notifications_mark_all_read to "Mark all as read",
+    MessageKey.delivery_notifications_mark_read to "Mark as read",
+    MessageKey.delivery_notifications_push_placeholder to "Push notifications coming soon",
+    MessageKey.delivery_notifications_event_new_order to "New order available",
+    MessageKey.delivery_notifications_event_assigned to "Order assigned to you",
+    MessageKey.delivery_notifications_event_delivered to "Order delivered",
+    MessageKey.delivery_notifications_event_not_delivered to "Order not delivered",
+    MessageKey.delivery_notifications_view_available_orders to "View available orders",
 )
