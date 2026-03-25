@@ -90,6 +90,14 @@ function log(msg) {
 
 async function notify(text, silent) {
     if (!tgClient) return;
+    // No enviar si el commander está procesando un comando del usuario
+    try {
+        const flagFile = path.join(HOOKS_DIR, "command-in-progress.flag");
+        if (fs.existsSync(flagFile)) {
+            const age = Date.now() - fs.statSync(flagFile).mtimeMs;
+            if (age < 180000) return; // 3 min — silenciar
+        }
+    } catch (e) {}
     try { await tgClient.sendMessage(text, { silent: !!silent }); } catch (e) { log("Notify error: " + e.message); }
 }
 
