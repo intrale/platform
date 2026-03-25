@@ -1,0 +1,65 @@
+{
+  "issue_number": 735,
+  "issue_title": "DLOC-001 – Placeholder de ubicacion y mapa en app de repartidores",
+  "branch": "agent/735-placeholder-ubicacion-mapa",
+  "timestamp": "2026-03-25T00:45:00Z",
+  "acceptance_criteria": [
+    "Mostrar direccion textual de comercio y cliente en el detalle del pedido",
+    "Placeholder visual para integracion futura con mapas",
+    "Boton Abrir en mapas usa Intent.ACTION_VIEW con URI geo:0,0?q=<direccion>",
+    "Apertura de mapa con expect/actual multiplataforma",
+    "Si no hay app de mapas, Snackbar con mensaje de error (no crash)",
+    "Nuevas MessageKey creadas",
+    "Strings en espanol en DefaultCatalog_es.kt",
+    "Tests unitarios cubren caso de direccion nula",
+    "Logger presente en el nuevo componente"
+  ],
+  "test_cases": [
+    {
+      "id": "tc-1",
+      "criterion": "Direccion textual de comercio y cliente visible",
+      "type": "unit",
+      "file": "app/composeApp/src/commonTest/kotlin/ui/sc/delivery/DeliveryOrderDetailViewModelTest.kt",
+      "tests": [
+        { "name": "loadDetail exitoso muestra detalle completo", "result": "PASSED" },
+        { "name": "loadDetail exitoso muestra datos de ubicacion con direccion", "result": "PASSED" }
+      ]
+    },
+    {
+      "id": "tc-2",
+      "criterion": "Placeholder visible y direccion nula oculta boton",
+      "type": "unit",
+      "file": "app/composeApp/src/commonTest/kotlin/ui/sc/delivery/DeliveryOrderDetailViewModelTest.kt",
+      "tests": [
+        { "name": "loadDetail con pedido sin direccion muestra detalle sin address", "result": "PASSED" }
+      ]
+    },
+    {
+      "id": "tc-3",
+      "criterion": "Intent.ACTION_VIEW con geo: URI y Uri.encode()",
+      "type": "code-review",
+      "file": "app/composeApp/src/androidMain/kotlin/ui/util/OpenExternalMap.android.kt",
+      "tests": [
+        { "name": "Verificacion manual de codigo — Uri.encode() aplicado correctamente", "result": "PASSED" }
+      ]
+    },
+    {
+      "id": "tc-4",
+      "criterion": "expect/actual multiplataforma",
+      "type": "code-review",
+      "file": "app/composeApp/src/commonMain/kotlin/ui/util/OpenExternalMap.kt",
+      "tests": [
+        { "name": "Verificacion de archivos actual: android, desktop, ios, wasm", "result": "PASSED" }
+      ]
+    }
+  ],
+  "pre_existing_tests": { "executed": 14, "passed": 14, "failed": 0 },
+  "generated_tests": { "executed": 0, "passed": 0, "failed": 0 },
+  "evidence": {
+    "videos": [],
+    "traces": [],
+    "html_report": null
+  },
+  "verdict": "APROBADO",
+  "verdict_reason": "Todos los tests unitarios pasan (14/14). Feature implementada en main (commit 59fc7a62). Cambios en esta rama son correcciones menores de accesibilidad y texto. Sin emulador Android disponible para video E2E — no bloquea dado que los cambios son de strings y contentDescription unicamente."
+}
