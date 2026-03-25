@@ -274,7 +274,7 @@ private fun DeliveryNotificationIcon(eventType: DeliveryNotificationEventType) {
 
 @Composable
 private fun DeliveryNotification.buildDisplayTitle(): String {
-    val available = Txt(MessageKey.delivery_notifications_event_available)
+    val available = Txt(MessageKey.delivery_notifications_event_new_order)
     val assigned = Txt(MessageKey.delivery_notifications_event_assigned)
     val delivered = Txt(MessageKey.delivery_notifications_event_delivered)
     val notDelivered = Txt(MessageKey.delivery_notifications_event_not_delivered)
