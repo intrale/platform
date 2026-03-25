@@ -101,16 +101,24 @@ try {
         $process.Start() | Out-Null
 
         # Leer output del runner (incluye output de Claude proxied)
+        # NOTA: agent-runner.js ya NO escribe al log (un solo escritor evita FileOpenFailure en Windows)
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
             if (-not $line) { continue }
-            $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
+            try {
+                $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
+            } catch {
+                # Fail-open: si el archivo esta lockeado, no crashear
+                Write-Host "  [log-write-blocked] $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
             Write-Host "  $line" -ForegroundColor Gray
         }
 
         $stderrOutput = $process.StandardError.ReadToEnd()
         if ($stderrOutput) {
-            $stderrOutput | Out-File -FilePath $LogFile -Encoding utf8 -Append
+            try {
+                $stderrOutput | Out-File -FilePath $LogFile -Encoding utf8 -Append
+            } catch { }
         }
 
         $process.WaitForExit()

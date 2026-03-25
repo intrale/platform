@@ -47,13 +47,11 @@ function parseArgs() {
 function log(msg) {
     const ts = new Date().toISOString().substring(11, 19);
     const line = "[" + ts + "] " + msg;
+    // Solo escribir a stdout — Run-AgentStream.ps1 es el UNICO escritor del log file.
+    // Escribir desde ambos procesos causa FileOpenFailure en Windows (file locking)
+    // que mata al agente con "proceso_disposed".
     console.log(line);
-    if (logFd) {
-        try { fs.appendFileSync(logFd, line + "\n"); } catch (e) { }
-    }
 }
-
-let logFd = null;
 
 // ─── Pipeline mode detection ─────────────────────────────────────────────────
 
@@ -120,10 +118,8 @@ function runClaude(config) {
         child.stdout.on("data", (chunk) => {
             const lines = chunk.toString().split("\n").filter(l => l.trim());
             for (const line of lines) {
-                // Log raw line
-                if (logFd) {
-                    try { fs.appendFileSync(logFd, line + "\n"); } catch (e) { }
-                }
+                // Raw lines van a stdout — Run-AgentStream.ps1 las escribe al log
+                console.log(line);
 
                 try {
                     const evt = JSON.parse(line);
@@ -148,9 +144,7 @@ function runClaude(config) {
         });
 
         child.stderr.on("data", (chunk) => {
-            if (logFd) {
-                try { fs.appendFileSync(logFd, "STDERR: " + chunk.toString() + "\n"); } catch (e) { }
-            }
+            console.error("STDERR: " + chunk.toString());
         });
 
         child.on("close", (code) => {
