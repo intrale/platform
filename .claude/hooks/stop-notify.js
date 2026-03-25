@@ -479,7 +479,7 @@ async function processInput() {
 
     // Detectar si es respuesta de voz del commander (TTS ya enviado — no duplicar)
     try {
-        const voiceFlagFile = path.join(HOOKS_DIR, "voice-response-active.flag");
+        const voiceFlagFile = path.join(__dirname, "voice-response-active.flag");
         if (fs.existsSync(voiceFlagFile)) {
             const flagAge = Date.now() - fs.statSync(voiceFlagFile).mtimeMs;
             if (flagAge < 120000) { // 2 min
