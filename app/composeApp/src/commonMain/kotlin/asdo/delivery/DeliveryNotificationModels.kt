@@ -18,8 +18,10 @@ data class DeliveryNotification(
 )
 
 fun DeliveryOrderStatus.toNotificationEventType(): DeliveryNotificationEventType = when (this) {
-    DeliveryOrderStatus.PENDING -> DeliveryNotificationEventType.ORDER_AVAILABLE
-    DeliveryOrderStatus.IN_PROGRESS -> DeliveryNotificationEventType.ORDER_ASSIGNED
+    DeliveryOrderStatus.ASSIGNED -> DeliveryNotificationEventType.ORDER_ASSIGNED
+    DeliveryOrderStatus.HEADING_TO_BUSINESS -> DeliveryNotificationEventType.ORDER_ASSIGNED
+    DeliveryOrderStatus.AT_BUSINESS -> DeliveryNotificationEventType.ORDER_ASSIGNED
+    DeliveryOrderStatus.HEADING_TO_CLIENT -> DeliveryNotificationEventType.ORDER_ASSIGNED
     DeliveryOrderStatus.DELIVERED -> DeliveryNotificationEventType.ORDER_DELIVERED
     DeliveryOrderStatus.NOT_DELIVERED -> DeliveryNotificationEventType.ORDER_NOT_DELIVERED
     DeliveryOrderStatus.UNKNOWN -> DeliveryNotificationEventType.ORDER_AVAILABLE
