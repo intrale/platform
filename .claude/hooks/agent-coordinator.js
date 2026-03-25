@@ -109,29 +109,17 @@ process.on("exit", cleanupPidFile);
 let tgClient = null;
 try { tgClient = require("./telegram-client"); } catch (e) {}
 
+// notify(): solo loguea. Las notificaciones operativas del coordinator no van a
+// Telegram porque el usuario no necesita actuar ni le cambia conocer esa info.
 async function notify(text) {
-    if (tgClient) {
-        try { await tgClient.sendMessage(text); return; } catch (e) { log("tgClient error: " + e.message); }
-    }
-    try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(HOOKS_DIR, "telegram-config.json"), "utf8"));
-        const https = require("https");
-        const querystring = require("querystring");
-        const postData = querystring.stringify({ chat_id: cfg.chat_id, text, parse_mode: "HTML" });
-        await new Promise((resolve) => {
-            const req = https.request({
-                hostname: "api.telegram.org",
-                path: "/bot" + cfg.bot_token + "/sendMessage",
-                method: "POST",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                timeout: 6000
-            }, (res) => { res.resume(); resolve(); });
-            req.on("error", resolve);
-            req.on("timeout", () => { req.destroy(); resolve(); });
-            req.write(postData);
-            req.end();
-        });
-    } catch (e) { log("notify error: " + e.message); }
+    const clean = (text || "").replace(/<[^>]+>/g, "").replace(/&#x[0-9A-Fa-f]+;/g, "").substring(0, 200);
+    log("(notify→log) " + clean);
+}
+
+// throttledNotify: también solo loguea (era para dedup pero ya no envía a Telegram)
+async function throttledNotify(issue, type, text) {
+    const clean = (text || "").replace(/<[^>]+>/g, "").replace(/&#x[0-9A-Fa-f]+;/g, "").substring(0, 200);
+    log("(throttled→log) #" + issue + " " + type + ": " + clean);
 }
 
 function escHtml(str) {
