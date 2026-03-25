@@ -1,8 +1,8 @@
 package ui.sc.delivery
 
 import asdo.delivery.DeliveryNotification
-import asdo.delivery.DeliveryOrder
 import asdo.delivery.DeliveryNotificationEventType
+import asdo.delivery.DeliveryOrder
 import asdo.delivery.toNotificationEventType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,8 +27,9 @@ object DeliveryNotificationStore {
                     orderId = order.id,
                     label = order.label,
                     businessName = order.businessName,
+                    neighborhood = order.neighborhood,
                     eventType = order.status.toNotificationEventType(),
-                    timestamp = "",
+                    timestamp = order.eta ?: "",
                     isRead = false
                 )
             }

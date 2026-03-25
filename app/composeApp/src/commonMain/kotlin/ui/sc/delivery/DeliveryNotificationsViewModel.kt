@@ -61,7 +61,7 @@ class DeliveryNotificationsViewModel(
                 }
             }
             .onFailure { throwable ->
-                logger.error(throwable) { "Error al cargar notificaciones delivery" }
+                logger.error(throwable) { "Error al cargar notificaciones" }
                 state = state.copy(
                     status = DeliveryNotificationsStatus.Empty,
                     errorMessage = throwable.message
