@@ -511,61 +511,72 @@ function setupWorktree(agente) {
     const wtName = "platform.agent-" + agente.issue + "-" + agente.slug;
     const wtDir = path.join(path.dirname(REPO_ROOT), wtName);
     const branch = "agent/" + agente.issue + "-" + agente.slug;
+    const relPath = "../" + wtName;
 
-    // Si el worktree existe y es válido (.git presente), reutilizarlo
+    // Caso 1: Worktree válido (.git presente) — reutilizar siempre
+    // Destruir y recrear en Windows causa loops "already exists" por file locks.
     if (fs.existsSync(wtDir) && fs.existsSync(path.join(wtDir, ".git"))) {
-        if (agente._reuse_worktree) {
-            log("setupWorktree: reutilizando worktree existente " + wtName);
-        } else {
-            // Limpiar y recrear solo si se pide explícitamente (no _reuse_worktree)
-            log("setupWorktree: limpiando worktree existente " + wtName);
-            const claudeDir = path.join(wtDir, ".claude");
-            // Usar cmd /c rmdir para junctions, fallback a rmSync para copias
+        log("setupWorktree: reutilizando worktree existente " + wtName);
+        // Actualizar a último main
+        try {
+            execSync("git fetch origin main", { timeout: 15000, windowsHide: true, cwd: wtDir, stdio: "ignore" });
+            execSync("git reset --hard origin/main", { timeout: 10000, windowsHide: true, cwd: wtDir, stdio: "ignore" });
+            log("setupWorktree: worktree actualizado a origin/main");
+        } catch (e) {
+            log("setupWorktree: no se pudo actualizar worktree (continuando): " + e.message);
+        }
+    } else if (fs.existsSync(wtDir)) {
+        // Caso 2: Directorio existe pero sin .git — huérfano
+        log("setupWorktree: directorio huerfano sin .git, intentando limpiar " + wtName);
+        // Intentar limpiar .claude/ primero (puede ser junction)
+        const claudeDir = path.join(wtDir, ".claude");
+        if (fs.existsSync(claudeDir)) {
+            try { execSync('cmd /c rmdir "' + claudeDir.replace(/\//g, "\\") + '" 2>NUL', { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch (e) {}
             if (fs.existsSync(claudeDir)) {
-                try { execSync('cmd /c rmdir "' + claudeDir.replace(/\//g, "\\") + '" 2>NUL', { timeout: 5000, windowsHide: true, stdio: "ignore" }); } catch (e) {}
-                if (fs.existsSync(claudeDir)) {
-                    try { fs.rmSync(claudeDir, { recursive: true, force: true }); } catch (e) {}
-                }
+                try { fs.rmSync(claudeDir, { recursive: true, force: true }); } catch (e) {}
             }
-            try {
-                execSync("git worktree remove " + JSON.stringify(wtDir.replace(/\\/g, "/")) + " --force", {
-                    encoding: "utf8", timeout: 15000, windowsHide: true, cwd: REPO_ROOT
-                });
-            } catch (e) {}
-            if (fs.existsSync(wtDir)) {
-                try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (e) {}
-            }
-            try { execSync("git worktree prune", { timeout: 5000, windowsHide: true, cwd: REPO_ROOT }); } catch (e) {}
+        }
+        try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (e) {}
+        try { execSync("git worktree prune", { timeout: 5000, windowsHide: true, cwd: REPO_ROOT }); } catch (e) {}
 
+        if (fs.existsSync(wtDir)) {
+            // Windows file lock: directorio no se pudo borrar. Usar como worktree de todas formas.
+            log("setupWorktree: WARN directorio no se pudo borrar (file locks), intentando git worktree add sin -b");
             try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore", cwd: REPO_ROOT }); } catch (e) {}
-
-            const relPath = "../" + wtName;
+            try {
+                execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
+                    encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
+                });
+            } catch (e) {
+                // Si falla porque branch ya existe, intentar sin -b
+                log("setupWorktree: fallback git worktree add sin -b: " + e.message.substring(0, 80));
+                execSync("git worktree add " + JSON.stringify(relPath) + " " + JSON.stringify(branch), {
+                    encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
+                });
+            }
+        } else {
+            // Limpieza exitosa — crear nuevo
+            try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore", cwd: REPO_ROOT }); } catch (e) {}
             log("setupWorktree: git worktree add " + relPath + " -b " + branch);
             execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
                 encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
             });
         }
-    } else if (fs.existsSync(wtDir)) {
-        // Directorio existe pero sin .git — huérfano, limpiar
-        log("setupWorktree: directorio huerfano sin .git, limpiando " + wtName);
-        try { fs.rmSync(wtDir, { recursive: true, force: true }); } catch (e) {}
-        try { execSync("git worktree prune", { timeout: 5000, windowsHide: true, cwd: REPO_ROOT }); } catch (e) {}
-        try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore", cwd: REPO_ROOT }); } catch (e) {}
-
-        const relPath = "../" + wtName;
-        log("setupWorktree: git worktree add " + relPath + " -b " + branch);
-        execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
-            encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
-        });
     } else {
-        // No existe — crear nuevo
+        // Caso 3: No existe — crear nuevo
         try { execSync("git branch -D " + JSON.stringify(branch), { timeout: 5000, windowsHide: true, stdio: "ignore", cwd: REPO_ROOT }); } catch (e) {}
-
-        const relPath = "../" + wtName;
         log("setupWorktree: git worktree add " + relPath + " -b " + branch);
-        execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
-            encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
-        });
+        try {
+            execSync("git worktree add " + JSON.stringify(relPath) + " -b " + JSON.stringify(branch) + " origin/main", {
+                encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
+            });
+        } catch (e) {
+            // Branch ya existe (de un sprint anterior) — reusar
+            log("setupWorktree: branch existe, reusando: " + e.message.substring(0, 80));
+            execSync("git worktree add " + JSON.stringify(relPath) + " " + JSON.stringify(branch), {
+                encoding: "utf8", timeout: 30000, windowsHide: true, cwd: REPO_ROOT
+            });
+        }
     }
 
     if (!fs.existsSync(path.join(wtDir, ".git"))) {

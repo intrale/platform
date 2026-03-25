@@ -104,6 +104,7 @@ class DeliveryHomeScreen : Screen(DELIVERY_HOME_PATH) {
                     activeTab = DeliveryTab.HOME,
                     onHomeClick = { coroutineScope.launch { scrollState.animateScrollTo(0) } },
                     onOrdersClick = { navigate(DELIVERY_DASHBOARD_PATH) },
+                    onNotificationsClick = { navigate(DELIVERY_NOTIFICATIONS_PATH) },
                     onProfileClick = { navigate(DELIVERY_PROFILE_PATH) }
                 )
             }

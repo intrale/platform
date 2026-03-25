@@ -485,6 +485,12 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_detail_distance to "Distance: {distance}",
     MessageKey.delivery_order_detail_notes to "Order notes",
     MessageKey.delivery_order_detail_items_count to "{count} item(s)",
+    MessageKey.delivery_order_detail_section_location to "Route",
+    MessageKey.delivery_order_detail_location_origin to "Origin",
+    MessageKey.delivery_order_detail_location_destination to "Destination",
+    MessageKey.delivery_order_detail_location_open_map to "Open in map",
+    MessageKey.delivery_order_detail_location_no_address to "Address not available",
+    MessageKey.delivery_order_detail_location_map_placeholder to "Map view (coming soon)",
     MessageKey.delivery_order_action_not_delivered to "Could not deliver",
     MessageKey.delivery_order_confirm_title to "Confirm delivery",
     MessageKey.delivery_order_confirm_message to "Confirm delivery of order {label}?",
@@ -799,6 +805,20 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.two_factor_setup_go_verify to "Go to verification",
     MessageKey.two_factor_verify_error_invalid to "Invalid or expired code",
     MessageKey.two_factor_verify_code_hint to "Enter the 6-digit code",
+
+    // Delivery notification center
+    MessageKey.delivery_tab_notifications to "Notifications",
+    MessageKey.delivery_notifications_title to "Notifications",
+    MessageKey.delivery_notifications_empty to "No notifications yet.",
+    MessageKey.delivery_notifications_tab_label to "Notif.",
+    MessageKey.delivery_notifications_mark_all_read to "Mark all as read",
+    MessageKey.delivery_notifications_mark_read to "Mark as read",
+    MessageKey.delivery_notifications_push_placeholder to "Push notifications will be activated soon.",
+    MessageKey.delivery_notifications_event_new_order to "New order available",
+    MessageKey.delivery_notifications_event_assigned to "Order assigned",
+    MessageKey.delivery_notifications_event_delivered to "Order delivered",
+    MessageKey.delivery_notifications_event_not_delivered to "Order not delivered",
+    MessageKey.delivery_notifications_view_available_orders to "View available orders",
 
     // Notification center
     MessageKey.client_notifications_title to "Notifications",

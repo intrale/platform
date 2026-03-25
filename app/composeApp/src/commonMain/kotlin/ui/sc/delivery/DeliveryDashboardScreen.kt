@@ -87,6 +87,7 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                     activeTab = DeliveryTab.ORDERS,
                     onHomeClick = { navigate(DELIVERY_HOME_PATH) },
                     onOrdersClick = { coroutineScope.launch { viewModel.loadOrders() } },
+                    onNotificationsClick = { navigate(DELIVERY_NOTIFICATIONS_PATH) },
                     onProfileClick = { navigate(DELIVERY_PROFILE_PATH) }
                 )
             }
