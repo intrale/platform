@@ -158,6 +158,11 @@ function classifyNotification(type, message, title) {
 }
 
 function sendTelegram(text, attempt, options) {
+    // Solo loguear — no enviar a Telegram. Las notificaciones automáticas de hooks
+    // no requieren acción del usuario. La info está en dashboard y logs.
+    const clean = (text || "").replace(/<[^>]+>/g, "").substring(0, 200);
+    log("(sendTelegram→log) " + clean);
+    return Promise.resolve({ ok: true, result: { message_id: 0 } });
     const silent = options && options.silent;
     const inlineKeyboard = options && options.inlineKeyboard;
 
@@ -204,6 +209,8 @@ function sendTelegram(text, attempt, options) {
  * Se usa para heartbeat y resumen diario.
  */
 function sendTelegramPhoto(photoBuffer, caption, attempt, options) {
+    log("(sendTelegramPhoto→log) foto omitida — ver dashboard web");
+    return Promise.resolve({ ok: true, result: { message_id: 0 } });
     const silent = options && options.silent;
     const inlineKeyboard = options && options.inlineKeyboard;
 
