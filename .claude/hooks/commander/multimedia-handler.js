@@ -355,6 +355,15 @@ async function handleVoiceOrAudio(msg) {
             return;
         }
 
+        // Marcar flag de voz ANTES de ejecutar Claude para que stop-notify no envíe imagen
+        const voiceFlagFile = require("path").join(
+            process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform",
+            ".claude", "hooks", "voice-response-active.flag"
+        );
+        if (isVoice) {
+            try { require("fs").writeFileSync(voiceFlagFile, String(Date.now()), "utf8"); } catch (e) {}
+        }
+
         const result = await _cmdContext.executeClaudeQueued(transcription, [], { useSession: true, skill: null });
         const claudeResponse = extractClaudeResponse(result);
 
