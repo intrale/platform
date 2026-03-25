@@ -79,6 +79,17 @@ class DeliveryOrdersService(
         throw throwable.toDeliveryException()
     }
 
+    override suspend fun takeOrder(orderId: String): Result<DeliveryOrderStatusUpdateResponse> = runCatching {
+        logger.info { "[Delivery][Orders] Tomando pedido $orderId" }
+        val response = httpClient.put("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/orders/$orderId/take") {
+            authorize()
+        }
+        response.toResult(DeliveryOrderStatusUpdateResponse.serializer())
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "[Delivery][Orders] Error al tomar pedido $orderId" }
+        throw throwable.toDeliveryException()
+    }
+
     override suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDTO> = runCatching {
         logger.info { "[Delivery][Orders] Solicitando detalle del pedido $orderId" }
         val response = httpClient.get("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/orders/$orderId") {

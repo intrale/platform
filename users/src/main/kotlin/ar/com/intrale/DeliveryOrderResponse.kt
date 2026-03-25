@@ -44,6 +44,8 @@ data class DeliveryOrderStatusUpdateResponse(
     val responseStatus: HttpStatusCode = HttpStatusCode.OK
 ) : Response(statusCode = responseStatus)
 
+class OrderAlreadyTakenException(orderId: String) : RuntimeException("El pedido $orderId ya no está disponible")
+
 data class DeliveryStateChangeResponse(
     val orderId: String = "",
     val state: String = "",

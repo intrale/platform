@@ -82,3 +82,34 @@ class DoGetDeliveryOrderDetail(
         throw throwable.toDeliveryException()
     }
 }
+
+class DoGetAvailableDeliveryOrders(
+    private val ordersService: CommDeliveryOrdersService
+) : ToDoGetAvailableDeliveryOrders {
+
+    private val logger = LoggerFactory.default.newLogger<DoGetAvailableDeliveryOrders>()
+
+    override suspend fun execute(): Result<List<DeliveryOrder>> = runCatching {
+        logger.info { "Obteniendo pedidos disponibles para tomar" }
+        ordersService.fetchAvailableOrders().getOrThrow()
+            .map { it.toDomain() }
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al obtener pedidos disponibles" }
+        throw throwable.toDeliveryException()
+    }
+}
+
+class DoTakeDeliveryOrder(
+    private val ordersService: CommDeliveryOrdersService
+) : ToDoTakeDeliveryOrder {
+
+    private val logger = LoggerFactory.default.newLogger<DoTakeDeliveryOrder>()
+
+    override suspend fun execute(orderId: String): Result<DeliveryOrderStatusUpdateResult> = runCatching {
+        logger.info { "Tomando pedido $orderId" }
+        ordersService.takeOrder(orderId).getOrThrow().toDomain()
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al tomar pedido $orderId" }
+        throw throwable.toDeliveryException()
+    }
+}

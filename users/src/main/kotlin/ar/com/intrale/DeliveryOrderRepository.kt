@@ -52,6 +52,28 @@ class DeliveryOrderRepository {
         return updateStatus(business, orderId, newState)
     }
 
+    /**
+     * Asigna un pedido disponible a un repartidor.
+     * Retorna null si el pedido no existe (404).
+     * Lanza [OrderAlreadyTakenException] si el pedido ya tiene repartidor asignado (409).
+     */
+    fun takeOrder(business: String, orderId: String, deliveryEmail: String): DeliveryOrderPayload? {
+        val list = orders.getOrDefault(businessKey(business), mutableListOf())
+        val index = list.indexOfFirst { it.id == orderId }
+        if (index == -1) return null
+        val current = list[index]
+        if (!current.assignedTo.isNullOrBlank()) {
+            throw OrderAlreadyTakenException(orderId)
+        }
+        val updated = current.copy(
+            assignedTo = deliveryEmail,
+            status = "assigned",
+            updatedAt = Instant.now().toString()
+        )
+        list[index] = updated
+        return updated
+    }
+
     fun createOrder(business: String, payload: DeliveryOrderPayload): DeliveryOrderPayload {
         val now = Instant.now().toString()
         val created = payload.copy(

@@ -813,4 +813,19 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_notifications_event_order_cancelled to "Order #{code} from {business} cancelled",
     MessageKey.client_notifications_event_business_message to "Message from {business}: {message}",
     MessageKey.client_notifications_push_placeholder to "Push notifications will be activated soon.",
+
+    // Available orders (Delivery flavor)
+    MessageKey.delivery_available_orders_tab to "Available",
+    MessageKey.delivery_orders_tab_mine to "My Orders",
+    MessageKey.delivery_available_orders_title to "Available orders",
+    MessageKey.delivery_available_orders_subtitle to "Orders without an assigned delivery person",
+    MessageKey.delivery_available_orders_empty to "No available orders at this time",
+    MessageKey.delivery_available_orders_error to "Could not load orders. Please try again.",
+    MessageKey.delivery_available_orders_retry to "Retry",
+    MessageKey.delivery_available_orders_refresh to "Refresh",
+    MessageKey.delivery_order_take_action to "Take order",
+    MessageKey.delivery_order_take_success to "Order taken successfully",
+    MessageKey.delivery_order_take_already_taken to "This order is no longer available",
+    MessageKey.delivery_order_take_error to "Error taking the order. Please try again.",
+    MessageKey.delivery_order_distance_placeholder to "-- km",
 )
