@@ -245,11 +245,23 @@ async function callTTS(text) {
 // ─── Extracción de respuesta de Claude ───────────────────────────────────────
 
 function extractClaudeResponse(result) {
-    if (!result || result.code !== 0) return null;
+    if (!result || result.code !== 0) {
+        _log("extractClaudeResponse: skip (code=" + (result ? result.code : "null") + ")");
+        return null;
+    }
+    if (!result.stdout) {
+        _log("extractClaudeResponse: stdout vacio — Claude no emitio evento result ni texto");
+        return null;
+    }
     try {
         const json = JSON.parse(result.stdout);
-        return json.result || json.text || json.content || null;
+        const text = json.result || json.text || json.content || null;
+        if (!text) {
+            _log("extractClaudeResponse: JSON parseado pero sin result/text/content: " + result.stdout.substring(0, 200));
+        }
+        return text;
     } catch (e) {
+        // stdout no es JSON — usar como texto plano
         return result.stdout || null;
     }
 }
