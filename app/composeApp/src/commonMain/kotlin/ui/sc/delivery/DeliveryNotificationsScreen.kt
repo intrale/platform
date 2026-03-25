@@ -99,9 +99,12 @@ class DeliveryNotificationsScreen : Screen(DELIVERY_NOTIFICATIONS_PATH) {
                             fontWeight = FontWeight.Bold
                         )
                         if (state.unreadCount > 0) {
-                            TextButton(onClick = {
-                                coroutineScope.launch { viewModel.markAllNotificationsAsRead() }
-                            }) {
+                            TextButton(
+                                onClick = {
+                                    coroutineScope.launch { viewModel.markAllNotificationsAsRead() }
+                                },
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
                                 Text(markAllLabel)
                             }
                         }
@@ -177,6 +180,7 @@ private fun DeliveryNotificationCard(
     onNavigateToOrder: () -> Unit
 ) {
     val markReadLabel = Txt(MessageKey.delivery_notifications_mark_read)
+    val cardDescription = notification.buildDisplayTitle()
 
     val containerColor = if (notification.isRead) {
         MaterialTheme.colorScheme.surfaceVariant
@@ -187,6 +191,7 @@ private fun DeliveryNotificationCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { contentDescription = cardDescription }
             .clickable { onNavigateToOrder() },
         colors = CardDefaults.cardColors(containerColor = containerColor)
     ) {
@@ -249,11 +254,16 @@ private fun DeliveryNotificationCard(
 
 @Composable
 private fun DeliveryNotificationIcon(eventType: DeliveryNotificationEventType) {
+    val iconAvailable = Txt(MessageKey.delivery_notifications_icon_available)
+    val iconAssigned = Txt(MessageKey.delivery_notifications_icon_assigned)
+    val iconDelivered = Txt(MessageKey.delivery_notifications_icon_delivered)
+    val iconNotDelivered = Txt(MessageKey.delivery_notifications_icon_not_delivered)
+
     val eventTypeDescription = when (eventType) {
-        DeliveryNotificationEventType.ORDER_AVAILABLE -> "Pedido disponible"
-        DeliveryNotificationEventType.ORDER_ASSIGNED -> "Pedido asignado"
-        DeliveryNotificationEventType.ORDER_DELIVERED -> "Pedido entregado"
-        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> "Pedido no entregado"
+        DeliveryNotificationEventType.ORDER_AVAILABLE -> iconAvailable
+        DeliveryNotificationEventType.ORDER_ASSIGNED -> iconAssigned
+        DeliveryNotificationEventType.ORDER_DELIVERED -> iconDelivered
+        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> iconNotDelivered
     }
 
     val (emoji, bgColor) = when (eventType) {

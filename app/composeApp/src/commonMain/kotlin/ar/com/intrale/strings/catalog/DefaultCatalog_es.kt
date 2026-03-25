@@ -809,8 +809,11 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_notifications_event_assigned to "Pedido asignado",
     MessageKey.delivery_notifications_event_delivered to "Pedido entregado",
     MessageKey.delivery_notifications_event_not_delivered to "Pedido no entregado",
-    MessageKey.delivery_notifications_view_available_orders to "Ver pedidos disponibles",
     MessageKey.delivery_notifications_unread_indicator to "No leida",
+    MessageKey.delivery_notifications_icon_available to "Pedido disponible",
+    MessageKey.delivery_notifications_icon_assigned to "Pedido asignado",
+    MessageKey.delivery_notifications_icon_delivered to "Pedido entregado",
+    MessageKey.delivery_notifications_icon_not_delivered to "Pedido no entregado",
 
     // Centro de notificaciones
     MessageKey.client_notifications_title to "Notificaciones",

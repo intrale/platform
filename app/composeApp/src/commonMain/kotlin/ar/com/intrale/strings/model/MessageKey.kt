@@ -816,6 +816,9 @@ enum class MessageKey {
     delivery_notifications_event_assigned,
     delivery_notifications_event_delivered,
     delivery_notifications_event_not_delivered,
-    delivery_notifications_view_available_orders,
     delivery_notifications_unread_indicator,
+    delivery_notifications_icon_available,
+    delivery_notifications_icon_assigned,
+    delivery_notifications_icon_delivered,
+    delivery_notifications_icon_not_delivered,
 }
