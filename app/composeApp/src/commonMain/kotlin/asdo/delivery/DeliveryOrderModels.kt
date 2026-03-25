@@ -15,7 +15,8 @@ data class DeliveryOrder(
     val businessName: String,
     val neighborhood: String,
     val status: DeliveryOrderStatus,
-    val eta: String?
+    val eta: String?,
+    val finishedAt: String? = null
 )
 
 data class DeliveryOrdersSummary(
@@ -61,7 +62,8 @@ fun DeliveryOrderDTO.toDomain(): DeliveryOrder = DeliveryOrder(
     businessName = businessName,
     neighborhood = neighborhood,
     status = status.toDeliveryOrderStatus(),
-    eta = eta ?: promisedAt
+    eta = eta ?: promisedAt,
+    finishedAt = updatedAt
 )
 
 fun DeliveryOrderDTO.toDetailDomain(): DeliveryOrderDetail = DeliveryOrderDetail(
