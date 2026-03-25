@@ -120,6 +120,7 @@ class DeliveryHomeViewModel(
         state = state.copy(activeOrdersState = DeliveryActiveOrdersState.Loading)
         getActiveOrders.execute()
             .onSuccess { orders ->
+                DeliveryNotificationStore.updateFromOrders(orders)
                 state = if (orders.isEmpty()) {
                     state.copy(activeOrdersState = DeliveryActiveOrdersState.Empty)
                 } else {

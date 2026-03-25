@@ -50,6 +50,7 @@ class DeliveryOrdersViewModel(
         getActiveOrders.execute()
             .onSuccess { orders ->
                 allOrders = orders
+                DeliveryNotificationStore.updateFromOrders(orders)
                 applyFilter()
             }
             .onFailure { throwable ->

@@ -803,4 +803,18 @@ enum class MessageKey {
     client_notifications_event_order_cancelled,
     client_notifications_event_business_message,
     client_notifications_push_placeholder,
+
+    // Centro de notificaciones delivery
+    delivery_tab_notifications,
+    delivery_notifications_title,
+    delivery_notifications_empty,
+    delivery_notifications_tab_label,
+    delivery_notifications_mark_all_read,
+    delivery_notifications_mark_read,
+    delivery_notifications_push_placeholder,
+    delivery_notifications_event_new_order,
+    delivery_notifications_event_assigned,
+    delivery_notifications_event_delivered,
+    delivery_notifications_event_not_delivered,
+    delivery_notifications_view_available_orders,
 }
