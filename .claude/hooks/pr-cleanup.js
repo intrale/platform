@@ -179,6 +179,65 @@ function getFailedChecks(pr) {
         .map(function(c) { return c.name || c.context || "unknown"; });
 }
 
+// ─── Acciones correctivas ─────────────────────────────────────────────────────
+
+function extractIssueFromBranch(branch) {
+    const match = (branch || "").match(/(?:agent|feature|bugfix)\/(\d+)-/);
+    return match ? match[1] : null;
+}
+
+function attemptRebase(branch) {
+    // Intentar rebase de la rama sobre origin/main
+    try {
+        ghExec(["api", "repos/" + GH_REPO + "/merges", "-f", "base=" + branch, "-f", "head=main"], 30000);
+        log("attemptRebase: merge de main en " + branch + " exitoso");
+        return true;
+    } catch (e) {
+        log("attemptRebase: falló para " + branch + ": " + (e.message || ""));
+        return false;
+    }
+}
+
+function attemptCIRerun(prNum, branch) {
+    // Intentar re-run del último workflow fallido
+    try {
+        const runs = ghJson(["run", "list", "--branch", branch, "--limit", "1", "--repo", GH_REPO,
+            "--json", "databaseId,status,conclusion"], 15000);
+        if (!runs || runs.length === 0) return false;
+        const lastRun = runs[0];
+        if (lastRun.conclusion === "failure") {
+            ghExec(["run", "rerun", String(lastRun.databaseId), "--repo", GH_REPO, "--failed"], 30000);
+            log("attemptCIRerun: re-run disparado para run " + lastRun.databaseId + " en PR #" + prNum);
+            return true;
+        }
+        return false;
+    } catch (e) {
+        log("attemptCIRerun: falló para PR #" + prNum + ": " + (e.message || ""));
+        return false;
+    }
+}
+
+function closePrAndReopenIssue(prNum, branch, reason) {
+    const issueNum = extractIssueFromBranch(branch);
+
+    // Cerrar PR con comentario
+    ghExec(["pr", "close", String(prNum), "--repo", GH_REPO,
+        "--comment", "Cerrado automáticamente por PR Cleanup: " + reason + ". Issue reabierto para reimplementar."], 15000);
+
+    if (issueNum) {
+        // Reabrir issue
+        ghExec(["issue", "reopen", issueNum, "--repo", GH_REPO], 10000);
+        // Agregar label backlog-tecnico
+        ghExec(["issue", "edit", issueNum, "--repo", GH_REPO, "--add-label", "backlog-tecnico"], 10000);
+        // Comentario explicativo
+        ghExec(["issue", "comment", issueNum, "--repo", GH_REPO,
+            "--body", "PR #" + prNum + " cerrado por PR Cleanup: " + reason + ".\nReimplementar desde main limpio."], 15000);
+        log("closePrAndReopenIssue: PR #" + prNum + " cerrado, issue #" + issueNum + " reabierto con label backlog-tecnico");
+    } else {
+        log("closePrAndReopenIssue: PR #" + prNum + " cerrado, pero no se pudo extraer issue number de branch " + branch);
+    }
+}
+
 // ─── Lógica principal ─────────────────────────────────────────────────────────
 
 async function runCleanup() {
@@ -277,18 +336,48 @@ async function runCleanup() {
         // Combinar datos del listado con detalles
         const fullPr = Object.assign({}, pr, detail, { number: prNum });
 
-        // Verificar conflictos
+        // Verificar conflictos — intentar resolver
         if (hasMergeConflicts(fullPr)) {
-            log("PR #" + prNum + " conflictos (mergeStateStatus=" + fullPr.mergeStateStatus + ")");
-            results.conflicts.push({ number: prNum, title: prTitle, branch: branch });
-            continue;
+            log("PR #" + prNum + " conflictos — intentando rebase automático");
+            const rebaseOk = attemptRebase(branch);
+            if (rebaseOk) {
+                log("PR #" + prNum + " rebase exitoso — re-evaluando CI");
+                // Esperar 10s para que GitHub actualice el estado
+                spawnSync("timeout", ["/t", "10", "/nobreak"], { windowsHide: true, stdio: "ignore" });
+                // Re-obtener detalle después del rebase
+                const detail2 = ghJson(["pr", "view", String(prNum), "--repo", GH_REPO,
+                    "--json", "mergeable,mergeStateStatus,statusCheckRollup"], 15000);
+                if (detail2 && !hasMergeConflicts(Object.assign({}, pr, detail2))) {
+                    log("PR #" + prNum + " conflictos resueltos tras rebase");
+                    // Continuar al check de CI abajo (no saltar)
+                    Object.assign(fullPr, detail2);
+                } else {
+                    log("PR #" + prNum + " conflictos persisten tras rebase — cerrando PR y reabriendo issue");
+                    closePrAndReopenIssue(prNum, branch, "conflictos irreconciliables tras rebase automático");
+                    results.conflicts.push({ number: prNum, title: prTitle, branch: branch, action: "cerrado+issue_reabierto" });
+                    continue;
+                }
+            } else {
+                log("PR #" + prNum + " rebase falló — cerrando PR y reabriendo issue");
+                closePrAndReopenIssue(prNum, branch, "rebase automático falló, conflictos requieren intervención manual");
+                results.conflicts.push({ number: prNum, title: prTitle, branch: branch, action: "cerrado+issue_reabierto" });
+                continue;
+            }
         }
 
-        // Verificar CI
+        // Verificar CI — intentar re-run si falló
         if (!isCIGreen(fullPr)) {
             const failed = getFailedChecks(fullPr);
-            log("PR #" + prNum + " CI no verde (mergeStateStatus=" + fullPr.mergeStateStatus + ") failedChecks=" + failed.join(","));
-            results.ciFailure.push({ number: prNum, title: prTitle, branch: branch, failedChecks: failed });
+            log("PR #" + prNum + " CI no verde — intentando re-run (failedChecks=" + failed.join(",") + ")");
+            const rerunOk = attemptCIRerun(prNum, branch);
+            if (rerunOk) {
+                log("PR #" + prNum + " CI re-run disparado — se evaluará en el próximo ciclo");
+                results.ciFailure.push({ number: prNum, title: prTitle, branch: branch, failedChecks: failed, action: "rerun_disparado" });
+            } else {
+                log("PR #" + prNum + " CI re-run falló — cerrando PR y reabriendo issue");
+                closePrAndReopenIssue(prNum, branch, "CI fallido: " + failed.slice(0, 3).join(", "));
+                results.ciFailure.push({ number: prNum, title: prTitle, branch: branch, failedChecks: failed, action: "cerrado+issue_reabierto" });
+            }
             continue;
         }
 
@@ -346,9 +435,10 @@ async function runCleanup() {
     }
 
     if (conflictsCount > 0) {
-        msg += "\n⚠️ <b>Con conflictos</b>\n";
+        msg += "\n⚠️ <b>Conflictos</b>\n";
         for (const pr of results.conflicts) {
-            msg += "  • #" + pr.number + " " + escHtml(pr.title) + "\n";
+            const action = pr.action ? " → " + pr.action : "";
+            msg += "  • #" + pr.number + " " + escHtml(pr.title) + action + "\n";
         }
     }
 
@@ -358,7 +448,8 @@ async function runCleanup() {
             const checksStr = pr.failedChecks && pr.failedChecks.length > 0
                 ? " <code>" + escHtml(pr.failedChecks.slice(0, 2).join(", ")) + "</code>"
                 : "";
-            msg += "  • #" + pr.number + " " + escHtml(pr.title) + checksStr + "\n";
+            const action = pr.action ? " → " + pr.action : "";
+            msg += "  • #" + pr.number + " " + escHtml(pr.title) + checksStr + action + "\n";
         }
     }
 
