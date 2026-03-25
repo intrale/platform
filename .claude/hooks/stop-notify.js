@@ -477,6 +477,20 @@ async function processInput() {
     // Rotacion: limpiar sessions "done" con mas de 2h de antiguedad
     cleanOldSessions();
 
+    // Detectar si es respuesta de voz del commander (TTS ya enviado — no duplicar)
+    try {
+        const voiceFlagFile = path.join(HOOKS_DIR, "voice-response-active.flag");
+        if (fs.existsSync(voiceFlagFile)) {
+            const flagAge = Date.now() - fs.statSync(voiceFlagFile).mtimeMs;
+            if (flagAge < 120000) { // 2 min
+                log("Respuesta de voz activa — omitiendo stop-notify (TTS ya enviado)");
+                try { fs.unlinkSync(voiceFlagFile); } catch (e) {}
+                return;
+            }
+            try { fs.unlinkSync(voiceFlagFile); } catch (e) {}
+        }
+    } catch (e) {}
+
     // Detectar si es ejecución de sprint
     const isSprint = isSprintSession(sessionId);
 
