@@ -4604,6 +4604,7 @@ function handleRequest(req, res) {
         { id: '_hooks', numero: '-', issue: null, branch: null, status: 'system', label: 'Hooks (debug)' },
         { id: '_activity', numero: '-', issue: null, branch: null, status: 'system', label: 'Activity log' },
         { id: '_watcher', numero: '-', issue: null, branch: null, status: 'system', label: 'Agent watcher' },
+        { id: '_coordinator', numero: '-', issue: null, branch: null, status: 'system', label: 'Agent Coordinator' },
       ];
       // Logs históricos de agentes (archivos agente_*.log en scripts/logs/)
       const logsDir = path.join(REPO_ROOT, 'scripts', 'logs');
@@ -4627,6 +4628,7 @@ function handleRequest(req, res) {
         '_hooks': path.join(REPO_ROOT, '.claude', 'hooks', 'hook-debug.log'),
         '_activity': path.join(REPO_ROOT, '.claude', 'activity-log.jsonl'),
         '_watcher': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-watcher.log'),
+        '_coordinator': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-coordinator.log'),
       };
       const logsDir = path.join(REPO_ROOT, 'scripts', 'logs');
       const logFile = path.join(logsDir, 'agente_' + agentId + '.log');
