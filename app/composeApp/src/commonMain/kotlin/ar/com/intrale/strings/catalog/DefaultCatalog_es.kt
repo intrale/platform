@@ -797,6 +797,18 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.two_factor_verify_error_invalid to "Código inválido o expirado",
     MessageKey.two_factor_verify_code_hint to "Ingresá el código de 6 dígitos",
 
+    // Centro de notificaciones delivery
+    MessageKey.delivery_notifications_title to "Notificaciones",
+    MessageKey.delivery_notifications_empty to "No tenes notificaciones por el momento.",
+    MessageKey.delivery_notifications_tab_label to "Notif.",
+    MessageKey.delivery_notifications_mark_all_read to "Marcar todo como leido",
+    MessageKey.delivery_notifications_mark_read to "Marcar como leido",
+    MessageKey.delivery_notifications_push_placeholder to "Las notificaciones push se activaran proximamente.",
+    MessageKey.delivery_notifications_event_available to "Nuevo pedido disponible",
+    MessageKey.delivery_notifications_event_assigned to "Pedido asignado",
+    MessageKey.delivery_notifications_event_delivered to "Pedido entregado",
+    MessageKey.delivery_notifications_event_not_delivered to "Pedido no entregado",
+
     // Centro de notificaciones
     MessageKey.client_notifications_title to "Notificaciones",
     MessageKey.client_notifications_empty to "No hay notificaciones por el momento.",

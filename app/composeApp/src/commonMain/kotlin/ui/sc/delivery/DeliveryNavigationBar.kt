@@ -2,49 +2,53 @@ package ui.sc.delivery
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
 import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import ui.th.spacing
 
 enum class DeliveryTab { HOME, ORDERS, NOTIFICATIONS, PROFILE }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeliveryBottomBar(
     activeTab: DeliveryTab,
     onHomeClick: () -> Unit,
     onOrdersClick: () -> Unit,
-    onNotificationsClick: () -> Unit = {},
-    onProfileClick: () -> Unit,
-    notificationBadgeCount: Int = DeliveryNotificationStore.unreadCount
+    onNotificationsClick: () -> Unit,
+    onProfileClick: () -> Unit
 ) {
     val homeLabel = Txt(MessageKey.delivery_tab_home)
     val ordersLabel = Txt(MessageKey.delivery_tab_orders)
-    val notificationsLabel = Txt(MessageKey.delivery_tab_notifications)
+    val notificationsLabel = Txt(MessageKey.delivery_notifications_tab_label)
     val profileLabel = Txt(MessageKey.delivery_tab_profile)
+
+    val notifications by DeliveryNotificationStore.notifications.collectAsState()
+    val unreadCount = notifications.count { !it.isRead }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -69,13 +73,32 @@ fun DeliveryBottomBar(
                 selected = activeTab == DeliveryTab.ORDERS,
                 onClick = onOrdersClick
             )
-            DeliveryBottomItem(
-                icon = Icons.Default.Notifications,
-                label = notificationsLabel,
-                selected = activeTab == DeliveryTab.NOTIFICATIONS,
-                onClick = onNotificationsClick,
-                badgeCount = notificationBadgeCount
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5),
+                modifier = Modifier.clickable(onClick = onNotificationsClick)
+            ) {
+                val tint = if (activeTab == DeliveryTab.NOTIFICATIONS) MaterialTheme.colorScheme.onPrimary else Color.White.copy(alpha = 0.8f)
+                BadgedBox(
+                    badge = {
+                        if (unreadCount > 0) {
+                            Badge { Text(if (unreadCount > 99) "99+" else unreadCount.toString()) }
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Notifications,
+                        contentDescription = notificationsLabel,
+                        tint = tint
+                    )
+                }
+                Text(
+                    text = notificationsLabel,
+                    color = tint,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
             DeliveryBottomItem(
                 icon = Icons.Default.Person,
                 label = profileLabel,
@@ -91,8 +114,7 @@ private fun DeliveryBottomItem(
     icon: ImageVector,
     label: String,
     selected: Boolean,
-    onClick: () -> Unit,
-    badgeCount: Int = 0
+    onClick: () -> Unit
 ) {
     val tint = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White.copy(alpha = 0.8f)
     Column(
@@ -100,28 +122,11 @@ private fun DeliveryBottomItem(
         verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5),
         modifier = Modifier.clickable(onClick = onClick)
     ) {
-        Box {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = tint
-            )
-            if (badgeCount > 0) {
-                Badge(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = 6.dp, y = (-4).dp)
-                        .size(16.dp),
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError
-                ) {
-                    Text(
-                        text = if (badgeCount > 99) "99+" else badgeCount.toString(),
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-            }
-        }
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint
+        )
         Text(
             text = label,
             color = tint,

@@ -11,15 +11,21 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -111,18 +117,29 @@ class DeliveryNotificationsScreen : Screen(DELIVERY_NOTIFICATIONS_PATH) {
                 }
 
                 when (state.status) {
-                    DeliveryNotificationsStatus.Empty -> item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
+                    DeliveryNotificationsStatus.Loading -> item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(MaterialTheme.spacing.x4),
+                            contentAlignment = Alignment.Center
                         ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+
+                    DeliveryNotificationsStatus.Empty -> item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(MaterialTheme.spacing.x4),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Notifications,
+                                contentDescription = null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                             Text(
                                 text = emptyMessage,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(MaterialTheme.spacing.x4),
                                 textAlign = TextAlign.Center,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -146,7 +163,7 @@ class DeliveryNotificationsScreen : Screen(DELIVERY_NOTIFICATIONS_PATH) {
                         }
                     }
 
-                    else -> {}
+                    DeliveryNotificationsStatus.Idle -> {}
                 }
             }
         }
@@ -200,13 +217,6 @@ private fun DeliveryNotificationCard(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (notification.neighborhood.isNotBlank()) {
-                            Text(
-                                text = notification.neighborhood,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
                 }
                 if (!notification.isRead) {
@@ -219,13 +229,15 @@ private fun DeliveryNotificationCard(
                 }
             }
             if (!notification.isRead) {
-                TextButton(
+                OutlinedButton(
                     onClick = onMarkRead,
-                    modifier = Modifier.align(Alignment.End)
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .heightIn(min = 48.dp)
                 ) {
                     Text(
                         text = markReadLabel,
-                        style = MaterialTheme.typography.labelSmall
+                        style = MaterialTheme.typography.labelMedium
                     )
                 }
             }
@@ -235,34 +247,25 @@ private fun DeliveryNotificationCard(
 
 @Composable
 private fun DeliveryNotificationIcon(eventType: DeliveryNotificationEventType) {
-    val (emoji, bgColor, description) = when (eventType) {
-        DeliveryNotificationEventType.NEW_ORDER_AVAILABLE -> Triple(
-            "\uD83D\uDCE6",
-            MaterialTheme.colorScheme.primaryContainer,
-            "Nuevo pedido disponible"
-        )
-        DeliveryNotificationEventType.ORDER_ASSIGNED -> Triple(
-            "\uD83D\uDEB4",
-            MaterialTheme.colorScheme.secondaryContainer,
-            "Pedido asignado"
-        )
-        DeliveryNotificationEventType.ORDER_DELIVERED -> Triple(
-            "\u2705",
-            MaterialTheme.colorScheme.tertiaryContainer,
-            "Pedido entregado"
-        )
-        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> Triple(
-            "\u274C",
-            MaterialTheme.colorScheme.errorContainer,
-            "Pedido no entregado"
-        )
+    val eventTypeDescription = when (eventType) {
+        DeliveryNotificationEventType.ORDER_AVAILABLE -> "Pedido disponible"
+        DeliveryNotificationEventType.ORDER_ASSIGNED -> "Pedido asignado"
+        DeliveryNotificationEventType.ORDER_DELIVERED -> "Pedido entregado"
+        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> "Pedido no entregado"
+    }
+
+    val (emoji, bgColor) = when (eventType) {
+        DeliveryNotificationEventType.ORDER_AVAILABLE -> "\uD83D\uDCE6" to MaterialTheme.colorScheme.primaryContainer
+        DeliveryNotificationEventType.ORDER_ASSIGNED -> "\uD83D\uDEB4" to MaterialTheme.colorScheme.secondaryContainer
+        DeliveryNotificationEventType.ORDER_DELIVERED -> "\u2705" to MaterialTheme.colorScheme.tertiaryContainer
+        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> "\u274C" to MaterialTheme.colorScheme.errorContainer
     }
     Box(
         modifier = Modifier
             .size(36.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(bgColor)
-            .semantics { contentDescription = description },
+            .semantics { contentDescription = eventTypeDescription },
         contentAlignment = Alignment.Center
     ) {
         Text(text = emoji, style = MaterialTheme.typography.bodyMedium)
@@ -270,9 +273,16 @@ private fun DeliveryNotificationIcon(eventType: DeliveryNotificationEventType) {
 }
 
 @Composable
-private fun DeliveryNotification.buildDisplayTitle(): String = when (eventType) {
-    DeliveryNotificationEventType.NEW_ORDER_AVAILABLE -> Txt(MessageKey.delivery_notifications_event_new_order)
-    DeliveryNotificationEventType.ORDER_ASSIGNED -> Txt(MessageKey.delivery_notifications_event_assigned)
-    DeliveryNotificationEventType.ORDER_DELIVERED -> Txt(MessageKey.delivery_notifications_event_delivered)
-    DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> Txt(MessageKey.delivery_notifications_event_not_delivered)
+private fun DeliveryNotification.buildDisplayTitle(): String {
+    val available = Txt(MessageKey.delivery_notifications_event_available)
+    val assigned = Txt(MessageKey.delivery_notifications_event_assigned)
+    val delivered = Txt(MessageKey.delivery_notifications_event_delivered)
+    val notDelivered = Txt(MessageKey.delivery_notifications_event_not_delivered)
+
+    return when (eventType) {
+        DeliveryNotificationEventType.ORDER_AVAILABLE -> available
+        DeliveryNotificationEventType.ORDER_ASSIGNED -> assigned
+        DeliveryNotificationEventType.ORDER_DELIVERED -> delivered
+        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> notDelivered
+    }
 }

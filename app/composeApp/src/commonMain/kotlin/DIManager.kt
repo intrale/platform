@@ -37,6 +37,12 @@ import asdo.client.ToDoGetNotifications
 import asdo.client.ToDoMarkNotificationRead
 import asdo.client.ToDoMarkAllNotificationsRead
 import asdo.delivery.DoDeliveryStateChange
+import asdo.delivery.DoGetDeliveryNotifications
+import asdo.delivery.DoMarkAllDeliveryNotificationsRead
+import asdo.delivery.DoMarkDeliveryNotificationRead
+import asdo.delivery.ToDoGetDeliveryNotifications
+import asdo.delivery.ToDoMarkAllDeliveryNotificationsRead
+import asdo.delivery.ToDoMarkDeliveryNotificationRead
 import asdo.delivery.DoGetActiveDeliveryOrders
 import asdo.delivery.DoGetDeliveryNotifications
 import asdo.delivery.DoMarkDeliveryNotificationRead
@@ -332,6 +338,7 @@ public const val SIGNUP_DELIVERY = "signupDelivery"
 public const val REGISTER_SALER = "registerSaler"
 public const val DELIVERY_HOME = "deliveryHome"
 public const val DELIVERY_DASHBOARD = "deliveryDashboard"
+public const val DELIVERY_NOTIFICATIONS = "deliveryNotifications"
 public const val DELIVERY_PROFILE = "deliveryProfile"
 public const val DELIVERY_ORDER_DETAIL = "deliveryOrderDetail"
 public const val DELIVERY_NOTIFICATIONS = "deliveryNotifications"
