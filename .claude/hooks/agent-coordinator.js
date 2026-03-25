@@ -63,6 +63,10 @@ const SWEEP_INTERVAL_MS = 60 * 1000;                   // sweep de waiting agent
 const SENTINEL_INTERVAL_MS = 5 * 60 * 1000;            // sentinel de liveness
 const SKILL_TIMEOUT_CHECK_MS = 2 * 60 * 1000;          // check de skills colgados
 
+// Notification throttling: por issue+tipo
+const _notifyThrottle = new Map(); // "issue:type" -> timestamp
+const NOTIFY_THROTTLE_MS = 10 * 60 * 1000; // 10 min entre notificaciones del mismo tipo por issue
+
 // Circuit breaker: por issue
 const _circuitBreaker = new Map(); // issue → { failures: N, lastFailure: ts, state: "closed"|"open"|"half-open" }
 const CB_MAX_FAILURES = 3;
@@ -134,6 +138,18 @@ async function notify(text) {
     } catch (e) { log("notify error: " + e.message); }
 }
 
+// Throttled notify: dedup por issue+tipo para evitar spam Telegram
+async function throttledNotify(issue, type, text) {
+    const key = issue + ":" + type;
+    const lastSent = _notifyThrottle.get(key) || 0;
+    if (Date.now() - lastSent < NOTIFY_THROTTLE_MS) {
+        log("Notify THROTTLED: " + key + " (" + Math.round((NOTIFY_THROTTLE_MS - (Date.now() - lastSent)) / 60000) + "min left)");
+        return;
+    }
+    _notifyThrottle.set(key, Date.now());
+    await notify(text);
+}
+
 function escHtml(str) {
     return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -169,6 +185,31 @@ function killProcess(pid) {
         execSync("taskkill /F /PID " + parseInt(pid, 10), { timeout: 5000, windowsHide: true, stdio: "ignore" });
         return true;
     } catch (e) { return !isPidAlive(pid); }
+}
+
+// Kill zombie PowerShell terminals associated with dead agents
+function killZombieTerminals(issue) {
+    try {
+        // Find PowerShell processes with window titles matching dead agent
+        const out = execSync(
+            'tasklist /FI "IMAGENAME eq powershell.exe" /V /FO CSV /NH',
+            { timeout: 10000, windowsHide: true, encoding: "utf8" }
+        );
+        const lines = out.trim().split("\n");
+        for (const line of lines) {
+            // CSV format: "powershell.exe","PID",...,"Window Title"
+            if (line.includes("Agente") && line.includes("#" + issue)) {
+                const match = line.match(/"powershell\.exe","(\d+)"/i);
+                if (match) {
+                    const zombiePid = parseInt(match[1], 10);
+                    log("killZombieTerminals: matando terminal zombie PID " + zombiePid + " (issue #" + issue + ")");
+                    killProcess(zombiePid);
+                }
+            }
+        }
+    } catch (e) {
+        // Fail-open: si no se pueden listar procesos, no bloquear
+    }
 }
 
 // ─── gh CLI ──────────────────────────────────────────────────────────────────
@@ -851,10 +892,10 @@ async function promoteFromQueue(plan) {
         if (launched) {
             nextAgent.status = "active";
             savePlan(plan); // Persist _pid
-            await notify("&#x1F680; <b>Agente #" + nextAgent.issue + " promovido</b>\n" + escHtml(nextAgent.slug) + "\nSlots: " + (activeCount + i + 1) + "/" + concurrencyLimit);
+            await throttledNotify(nextAgent.issue, "promoted", "&#x1F680; <b>Agente #" + nextAgent.issue + " promovido</b>\n" + escHtml(nextAgent.slug) + "\nSlots: " + (activeCount + i + 1) + "/" + concurrencyLimit);
             emitEvent({ type: "promoted", issue: nextAgent.issue, from: "queue", slot: activeCount + i + 1 });
         } else {
-            await notify("&#x26A0;&#xFE0F; <b>#" + nextAgent.issue + " promovido pero no se pudo lanzar</b>");
+            await throttledNotify(nextAgent.issue, "launch_failed", "&#x26A0;&#xFE0F; <b>#" + nextAgent.issue + " promovido pero no se pudo lanzar</b>");
         }
     }
 }
@@ -962,8 +1003,7 @@ async function checkSkillTimeouts(plan) {
 
         emitEvent({ type: "skill-timeout", issue: ag.issue, skill: currentSkill, elapsed_min: Math.round(elapsedMin) });
 
-        await notify(
-            "&#x23F1;&#xFE0F; <b>Agente #" + ag.issue + ": skill colgado</b>\n" +
+        await throttledNotify(ag.issue, "skill_timeout", "&#x23F1;&#xFE0F; <b>Agente #" + ag.issue + ": skill colgado</b>\n" +
             "Skill: <code>" + currentSkill + "</code> · Inactivo: " + Math.round(elapsedMin) + " min\n" +
             "PID " + pid + " terminado"
         );
@@ -986,7 +1026,7 @@ async function sweepWaitingAgents(plan) {
             if (!Array.isArray(plan._completed)) plan._completed = [];
             plan._completed.push(buildCompletedEntry(ag, null, "ok"));
             freed++;
-            await notify("&#x2705; <b>Agente #" + ag.issue + " completado (sweep)</b>\nPR mergeada");
+            await throttledNotify(ag.issue, "sweep_completed", "&#x2705; <b>Agente #" + ag.issue + " completado (sweep)</b>\nPR mergeada");
         } else if (prStatus.status === "closed_no_merge") {
             plan.agentes = (plan.agentes || []).filter(a => a.issue !== ag.issue);
             if (!Array.isArray(plan._incomplete)) plan._incomplete = [];
@@ -1030,8 +1070,10 @@ async function reconcile() {
     // 2. Clean zombie sessions
     markZombieSessions();
 
+    // Idempotency: skip issues already in _completed/_incomplete to avoid re-processing
+    const completedIssues = new Set(((plan._completed || []).concat(plan._incomplete || [])).map(e => e.issue));
     // 3. For each active agent, check liveness
-    const activeAgents = (plan.agentes || []).filter(ag => ag.status !== "waiting");
+    const activeAgents = (plan.agentes || []).filter(ag => ag.status !== "waiting" && !completedIssues.has(ag.issue));
     for (const ag of activeAgents) {
         let alive;
         try { alive = isAgentAlive(ag); } catch (e) { continue; }
@@ -1057,6 +1099,9 @@ async function reconcile() {
         // Cleanup PID file
         try { if (fs.existsSync(path.join(HOOKS_DIR, "agent-" + ag.issue + ".pid"))) fs.unlinkSync(path.join(HOOKS_DIR, "agent-" + ag.issue + ".pid")); } catch (e) {}
 
+        // Kill zombie PowerShell terminal associated with this dead agent
+        killZombieTerminals(ag.issue);
+
         if (prStatus.status === "merged") {
             const entry = buildCompletedEntry(ag, null, "ok");
             entry.detectado_por = "coordinator";
@@ -1069,13 +1114,13 @@ async function reconcile() {
                 plan._completed.push(entry);
                 await updateProjectV2(ag.issue, "Done");
                 clearBackoff(ag.issue);
-                await notify("&#x2705; <b>Agente #" + ag.issue + " completado (coordinator)</b>\nPR mergeada · " + escHtml(ag.slug));
+                await throttledNotify(ag.issue, "completed", "&#x2705; <b>Agente #" + ag.issue + " completado (coordinator)</b>\nPR mergeada · " + escHtml(ag.slug));
             }
             emitEvent({ type: "completed", issue: ag.issue, result: "merged", detected_by: "coordinator" });
         } else if (prStatus.status === "open") {
             const waitingEntry = Object.assign({}, ag, { status: "waiting", resultado: "pending_review" });
             plan.agentes.push(waitingEntry);
-            await notify("&#x23F3; <b>Agente #" + ag.issue + " — PR abierta (coordinator)</b>\nSlot liberado");
+            await throttledNotify(ag.issue, "pr_open", "&#x23F3; <b>Agente #" + ag.issue + " — PR abierta (coordinator)</b>\nSlot liberado");
         } else {
             // No PR — retry or incomplete
             const retryCount = ag._retry_count || 0;
@@ -1118,8 +1163,7 @@ async function reconcile() {
                 const launched = launchAgent(ag);
                 if (ag._pid) savePlan(plan);
 
-                await notify(
-                    "&#x1F504; <b>Agente #" + ag.issue + " relanzado (intento " + ag._retry_count + "/" + MAX_RETRIES + ")</b>\n" +
+                await throttledNotify(ag.issue, "relaunched", "&#x1F504; <b>Agente #" + ag.issue + " relanzado (intento " + ag._retry_count + "/" + MAX_RETRIES + ")</b>\n" +
                     escHtml(ag.slug) + " · " + (launched ? "spawn ok" : "spawn fallido")
                 );
                 emitEvent({ type: "relaunched", issue: ag.issue, retry: ag._retry_count });
