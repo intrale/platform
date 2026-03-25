@@ -292,4 +292,38 @@ class DeliveryOrderDetailViewModelTest {
         assertTrue(viewModel.state.notDeliveredSuccess)
         assertEquals("Perro agresivo en la puerta", fakeUpdate.lastReason)
     }
+
+    @Test
+    fun `loadDetail exitoso muestra datos de ubicacion con direccion`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+
+        assertEquals(DeliveryOrderDetailStatus.Loaded, viewModel.state.status)
+        assertNotNull(viewModel.state.detail?.address)
+        assertEquals("Av. Siempre Viva 742", viewModel.state.detail?.address)
+        assertEquals("Pizzeria Roma", viewModel.state.detail?.businessName)
+        assertEquals("Centro", viewModel.state.detail?.neighborhood)
+        assertEquals("2.5 km", viewModel.state.detail?.distance)
+    }
+
+    @Test
+    fun `loadDetail con pedido sin direccion muestra detalle sin address`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val detailSinDireccion = sampleDetail.copy(address = null, addressNotes = null)
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(Result.success(detailSinDireccion)),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+
+        assertEquals(DeliveryOrderDetailStatus.Loaded, viewModel.state.status)
+        assertNull(viewModel.state.detail?.address)
+        assertNotNull(viewModel.state.detail?.businessName)
+    }
 }
