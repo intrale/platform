@@ -1,7 +1,9 @@
 package ui.sc.delivery
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,9 +13,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -41,6 +46,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import ui.util.rememberOpenExternalMap
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -107,6 +116,7 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
         val backLabel = Txt(MessageKey.delivery_order_detail_back)
         val errorText = Txt(MessageKey.delivery_order_detail_error)
         val retryText = Txt(MessageKey.delivery_order_detail_retry)
+        val noMapAppMessage = Txt(MessageKey.delivery_order_detail_location_no_address)
 
         if (state.showDeliveredConfirmDialog) {
             DeliveredConfirmDialog(
@@ -181,6 +191,11 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                                 onConfirmDelivered = { viewModel.showDeliveredConfirm() },
                                 onNotDelivered = { viewModel.showNotDeliveredSheet() }
                             )
+                            LocationSection(detail) {
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(noMapAppMessage)
+                                }
+                            }
                             BusinessSection(detail)
                             CustomerSection(detail)
                             ItemsSection(detail.items)
@@ -402,6 +417,136 @@ private fun NotDeliveredBottomSheet(
             IntralePrimaryButton(
                 text = Txt(MessageKey.delivery_order_confirm_yes),
                 onClick = onConfirm,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> Unit) {
+    val sectionTitle = Txt(MessageKey.delivery_order_detail_section_location)
+    val originLabel = Txt(MessageKey.delivery_order_detail_location_origin)
+    val destinationLabel = Txt(MessageKey.delivery_order_detail_location_destination)
+    val openMapLabel = Txt(MessageKey.delivery_order_detail_location_open_map)
+    val noAddressLabel = Txt(MessageKey.delivery_order_detail_location_no_address)
+    val mapPlaceholderLabel = Txt(MessageKey.delivery_order_detail_location_map_placeholder)
+
+    val openExternalMap = rememberOpenExternalMap()
+
+    SectionCard(title = sectionTitle) {
+        // Placeholder de mapa
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .semantics { contentDescription = mapPlaceholderLabel },
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Place,
+                    contentDescription = null,
+                    modifier = Modifier.size(32.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = mapPlaceholderLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = MaterialTheme.spacing.x1))
+
+        // Origen (comercio)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(
+                imageVector = Icons.Default.LocationOn,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = originLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = detail.businessName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = detail.neighborhood,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Destino (cliente)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(
+                imageVector = Icons.Default.Place,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.error
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = destinationLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (detail.address != null) {
+                    Text(
+                        text = detail.address,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    detail.distance?.let { distance ->
+                        Text(
+                            text = distance,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    Text(
+                        text = noAddressLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // Botón "Abrir en mapa"
+        if (detail.address != null) {
+            IntralePrimaryButton(
+                text = openMapLabel,
+                onClick = {
+                    val opened = openExternalMap(detail.address)
+                    if (!opened) {
+                        onOpenMapFailed()
+                    }
+                },
                 modifier = Modifier.fillMaxWidth()
             )
         }
