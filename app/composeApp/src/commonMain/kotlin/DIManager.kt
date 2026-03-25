@@ -44,9 +44,6 @@ import asdo.delivery.ToDoGetDeliveryNotifications
 import asdo.delivery.ToDoMarkAllDeliveryNotificationsRead
 import asdo.delivery.ToDoMarkDeliveryNotificationRead
 import asdo.delivery.DoGetActiveDeliveryOrders
-import asdo.delivery.DoGetDeliveryNotifications
-import asdo.delivery.DoMarkDeliveryNotificationRead
-import asdo.delivery.DoMarkAllDeliveryNotificationsRead
 import asdo.delivery.DoGetDeliveryAvailability
 import asdo.delivery.DoGetDeliveryOrderDetail
 import asdo.delivery.DoGetDeliveryOrdersSummary
@@ -56,9 +53,6 @@ import asdo.delivery.DoUpdateDeliveryOrderStatus
 import asdo.delivery.DoUpdateDeliveryProfile
 import asdo.delivery.ToDoDeliveryStateChange
 import asdo.delivery.ToDoGetActiveDeliveryOrders
-import asdo.delivery.ToDoGetDeliveryNotifications
-import asdo.delivery.ToDoMarkDeliveryNotificationRead
-import asdo.delivery.ToDoMarkAllDeliveryNotificationsRead
 import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryOrderDetail
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
@@ -341,7 +335,6 @@ public const val DELIVERY_DASHBOARD = "deliveryDashboard"
 public const val DELIVERY_NOTIFICATIONS = "deliveryNotifications"
 public const val DELIVERY_PROFILE = "deliveryProfile"
 public const val DELIVERY_ORDER_DETAIL = "deliveryOrderDetail"
-public const val DELIVERY_NOTIFICATIONS = "deliveryNotifications"
 public const val SELECT_SIGNUP_PROFILE = "selectSignupProfile"
 public const val CHANGE_PASSWORD = "changePassword"
 public const val PASSWORD_RECOVERY = "passwordRecovery"
