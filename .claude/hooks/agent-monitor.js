@@ -1118,7 +1118,7 @@ function moveToCompleted(plan, issueNumber) {
                     finished.motivo = "Recovery por agent-doctor: " + doctorResult.recovery.details;
                     plan._completed.push(finished);
                     log("moveToCompleted: #" + issueNumber + " -> _completed (recovered by doctor)");
-                    notify("\uD83C\uDFE5 <b>Doctor: recovery exitoso #" + issueNumber + "</b>\n" + doctorResult.recovery.details, true);
+                    log("Doctor: recovery exitoso #" + issueNumber + " — " + doctorResult.recovery.details);
                     try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor"); } catch(e2) {}
                     return;
                 }

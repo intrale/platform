@@ -1150,7 +1150,7 @@ async function reconcile() {
                         if (doctorResult.recovery.success && !doctorResult.shouldRelaunch) {
                             plan._completed.push(buildCompletedEntry(ag, null, "completed"));
                             savePlan(plan);
-                            await notify(agentDoctor.buildDiagnosisNotification(ag, doctorResult.diagnosis, doctorResult.recovery));
+                            log("Doctor: recovery exitoso #" + ag.issue + " — no notificar Telegram (anti-spam)");
                             continue;
                         }
                         ag.prompt = agentDoctor.buildDoctorRetryPrompt(ag.prompt || generateDefaultPrompt(ag.issue, ag.slug), ag, doctorResult.diagnosis);
