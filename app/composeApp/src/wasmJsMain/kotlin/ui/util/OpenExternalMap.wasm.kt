@@ -9,12 +9,15 @@ import org.kodein.log.newLogger
 private object OpenExternalMapLogger
 private val logger = LoggerFactory.default.newLogger<OpenExternalMapLogger>()
 
+private fun encodeURIComponent(value: String): String =
+    js("encodeURIComponent(value)")
+
 @Composable
 actual fun rememberOpenExternalMap(): (address: String) -> Boolean {
     return remember {
         { address: String ->
             try {
-                val encoded = js("encodeURIComponent(address)") as String
+                val encoded = encodeURIComponent(address)
                 window.open("https://maps.google.com/maps?q=$encoded", "_blank")
                 logger.info { "Mapa abierto en navegador para direccion: $address" }
                 true
