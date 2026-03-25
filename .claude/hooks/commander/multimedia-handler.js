@@ -355,12 +355,11 @@ async function handleVoiceOrAudio(msg) {
             return;
         }
 
-        await _tgApi.sendMessage("🎤 <i>" + _tgApi.escHtml(transcription.substring(0, 300)) + (transcription.length > 300 ? "…" : "") + "</i>");
         const result = await _cmdContext.executeClaudeQueued(transcription, [], { useSession: true, skill: null });
         const claudeResponse = extractClaudeResponse(result);
 
-        await _cmdContext.sendResult("🎤 Voz", result);
-
+        // Si es voice y TTS disponible: responder SOLO con audio (sin eco, sin texto, sin imagen)
+        // Asumimos que si el usuario envía audio es porque no puede mirar texto.
         if (isVoice && result.code === 0 && claudeResponse && (_config.elevenlabsApiKey || _config.openaiApiKey)) {
             try {
                 _log("Generando TTS para respuesta (" + claudeResponse.length + " chars)");
@@ -368,8 +367,12 @@ async function handleVoiceOrAudio(msg) {
                 await _tgApi.sendVoiceMessage(audioBuffer);
                 _log("TTS enviado: " + audioBuffer.length + " bytes");
             } catch (ttsErr) {
-                _log("Error generando TTS: " + ttsErr.message);
+                _log("Error generando TTS, fallback a texto: " + ttsErr.message);
+                await _cmdContext.sendResult("🎤 Voz", result);
             }
+        } else {
+            // Sin TTS disponible o error: enviar respuesta como texto
+            await _cmdContext.sendResult("🎤 Voz", result);
         }
 
     } catch (e) {
