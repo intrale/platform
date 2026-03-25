@@ -491,6 +491,7 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_detail_location_open_map to "Abrir en mapa",
     MessageKey.delivery_order_detail_location_no_address to "Direccion no disponible",
     MessageKey.delivery_order_detail_location_map_placeholder to "Vista de mapa (proximamente)",
+    MessageKey.delivery_order_detail_no_maps_app to "No se encontro una app de mapas en el dispositivo",
     MessageKey.delivery_order_action_not_delivered to "No pude entregar",
     MessageKey.delivery_order_confirm_title to "Confirmar entrega",
     MessageKey.delivery_order_confirm_message to "¿Confirmar la entrega del pedido {label}?",

@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -116,7 +117,7 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
         val backLabel = Txt(MessageKey.delivery_order_detail_back)
         val errorText = Txt(MessageKey.delivery_order_detail_error)
         val retryText = Txt(MessageKey.delivery_order_detail_retry)
-        val noMapAppMessage = Txt(MessageKey.delivery_order_detail_location_no_address)
+        val noMapAppMessage = Txt(MessageKey.delivery_order_detail_no_maps_app)
 
         if (state.showDeliveredConfirmDialog) {
             DeliveredConfirmDialog(
@@ -191,9 +192,11 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                                 onConfirmDelivered = { viewModel.showDeliveredConfirm() },
                                 onNotDelivered = { viewModel.showNotDeliveredSheet() }
                             )
-                            LocationSection(detail) {
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(noMapAppMessage)
+                            if (detail.address != null) {
+                                LocationSection(detail) {
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(noMapAppMessage)
+                                    }
                                 }
                             }
                             BusinessSection(detail)
@@ -439,7 +442,7 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(120.dp)
+                .height(160.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .semantics { contentDescription = mapPlaceholderLabel },
@@ -473,7 +476,7 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
         ) {
             Icon(
                 imageVector = Icons.Default.LocationOn,
-                contentDescription = null,
+                contentDescription = originLabel,
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.primary
             )
@@ -504,7 +507,7 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
         ) {
             Icon(
                 imageVector = Icons.Default.Place,
-                contentDescription = null,
+                contentDescription = destinationLabel,
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.error
             )
@@ -541,6 +544,7 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
         if (detail.address != null) {
             IntralePrimaryButton(
                 text = openMapLabel,
+                leadingIcon = Icons.Default.Map,
                 onClick = {
                     val opened = openExternalMap(detail.address)
                     if (!opened) {

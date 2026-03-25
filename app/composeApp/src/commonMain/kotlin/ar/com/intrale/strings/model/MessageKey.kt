@@ -466,6 +466,7 @@ enum class MessageKey {
     delivery_order_detail_location_open_map,
     delivery_order_detail_location_no_address,
     delivery_order_detail_location_map_placeholder,
+    delivery_order_detail_no_maps_app,
     delivery_order_action_not_delivered,
     delivery_order_confirm_title,
     delivery_order_confirm_message,
