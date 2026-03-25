@@ -220,11 +220,13 @@ private fun DeliveryNotificationCard(
                     }
                 }
                 if (!notification.isRead) {
+                    val unreadLabel = Txt(MessageKey.delivery_notifications_unread_indicator)
                     Box(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.primary)
+                            .semantics { contentDescription = unreadLabel }
                     )
                 }
             }
