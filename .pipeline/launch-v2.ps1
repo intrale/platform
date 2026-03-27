@@ -53,7 +53,7 @@ Write-Host "  Servicios: telegram, github, drive"
 Write-Host "  Watchdog:  cada 2 min"
 Write-Host ""
 Write-Host "Comandos utiles:"
-Write-Host "  Estado:   ls .pipeline/desarrollo/*/pendiente/"
-Write-Host "  Pausar:   touch .pipeline/.paused"
-Write-Host "  Reanudar: rm .pipeline/.paused"
-Write-Host "  Detener:  taskkill /F /PID (cat .pipeline/pulpo.pid)"
+Write-Host '  Estado:   ls .pipeline\desarrollo\*\pendiente\'
+Write-Host '  Pausar:   New-Item .pipeline\.paused'
+Write-Host '  Reanudar: Remove-Item .pipeline\.paused'
+Write-Host '  Detener:  taskkill /F /PID $((Get-Content .pipeline\pulpo.pid))'
