@@ -1,54 +1,5 @@
 {
   "hooks": {
-    "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/notify-telegram.js",
-            "timeout": 15000
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/stop-notify.js",
-            "timeout": 15000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-console-response.js",
-            "timeout": 10000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/agent-concurrency-check.js",
-            "timeout": 20000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/scrum-monitor-bg.js",
-            "timeout": 60000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/pr-cleanup.js",
-            "timeout": 120000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/auto-review-bg.js",
-            "timeout": 120000
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -57,93 +8,18 @@
             "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/branch-guard.js",
             "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/worktree-guard.js",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/delivery-gate.js",
-            "timeout": 30000
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/worktree-guard.js",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/worktree-guard.js",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/permission-gate.js",
-            "timeout": 1830000
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-git-push.js",
-            "timeout": 10000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-issue-close.js",
-            "timeout": 10000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-merge-qa.js",
-            "timeout": 15000
-          }
-        ]
-      },
-      {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/post-tool-orchestrator.js",
-            "timeout": 10000
-          },
-          {
-            "type": "command",
             "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/activity-logger.js",
             "timeout": 10000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/commander-launcher.js",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "node /c/Workspaces/Intrale/platform/.claude/hooks/health-check.js",
-            "timeout": 15000
           }
         ]
       }

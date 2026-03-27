@@ -1,0 +1,106 @@
+#!/usr/bin/env node
+// =============================================================================
+// Servicio Telegram — Fire-and-forget message sender
+// Procesa cola de servicios/telegram/pendiente/
+// =============================================================================
+
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+
+const PIPELINE = path.resolve(__dirname);
+const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
+const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
+const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
+const LISTO = path.join(QUEUE_DIR, 'listo');
+
+const TELEGRAM_CONFIG = path.join(path.resolve(__dirname, '..'), '.claude', 'hooks', 'telegram-config.json');
+let BOT_TOKEN, CHAT_ID;
+
+try {
+  const config = JSON.parse(fs.readFileSync(TELEGRAM_CONFIG, 'utf8'));
+  BOT_TOKEN = config.bot_token;
+  CHAT_ID = config.chat_id;
+} catch (e) {
+  console.error('Error leyendo telegram-config.json:', e.message);
+  process.exit(1);
+}
+
+function log(msg) {
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  console.log(`[${ts}] [svc-telegram] ${msg}`);
+}
+
+function telegramSend(method, params) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({ chat_id: CHAT_ID, ...params });
+    const options = {
+      hostname: 'api.telegram.org',
+      path: `/bot${BOT_TOKEN}/${method}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+    };
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', (c) => body += c);
+      res.on('end', () => resolve(JSON.parse(body)));
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')); });
+    req.write(data);
+    req.end();
+  });
+}
+
+function listWorkFiles(dir) {
+  try {
+    return fs.readdirSync(dir)
+      .filter(f => !f.startsWith('.') && f.endsWith('.json'))
+      .map(f => ({ name: f, path: path.join(dir, f) }));
+  } catch { return []; }
+}
+
+async function processQueue() {
+  const files = listWorkFiles(PENDIENTE);
+  if (files.length === 0) return;
+
+  for (const file of files) {
+    const trabajandoPath = path.join(TRABAJANDO, file.name);
+    try {
+      fs.renameSync(file.path, trabajandoPath);
+    } catch { continue; } // otro proceso lo tomó
+
+    try {
+      const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+
+      if (data.text) {
+        await telegramSend('sendMessage', { text: data.text, parse_mode: data.parse_mode || 'Markdown' });
+      } else if (data.document) {
+        // Para documentos se usa multipart, simplificamos con texto
+        await telegramSend('sendMessage', { text: `📎 Documento: ${data.document}` });
+      }
+
+      const listoPath = path.join(LISTO, file.name);
+      fs.renameSync(trabajandoPath, listoPath);
+      log(`Enviado: ${file.name}`);
+    } catch (e) {
+      log(`Error procesando ${file.name}: ${e.message}`);
+      // Devolver a pendiente para reintento
+      try { fs.renameSync(trabajandoPath, file.path); } catch {}
+    }
+  }
+}
+
+// Main loop
+async function main() {
+  log('Servicio Telegram iniciado');
+  while (true) {
+    try { await processQueue(); } catch (e) { log(`Error: ${e.message}`); }
+    await new Promise(r => setTimeout(r, 5000)); // Poll cada 5 seg
+  }
+}
+
+fs.writeFileSync(path.join(PIPELINE, 'svc-telegram.pid'), String(process.pid));
+process.on('SIGINT', () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));
+main();
