@@ -1,0 +1,86 @@
+# Pipeline V2 — Configuración del Pulpo
+# Fuente de verdad para pipelines, fases, concurrencia e intake.
+
+pipelines:
+  definicion:
+    fases: [analisis, criterios, sizing]
+    fase_rechazo: null  # No hay rechazo en definición (se escala al usuario)
+    skills_por_fase:
+      analisis: [guru, security]
+      criterios: [po, ux]
+      sizing: [planner]
+
+  desarrollo:
+    fases: [validacion, dev, build, verificacion, aprobacion, entrega]
+    fase_rechazo: dev   # Los rechazos siempre vuelven a dev
+    skills_por_fase:
+      validacion: [po, ux, guru]
+      dev: [backend-dev, android-dev, web-dev]  # Uno solo por historia, según labels
+      build: [build]                             # Script puro, no Claude
+      verificacion: [tester, security, qa]
+      aprobacion: [review, po, ux]
+      entrega: [delivery]
+
+# Concurrencia máxima por rol (instancias simultáneas de Claude)
+concurrencia:
+  # Definición — no modifican código
+  po: 2
+  ux: 2
+  guru: 2
+  security: 2
+  planner: 1             # Necesita ver panorama completo
+
+  # Desarrollo — worktree por issue
+  backend-dev: 3
+  android-dev: 2
+  web-dev: 2
+
+  # Verificación
+  tester: 2
+  qa: 1                  # Limitado por hardware (emulador + video)
+  review: 2
+
+  # Entrega — secuencial
+  build: 1               # Gradle consume mucha CPU/RAM
+  delivery: 1            # Merge a main debe ser secuencial
+
+  # Commander — singleton
+  commander: 1
+
+# Intake: qué labels de GitHub disparan la entrada a cada pipeline
+intake:
+  definicion:
+    label: "needs-definition"
+    fase_entrada: analisis
+  desarrollo:
+    label: "ready"
+    fase_entrada: validacion
+
+# Mapeo de labels de GitHub a skill de desarrollo
+dev_skill_mapping:
+  "area:backend": "backend-dev"
+  "app:client": "android-dev"
+  "app:business": "android-dev"
+  "app:delivery": "android-dev"
+  "area:web": "web-dev"
+  default: "backend-dev"   # Si no tiene label de área
+
+# Prioridad de intake (orden de procesamiento)
+prioridad_labels:
+  - "priority:critical"
+  - "priority:high"
+  - "priority:medium"    # Default si no tiene label
+  - "priority:low"
+
+# Timeouts
+timeouts:
+  poll_interval_seconds: 30       # Frecuencia de barrido/lanzamiento (local)
+  intake_interval_seconds: 300    # Frecuencia de intake (GitHub API, 5 min)
+  orphan_timeout_minutes: 10      # Archivo en trabajando/ sin proceso → vuelve a pendiente
+  build_timeout_minutes: 15       # Timeout del build de Gradle
+
+# GitHub
+github:
+  owner: "intrale"
+  repo: "platform"
+  project_number: 2               # GitHub Project V2
