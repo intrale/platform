@@ -1007,14 +1007,16 @@ REGLAS:
 
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
-        // Spawn async (como V1) — evita problemas de spawnSync + cmd.exe + stdin largo
+        // Enviar mensaje de "procesando" inmediato para que el usuario sepa
+        sendTelegram('🔄 Recibido, estoy trabajando en tu pedido...');
+
+        // Spawn async (como V1) — sin max-turns, con timeout manual
         respuesta = await new Promise((resolve, reject) => {
           const readline = require('readline');
           const args = [
             '-p',
             '--output-format', 'stream-json',
             '--verbose',
-            '--max-turns', '20',
             '--permission-mode', 'bypassPermissions'
           ];
 
@@ -1034,6 +1036,8 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
           let lastText = '';
           let finalResult = null;
+          let toolCount = 0;
+          let progressSent = false;
 
           // Parsear stream-json línea por línea
           const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
@@ -1045,6 +1049,16 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
                 const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
                 for (const b of blocks) {
                   if (b.type === 'text' && b.text) lastText = b.text;
+                  if (b.type === 'tool_use') {
+                    toolCount++;
+                    const desc = b.input?.description || b.input?.command?.slice(0, 60) || b.name || '';
+                    log('commander', `  [tool ${toolCount}] ${b.name}: ${desc.slice(0, 80)}`);
+                    // Notificar progreso cada 5 tools
+                    if (toolCount === 5 && !progressSent) {
+                      progressSent = true;
+                      sendTelegram('⏳ Sigo revisando, ya ejecuté varias verificaciones...');
+                    }
+                  }
                 }
               } else if (evt.type === 'result') {
                 finalResult = evt;
@@ -1062,16 +1076,13 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
           proc.on('exit', (code) => {
             clearTimeout(timer);
-            // Extraer resultado (mismo patrón que V1)
+            log('commander', `Claude terminó (code=${code}, tools=${toolCount}, lastText=${(lastText||'').length}chars)`);
             if (finalResult?.result) {
               resolve(finalResult.result);
-            } else if (finalResult?.subtype === 'error_max_turns') {
-              log('commander', `max_turns agotado (${finalResult.num_turns} turns, $${finalResult.total_cost_usd?.toFixed(2)})`);
-              resolve(lastText || '⏱️ La consulta fue compleja. Intentá con algo más específico.');
             } else if (lastText) {
               resolve(lastText);
             } else {
-              log('commander', `Claude exit ${code}, stderr: ${stderr.slice(0, 200)}`);
+              log('commander', `stderr: ${stderr.slice(0, 300)}`);
               resolve(null);
             }
           });
