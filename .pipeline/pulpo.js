@@ -16,6 +16,19 @@ const LOG_DIR = path.join(PIPELINE, 'logs');
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
+// Rate limiting para GitHub API (máx 1 call cada 2 segundos)
+let lastGhCallTime = 0;
+function ghThrottle() {
+  const now = Date.now();
+  const wait = 2000 - (now - lastGhCallTime);
+  if (wait > 0) {
+    // Busy-wait síncrono (las alternativas requieren async y esto es llamado desde contextos sync)
+    const end = Date.now() + wait;
+    while (Date.now() < end) { /* throttle */ }
+  }
+  lastGhCallTime = Date.now();
+}
+
 // --- Utilidades ---
 
 function log(brazo, msg) {
@@ -102,6 +115,14 @@ function processKey(skill, issue) { return `${skill}:${issue}`; }
 
 function isProcessAlive(pid) {
   try {
+    // En Windows, process.kill(pid, 0) no es confiable — usar tasklist
+    if (process.platform === 'win32') {
+      const { spawnSync } = require('child_process');
+      const result = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], {
+        encoding: 'utf8', timeout: 5000, windowsHide: true
+      });
+      return (result.stdout || '').includes(`"${pid}"`);
+    }
     process.kill(pid, 0);
     return true;
   } catch { return false; }
@@ -223,6 +244,21 @@ function brazoBarrido(config) {
         } else {
           // Última fase completada — historia terminada
           log('barrido', `#${issue} COMPLETADO — salió del pipeline ${pipelineName}`);
+
+          // Cleanup: eliminar worktree del issue si existe
+          try {
+            const wtList = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 10000 });
+            const wtPattern = `platform.agent-${issue}-`;
+            for (const line of wtList.split('\n')) {
+              if (line.startsWith('worktree ') && line.includes(wtPattern)) {
+                const wtPath = line.replace('worktree ', '').trim();
+                execSync(`git worktree remove "${wtPath}" --force`, { cwd: ROOT, timeout: 30000 });
+                log('barrido', `Worktree eliminado: ${wtPath}`);
+              }
+            }
+          } catch (e) {
+            log('barrido', `Error limpiando worktree de #${issue}: ${e.message}`);
+          }
         }
 
         // Mover todos los archivos evaluados a procesado/
@@ -241,6 +277,7 @@ function determinarDevSkill(issue, config) {
   // Buscar en archivos procesados de fases anteriores si ya se determinó
   // Por ahora: intentar leer labels del issue de GitHub
   try {
+    ghThrottle();
     const result = execSync(
       `"${GH_BIN}" issue view ${issue} --json labels --jq ".labels[].name"`,
       { cwd: ROOT, encoding: 'utf8', timeout: 10000 }
@@ -421,11 +458,17 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   const child = spawn('bash', ['-c', `./gradlew check 2>&1`], {
     cwd: buildCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-    timeout
+    detached: true
   });
 
   child.unref();
+
+  // Timeout real con setTimeout + kill (spawn no soporta timeout option)
+  const buildTimer = setTimeout(() => {
+    log('build', `#${issue} TIMEOUT (${timeout / 60000}min) — matando proceso`);
+    try { process.kill(-child.pid); } catch {}
+    try { child.kill('SIGKILL'); } catch {}
+  }, timeout);
 
   activeProcesses.set(processKey('build', issue), {
     pid: child.pid,
@@ -440,6 +483,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   child.stderr.on('data', (d) => { output += d; });
 
   child.on('exit', (code) => {
+    clearTimeout(buildTimer);
     const logFile = path.join(LOG_DIR, `build-${issue}.log`);
     fs.writeFileSync(logFile, output);
 
@@ -470,6 +514,9 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 // BRAZO 3: HUÉRFANOS — Detecta archivos trabados en trabajando/
 // =============================================================================
 
+const orphanRetries = new Map(); // key: "pipeline/fase/filename" → count
+const MAX_ORPHAN_RETRIES = 3;
+
 function brazoHuerfanos(config) {
   const timeoutMinutes = config.timeouts?.orphan_timeout_minutes || 10;
 
@@ -477,6 +524,7 @@ function brazoHuerfanos(config) {
     for (const fase of pipelineConfig.fases) {
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
+      const listoDir = path.join(fasePath(pipelineName, fase), 'listo');
       const archivos = listWorkFiles(trabajandoDir);
 
       for (const archivo of archivos) {
@@ -491,22 +539,323 @@ function brazoHuerfanos(config) {
         const info = activeProcesses.get(key);
         if (info && isProcessAlive(info.pid)) continue;
 
-        // Proceso muerto o desconocido + timeout → devolver a pendiente
-        log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min en trabajando/ sin proceso → pendiente/`);
-        try {
-          moveFile(archivo.path, pendienteDir);
-          activeProcesses.delete(key);
-        } catch (e) {
-          log('huerfanos', `Error devolviendo ${archivo.name}: ${e.message}`);
+        const retryKey = `${pipelineName}/${fase}/${archivo.name}`;
+        const retries = (orphanRetries.get(retryKey) || 0) + 1;
+        orphanRetries.set(retryKey, retries);
+
+        if (retries > MAX_ORPHAN_RETRIES) {
+          // Demasiados reintentos → marcar como rechazado y mover a listo
+          log('huerfanos', `${archivo.name} excedió ${MAX_ORPHAN_RETRIES} reintentos → rechazado`);
+          try {
+            const data = readYaml(archivo.path);
+            data.resultado = 'rechazado';
+            data.motivo = `Huérfano tras ${MAX_ORPHAN_RETRIES} reintentos — proceso muere repetidamente`;
+            writeYaml(archivo.path, data);
+            moveFile(archivo.path, listoDir);
+            orphanRetries.delete(retryKey);
+          } catch (e) {
+            log('huerfanos', `Error rechazando ${archivo.name}: ${e.message}`);
+          }
+        } else {
+          // Devolver a pendiente para reintento
+          log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min sin proceso → pendiente/ (intento ${retries}/${MAX_ORPHAN_RETRIES})`);
+          try {
+            moveFile(archivo.path, pendienteDir);
+          } catch (e) {
+            log('huerfanos', `Error devolviendo ${archivo.name}: ${e.message}`);
+          }
         }
+        activeProcesses.delete(key);
       }
     }
   }
 }
 
 // =============================================================================
-// BRAZO 5: COMMANDER — Procesa mensajes de Telegram
+// BRAZO 5: COMMANDER — Procesa mensajes de Telegram con handlers nativos
 // =============================================================================
+
+// --- Sesión conversacional persistente ---
+
+const SESSION_FILE = path.join(PIPELINE, 'commander-session.json');
+
+function loadSession() {
+  try {
+    return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+  } catch {
+    return { context: null, lastCommand: null, lastTimestamp: null, pendingAction: null };
+  }
+}
+
+function saveSession(session) {
+  fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
+}
+
+// --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
+
+function cmdStatus(config) {
+  const lines = ['📊 *Estado del Pipeline*\n'];
+
+  for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
+    lines.push(`*${pipelineName.toUpperCase()}*`);
+    for (const fase of pipelineConfig.fases) {
+      const base = fasePath(pipelineName, fase);
+      const p = listWorkFiles(path.join(base, 'pendiente')).length;
+      const t = listWorkFiles(path.join(base, 'trabajando')).length;
+      const l = listWorkFiles(path.join(base, 'listo')).length;
+      if (p + t + l === 0) continue;
+      lines.push(`  ${fase}: 📋${p} ⚙️${t} ✅${l}`);
+
+      // Detalle por issue
+      const allFiles = [
+        ...listWorkFiles(path.join(base, 'pendiente')).map(f => ({ ...f, estado: '📋' })),
+        ...listWorkFiles(path.join(base, 'trabajando')).map(f => ({ ...f, estado: '⚙️' })),
+        ...listWorkFiles(path.join(base, 'listo')).map(f => ({ ...f, estado: '✅' }))
+      ];
+      const byIssue = {};
+      for (const f of allFiles) {
+        const iss = issueFromFile(f.name);
+        if (!byIssue[iss]) byIssue[iss] = [];
+        byIssue[iss].push(`${skillFromFile(f.name)}${f.estado}`);
+      }
+      for (const [iss, skills] of Object.entries(byIssue)) {
+        lines.push(`    #${iss}: ${skills.join(' ')}`);
+      }
+    }
+    lines.push('');
+  }
+
+  // Agentes activos
+  const agentes = [];
+  for (const [key, info] of activeProcesses) {
+    if (isProcessAlive(info.pid)) {
+      const age = Math.round((Date.now() - info.startTime) / 60000);
+      agentes.push(`  ${key} (${age}min, pid:${info.pid})`);
+    }
+  }
+  if (agentes.length > 0) {
+    lines.push('*Agentes activos*');
+    lines.push(...agentes);
+  } else {
+    lines.push('*Agentes activos:* ninguno');
+  }
+
+  // Servicios
+  lines.push('\n*Servicios*');
+  for (const svc of ['telegram', 'github', 'drive', 'commander']) {
+    const svcDir = path.join(PIPELINE, 'servicios', svc, 'pendiente');
+    const count = listWorkFiles(svcDir).length;
+    if (count > 0) lines.push(`  ${svc}: ${count} pendientes`);
+  }
+
+  // Estado pausa
+  if (paused) lines.push('\n⏸️ *PULPO PAUSADO*');
+
+  return lines.join('\n');
+}
+
+function cmdActividad(args) {
+  const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
+  let lines = [];
+  try {
+    lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n');
+  } catch { return '📭 Sin historial de actividad'; }
+
+  // Parsear filtro
+  let filtro = 10;
+  let issueFilter = null;
+
+  if (args) {
+    const minuteMatch = args.match(/(\d+)m/);
+    const issueMatch = args.match(/#?(\d+)/);
+    if (minuteMatch) {
+      const mins = parseInt(minuteMatch[1]);
+      const cutoff = new Date(Date.now() - mins * 60000).toISOString();
+      lines = lines.filter(l => {
+        try { return JSON.parse(l).timestamp >= cutoff; } catch { return false; }
+      });
+      filtro = lines.length;
+    } else if (issueMatch) {
+      issueFilter = issueMatch[1];
+      lines = lines.filter(l => l.includes(issueFilter));
+      filtro = lines.length;
+    }
+  }
+
+  const recientes = lines.slice(-filtro);
+  if (recientes.length === 0) return '📭 Sin actividad reciente';
+
+  const result = ['📋 *Actividad reciente*\n'];
+  for (const line of recientes) {
+    try {
+      const entry = JSON.parse(line);
+      const dir = entry.direction === 'in' ? '→' : '←';
+      const ts = entry.timestamp?.slice(11, 16) || '??:??';
+      const from = entry.from ? `[${entry.from}]` : '';
+      const text = (entry.text || '').slice(0, 80);
+      result.push(`${ts} ${dir} ${from} ${text}`);
+    } catch {}
+  }
+  return result.join('\n');
+}
+
+function cmdIntake(args, config) {
+  if (args) {
+    // Intake de un issue específico
+    const issueNum = args.replace('#', '').trim();
+    if (issueExistsInPipeline(issueNum)) {
+      return `⚠️ #${issueNum} ya está en el pipeline`;
+    }
+
+    // Determinar pipeline de entrada (por defecto desarrollo/validacion)
+    const pendienteDir = path.join(fasePath('desarrollo', 'validacion'), 'pendiente');
+    const skills = config.pipelines.desarrollo.skills_por_fase.validacion || [];
+    for (const skill of skills) {
+      const filePath = path.join(pendienteDir, `${issueNum}.${skill}`);
+      writeYaml(filePath, { issue: parseInt(issueNum), fase: 'validacion', pipeline: 'desarrollo' });
+    }
+    log('intake', `#${issueNum} ingresado manualmente vía /intake`);
+    return `✅ #${issueNum} ingresado al pipeline → desarrollo/validacion (${skills.join(', ')})`;
+  }
+
+  // Forzar intake inmediato (resetear timer)
+  lastIntakeTime = 0;
+  brazoIntake(config);
+  return '✅ Intake ejecutado — revisé GitHub por issues pendientes';
+}
+
+function cmdPausar() {
+  fs.writeFileSync(PAUSE_FILE, new Date().toISOString());
+  paused = true;
+  return '⏸️ Pulpo PAUSADO. Usar /reanudar para continuar.';
+}
+
+function cmdReanudar() {
+  try { fs.unlinkSync(PAUSE_FILE); } catch {}
+  paused = false;
+  return '▶️ Pulpo REANUDADO. Procesamiento activo.';
+}
+
+function cmdCostos() {
+  // Leer logs de agentes para estimar actividad
+  const logFiles = [];
+  try {
+    logFiles.push(...fs.readdirSync(LOG_DIR).filter(f => f.endsWith('.log') && !f.startsWith('.')));
+  } catch {}
+
+  if (logFiles.length === 0) return '📊 Sin datos de costos disponibles';
+
+  const lines = ['💰 *Resumen de actividad (por logs)*\n'];
+  const skillStats = {};
+
+  for (const f of logFiles) {
+    const match = f.match(/^(\d+)-(.+)\.log$/);
+    if (!match) continue;
+    const [, issue, skill] = match;
+    const stat = fs.statSync(path.join(LOG_DIR, f));
+    const sizeKb = Math.round(stat.size / 1024);
+    if (!skillStats[skill]) skillStats[skill] = { count: 0, totalKb: 0 };
+    skillStats[skill].count++;
+    skillStats[skill].totalKb += sizeKb;
+  }
+
+  for (const [skill, stats] of Object.entries(skillStats).sort((a, b) => b[1].totalKb - a[1].totalKb)) {
+    lines.push(`  ${skill}: ${stats.count} ejecuciones, ${stats.totalKb}KB output`);
+  }
+
+  lines.push(`\n*Total:* ${logFiles.length} logs en .pipeline/logs/`);
+  return lines.join('\n');
+}
+
+function cmdProponer(args, config) {
+  const count = parseInt(args) || 3;
+
+  // Lanzar agente propositor como proceso async (fire-and-forget)
+  const propositorPrompt = `Analizá el backlog de GitHub, el estado actual del código y la deuda técnica del proyecto Intrale.
+Generá ${count} propuestas de historias nuevas. Para cada una incluí:
+- Título conciso
+- Descripción de 2-3 oraciones
+- Área (backend/app/web)
+- Tamaño estimado (simple/medio/grande)
+- Justificación (por qué es importante)
+
+Usá: gh issue list --state open --json number,title,labels,body --limit 50
+Y: git log --oneline -20 para ver actividad reciente.
+
+Formato de respuesta: lista numerada, una propuesta por item.`;
+
+  try {
+    // Ejecutar Claude síncronamente (max 2 min) para obtener propuestas
+    const resultado = execSync(
+      `claude -p - --output-format text --max-turns 3`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 120000, input: propositorPrompt }
+    ).trim();
+
+    if (resultado) {
+      // Guardar propuestas en archivo para referencia
+      const proposalFile = path.join(PIPELINE, 'commander-proposals.json');
+      const proposals = { timestamp: new Date().toISOString(), count, text: resultado };
+      fs.writeFileSync(proposalFile, JSON.stringify(proposals, null, 2));
+
+      return `💡 *Propuestas de historias nuevas*\n\n${resultado}\n\n_Respondé "crear N" para crear una como issue, o "descartar" para ignorar._`;
+    }
+    return '⚠️ No pude generar propuestas. Intentá de nuevo.';
+  } catch (e) {
+    log('commander', `Error en proponer: ${e.message}`);
+    return '⚠️ Error generando propuestas: ' + e.message.slice(0, 100);
+  }
+}
+
+function cmdHelp() {
+  return `🤖 *Comandos del Pipeline V2*
+
+/status — Tablero completo del pipeline
+/actividad [filtro] — Timeline (ej: /actividad 30m, /actividad #732)
+/intake [issue] — Meter trabajo al pipeline
+/proponer — Proponer historias nuevas (vía Claude)
+/pausar — Pausar el Pulpo
+/reanudar — Reanudar el Pulpo
+/costos — Resumen de actividad/costos
+/help — Esta ayuda
+/stop — Apagar el Commander
+
+También podés escribir texto libre y te respondo con Claude.`;
+}
+
+/** Detectar si un mensaje es un comando y extraer nombre + argumentos */
+function parseCommand(text) {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+
+  // Comando explícito /xxx
+  const match = trimmed.match(/^\/(\w+)\s*(.*)?$/s);
+  if (match) return { cmd: match[1].toLowerCase(), args: (match[2] || '').trim() };
+
+  // Detección de intención por lenguaje natural (para audio transcripto)
+  const lower = trimmed.toLowerCase();
+  const intentPatterns = [
+    { pattern: /\b(status|estado|tablero|cómo est[áa]|que hay en el pipeline)\b/i, cmd: 'status' },
+    { pattern: /\b(pausar|paus[áa]|fren[áa]|par[áa] el pulpo)\b/i, cmd: 'pausar' },
+    { pattern: /\b(reanudar|reanud[áa]|segui|continu[áa]|arrancá)\b/i, cmd: 'reanudar' },
+    { pattern: /\b(actividad|qué pas[óo]|movimientos|timeline)\b/i, cmd: 'actividad' },
+    { pattern: /\b(costos?|gasto|consumo|tokens?)\b/i, cmd: 'costos' },
+    { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
+    { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa])\b/i, cmd: 'intake' },
+    { pattern: /\b(proponer|propon[eé]|historias nuevas|ideas)\b/i, cmd: 'proponer' },
+    { pattern: /\b(stop|apag[áa]|cerr[áa])\b/i, cmd: 'stop' },
+  ];
+
+  for (const { pattern, cmd } of intentPatterns) {
+    if (pattern.test(lower)) {
+      // Extraer argumentos: todo lo que no es el keyword
+      const args = lower.replace(pattern, '').trim();
+      log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
+      return { cmd, args };
+    }
+  }
+
+  return null; // Texto libre — delegar a Claude
+}
 
 async function brazoCommander(config) {
   const commanderPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
@@ -514,19 +863,25 @@ async function brazoCommander(config) {
   const commanderListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
   const archivos = listWorkFiles(commanderPendiente);
 
+  log('commander', `${archivos.length} mensaje(s) pendiente(s)`);
+
   if (archivos.length === 0) return;
 
   // Commander es singleton — verificar si ya hay uno corriendo
   const key = processKey('commander', 'telegram');
-  if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) return;
+  if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
+    log('commander', 'Ya hay un commander corriendo — skip');
+    return;
+  }
 
-  // Tomar TODOS los mensajes pendientes (el commander los procesa en lote)
+  // Tomar TODOS los mensajes pendientes
   const mensajes = [];
   for (const archivo of archivos) {
     try {
       const trabajandoPath = moveFile(archivo.path, commanderTrabajando);
       const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
       mensajes.push({ ...data, _path: trabajandoPath });
+      log('commander', `Tomado: ${archivo.name} → trabajando/`);
     } catch (e) {
       log('commander', `Error moviendo ${archivo.name}: ${e.message}`);
     }
@@ -534,142 +889,189 @@ async function brazoCommander(config) {
 
   if (mensajes.length === 0) return;
 
-  // Construir contexto con historial
   const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
-  let historial = '';
-  try {
-    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n').slice(-50);
-    historial = '\nHistorial reciente:\n' + lines.join('\n');
-  } catch {}
-
-  // Construir prompt con los mensajes
-  const cmdPrompt = fs.readFileSync(path.join(PIPELINE, 'roles', 'commander.md'), 'utf8');
-  // Preprocesar multimedia (transcribir audio, describir imágenes)
-  const { preprocessMessage } = require('./multimedia');
   const botToken = getTelegramToken();
+  const chatId = getTelegramChatId();
+  log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  const mensajesDesc = [];
-  for (let i = 0; i < mensajes.length; i++) {
-    const m = mensajes[i];
+  // Preprocesar multimedia
+  const { preprocessMessage, textToSpeech, sendVoiceTelegram } = require('./multimedia');
+
+  const session = loadSession();
+
+  for (const m of mensajes) {
+    log('commander', `Procesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
     const processed = await preprocessMessage(m, botToken);
-    let desc = `${i + 1}. [${m.from}] ${processed.text}`;
-    if (processed.extras.length > 0) desc += ' ' + processed.extras.join(' ');
-    mensajesDesc.push(desc);
-  }
+    const textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
+    log('commander', `Preprocesado: "${textoFinal.slice(0, 80)}"`);
 
-  const userPrompt = `IMPORTANTE: Solo genera texto plano como respuesta. NO uses herramientas, NO ejecutes comandos, NO hagas curl ni Bash. Tu output se envía directamente a Telegram.\n\nMensajes de Telegram a responder:\n${mensajesDesc.join('\n')}\n\nResponde de forma concisa y amigable en español argentino.`;
+    // Registrar entrada en historial
+    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: textoFinal, timestamp: new Date().toISOString() }) + '\n');
 
-  // Construir args de claude
-  const claudeArgs = ['-p', '-', '--output-format', 'text'];
+    let respuesta = null;
+    const parsed = parseCommand(textoFinal);
 
-  // Si hay imágenes, claude puede leerlas directamente con Read tool
-  log('commander', `Lanzando commander para ${mensajes.length} mensaje(s)`);
-
-  try {
-    const respuesta = execSync(
-      `claude ${claudeArgs.join(' ')}`,
-      { cwd: ROOT, encoding: 'utf8', timeout: 120000, input: userPrompt }
-    ).trim();
-
-    log('commander', `Commander respondió: ${respuesta.length} chars`);
-
-    // Enviar respuesta a Telegram
-    let enviado = false;
-
-    if (respuesta && mensajes.some(m => m.voice)) {
-      // Audio → responder SOLO con audio TTS
-      const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
-      log('commander', 'Generando TTS...');
-      const audioBuffer = await textToSpeech(respuesta);
-      if (audioBuffer) {
-        enviado = await sendVoiceTelegram(audioBuffer, botToken, getTelegramChatId());
-        if (enviado) log('telegram', `Audio enviado (${audioBuffer.length} bytes)`);
+    if (parsed) {
+      // Handler nativo de comando
+      log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
+      switch (parsed.cmd) {
+        case 'status':
+          respuesta = cmdStatus(config);
+          break;
+        case 'actividad':
+          respuesta = cmdActividad(parsed.args);
+          break;
+        case 'intake':
+          respuesta = cmdIntake(parsed.args, config);
+          break;
+        case 'pausar':
+          respuesta = cmdPausar();
+          break;
+        case 'reanudar':
+          respuesta = cmdReanudar();
+          break;
+        case 'costos':
+          respuesta = cmdCostos();
+          break;
+        case 'help':
+        case 'start':
+          respuesta = cmdHelp();
+          break;
+        case 'stop':
+          respuesta = '🛑 Commander apagándose...';
+          sendTelegram(respuesta);
+          running = false;
+          break;
+        case 'proponer':
+          respuesta = cmdProponer(parsed.args, config);
+          break;
+        default:
+          // Comando desconocido — delegar a Claude como texto libre
+          respuesta = null;
+          break;
       }
-      // Fallback a texto solo si TTS falló
-      if (!enviado) {
-        log('telegram', 'TTS falló, fallback a texto');
-        sendTelegram(respuesta);
-        enviado = true;
+
+      // Guardar contexto del comando nativo en sesión
+      if (respuesta !== null) {
+        session.lastCommand = parsed.cmd;
+        session.lastTimestamp = new Date().toISOString();
+        session.context = `Último comando: /${parsed.cmd}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
       }
-    } else if (respuesta) {
-      sendTelegram(respuesta);
-      enviado = true;
-    } else {
-      sendTelegram('(Commander no genero respuesta)');
-      enviado = true;
     }
 
-    // Guardar en historial
-    for (const m of mensajes) {
-      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: m.text, timestamp: new Date().toISOString() }) + '\n');
+    // Si no se resolvió con handler nativo → delegar a Claude
+    if (respuesta === null) {
+      try {
+        let historial = '';
+        try {
+          const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+          const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n')
+            .filter(l => { try { return JSON.parse(l).timestamp >= cutoff24h; } catch { return false; } })
+            .slice(-50); // Cap a 50 entries dentro de las 24hs
+          historial = '\nHistorial reciente (24hs):\n' + lines.join('\n');
+        } catch {}
+
+        // Incluir contexto de sesión para continuidad conversacional
+        let sessionCtx = '';
+        if (session.context && session.lastTimestamp) {
+          const ageMin = (Date.now() - new Date(session.lastTimestamp).getTime()) / 60000;
+          if (ageMin < 30) { // Solo si la sesión es reciente (< 30 min)
+            sessionCtx = `\n\nContexto de sesión: ${session.context}`;
+          }
+        }
+
+        const userPrompt = `REGLAS ESTRICTAS:
+1. Solo genera la respuesta directa al usuario. NADA MAS.
+2. NO menciones archivos, carpetas, pendiente/, listo/, trabajando/, ni nada del pipeline interno.
+3. NO uses herramientas, NO ejecutes comandos, NO hagas bash.
+4. NO describas lo que hiciste o vas a hacer. Solo respondé al mensaje.
+5. Respondé en español argentino, conciso y amigable.
+
+Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
+
+        respuesta = execSync(
+          `claude -p - --output-format text`,
+          { cwd: ROOT, encoding: 'utf8', timeout: 120000, input: userPrompt }
+        ).trim();
+
+        log('commander', `Claude respondió: ${respuesta.length} chars`);
+
+        // Actualizar sesión con respuesta de Claude
+        session.lastCommand = 'chat';
+        session.lastTimestamp = new Date().toISOString();
+        session.context = `Conversación libre. Último mensaje: "${textoFinal.slice(0, 100)}". Respuesta: "${(respuesta || '').slice(0, 100)}"`;
+      } catch (e) {
+        log('commander', `Error Claude: ${e.message}`);
+        respuesta = '⚠️ Error procesando tu mensaje. Intentá de nuevo.';
+      }
     }
+
+    // Enviar respuesta
     if (respuesta) {
+      let enviado = false;
+
+      // Si el mensaje original fue de voz → responder con audio
+      if (m.voice || m.voice_path) {
+        try {
+          const audioBuffer = await textToSpeech(respuesta);
+          if (audioBuffer) {
+            enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
+            if (enviado) log('telegram', `Audio enviado (${audioBuffer.length} bytes)`);
+          }
+        } catch (e) {
+          log('commander', `TTS error: ${e.message}`);
+        }
+      }
+
+      if (!enviado) {
+        sendTelegram(respuesta);
+      }
+
+      // Registrar salida en historial
       fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
     }
 
+    // Mover a listo
+    try { moveFile(m._path, commanderListo); } catch {}
+
     const logFile = path.join(LOG_DIR, 'commander.log');
-    fs.appendFileSync(logFile, `[${new Date().toISOString()}] OK\n${respuesta}\n---\n`);
-
-    // Solo mover a listo si el envío fue exitoso
-    for (const m of mensajes) {
-      try { moveFile(m._path, commanderListo); } catch {}
-    }
-
-  } catch (e) {
-    log('commander', `Error: ${e.message}`);
-    const logFile = path.join(LOG_DIR, 'commander.log');
-    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ERROR\n${e.message}\n---\n`);
-
-    // Devolver mensajes a pendiente para reintento
-    for (const m of mensajes) {
-      try { moveFile(m._path, commanderPendiente); } catch {}
-    }
-    log('commander', 'Mensajes devueltos a pendiente para reintento');
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${parsed ? '/' + parsed.cmd : 'TEXT'}\n${respuesta || '(sin respuesta)'}\n---\n`);
   }
 
+  // Persistir sesión conversacional
+  saveSession(session);
   activeProcesses.delete(key);
 }
 
-function sendTelegramSync(text) {
+function sendTelegram(text) {
   const token = getTelegramToken();
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return; }
 
   const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
-  const data = JSON.stringify({ chat_id: chatId, text: msg });
 
-  // Envío sincrónico usando spawnSync con node inline (evita curl y problemas de cmd.exe)
+  // Encolar en el servicio de telegram (fire-and-forget via filesystem)
+  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  const filename = `${Date.now()}-cmd.json`;
   try {
-    const { spawnSync } = require('child_process');
-    const script = `
-      const https = require('https');
-      const data = ${JSON.stringify(data)};
-      const req = https.request({
-        hostname: 'api.telegram.org',
-        path: '/bot${token}/sendMessage',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
-      }, (res) => {
-        let b=''; res.on('data',c=>b+=c);
-        res.on('end',()=>{ process.stdout.write(JSON.parse(b).ok?'OK':'FAIL'); });
-      });
-      req.on('error',(e)=>{ process.stdout.write('ERR:'+e.message); });
-      req.write(data); req.end();
-    `;
-    const result = spawnSync('node', ['-e', script], { encoding: 'utf8', timeout: 15000 });
-    const status = (result.stdout || '').trim();
-    if (status === 'OK') {
-      log('telegram', `Enviado (${msg.length} chars)`);
-    } else {
-      log('telegram', `Error: ${status || result.stderr || 'unknown'}`);
-    }
+    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify({ text: msg, parse_mode: 'Markdown' }));
+    log('telegram', `Encolado (${msg.length} chars) → ${filename}`);
   } catch (e) {
-    log('telegram', `Error enviando: ${e.message}`);
+    // Fallback: envío directo con https (sin subproceso)
+    const https = require('https');
+    const data = JSON.stringify({ chat_id: chatId, text: msg });
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendMessage`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+    });
+    req.on('error', (err) => log('telegram', `Error directo: ${err.message}`));
+    req.write(data);
+    req.end();
+    log('telegram', `Enviado directo (${msg.length} chars)`);
   }
 }
-
-// Alias para compatibilidad
-const sendTelegram = sendTelegramSync;
 
 function getTelegramToken() {
   try {
@@ -704,6 +1106,7 @@ function brazoIntake(config) {
 
     try {
       // Consultar GitHub por issues con el label
+      ghThrottle();
       const result = execSync(
         `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50`,
         { cwd: ROOT, encoding: 'utf8', timeout: 30000 }
@@ -773,6 +1176,26 @@ function checkPauseFile() {
   paused = fs.existsSync(PAUSE_FILE);
 }
 
+// Rotación del historial del commander (descartar > 24hs)
+let lastHistoryRotation = 0;
+function rotateHistory() {
+  if (Date.now() - lastHistoryRotation < 3600000) return; // Rotar máx cada hora
+  lastHistoryRotation = Date.now();
+
+  const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
+  try {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n');
+    const kept = lines.filter(l => {
+      try { return JSON.parse(l).timestamp >= cutoff; } catch { return false; }
+    });
+    if (kept.length < lines.length) {
+      fs.writeFileSync(historyFile, kept.join('\n') + '\n');
+      log('pulpo', `Historial rotado: ${lines.length} → ${kept.length} entries`);
+    }
+  } catch {}
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
@@ -781,9 +1204,13 @@ async function mainLoop() {
     try {
       checkPauseFile();
 
+      const config = loadConfig(); // Reload cada ciclo para hot-reload
+
+      // Commander SIEMPRE corre (incluso en pausa) — necesario para /reanudar
+      await brazoCommander(config);
+
       if (!paused) {
-        const config = loadConfig(); // Reload cada ciclo para hot-reload
-        await brazoCommander(config); // Primero: responder mensajes de Telegram
+        rotateHistory();          // Housekeeping: rotar historial > 24hs
         brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
         brazoBarrido(config);   // Tercero: promover entre fases
         brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes

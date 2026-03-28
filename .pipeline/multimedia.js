@@ -157,36 +157,64 @@ async function preprocessMessage(msg, botToken) {
   const result = { text: msg.text || '', extras: [] };
 
   // Transcribir audio
-  if (msg.voice) {
-    log(`Descargando audio ${msg.voice}...`);
-    const audioBuffer = await downloadTelegramFile(msg.voice, botToken);
+  // El listener ya descargó el archivo a voice_path (local) o tenemos file_id en voice
+  if (msg.voice || msg.voice_path) {
+    let audioBuffer = null;
+
+    if (msg.voice_path && fs.existsSync(msg.voice_path)) {
+      // Listener ya descargó — leer del disco
+      log(`Leyendo audio local: ${msg.voice_path}`);
+      audioBuffer = fs.readFileSync(msg.voice_path);
+    } else if (msg.voice) {
+      // Fallback: descargar de Telegram
+      log(`Descargando audio ${msg.voice}...`);
+      audioBuffer = await downloadTelegramFile(msg.voice, botToken);
+    }
+
     if (audioBuffer) {
       log(`Transcribiendo audio (${audioBuffer.length} bytes)...`);
       const transcription = await transcribeAudio(audioBuffer, 'audio.ogg');
-      log(`Transcripcion: ${transcription.slice(0, 100)}`);
+      log(`Transcripcion: "${transcription.slice(0, 100)}"`);
       result.text = transcription;
       result.extras.push('(mensaje de voz transcripto)');
     } else {
-      result.extras.push('(audio no descargado)');
+      log('Audio no disponible');
+      result.extras.push('(audio no disponible)');
     }
   }
 
   // Describir imagen
-  if (msg.photo) {
-    log(`Descargando imagen ${msg.photo}...`);
-    const imgBuffer = await downloadTelegramFile(msg.photo, botToken);
+  // El listener ya descargó a photo_path (local) o tenemos file_id en photo
+  if (msg.photo || msg.photo_path) {
+    let imgBuffer = null;
+
+    if (msg.photo_path && fs.existsSync(msg.photo_path)) {
+      // Listener ya descargó — leer del disco
+      log(`Leyendo imagen local: ${msg.photo_path}`);
+      imgBuffer = fs.readFileSync(msg.photo_path);
+    } else if (msg.photo) {
+      // Fallback: descargar de Telegram
+      log(`Descargando imagen ${msg.photo}...`);
+      imgBuffer = await downloadTelegramFile(msg.photo, botToken);
+    }
+
     if (imgBuffer) {
       log(`Describiendo imagen (${imgBuffer.length} bytes)...`);
       const description = await describeImage(imgBuffer, 'image/jpeg');
       if (typeof description === 'string') {
+        log(`Vision: "${description.slice(0, 100)}"`);
         result.extras.push(`[Imagen: ${description}]`);
       } else {
         // base64 sin API key — guardar a disco para que Claude lo lea
         const imgPath = path.join(__dirname, 'logs', 'media', `img-${Date.now()}.jpg`);
         fs.mkdirSync(path.dirname(imgPath), { recursive: true });
         fs.writeFileSync(imgPath, imgBuffer);
+        log(`Imagen guardada (sin API key Vision): ${imgPath}`);
         result.extras.push(`[Imagen guardada en: ${imgPath}]`);
       }
+    } else {
+      log('Imagen no disponible');
+      result.extras.push('(imagen no disponible)');
     }
   }
 
