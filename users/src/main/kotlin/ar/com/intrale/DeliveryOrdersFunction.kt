@@ -142,6 +142,22 @@ class DeliveryOrdersFunction(
                 )
             }
 
+            "take" -> {
+                logger.info("Repartidor $email toma el pedido $orderId en negocio $business")
+                val taken = try {
+                    repository.takeOrder(business, orderId, email)
+                        ?: return ExceptionResponse("Order not found", HttpStatusCode.NotFound)
+                } catch (e: OrderAlreadyTakenException) {
+                    return ExceptionResponse("Este pedido ya no está disponible", HttpStatusCode.Conflict)
+                }
+                DeliveryOrderStatusUpdateResponse(
+                    orderId = taken.id,
+                    status = taken.status,
+                    message = "Pedido tomado correctamente",
+                    responseStatus = HttpStatusCode.OK
+                )
+            }
+
             else -> RequestValidationException("Unsupported sub-path for delivery orders PUT: $action")
         }
     }
