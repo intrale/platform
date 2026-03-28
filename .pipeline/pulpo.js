@@ -13,7 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = path.resolve(ROOT, '.pipeline');
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
-const CLAUDE_BIN = process.env.CLAUDE_BIN || (process.platform === 'win32' ? 'claude.cmd' : 'claude');
+const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
@@ -789,7 +789,7 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
     const { spawnSync: spSyncP } = require('child_process');
     const propResult = spSyncP(CLAUDE_BIN, ['-p', '-', '--output-format', 'text', '--max-turns', '3'], {
       cwd: ROOT, encoding: 'utf8', timeout: 120000, input: propositorPrompt,
-      shell: false, windowsHide: true
+      shell: true, windowsHide: true
     });
     if (propResult.error) throw propResult.error;
     const resultado = (propResult.stdout || '').trim();
@@ -995,7 +995,7 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
         const { spawnSync: spSync } = require('child_process');
         const claudeResult = spSync(CLAUDE_BIN, ['-p', '-', '--output-format', 'text'], {
           cwd: ROOT, encoding: 'utf8', timeout: 120000, input: userPrompt,
-          shell: false, windowsHide: true
+          shell: true, windowsHide: true
         });
         if (claudeResult.error) throw claudeResult.error;
         respuesta = (claudeResult.stdout || '').trim();
