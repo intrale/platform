@@ -1056,22 +1056,27 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
     if (respuesta) {
       let enviado = false;
 
-      // Si el mensaje original fue de voz → responder con audio
+      // Si el mensaje original fue de voz → intentar TTS, siempre con fallback a texto
       if (m.voice || m.voice_path) {
         try {
           const audioBuffer = await textToSpeech(respuesta);
           if (audioBuffer) {
+            // Guardar audio a disco y enviar via sendVoice directo
+            const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}.ogg`);
+            fs.writeFileSync(audioPath, audioBuffer);
             enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
-            if (enviado) log('telegram', `Audio enviado (${audioBuffer.length} bytes)`);
+            if (enviado) log('telegram', `Audio TTS enviado (${audioBuffer.length} bytes)`);
           }
         } catch (e) {
           log('commander', `TTS error: ${e.message}`);
         }
       }
 
-      if (!enviado) {
-        sendTelegram(respuesta);
-      }
+      // SIEMPRE encolar texto en servicio-telegram como respaldo
+      // Si TTS funcionó, el usuario ya tiene el audio — el texto es backup
+      // Si TTS falló, el texto es la respuesta principal
+      sendTelegram(respuesta);
+      log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
 
       // Registrar salida en historial
       fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
