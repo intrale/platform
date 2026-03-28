@@ -508,7 +508,7 @@ function brazoHuerfanos(config) {
 // BRAZO 5: COMMANDER — Procesa mensajes de Telegram
 // =============================================================================
 
-function brazoCommander(config) {
+async function brazoCommander(config) {
   const commanderPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
   const commanderTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
   const commanderListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
@@ -544,26 +544,55 @@ function brazoCommander(config) {
 
   // Construir prompt con los mensajes
   const cmdPrompt = fs.readFileSync(path.join(PIPELINE, 'roles', 'commander.md'), 'utf8');
-  const mensajesTexto = mensajes.map(m => `[${m.from}] ${m.text || '(foto/audio)'}`).join('\n');
+  // Preprocesar multimedia (transcribir audio, describir imágenes)
+  const { preprocessMessage } = require('./multimedia');
+  const botToken = getTelegramToken();
 
-  // System prompt al archivo, user prompt corto como argumento
-  const systemPromptFile = path.join(LOG_DIR, 'commander-system.txt');
-  fs.writeFileSync(systemPromptFile, cmdPrompt);
+  const mensajesDesc = [];
+  for (let i = 0; i < mensajes.length; i++) {
+    const m = mensajes[i];
+    const processed = await preprocessMessage(m, botToken);
+    let desc = `${i + 1}. [${m.from}] ${processed.text}`;
+    if (processed.extras.length > 0) desc += ' ' + processed.extras.join(' ');
+    mensajesDesc.push(desc);
+  }
 
-  const userPrompt = `Mensajes de Telegram:\n${mensajesTexto}\n\nGenera la respuesta para cada mensaje. Solo texto, sin comandos.`;
+  const userPrompt = `Mensajes de Telegram a responder:\n${mensajesDesc.join('\n')}\n\nResponde a cada mensaje de forma concisa.`;
 
+  // Construir args de claude
+  const claudeArgs = ['-p', '-', '--output-format', 'text'];
+
+  // Si hay imágenes, claude puede leerlas directamente con Read tool
   log('commander', `Lanzando commander para ${mensajes.length} mensaje(s)`);
 
   try {
     const respuesta = execSync(
-      'claude -p - --output-format text --max-turns 1',
+      `claude ${claudeArgs.join(' ')}`,
       { cwd: ROOT, encoding: 'utf8', timeout: 120000, input: userPrompt }
     ).trim();
 
     log('commander', `Commander respondió: ${respuesta.length} chars`);
 
     // Enviar respuesta a Telegram
-    if (respuesta) {
+    // Si algún mensaje era audio, responder con audio (TTS)
+    const hasVoice = mensajes.some(m => m.voice);
+    if (respuesta && hasVoice) {
+      const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+      log('commander', 'Generando TTS para respuesta de audio...');
+      const audioBuffer = await textToSpeech(respuesta);
+      if (audioBuffer) {
+        const sent = await sendVoiceTelegram(audioBuffer, botToken, getTelegramChatId());
+        if (sent) {
+          log('telegram', `Audio enviado (${audioBuffer.length} bytes)`);
+        } else {
+          log('telegram', 'Error enviando audio, fallback a texto');
+          sendTelegram(respuesta);
+        }
+      } else {
+        log('telegram', 'TTS no disponible, enviando texto');
+        sendTelegram(respuesta);
+      }
+    } else if (respuesta) {
       sendTelegram(respuesta);
     } else {
       sendTelegram('(Commander no genero respuesta)');
@@ -726,7 +755,7 @@ async function mainLoop() {
 
       if (!paused) {
         const config = loadConfig(); // Reload cada ciclo para hot-reload
-        brazoCommander(config); // Primero: responder mensajes de Telegram
+        await brazoCommander(config); // Primero: responder mensajes de Telegram
         brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
         brazoBarrido(config);   // Tercero: promover entre fases
         brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
