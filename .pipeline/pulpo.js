@@ -609,39 +609,66 @@ async function brazoCommander(config) {
     const logFile = path.join(LOG_DIR, 'commander.log');
     fs.appendFileSync(logFile, `[${new Date().toISOString()}] OK\n${respuesta}\n---\n`);
 
+    // Solo mover a listo si el envío fue exitoso
+    for (const m of mensajes) {
+      try { moveFile(m._path, commanderListo); } catch {}
+    }
+
   } catch (e) {
     log('commander', `Error: ${e.message}`);
     const logFile = path.join(LOG_DIR, 'commander.log');
     fs.appendFileSync(logFile, `[${new Date().toISOString()}] ERROR\n${e.message}\n---\n`);
-  }
 
-  // Mover mensajes a listo
-  for (const m of mensajes) {
-    try { moveFile(m._path, commanderListo); } catch {}
+    // Devolver mensajes a pendiente para reintento
+    for (const m of mensajes) {
+      try { moveFile(m._path, commanderPendiente); } catch {}
+    }
+    log('commander', 'Mensajes devueltos a pendiente para reintento');
   }
 
   activeProcesses.delete(key);
 }
 
-function sendTelegram(text) {
+function sendTelegramSync(text) {
   const token = getTelegramToken();
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return; }
 
   const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
+  const data = JSON.stringify({ chat_id: chatId, text: msg });
 
-  // Envío sincrónico via curl para garantizar que se complete antes de continuar
+  // Envío sincrónico usando spawnSync con node inline (evita curl y problemas de cmd.exe)
   try {
-    const payload = JSON.stringify({ chat_id: chatId, text: msg });
-    execSync(
-      `curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" -H "Content-Type: application/json" -d @-`,
-      { input: payload, encoding: 'utf8', timeout: 15000 }
-    );
-    log('telegram', `Enviado (${msg.length} chars)`);
+    const { spawnSync } = require('child_process');
+    const script = `
+      const https = require('https');
+      const data = ${JSON.stringify(data)};
+      const req = https.request({
+        hostname: 'api.telegram.org',
+        path: '/bot${token}/sendMessage',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+      }, (res) => {
+        let b=''; res.on('data',c=>b+=c);
+        res.on('end',()=>{ process.stdout.write(JSON.parse(b).ok?'OK':'FAIL'); });
+      });
+      req.on('error',(e)=>{ process.stdout.write('ERR:'+e.message); });
+      req.write(data); req.end();
+    `;
+    const result = spawnSync('node', ['-e', script], { encoding: 'utf8', timeout: 15000 });
+    const status = (result.stdout || '').trim();
+    if (status === 'OK') {
+      log('telegram', `Enviado (${msg.length} chars)`);
+    } else {
+      log('telegram', `Error: ${status || result.stderr || 'unknown'}`);
+    }
   } catch (e) {
     log('telegram', `Error enviando: ${e.message}`);
   }
 }
+
+// Alias para compatibilidad
+const sendTelegram = sendTelegramSync;
 
 function getTelegramToken() {
   try {
