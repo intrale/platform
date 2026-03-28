@@ -1006,12 +1006,23 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
         });
         if (claudeResult.error) throw claudeResult.error;
         const rawOut = (claudeResult.stdout || '').trim();
-        // claude --output-format json devuelve: {"type":"result","result":"texto final",...}
+        // claude --output-format json devuelve: {"type":"result","result":"texto",...}
+        // Si max_turns se agotó: {"type":"result","subtype":"error_max_turns",...} sin result
         try {
           const parsed = JSON.parse(rawOut);
-          respuesta = parsed.result || rawOut;
+          if (parsed.result) {
+            respuesta = parsed.result;
+          } else if (parsed.subtype === 'error_max_turns') {
+            respuesta = '⏱️ La consulta fue compleja y se agotaron los turnos. Intentá con algo más específico.';
+            log('commander', `max_turns agotado (${parsed.num_turns} turns, $${parsed.total_cost_usd?.toFixed(2)})`);
+          } else if (parsed.is_error) {
+            respuesta = '⚠️ Error interno procesando tu mensaje.';
+          } else {
+            respuesta = parsed.result || '(sin respuesta)';
+          }
         } catch {
-          respuesta = rawOut;
+          // No es JSON — usar raw (puede pasar si --output-format text se coló)
+          respuesta = rawOut.length > 4000 ? rawOut.slice(-2000) : rawOut;
         }
         log('commander', `Claude respondió (json): ${(respuesta || '').length} chars`);
 
