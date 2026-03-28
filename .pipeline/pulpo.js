@@ -1053,11 +1053,6 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
                     toolCount++;
                     const desc = b.input?.description || b.input?.command?.slice(0, 60) || b.name || '';
                     log('commander', `  [tool ${toolCount}] ${b.name}: ${desc.slice(0, 80)}`);
-                    // Notificar progreso cada 5 tools
-                    if (toolCount === 5 && !progressSent) {
-                      progressSent = true;
-                      sendTelegram('⏳ Sigo revisando, ya ejecuté varias verificaciones...');
-                    }
                   }
                 }
               } else if (evt.type === 'result') {
@@ -1069,6 +1064,22 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
           let stderr = '';
           proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
+          // Mensajes de progreso periódicos mientras Claude trabaja
+          const progressMsgs = [
+            '⏳ Aguantame que lo estoy revisando...',
+            '🔍 Sigo en eso, ya ejecuté varias verificaciones...',
+            '⚙️ Esto está costando pero ya lo tengo...',
+            '🔧 Casi listo, dame un toque más...',
+          ];
+          let progressIdx = 0;
+          const progressTimer = setInterval(() => {
+            if (progressIdx < progressMsgs.length) {
+              sendTelegram(progressMsgs[progressIdx]);
+              log('commander', `Progreso [${progressIdx}]: ${progressMsgs[progressIdx]}`);
+              progressIdx++;
+            }
+          }, 45000); // Cada 45 segundos
+
           const timer = setTimeout(() => {
             log('commander', `Timeout 5min — matando claude PID ${proc.pid}`);
             try { proc.kill('SIGKILL'); } catch {}
@@ -1076,6 +1087,7 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
           proc.on('exit', (code) => {
             clearTimeout(timer);
+            clearInterval(progressTimer);
             log('commander', `Claude terminó (code=${code}, tools=${toolCount}, lastText=${(lastText||'').length}chars)`);
             if (finalResult?.result) {
               resolve(finalResult.result);
@@ -1089,6 +1101,7 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
           proc.on('error', (e) => {
             clearTimeout(timer);
+            clearInterval(progressTimer);
             reject(e);
           });
         });
