@@ -1007,45 +1007,78 @@ REGLAS:
 
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
-        // Escribir prompt a archivo temporal (evita problemas de stdin + cmd.exe en Windows)
-        const promptFile = path.join(LOG_DIR, `cmd-prompt-${Date.now()}.txt`);
-        fs.writeFileSync(promptFile, userPrompt);
+        // Spawn async (como V1) — evita problemas de spawnSync + cmd.exe + stdin largo
+        respuesta = await new Promise((resolve, reject) => {
+          const readline = require('readline');
+          const args = [
+            '-p', '-',
+            '--output-format', 'stream-json',
+            '--max-turns', '20',
+            '--dangerously-skip-permissions',
+            '--permission-mode', 'bypassPermissions'
+          ];
 
-        const { spawnSync: spSync } = require('child_process');
-        const claudeResult = spSync(CLAUDE_BIN, [
-          '-p', userPrompt.length > 2000 ? `Leé el archivo ${promptFile} y seguí las instrucciones que contiene.` : userPrompt,
-          '--output-format', 'json',
-          '--max-turns', '20',
-          '--dangerously-skip-permissions',
-          '--permission-mode', 'bypassPermissions'
-        ], {
-          cwd: ROOT, encoding: 'utf8', timeout: 300000,
-          shell: true, windowsHide: true
+          const proc = spawn(CLAUDE_BIN, args, {
+            cwd: ROOT,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            shell: true,
+            timeout: 300000
+          });
+
+          // Escribir prompt por stdin (como V1)
+          proc.stdin.write(userPrompt);
+          proc.stdin.end();
+
+          let lastText = '';
+          let finalResult = null;
+
+          // Parsear stream-json línea por línea
+          const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
+          rl.on('line', (line) => {
+            if (!line.trim()) return;
+            try {
+              const evt = JSON.parse(line);
+              if (evt.type === 'assistant' && evt.message?.content) {
+                const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
+                for (const b of blocks) {
+                  if (b.type === 'text' && b.text) lastText = b.text;
+                }
+              } else if (evt.type === 'result') {
+                finalResult = evt;
+              }
+            } catch {}
+          });
+
+          let stderr = '';
+          proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+          const timer = setTimeout(() => {
+            log('commander', `Timeout 5min — matando claude PID ${proc.pid}`);
+            try { proc.kill('SIGKILL'); } catch {}
+          }, 300000);
+
+          proc.on('exit', (code) => {
+            clearTimeout(timer);
+            // Extraer resultado (mismo patrón que V1)
+            if (finalResult?.result) {
+              resolve(finalResult.result);
+            } else if (finalResult?.subtype === 'error_max_turns') {
+              log('commander', `max_turns agotado (${finalResult.num_turns} turns, $${finalResult.total_cost_usd?.toFixed(2)})`);
+              resolve(lastText || '⏱️ La consulta fue compleja. Intentá con algo más específico.');
+            } else if (lastText) {
+              resolve(lastText);
+            } else {
+              log('commander', `Claude exit ${code}, stderr: ${stderr.slice(0, 200)}`);
+              resolve(null);
+            }
+          });
+
+          proc.on('error', (e) => {
+            clearTimeout(timer);
+            reject(e);
+          });
         });
-
-        // Limpiar archivo temporal
-        try { fs.unlinkSync(promptFile); } catch {}
-        if (claudeResult.error) throw claudeResult.error;
-        const rawOut = (claudeResult.stdout || '').trim();
-        // claude --output-format json devuelve: {"type":"result","result":"texto",...}
-        // Si max_turns se agotó: {"type":"result","subtype":"error_max_turns",...} sin result
-        try {
-          const parsed = JSON.parse(rawOut);
-          if (parsed.result) {
-            respuesta = parsed.result;
-          } else if (parsed.subtype === 'error_max_turns') {
-            respuesta = '⏱️ La consulta fue compleja y se agotaron los turnos. Intentá con algo más específico.';
-            log('commander', `max_turns agotado (${parsed.num_turns} turns, $${parsed.total_cost_usd?.toFixed(2)})`);
-          } else if (parsed.is_error) {
-            respuesta = '⚠️ Error interno procesando tu mensaje.';
-          } else {
-            respuesta = parsed.result || '(sin respuesta)';
-          }
-        } catch {
-          // No es JSON — usar raw (puede pasar si --output-format text se coló)
-          respuesta = rawOut.length > 4000 ? rawOut.slice(-2000) : rawOut;
-        }
-        log('commander', `Claude respondió (json): ${(respuesta || '').length} chars`);
+        log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
         log('commander', `Claude respondió: ${respuesta.length} chars`);
 
