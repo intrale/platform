@@ -1,53 +1,95 @@
 // singleton.js — Garantiza una sola instancia por componente del pipeline
+// Verifica en la lista de procesos del SO, no depende de archivos PID.
+//
 // Uso: require('./singleton')('pulpo') al inicio de cada script
+// Si ya hay otro node.exe corriendo el mismo script, aborta.
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const PIPELINE = path.resolve(__dirname);
 
-function isProcessAlive(pid) {
+/**
+ * Busca procesos node.exe que tengan el mismo script en su command line.
+ * Retorna array de PIDs (excluyendo el proceso actual).
+ */
+function findSiblings(scriptName) {
   if (process.platform === 'win32') {
     try {
-      const { spawnSync } = require('child_process');
-      const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], {
-        encoding: 'utf8', timeout: 5000, windowsHide: true
-      });
-      return (r.stdout || '').includes(`"${pid}"`);
-    } catch { return false; }
+      const r = spawnSync('wmic', [
+        'process', 'where', "name='node.exe'",
+        'get', 'ProcessId,CommandLine', '/format:csv'
+      ], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+
+      const lines = (r.stdout || '').split('\n');
+      const pids = [];
+      for (const line of lines) {
+        if (line.includes(scriptName) && !line.includes('wmic')) {
+          // CSV format: node,commandline,pid
+          const match = line.match(/(\d+)\s*$/);
+          if (match) {
+            const pid = parseInt(match[1]);
+            if (pid !== process.pid) pids.push(pid);
+          }
+        }
+      }
+      return pids;
+    } catch { return []; }
   }
-  try { process.kill(pid, 0); return true; } catch { return false; }
+
+  // Linux/Mac: usar ps
+  try {
+    const r = spawnSync('ps', ['aux'], { encoding: 'utf8', timeout: 5000 });
+    const lines = (r.stdout || '').split('\n');
+    const pids = [];
+    for (const line of lines) {
+      if (line.includes(scriptName) && line.includes('node')) {
+        const match = line.match(/^\S+\s+(\d+)/);
+        if (match) {
+          const pid = parseInt(match[1]);
+          if (pid !== process.pid) pids.push(pid);
+        }
+      }
+    }
+    return pids;
+  } catch { return []; }
 }
 
 /**
- * Garantiza singleton. Si ya hay una instancia viva, mata este proceso.
+ * Garantiza singleton. Si ya hay una instancia viva del mismo script, aborta.
  * @param {string} name — nombre del componente (pulpo, listener, svc-telegram, etc.)
- * @returns {string} path al PID file (para cleanup en shutdown)
  */
 module.exports = function singleton(name) {
+  // Mapeo nombre → script filename
+  const scriptMap = {
+    'pulpo': 'pulpo.js',
+    'listener': 'listener-telegram.js',
+    'svc-telegram': 'servicio-telegram.js',
+    'svc-github': 'servicio-github.js',
+    'svc-drive': 'servicio-drive.js',
+    'dashboard': 'dashboard-v2.js'
+  };
+
+  const scriptName = scriptMap[name] || `${name}.js`;
+  const siblings = findSiblings(scriptName);
+
+  if (siblings.length > 0) {
+    console.error(`[FATAL] Ya hay ${siblings.length} instancia(s) de ${name} corriendo: PIDs ${siblings.join(', ')}. Abortando.`);
+    process.exit(1);
+  }
+
+  // Escribir PID file (informativo, para el watchdog y diagnóstico)
   const pidFile = path.join(PIPELINE, `${name}.pid`);
-
-  try {
-    const oldPid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-    if (oldPid && oldPid !== process.pid && isProcessAlive(oldPid)) {
-      console.error(`[FATAL] Ya hay un ${name} corriendo (PID ${oldPid}). Abortando.`);
-      process.exit(1);
-    }
-  } catch {}
-
-  // Registrar nuestro PID
   fs.writeFileSync(pidFile, String(process.pid));
 
   // Cleanup al salir
-  const cleanup = () => {
+  process.on('exit', () => {
     try {
       const current = fs.readFileSync(pidFile, 'utf8').trim();
       if (current === String(process.pid)) fs.unlinkSync(pidFile);
     } catch {}
-  };
-  process.on('exit', cleanup);
-  process.on('SIGINT', () => { cleanup(); process.exit(0); });
-  process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+  });
 
   return pidFile;
 };
