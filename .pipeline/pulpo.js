@@ -379,7 +379,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--max-turns', '3'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--max-turns', '20', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'];
   if (needsWorktree) {
     args.push('--cwd', worktreePath);
   }
@@ -787,12 +787,20 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
   try {
     // Ejecutar Claude síncronamente (max 2 min) para obtener propuestas
     const { spawnSync: spSyncP } = require('child_process');
-    const propResult = spSyncP(CLAUDE_BIN, ['-p', '-', '--output-format', 'text', '--max-turns', '3'], {
-      cwd: ROOT, encoding: 'utf8', timeout: 120000, input: propositorPrompt,
+    const propResult = spSyncP(CLAUDE_BIN, [
+      '-p', '-',
+      '--output-format', 'json',
+      '--max-turns', '10',
+      '--dangerously-skip-permissions',
+      '--permission-mode', 'bypassPermissions'
+    ], {
+      cwd: ROOT, encoding: 'utf8', timeout: 180000, input: propositorPrompt,
       shell: true, windowsHide: true
     });
     if (propResult.error) throw propResult.error;
-    const resultado = (propResult.stdout || '').trim();
+    const propRaw = (propResult.stdout || '').trim();
+    let resultado;
+    try { resultado = JSON.parse(propRaw).result || propRaw; } catch { resultado = propRaw; }
 
     if (resultado) {
       // Guardar propuestas en archivo para referencia
@@ -1000,8 +1008,14 @@ REGLAS:
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
         const { spawnSync: spSync } = require('child_process');
-        const claudeResult = spSync(CLAUDE_BIN, ['-p', '-', '--output-format', 'json', '--max-turns', '10'], {
-          cwd: ROOT, encoding: 'utf8', timeout: 180000, input: userPrompt,
+        const claudeResult = spSync(CLAUDE_BIN, [
+          '-p', '-',
+          '--output-format', 'json',
+          '--max-turns', '20',
+          '--dangerously-skip-permissions',
+          '--permission-mode', 'bypassPermissions'
+        ], {
+          cwd: ROOT, encoding: 'utf8', timeout: 300000, input: userPrompt,
           shell: true, windowsHide: true
         });
         if (claudeResult.error) throw claudeResult.error;
