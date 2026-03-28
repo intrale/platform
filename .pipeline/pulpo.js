@@ -1011,19 +1011,21 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
         respuesta = await new Promise((resolve, reject) => {
           const readline = require('readline');
           const args = [
-            '-p', '-',
+            '-p',
             '--output-format', 'stream-json',
             '--verbose',
             '--max-turns', '20',
-            '--dangerously-skip-permissions',
             '--permission-mode', 'bypassPermissions'
           ];
 
+          const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+          delete cleanEnv.CLAUDECODE;
+
           const proc = spawn(CLAUDE_BIN, args, {
             cwd: ROOT,
+            env: cleanEnv,
             stdio: ['pipe', 'pipe', 'pipe'],
-            shell: true,
-            timeout: 300000
+            shell: true
           });
 
           // Escribir prompt por stdin (como V1)
