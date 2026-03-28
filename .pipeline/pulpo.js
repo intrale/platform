@@ -1064,36 +1064,31 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
           let stderr = '';
           proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-          // Mensajes de progreso con contexto real de lo que se está haciendo
+          // Mensajes de progreso con contexto — templates fijos, contexto dinámico
           let lastToolDesc = '';
           let progressCount = 0;
-          const usedMsgs = new Set();
           const startTime = Date.now();
+          // Templates con slot {ctx} y {stats} — se usan en orden, nunca se repiten
+          const templates = [
+            (ctx, stats) => `⏳ ${ctx ? `Estoy en: ${ctx}` : 'Analizando tu pedido'}... ${stats}`,
+            (ctx, stats) => `⚙️ ${stats}. ${ctx ? `Último paso: ${ctx}` : 'Sigo laburando'}`,
+            (ctx, stats) => `🔧 Esto lleva laburo — ${stats}. ${ctx ? `Ahora: ${ctx}` : 'Ya casi'}`,
+            (ctx, stats) => `💪 ${stats}. Bancame que ya cierro esto`,
+            (ctx, stats) => `🔄 Varias cosas que revisar — ${stats}`,
+            (ctx, stats) => `📋 ${stats}. Un toque más`,
+            (ctx, stats) => `🔍 Casi termino — ${stats}`,
+            (ctx, stats) => `✨ Ya lo tengo, dame un segundo más — ${stats}`,
+          ];
           const progressTimer = setInterval(() => {
+            const elapsed = Math.round((Date.now() - startTime) / 1000);
+            const ctx = lastToolDesc ? lastToolDesc.slice(0, 40) : '';
+            const stats = `${toolCount} pasos en ${elapsed}s`;
+            const tpl = templates[progressCount % templates.length];
+            const msg = tpl(ctx, stats);
             progressCount++;
-            const elapsedSec = Math.round((Date.now() - startTime) / 1000);
-            const ctx = lastToolDesc ? lastToolDesc.slice(0, 45) : '';
-
-            // Pool de mensajes — nunca repetir
-            const pool = [
-              ctx ? `🔍 Estoy revisando: ${ctx}` : '🔍 Estoy analizando tu pedido...',
-              `⚙️ Ya van ${toolCount} operaciones, ${elapsedSec}s... sigo en eso`,
-              ctx ? `🔧 Ahora estoy con: ${ctx}` : '🔧 Ejecutando verificaciones...',
-              `⏳ Llevamos ${elapsedSec}s, ${toolCount} pasos. Aguantame que ya sale`,
-              ctx ? `💡 Revisando ${ctx}... esto lleva un toque` : '💡 Estoy investigando, un momento',
-              `💪 ${toolCount} pasos hechos en ${elapsedSec}s. Ya casi termino`,
-              `🔄 Sigo laburando — esto necesita varias verificaciones`,
-              `📋 Ya hice ${toolCount} chequeos. Dame un toque más que cierro`,
-            ];
-
-            // Elegir uno que no se haya usado
-            let msg = pool.find(m => !usedMsgs.has(m));
-            if (!msg) msg = `⏳ ${elapsedSec}s, ${toolCount} operaciones... ya termino`;
-            usedMsgs.add(msg);
-
             sendTelegram(msg);
             log('commander', `Progreso: ${msg}`);
-          }, 45000); // Cada 45 segundos
+          }, 45000);
 
           const timer = setTimeout(() => {
             log('commander', `Timeout 5min — matando claude PID ${proc.pid}`);
