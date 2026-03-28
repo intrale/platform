@@ -983,22 +983,34 @@ async function brazoCommander(config) {
           }
         }
 
-        const userPrompt = `REGLAS ESTRICTAS:
-1. Solo genera la respuesta directa al usuario. NADA MAS.
-2. NO menciones archivos, carpetas, pendiente/, listo/, trabajando/, ni nada del pipeline interno.
-3. NO uses herramientas, NO ejecutes comandos, NO hagas bash.
-4. NO describas lo que hiciste o vas a hacer. Solo respondé al mensaje.
-5. Respondé en español argentino, conciso y amigable.
+        const userPrompt = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
+
+REGLAS:
+1. Si el usuario pide una ACCIÓN (revisar, arreglar, validar, verificar, levantar, etc): EJECUTALA primero con las herramientas que tengas, y después reportá qué hiciste y el resultado.
+2. Si el usuario hace una PREGUNTA: respondé directamente.
+3. Tu respuesta final (el texto que se envía a Telegram) debe ser SOLO el reporte al usuario. Conciso, en español argentino.
+4. NO menciones paths internos del pipeline (pendiente/, listo/, etc).
+5. Contexto del entorno:
+   - Pipeline dir: ${PIPELINE}
+   - Dashboard: node .pipeline/dashboard-v2.js (puerto 3200)
+   - PIDs: .pipeline/*.pid
+   - Logs: .pipeline/logs/
+   - Procesos: tasklist | grep node
 
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
         const { spawnSync: spSync } = require('child_process');
-        const claudeResult = spSync(CLAUDE_BIN, ['-p', '-', '--output-format', 'text'], {
-          cwd: ROOT, encoding: 'utf8', timeout: 120000, input: userPrompt,
+        const claudeResult = spSync(CLAUDE_BIN, ['-p', '-', '--output-format', 'text', '--max-turns', '10'], {
+          cwd: ROOT, encoding: 'utf8', timeout: 180000, input: userPrompt,
           shell: true, windowsHide: true
         });
         if (claudeResult.error) throw claudeResult.error;
         respuesta = (claudeResult.stdout || '').trim();
+        // Limpiar: tomar solo las últimas líneas (el reporte, no el log de tools)
+        const respLines = respuesta.split('\n');
+        if (respLines.length > 20) {
+          respuesta = respLines.slice(-20).join('\n').trim();
+        }
 
         log('commander', `Claude respondió: ${respuesta.length} chars`);
 
