@@ -109,29 +109,17 @@ process.on("exit", cleanupPidFile);
 let tgClient = null;
 try { tgClient = require("./telegram-client"); } catch (e) {}
 
+// notify(): solo loguea. Las notificaciones operativas del coordinator no van a
+// Telegram porque el usuario no necesita actuar ni le cambia conocer esa info.
 async function notify(text) {
-    if (tgClient) {
-        try { await tgClient.sendMessage(text); return; } catch (e) { log("tgClient error: " + e.message); }
-    }
-    try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(HOOKS_DIR, "telegram-config.json"), "utf8"));
-        const https = require("https");
-        const querystring = require("querystring");
-        const postData = querystring.stringify({ chat_id: cfg.chat_id, text, parse_mode: "HTML" });
-        await new Promise((resolve) => {
-            const req = https.request({
-                hostname: "api.telegram.org",
-                path: "/bot" + cfg.bot_token + "/sendMessage",
-                method: "POST",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                timeout: 6000
-            }, (res) => { res.resume(); resolve(); });
-            req.on("error", resolve);
-            req.on("timeout", () => { req.destroy(); resolve(); });
-            req.write(postData);
-            req.end();
-        });
-    } catch (e) { log("notify error: " + e.message); }
+    const clean = (text || "").replace(/<[^>]+>/g, "").replace(/&#x[0-9A-Fa-f]+;/g, "").substring(0, 200);
+    log("(notify→log) " + clean);
+}
+
+// throttledNotify: también solo loguea (era para dedup pero ya no envía a Telegram)
+async function throttledNotify(issue, type, text) {
+    const clean = (text || "").replace(/<[^>]+>/g, "").replace(/&#x[0-9A-Fa-f]+;/g, "").substring(0, 200);
+    log("(throttled→log) #" + issue + " " + type + ": " + clean);
 }
 
 function escHtml(str) {
@@ -441,15 +429,23 @@ function isAgentAlive(agente) {
         }
     } catch (e) {}
 
+    // Método 5: Sesión activa reciente (última línea de defensa contra falsos muertos)
+    // Si hay una sesión con actividad en los últimos 15 min, el agente está vivo
+    // aunque el heartbeat y PID digan lo contrario.
+    if (hasActiveSession(agente.issue, agente.slug)) {
+        log("isAgentAlive #" + agente.issue + ": sesion activa reciente -> VIVO (override heartbeat/PID)");
+        return true;
+    }
+
     // Sin evidencia: verificar worktree
     const worktreePath = getExpectedWorktreePath(agente);
     if (!fs.existsSync(worktreePath)) {
-        log("isAgentAlive #" + agente.issue + ": sin heartbeat, sin PID, sin worktree -> muerto");
+        log("isAgentAlive #" + agente.issue + ": sin heartbeat, sin PID, sin sesion, sin worktree -> muerto");
         return false;
     }
 
-    log("isAgentAlive #" + agente.issue + ": indeterminado (worktree existe) -> asumiendo muerto (coordinator)");
-    return false; // Coordinator es más agresivo: si no hay heartbeat ni PID → muerto
+    log("isAgentAlive #" + agente.issue + ": indeterminado (worktree existe pero sin actividad) -> muerto");
+    return false;
 }
 
 // ─── Circuit breaker ─────────────────────────────────────────────────────────
@@ -600,8 +596,39 @@ function setupWorktree(agente) {
 
 // ─── Launch agent (UNICO LANZADOR) ──────────────────────────────────────────
 
+function hasActiveSession(issue, slug) {
+    // Verificar si ya existe una sesión activa reciente para este issue.
+    // Evita relanzar agentes que siguen vivos pero cuyo heartbeat está stale.
+    try {
+        if (!fs.existsSync(SESSIONS_DIR)) return false;
+        const branch = "agent/" + issue + "-" + slug;
+        const now = Date.now();
+        const MAX_SESSION_AGE_MS = 30 * 60 * 1000; // 30 min
+        const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+            try {
+                const session = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
+                if (session.branch !== branch || session.status !== "active") continue;
+                const lastActivity = new Date(session.last_activity_ts || 0).getTime();
+                const age = now - lastActivity;
+                if (age < MAX_SESSION_AGE_MS) {
+                    log("hasActiveSession #" + issue + ": sesion " + file.replace(".json", "") + " activa (" + Math.round(age / 60000) + "m ago, " + (session.action_count || 0) + " acts)");
+                    return true;
+                }
+            } catch (e) {}
+        }
+    } catch (e) {}
+    return false;
+}
+
 function launchAgent(agente) {
     try {
+        // Guard: verificar si ya hay sesión activa para este issue
+        if (hasActiveSession(agente.issue, agente.slug)) {
+            log("launchAgent: SKIP #" + agente.issue + " — ya tiene sesion activa reciente");
+            return false;
+        }
+
         // Circuit breaker check
         const cbResult = cbCanRelaunch(agente.issue);
         if (!cbResult.allowed) {
@@ -1111,7 +1138,7 @@ async function reconcile() {
                         if (doctorResult.recovery.success && !doctorResult.shouldRelaunch) {
                             plan._completed.push(buildCompletedEntry(ag, null, "completed"));
                             savePlan(plan);
-                            await notify(agentDoctor.buildDiagnosisNotification(ag, doctorResult.diagnosis, doctorResult.recovery));
+                            log("Doctor: recovery exitoso #" + ag.issue + " — no notificar Telegram (anti-spam)");
                             continue;
                         }
                         ag.prompt = agentDoctor.buildDoctorRetryPrompt(ag.prompt || generateDefaultPrompt(ag.issue, ag.slug), ag, doctorResult.diagnosis);

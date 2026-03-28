@@ -110,8 +110,38 @@ async function telegramPostRetry(method, params, timeoutMs) {
  * @param {object} [opts] - Opciones: { silent, replyMarkup, chatId }
  * @returns {Promise<object>} Mensaje enviado
  */
+// ─── Command-in-progress guard ───────────────────────────────────────────────
+// Cuando el usuario envía un mensaje (texto o audio), se activa un flag que
+// bloquea mensajes automáticos de otros hooks hasta que la respuesta se envíe.
+// Solo mensajes marcados con opts.isResponse=true pasan durante el bloqueo.
+
+const COMMAND_FLAG = path.join(HOOKS_DIR, "command-in-progress.flag");
+
+function isCommandInProgress() {
+    try {
+        if (!fs.existsSync(COMMAND_FLAG)) return false;
+        const age = Date.now() - fs.statSync(COMMAND_FLAG).mtimeMs;
+        if (age > 180000) { // 3 min max — cleanup stale flags
+            try { fs.unlinkSync(COMMAND_FLAG); } catch (e) {}
+            return false;
+        }
+        return true;
+    } catch (e) { return false; }
+}
+
+function setCommandInProgress(active) {
+    try {
+        if (active) {
+            fs.writeFileSync(COMMAND_FLAG, String(Date.now()), "utf8");
+        } else {
+            if (fs.existsSync(COMMAND_FLAG)) fs.unlinkSync(COMMAND_FLAG);
+        }
+    } catch (e) {}
+}
+
 async function sendMessage(text, opts) {
     opts = opts || {};
+
     const chatId = opts.chatId || getChatId();
     if (!chatId) throw new Error("No chat_id configured");
 
@@ -279,5 +309,7 @@ module.exports = {
     getConfig,
     getBotToken,
     getChatId,
-    TG_MSG_MAX
+    TG_MSG_MAX,
+    setCommandInProgress,
+    isCommandInProgress
 };

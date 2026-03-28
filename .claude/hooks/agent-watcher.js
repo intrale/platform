@@ -220,6 +220,11 @@ try { agentDoctor = require("./agent-doctor"); } catch (e) { log("agent-doctor n
 const { buildCompletedEntry, validateCompletionCriteria, MIN_DURATION_MINUTES } = require("./validation-utils");
 
 async function notify(text) {
+    // Watcher legacy — solo loguea, no envía a Telegram (reemplazado por coordinator)
+    const clean = (text || "").replace(/<[^>]+>/g, "").substring(0, 200);
+    log("(notify→log) " + clean);
+    return;
+    // Dead code below — kept for reference
     if (tgClient) {
         try { await tgClient.sendMessage(text); return; } catch (e) { log("tgClient error: " + e.message); }
     }

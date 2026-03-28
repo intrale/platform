@@ -117,8 +117,20 @@ function hasActiveSessions() {
 
 // --- Envío Telegram ---
 
+function isCommandActive() {
+  try {
+    const flagFile = require('path').join(__dirname, 'command-in-progress.flag');
+    if (!require('fs').existsSync(flagFile)) return false;
+    const age = Date.now() - require('fs').statSync(flagFile).mtimeMs;
+    return age < 180000;
+  } catch { return false; }
+}
+
 function sendTelegramText(text, silent) {
-  if (!tgConfig.bot_token || !tgConfig.chat_id) return;
+  // Heartbeat solo loguea — no envía a Telegram.
+  // La info está disponible en el dashboard web (localhost:3100).
+  console.log('[heartbeat] (log-only) ' + (text || '').replace(/<[^>]+>/g, '').substring(0, 150));
+  return;
   const params = JSON.stringify({
     chat_id: tgConfig.chat_id, text, parse_mode: 'HTML',
     disable_web_page_preview: true, disable_notification: !!silent
@@ -146,7 +158,9 @@ function sendTelegramText(text, silent) {
 }
 
 function sendTelegramPhoto(photoBuffer, caption, silent) {
-  if (!tgConfig.bot_token || !tgConfig.chat_id) return Promise.resolve(null);
+  // Heartbeat solo loguea — no envía screenshots a Telegram.
+  console.log('[heartbeat] (log-only) screenshot omitido — ver dashboard web');
+  return Promise.resolve(null);
   return new Promise((resolve, reject) => {
     const boundary = '----FormBoundary' + Date.now().toString(36);
     let body = '';

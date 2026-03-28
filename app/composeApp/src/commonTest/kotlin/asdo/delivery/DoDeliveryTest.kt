@@ -192,6 +192,7 @@ private class FakeDeliveryOrdersService(
     private val activeResult: Result<List<DeliveryOrderDTO>> = Result.success(sampleOrderDTOs),
     private val summaryResult: Result<DeliveryOrdersSummaryDTO> = Result.success(sampleSummaryDTO),
     private val availableResult: Result<List<DeliveryOrderDTO>> = Result.success(emptyList()),
+    private val historyResult: Result<List<DeliveryOrderDTO>> = Result.success(sampleOrderDTOs),
     private val updateStatusResult: Result<DeliveryOrderStatusUpdateResponse> = Result.success(
         DeliveryOrderStatusUpdateResponse(orderId = "o1", status = "inprogress")
     ),
@@ -200,6 +201,7 @@ private class FakeDeliveryOrdersService(
     override suspend fun fetchActiveOrders() = activeResult
     override suspend fun fetchSummary(date: LocalDate) = summaryResult
     override suspend fun fetchAvailableOrders() = availableResult
+    override suspend fun fetchHistoryOrders() = historyResult
     override suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String?) = updateStatusResult
     override suspend fun fetchOrderDetail(orderId: String) = orderDetailResult
     override suspend fun takeOrder(orderId: String): Result<DeliveryOrderStatusUpdateResponse> =
@@ -347,3 +349,52 @@ class DoGetDeliveryOrderDetailTest {
 }
 
 // endregion DoGetDeliveryOrderDetail
+
+// region DoGetDeliveryOrderHistory
+
+private val sampleHistoryDTOs = listOf(
+    DeliveryOrderDTO(id = "h1", publicId = "BCX472", businessName = "Almacen Don Julio", neighborhood = "Palermo", status = "delivered", eta = "14:30", updatedAt = "2026-03-23T14:30:00Z"),
+    DeliveryOrderDTO(id = "h2", publicId = "PQR789", businessName = "Farmacia Central", neighborhood = "Flores", status = "not_delivered", eta = "10:15", updatedAt = "2026-03-22T10:15:00Z"),
+    DeliveryOrderDTO(id = "h3", publicId = "XYZ123", businessName = "Panaderia Sur", neighborhood = "Centro", status = "pending", eta = "09:00"),
+)
+
+class DoGetDeliveryOrderHistoryTest {
+
+    @Test
+    fun `obtener historial exitoso retorna solo pedidos finalizados ordenados`() = runTest {
+        val sut = DoGetDeliveryOrderHistory(FakeDeliveryOrdersService(historyResult = Result.success(sampleHistoryDTOs)))
+
+        val result = sut.execute()
+
+        assertTrue(result.isSuccess)
+        val orders = result.getOrThrow()
+        assertEquals(2, orders.size)
+        assertTrue(orders.all { it.status == DeliveryOrderStatus.DELIVERED || it.status == DeliveryOrderStatus.NOT_DELIVERED })
+        assertEquals("BCX472", orders[0].label)
+        assertEquals("PQR789", orders[1].label)
+    }
+
+    @Test
+    fun `obtener historial fallido retorna DeliveryExceptionResponse`() = runTest {
+        val sut = DoGetDeliveryOrderHistory(
+            FakeDeliveryOrdersService(historyResult = Result.failure(RuntimeException("Error de red")))
+        )
+
+        val result = sut.execute()
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is DeliveryExceptionResponse)
+    }
+
+    @Test
+    fun `obtener historial vacio retorna lista vacia`() = runTest {
+        val sut = DoGetDeliveryOrderHistory(FakeDeliveryOrdersService(historyResult = Result.success(emptyList())))
+
+        val result = sut.execute()
+
+        assertTrue(result.isSuccess)
+        assertEquals(0, result.getOrThrow().size)
+    }
+}
+
+// endregion DoGetDeliveryOrderHistory

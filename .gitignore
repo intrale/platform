@@ -101,3 +101,25 @@ scripts/planner-plan.json
 .claude/hooks/tg-commander-offset.json
 .claude/hooks/commander-stdout.log
 .claude/hooks/commander-stderr.log
+
+# Pipeline V2 — estado efímero (no commitear)
+.pipeline/logs/
+.pipeline/*.pid
+.pipeline/.paused
+.pipeline/listener-offset.json
+.pipeline/commander-history.jsonl
+.pipeline/node_modules/
+.pipeline/package-lock.json
+.pipeline/definicion/*/pendiente/*
+.pipeline/definicion/*/trabajando/*
+.pipeline/definicion/*/listo/*
+.pipeline/definicion/*/procesado/*
+.pipeline/desarrollo/*/pendiente/*
+.pipeline/desarrollo/*/trabajando/*
+.pipeline/desarrollo/*/listo/*
+.pipeline/desarrollo/*/procesado/*
+.pipeline/servicios/*/pendiente/*
+.pipeline/servicios/*/trabajando/*
+.pipeline/servicios/*/listo/*
+.pipeline/servicios/*/procesado/*
+!.pipeline/**/.gitkeep

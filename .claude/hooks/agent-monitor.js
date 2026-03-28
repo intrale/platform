@@ -60,6 +60,7 @@ const FAILSAFE_MS = 4 * 60 * 60 * 1000; // 4 horas
 const STALE_MS = 15 * 60 * 1000;    // 15 minutos — agente sin actividad = stale
 const FAILED_TOTAL_MS = 45 * 60 * 1000; // 45 minutos — agente sin actividad = failed
 const PR_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 min — supervisión de PRs (#1658)
+const PR_STALE_MS = 15 * 60 * 1000;        // 15 min — PR sin actividad = stale
 
 let _pollInterval = null;
 let _guardianInterval = null;
@@ -87,9 +88,26 @@ function log(msg) {
     try { fs.appendFileSync(LOG_FILE, "[" + new Date().toISOString() + "] AgentMonitor: " + msg + "\n"); } catch (e) {}
 }
 
+// notify(): solo loguea. Las notificaciones informativas del monitor no van a Telegram
+// porque el usuario no necesita actuar. Solo se usa notifyUser() para cosas que
+// requieren atención inmediata del usuario.
 async function notify(text, silent) {
+    // Strip HTML tags para el log
+    const clean = (text || "").replace(/<[^>]+>/g, "").substring(0, 200);
+    log("(notify→log) " + clean);
+}
+
+// notifyUser(): envía a Telegram — SOLO para situaciones donde el usuario debe actuar
+async function notifyUser(text) {
     if (!tgClient) return;
-    try { await tgClient.sendMessage(text, { silent: !!silent }); } catch (e) { log("Notify error: " + e.message); }
+    try {
+        const flagFile = path.join(HOOKS_DIR, "command-in-progress.flag");
+        if (fs.existsSync(flagFile)) {
+            const age = Date.now() - fs.statSync(flagFile).mtimeMs;
+            if (age < 180000) return;
+        }
+    } catch (e) {}
+    try { await tgClient.sendMessage(text); } catch (e) { log("NotifyUser error: " + e.message); }
 }
 
 // ─── Detección de agentes ────────────────────────────────────────────────────
@@ -557,6 +575,67 @@ async function syncSprintPlanWithGitHub() {
             true
         );
     }
+
+    // ─── Detectar inconsistencia: PR mergeado pero issue sigue abierto ────────
+    // Para cada agente activo o waiting, verificar si tiene PR mergeado
+    // Si sí → cerrar el issue automáticamente y mover a _completed
+    const fixedIssues = [];
+    for (const ag of [...agentes]) {
+        const issueNum = ag.issue;
+        if (!issueNum || completedIssues.has(issueNum)) continue;
+
+        const branch = "agent/" + issueNum + "-" + ag.slug;
+        let prMerged = null;
+        try {
+            const prOut = execSync(
+                '"' + ghCmd + '" pr list --repo intrale/platform --state merged --head ' + branch + ' --json number -q ".[0].number"',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            ).trim();
+            if (prOut && !isNaN(parseInt(prOut, 10))) prMerged = parseInt(prOut, 10);
+        } catch (e) { continue; }
+
+        if (!prMerged) continue;
+
+        // PR mergeado — verificar si issue sigue abierto
+        let issueState;
+        try {
+            issueState = execSync(
+                '"' + ghCmd + '" issue view ' + issueNum + ' --repo intrale/platform --json state -q ".state"',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            ).trim();
+        } catch (e) { continue; }
+
+        if (issueState !== "OPEN") continue;
+
+        // Inconsistencia detectada: PR mergeado pero issue abierto → cerrar issue
+        log("syncSprintPlan: INCONSISTENCIA #" + issueNum + " — PR #" + prMerged + " mergeado pero issue OPEN → cerrando");
+        try {
+            execSync(
+                '"' + ghCmd + '" issue close ' + issueNum + ' --repo intrale/platform --comment "Cerrado automáticamente: PR #' + prMerged + ' ya mergeado."',
+                { encoding: "utf8", timeout: 15000, windowsHide: true }
+            );
+        } catch (e) { log("syncSprintPlan: error cerrando issue #" + issueNum + ": " + e.message); }
+
+        // Mover a _completed
+        const entry = Object.assign({}, ag, { resultado: "ok", completed_at: new Date().toISOString(), pr: prMerged, fixed_by: "sync_inconsistency" });
+        plan._completed.push(entry);
+        completedIssues.add(issueNum);
+        const idx = plan.agentes.findIndex(a => a.issue === issueNum);
+        if (idx !== -1) plan.agentes.splice(idx, 1);
+        planDirty = true;
+        fixedIssues.push("#" + issueNum + " (PR #" + prMerged + ")");
+    }
+
+    if (fixedIssues.length > 0) {
+        try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor-sync"); } catch (e) {}
+        log("syncSprintPlan: inconsistencias corregidas: " + fixedIssues.join(", "));
+        await notify(
+            "🔧 <b>Inconsistencias corregidas</b>\n" +
+            "PR mergeado + issue abierto → issue cerrado:\n" +
+            fixedIssues.map(i => "• " + i).join("\n"),
+            true
+        );
+    }
 }
 
 // ─── Watch-Agentes (polling de estado de agentes) ────────────────────────────
@@ -673,7 +752,7 @@ async function handleAllDone(elapsedMin) {
                 log("Siguiente sprint planificado");
             } catch (e) {
                 log("Error en auto-plan-sprint: " + e.message);
-                await notify("⚠️ <b>Error planificando sprint</b>\n" + e.message.substring(0, 200));
+                await notifyUser("⚠️ <b>Error planificando sprint</b>\n" + e.message.substring(0, 200));
             }
         } else {
             log("auto-plan-sprint.js no encontrado");
@@ -691,7 +770,7 @@ async function handleAllDone(elapsedMin) {
                 }
             } catch (e) {}
         } else {
-            await notify("🚨 <b>Planificación fallida</b>\nRevisa auto-plan-sprint.log y lanza manualmente.");
+            await notifyUser("🚨 <b>Planificación fallida</b>\nRevisa auto-plan-sprint.log y lanza manualmente.");
             return;
         }
     }
@@ -712,11 +791,11 @@ async function handleAllDone(elapsedMin) {
                 await notify("🏃 <b>Siguiente sprint iniciado</b>\nAgentes arrancando...");
             } catch (e) {
                 log("Error arrancando agentes: " + e.message);
-                await notify("⚠️ <b>Error arrancando agentes</b>\n" + e.message.substring(0, 200));
+                await notifyUser("⚠️ <b>Error arrancando agentes</b>\n" + e.message.substring(0, 200));
             }
         } else {
             log("Start-Agente.ps1 no encontrado");
-            await notify("⚠️ <b>Start-Agente.ps1 no encontrado</b>\nLanzar agentes manualmente.");
+            await notifyUser("⚠️ <b>Start-Agente.ps1 no encontrado</b>\nLanzar agentes manualmente.");
         }
 
         // Limpiar ciclo_estado del plan
@@ -1118,7 +1197,7 @@ function moveToCompleted(plan, issueNumber) {
                     finished.motivo = "Recovery por agent-doctor: " + doctorResult.recovery.details;
                     plan._completed.push(finished);
                     log("moveToCompleted: #" + issueNumber + " -> _completed (recovered by doctor)");
-                    notify("\uD83C\uDFE5 <b>Doctor: recovery exitoso #" + issueNumber + "</b>\n" + doctorResult.recovery.details, true);
+                    log("Doctor: recovery exitoso #" + issueNumber + " — " + doctorResult.recovery.details);
                     try { require("./sprint-data.js").saveRoadmapFromPlan(plan, "agent-monitor"); } catch(e2) {}
                     return;
                 }

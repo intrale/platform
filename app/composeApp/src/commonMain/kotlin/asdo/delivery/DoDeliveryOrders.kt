@@ -83,6 +83,7 @@ class DoGetDeliveryOrderDetail(
     }
 }
 
+<<<<<<< HEAD
 class DoGetAvailableDeliveryOrders(
     private val ordersService: CommDeliveryOrdersService
 ) : ToDoGetAvailableDeliveryOrders {
@@ -110,6 +111,24 @@ class DoTakeDeliveryOrder(
         ordersService.takeOrder(orderId).getOrThrow().toDomain()
     }.recoverCatching { throwable ->
         logger.error(throwable) { "Fallo al tomar pedido $orderId" }
+        throw throwable.toDeliveryException()
+    }
+}
+
+class DoGetDeliveryOrderHistory(
+    private val ordersService: CommDeliveryOrdersService
+) : ToDoGetDeliveryOrderHistory {
+
+    private val logger = LoggerFactory.default.newLogger<DoGetDeliveryOrderHistory>()
+
+    override suspend fun execute(): Result<List<DeliveryOrder>> = runCatching {
+        logger.info { "Obteniendo historial de pedidos del repartidor" }
+        ordersService.fetchHistoryOrders().getOrThrow()
+            .map { it.toDomain() }
+            .filter { it.status == DeliveryOrderStatus.DELIVERED || it.status == DeliveryOrderStatus.NOT_DELIVERED }
+            .sortedByDescending { it.eta.orEmpty() }
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al obtener historial de pedidos" }
         throw throwable.toDeliveryException()
     }
 }

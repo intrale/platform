@@ -245,11 +245,23 @@ async function callTTS(text) {
 // ─── Extracción de respuesta de Claude ───────────────────────────────────────
 
 function extractClaudeResponse(result) {
-    if (!result || result.code !== 0) return null;
+    if (!result || result.code !== 0) {
+        _log("extractClaudeResponse: skip (code=" + (result ? result.code : "null") + ")");
+        return null;
+    }
+    if (!result.stdout) {
+        _log("extractClaudeResponse: stdout vacio — Claude no emitio evento result ni texto");
+        return null;
+    }
     try {
         const json = JSON.parse(result.stdout);
-        return json.result || json.text || json.content || null;
+        const text = json.result || json.text || json.content || null;
+        if (!text) {
+            _log("extractClaudeResponse: JSON parseado pero sin result/text/content: " + result.stdout.substring(0, 200));
+        }
+        return text;
     } catch (e) {
+        // stdout no es JSON — usar como texto plano
         return result.stdout || null;
     }
 }
@@ -343,12 +355,20 @@ async function handleVoiceOrAudio(msg) {
             return;
         }
 
-        await _tgApi.sendMessage("🎤 <i>" + _tgApi.escHtml(transcription.substring(0, 300)) + (transcription.length > 300 ? "…" : "") + "</i>");
+        // Marcar flag de voz ANTES de ejecutar Claude para que stop-notify no envíe imagen
+        const voiceFlagFile = require("path").join(
+            process.env.CLAUDE_PROJECT_DIR || "C:\\Workspaces\\Intrale\\platform",
+            ".claude", "hooks", "voice-response-active.flag"
+        );
+        if (isVoice) {
+            try { require("fs").writeFileSync(voiceFlagFile, String(Date.now()), "utf8"); } catch (e) {}
+        }
+
         const result = await _cmdContext.executeClaudeQueued(transcription, [], { useSession: true, skill: null });
         const claudeResponse = extractClaudeResponse(result);
 
-        await _cmdContext.sendResult("🎤 Voz", result);
-
+        // Si es voice y TTS disponible: responder SOLO con audio (sin eco, sin texto, sin imagen)
+        // Asumimos que si el usuario envía audio es porque no puede mirar texto.
         if (isVoice && result.code === 0 && claudeResponse && (_config.elevenlabsApiKey || _config.openaiApiKey)) {
             try {
                 _log("Generando TTS para respuesta (" + claudeResponse.length + " chars)");
@@ -356,8 +376,12 @@ async function handleVoiceOrAudio(msg) {
                 await _tgApi.sendVoiceMessage(audioBuffer);
                 _log("TTS enviado: " + audioBuffer.length + " bytes");
             } catch (ttsErr) {
-                _log("Error generando TTS: " + ttsErr.message);
+                _log("Error generando TTS, fallback a texto: " + ttsErr.message);
+                await _cmdContext.sendResult("🎤 Voz", result);
             }
+        } else {
+            // Sin TTS disponible o error: enviar respuesta como texto
+            await _cmdContext.sendResult("🎤 Voz", result);
         }
 
     } catch (e) {

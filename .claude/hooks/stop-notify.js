@@ -477,6 +477,31 @@ async function processInput() {
     // Rotacion: limpiar sessions "done" con mas de 2h de antiguedad
     cleanOldSessions();
 
+    // Detectar si el commander está procesando un comando del usuario.
+    // Cuando el commander maneja un mensaje (texto o audio), stop-notify NO debe
+    // enviar nada — el commander ya se encarga de la respuesta.
+    try {
+        const cmdFlagFile = path.join(__dirname, "command-in-progress.flag");
+        if (fs.existsSync(cmdFlagFile)) {
+            const flagAge = Date.now() - fs.statSync(cmdFlagFile).mtimeMs;
+            if (flagAge < 180000) { // 3 min
+                log("Comando del commander en progreso — omitiendo stop-notify (commander responde)");
+                return;
+            }
+            try { fs.unlinkSync(cmdFlagFile); } catch (e) {}
+        }
+        const voiceFlagFile = path.join(__dirname, "voice-response-active.flag");
+        if (fs.existsSync(voiceFlagFile)) {
+            const flagAge = Date.now() - fs.statSync(voiceFlagFile).mtimeMs;
+            if (flagAge < 120000) {
+                log("Respuesta de voz activa — omitiendo stop-notify (TTS ya enviado)");
+                try { fs.unlinkSync(voiceFlagFile); } catch (e) {}
+                return;
+            }
+            try { fs.unlinkSync(voiceFlagFile); } catch (e) {}
+        }
+    } catch (e) {}
+
     // Detectar si es ejecución de sprint
     const isSprint = isSprintSession(sessionId);
 

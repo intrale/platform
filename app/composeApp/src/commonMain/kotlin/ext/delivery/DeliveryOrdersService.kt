@@ -63,6 +63,17 @@ class DeliveryOrdersService(
         throw throwable.toDeliveryException()
     }
 
+    override suspend fun fetchHistoryOrders(): Result<List<DeliveryOrderDTO>> = runCatching {
+        logger.info { "[Delivery][History] Solicitando historial de pedidos" }
+        val response = httpClient.get("${BuildKonfig.BASE_URL}${BuildKonfig.DELIVERY}/orders/history") {
+            authorize()
+        }
+        response.toResult(ListSerializer(DeliveryOrderDTO.serializer()))
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "[Delivery][History] Error al obtener historial de pedidos" }
+        throw throwable.toDeliveryException()
+    }
+
     override suspend fun updateOrderStatus(
         orderId: String,
         newStatus: String,

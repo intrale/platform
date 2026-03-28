@@ -156,6 +156,9 @@ async function executeClaudeQueued(prompt, extraArgs, options) {
     activeCommands.set(cmdId, { label, sessionId: null, startTime: Date.now() });
     log("Comando [Cmd #" + cmdId + "] registrado: " + label + " (activos: " + activeCommands.size + ")");
 
+    // Silenciar mensajes automáticos de otros hooks mientras se procesa el comando
+    try { require("./telegram-client").setCommandInProgress(true); } catch (e) {}
+
     // ─── Traza de inicio en terminal ─────────────────────────────────────────
     const _ts0 = new Date().toISOString().substring(11, 19);
     const _displayLabel = _qOpts.cmdLabel || (_qOpts.skill ? "/" + _qOpts.skill : label.substring(0, 60));
@@ -179,6 +182,7 @@ async function executeClaudeQueued(prompt, extraArgs, options) {
         return result;
     } finally {
         activeCommands.delete(cmdId);
+        try { require("./telegram-client").setCommandInProgress(false); } catch (e) {}
         log("Comando [Cmd #" + cmdId + "] finalizado (activos: " + activeCommands.size + ")");
     }
 }
@@ -221,6 +225,7 @@ function executeClaude(prompt, extraArgs, options) {
         let stderr = "";
         let _finalResultJson = null;
         let _toolCount = 0;
+        let _lastAssistantText = ""; // Fallback: último texto del assistant (para TTS cuando no hay evento result)
 
         // ─── Procesamiento stream-json en tiempo real ─────────────────────────
         const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
@@ -243,6 +248,7 @@ function executeClaude(prompt, extraArgs, options) {
                                 : "  [" + ts + "] [" + _toolCount + "] " + block.name;
                             console.log("\x1b[33m" + tLabel + "\x1b[0m");
                         } else if (block.type === "text" && block.text) {
+                            _lastAssistantText = block.text; // Capturar para TTS fallback
                             let preview = block.text;
                             if (preview.length > 120) preview = preview.substring(0, 120) + "...";
                             console.log("\x1b[90m  [" + ts + "] > " + preview + "\x1b[0m");
@@ -263,7 +269,15 @@ function executeClaude(prompt, extraArgs, options) {
             if (resolved) return;
             resolved = true;
             clearTimeout(timer);
-            const stdout = _finalResultJson ? JSON.stringify(_finalResultJson) : "";
+            // Inyectar último texto del assistant si el campo result está vacío
+            // Claude stream-json emite result:"" pero el texto real está en bloques text del assistant
+            if (_finalResultJson && !_finalResultJson.result && _lastAssistantText) {
+                _finalResultJson.result = _lastAssistantText;
+            }
+            let stdout = _finalResultJson ? JSON.stringify(_finalResultJson) : "";
+            if (!stdout && _lastAssistantText) {
+                stdout = JSON.stringify({ type: "result", result: _lastAssistantText });
+            }
             log("claude terminó con código " + code + " (stdout: " + stdout.length + " bytes, stderr: " + stderr.length + " bytes)");
             if (stderr) log("STDERR: " + stderr.substring(0, 500));
 
@@ -357,9 +371,14 @@ async function sendResult(label, result) {
         rawText = result.stdout || "(sin output)";
     }
 
+    // Guardar respuesta completa para TTS bajo demanda
+    lastFullResponse.save(rawText, label);
+
+    // Botón "Escuchar" siempre disponible para pedir audio de la respuesta
+    const listenBtn = { text: "🔊 Escuchar", callback_data: "tts_listen" };
+
     // Resumen inteligente (#1681): si la respuesta es larga, resumir y ofrecer detalle
     if (!responseSummarizer.isShort(rawText)) {
-        lastFullResponse.save(rawText, label);
         const summary = responseSummarizer.summarize(rawText);
         output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(summary);
         try {
@@ -368,7 +387,7 @@ async function sendResult(label, result) {
                 chat_id: tgApi.getChatId(),
                 text: output,
                 parse_mode: "HTML",
-                reply_markup: { inline_keyboard: [[{ text: "📋 Ver detalle", callback_data: "show_detail" }]] }
+                reply_markup: { inline_keyboard: [[{ text: "📋 Ver detalle", callback_data: "show_detail" }, listenBtn]] }
             }, 8000);
             if (r && r.message_id) registerMessage(r.message_id, "command");
         } catch (e) {
@@ -377,7 +396,18 @@ async function sendResult(label, result) {
         }
     } else {
         output = cmdPrefix + "✅ <b>" + tgApi.escHtml(label) + "</b>\n\n" + tgApi.escHtml(rawText);
-        await tgApi.sendLongMessage(output);
+        try {
+            const { registerMessage } = require("./telegram-message-registry");
+            const r = await tgApi.telegramPost("sendMessage", {
+                chat_id: tgApi.getChatId(),
+                text: output,
+                parse_mode: "HTML",
+                reply_markup: { inline_keyboard: [[listenBtn]] }
+            }, 8000);
+            if (r && r.message_id) registerMessage(r.message_id, "command");
+        } catch (e) {
+            await tgApi.sendLongMessage(output);
+        }
     }
 }
 

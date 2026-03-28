@@ -294,7 +294,15 @@ private fun OrderStatusSection(
                             Text(text = Txt(MessageKey.delivery_order_action_not_delivered))
                         }
                     }
-                    else -> { /* Sin acciones para DELIVERED, NOT_DELIVERED y UNKNOWN */ }
+                    DeliveryOrderStatus.DELIVERED,
+                    DeliveryOrderStatus.NOT_DELIVERED -> {
+                        Text(
+                            text = Txt(MessageKey.delivery_history_readonly_banner),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    else -> { /* Sin acciones para UNKNOWN */ }
                 }
             }
         }

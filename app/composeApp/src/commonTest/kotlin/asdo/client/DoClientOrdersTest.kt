@@ -4,6 +4,8 @@ import ext.client.ClientExceptionResponse
 import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
 import ar.com.intrale.shared.client.ClientOrderItemDTO
+import ar.com.intrale.shared.client.CreateClientOrderRequestDTO
+import ar.com.intrale.shared.client.CreateClientOrderResponseDTO
 import ext.client.CommClientOrdersService
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -35,12 +37,20 @@ private val sampleDetailDTO = ClientOrderDetailDTO(
     address = null
 )
 
+private val sampleCreateResponse = CreateClientOrderResponseDTO(
+    orderId = "ord-new-1",
+    shortCode = "AB23CD",
+    status = "PENDING"
+)
+
 private class FakeClientOrdersService(
     private val listResult: Result<List<ClientOrderDTO>> = Result.success(sampleOrderDTOs),
-    private val detailResult: Result<ClientOrderDetailDTO> = Result.success(sampleDetailDTO)
+    private val detailResult: Result<ClientOrderDetailDTO> = Result.success(sampleDetailDTO),
+    private val createResult: Result<CreateClientOrderResponseDTO> = Result.success(sampleCreateResponse)
 ) : CommClientOrdersService {
     override suspend fun listOrders(): Result<List<ClientOrderDTO>> = listResult
     override suspend fun fetchOrderDetail(orderId: String): Result<ClientOrderDetailDTO> = detailResult
+    override suspend fun createOrder(request: CreateClientOrderRequestDTO): Result<CreateClientOrderResponseDTO> = createResult
 }
 
 private val sampleDeliveredOrder = ClientOrderDetail(
@@ -209,6 +219,66 @@ class DoRepeatOrderTest {
         val repeatResult = result.getOrThrow()
         assertTrue(repeatResult.addedItems.isEmpty())
         assertTrue(repeatResult.skippedItems.isEmpty())
+    }
+}
+
+// endregion
+
+// region DoCreateClientOrder
+
+class DoCreateClientOrderTest {
+
+    private val sampleParams = CreateClientOrderParams(
+        items = listOf(
+            CreateClientOrderItem(
+                productId = "prod-1", productName = "Producto A",
+                quantity = 2, unitPrice = 50.0
+            ),
+            CreateClientOrderItem(
+                productId = "prod-2", productName = "Producto B",
+                quantity = 1, unitPrice = 30.0
+            )
+        ),
+        addressId = "addr-1",
+        paymentMethodId = "pm-1",
+        notes = "Sin cebolla"
+    )
+
+    @Test
+    fun `crear pedido exitoso retorna orderId y shortCode`() = runTest {
+        val sut = DoCreateClientOrder(FakeClientOrdersService())
+
+        val result = sut.execute(sampleParams)
+
+        assertTrue(result.isSuccess)
+        val createResult = result.getOrThrow()
+        assertEquals("ord-new-1", createResult.orderId)
+        assertEquals("AB23CD", createResult.shortCode)
+        assertEquals("PENDING", createResult.status)
+    }
+
+    @Test
+    fun `crear pedido fallido retorna ClientExceptionResponse`() = runTest {
+        val sut = DoCreateClientOrder(
+            FakeClientOrdersService(
+                createResult = Result.failure(RuntimeException("Error de red"))
+            )
+        )
+
+        val result = sut.execute(sampleParams)
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is ClientExceptionResponse)
+    }
+
+    @Test
+    fun `crear pedido sin notas envia null como notas`() = runTest {
+        val paramsWithoutNotes = sampleParams.copy(notes = null)
+        val sut = DoCreateClientOrder(FakeClientOrdersService())
+
+        val result = sut.execute(paramsWithoutNotes)
+
+        assertTrue(result.isSuccess)
     }
 }
 

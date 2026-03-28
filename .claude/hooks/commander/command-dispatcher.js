@@ -613,7 +613,8 @@ async function handleFreetext(text) {
     const cmdNum = _cmdContext.peekNextCmdNumber();
     const parallelTag = _cmdContext.getActiveCount() > 0 ? " [Cmd #" + cmdNum + "]" : "";
     // P6-UX: Sin eco del input — responder directamente
-    await _cmdContext.executeClaudeQueued(text, [], { useSession: true, skill: null });
+    const result = await _cmdContext.executeClaudeQueued(text, [], { useSession: true, skill: null });
+    await _cmdContext.sendResult("💬 Respuesta", result);
 }
 
 async function handleDetalle() {
