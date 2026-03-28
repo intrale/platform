@@ -1238,11 +1238,10 @@ async function mainLoop() {
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
 
-// Escribir PID para que el watchdog pueda verificar
-fs.writeFileSync(path.join(PIPELINE, 'pulpo.pid'), String(process.pid));
+// --- SINGLETON ---
+require('./singleton')('pulpo');
 
 mainLoop().then(() => {
   log('pulpo', 'Pulpo finalizado');
-  try { fs.unlinkSync(path.join(PIPELINE, 'pulpo.pid')); } catch {}
   process.exit(0);
 });

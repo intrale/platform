@@ -156,7 +156,6 @@ async function main() {
   }
 }
 
-fs.writeFileSync(path.join(PIPELINE, 'svc-telegram.pid'), String(process.pid));
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+// --- SINGLETON ---
+require('./singleton')('svc-telegram');
 main();

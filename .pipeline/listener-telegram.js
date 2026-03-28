@@ -211,10 +211,7 @@ async function pollLoop() {
   }
 }
 
-// --- PID file ---
-fs.writeFileSync(path.join(PIPELINE, 'listener.pid'), String(process.pid));
-
-process.on('SIGINT', () => { log('Cerrando listener'); process.exit(0); });
-process.on('SIGTERM', () => { log('Cerrando listener'); process.exit(0); });
+// --- SINGLETON ---
+require('./singleton')('listener');
 
 pollLoop().catch(e => { log(`Fatal: ${e.message}`); process.exit(1); });
