@@ -13,7 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = path.resolve(ROOT, '.pipeline');
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
-const CLAUDE_BIN = process.env.CLAUDE_BIN || 'C:\\Users\\Administrator\\AppData\\Roaming\\npm\\claude.cmd';
+const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
 // --- Utilidades ---
@@ -74,6 +74,24 @@ function fileAgeMinutes(filepath) {
     const stat = fs.statSync(filepath);
     return (Date.now() - stat.mtimeMs) / 60000;
   } catch { return 0; }
+}
+
+/** Buscar si un issue ya existe en alguna carpeta del pipeline */
+function issueExistsInPipeline(issueNum) {
+  const prefix = issueNum + '.';
+  function searchDir(dir) {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (searchDir(path.join(dir, entry.name))) return true;
+        } else if (entry.name.startsWith(prefix) && entry.name !== '.gitkeep') {
+          return true;
+        }
+      }
+    } catch {}
+    return false;
+  }
+  return searchDir(PIPELINE);
 }
 
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
@@ -224,7 +242,7 @@ function determinarDevSkill(issue, config) {
   // Por ahora: intentar leer labels del issue de GitHub
   try {
     const result = execSync(
-      `"${GH_BIN}" issue view ${issue} --json labels --jq ".labels[].name" 2>/dev/null`,
+      `"${GH_BIN}" issue view ${issue} --json labels --jq ".labels[].name"`,
       { cwd: ROOT, encoding: 'utf8', timeout: 10000 }
     ).trim().split('\n');
 
@@ -294,7 +312,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const rol = fs.readFileSync(rolPrompt, 'utf8');
   const workData = readYaml(trabajandoPath);
 
-  const prompt = `${base}\n\n${rol}\n\n---\n\nArchivo de trabajo: ${path.basename(trabajandoPath)}\nPath: ${trabajandoPath}\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;
+  // Escribir system prompt (rol) a archivo y user prompt corto como argumento
+  const systemFile = path.join(LOG_DIR, `agent-${issue}-${skill}-system.txt`);
+  fs.writeFileSync(systemFile, `${base}\n\n${rol}`);
+
+  const userPrompt = `Archivo de trabajo: ${path.basename(trabajandoPath)}\nPath: ${trabajandoPath}\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
@@ -307,21 +329,20 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
 
       if (!fs.existsSync(worktreePath)) {
-        execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main 2>&1`, {
+        execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main`, {
           cwd: ROOT, encoding: 'utf8', timeout: 30000
         });
         log('lanzamiento', `Worktree creado: ${worktreePath}`);
       }
     } catch (e) {
       log('lanzamiento', `Error creando worktree para #${issue}: ${e.message}`);
-      // Intentar sin worktree no es opción para dev, devolver a pendiente
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       moveFile(trabajandoPath, pendienteDir);
       return;
     }
   }
 
-  const args = ['-p', prompt, '--no-input'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--max-turns', '3'];
   if (needsWorktree) {
     args.push('--cwd', worktreePath);
   }
@@ -332,6 +353,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     cwd: needsWorktree ? worktreePath : ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
+    shell: true,
     env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase }
   });
 
@@ -483,6 +505,128 @@ function brazoHuerfanos(config) {
 }
 
 // =============================================================================
+// BRAZO 5: COMMANDER — Procesa mensajes de Telegram
+// =============================================================================
+
+function brazoCommander(config) {
+  const commanderPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
+  const commanderTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
+  const commanderListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
+  const archivos = listWorkFiles(commanderPendiente);
+
+  if (archivos.length === 0) return;
+
+  // Commander es singleton — verificar si ya hay uno corriendo
+  const key = processKey('commander', 'telegram');
+  if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) return;
+
+  // Tomar TODOS los mensajes pendientes (el commander los procesa en lote)
+  const mensajes = [];
+  for (const archivo of archivos) {
+    try {
+      const trabajandoPath = moveFile(archivo.path, commanderTrabajando);
+      const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      mensajes.push({ ...data, _path: trabajandoPath });
+    } catch (e) {
+      log('commander', `Error moviendo ${archivo.name}: ${e.message}`);
+    }
+  }
+
+  if (mensajes.length === 0) return;
+
+  // Construir contexto con historial
+  const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
+  let historial = '';
+  try {
+    const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n').slice(-50);
+    historial = '\nHistorial reciente:\n' + lines.join('\n');
+  } catch {}
+
+  // Construir prompt con los mensajes
+  const cmdPrompt = fs.readFileSync(path.join(PIPELINE, 'roles', 'commander.md'), 'utf8');
+  const mensajesTexto = mensajes.map(m => `[${m.from}] ${m.text || '(foto/audio)'}`).join('\n');
+
+  // System prompt al archivo, user prompt corto como argumento
+  const systemPromptFile = path.join(LOG_DIR, 'commander-system.txt');
+  fs.writeFileSync(systemPromptFile, cmdPrompt);
+
+  const userPrompt = `Mensajes de Telegram:\n${mensajesTexto}\n\nGenera la respuesta para cada mensaje. Solo texto, sin comandos.`;
+
+  log('commander', `Lanzando commander para ${mensajes.length} mensaje(s)`);
+
+  try {
+    const respuesta = execSync(
+      'claude -p - --output-format text --max-turns 1',
+      { cwd: ROOT, encoding: 'utf8', timeout: 120000, input: userPrompt }
+    ).trim();
+
+    log('commander', `Commander respondió: ${respuesta.length} chars`);
+
+    // Enviar respuesta a Telegram
+    if (respuesta) {
+      sendTelegram(respuesta);
+    } else {
+      sendTelegram('(Commander no genero respuesta)');
+    }
+
+    // Guardar en historial
+    for (const m of mensajes) {
+      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: m.text, timestamp: new Date().toISOString() }) + '\n');
+    }
+    if (respuesta) {
+      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+    }
+
+    const logFile = path.join(LOG_DIR, 'commander.log');
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] OK\n${respuesta}\n---\n`);
+
+  } catch (e) {
+    log('commander', `Error: ${e.message}`);
+    const logFile = path.join(LOG_DIR, 'commander.log');
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ERROR\n${e.message}\n---\n`);
+  }
+
+  // Mover mensajes a listo
+  for (const m of mensajes) {
+    try { moveFile(m._path, commanderListo); } catch {}
+  }
+
+  activeProcesses.delete(key);
+}
+
+function sendTelegram(text) {
+  const token = getTelegramToken();
+  const chatId = getTelegramChatId();
+  if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return; }
+
+  const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
+
+  // Envío sincrónico via curl para garantizar que se complete antes de continuar
+  try {
+    const payload = JSON.stringify({ chat_id: chatId, text: msg });
+    execSync(
+      `curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" -H "Content-Type: application/json" -d @-`,
+      { input: payload, encoding: 'utf8', timeout: 15000 }
+    );
+    log('telegram', `Enviado (${msg.length} chars)`);
+  } catch (e) {
+    log('telegram', `Error enviando: ${e.message}`);
+  }
+}
+
+function getTelegramToken() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ROOT, '.claude', 'hooks', 'telegram-config.json'), 'utf8')).bot_token;
+  } catch { return ''; }
+}
+
+function getTelegramChatId() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ROOT, '.claude', 'hooks', 'telegram-config.json'), 'utf8')).chat_id;
+  } catch { return ''; }
+}
+
+// =============================================================================
 // BRAZO 4: INTAKE — Lee issues de GitHub y los mete al pipeline
 // =============================================================================
 
@@ -504,7 +648,7 @@ function brazoIntake(config) {
     try {
       // Consultar GitHub por issues con el label
       const result = execSync(
-        `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50 2>/dev/null`,
+        `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50`,
         { cwd: ROOT, encoding: 'utf8', timeout: 30000 }
       );
       const issues = JSON.parse(result || '[]');
@@ -523,13 +667,7 @@ function brazoIntake(config) {
         const issueNum = String(issue.number);
 
         // Deduplicación: verificar que el issue no esté ya en el pipeline
-        try {
-          const existing = execSync(
-            `find "${PIPELINE}" -name "${issueNum}.*" -not -name ".gitkeep" 2>/dev/null`,
-            { cwd: ROOT, encoding: 'utf8', timeout: 5000 }
-          ).trim();
-          if (existing) continue; // Ya está en el pipeline
-        } catch { /* si find falla, intentar meter igual */ }
+        if (issueExistsInPipeline(issueNum)) continue;
 
         // Crear archivos en pendiente/ de la fase de entrada
         const skills = pipelineConfig.skills_por_fase[faseEntrada] || [];
@@ -588,10 +726,11 @@ async function mainLoop() {
 
       if (!paused) {
         const config = loadConfig(); // Reload cada ciclo para hot-reload
-        brazoIntake(config);    // Primero: traer trabajo nuevo de GitHub
-        brazoBarrido(config);   // Segundo: promover entre fases
-        brazoLanzamiento(config); // Tercero: asignar trabajo a agentes
-        brazoHuerfanos(config); // Cuarto: recuperar trabajo trabado
+        brazoCommander(config); // Primero: responder mensajes de Telegram
+        brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
+        brazoBarrido(config);   // Tercero: promover entre fases
+        brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
+        brazoHuerfanos(config); // Quinto: recuperar trabajo trabado
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
