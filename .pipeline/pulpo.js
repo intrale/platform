@@ -1007,17 +1007,24 @@ REGLAS:
 
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
+        // Escribir prompt a archivo temporal (evita problemas de stdin + cmd.exe en Windows)
+        const promptFile = path.join(LOG_DIR, `cmd-prompt-${Date.now()}.txt`);
+        fs.writeFileSync(promptFile, userPrompt);
+
         const { spawnSync: spSync } = require('child_process');
         const claudeResult = spSync(CLAUDE_BIN, [
-          '-p', '-',
+          '-p', userPrompt.length > 2000 ? `Leé el archivo ${promptFile} y seguí las instrucciones que contiene.` : userPrompt,
           '--output-format', 'json',
           '--max-turns', '20',
           '--dangerously-skip-permissions',
           '--permission-mode', 'bypassPermissions'
         ], {
-          cwd: ROOT, encoding: 'utf8', timeout: 300000, input: userPrompt,
+          cwd: ROOT, encoding: 'utf8', timeout: 300000,
           shell: true, windowsHide: true
         });
+
+        // Limpiar archivo temporal
+        try { fs.unlinkSync(promptFile); } catch {}
         if (claudeResult.error) throw claudeResult.error;
         const rawOut = (claudeResult.stdout || '').trim();
         // claude --output-format json devuelve: {"type":"result","result":"texto",...}
