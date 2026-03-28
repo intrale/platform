@@ -1090,28 +1090,24 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
             log('commander', `Progreso: ${msg}`);
           }, 45000);
 
-          const timer = setTimeout(() => {
-            log('commander', `Timeout 5min — matando claude PID ${proc.pid}`);
-            try { proc.kill('SIGKILL'); } catch {}
-          }, 300000);
+          // Sin timeout — Claude trabaja todo lo que necesite
+          // Los mensajes de progreso mantienen al usuario informado
 
           proc.on('exit', (code) => {
-            clearTimeout(timer);
             clearInterval(progressTimer);
-            log('commander', `Claude terminó (code=${code}, tools=${toolCount}, lastText=${(lastText||'').length}chars)`);
+            const elapsed = Math.round((Date.now() - startTime) / 1000);
+            log('commander', `Claude terminó (code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
             if (finalResult?.result) {
               resolve(finalResult.result);
             } else if (lastText) {
               resolve(lastText);
             } else {
               log('commander', `stderr: ${stderr.slice(0, 300)}`);
-              // SIEMPRE devolver algo — nunca dejar al usuario sin respuesta
-              resolve(`⏱️ Se agotó el tiempo procesando tu pedido (${toolCount} operaciones en 5 min). Intentá de nuevo o con algo más puntual.`);
+              resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
             }
           });
 
           proc.on('error', (e) => {
-            clearTimeout(timer);
             clearInterval(progressTimer);
             reject(e);
           });
