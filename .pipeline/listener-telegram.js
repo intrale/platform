@@ -127,12 +127,27 @@ async function downloadTelegramFile(fileId, ext) {
 
 // --- Enqueue message for Commander ---
 
+// Deduplicación: trackear últimos message_id procesados
+const processedMessageIds = new Set();
+
 async function enqueueMessage(update) {
   const msg = update.message;
   if (!msg) return;
 
   // Solo procesar mensajes del chat autorizado
   if (String(msg.chat.id) !== String(CHAT_ID)) return;
+
+  // Deduplicar: no procesar el mismo message_id dos veces
+  if (processedMessageIds.has(msg.message_id)) {
+    log(`Duplicado ignorado: message_id=${msg.message_id}`);
+    return;
+  }
+  processedMessageIds.add(msg.message_id);
+  // Limpiar set si crece mucho (mantener últimos 100)
+  if (processedMessageIds.size > 100) {
+    const arr = [...processedMessageIds];
+    arr.slice(0, arr.length - 100).forEach(id => processedMessageIds.delete(id));
+  }
 
   const id = `${Date.now()}-${msg.message_id}`;
 
