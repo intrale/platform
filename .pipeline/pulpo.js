@@ -1105,7 +1105,8 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
               resolve(lastText);
             } else {
               log('commander', `stderr: ${stderr.slice(0, 300)}`);
-              resolve(null);
+              // SIEMPRE devolver algo — nunca dejar al usuario sin respuesta
+              resolve(`⏱️ Se agotó el tiempo procesando tu pedido (${toolCount} operaciones en 5 min). Intentá de nuevo o con algo más puntual.`);
             }
           });
 
