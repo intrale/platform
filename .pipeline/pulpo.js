@@ -1051,8 +1051,8 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
                   if (b.type === 'text' && b.text) lastText = b.text;
                   if (b.type === 'tool_use') {
                     toolCount++;
-                    const desc = b.input?.description || b.input?.command?.slice(0, 60) || b.name || '';
-                    log('commander', `  [tool ${toolCount}] ${b.name}: ${desc.slice(0, 80)}`);
+                    lastToolDesc = b.input?.description || b.input?.command?.slice(0, 50) || b.name || '';
+                    log('commander', `  [tool ${toolCount}] ${b.name}: ${lastToolDesc.slice(0, 80)}`);
                   }
                 }
               } else if (evt.type === 'result') {
@@ -1064,20 +1064,35 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
           let stderr = '';
           proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-          // Mensajes de progreso periódicos mientras Claude trabaja
-          const progressMsgs = [
-            '⏳ Aguantame que lo estoy revisando...',
-            '🔍 Sigo en eso, ya ejecuté varias verificaciones...',
-            '⚙️ Esto está costando pero ya lo tengo...',
-            '🔧 Casi listo, dame un toque más...',
-          ];
-          let progressIdx = 0;
+          // Mensajes de progreso con contexto real de lo que se está haciendo
+          let lastToolDesc = '';
+          let progressCount = 0;
+          const usedMsgs = new Set();
+          const startTime = Date.now();
           const progressTimer = setInterval(() => {
-            if (progressIdx < progressMsgs.length) {
-              sendTelegram(progressMsgs[progressIdx]);
-              log('commander', `Progreso [${progressIdx}]: ${progressMsgs[progressIdx]}`);
-              progressIdx++;
-            }
+            progressCount++;
+            const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+            const ctx = lastToolDesc ? lastToolDesc.slice(0, 45) : '';
+
+            // Pool de mensajes — nunca repetir
+            const pool = [
+              ctx ? `🔍 Estoy revisando: ${ctx}` : '🔍 Estoy analizando tu pedido...',
+              `⚙️ Ya van ${toolCount} operaciones, ${elapsedSec}s... sigo en eso`,
+              ctx ? `🔧 Ahora estoy con: ${ctx}` : '🔧 Ejecutando verificaciones...',
+              `⏳ Llevamos ${elapsedSec}s, ${toolCount} pasos. Aguantame que ya sale`,
+              ctx ? `💡 Revisando ${ctx}... esto lleva un toque` : '💡 Estoy investigando, un momento',
+              `💪 ${toolCount} pasos hechos en ${elapsedSec}s. Ya casi termino`,
+              `🔄 Sigo laburando — esto necesita varias verificaciones`,
+              `📋 Ya hice ${toolCount} chequeos. Dame un toque más que cierro`,
+            ];
+
+            // Elegir uno que no se haya usado
+            let msg = pool.find(m => !usedMsgs.has(m));
+            if (!msg) msg = `⏳ ${elapsedSec}s, ${toolCount} operaciones... ya termino`;
+            usedMsgs.add(msg);
+
+            sendTelegram(msg);
+            log('commander', `Progreso: ${msg}`);
           }, 45000); // Cada 45 segundos
 
           const timer = setTimeout(() => {
