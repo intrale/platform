@@ -557,7 +557,7 @@ async function brazoCommander(config) {
     mensajesDesc.push(desc);
   }
 
-  const userPrompt = `Mensajes de Telegram a responder:\n${mensajesDesc.join('\n')}\n\nResponde a cada mensaje de forma concisa.`;
+  const userPrompt = `IMPORTANTE: Solo genera texto plano como respuesta. NO uses herramientas, NO ejecutes comandos, NO hagas curl ni Bash. Tu output se envía directamente a Telegram.\n\nMensajes de Telegram a responder:\n${mensajesDesc.join('\n')}\n\nResponde de forma concisa y amigable en español argentino.`;
 
   // Construir args de claude
   const claudeArgs = ['-p', '-', '--output-format', 'text'];
@@ -574,28 +574,29 @@ async function brazoCommander(config) {
     log('commander', `Commander respondió: ${respuesta.length} chars`);
 
     // Enviar respuesta a Telegram
-    // Si algún mensaje era audio, responder con audio (TTS)
-    const hasVoice = mensajes.some(m => m.voice);
-    if (respuesta && hasVoice) {
+    let enviado = false;
+
+    if (respuesta && mensajes.some(m => m.voice)) {
+      // Audio → responder SOLO con audio TTS
       const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
-      log('commander', 'Generando TTS para respuesta de audio...');
+      log('commander', 'Generando TTS...');
       const audioBuffer = await textToSpeech(respuesta);
       if (audioBuffer) {
-        const sent = await sendVoiceTelegram(audioBuffer, botToken, getTelegramChatId());
-        if (sent) {
-          log('telegram', `Audio enviado (${audioBuffer.length} bytes)`);
-        } else {
-          log('telegram', 'Error enviando audio, fallback a texto');
-          sendTelegram(respuesta);
-        }
-      } else {
-        log('telegram', 'TTS no disponible, enviando texto');
+        enviado = await sendVoiceTelegram(audioBuffer, botToken, getTelegramChatId());
+        if (enviado) log('telegram', `Audio enviado (${audioBuffer.length} bytes)`);
+      }
+      // Fallback a texto solo si TTS falló
+      if (!enviado) {
+        log('telegram', 'TTS falló, fallback a texto');
         sendTelegram(respuesta);
+        enviado = true;
       }
     } else if (respuesta) {
       sendTelegram(respuesta);
+      enviado = true;
     } else {
       sendTelegram('(Commander no genero respuesta)');
+      enviado = true;
     }
 
     // Guardar en historial
