@@ -1013,6 +1013,7 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
           const args = [
             '-p', '-',
             '--output-format', 'stream-json',
+            '--verbose',
             '--max-turns', '20',
             '--dangerously-skip-permissions',
             '--permission-mode', 'bypassPermissions'
@@ -1080,7 +1081,7 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
         });
         log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
-        log('commander', `Claude respondió: ${respuesta.length} chars`);
+        log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
         // Actualizar sesión con respuesta de Claude
         session.lastCommand = 'chat';
