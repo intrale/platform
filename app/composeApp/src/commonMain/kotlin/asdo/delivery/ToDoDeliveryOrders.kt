@@ -17,3 +17,7 @@ interface ToDoUpdateDeliveryOrderStatus {
 interface ToDoGetDeliveryOrderDetail {
     suspend fun execute(orderId: String): Result<DeliveryOrderDetail>
 }
+
+interface ToDoGetDeliveryOrderHistory {
+    suspend fun execute(): Result<List<DeliveryOrder>>
+}

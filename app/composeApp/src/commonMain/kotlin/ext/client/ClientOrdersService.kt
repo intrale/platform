@@ -6,13 +6,19 @@ import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
 import ar.com.intrale.shared.client.ClientOrderDetailResponse
 import ar.com.intrale.shared.client.ClientOrdersResponse
+import ar.com.intrale.shared.client.CreateClientOrderRequestDTO
+import ar.com.intrale.shared.client.CreateClientOrderResponseDTO
 import ext.storage.CommKeyValueStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -80,6 +86,27 @@ class ClientOrdersService(
             return Json.decodeFromString(ClientOrderDetailDTO.serializer(), bodyText)
         }
         throw bodyText.toClientException()
+    }
+
+    override suspend fun createOrder(request: CreateClientOrderRequestDTO): Result<CreateClientOrderResponseDTO> {
+        return try {
+            logger.info { "Creando pedido con ${request.items.size} items" }
+            val response = httpClient.post("${BuildKonfig.BASE_URL}${BuildKonfig.BUSINESS}/client/orders") {
+                authorize()
+                contentType(ContentType.Application.Json)
+                setBody(Json.encodeToString(CreateClientOrderRequestDTO.serializer(), request))
+            }
+            val bodyText = response.bodyAsText()
+            if (response.status.isSuccess()) {
+                val parsed = Json.decodeFromString(CreateClientOrderResponseDTO.serializer(), bodyText)
+                Result.success(parsed)
+            } else {
+                Result.failure(bodyText.toClientException())
+            }
+        } catch (throwable: Throwable) {
+            logger.error(throwable) { "Error al crear pedido" }
+            Result.failure(throwable.toClientException())
+        }
     }
 
     private fun String.toClientException(): ClientExceptionResponse =
