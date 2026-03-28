@@ -1006,30 +1006,14 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
         });
         if (claudeResult.error) throw claudeResult.error;
         const rawOut = (claudeResult.stdout || '').trim();
-        // output-format json: extraer el último message assistant de tipo text
+        // claude --output-format json devuelve: {"type":"result","result":"texto final",...}
         try {
           const parsed = JSON.parse(rawOut);
-          // json format: array of messages o un solo result
-          if (Array.isArray(parsed)) {
-            // Buscar el último bloque de texto del assistant
-            const textBlocks = parsed
-              .filter(m => m.role === 'assistant' && m.type !== 'tool_use')
-              .flatMap(m => (m.content || []).filter(b => b.type === 'text').map(b => b.text));
-            respuesta = textBlocks[textBlocks.length - 1] || '';
-          } else if (parsed.result) {
-            respuesta = parsed.result;
-          } else if (parsed.content) {
-            const texts = (Array.isArray(parsed.content) ? parsed.content : [parsed.content])
-              .filter(b => b.type === 'text').map(b => b.text);
-            respuesta = texts.join('\n');
-          } else {
-            respuesta = rawOut;
-          }
+          respuesta = parsed.result || rawOut;
         } catch {
-          // Si no es JSON válido, usar raw output (últimas 20 líneas)
-          const lines = rawOut.split('\n');
-          respuesta = lines.length > 20 ? lines.slice(-20).join('\n').trim() : rawOut;
+          respuesta = rawOut;
         }
+        log('commander', `Claude respondió (json): ${(respuesta || '').length} chars`);
 
         log('commander', `Claude respondió: ${respuesta.length} chars`);
 

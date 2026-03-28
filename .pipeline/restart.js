@@ -1,9 +1,16 @@
 #!/usr/bin/env node
-// restart.js — Reinicio seguro de todos los componentes del pipeline
-// Mata TODOS los procesos del pipeline (por command line, no por PID) y relanza.
-// Uso: node .pipeline/restart.js
+// restart.js — Reinicio drástico y seguro del pipeline V2
+//
+// Estrategia: matar TODOS los node.exe del pipeline (por taskkill),
+// limpiar PID files, y relanzar. El pipeline es idempotente —
+// el estado vive en el filesystem, no en memoria.
+//
+// Uso:
+//   node .pipeline/restart.js          → kill all + relaunch
+//   node .pipeline/restart.js stop     → kill all
+//   node .pipeline/restart.js status   → verificar estado
 
-const { execSync, spawn } = require('child_process');
+const { execSync, spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -11,152 +18,179 @@ const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
 
 const COMPONENTS = [
-  { name: 'pulpo', script: 'pulpo.js', pidFile: 'pulpo.pid' },
-  { name: 'listener', script: 'listener-telegram.js', pidFile: 'listener.pid' },
-  { name: 'svc-telegram', script: 'servicio-telegram.js', pidFile: 'svc-telegram.pid' },
-  { name: 'svc-github', script: 'servicio-github.js', pidFile: 'svc-github.pid' },
-  { name: 'svc-drive', script: 'servicio-drive.js', pidFile: 'svc-drive.pid' },
+  { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
+  { name: 'listener', script: 'listener-telegram.js', pid: 'listener.pid' },
+  { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
+  { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
+  { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
 ];
 
+const SCRIPT_NAMES = COMPONENTS.map(c => c.script);
+
 function log(msg) {
-  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  console.log(`[${ts}] ${msg}`);
+  console.log(`[${new Date().toISOString().replace('T',' ').slice(0,19)}] ${msg}`);
 }
 
-// --- PASO 1: Matar todos los procesos del pipeline ---
+function sleep(ms) {
+  spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${ms})`], { timeout: ms + 2000 });
+}
+
+// --- KILL: drástico — matar todo lo que sea del pipeline ---
 
 function killAll() {
-  log('=== Matando procesos del pipeline ===');
+  log('=== STOP ===');
+
+  // Obtener TODOS los PIDs de node.exe que corren scripts del pipeline
+  const pidsToKill = new Set();
 
   try {
     const output = execSync(
       'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /format:csv',
       { encoding: 'utf8', timeout: 10000 }
     );
-
-    let killed = 0;
     for (const line of output.split('\n')) {
+      // Matar si tiene .pipeline/ en su command line
       if (!line.includes('.pipeline')) continue;
+      // No matarse a sí mismo
       const match = line.match(/(\d+)\s*$/);
       if (!match) continue;
-      const pid = match[1];
-
-      // No matarse a sí mismo
-      if (parseInt(pid) === process.pid) continue;
-
-      try {
-        execSync(`taskkill /PID ${pid} /F`, { timeout: 5000, windowsHide: true });
-        const script = COMPONENTS.find(c => line.includes(c.script));
-        log(`  Killed ${script ? script.name : 'unknown'} (PID ${pid})`);
-        killed++;
-      } catch {}
+      const pid = parseInt(match[1]);
+      if (pid === process.pid) continue;
+      pidsToKill.add(pid);
     }
-
-    if (killed === 0) log('  Ningún proceso del pipeline encontrado');
-    else log(`  ${killed} proceso(s) eliminado(s)`);
   } catch (e) {
     log(`  Error listando procesos: ${e.message}`);
   }
 
+  // También agregar PIDs de los archivos .pid (por si wmic no los encontró)
+  for (const comp of COMPONENTS) {
+    try {
+      const pid = parseInt(fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim());
+      if (pid && pid !== process.pid) pidsToKill.add(pid);
+    } catch {}
+  }
+
+  if (pidsToKill.size === 0) {
+    log('  No hay procesos del pipeline corriendo');
+  } else {
+    // Matar todos de un solo golpe con taskkill /T (tree kill — mata hijos también)
+    for (const pid of pidsToKill) {
+      try {
+        execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
+        log(`  Killed PID ${pid}`);
+      } catch {}
+    }
+    log(`  ${pidsToKill.size} proceso(s) eliminado(s)`);
+  }
+
   // Limpiar PID files
   for (const comp of COMPONENTS) {
-    try { fs.unlinkSync(path.join(PIPELINE, comp.pidFile)); } catch {}
+    try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
   }
+
+  // Devolver archivos de trabajando/ a pendiente/ en commander (por si quedaron)
+  const cmdTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
+  const cmdPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
+  try {
+    for (const f of fs.readdirSync(cmdTrabajando)) {
+      if (f.endsWith('.json')) {
+        fs.renameSync(path.join(cmdTrabajando, f), path.join(cmdPendiente, f));
+        log(`  Recuperado: commander/${f} → pendiente/`);
+      }
+    }
+  } catch {}
+
+  sleep(2000);
+
+  // Verificar que no quede nada
+  try {
+    const check = execSync(
+      'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /format:csv',
+      { encoding: 'utf8', timeout: 10000 }
+    );
+    const survivors = check.split('\n').filter(l => l.includes('.pipeline') && !l.includes('restart.js'));
+    if (survivors.length > 0) {
+      log('  ⚠️ Quedan procesos vivos — segundo intento:');
+      for (const line of survivors) {
+        const m = line.match(/(\d+)\s*$/);
+        if (m) {
+          execSync(`taskkill /PID ${m[1]} /F /T`, { timeout: 5000, stdio: 'ignore' }).catch(() => {});
+          log(`    Force killed PID ${m[1]}`);
+        }
+      }
+    }
+  } catch {}
 }
 
-// --- PASO 2: Lanzar todos los componentes ---
+// --- LAUNCH ---
 
 function launchAll() {
-  log('=== Lanzando componentes ===');
-
-  const launched = [];
+  log('=== START ===');
 
   for (const comp of COMPONENTS) {
     const scriptPath = path.join(PIPELINE, comp.script);
-    if (!fs.existsSync(scriptPath)) {
-      log(`  SKIP ${comp.name} — ${comp.script} no existe`);
-      continue;
-    }
+    if (!fs.existsSync(scriptPath)) continue;
 
-    const logFile = path.join(PIPELINE, 'logs', `${comp.name}.log`);
-    const logFd = fs.openSync(logFile, 'a');
+    const logPath = path.join(PIPELINE, 'logs', `${comp.name}.log`);
+    fs.writeFileSync(logPath, `--- restart ${new Date().toISOString()} ---\n`);
+    const logFd = fs.openSync(logPath, 'a');
 
-    const child = spawn('node', [scriptPath], {
+    const child = spawn(process.execPath, [scriptPath], {
       cwd: ROOT,
       stdio: ['ignore', logFd, logFd],
       detached: true,
       windowsHide: true
     });
     child.unref();
-
-    launched.push({ name: comp.name, pid: child.pid, pidFile: comp.pidFile });
-    log(`  ${comp.name}: PID ${child.pid} → ${comp.script}`);
-
     fs.closeSync(logFd);
+
+    log(`  ${comp.name}: PID ${child.pid}`);
   }
 
-  return launched;
+  sleep(3000);
 }
 
-// --- PASO 3: Verificar que todos arrancaron ---
+// --- STATUS ---
 
-function verify() {
-  log('=== Verificando ===');
-
-  // Esperar 3 segundos
-  const { spawnSync: sleepSync } = require('child_process');
-  sleepSync('node', ['-e', 'setTimeout(()=>{},3000)'], { timeout: 5000 });
-
+function status() {
+  log('=== STATUS ===');
   let allOk = true;
+
   for (const comp of COMPONENTS) {
-    const pidPath = path.join(PIPELINE, comp.pidFile);
+    if (!fs.existsSync(path.join(PIPELINE, comp.script))) continue;
+
     try {
-      const pid = fs.readFileSync(pidPath, 'utf8').trim();
-      const check = execSync(
-        `tasklist /FI "PID eq ${pid}" /NH /FO CSV`,
-        { encoding: 'utf8', timeout: 5000 }
-      );
+      const pid = fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim();
+      const check = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 5000 });
       if (check.includes(`"${pid}"`)) {
         log(`  ✓ ${comp.name} (PID ${pid})`);
       } else {
-        log(`  ✗ ${comp.name} — proceso muerto`);
+        log(`  ✗ ${comp.name}`);
         allOk = false;
       }
     } catch {
-      if (!fs.existsSync(path.join(PIPELINE, comp.script))) {
-        log(`  - ${comp.name} (no existe)`);
-      } else {
-        log(`  ✗ ${comp.name} — sin PID file`);
-        allOk = false;
-      }
+      log(`  ✗ ${comp.name}`);
+      allOk = false;
     }
   }
-
   return allOk;
 }
 
-// --- Main ---
+// --- MAIN ---
 
 const action = process.argv[2] || 'restart';
 
-if (action === 'stop') {
-  killAll();
-  log('Pipeline detenido.');
-} else if (action === 'status') {
-  verify();
-} else {
-  killAll();
-
-  // Pequeña pausa para que los procesos terminen
-  const { spawnSync: sleepSync2 } = require('child_process');
-  sleepSync2('node', ['-e', 'setTimeout(()=>{},2000)'], { timeout: 5000 });
-
-  launchAll();
-  const ok = verify();
-
-  if (ok) {
-    log('=== Pipeline V2 operativo ===');
-  } else {
-    log('=== ADVERTENCIA: algunos componentes no arrancaron ===');
-  }
+switch (action) {
+  case 'stop':
+    killAll();
+    log('Pipeline detenido.');
+    break;
+  case 'status':
+    status();
+    break;
+  default:
+    killAll();
+    launchAll();
+    const ok = status();
+    log(ok ? '=== Pipeline V2 operativo ===' : '=== ⚠️ Revisar componentes ===');
 }
