@@ -91,9 +91,43 @@ async function sendMessage(text) {
   }
 }
 
+// --- Download Telegram files ---
+
+const MEDIA_DIR = path.join(PIPELINE, 'logs', 'media');
+try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
+
+async function downloadTelegramFile(fileId, ext) {
+  try {
+    // Get file path from Telegram API
+    const fileInfo = await telegramRequest('getFile', { file_id: fileId });
+    if (!fileInfo.ok || !fileInfo.result?.file_path) return null;
+
+    const remotePath = fileInfo.result.file_path;
+    const localName = `${Date.now()}-${fileId.slice(-8)}.${ext}`;
+    const localPath = path.join(MEDIA_DIR, localName);
+
+    // Download file
+    return new Promise((resolve, reject) => {
+      const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${remotePath}`;
+      https.get(url, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          fs.writeFileSync(localPath, Buffer.concat(chunks));
+          log(`Descargado: ${localName} (${Buffer.concat(chunks).length} bytes)`);
+          resolve(localPath);
+        });
+      }).on('error', (e) => { log(`Error descargando: ${e.message}`); resolve(null); });
+    });
+  } catch (e) {
+    log(`Error en downloadTelegramFile: ${e.message}`);
+    return null;
+  }
+}
+
 // --- Enqueue message for Commander ---
 
-function enqueueMessage(update) {
+async function enqueueMessage(update) {
   const msg = update.message;
   if (!msg) return;
 
@@ -101,12 +135,33 @@ function enqueueMessage(update) {
   if (String(msg.chat.id) !== String(CHAT_ID)) return;
 
   const id = `${Date.now()}-${msg.message_id}`;
+
+  // Descargar multimedia si existe
+  let photoPath = null;
+  let voicePath = null;
+  let caption = msg.caption || '';
+
+  if (msg.photo && msg.photo.length > 0) {
+    const bestPhoto = msg.photo[msg.photo.length - 1];
+    photoPath = await downloadTelegramFile(bestPhoto.file_id, 'jpg');
+  }
+
+  if (msg.voice) {
+    voicePath = await downloadTelegramFile(msg.voice.file_id, 'ogg');
+  }
+
+  if (msg.audio) {
+    voicePath = await downloadTelegramFile(msg.audio.file_id, 'mp3');
+  }
+
   const content = {
     message_id: msg.message_id,
     from: msg.from?.first_name || 'unknown',
-    text: msg.text || '',
+    text: msg.text || caption || '',
     photo: msg.photo ? msg.photo[msg.photo.length - 1]?.file_id : null,
-    voice: msg.voice?.file_id || null,
+    photo_path: photoPath,
+    voice: msg.voice?.file_id || msg.audio?.file_id || null,
+    voice_path: voicePath,
     date: msg.date
   };
 
