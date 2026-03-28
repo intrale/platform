@@ -1000,16 +1000,35 @@ REGLAS:
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
         const { spawnSync: spSync } = require('child_process');
-        const claudeResult = spSync(CLAUDE_BIN, ['-p', '-', '--output-format', 'text', '--max-turns', '10'], {
+        const claudeResult = spSync(CLAUDE_BIN, ['-p', '-', '--output-format', 'json', '--max-turns', '10'], {
           cwd: ROOT, encoding: 'utf8', timeout: 180000, input: userPrompt,
           shell: true, windowsHide: true
         });
         if (claudeResult.error) throw claudeResult.error;
-        respuesta = (claudeResult.stdout || '').trim();
-        // Limpiar: tomar solo las últimas líneas (el reporte, no el log de tools)
-        const respLines = respuesta.split('\n');
-        if (respLines.length > 20) {
-          respuesta = respLines.slice(-20).join('\n').trim();
+        const rawOut = (claudeResult.stdout || '').trim();
+        // output-format json: extraer el último message assistant de tipo text
+        try {
+          const parsed = JSON.parse(rawOut);
+          // json format: array of messages o un solo result
+          if (Array.isArray(parsed)) {
+            // Buscar el último bloque de texto del assistant
+            const textBlocks = parsed
+              .filter(m => m.role === 'assistant' && m.type !== 'tool_use')
+              .flatMap(m => (m.content || []).filter(b => b.type === 'text').map(b => b.text));
+            respuesta = textBlocks[textBlocks.length - 1] || '';
+          } else if (parsed.result) {
+            respuesta = parsed.result;
+          } else if (parsed.content) {
+            const texts = (Array.isArray(parsed.content) ? parsed.content : [parsed.content])
+              .filter(b => b.type === 'text').map(b => b.text);
+            respuesta = texts.join('\n');
+          } else {
+            respuesta = rawOut;
+          }
+        } catch {
+          // Si no es JSON válido, usar raw output (últimas 20 líneas)
+          const lines = rawOut.split('\n');
+          respuesta = lines.length > 20 ? lines.slice(-20).join('\n').trim() : rawOut;
         }
 
         log('commander', `Claude respondió: ${respuesta.length} chars`);
