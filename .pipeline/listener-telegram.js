@@ -194,10 +194,15 @@ async function pollLoop() {
 
       if (result.ok && result.result?.length > 0) {
         for (const update of result.result) {
-          enqueueMessage(update);
+          try {
+            await enqueueMessage(update);
+          } catch (e) {
+            log(`Error procesando update ${update.update_id}: ${e.message}`);
+          }
           offset = update.update_id + 1;
         }
         saveOffset(offset);
+        log(`Procesados ${result.result.length} update(s), offset → ${offset}`);
       }
     } catch (e) {
       log(`Error en polling: ${e.message}`);
