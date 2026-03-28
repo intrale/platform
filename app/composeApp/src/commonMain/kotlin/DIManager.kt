@@ -55,6 +55,8 @@ import asdo.delivery.ToDoDeliveryStateChange
 import asdo.delivery.ToDoGetActiveDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryOrderDetail
+import asdo.delivery.ToDoGetDeliveryOrderHistory
+import asdo.delivery.DoGetDeliveryOrderHistory
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
 import asdo.delivery.ToDoGetDeliveryProfile
 import asdo.delivery.ToDoUpdateDeliveryAvailability
@@ -522,6 +524,7 @@ private val deliveryModule = DI.Module("delivery") {
     bindSingleton<ToDoUpdateDeliveryOrderStatus> { DoUpdateDeliveryOrderStatus(instance()) }
     bindSingleton<ToDoDeliveryStateChange> { DoDeliveryStateChange(instance()) }
     bindSingleton<ToDoGetDeliveryOrderDetail> { DoGetDeliveryOrderDetail(instance()) }
+    bindSingleton<ToDoGetDeliveryOrderHistory> { DoGetDeliveryOrderHistory(instance()) }
 
     bindSingleton<ToDoGetDeliveryNotifications> { DoGetDeliveryNotifications() }
     bindSingleton<ToDoMarkDeliveryNotificationRead> { DoMarkDeliveryNotificationRead() }
