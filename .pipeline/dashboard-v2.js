@@ -304,25 +304,55 @@ function generateHTML(state) {
         continue;
       }
 
+      // Detectar skills repetidos para mostrar índice y diferenciar runs anteriores
+      const skillRunCount = {};
+      for (const e of entries) {
+        skillRunCount[e.skill] = (skillRunCount[e.skill] || 0) + 1;
+      }
+      // Asignar índice por orden de aparición (más viejo primero)
+      const skillRunIndex = {};
+      const sortedEntries = [...entries].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+      for (const e of sortedEntries) {
+        skillRunIndex[e.skill] = (skillRunIndex[e.skill] || 0) + 1;
+        e._runIndex = skillRunIndex[e.skill];
+        e._runTotal = skillRunCount[e.skill];
+        e._isRetry = skillRunCount[e.skill] > 1;
+        e._isLatestRun = skillRunIndex[e.skill] === skillRunCount[e.skill];
+      }
+
       const chips = entries.map(e => {
-        const cls = e.estado === 'trabajando' ? 'st-working' :
+        // Estado rechazado: resultado explícito de rechazo
+        const isRejected = e.resultado && e.resultado !== 'aprobado';
+
+        const cls = isRejected ? 'st-rejected' :
+                    e.estado === 'trabajando' ? 'st-working' :
                     e.estado === 'listo' ? 'st-done' :
                     e.estado === 'procesado' ? 'st-processed' : 'st-pending';
-        const icon = e.estado === 'trabajando' ? '⚙' :
+        const icon = isRejected ? '✗' :
+                     e.estado === 'trabajando' ? '⚙' :
                      e.estado === 'listo' ? '✓' :
                      e.estado === 'procesado' ? '✔' : '○';
         const staleClass = (e.estado === 'trabajando' && e.ageMin > 10) ? ' stale-chip' : '';
+        // Runs anteriores de un skill repetido se muestran compactos
+        const priorClass = (e._isRetry && !e._isLatestRun) ? ' chip-prior' : '';
+        const runLabel = e._isRetry ? `<sup class="run-idx">${e._runIndex}</sup>` : '';
 
         // Tooltip content
         const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
         const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
-        const ttLines = [e.skill, ttStart, ttDur, ttRes, ttMot].filter(Boolean);
+        const ttRun = e._isRetry ? `Ejecución: ${e._runIndex}/${e._runTotal}` : '';
+        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttRes, ttMot].filter(Boolean);
         const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
 
+        // Prior runs: solo ícono + índice (sin nombre del skill)
+        const chipContent = (e._isRetry && !e._isLatestRun)
+          ? `${icon} ${skillIcon(e.skill)}${runLabel}`
+          : `${icon} ${skillIcon(e.skill)} ${e.skill}${runLabel}`;
+
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}">${icon} ${skillIcon(e.skill)} ${e.skill}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${tooltip}</span>`;
         if (e.hasLog) {
           return `<a href="/logs/${e.logFile}" target="_blank" class="log-link">${inner}</a>`;
         }
@@ -545,6 +575,16 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .st-done{color:var(--gn);background:rgba(63,185,80,0.1);border-color:rgba(63,185,80,0.25)}
 .st-processed{color:var(--gn);opacity:0.55}
 .st-pending{color:var(--dim);background:rgba(139,148,158,0.08);border-color:rgba(139,148,158,0.2)}
+.st-rejected{color:var(--rd);background:rgba(248,81,73,0.1);border-color:rgba(248,81,73,0.3);opacity:0.7}
+.chip-prior{
+  font-size:0.72em;padding:2px 6px;opacity:0.5;
+  transform:scale(0.85);transform-origin:center;
+}
+.chip-prior:hover{opacity:0.85}
+.run-idx{
+  font-size:0.7em;font-weight:700;color:var(--ac);
+  margin-left:1px;vertical-align:super;line-height:1;
+}
 .stale-chip{
   color:var(--rd)!important;background:rgba(248,81,73,0.12)!important;
   border-color:rgba(248,81,73,0.4)!important;animation:pulse 1.8s infinite
