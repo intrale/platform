@@ -199,6 +199,15 @@ function generateHTML(state) {
   const allFases = state.allFases;
   const GH = (num) => `${GITHUB_BASE}/${num}`;
 
+  // Íconos por skill
+  const SKILL_ICON = {
+    guru: '🧠', security: '🔒', po: '📋', ux: '🎨', planner: '📐',
+    'backend-dev': '⚡', 'android-dev': '📱', 'web-dev': '🌐', hotfix: '🔥',
+    tester: '🧪', qa: '✅', review: '👁️', delivery: '🚀', build: '🏗️',
+    commander: '🤖'
+  };
+  const skillIcon = (skill) => SKILL_ICON[skill] || '⚙';
+
   // KPIs
   const matrixEntries = Object.entries(state.issueMatrix);
   const activos = matrixEntries.filter(([_, d]) => d.estadoActual).length;
@@ -299,7 +308,7 @@ function generateHTML(state) {
         const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
 
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}">${icon}${e.skill}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}">${icon} ${skillIcon(e.skill)} ${e.skill}${tooltip}</span>`;
         if (e.hasLog) {
           return `<a href="/logs/${e.logFile}" target="_blank" class="log-link">${inner}</a>`;
         }
@@ -469,25 +478,25 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   padding:2px 10px;
 }
 .matrix-scroll{overflow-x:auto}
-.issue-matrix{width:100%;border-collapse:collapse;font-size:0.88em}
+.issue-matrix{width:100%;border-collapse:collapse;font-size:1em}
 .issue-matrix th{
-  padding:7px 10px;color:var(--dim);border-bottom:2px solid var(--bd);
-  font-size:0.78em;text-transform:uppercase;letter-spacing:1px;text-align:left;
-  font-weight:600;
+  padding:10px 12px;color:var(--tx);border-bottom:2px solid var(--bd);
+  font-size:0.9em;text-transform:uppercase;letter-spacing:1px;text-align:left;
+  font-weight:700;
 }
-.issue-matrix td{padding:6px 10px;border-bottom:1px solid var(--bd2);white-space:nowrap}
+.issue-matrix td{padding:8px 12px;border-bottom:1px solid var(--bd2);white-space:nowrap}
 .issue-matrix tbody tr:hover{background:rgba(255,255,255,0.03)}
-.th-issue{min-width:100px}
-.group-header th{border-bottom:1px solid var(--bd);font-size:0.72em;letter-spacing:2px;padding:5px 10px}
+.th-issue{min-width:110px}
+.group-header th{border-bottom:1px solid var(--bd);font-size:0.85em;letter-spacing:2px;padding:8px 12px;font-weight:700}
 .group-def{color:var(--or);text-align:center;border-right:2px solid var(--bd)}.group-dev{color:var(--ac);text-align:center}
 .th-def:last-of-type,.col-def:last-of-type{border-right:2px solid var(--bd)}
 
 /* ── Issue column ───────────────────────────────────────────────────────── */
 .issue-col{min-width:88px}
-.issue-link{color:var(--ac);font-weight:700;font-size:1em}
-.progress-bar{height:4px;background:var(--bd);border-radius:3px;margin-top:4px;width:72px}
+.issue-link{color:var(--ac);font-weight:700;font-size:1.05em}
+.progress-bar{height:4px;background:var(--bd);border-radius:3px;margin-top:5px;width:80px}
 .progress-fill{height:100%;background:var(--gn);border-radius:3px;transition:width 0.4s}
-.progress-text{font-size:0.7em;color:var(--dim);margin-top:1px;display:block}
+.progress-text{font-size:0.8em;color:var(--dim);margin-top:2px;display:block}
 
 /* ── Row states ─────────────────────────────────────────────────────────── */
 .cell-empty{color:var(--bd);text-align:center;font-size:0.85em}
@@ -498,9 +507,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── Chips ──────────────────────────────────────────────────────────────── */
 .chip{
   position:relative;cursor:default;
-  padding:3px 7px;border-radius:5px;font-size:0.85em;
-  display:inline-flex;align-items:center;gap:4px;
+  padding:4px 10px;border-radius:5px;font-size:0.95em;
+  display:inline-flex;align-items:center;gap:5px;
   border:1px solid transparent;font-family:inherit;
+  font-weight:500;
 }
 .st-working{
   color:var(--yl);background:rgba(210,153,34,0.12);border-color:rgba(210,153,34,0.3);
