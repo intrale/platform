@@ -78,6 +78,35 @@ function getPipelineState() {
     }
   } catch {}
 
+  // Actividad reciente (commander history)
+  state.actividad = [];
+  try {
+    const histFile = path.join(PIPELINE, 'commander-history.jsonl');
+    const lines = fs.readFileSync(histFile, 'utf8').trim().split('\n').slice(-20);
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        state.actividad.push({
+          dir: entry.direction,
+          from: entry.from || 'Sistema',
+          text: (entry.text || '').slice(0, 120),
+          ts: entry.timestamp
+        });
+      } catch {}
+    }
+  } catch {}
+
+  // Procesos activos (PIDs)
+  state.procesos = {};
+  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'dashboard']) {
+    try {
+      const pid = fs.readFileSync(path.join(PIPELINE, `${comp}.pid`), 'utf8').trim();
+      state.procesos[comp] = { pid, alive: true }; // Asumimos alive si el PID file existe
+    } catch {
+      state.procesos[comp] = { pid: null, alive: false };
+    }
+  }
+
   return state;
 }
 
@@ -136,15 +165,41 @@ function generateHTML(state) {
       </div>`;
   }
 
-  // Servicios
+  // Servicios — con pendiente y procesados
   let svcsHTML = '';
   if (state.servicios) {
     for (const [name, data] of Object.entries(state.servicios)) {
+      const statusDot = data.pendiente > 0 ? '🟡' : data.trabajando > 0 ? '🔵' : '🟢';
       svcsHTML += `<div class="servicio">
-        <span class="svc-name">${name}</span>
-        <span class="svc-count">${data.pendiente} pendiente</span>
+        <span class="svc-name">${statusDot} ${name}</span>
+        <span class="svc-count">${data.pendiente}○ ${data.trabajando}⚙ ${data.listo}✓</span>
       </div>`;
     }
+  }
+
+  // Procesos activos
+  let processHTML = '';
+  if (state.procesos) {
+    for (const [name, info] of Object.entries(state.procesos)) {
+      const dot = info.pid ? '🟢' : '🔴';
+      processHTML += `<span class="proc">${dot} ${name}${info.pid ? ' ('+info.pid+')' : ''}</span> `;
+    }
+  }
+
+  // Actividad reciente
+  let actividadHTML = '';
+  if (state.actividad && state.actividad.length > 0) {
+    const rows = state.actividad.slice(-15).reverse().map(a => {
+      const ts = a.ts ? a.ts.slice(11, 19) : '??:??';
+      const dir = a.dir === 'in' ? '→' : '←';
+      const cls = a.dir === 'in' ? 'msg-in' : 'msg-out';
+      const from = a.from ? `[${a.from}]` : '';
+      const text = (a.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<div class="activity-row ${cls}"><span class="ts">${ts}</span> ${dir} ${from} ${text}</div>`;
+    }).join('');
+    actividadHTML = rows;
+  } else {
+    actividadHTML = '<div class="empty-label">Sin actividad reciente</div>';
   }
 
   // KPIs
@@ -201,6 +256,18 @@ function generateHTML(state) {
   .svc-name { font-weight: bold; font-size: 0.85em; }
   .svc-count { font-size: 0.75em; color: var(--text-dim); margin-left: 8px; }
 
+  .section-row { display: flex; gap: 16px; margin-top: 16px; }
+  .section { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .procesos { display: flex; flex-wrap: wrap; gap: 8px; }
+  .proc { font-size: 0.8em; padding: 2px 6px; background: var(--bg); border-radius: 4px; }
+
+  .activity-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
+  .activity-log { max-height: 300px; overflow-y: auto; }
+  .activity-row { font-size: 0.8em; padding: 3px 0; border-bottom: 1px solid var(--border); font-family: monospace; }
+  .activity-row .ts { color: var(--text-dim); }
+  .msg-in { color: var(--accent); }
+  .msg-out { color: var(--green); }
+
   .footer { margin-top: 24px; font-size: 0.75em; color: var(--text-dim); text-align: center; }
 </style>
 </head>
@@ -215,8 +282,21 @@ function generateHTML(state) {
 
   ${pipelinesHTML}
 
-  <h2>SERVICIOS</h2>
-  <div class="servicios">${svcsHTML}</div>
+  <div class="section-row">
+    <div class="section">
+      <h2>SERVICIOS</h2>
+      <div class="servicios">${svcsHTML}</div>
+    </div>
+    <div class="section">
+      <h2>PROCESOS</h2>
+      <div class="procesos">${processHTML}</div>
+    </div>
+  </div>
+
+  <div class="activity-section">
+    <h2>ACTIVIDAD RECIENTE (Commander)</h2>
+    <div class="activity-log">${actividadHTML}</div>
+  </div>
 
   <div class="footer">Auto-refresh: 10s | ${new Date().toLocaleString('es-AR')}</div>
 </body>
