@@ -23,6 +23,7 @@ const COMPONENTS = [
   { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'dashboard', script: 'dashboard-v2.js', pid: 'dashboard.pid' },
 ];
 
 const SCRIPT_NAMES = COMPONENTS.map(c => c.script);
