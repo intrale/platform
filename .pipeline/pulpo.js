@@ -338,6 +338,11 @@ function brazoLanzamiento(config) {
         try {
           const trabajandoPath = moveFile(archivo.path, trabajandoDir);
 
+          // Pre-requisitos por fase
+          if (fase === 'verificacion') {
+            ensureQaEnvironment();
+          }
+
           // Lanzar agente
           if (fase === 'build') {
             lanzarBuild(issue, trabajandoPath, pipelineName, config);
@@ -350,6 +355,47 @@ function brazoLanzamiento(config) {
       }
     }
   }
+}
+
+/** Asegurar que el QA environment está levantado. Se llama una vez por ciclo de verificación. */
+let qaEnvChecked = false;
+function ensureQaEnvironment() {
+  if (qaEnvChecked) return; // Solo chequear una vez por vida del Pulpo
+
+  const stateFile = path.join(PIPELINE, 'qa-env-state.json');
+  let needsStart = false;
+
+  try {
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    // Verificar si todos los servicios están vivos
+    for (const [name, pid] of Object.entries(state)) {
+      if (!pid || !isProcessAlive(pid)) {
+        log('qa-env', `${name} no está corriendo (PID: ${pid || 'null'})`);
+        needsStart = true;
+        break;
+      }
+    }
+  } catch {
+    needsStart = true;
+  }
+
+  if (needsStart) {
+    log('qa-env', 'Levantando QA environment automáticamente...');
+    try {
+      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" start`, {
+        cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
+      });
+      log('qa-env', 'QA environment levantado OK');
+      sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
+    } catch (e) {
+      log('qa-env', `Error levantando QA environment: ${e.message}`);
+      sendTelegram('⚠️ Error levantando QA environment: ' + e.message.slice(0, 100));
+    }
+  } else {
+    log('qa-env', 'QA environment OK — ya corriendo');
+  }
+
+  qaEnvChecked = true;
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
