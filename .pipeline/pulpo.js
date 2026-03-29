@@ -245,6 +245,23 @@ function brazoBarrido(config) {
           // Última fase completada — historia terminada
           log('barrido', `#${issue} COMPLETADO — salió del pipeline ${pipelineName}`);
 
+          // Si es pipeline de definición → agregar label "ready" para que desarrollo lo tome
+          if (pipelineName === 'definicion') {
+            const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+            const labelFile = path.join(ghQueueDir, `${issue}-ready-${Date.now()}.json`);
+            fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'ready' }));
+            log('barrido', `#${issue} → encolado label "ready" en servicio-github`);
+
+            // También remover label needs-definition
+            const rmLabelFile = path.join(ghQueueDir, `${issue}-rm-ndef-${Date.now()}.json`);
+            fs.writeFileSync(rmLabelFile, JSON.stringify({ action: 'remove-label', issue: parseInt(issue), label: 'needs-definition' }));
+          }
+
+          // Si es pipeline de desarrollo → notificar por telegram
+          if (pipelineName === 'desarrollo') {
+            sendTelegram(`✅ #${issue} completó el pipeline de desarrollo. Listo para merge.`);
+          }
+
           // Cleanup: eliminar worktree del issue si existe
           try {
             const wtList = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 10000 });
@@ -379,7 +396,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--max-turns', '20', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
   if (needsWorktree) {
     args.push('--cwd', worktreePath);
   }
@@ -767,10 +784,9 @@ function cmdCostos() {
   return lines.join('\n');
 }
 
-function cmdProponer(args, config) {
+async function cmdProponer(args, config) {
   const count = parseInt(args) || 3;
 
-  // Lanzar agente propositor como proceso async (fire-and-forget)
   const propositorPrompt = `Analizá el backlog de GitHub, el estado actual del código y la deuda técnica del proyecto Intrale.
 Generá ${count} propuestas de historias nuevas. Para cada una incluí:
 - Título conciso
@@ -784,26 +800,12 @@ Y: git log --oneline -20 para ver actividad reciente.
 
 Formato de respuesta: lista numerada, una propuesta por item.`;
 
+  sendTelegram('🔄 Analizando backlog para generar propuestas...');
+
   try {
-    // Ejecutar Claude síncronamente (max 2 min) para obtener propuestas
-    const { spawnSync: spSyncP } = require('child_process');
-    const propResult = spSyncP(CLAUDE_BIN, [
-      '-p', '-',
-      '--output-format', 'json',
-      '--max-turns', '10',
-      '--dangerously-skip-permissions',
-      '--permission-mode', 'bypassPermissions'
-    ], {
-      cwd: ROOT, encoding: 'utf8', timeout: 180000, input: propositorPrompt,
-      shell: true, windowsHide: true
-    });
-    if (propResult.error) throw propResult.error;
-    const propRaw = (propResult.stdout || '').trim();
-    let resultado;
-    try { resultado = JSON.parse(propRaw).result || propRaw; } catch { resultado = propRaw; }
+    const resultado = await ejecutarClaude(propositorPrompt);
 
     if (resultado) {
-      // Guardar propuestas en archivo para referencia
       const proposalFile = path.join(PIPELINE, 'commander-proposals.json');
       const proposals = { timestamp: new Date().toISOString(), count, text: resultado };
       fs.writeFileSync(proposalFile, JSON.stringify(proposals, null, 2));
@@ -815,6 +817,103 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
     log('commander', `Error en proponer: ${e.message}`);
     return '⚠️ Error generando propuestas: ' + e.message.slice(0, 100);
   }
+}
+
+/** Ejecutar Claude async con spawn + stream-json (patrón V1). Retorna el texto de respuesta. */
+function ejecutarClaude(prompt) {
+  return new Promise((resolve, reject) => {
+    const readline = require('readline');
+    const args = [
+      '-p',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--permission-mode', 'bypassPermissions'
+    ];
+
+    const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+    delete cleanEnv.CLAUDECODE;
+
+    const proc = spawn(CLAUDE_BIN, args, {
+      cwd: ROOT,
+      env: cleanEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: true
+    });
+
+    proc.stdin.write(prompt);
+    proc.stdin.end();
+
+    let lastText = '';
+    let finalResult = null;
+    let toolCount = 0;
+    let lastToolDesc = '';
+    let progressCount = 0;
+    const startTime = Date.now();
+
+    const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
+    rl.on('line', (line) => {
+      if (!line.trim()) return;
+      try {
+        const evt = JSON.parse(line);
+        if (evt.type === 'assistant' && evt.message?.content) {
+          const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
+          for (const b of blocks) {
+            if (b.type === 'text' && b.text) lastText = b.text;
+            if (b.type === 'tool_use') {
+              toolCount++;
+              lastToolDesc = b.input?.description || b.input?.command?.slice(0, 50) || b.name || '';
+              log('commander', `  [tool ${toolCount}] ${b.name}: ${lastToolDesc.slice(0, 80)}`);
+            }
+          }
+        } else if (evt.type === 'result') {
+          finalResult = evt;
+        }
+      } catch {}
+    });
+
+    let stderr = '';
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    // Mensajes de progreso cada 45s
+    const templates = [
+      (ctx, stats) => `⏳ ${ctx ? `Estoy en: ${ctx}` : 'Analizando tu pedido'}... ${stats}`,
+      (ctx, stats) => `⚙️ ${stats}. ${ctx ? `Último paso: ${ctx}` : 'Sigo laburando'}`,
+      (ctx, stats) => `🔧 Esto lleva laburo — ${stats}. ${ctx ? `Ahora: ${ctx}` : 'Ya casi'}`,
+      (ctx, stats) => `💪 ${stats}. Bancame que ya cierro esto`,
+      (ctx, stats) => `🔄 Varias cosas que revisar — ${stats}`,
+      (ctx, stats) => `📋 ${stats}. Un toque más`,
+      (ctx, stats) => `🔍 Casi termino — ${stats}`,
+      (ctx, stats) => `✨ Ya lo tengo, dame un segundo más — ${stats}`,
+    ];
+    const progressTimer = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const ctx = lastToolDesc ? lastToolDesc.slice(0, 40) : '';
+      const stats = `${toolCount} pasos en ${elapsed}s`;
+      const msg = templates[progressCount % templates.length](ctx, stats);
+      progressCount++;
+      sendTelegram(msg);
+      log('commander', `Progreso: ${msg}`);
+    }, 45000);
+
+    proc.on('exit', (code) => {
+      clearInterval(progressTimer);
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      log('commander', `Claude terminó (code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
+      if (finalResult?.result) {
+        resolve(finalResult.result);
+      } else if (lastText) {
+        resolve(lastText);
+      } else {
+        log('commander', `stderr: ${stderr.slice(0, 300)}`);
+        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
+      }
+    });
+
+    proc.on('error', (e) => {
+      clearInterval(progressTimer);
+      reject(e);
+    });
+  });
 }
 
 function cmdHelp() {
@@ -954,7 +1053,7 @@ async function brazoCommander(config) {
           running = false;
           break;
         case 'proponer':
-          respuesta = cmdProponer(parsed.args, config);
+          respuesta = await cmdProponer(parsed.args, config);
           break;
         default:
           // Comando desconocido — delegar a Claude como texto libre
@@ -1007,113 +1106,8 @@ REGLAS:
 
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
-        // Enviar mensaje de "procesando" inmediato para que el usuario sepa
         sendTelegram('🔄 Recibido, estoy trabajando en tu pedido...');
-
-        // Spawn async (como V1) — sin max-turns, con timeout manual
-        respuesta = await new Promise((resolve, reject) => {
-          const readline = require('readline');
-          const args = [
-            '-p',
-            '--output-format', 'stream-json',
-            '--verbose',
-            '--permission-mode', 'bypassPermissions'
-          ];
-
-          const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
-          delete cleanEnv.CLAUDECODE;
-
-          const proc = spawn(CLAUDE_BIN, args, {
-            cwd: ROOT,
-            env: cleanEnv,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: true
-          });
-
-          // Escribir prompt por stdin (como V1)
-          proc.stdin.write(userPrompt);
-          proc.stdin.end();
-
-          let lastText = '';
-          let finalResult = null;
-          let toolCount = 0;
-          let progressSent = false;
-
-          // Parsear stream-json línea por línea
-          const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
-          rl.on('line', (line) => {
-            if (!line.trim()) return;
-            try {
-              const evt = JSON.parse(line);
-              if (evt.type === 'assistant' && evt.message?.content) {
-                const blocks = Array.isArray(evt.message.content) ? evt.message.content : [evt.message.content];
-                for (const b of blocks) {
-                  if (b.type === 'text' && b.text) lastText = b.text;
-                  if (b.type === 'tool_use') {
-                    toolCount++;
-                    lastToolDesc = b.input?.description || b.input?.command?.slice(0, 50) || b.name || '';
-                    log('commander', `  [tool ${toolCount}] ${b.name}: ${lastToolDesc.slice(0, 80)}`);
-                  }
-                }
-              } else if (evt.type === 'result') {
-                finalResult = evt;
-              }
-            } catch {}
-          });
-
-          let stderr = '';
-          proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-          // Mensajes de progreso con contexto — templates fijos, contexto dinámico
-          let lastToolDesc = '';
-          let progressCount = 0;
-          const startTime = Date.now();
-          // Templates con slot {ctx} y {stats} — se usan en orden, nunca se repiten
-          const templates = [
-            (ctx, stats) => `⏳ ${ctx ? `Estoy en: ${ctx}` : 'Analizando tu pedido'}... ${stats}`,
-            (ctx, stats) => `⚙️ ${stats}. ${ctx ? `Último paso: ${ctx}` : 'Sigo laburando'}`,
-            (ctx, stats) => `🔧 Esto lleva laburo — ${stats}. ${ctx ? `Ahora: ${ctx}` : 'Ya casi'}`,
-            (ctx, stats) => `💪 ${stats}. Bancame que ya cierro esto`,
-            (ctx, stats) => `🔄 Varias cosas que revisar — ${stats}`,
-            (ctx, stats) => `📋 ${stats}. Un toque más`,
-            (ctx, stats) => `🔍 Casi termino — ${stats}`,
-            (ctx, stats) => `✨ Ya lo tengo, dame un segundo más — ${stats}`,
-          ];
-          const progressTimer = setInterval(() => {
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            const ctx = lastToolDesc ? lastToolDesc.slice(0, 40) : '';
-            const stats = `${toolCount} pasos en ${elapsed}s`;
-            const tpl = templates[progressCount % templates.length];
-            const msg = tpl(ctx, stats);
-            progressCount++;
-            sendTelegram(msg);
-            log('commander', `Progreso: ${msg}`);
-          }, 45000);
-
-          // Sin timeout — Claude trabaja todo lo que necesite
-          // Los mensajes de progreso mantienen al usuario informado
-
-          proc.on('exit', (code) => {
-            clearInterval(progressTimer);
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            log('commander', `Claude terminó (code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
-            if (finalResult?.result) {
-              resolve(finalResult.result);
-            } else if (lastText) {
-              resolve(lastText);
-            } else {
-              log('commander', `stderr: ${stderr.slice(0, 300)}`);
-              resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
-            }
-          });
-
-          proc.on('error', (e) => {
-            clearInterval(progressTimer);
-            reject(e);
-          });
-        });
-        log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
-
+        respuesta = await ejecutarClaude(userPrompt);
         log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
         // Actualizar sesión con respuesta de Claude

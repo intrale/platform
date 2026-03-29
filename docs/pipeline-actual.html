@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Pipeline Actual - Skills × Fases - Intrale Platform</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    padding: 30px;
+  }
+  h1 { text-align: center; color: #f0883e; font-size: 26px; margin-bottom: 4px; }
+  .subtitle { text-align: center; color: #8b949e; font-size: 13px; margin-bottom: 28px; }
+
+  /* ===== PHASE SWIM LANES ===== */
+  .phase {
+    display: flex;
+    align-items: stretch;
+    margin-bottom: 2px;
+    min-height: 90px;
+  }
+  .phase-header {
+    flex: 0 0 180px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 12px 16px;
+    border-radius: 10px 0 0 10px;
+    position: relative;
+  }
+  .phase-header h3 { font-size: 14px; margin-bottom: 2px; }
+  .phase-header .phase-num { font-size: 28px; font-weight: 800; opacity: 0.15; position: absolute; right: 12px; top: 8px; }
+  .phase-header small { font-size: 10px; opacity: 0.7; }
+
+  .phase-content {
+    flex: 1;
+    display: flex;
+    gap: 0;
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-left: none;
+    border-radius: 0 10px 10px 0;
+    overflow: hidden;
+  }
+
+  /* Three sub-columns in each phase */
+  .col-skills, .col-hooks, .col-issues {
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .col-skills { flex: 2; border-right: 1px solid #21262d; }
+  .col-hooks { flex: 2; border-right: 1px solid #21262d; }
+  .col-issues { flex: 1.5; }
+
+  .col-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #484f58;
+    margin-bottom: 2px;
+  }
+
+  /* Arrow between phases */
+  .phase-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding-left: 86px;
+    height: 20px;
+    color: #30363d;
+    font-size: 18px;
+  }
+
+  /* ===== SKILL TAGS ===== */
+  .skill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-family: monospace;
+    white-space: nowrap;
+  }
+  .skill .model {
+    font-size: 8px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: sans-serif;
+    font-weight: 600;
+  }
+
+  /* Executor skills */
+  .skill-exec { background: rgba(56, 139, 253, 0.15); color: #79c0ff; border: 1px solid rgba(56, 139, 253, 0.3); }
+  /* Validator skills */
+  .skill-val { background: rgba(126, 231, 135, 0.12); color: #7ee787; border: 1px solid rgba(126, 231, 135, 0.3); }
+  /* Ops skills */
+  .skill-ops { background: rgba(210, 153, 34, 0.12); color: #e3b341; border: 1px solid rgba(210, 153, 34, 0.3); }
+  /* Research/product */
+  .skill-prod { background: rgba(188, 140, 255, 0.12); color: #d2a8ff; border: 1px solid rgba(188, 140, 255, 0.3); }
+
+  /* Model badges */
+  .m-opus { background: rgba(248, 81, 73, 0.3); color: #ff7b72; }
+  .m-sonnet { background: rgba(56, 139, 253, 0.3); color: #79c0ff; }
+  .m-haiku { background: rgba(126, 231, 135, 0.3); color: #7ee787; }
+
+  /* Hook tags */
+  .hook {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: monospace;
+    white-space: nowrap;
+    display: inline-block;
+  }
+  .hook-guard { background: rgba(248, 81, 73, 0.12); color: #ff7b72; }
+  .hook-log { background: rgba(126, 231, 135, 0.1); color: #56d364; }
+  .hook-monitor { background: rgba(210, 153, 34, 0.12); color: #e3b341; }
+  .hook-auto { background: rgba(136, 132, 216, 0.12); color: #a5a0f0; }
+  .hook-notify { background: rgba(56, 139, 253, 0.12); color: #58a6ff; }
+
+  /* Issue tags */
+  .issue {
+    font-size: 10px;
+    color: #f0883e;
+    line-height: 1.4;
+  }
+  .issue b { color: #ffa657; }
+
+  /* Phase colors */
+  .ph-plan { background: rgba(188, 140, 255, 0.12); border: 2px solid rgba(188, 140, 255, 0.3); }
+  .ph-plan h3 { color: #d2a8ff; }
+  .ph-launch { background: rgba(210, 153, 34, 0.12); border: 2px solid rgba(210, 153, 34, 0.3); }
+  .ph-launch h3 { color: #e3b341; }
+  .ph-dev { background: rgba(56, 139, 253, 0.12); border: 2px solid rgba(56, 139, 253, 0.3); }
+  .ph-dev h3 { color: #58a6ff; }
+  .ph-test { background: rgba(126, 231, 135, 0.12); border: 2px solid rgba(126, 231, 135, 0.3); }
+  .ph-test h3 { color: #7ee787; }
+  .ph-review { background: rgba(219, 97, 162, 0.12); border: 2px solid rgba(219, 97, 162, 0.3); }
+  .ph-review h3 { color: #f778ba; }
+  .ph-delivery { background: rgba(240, 136, 62, 0.12); border: 2px solid rgba(240, 136, 62, 0.3); }
+  .ph-delivery h3 { color: #ffa657; }
+  .ph-ops { background: rgba(248, 81, 73, 0.08); border: 2px solid rgba(248, 81, 73, 0.25); }
+  .ph-ops h3 { color: #ff7b72; }
+
+  /* ===== FLOATING SKILLS ===== */
+  .floating-section {
+    margin-top: 24px;
+    padding: 18px;
+    background: rgba(248, 81, 73, 0.05);
+    border: 2px dashed rgba(248, 81, 73, 0.3);
+    border-radius: 12px;
+  }
+  .floating-section h3 { color: #f85149; font-size: 15px; margin-bottom: 12px; }
+  .floating-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 10px;
+  }
+  .floating-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .floating-card .name { color: #ffa657; font-family: monospace; font-size: 12px; font-weight: 600; }
+  .floating-card .reason { color: #8b949e; font-size: 11px; margin-top: 4px; }
+
+  /* ===== SUMMARY TABLE ===== */
+  .summary {
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .summary-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+  }
+  .summary-card .num { font-size: 32px; font-weight: 800; }
+  .summary-card .label { font-size: 11px; color: #8b949e; margin-top: 4px; }
+
+  /* ===== LEGEND ===== */
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-top: 20px;
+    padding: 10px;
+    background: #161b22;
+    border-radius: 8px;
+    flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+  .overlap-warning {
+    margin-top: 20px;
+    padding: 16px;
+    background: rgba(210, 153, 34, 0.06);
+    border: 2px solid rgba(210, 153, 34, 0.25);
+    border-radius: 12px;
+  }
+  .overlap-warning h3 { color: #e3b341; font-size: 14px; margin-bottom: 10px; }
+  .overlap-warning li { font-size: 12px; color: #d29922; margin-left: 16px; margin-bottom: 5px; line-height: 1.4; }
+</style>
+</head>
+<body>
+
+<h1>Pipeline Actual &mdash; Skills &times; Fases</h1>
+<p class="subtitle">Mapa completo: 29 skills, 7 fases, hooks y solapamientos &mdash; Marzo 2026</p>
+
+<!-- ===== PHASE 1: PLANNING ===== -->
+<div class="phase">
+  <div class="phase-header ph-plan">
+    <span class="phase-num">1</span>
+    <h3>Planificacion</h3>
+    <small>Issues, backlog, sprint</small>
+  </div>
+  <div class="phase-content">
+    <div class="col-skills">
+      <div class="col-label">Skills que participan</div>
+      <span class="skill skill-prod">/doc <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-prod">/historia <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-prod">/refinar <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-prod">/priorizar <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-prod">/planner <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-prod">/po <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-prod">/ux <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-prod">/guru <span class="model m-sonnet">Sonnet</span></span>
+    </div>
+    <div class="col-hooks">
+      <div class="col-label">Hooks activos</div>
+      <span class="hook hook-log">activity-logger.js</span>
+      <span class="hook hook-monitor">scrum-monitor-bg.js</span>
+      <span class="hook hook-auto">scrum-auto-corrections.js</span>
+      <span class="hook hook-notify">notify-telegram.js</span>
+    </div>
+    <div class="col-issues">
+      <div class="col-label">Observaciones</div>
+      <div class="issue"><b>/doc</b> orquesta /po + /ux + /qa + /security + /guru en paralelo &mdash; es un mini-pipeline dentro del pipeline</div>
+      <div class="issue" style="margin-top:4px"><b>/historia</b> es alias de <b>/doc nueva</b> &mdash; duplicacion</div>
+      <div class="issue" style="margin-top:4px"><b>/refinar</b> es alias de <b>/doc refinar</b> &mdash; duplicacion</div>
+    </div>
+  </div>
+</div>
+<div class="phase-arrow">&#9660;</div>
+
+<!-- ===== PHASE 2: LAUNCH ===== -->
+<div class="phase">
+  <div class="phase-header ph-launch">
+    <span class="phase-num">2</span>
+    <h3>Lanzamiento</h3>
+    <small>Worktree, branch, spawn</small>
+  </div>
+  <div class="phase-content">
+    <div class="col-skills">
+      <div class="col-label">Skills que participan</div>
+      <span class="skill skill-ops">/branch <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/ops <span class="model m-haiku">Haiku</span></span>
+    </div>
+    <div class="col-hooks">
+      <div class="col-label">Hooks activos + Scripts</div>
+      <span class="hook hook-auto">Start-Agente.ps1 (900 lin)</span>
+      <span class="hook hook-auto">Run-AgentStream.ps1 (300 lin)</span>
+      <span class="hook hook-guard">worktree-guard.js</span>
+      <span class="hook hook-guard">branch-guard.js</span>
+      <span class="hook hook-monitor">agent-coordinator.js</span>
+      <span class="hook hook-monitor">agent-watcher.js</span>
+    </div>
+    <div class="col-issues">
+      <div class="col-label">Observaciones</div>
+      <div class="issue"><b>/branch</b> duplica logica que ya esta en Start-Agente.ps1 (crear rama, validar main)</div>
+      <div class="issue" style="margin-top:4px">El <b>launch</b> es un monolito PS1 que no es un skill &mdash; no se puede invocar como agente</div>
+    </div>
+  </div>
+</div>
+<div class="phase-arrow">&#9660;</div>
+
+<!-- ===== PHASE 3: DEVELOPMENT ===== -->
+<div class="phase">
+  <div class="phase-header ph-dev">
+    <span class="phase-num">3</span>
+    <h3>Desarrollo</h3>
+    <small>Implementacion de codigo</small>
+  </div>
+  <div class="phase-content">
+    <div class="col-skills">
+      <div class="col-label">Skills que participan</div>
+      <span class="skill skill-exec">/android-dev <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-exec">/backend-dev <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-exec">/web-dev <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-exec">/hotfix <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-prod">/guru <span class="model m-sonnet">Sonnet</span></span>
+    </div>
+    <div class="col-hooks">
+      <div class="col-label">Hooks activos (por cada tool use)</div>
+      <span class="hook hook-guard">permission-gate.js</span>
+      <span class="hook hook-guard">worktree-guard.js</span>
+      <span class="hook hook-guard">branch-guard.js</span>
+      <span class="hook hook-log">activity-logger.js</span>
+      <span class="hook hook-monitor">health-check.js</span>
+      <span class="hook hook-monitor">heartbeat-manager.js</span>
+      <span class="hook hook-auto">commander-launcher.js</span>
+    </div>
+    <div class="col-issues">
+      <div class="col-label">Observaciones</div>
+      <div class="issue">Cada tool use dispara <b>~7 hooks</b>. Un agente tipico hace 200-400 tool uses = <b>1400-2800 hook executions</b></div>
+      <div class="issue" style="margin-top:4px"><b>/guru</b> se usa aqui y en planificacion &mdash; skill transversal</div>
+    </div>
+  </div>
+</div>
+<div class="phase-arrow">&#9660;</div>
+
+<!-- ===== PHASE 4: TESTING ===== -->
+<div class="phase">
+  <div class="phase-header ph-test">
+    <span class="phase-num">4</span>
+    <h3>Testing</h3>
+    <small>Unit, E2E, cobertura</small>
+  </div>
+  <div class="phase-content">
+    <div class="col-skills">
+      <div class="col-label">Skills que participan</div>
+      <span class="skill skill-val">/tester <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-val">/qa <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-exec">/builder <span class="model m-haiku">Haiku</span></span>
+    </div>
+    <div class="col-hooks">
+      <div class="col-label">Hooks + Pipeline scripts</div>
+      <span class="hook hook-auto">agent-runner.js &rarr; run-tests.js</span>
+      <span class="hook hook-auto">post-merge-qa.js</span>
+      <span class="hook hook-log">activity-logger.js</span>
+    </div>
+    <div class="col-issues">
+      <div class="col-label">Observaciones</div>
+      <div class="issue"><b>/builder</b> tambien corre tests (gradlew check) &mdash; duplica /tester parcialmente</div>
+      <div class="issue" style="margin-top:4px"><b>/qa</b> requiere emulador Android &mdash; solo funciona con setup especifico (AVD virtualAndroid)</div>
+      <div class="issue" style="margin-top:4px"><b>agent-runner.js</b> ejecuta tests por fuera de los skills &mdash; path paralelo al skill /tester</div>
+    </div>
+  </div>
+</div>
+<div class="phase-arrow">&#9660;</div>
+
+<!-- ===== PHASE 5: REVIEW ===== -->
+<div class="phase">
+  <div class="phase-header ph-review">
+    <span class="phase-num">5</span>
+    <h3>Review</h3>
+    <small>Code review, security, PO</small>
+  </div>
+  <div class="phase-content">
+    <div class="col-skills">
+      <div class="col-label">Skills que participan</div>
+      <span class="skill skill-val">/review <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-val">/security <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-val">/po <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-val">/ux <span class="model m-sonnet">Sonnet</span></span>
+      <span class="skill skill-exec">/simplify <span class="model m-opus">Opus</span></span>
+    </div>
+    <div class="col-hooks">
+      <div class="col-label">Hooks + Pipeline scripts</div>
+      <span class="hook hook-auto">auto-review-bg.js</span>
+      <span class="hook hook-auto">agent-runner.js &rarr; security-scan.js</span>
+      <span class="hook hook-guard">delivery-gate.js</span>
+    </div>
+    <div class="col-issues">
+      <div class="col-label">Observaciones</div>
+      <div class="issue"><b>/po</b> y <b>/ux</b> aparecen en planificacion Y en review &mdash; doble rol sin distincion</div>
+      <div class="issue" style="margin-top:4px"><b>auto-review-bg.js</b> es un hook que hace review automatico &mdash; compite con skill /review</div>
+      <div class="issue" style="margin-top:4px"><b>security-scan.js</b> (pipeline) vs <b>/security</b> (skill) &mdash; dos paths paralelos</div>
+    </div>
+  </div>
+</div>
+<div class="phase-arrow">&#9660;</div>
+
+<!-- ===== PHASE 6: DELIVERY ===== -->
+<div class="phase">
+  <div class="phase-header ph-delivery">
+    <span class="phase-num">6</span>
+    <h3>Delivery</h3>
+    <small>PR, merge, cleanup</small>
+  </div>
+  <div class="phase-content">
+    <div class="col-skills">
+      <div class="col-label">Skills que participan</div>
+      <span class="skill skill-exec">/delivery <span class="model m-opus">Opus</span></span>
+      <span class="skill skill-ops">/cleanup <span class="model m-haiku">Haiku</span></span>
+    </div>
+    <div class="col-hooks">
+      <div class="col-label">Hooks activos</div>
+      <span class="hook hook-guard">delivery-gate.js</span>
+      <span class="hook hook-auto">post-git-push.js</span>
+      <span class="hook hook-auto">post-issue-close.js</span>
+      <span class="hook hook-auto">post-merge-qa.js</span>
+      <span class="hook hook-monitor">agent-concurrency-check.js</span>
+    </div>
+    <div class="col-issues">
+      <div class="col-label">Observaciones</div>
+      <div class="issue"><b>/delivery</b> internamente invoca /qa + /tester + /review como gates &mdash; re-ejecuta fase 4 y 5 dentro de fase 6</div>
+      <div class="issue" style="margin-top:4px">Concurrency-check en Stop emite evento &rarr; coordinator promueve siguiente &mdash; acoplamiento fuerte</div>
+    </div>
+  </div>
+</div>
+<div class="phase-arrow">&#9660;</div>
+
+<!-- ===== PHASE 7: OPS ===== -->
+<div class="phase">
+  <div class="phase-header ph-ops">
+    <span class="phase-num">7</span>
+    <h3>Operaciones</h3>
+    <small>Monitoreo, salud, costos</small>
+  </div>
+  <div class="phase-content">
+    <div class="col-skills">
+      <div class="col-label">Skills que participan</div>
+      <span class="skill skill-ops">/monitor <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/checkup <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/ops <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/reset <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/cost <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/scrum <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/auth <span class="model m-haiku">Haiku</span></span>
+      <span class="skill skill-ops">/perf <span class="model m-sonnet">Sonnet</span></span>
+    </div>
+    <div class="col-hooks">
+      <div class="col-label">Hooks permanentes</div>
+      <span class="hook hook-monitor">agent-coordinator.js (1300 lin)</span>
+      <span class="hook hook-monitor">agent-watcher.js (1400 lin)</span>
+      <span class="hook hook-monitor">agent-monitor.js (1479 lin)</span>
+      <span class="hook hook-monitor">health-check.js (939 lin)</span>
+      <span class="hook hook-monitor">heartbeat-manager.js</span>
+      <span class="hook hook-monitor">scrum-consistency-check.js</span>
+      <span class="hook hook-auto">auto-repair-sprint.js</span>
+      <span class="hook hook-auto">agent-doctor.js</span>
+      <span class="hook hook-auto">circuit-breaker.js</span>
+      <span class="hook hook-notify">telegram-commander.js (1100 lin)</span>
+      <span class="hook hook-notify">notify-telegram.js</span>
+    </div>
+    <div class="col-issues">
+      <div class="col-label">Observaciones</div>
+      <div class="issue"><b>8 skills + 11 hooks</b> solo para operaciones &mdash; mas infra que producto</div>
+      <div class="issue" style="margin-top:4px"><b>/checkup</b> = /ops + /cleanup combinado &mdash; solapamiento triple</div>
+      <div class="issue" style="margin-top:4px"><b>/scrum</b> duplica lo que scrum-monitor-bg.js ya hace en hooks</div>
+      <div class="issue" style="margin-top:4px">coordinator + watcher + monitor = <b>3 procesos vigilandose mutuamente</b></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== FLOATING / ORPHAN SKILLS ===== -->
+<div class="floating-section">
+  <h3>Skills sin Fase Clara / Alias / Transversales</h3>
+  <div class="floating-grid">
+    <div class="floating-card">
+      <div class="name">/historia</div>
+      <div class="reason">Alias directo de <code>/doc nueva</code>. No agrega logica propia. <b>Candidato a eliminar.</b></div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/refinar</div>
+      <div class="reason">Alias directo de <code>/doc refinar</code>. No agrega logica propia. <b>Candidato a eliminar.</b></div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/priorizar</div>
+      <div class="reason">Alias directo de <code>/doc priorizar</code>. No agrega logica propia. <b>Candidato a eliminar.</b></div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/simplify</div>
+      <div class="reason">Review de calidad de codigo. Solapamiento con <code>/review</code>. Se usa ad-hoc, no esta en ninguna fase formal.</div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/claude-api</div>
+      <div class="reason">Asistente para Anthropic SDK. Utility puro, no es parte del pipeline de desarrollo de Intrale.</div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/keybindings-help</div>
+      <div class="reason">Configura shortcuts de Claude Code. Utility puro, no es pipeline.</div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/update-config</div>
+      <div class="reason">Modifica settings.json. Utility de infra, no pipeline.</div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/loop</div>
+      <div class="reason">Polling recurrente de skills. Meta-skill que envuelve otros. No es fase propia.</div>
+    </div>
+    <div class="floating-card">
+      <div class="name">/schedule</div>
+      <div class="reason">Cron de agentes remotos. Infra pura. Podria ser el orquestador en modelo event-driven.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== OVERLAP ANALYSIS ===== -->
+<div class="overlap-warning">
+  <h3>Solapamientos y Duplicaciones Detectadas</h3>
+  <ul>
+    <li><b>/historia, /refinar, /priorizar</b> son aliases de <b>/doc</b> &mdash; 3 skills que podrian no existir</li>
+    <li><b>/checkup</b> = <b>/ops</b> + <b>/cleanup</b> combinados &mdash; triple cobertura del mismo espacio</li>
+    <li><b>/builder</b> corre <code>gradlew check</code> (incluye tests) &mdash; solapa con <b>/tester</b></li>
+    <li><b>auto-review-bg.js</b> (hook) compite con <b>/review</b> (skill) &mdash; dos paths para code review</li>
+    <li><b>security-scan.js</b> (pipeline script) compite con <b>/security</b> (skill) &mdash; dos paths para security</li>
+    <li><b>scrum-monitor-bg.js</b> (hook) duplica funcionalidad de <b>/scrum</b> (skill)</li>
+    <li><b>/po</b> y <b>/ux</b> participan en fase 1 (planificacion) Y fase 5 (review) sin modo distinto</li>
+    <li><b>/delivery</b> re-ejecuta <b>/qa + /tester + /review</b> como gates internos &mdash; la fase 6 repite fases 4+5</li>
+    <li><b>agent-runner.js</b> ejecuta tests/security por fuera de skills &mdash; path paralelo invisible</li>
+    <li><b>coordinator + watcher + monitor</b> = 3 procesos (4100+ lineas) vigilandose mutuamente en loop</li>
+  </ul>
+</div>
+
+<!-- ===== SUMMARY CARDS ===== -->
+<div class="summary">
+  <div class="summary-card">
+    <div class="num" style="color:#58a6ff">29</div>
+    <div class="label">Skills totales</div>
+  </div>
+  <div class="summary-card">
+    <div class="num" style="color:#7ee787">7</div>
+    <div class="label">Fases del pipeline</div>
+  </div>
+  <div class="summary-card">
+    <div class="num" style="color:#f85149">10</div>
+    <div class="label">Solapamientos detectados</div>
+  </div>
+  <div class="summary-card">
+    <div class="num" style="color:#e3b341">9</div>
+    <div class="label">Skills sin fase clara</div>
+  </div>
+</div>
+
+<!-- ===== MODEL DISTRIBUTION ===== -->
+<div style="margin-top:20px; display:flex; gap:12px; justify-content:center;">
+  <div style="background:#161b22; border-radius:8px; padding:12px 20px; text-align:center;">
+    <div style="font-size:20px; font-weight:800; color:#ff7b72">5</div>
+    <div style="font-size:10px; color:#8b949e">Opus (caro)</div>
+    <div style="font-size:9px; color:#484f58">android, backend, web, qa, delivery</div>
+  </div>
+  <div style="background:#161b22; border-radius:8px; padding:12px 20px; text-align:center;">
+    <div style="font-size:20px; font-weight:800; color:#79c0ff">9</div>
+    <div style="font-size:10px; color:#8b949e">Sonnet (medio)</div>
+    <div style="font-size:9px; color:#484f58">guru, hotfix, po, review, security, tester, ux, perf, simplify</div>
+  </div>
+  <div style="background:#161b22; border-radius:8px; padding:12px 20px; text-align:center;">
+    <div style="font-size:20px; font-weight:800; color:#7ee787">11</div>
+    <div style="font-size:10px; color:#8b949e">Haiku (barato)</div>
+    <div style="font-size:9px; color:#484f58">auth, branch, builder, checkup, cleanup, cost, monitor, ops, priorizar, refinar, scrum</div>
+  </div>
+  <div style="background:#161b22; border-radius:8px; padding:12px 20px; text-align:center;">
+    <div style="font-size:20px; font-weight:800; color:#8b949e">4</div>
+    <div style="font-size:10px; color:#8b949e">Utilities</div>
+    <div style="font-size:9px; color:#484f58">claude-api, keybindings, update-config, loop</div>
+  </div>
+</div>
+
+<!-- ===== LEGEND ===== -->
+<div class="legend">
+  <div class="legend-item"><span class="legend-dot" style="background:#79c0ff"></span> Executor (escribe codigo)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#7ee787"></span> Validator (verifica)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#e3b341"></span> Operations (infra)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#d2a8ff"></span> Product (planifica)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#ff7b72"></span> Guard hook</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#56d364"></span> Logger hook</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#a5a0f0"></span> Automation hook</div>
+</div>
+
+<div style="text-align:center; margin-top:16px; color:#484f58; font-size:11px;">
+  29 skills &middot; ~120 hooks JS &middot; ~20 state files &middot; 7 fases &middot; 10 solapamientos &middot; 9 skills flotantes &middot; 4 loops de control
+</div>
+
+</body>
+</html>
