@@ -465,15 +465,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     userPrompt += `\n\n⚠️ REBOTE — Este issue fue RECHAZADO en la fase "${rechazadoEn}" y vuelve a vos para corrección.\n`;
     userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
     userPrompt += `INSTRUCCIONES OBLIGATORIAS:\n`;
-    userPrompt += `1. Leé el motivo de rechazo arriba con atención\n`;
+    userPrompt += `1. Actualizá tu rama con main: git fetch origin main && git merge origin/main --no-edit\n`;
+    userPrompt += `2. Leé el motivo de rechazo arriba con atención\n`;
     if (buildLogExists) {
-      userPrompt += `2. Leé el log completo del build: cat "${buildLog}" | tail -100\n`;
+      userPrompt += `3. Leé el log completo del build: cat "${buildLog}" | tail -100\n`;
       userPrompt += `   El log tiene el output de gradlew con los errores exactos de compilación o tests\n`;
     }
-    userPrompt += `3. Diagnosticá la causa raíz del fallo\n`;
-    userPrompt += `4. Corregí el código en tu worktree\n`;
-    userPrompt += `5. Verificá que compila localmente antes de marcar como aprobado\n`;
-    userPrompt += `6. Commiteá y pusheá los fixes\n`;
+    userPrompt += `4. Diagnosticá la causa raíz del fallo\n`;
+    userPrompt += `5. Corregí el código en tu worktree\n`;
+    userPrompt += `6. Verificá que compila: ./gradlew check\n`;
+    userPrompt += `7. Commiteá y pusheá los fixes\n`;
     userPrompt += `\nNO reimplementes desde cero. Focalizá solo en corregir los errores del rechazo.\n`;
   }
 
@@ -595,6 +596,18 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
       }
     }
   } catch { /* usar ROOT */ }
+
+  // Antes de compilar, mergear origin/main para tener los últimos hotfixes
+  if (buildCwd !== ROOT) {
+    try {
+      execSync('git fetch origin main && git merge origin/main --no-edit', {
+        cwd: buildCwd, encoding: 'utf8', timeout: 30000, windowsHide: true
+      });
+      log('build', `#${issue} worktree actualizado con origin/main`);
+    } catch (e) {
+      log('build', `#${issue} merge main falló (puede haber conflictos): ${e.message.slice(0, 200)}`);
+    }
+  }
 
   const child = spawn('bash', ['-c', `./gradlew check 2>&1`], {
     cwd: buildCwd,
