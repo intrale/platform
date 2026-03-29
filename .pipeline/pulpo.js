@@ -207,6 +207,27 @@ function brazoBarrido(config) {
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
 
         if (rechazados.length > 0 && faseRechazo) {
+          // Circuit breaker: contar rebotes previos del mismo issue en procesado/
+          const devProcessed = path.join(fasePath(pipelineName, faseRechazo), 'procesado');
+          let reboteCount = 0;
+          try {
+            for (const f of fs.readdirSync(devProcessed)) {
+              if (f.startsWith(issue + '.')) reboteCount++;
+            }
+          } catch {}
+
+          const MAX_REBOTES = 3;
+          if (reboteCount >= MAX_REBOTES) {
+            log('barrido', `⛔ #${issue} CIRCUIT BREAKER — ${reboteCount} rebotes en ${faseRechazo}, no devolver más. Requiere intervención manual.`);
+            sendTelegram(`⛔ Issue #${issue} atascado — ${reboteCount} rebotes entre ${fase} y ${faseRechazo}. Requiere intervención manual.`);
+            // Mover todo a procesado para sacarlo del loop
+            for (const a of archivos) {
+              const dest = path.join(fasePath(pipelineName, fase), 'procesado');
+              try { moveFile(a.path, dest); } catch {}
+            }
+            continue;
+          }
+
           // Hay rechazo → devolver a fase de rechazo
           const motivos = rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || 'sin motivo'}`).join('\n');
 
@@ -221,11 +242,12 @@ function brazoBarrido(config) {
             fase: faseRechazo,
             pipeline: pipelineName,
             rebote: true,
+            rebote_numero: reboteCount + 1,
             motivo_rechazo: motivos,
             rechazado_en_fase: fase
           });
 
-          log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseRechazo} (${rechazados.length} rechazos)`);
+          log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseRechazo} (rebote ${reboteCount + 1}/${MAX_REBOTES})`);
         } else if (i < fases.length - 1) {
           // Todos aprobaron → promover a siguiente fase
           const siguienteFase = fases[i + 1];
@@ -431,7 +453,29 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const systemFile = path.join(LOG_DIR, `agent-${issue}-${skill}-system.txt`);
   fs.writeFileSync(systemFile, `${base}\n\n${rol}`);
 
-  const userPrompt = `Archivo de trabajo: ${path.basename(trabajandoPath)}\nPath: ${trabajandoPath}\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;
+  // Construir user prompt — enriquecer si es un rebote con contexto del rechazo
+  let userPrompt = `Archivo de trabajo: ${path.basename(trabajandoPath)}\nPath: ${trabajandoPath}\nContenido:\n${yaml.dump(workData, { lineWidth: -1 })}`;
+
+  if (workData.rebote) {
+    const rechazadoEn = workData.rechazado_en_fase || 'desconocida';
+    const motivo = workData.motivo_rechazo || 'sin motivo especificado';
+    const buildLog = path.join(LOG_DIR, `build-${issue}.log`);
+    const buildLogExists = fs.existsSync(buildLog);
+
+    userPrompt += `\n\n⚠️ REBOTE — Este issue fue RECHAZADO en la fase "${rechazadoEn}" y vuelve a vos para corrección.\n`;
+    userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
+    userPrompt += `INSTRUCCIONES OBLIGATORIAS:\n`;
+    userPrompt += `1. Leé el motivo de rechazo arriba con atención\n`;
+    if (buildLogExists) {
+      userPrompt += `2. Leé el log completo del build: cat "${buildLog}" | tail -100\n`;
+      userPrompt += `   El log tiene el output de gradlew con los errores exactos de compilación o tests\n`;
+    }
+    userPrompt += `3. Diagnosticá la causa raíz del fallo\n`;
+    userPrompt += `4. Corregí el código en tu worktree\n`;
+    userPrompt += `5. Verificá que compila localmente antes de marcar como aprobado\n`;
+    userPrompt += `6. Commiteá y pusheá los fixes\n`;
+    userPrompt += `\nNO reimplementes desde cero. Focalizá solo en corregir los errores del rechazo.\n`;
+  }
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
@@ -458,9 +502,6 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   }
 
   const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
-  if (needsWorktree) {
-    args.push('--cwd', worktreePath);
-  }
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
@@ -495,7 +536,26 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   // Cuando el proceso termina, mover de trabajando → listo
+  const launchTime = Date.now();
   child.on('exit', (code) => {
+    const elapsedSec = (Date.now() - launchTime) / 1000;
+
+    // Si murió en menos de 15 segundos con error → es un fallo de infraestructura, no de código
+    // Devolver a pendiente en vez de marcar como listo (evita loop de rebotes infinitos)
+    if (code !== 0 && elapsedSec < 15) {
+      log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo de infra, devolviendo a pendiente`);
+      const agentLog = path.join(LOG_DIR, `${issue}-${skill}.log`);
+      try {
+        const logContent = fs.readFileSync(agentLog, 'utf8').slice(-500);
+        log('lanzamiento', `  Log: ${logContent.replace(/\n/g, ' | ')}`);
+      } catch {}
+      const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+      try { moveFile(trabajandoPath, pendienteDir); } catch {}
+      activeProcesses.delete(processKey(skill, issue));
+      sendTelegram(`⚠️ Agente ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo de infra. Revisar log.`);
+      return;
+    }
+
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
       // El agente debería haber escrito resultado en el archivo
@@ -507,7 +567,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         writeYaml(trabajandoPath, data);
       }
       moveFile(trabajandoPath, listoDir);
-      log('lanzamiento', `${skill}:#${issue} terminó (code=${code}) → listo/`);
+      log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
     } catch (e) {
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
