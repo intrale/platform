@@ -179,4 +179,10 @@ tasks.matching { it.name == "build" }.configureEach {
 plugins.withType<WasmBinaryenPlugin> {
     extensions.getByType<WasmBinaryenEnvSpec>().version.set("version_118")
 }
+@OptIn(ExperimentalWasmDsl::class)
+allprojects {
+    plugins.withType<WasmBinaryenPlugin> {
+        extensions.getByType<WasmBinaryenEnvSpec>().version.set("version_118")
+    }
+}
 
