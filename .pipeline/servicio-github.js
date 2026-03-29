@@ -43,21 +43,21 @@ function processQueue() {
       switch (data.action) {
         case 'comment':
           execSync(`"${GH_BIN}" issue comment ${data.issue} -b "${data.body.replace(/"/g, '\\"')}"`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 15000
+            cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
           });
           log(`Comentario en #${data.issue}`);
           break;
 
         case 'label':
           execSync(`"${GH_BIN}" issue edit ${data.issue} --add-label "${data.label}"`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 15000
+            cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
           });
           log(`Label "${data.label}" → #${data.issue}`);
           break;
 
         case 'remove-label':
           execSync(`"${GH_BIN}" issue edit ${data.issue} --remove-label "${data.label}"`, {
-            cwd: ROOT, encoding: 'utf8', timeout: 15000
+            cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
           });
           log(`Label "${data.label}" removido de #${data.issue}`);
           break;

@@ -264,12 +264,12 @@ function brazoBarrido(config) {
 
           // Cleanup: eliminar worktree del issue si existe
           try {
-            const wtList = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 10000 });
+            const wtList = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true });
             const wtPattern = `platform.agent-${issue}-`;
             for (const line of wtList.split('\n')) {
               if (line.startsWith('worktree ') && line.includes(wtPattern)) {
                 const wtPath = line.replace('worktree ', '').trim();
-                execSync(`git worktree remove "${wtPath}" --force`, { cwd: ROOT, timeout: 30000 });
+                execSync(`git worktree remove "${wtPath}" --force`, { cwd: ROOT, timeout: 30000, windowsHide: true });
                 log('barrido', `Worktree eliminado: ${wtPath}`);
               }
             }
@@ -297,7 +297,7 @@ function determinarDevSkill(issue, config) {
     ghThrottle();
     const result = execSync(
       `"${GH_BIN}" issue view ${issue} --json labels --jq ".labels[].name"`,
-      { cwd: ROOT, encoding: 'utf8', timeout: 10000 }
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim().split('\n');
 
     for (const label of result) {
@@ -384,7 +384,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
       if (!fs.existsSync(worktreePath)) {
         execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main`, {
-          cwd: ROOT, encoding: 'utf8', timeout: 30000
+          cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
         });
         log('lanzamiento', `Worktree creado: ${worktreePath}`);
       }
@@ -408,6 +408,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     shell: true,
+    windowsHide: true,
     env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase }
   });
 
@@ -463,7 +464,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   let buildCwd = ROOT;
 
   try {
-    const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8' });
+    const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
     for (const line of worktrees.split('\n')) {
       if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
         buildCwd = line.replace('worktree ', '').trim();
@@ -475,7 +476,8 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   const child = spawn('bash', ['-c', `./gradlew check 2>&1`], {
     cwd: buildCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true
+    detached: true,
+    windowsHide: true
   });
 
   child.unref();
@@ -837,7 +839,8 @@ function ejecutarClaude(prompt) {
       cwd: ROOT,
       env: cleanEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: true
+      shell: true,
+      windowsHide: true
     });
 
     proc.stdin.write(prompt);
@@ -1228,7 +1231,7 @@ function brazoIntake(config) {
       ghThrottle();
       const result = execSync(
         `"${GH_BIN}" issue list --label "${label}" --state open --json number,title,labels --limit 50`,
-        { cwd: ROOT, encoding: 'utf8', timeout: 30000 }
+        { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
       );
       const issues = JSON.parse(result || '[]');
 
