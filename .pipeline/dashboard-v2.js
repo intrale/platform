@@ -477,14 +477,14 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--bg);border:1px solid var(--bd);border-radius:20px;
   padding:2px 10px;
 }
-.matrix-scroll{overflow-x:auto}
-.issue-matrix{width:100%;border-collapse:collapse;font-size:1em}
+.matrix-scroll{overflow-x:visible}
+.issue-matrix{width:100%;border-collapse:collapse;font-size:1em;table-layout:auto}
 .issue-matrix th{
   padding:10px 12px;color:var(--tx);border-bottom:2px solid var(--bd);
   font-size:0.9em;text-transform:uppercase;letter-spacing:1px;text-align:left;
   font-weight:700;
 }
-.issue-matrix td{padding:8px 12px;border-bottom:1px solid var(--bd2);white-space:nowrap}
+.issue-matrix td{padding:8px 10px;border-bottom:1px solid var(--bd2)}
 .issue-matrix tbody tr:hover{background:rgba(255,255,255,0.03)}
 .th-issue{min-width:110px}
 .group-header th{border-bottom:1px solid var(--bd);font-size:0.85em;letter-spacing:2px;padding:8px 12px;font-weight:700}
@@ -530,14 +530,15 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── Tooltip ────────────────────────────────────────────────────────────── */
 .chip .tt{
   display:none;position:absolute;z-index:200;
-  bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);
-  background:var(--sf2);border:1px solid var(--bd);border-radius:8px;
-  padding:10px 14px;font-size:0.88em;white-space:nowrap;
-  min-width:190px;color:var(--tx);
-  box-shadow:0 8px 24px rgba(0,0,0,0.7);pointer-events:none;
+  bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
+  background:#000000;border:2px solid var(--ac);border-radius:10px;
+  padding:14px 18px;font-size:0.95em;white-space:nowrap;
+  min-width:220px;color:var(--tx);
+  box-shadow:0 8px 32px rgba(0,0,0,0.9),0 0 0 1px rgba(88,166,255,0.2);
+  pointer-events:none;
 }
-.chip .tt span{display:block;line-height:1.6;color:var(--dim)}
-.chip .tt span:first-child{color:var(--tx);font-weight:600;margin-bottom:2px}
+.chip .tt span{display:block;line-height:1.7;color:#c9d1d9;font-size:0.95em}
+.chip .tt span:first-child{color:var(--tx);font-weight:700;font-size:1.05em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
 .chip:hover .tt{display:block}
 .more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
 
