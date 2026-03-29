@@ -123,7 +123,7 @@ function generateHTML(state) {
   let pipelinesHTML = '';
 
   for (const [pName, fases] of Object.entries(state)) {
-    if (pName === 'servicios') continue;
+    if (pName === 'servicios' || pName === 'actividad' || pName === 'procesos') continue;
 
     let fasesHTML = '';
     for (const [fName, data] of Object.entries(fases)) {
@@ -205,7 +205,7 @@ function generateHTML(state) {
   // KPIs
   let totalActive = 0, totalDone = 0;
   for (const [pName, fases] of Object.entries(state)) {
-    if (pName === 'servicios') continue;
+    if (pName === 'servicios' || pName === 'actividad' || pName === 'procesos') continue;
     for (const data of Object.values(fases)) {
       totalActive += data.total_active;
       totalDone += data.procesado_count;
