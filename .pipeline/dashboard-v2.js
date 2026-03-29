@@ -204,16 +204,33 @@ function generateHTML(state) {
   const activos = matrixEntries.filter(([_, d]) => d.estadoActual).length;
   const totalIssues = matrixEntries.length;
   const trabajando = matrixEntries.filter(([_, d]) => d.estadoActual === 'trabajando').length;
+  const pendientes = matrixEntries.filter(([_, d]) => d.estadoActual === 'pendiente').length;
   const stale = matrixEntries.filter(([_, d]) => {
     if (d.estadoActual !== 'trabajando' || !d.faseActual) return false;
     const entries = d.fases[d.faseActual] || [];
     return entries.some(e => e.ageMin > 10);
   }).length;
 
+  // Definidos = completaron la fase final de definición (sizing/procesado)
+  const defFasesKpi = config.pipelines?.definicion?.fases || [];
+  const lastDefFase = defFasesKpi[defFasesKpi.length - 1];
+  const definidos = lastDefFase ? matrixEntries.filter(([_, d]) => {
+    const entries = d.fases[`definicion/${lastDefFase}`] || [];
+    return entries.some(e => e.estado === 'procesado');
+  }).length : 0;
+
+  // Entregados = completaron la fase final de desarrollo (entrega/procesado)
+  const devFasesKpi = config.pipelines?.desarrollo?.fases || [];
+  const lastDevFase = devFasesKpi[devFasesKpi.length - 1];
+  const entregados = lastDevFase ? matrixEntries.filter(([_, d]) => {
+    const entries = d.fases[`desarrollo/${lastDevFase}`] || [];
+    return entries.some(e => e.estado === 'procesado');
+  }).length : 0;
+
   // --- Issue Tracker Matrix (unified) ---
   // Headers: definición phases | separator | desarrollo phases
-  const defFases = config.pipelines.definicion?.fases || [];
-  const devFases = config.pipelines.desarrollo?.fases || [];
+  const defFases = config.pipelines?.definicion?.fases || [];
+  const devFases = config.pipelines?.desarrollo?.fases || [];
 
   const headerCells = [
     ...defFases.map(f => `<th class="th-def">${f}</th>`),
@@ -303,7 +320,10 @@ function generateHTML(state) {
 
   const matrixHTML = `
     <div class="matrix-section">
-      <h2>ISSUE TRACKER <span class="matrix-count">${activos} activos · ${totalIssues - activos} finalizados</span></h2>
+      <div class="matrix-header">
+        <h2>📊 Issue Tracker</h2>
+        <span class="matrix-count">${activos} activos · ${totalIssues - activos} finalizados</span>
+      </div>
       <div class="matrix-scroll">
         <table class="issue-matrix">
           <thead>${groupHeader}<tr><th class="th-issue">Issue</th>${headerCells}</tr></thead>
@@ -358,87 +378,267 @@ function generateHTML(state) {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pipeline V2 — Intrale</title>
 <style>
-:root{--bg:#0d1117;--sf:#161b22;--bd:#30363d;--tx:#e6edf3;--dim:#8b949e;--ac:#58a6ff;--gn:#3fb950;--yl:#d29922;--rd:#f85149;--or:#db6d28}
+/* ── Variables ──────────────────────────────────────────────────────────── */
+:root{
+  --bg:#0d1117;--sf:#161b22;--sf2:#1c2128;--bd:#30363d;--bd2:#21262d;
+  --tx:#e6edf3;--dim:#8b949e;--dim2:#6e7681;
+  --ac:#58a6ff;--ac2:#1f6feb;
+  --gn:#3fb950;--gn2:#196c2e;
+  --yl:#d29922;--yl2:#9e6a03;
+  --rd:#f85149;--rd2:#8b1a14;
+  --or:#db6d28;--or2:#7d3410;
+  --pu:#bc8cff;
+  --radius:10px;--radius-sm:6px;
+}
+/* ── Reset ──────────────────────────────────────────────────────────────── */
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;padding:16px;font-size:14px}
+body{
+  background:var(--bg);color:var(--tx);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  padding:20px 24px;font-size:15px;line-height:1.5;
+}
 a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}
-h1{color:var(--ac);font-size:1.3em;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-h2{color:var(--dim);font-size:0.9em;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}
-.header-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-.kpis{display:flex;gap:12px;margin-bottom:20px}
-.kpi{background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:12px 16px;flex:1;text-align:center}
-.kpi-value{font-size:1.8em;font-weight:bold;color:var(--ac)}.kpi-value.warn{color:var(--yl)}.kpi-value.danger{color:var(--rd)}
-.kpi-label{font-size:0.75em;color:var(--dim);margin-top:2px}
-${stale > 0 ? `.alert{background:rgba(248,81,73,0.1);border:1px solid var(--rd);border-radius:8px;padding:10px 16px;margin-bottom:16px;color:var(--rd);font-size:0.9em}` : ''}
-.matrix-section{background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:16px;margin-bottom:16px}
-.matrix-count{font-size:0.7em;color:var(--dim);font-weight:normal}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+h1{
+  color:var(--tx);font-size:1.5em;font-weight:700;
+  margin-bottom:20px;display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid var(--bd);padding-bottom:14px;
+}
+h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px}
+h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;font-weight:600}
+
+/* ── Alert ──────────────────────────────────────────────────────────────── */
+.alert{
+  background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.4);
+  border-left:4px solid var(--rd);border-radius:var(--radius-sm);
+  padding:12px 16px;margin-bottom:20px;color:var(--rd);font-size:0.95em;
+  display:flex;align-items:center;gap:10px;
+}
+
+/* ── KPI Grid ───────────────────────────────────────────────────────────── */
+.kpis{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  gap:14px;margin-bottom:24px;
+}
+.kpi{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:18px 16px 14px;display:flex;flex-direction:column;align-items:center;
+  gap:6px;position:relative;overflow:hidden;transition:border-color 0.2s;
+}
+.kpi:hover{border-color:var(--ac)}
+.kpi::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:var(--kpi-accent,var(--ac));border-radius:var(--radius) var(--radius) 0 0;
+}
+.kpi-icon{font-size:1.6em;line-height:1;margin-bottom:2px}
+.kpi-value{
+  font-size:2.4em;font-weight:800;color:var(--kpi-accent,var(--ac));
+  font-variant-numeric:tabular-nums;line-height:1;
+}
+.kpi-value.warn{color:var(--yl);--kpi-accent:var(--yl)}
+.kpi-value.danger{color:var(--rd);--kpi-accent:var(--rd)}
+.kpi-value.success{color:var(--gn);--kpi-accent:var(--gn)}
+.kpi-value.muted{color:var(--dim);--kpi-accent:var(--dim2)}
+.kpi-label{font-size:0.78em;color:var(--dim);font-weight:500;text-align:center;line-height:1.2}
+
+/* ── KPI accent colors per type ─────────────────────────────────────────── */
+.kpi.kpi-activos{--kpi-accent:var(--ac)}
+.kpi.kpi-working{--kpi-accent:var(--yl)}
+.kpi.kpi-pendientes{--kpi-accent:var(--or)}
+.kpi.kpi-blocked{--kpi-accent:var(--rd)}
+.kpi.kpi-definidos{--kpi-accent:var(--pu)}
+.kpi.kpi-entregados{--kpi-accent:var(--gn)}
+
+/* ── Separador de pipeline KPIs ─────────────────────────────────────────── */
+.kpi-divider{
+  grid-column:1/-1;height:1px;background:var(--bd);
+  margin:2px 0;
+}
+
+/* ── Matrix Section ─────────────────────────────────────────────────────── */
+.matrix-section{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:18px 20px;margin-bottom:20px;
+}
+.matrix-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.matrix-count{
+  font-size:0.8em;color:var(--dim);font-weight:400;
+  background:var(--bg);border:1px solid var(--bd);border-radius:20px;
+  padding:2px 10px;
+}
 .matrix-scroll{overflow-x:auto}
-.issue-matrix{width:100%;border-collapse:collapse;font-size:0.8em}
-.issue-matrix th{padding:5px 8px;color:var(--dim);border-bottom:2px solid var(--bd);font-size:0.8em;text-transform:uppercase;letter-spacing:1px;text-align:left}
-.issue-matrix td{padding:4px 8px;border-bottom:1px solid var(--bd);white-space:nowrap}
-.th-issue{min-width:90px}.group-header th{border-bottom:1px solid var(--bd);font-size:0.7em;letter-spacing:2px}
+.issue-matrix{width:100%;border-collapse:collapse;font-size:0.88em}
+.issue-matrix th{
+  padding:7px 10px;color:var(--dim);border-bottom:2px solid var(--bd);
+  font-size:0.78em;text-transform:uppercase;letter-spacing:1px;text-align:left;
+  font-weight:600;
+}
+.issue-matrix td{padding:6px 10px;border-bottom:1px solid var(--bd2);white-space:nowrap}
+.issue-matrix tbody tr:hover{background:rgba(255,255,255,0.03)}
+.th-issue{min-width:100px}
+.group-header th{border-bottom:1px solid var(--bd);font-size:0.72em;letter-spacing:2px;padding:5px 10px}
 .group-def{color:var(--or);text-align:center;border-right:2px solid var(--bd)}.group-dev{color:var(--ac);text-align:center}
-.th-def{border-right:none}.col-def{}.col-dev{}
 .th-def:last-of-type,.col-def:last-of-type{border-right:2px solid var(--bd)}
-.issue-col{min-width:80px}
-.issue-link{color:var(--ac);font-weight:bold;font-size:0.95em}
-.progress-bar{height:3px;background:var(--bd);border-radius:2px;margin-top:3px;width:70px}
-.progress-fill{height:100%;background:var(--gn);border-radius:2px}
-.progress-text{font-size:0.65em;color:var(--dim)}
-.cell-empty{color:var(--bd);text-align:center}
-.cell-current{background:rgba(88,166,255,0.06);border-left:2px solid var(--ac)}
-.issue-trabajando{}.issue-pendiente{}.issue-listo{opacity:0.7}.issue-done{opacity:0.4}
-.chip{position:relative;cursor:default;padding:1px 3px;border-radius:3px;font-size:0.9em}
-.st-working{color:var(--yl);font-weight:bold}.st-done{color:var(--gn)}.st-processed{color:var(--gn);opacity:0.6}.st-pending{color:var(--dim)}
-.stale-chip{color:var(--rd)!important;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
-.log-link{text-decoration:none}.log-link:hover .chip{text-decoration:underline}
-.chip .tt{display:none;position:absolute;z-index:100;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#1c2128;border:1px solid var(--bd);border-radius:6px;padding:8px 12px;font-size:0.85em;white-space:nowrap;min-width:180px;color:var(--tx);box-shadow:0 4px 16px rgba(0,0,0,0.6);pointer-events:none}
-.chip .tt span{display:block;line-height:1.5}
+
+/* ── Issue column ───────────────────────────────────────────────────────── */
+.issue-col{min-width:88px}
+.issue-link{color:var(--ac);font-weight:700;font-size:1em}
+.progress-bar{height:4px;background:var(--bd);border-radius:3px;margin-top:4px;width:72px}
+.progress-fill{height:100%;background:var(--gn);border-radius:3px;transition:width 0.4s}
+.progress-text{font-size:0.7em;color:var(--dim);margin-top:1px;display:block}
+
+/* ── Row states ─────────────────────────────────────────────────────────── */
+.cell-empty{color:var(--bd);text-align:center;font-size:0.85em}
+.cell-current{background:rgba(88,166,255,0.07);border-left:3px solid var(--ac)}
+.issue-done{opacity:0.38}
+.issue-listo{opacity:0.65}
+
+/* ── Chips ──────────────────────────────────────────────────────────────── */
+.chip{
+  position:relative;cursor:default;
+  padding:3px 7px;border-radius:5px;font-size:0.85em;
+  display:inline-flex;align-items:center;gap:4px;
+  border:1px solid transparent;font-family:inherit;
+}
+.st-working{
+  color:var(--yl);background:rgba(210,153,34,0.12);border-color:rgba(210,153,34,0.3);
+  font-weight:600;
+}
+.st-done{color:var(--gn);background:rgba(63,185,80,0.1);border-color:rgba(63,185,80,0.25)}
+.st-processed{color:var(--gn);opacity:0.55}
+.st-pending{color:var(--dim);background:rgba(139,148,158,0.08);border-color:rgba(139,148,158,0.2)}
+.stale-chip{
+  color:var(--rd)!important;background:rgba(248,81,73,0.12)!important;
+  border-color:rgba(248,81,73,0.4)!important;animation:pulse 1.8s infinite
+}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.log-link{text-decoration:none}
+.log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
+
+/* ── Tooltip ────────────────────────────────────────────────────────────── */
+.chip .tt{
+  display:none;position:absolute;z-index:200;
+  bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);
+  background:var(--sf2);border:1px solid var(--bd);border-radius:8px;
+  padding:10px 14px;font-size:0.88em;white-space:nowrap;
+  min-width:190px;color:var(--tx);
+  box-shadow:0 8px 24px rgba(0,0,0,0.7);pointer-events:none;
+}
+.chip .tt span{display:block;line-height:1.6;color:var(--dim)}
+.chip .tt span:first-child{color:var(--tx);font-weight:600;margin-bottom:2px}
 .chip:hover .tt{display:block}
-.more-label{color:var(--dim);font-style:italic;text-align:center}
-.bar-row{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.bar-section{background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:12px 16px;flex:1;min-width:200px}
-.skill-load{display:inline-block;font-size:0.78em;padding:3px 6px;margin:2px;border-radius:4px;background:var(--bg)}
-.load-full{color:var(--rd)}.load-partial{color:var(--yl)}.load-idle{color:var(--dim)}
-.svc-chip{display:inline-block;font-size:0.78em;padding:3px 8px;margin:2px;border-radius:4px;background:var(--bg)}
+.more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
+
+/* ── Bar row: skills / servicios / procesos ─────────────────────────────── */
+.bar-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.bar-section{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:16px 18px;flex:1;min-width:200px;
+}
+.skill-load{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:0.82em;padding:4px 8px;margin:3px;
+  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
+}
+.load-full{color:var(--rd);border-color:rgba(248,81,73,0.3)}
+.load-partial{color:var(--yl);border-color:rgba(210,153,34,0.3)}
+.load-idle{color:var(--dim2)}
+.svc-chip{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:0.82em;padding:4px 10px;margin:3px;
+  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
+}
 .svc-busy{border-left:3px solid var(--yl)}.svc-ok{border-left:3px solid var(--gn)}
-.proc-chip{display:inline-block;font-size:0.78em;padding:3px 6px;margin:2px;border-radius:4px;background:var(--bg)}
+.proc-chip{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:0.82em;padding:4px 8px;margin:3px;
+  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
+}
 .proc-alive{color:var(--gn)}.proc-dead{color:var(--rd)}
-.rechazo-row{font-size:0.8em;padding:3px 0;border-bottom:1px solid var(--bd);color:var(--rd)}
-.rechazo-motivo{color:var(--dim);font-style:italic}.ts{color:var(--dim);font-size:0.85em}
-.act-row{font-size:0.78em;padding:2px 0;border-bottom:1px solid var(--bd);font-family:monospace}
+
+/* ── Rechazos / Actividad ───────────────────────────────────────────────── */
+.rechazo-row{font-size:0.85em;padding:5px 2px;border-bottom:1px solid var(--bd2);color:var(--rd);display:flex;gap:8px;align-items:baseline}
+.rechazo-motivo{color:var(--dim);font-style:italic}
+.ts{color:var(--dim);font-size:0.82em}
+.act-row{font-size:0.82em;padding:4px 2px;border-bottom:1px solid var(--bd2);font-family:'SF Mono','Fira Code',monospace;display:flex;gap:8px}
 .msg-in{color:var(--ac)}.msg-out{color:var(--gn)}
-.collapse-section{margin-top:16px}
-summary{color:var(--dim);font-size:0.85em;cursor:pointer;padding:6px 0;text-transform:uppercase;letter-spacing:1px}
-.empty-label{color:var(--dim);font-size:0.78em;font-style:italic}
-.footer{margin-top:20px;font-size:0.7em;color:var(--dim);text-align:center}
+
+/* ── Collapse / details ─────────────────────────────────────────────────── */
+.collapse-section{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:0;margin-bottom:14px;overflow:hidden;
+}
+.collapse-section summary{
+  color:var(--dim);font-size:0.82em;cursor:pointer;
+  padding:12px 18px;text-transform:uppercase;letter-spacing:1.5px;font-weight:600;
+  list-style:none;display:flex;justify-content:space-between;align-items:center;
+  user-select:none;
+}
+.collapse-section summary::-webkit-details-marker{display:none}
+.collapse-section summary::after{content:'▸';transition:transform 0.2s}
+.collapse-section[open] summary::after{transform:rotate(90deg)}
+.collapse-section summary:hover{background:rgba(255,255,255,0.03)}
+.collapse-body{padding:10px 18px 14px;border-top:1px solid var(--bd2)}
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+.footer{margin-top:22px;font-size:0.75em;color:var(--dim2);text-align:center;padding-top:12px;border-top:1px solid var(--bd2)}
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+.empty-label{color:var(--dim);font-size:0.82em;font-style:italic}
 </style></head>
 <body>
-  <h1>🐙 Pipeline V2 — Intrale</h1>
+  <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span></h1>
 
-  ${stale > 0 ? `<div class="alert">⚠️ ${stale} issue(s) llevan más de 10 min en trabajando — posible huérfano</div>` : ''}
+  ${stale > 0 ? `<div class="alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 10 min en trabajando — posible huérfano</div>` : ''}
 
   <div class="kpis">
-    <div class="kpi"><div class="kpi-value">${activos}</div><div class="kpi-label">Activos</div></div>
-    <div class="kpi"><div class="kpi-value ${trabajando > 0 ? '' : 'warn'}">${trabajando}</div><div class="kpi-label">En ejecución</div></div>
-    <div class="kpi"><div class="kpi-value ${stale > 0 ? 'danger' : ''}">${stale}</div><div class="kpi-label">Bloqueados</div></div>
-    <div class="kpi"><div class="kpi-value">${totalIssues - activos}</div><div class="kpi-label">Finalizados</div></div>
+    <div class="kpi kpi-activos">
+      <span class="kpi-icon">🔄</span>
+      <div class="kpi-value">${activos}</div>
+      <div class="kpi-label">Activos en pipeline</div>
+    </div>
+    <div class="kpi kpi-working">
+      <span class="kpi-icon">⚙️</span>
+      <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
+      <div class="kpi-label">En ejecución ahora</div>
+    </div>
+    <div class="kpi kpi-pendientes">
+      <span class="kpi-icon">⏳</span>
+      <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
+      <div class="kpi-label">Pendientes en cola</div>
+    </div>
+    <div class="kpi kpi-blocked">
+      <span class="kpi-icon">🚨</span>
+      <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
+      <div class="kpi-label">Bloqueados / stale</div>
+    </div>
+    <div class="kpi kpi-definidos">
+      <span class="kpi-icon">📋</span>
+      <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
+      <div class="kpi-label">Definidos listos</div>
+    </div>
+    <div class="kpi kpi-entregados">
+      <span class="kpi-icon">🚀</span>
+      <div class="kpi-value success">${entregados}</div>
+      <div class="kpi-label">Entregados a prod</div>
+    </div>
   </div>
 
   ${matrixHTML}
 
   <div class="bar-row">
-    <div class="bar-section"><h2>Skills</h2>${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
-    <div class="bar-section"><h2>Servicios</h2>${svcsHTML}</div>
-    <div class="bar-section"><h2>Procesos</h2>${procHTML}</div>
+    <div class="bar-section"><h2>🧠 Skills activos</h2>${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
+    <div class="bar-section"><h2>📡 Servicios</h2>${svcsHTML}</div>
+    <div class="bar-section"><h2>⚡ Procesos</h2>${procHTML}</div>
   </div>
 
-  ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>RECHAZOS RECIENTES (${state.rechazos.length})</summary><div style="padding:8px 0">${rechazosHTML}</div></details>` : ''}
+  ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
-  <details class="collapse-section"><summary>ACTIVIDAD COMMANDER</summary><div style="padding:8px 0;max-height:300px;overflow-y:auto">${actHTML}</div></details>
+  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
 
-  <div class="footer">Auto-refresh: 10s | ${new Date().toLocaleString('es-AR')}</div>
+  <div class="footer">🔴 Live · Auto-refresh 10s &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
 <script>
 // SSE live refresh — solo recarga si el estado cambió
