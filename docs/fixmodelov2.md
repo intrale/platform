@@ -1,118 +1,66 @@
 # Fix Modelo V2 — Tracking de Avance
 
-> Archivo de seguimiento para mantener contexto entre sesiones.
-> Ultima actualizacion: 2026-03-28T16:00
+> Ultima actualizacion: 2026-03-28T23:55
 
 ## Estado general
 
-Informe completo en: `docs/informe-migracion-v1-v2.md`
-Diseño original en: `docs/pipeline-v2-diseno.md` + `docs/revision-hooks-v2.md` (seccion Commander V2)
 Branch: `fix/pulpo-telegram-retry`
+Informe de gaps: `docs/informe-migracion-v1-v2.md`
+Pendientes detallados: `docs/pendingsmodelov2.md`
 
-## Progreso por tarea
+## Resumen de sesion 2026-03-28
 
-### Fase A — Circuito completo (Critica) — 3/4 COMPLETADOS
+### Completado
 
-- [x] **A1** — Parser de comandos en Commander (`pulpo.js` brazoCommander)
-  - 8 handlers nativos: /status, /actividad, /intake, /proponer, /pausar, /reanudar, /costos, /help, /stop
-  - /proponer lanza Claude sincrono (2min timeout), guarda propuestas en commander-proposals.json
-  - Texto libre se delega a Claude con ventana de 24hs de historial
-  - Mensajes procesados individualmente
+**Pipeline core:**
+- [x] Commander con 8 handlers nativos (/status, /help, /actividad, /intake, /pausar, /reanudar, /costos, /proponer)
+- [x] Deteccion de intencion por lenguaje natural (para audio transcripto)
+- [x] Sesion conversacional persistente (commander-session.json)
+- [x] Historial con ventana de 24hs + rotacion automatica
+- [x] Commander corre fuera del if(!paused) para /reanudar
+- [x] Build timeout real con setTimeout + child.kill()
+- [x] Max 3 retries en huerfanos, luego rechazo
+- [x] Rate limiting GitHub API (2s entre calls)
+- [x] Cleanup de worktrees al completar entrega
+- [x] sendTelegram migrado a encolado fire-and-forget
+- [x] Rol hotfix.md + config
 
-- [ ] **A2** — Seedear issues con labels en GitHub
-  - PENDIENTE — requiere crear issues reales con labels `needs-definition` o `ready`
+**Multimedia (audio/imagen):**
+- [x] STT Whisper funcional (transcripcion en 2-3s)
+- [x] TTS OpenAI funcional (respuesta por audio)
+- [x] Vision Anthropic (sin API key usa fallback a disco)
+- [x] preprocessMessage usa paths locales del listener (no re-descarga)
+- [x] Deduplicacion de mensajes por message_id en listener
+- [x] await en enqueueMessage del listener (fix mensajes perdidos)
 
-- [x] **A3** — Cleanup de worktrees en fase de entrega
-  - brazoBarrido limpia worktrees al completar ultima fase
-  - Pattern matching: `platform.agent-{issue}-*`, `git worktree remove --force`
+**Invocacion de Claude (critico):**
+- [x] spawn async con stdin pipe + stream-json (patron V1)
+- [x] --verbose requerido para stream-json
+- [x] --permission-mode bypassPermissions para tools
+- [x] Sin timeout — Claude trabaja todo lo que necesite
+- [x] Mensajes de progreso cada 45s con contexto dinamico (8 templates unicos)
+- [x] Siempre responder al usuario (nunca null)
+- [x] Texto siempre encolado como backup del TTS
 
-- [x] **A4** — Fix timeout de build
-  - setTimeout + child.kill() + clearTimeout en exit handler
+**Gestion de procesos:**
+- [x] singleton.js basado en wmic (no PID file)
+- [x] restart.js: kill all + relaunch + verify (node .pipeline/restart.js)
+- [x] taskkill /F /T para tree kill
+- [x] Recuperacion de mensajes trabados en trabajando/
 
-### Fase B — Funcionalidad core (Alta) — 6/6 COMPLETADOS
+### Evidencia de funcionamiento
 
-- [x] **B1** — Persistencia de sesiones Commander
-  - `commander-session.json`: context, lastCommand, lastTimestamp
-  - loadSession()/saveSession() cada ciclo
-  - Contexto pasado a Claude si sesion < 30min
-  - Historial con ventana de 24hs (no lineas fijas)
-  - Rotacion automatica cada hora (descarta > 24hs)
+- Audio STT + TTS: funciona (transcripcion 2-3s, TTS 5-8s)
+- Handlers nativos: /status, /help, /pausar, /reanudar verificados
+- Claude con tools: 60 tools ejecutadas en 629s, merge de PR exitoso
+- Mensajes de progreso: cada 45s con contexto de la tool actual
+- Dashboard verificado por audio command
 
-- [x] **B2** — Handler nativo `/status` — Cero tokens
+### Pendiente
 
-- [x] **B3** — Handler nativo `/intake` — manual y forzado
-
-- [x] **B4** — `/pausar` y `/reanudar` nativos
-
-- [x] **B5** — Max retries en huerfanos (3, luego rechaza)
-
-- [x] **B6** — Deteccion de procesos Windows (`tasklist`)
-
-### Fase C — Ecosistema (Media) — 4/6 COMPLETADOS
-
-- [x] **C1** — Rol `hotfix.md` + config (concurrencia:1, dev_skill_mapping por label priority:critical)
-
-- [ ] **C2** — Division de historias en planner
-  - PENDIENTE — sizing "grande" → crear sub-issues, re-entrar en criterios
-
-- [ ] **C3** — `/costos` con tracking real de tokens
-  - PARCIAL: handler lee logs y muestra stats basicas
-  - Falta: parsear tokens reales del output de Claude
-
-- [ ] **C4** — Servicio Drive — PENDIENTE (requiere Google credentials)
-
-- [x] **C5** — Rate limiting GitHub API (2s entre calls)
-
-- [x] **C6** — Envio de documentos/imagenes en servicio-telegram (multipart real)
-
-### Extras completados (no estaban en plan original)
-
-- [x] sendTelegram() migrado de spawnSync hack a encolado fire-and-forget via servicio
-- [x] /proponer implementado con agente Claude sincrono + proposals file
-- [x] Rotacion de historial commander-history.jsonl (> 24hs se descarta)
-- [x] Ventana de historial cambiada de "ultimas N lineas" a "ultimas 24hs"
-- [x] Rol cua descartado — qa.md ya incluye video/evidencia
-
-## Archivos modificados
-
-| Archivo | Cambio |
-|---------|--------|
-| `.pipeline/pulpo.js` | 816→1185 lineas (+369): handlers, session, timeout, Windows, retries, worktree cleanup, rate limit, rotacion, proponer |
-| `.pipeline/servicio-telegram.js` | 107→162 lineas: multipart upload documentos y fotos |
-| `.pipeline/roles/hotfix.md` | NUEVO: 30 lineas |
-| `.pipeline/config.yaml` | hotfix en concurrencia + dev_skill_mapping |
-| `docs/informe-migracion-v1-v2.md` | Informe completo de gaps V1→V2 |
-| `docs/fixmodelov2.md` | Este tracking |
-
-## Verificacion
-
-- `node -c .pipeline/pulpo.js` — OK
-- `node -c .pipeline/servicio-telegram.js` — OK
-- Estructura de carpetas pipeline completa (procesado/ en cada fase)
-
-## Bugs encontrados y corregidos durante testing
-
-1. **Commander no procesaba /reanudar estando pausado** — brazoCommander estaba dentro del `if (!paused)`. Fix: moverlo afuera.
-2. **Historial usaba ventana por cantidad** — Cambiado a ventana de 24hs segun diseno.
-3. **/proponer no tenia handler** — Implementado con Claude sincrono + proposals file.
-
-## Testing completado (2026-03-28)
-
-Evidencia completa en: `docs/evidencia-test-v2.md`
-
-| Comando | Resultado |
-|---------|-----------|
-| /status | PASS — respuesta nativa, 0 tokens |
-| /pausar | PASS — crea .paused, Pulpo se pausa |
-| /reanudar | PASS — funciona estando pausado |
-| /help | PASS — lista completa de comandos |
-| /actividad | PASS — timeline con filtro 24hs |
-| /costos | PASS — stats basicas de logs |
-
-## Pendiente
-
-1. **A2**: Crear issues de prueba en GitHub para test E2E del circuito
-2. **C2**: Division de historias grandes en planner (sizing "grande")
-3. **C3**: Tracking real de tokens
-4. **C4**: Servicio Drive (Google credentials)
-5. Tests pendientes: /intake real, /proponer, audio, imagenes, pipeline E2E
+1. **Intake de issues**: crear issues con labels needs-definition/ready para probar circuito E2E
+2. **Division de historias en planner**: sizing "grande" -> sub-issues
+3. **Tracking real de tokens**: parsear usage del JSON de claude
+4. **Servicio Drive**: requiere Google credentials
+5. **Imagenes**: probar envio de foto por Telegram (sin Anthropic API key usa fallback)
+6. **Dashboard**: no muestra actividad del commander ni servicios procesados
