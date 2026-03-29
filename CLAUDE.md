@@ -193,27 +193,20 @@ Si no existe ninguno de los dos labels → **BLOQUEAR merge** y escalar a `/qa`.
 
 ## Lanzamiento de agentes (CRITICO)
 
-**SIEMPRE** lanzar agentes de sprint via `Start-Agente.ps1`. **NUNCA** crear worktrees manualmente ni lanzar `claude -p` directo.
+Los agentes se lanzan automáticamente por el **Pulpo** (`.pipeline/pulpo.js`). El pipeline V2 gestiona todo el ciclo de vida:
 
+- Intake automático desde GitHub (issues con labels `needs-definition` o `ready`)
+- Worktrees aislados para fase `dev`
+- Circuit breaker: máximo 3 rebotes por issue
+- Muerte prematura (<15s) se detecta como fallo de infra
+
+**Para gestionar el pipeline:**
 ```bash
-# Lanzar todos los agentes del sprint
-powershell.exe -NonInteractive -File scripts/Start-Agente.ps1 all
-
-# Lanzar un agente específico
-powershell.exe -NonInteractive -File scripts/Start-Agente.ps1 1
-
-# Relanzar con worktree limpio
-powershell.exe -NonInteractive -File scripts/Start-Agente.ps1 1 -Force
+node .pipeline/restart.js          # Reiniciar todos los servicios
+node .pipeline/pulpo.js            # Ejecutar manualmente (normalmente corre como servicio)
 ```
 
-`Start-Agente.ps1` garantiza:
-- Worktree aislado con `.claude/` copiado
-- `Run-AgentStream.ps1` con stream-json parsing
-- Pipeline post-Claude automático (tests → security → build → delivery)
-- `agent-watcher.js` monitoreando agentes muertos y promoviendo de cola
-- Logs en `scripts/logs/agente_N.log` con diagnóstico de muerte
-
-**Prohibido:** crear worktrees con `git worktree add` + lanzar `claude` manualmente. Esto bypasea el pipeline post-Claude y los agentes mueren sin hacer delivery.
+**Prohibido:** crear worktrees con `git worktree add` + lanzar `claude` manualmente. Usar siempre el pipeline V2.
 
 ## Protocolo de tareas (obligatorio en toda implementación)
 
