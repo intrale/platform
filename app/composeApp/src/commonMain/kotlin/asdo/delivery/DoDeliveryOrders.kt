@@ -83,7 +83,6 @@ class DoGetDeliveryOrderDetail(
     }
 }
 
-<<<<<<< HEAD
 class DoGetAvailableDeliveryOrders(
     private val ordersService: CommDeliveryOrdersService
 ) : ToDoGetAvailableDeliveryOrders {
