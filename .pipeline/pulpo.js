@@ -403,9 +403,14 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
+  // Log de agente: redirigir stdout/stderr directamente al archivo
+  const agentLogPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
+  fs.writeFileSync(agentLogPath, `--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} ${new Date().toISOString()} ---\n`);
+  const agentLogFd = fs.openSync(agentLogPath, 'a');
+
   const child = spawn(CLAUDE_BIN, args, {
     cwd: needsWorktree ? worktreePath : ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', agentLogFd, agentLogFd],
     detached: true,
     shell: true,
     windowsHide: true,
@@ -413,6 +418,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   child.unref();
+  fs.closeSync(agentLogFd);
 
   activeProcesses.set(processKey(skill, issue), {
     pid: child.pid,
@@ -443,15 +449,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     activeProcesses.delete(processKey(skill, issue));
   });
 
-  child.stdout.on('data', (data) => {
-    const logFile = path.join(LOG_DIR, `${issue}-${skill}.log`);
-    fs.appendFileSync(logFile, data);
-  });
-
-  child.stderr.on('data', (data) => {
-    const logFile = path.join(LOG_DIR, `${issue}-${skill}.log`);
-    fs.appendFileSync(logFile, `[STDERR] ${data}`);
-  });
+  // stdout/stderr redirigidos al archivo de log via stdio fd
 }
 
 function lanzarBuild(issue, trabajandoPath, pipeline, config) {

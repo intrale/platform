@@ -101,8 +101,11 @@ function getPipelineState() {
           entry.motivo = yamlData.motivo;
         }
 
-        // Log disponible?
-        const logFile = `${issue}-${skill}.log`;
+        // Log disponible? Buscar {issue}-{skill}.log o build-{issue}.log
+        let logFile = `${issue}-${skill}.log`;
+        if (!fs.existsSync(path.join(LOG_DIR, logFile)) && skill === 'build') {
+          logFile = `build-${issue}.log`;
+        }
         entry.hasLog = fs.existsSync(path.join(LOG_DIR, logFile));
         entry.logFile = logFile;
 
