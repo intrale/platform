@@ -18,6 +18,14 @@ interface ToDoGetDeliveryOrderDetail {
     suspend fun execute(orderId: String): Result<DeliveryOrderDetail>
 }
 
+interface ToDoGetAvailableDeliveryOrders {
+    suspend fun execute(): Result<List<DeliveryOrder>>
+}
+
+interface ToDoTakeDeliveryOrder {
+    suspend fun execute(orderId: String): Result<DeliveryOrderStatusUpdateResult>
+}
+
 interface ToDoGetDeliveryOrderHistory {
     suspend fun execute(): Result<List<DeliveryOrder>>
 }

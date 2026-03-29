@@ -11,7 +11,22 @@
       "Bash(.pipeline/desarrollo/validacion/listo/9999.ux:*)",
       "Bash(.pipeline/desarrollo/validacion/listo/9999.guru:*)",
       "Bash(where claude:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git merge:*)",
+      "Bash(__NEW_LINE_a3c6da8fe390e0fa__ echo:*)",
+      "Bash(ls .pipeline/servicios/commander/pendiente/*.json)",
+      "Bash(ls .pipeline/servicios/commander/trabajando/*.json)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(echo '=== PROCESOS ===' wmic process where name=''node.exe'' get ProcessId,CommandLine)",
+      "Bash(\"C:\\\\Workspaces\\\\gh-cli\\\\bin\\\\gh.exe\" issue:*)",
+      "Bash(__NEW_LINE_03fa7b5ea38989a3__ git:*)",
+      "Bash(__NEW_LINE_0790a4bed0065cc7__ git:*)",
+      "Bash(grep ^19[0-9])",
+      "Bash(curl -s http://localhost:3200/api/state)",
+      "Bash(__NEW_LINE_a9ea5bbe76a3a9be__ git:*)",
+      "Bash(__NEW_LINE_567c88691e7e87a2__ git:*)",
+      "Skill(delivery)"
     ],
     "deny": [
       "Bash(git push --force*)",

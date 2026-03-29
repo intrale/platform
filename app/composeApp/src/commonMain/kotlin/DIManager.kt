@@ -49,18 +49,22 @@ import asdo.delivery.DoGetActiveDeliveryOrders
 import asdo.delivery.DoGetDeliveryAvailability
 import asdo.delivery.DoGetDeliveryOrderDetail
 import asdo.delivery.DoGetDeliveryOrdersSummary
+import asdo.delivery.DoGetAvailableDeliveryOrders
 import asdo.delivery.DoGetDeliveryProfile
+import asdo.delivery.DoTakeDeliveryOrder
 import asdo.delivery.DoUpdateDeliveryAvailability
 import asdo.delivery.DoUpdateDeliveryOrderStatus
 import asdo.delivery.DoUpdateDeliveryProfile
 import asdo.delivery.ToDoDeliveryStateChange
 import asdo.delivery.ToDoGetActiveDeliveryOrders
+import asdo.delivery.ToDoGetAvailableDeliveryOrders
 import asdo.delivery.ToDoGetDeliveryAvailability
 import asdo.delivery.ToDoGetDeliveryOrderDetail
 import asdo.delivery.ToDoGetDeliveryOrderHistory
 import asdo.delivery.DoGetDeliveryOrderHistory
 import asdo.delivery.ToDoGetDeliveryOrdersSummary
 import asdo.delivery.ToDoGetDeliveryProfile
+import asdo.delivery.ToDoTakeDeliveryOrder
 import asdo.delivery.ToDoUpdateDeliveryAvailability
 import asdo.delivery.ToDoUpdateDeliveryOrderStatus
 import asdo.delivery.ToDoUpdateDeliveryProfile
@@ -529,6 +533,8 @@ private val deliveryModule = DI.Module("delivery") {
     bindSingleton<ToDoUpdateDeliveryOrderStatus> { DoUpdateDeliveryOrderStatus(instance()) }
     bindSingleton<ToDoDeliveryStateChange> { DoDeliveryStateChange(instance()) }
     bindSingleton<ToDoGetDeliveryOrderDetail> { DoGetDeliveryOrderDetail(instance()) }
+    bindSingleton<ToDoGetAvailableDeliveryOrders> { DoGetAvailableDeliveryOrders(instance()) }
+    bindSingleton<ToDoTakeDeliveryOrder> { DoTakeDeliveryOrder(instance()) }
     bindSingleton<ToDoGetDeliveryOrderHistory> { DoGetDeliveryOrderHistory(instance()) }
 
     bindSingleton<ToDoGetDeliveryNotifications> { DoGetDeliveryNotifications() }

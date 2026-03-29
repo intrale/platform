@@ -15,7 +15,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -63,8 +65,10 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
     @Composable
     override fun screen() {
         val ordersViewModel: DeliveryOrdersViewModel = viewModel { DeliveryOrdersViewModel() }
+        val availableViewModel: AvailableOrdersViewModel = viewModel { AvailableOrdersViewModel() }
         val historyViewModel: DeliveryHistoryViewModel = viewModel { DeliveryHistoryViewModel() }
         val ordersState = ordersViewModel.state
+        val availableState = availableViewModel.state
         val historyState = historyViewModel.state
         val coroutineScope = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
@@ -76,7 +80,11 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
         }
 
         LaunchedEffect(selectedTab) {
-            if (selectedTab == 1 && historyState.status == DeliveryHistoryStatus.Idle) {
+            if (selectedTab == 1 && availableState.status == AvailableOrdersStatus.Idle) {
+                logger.info { "[Delivery] Cargando pedidos disponibles" }
+                availableViewModel.loadAvailableOrders()
+            }
+            if (selectedTab == 2 && historyState.status == DeliveryHistoryStatus.Idle) {
                 logger.info { "[Delivery] Cargando historial de pedidos" }
                 historyViewModel.loadHistory()
             }
@@ -110,7 +118,11 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
         val filterDelivered = Txt(MessageKey.delivery_order_status_delivered)
 
         val tabActive = Txt(MessageKey.delivery_history_tab_active)
+        val tabAvailable = Txt(MessageKey.delivery_available_orders_tab)
         val tabHistory = Txt(MessageKey.delivery_history_tab_history)
+        val availableEmpty = Txt(MessageKey.delivery_available_orders_empty)
+        val availableError = Txt(MessageKey.delivery_available_orders_error)
+        val availableRetry = Txt(MessageKey.delivery_available_orders_retry)
         val historyEmpty = Txt(MessageKey.delivery_history_empty)
         val historyError = Txt(MessageKey.delivery_history_error)
         val historyRetry = Txt(MessageKey.delivery_history_retry)
@@ -122,10 +134,10 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                     activeTab = DeliveryTab.ORDERS,
                     onHomeClick = { navigate(DELIVERY_HOME_PATH) },
                     onOrdersClick = {
-                        if (selectedTab == 0) {
-                            coroutineScope.launch { ordersViewModel.loadOrders() }
-                        } else {
-                            coroutineScope.launch { historyViewModel.loadHistory() }
+                        when (selectedTab) {
+                            0 -> coroutineScope.launch { ordersViewModel.loadOrders() }
+                            1 -> coroutineScope.launch { availableViewModel.loadAvailableOrders() }
+                            2 -> coroutineScope.launch { historyViewModel.loadHistory() }
                         }
                     },
                     onNotificationsClick = { navigate(DELIVERY_NOTIFICATIONS_PATH) },
@@ -164,6 +176,11 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                     Tab(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
+                        text = { Text(tabAvailable) }
+                    )
+                    Tab(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
                         text = { Text(tabHistory) }
                     )
                 }
@@ -195,7 +212,18 @@ class DeliveryDashboardScreen : Screen(DELIVERY_DASHBOARD_PATH) {
                             }
                         }
                     )
-                    1 -> HistoryContent(
+                    1 -> AvailableOrdersContent(
+                        state = availableState,
+                        emptyMessage = availableEmpty,
+                        errorMessage = availableError,
+                        retryLabel = availableRetry,
+                        onRetry = { coroutineScope.launch { availableViewModel.loadAvailableOrders() } },
+                        onTakeOrder = { orderId ->
+                            coroutineScope.launch { availableViewModel.takeOrder(orderId) }
+                        },
+                        snackbarHostState = snackbarHostState
+                    )
+                    2 -> HistoryContent(
                         state = historyState,
                         emptyMessage = historyEmpty,
                         errorMessage = historyError,
@@ -433,6 +461,156 @@ internal fun HistoryOrderCard(
                     Text(
                         text = Txt(MessageKey.delivery_history_view_detail)
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AvailableOrdersContent(
+    state: AvailableOrdersUiState,
+    emptyMessage: String,
+    errorMessage: String,
+    retryLabel: String,
+    onRetry: () -> Unit,
+    onTakeOrder: (String) -> Unit,
+    snackbarHostState: SnackbarHostState
+) {
+    val takeSuccessMessage = Txt(MessageKey.delivery_order_take_success)
+    val alreadyTakenMessage = Txt(MessageKey.delivery_order_take_already_taken)
+
+    LaunchedEffect(state.takeSuccess) {
+        if (state.takeSuccess) {
+            snackbarHostState.showSnackbar(takeSuccessMessage)
+        }
+    }
+
+    LaunchedEffect(state.alreadyTakenOrderId) {
+        if (state.alreadyTakenOrderId != null) {
+            snackbarHostState.showSnackbar(alreadyTakenMessage)
+        }
+    }
+
+    LaunchedEffect(state.takeError) {
+        state.takeError?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = MaterialTheme.spacing.x4, vertical = MaterialTheme.spacing.x3),
+        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3)
+    ) {
+        when (state.status) {
+            AvailableOrdersStatus.Idle,
+            AvailableOrdersStatus.Loading -> item {
+                DeliveryLoading()
+            }
+
+            AvailableOrdersStatus.Empty -> item {
+                DeliveryStateCard(
+                    message = emptyMessage,
+                    actionLabel = retryLabel,
+                    onAction = onRetry
+                )
+            }
+
+            AvailableOrdersStatus.Error -> item {
+                DeliveryStateCard(
+                    message = state.errorMessage ?: errorMessage,
+                    actionLabel = retryLabel,
+                    onAction = onRetry
+                )
+            }
+
+            AvailableOrdersStatus.Loaded -> {
+                items(state.orders, key = { it.id }) { order ->
+                    AvailableOrderCard(
+                        order = order,
+                        isTaking = state.takingOrderId == order.id,
+                        onTake = { onTakeOrder(order.id) }
+                    )
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(MaterialTheme.spacing.x6))
+        }
+    }
+}
+
+@Composable
+private fun AvailableOrderCard(
+    order: DeliveryOrder,
+    isTaking: Boolean,
+    onTake: () -> Unit
+) {
+    val takeLabel = Txt(MessageKey.delivery_order_take_action)
+    val distancePlaceholder = Txt(MessageKey.delivery_order_distance_placeholder)
+
+    androidx.compose.material3.Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5)
+                ) {
+                    Text(
+                        text = order.businessName,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = order.neighborhood,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x0_5)
+                ) {
+                    Text(
+                        text = distancePlaceholder,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    order.eta?.let { eta ->
+                        Text(
+                            text = eta,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+
+            Button(
+                onClick = onTake,
+                enabled = !isTaking,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isTaking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.height(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Text(takeLabel)
                 }
             }
         }

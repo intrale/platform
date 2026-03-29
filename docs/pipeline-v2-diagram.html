@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Pipeline V2 — Nuevo Modelo Operativo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    padding: 24px;
+    width: 1200px;
+  }
+  h1 { text-align: center; color: #7ee787; font-size: 24px; margin-bottom: 4px; }
+  .subtitle { text-align: center; color: #8b949e; font-size: 12px; margin-bottom: 24px; }
+
+  /* Layout */
+  .main-layout {
+    display: flex;
+    gap: 20px;
+  }
+  .pipelines-col { flex: 1; }
+  .side-col { flex: 0 0 260px; display: flex; flex-direction: column; gap: 14px; }
+
+  /* Section headers */
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .section-header h2 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .section-header .line { flex: 1; height: 1px; background: #21262d; }
+
+  /* Phase rows */
+  .phase-row {
+    display: flex;
+    align-items: stretch;
+    margin-bottom: 3px;
+    min-height: 62px;
+  }
+  .phase-label {
+    flex: 0 0 130px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 8px 12px;
+    border-radius: 8px 0 0 8px;
+    position: relative;
+  }
+  .phase-label h3 { font-size: 13px; }
+  .phase-label small { font-size: 9px; opacity: 0.7; }
+  .phase-label .num { font-size: 22px; font-weight: 800; opacity: 0.12; position: absolute; right: 8px; top: 4px; }
+
+  .phase-body {
+    flex: 1;
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-left: none;
+    border-radius: 0 8px 8px 0;
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* Skill tags */
+  .skill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 5px;
+    font-family: monospace;
+    white-space: nowrap;
+  }
+  .badge {
+    font-size: 7px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: sans-serif;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  /* Skill types */
+  .sk-claude { background: rgba(56, 139, 253, 0.12); color: #79c0ff; border: 1px solid rgba(56, 139, 253, 0.25); }
+  .sk-script { background: rgba(210, 153, 34, 0.12); color: #e3b341; border: 1px solid rgba(210, 153, 34, 0.25); }
+  .sk-product { background: rgba(188, 140, 255, 0.12); color: #d2a8ff; border: 1px solid rgba(188, 140, 255, 0.25); }
+  .sk-dev { background: rgba(126, 231, 135, 0.12); color: #7ee787; border: 1px solid rgba(126, 231, 135, 0.25); }
+
+  .b-opus { background: rgba(248, 81, 73, 0.3); color: #ff7b72; }
+  .b-sonnet { background: rgba(56, 139, 253, 0.3); color: #79c0ff; }
+  .b-haiku { background: rgba(126, 231, 135, 0.3); color: #7ee787; }
+  .b-script { background: rgba(210, 153, 34, 0.3); color: #e3b341; }
+
+  .parallel-tag {
+    font-size: 9px;
+    color: #484f58;
+    font-style: italic;
+    margin-left: auto;
+  }
+
+  /* Phase colors */
+  .ph-val { background: rgba(188, 140, 255, 0.1); border: 2px solid rgba(188, 140, 255, 0.25); }
+  .ph-val h3 { color: #d2a8ff; }
+  .ph-dev { background: rgba(56, 139, 253, 0.1); border: 2px solid rgba(56, 139, 253, 0.25); }
+  .ph-dev h3 { color: #58a6ff; }
+  .ph-build { background: rgba(210, 153, 34, 0.1); border: 2px solid rgba(210, 153, 34, 0.25); }
+  .ph-build h3 { color: #e3b341; }
+  .ph-ver { background: rgba(126, 231, 135, 0.1); border: 2px solid rgba(126, 231, 135, 0.25); }
+  .ph-ver h3 { color: #7ee787; }
+  .ph-apr { background: rgba(219, 97, 162, 0.1); border: 2px solid rgba(219, 97, 162, 0.25); }
+  .ph-apr h3 { color: #f778ba; }
+  .ph-ent { background: rgba(240, 136, 62, 0.1); border: 2px solid rgba(240, 136, 62, 0.25); }
+  .ph-ent h3 { color: #ffa657; }
+  .ph-ana { background: rgba(136, 132, 216, 0.1); border: 2px solid rgba(136, 132, 216, 0.25); }
+  .ph-ana h3 { color: #a5a0f0; }
+  .ph-cri { background: rgba(188, 140, 255, 0.1); border: 2px solid rgba(188, 140, 255, 0.25); }
+  .ph-cri h3 { color: #d2a8ff; }
+  .ph-siz { background: rgba(56, 139, 253, 0.1); border: 2px solid rgba(56, 139, 253, 0.25); }
+  .ph-siz h3 { color: #58a6ff; }
+
+  /* Arrow */
+  .arrow { text-align: center; color: #30363d; font-size: 14px; height: 16px; line-height: 16px; padding-left: 60px; }
+
+  /* Reject arrow */
+  .reject-arrow {
+    position: relative;
+    margin: 2px 0 2px 130px;
+    padding: 3px 12px;
+    font-size: 10px;
+    color: #f85149;
+    border-left: 2px dashed rgba(248, 81, 73, 0.4);
+  }
+
+  /* Side boxes */
+  .side-box {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .side-box h4 { font-size: 12px; margin-bottom: 8px; }
+  .side-box p, .side-box li { font-size: 11px; color: #8b949e; line-height: 1.4; }
+  .side-box li { margin-left: 14px; margin-bottom: 3px; }
+
+  /* Services */
+  .svc-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid #21262d;
+  }
+  .svc-row:last-child { border-bottom: none; }
+  .svc-name { font-family: monospace; font-size: 11px; color: #e3b341; flex: 0 0 80px; }
+  .svc-desc { font-size: 10px; color: #8b949e; }
+  .svc-type { font-size: 8px; padding: 1px 6px; border-radius: 3px; background: rgba(210, 153, 34, 0.2); color: #e3b341; }
+
+  /* Connector */
+  .connector {
+    text-align: center;
+    padding: 8px;
+    margin: 10px 0;
+    background: rgba(126, 231, 135, 0.06);
+    border: 1px dashed rgba(126, 231, 135, 0.3);
+    border-radius: 8px;
+    font-size: 11px;
+    color: #7ee787;
+  }
+
+  /* Stats */
+  .stats {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+    justify-content: center;
+  }
+  .stat {
+    background: #161b22;
+    border-radius: 8px;
+    padding: 10px 18px;
+    text-align: center;
+  }
+  .stat .n { font-size: 24px; font-weight: 800; }
+  .stat .l { font-size: 10px; color: #8b949e; }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 18px;
+    margin-top: 14px;
+    padding: 8px;
+    background: #161b22;
+    border-radius: 8px;
+    flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 10px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+  .folder-preview {
+    font-family: monospace;
+    font-size: 10px;
+    color: #484f58;
+    line-height: 1.5;
+    padding: 8px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 6px;
+    margin-top: 6px;
+  }
+  .folder-preview .f { color: #e3b341; }
+  .folder-preview .d { color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<h1>Pipeline V2 — Nuevo Modelo Operativo</h1>
+<p class="subtitle">Event-driven &middot; Agentes persistentes &middot; Flujo continuo Kanban &middot; Filesystem como estado</p>
+
+<div class="main-layout">
+  <div class="pipelines-col">
+
+    <!-- ===== PIPELINE DEFINICIÓN ===== -->
+    <div class="section-header">
+      <h2 style="color:#a5a0f0">Pipeline de Definici&oacute;n</h2>
+      <div class="line"></div>
+      <span style="font-size:10px; color:#484f58">Issues en borrador → ready</span>
+    </div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-ana"><span class="num">1</span><h3>An&aacute;lisis</h3><small>Viabilidad</small></div>
+      <div class="phase-body">
+        <span class="skill sk-product">guru <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-product">security <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="parallel-tag">paralelo</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-cri"><span class="num">2</span><h3>Criterios</h3><small>Aceptaci&oacute;n</small></div>
+      <div class="phase-body">
+        <span class="skill sk-product">po <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-product">ux <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="parallel-tag">paralelo</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-siz"><span class="num">3</span><h3>Sizing</h3><small>Dimensionar</small></div>
+      <div class="phase-body">
+        <span class="skill sk-product">planner <span class="badge b-opus">Opus</span></span>
+        <span class="parallel-tag">uno solo</span>
+      </div>
+    </div>
+
+    <div class="connector">
+      Issue marcado "ready" en GitHub &rarr; <b>Intake</b> lo toma &rarr; Pipeline de Desarrollo
+    </div>
+
+    <!-- ===== PIPELINE DESARROLLO ===== -->
+    <div class="section-header">
+      <h2 style="color:#58a6ff">Pipeline de Desarrollo</h2>
+      <div class="line"></div>
+      <span style="font-size:10px; color:#484f58">Issues ready → merged</span>
+    </div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-val"><span class="num">1</span><h3>Validaci&oacute;n</h3><small>Pre-dev check</small></div>
+      <div class="phase-body">
+        <span class="skill sk-product">po <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-product">ux <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-product">guru <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="parallel-tag">paralelo</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-dev"><span class="num">2</span><h3>Desarrollo</h3><small>Escribir c&oacute;digo</small></div>
+      <div class="phase-body">
+        <span class="skill sk-dev">android-dev <span class="badge b-opus">Opus</span></span>
+        <span class="skill sk-dev">backend-dev <span class="badge b-opus">Opus</span></span>
+        <span class="skill sk-dev">web-dev <span class="badge b-opus">Opus</span></span>
+        <span class="skill sk-dev">hotfix <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="parallel-tag">uno por historia</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-build"><span class="num">3</span><h3>Build</h3><small>Compilar + test</small></div>
+      <div class="phase-body">
+        <span class="skill sk-script">build <span class="badge b-script">Script</span></span>
+        <span class="parallel-tag">NO Claude — gradlew check</span>
+      </div>
+    </div>
+    <div class="reject-arrow">&#8617; Si falla → vuelve a Desarrollo (con log del error)</div>
+    <div class="arrow">&#9660;</div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-ver"><span class="num">4</span><h3>Verificaci&oacute;n</h3><small>QA + Security</small></div>
+      <div class="phase-body">
+        <span class="skill sk-claude">tester <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-claude">security <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-claude">qa <span class="badge b-opus">Opus</span></span>
+        <span class="parallel-tag">paralelo</span>
+      </div>
+    </div>
+    <div class="reject-arrow">&#8617; Si rechazan → vuelve a Desarrollo (con motivo)</div>
+    <div class="arrow">&#9660;</div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-apr"><span class="num">5</span><h3>Aprobaci&oacute;n</h3><small>Review + PO + UX</small></div>
+      <div class="phase-body">
+        <span class="skill sk-claude">review <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-claude">po <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="skill sk-claude">ux <span class="badge b-sonnet">Sonnet</span></span>
+        <span class="parallel-tag">paralelo</span>
+      </div>
+    </div>
+    <div class="reject-arrow">&#8617; Si rechazan → vuelve a Desarrollo (con motivo)</div>
+    <div class="arrow">&#9660;</div>
+
+    <div class="phase-row">
+      <div class="phase-label ph-ent"><span class="num">6</span><h3>Entrega</h3><small>PR + merge</small></div>
+      <div class="phase-body">
+        <span class="skill sk-claude">delivery <span class="badge b-opus">Opus</span></span>
+        <span class="parallel-tag">uno solo</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== SIDE COLUMN ===== -->
+  <div class="side-col">
+
+    <!-- Servicios fire-and-forget -->
+    <div class="side-box" style="border-color: rgba(210, 153, 34, 0.3);">
+      <h4 style="color:#e3b341">Servicios (fire-and-forget)</h4>
+      <div class="svc-row">
+        <span class="svc-name">telegram</span>
+        <span class="svc-desc">Enviar notificaciones</span>
+        <span class="svc-type">script</span>
+      </div>
+      <div class="svc-row">
+        <span class="svc-name">drive</span>
+        <span class="svc-desc">Subir videos/archivos</span>
+        <span class="svc-type">script</span>
+      </div>
+      <p style="margin-top:8px; font-size:10px; color:#484f58">Cualquier agente puede dejar pedidos. No bloquean el pipeline. Reintentos autom&aacute;ticos.</p>
+    </div>
+
+    <!-- Barrendero -->
+    <div class="side-box" style="border-color: rgba(126, 231, 135, 0.3);">
+      <h4 style="color:#7ee787">Barrendero</h4>
+      <p>Proceso simple que conecta fases:</p>
+      <ul style="margin-top:4px">
+        <li>Todos aprobaron → fase siguiente</li>
+        <li>Alguno rechaz&oacute; → vuelve a desarrollo</li>
+        <li>Build fall&oacute; → vuelve a desarrollo</li>
+      </ul>
+      <p style="margin-top:6px">Idempotente. Sin estado propio. ~50 l&iacute;neas.</p>
+    </div>
+
+    <!-- Intake -->
+    <div class="side-box" style="border-color: rgba(56, 139, 253, 0.3);">
+      <h4 style="color:#58a6ff">Intake</h4>
+      <p>Mira GitHub → filtra issues "ready" → los mete en la primera fase del pipeline de desarrollo.</p>
+      <p style="margin-top:4px">Autom&aacute;tico o manual.</p>
+    </div>
+
+    <!-- Carpetas -->
+    <div class="side-box" style="border-color: rgba(210, 153, 34, 0.3);">
+      <h4 style="color:#e3b341">Estructura de cada fase</h4>
+      <div class="folder-preview">
+        <span class="d">verificacion/</span><br>
+        &nbsp;&nbsp;<span class="d">pendiente/</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="f">1732.tester</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="f">1732.security</span><br>
+        &nbsp;&nbsp;<span class="d">trabajando/</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="f">1732.qa</span> &larr; QA lo tom&oacute;<br>
+        &nbsp;&nbsp;<span class="d">listo/</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="f">1600.tester</span> ✓<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="f">1600.security</span> ✓<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;<span class="f">1600.qa</span> ✓
+      </div>
+    </div>
+
+    <!-- Dashboard -->
+    <div class="side-box" style="border-color: rgba(219, 97, 162, 0.3);">
+      <h4 style="color:#f778ba">Dashboard V2</h4>
+      <p>Solo hace <code>ls</code> sobre carpetas. No hay estado oculto.</p>
+      <ul style="margin-top:4px">
+        <li>Vista de colas por fase</li>
+        <li>Historias por skill: ✓ ⏳ ⚙️</li>
+        <li>Servicios pendientes</li>
+      </ul>
+    </div>
+
+    <!-- Ops transversales -->
+    <div class="side-box" style="border-color: rgba(248, 81, 73, 0.25);">
+      <h4 style="color:#ff7b72">Operaciones (transversales)</h4>
+      <p>Fuera del pipeline, invocaci&oacute;n manual:</p>
+      <div style="margin-top:4px; font-family:monospace; font-size:10px; color:#8b949e; line-height:1.6">
+        /monitor &middot; /ops &middot; /cleanup<br>
+        /cost &middot; /scrum &middot; /auth<br>
+        /perf &middot; /reset &middot; /simplify
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div class="stats">
+  <div class="stat"><div class="n" style="color:#7ee787">13</div><div class="l">Skills en pipeline</div></div>
+  <div class="stat"><div class="n" style="color:#58a6ff">9</div><div class="l">Fases totales (2 pipelines)</div></div>
+  <div class="stat"><div class="n" style="color:#e3b341">2</div><div class="l">Servicios</div></div>
+  <div class="stat"><div class="n" style="color:#f778ba">1</div><div class="l">Barrendero</div></div>
+  <div class="stat"><div class="n" style="color:#ff7b72">0</div><div class="l">Orquestadores</div></div>
+  <div class="stat"><div class="n" style="color:#d2a8ff">0</div><div class="l">Loops de control</div></div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><span class="legend-dot" style="background:#d2a8ff"></span> Producto (PO, UX, Guru, Planner)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#7ee787"></span> Desarrollo (Android, Backend, Web)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#79c0ff"></span> Validadores (Tester, QA, Review, Security)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#e3b341"></span> Scripts mec&aacute;nicos (Build, Telegram, Drive)</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#ffa657"></span> Entrega (Delivery)</div>
+</div>
+
+<div style="text-align:center; margin-top:12px; color:#484f58; font-size:10px;">
+  Pipeline V2: 13 skills &middot; 9 fases &middot; 0 orquestadores &middot; 0 loops de control &middot; filesystem como estado
+</div>
+
+</body>
+</html>

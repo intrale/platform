@@ -127,12 +127,27 @@ async function downloadTelegramFile(fileId, ext) {
 
 // --- Enqueue message for Commander ---
 
+// Deduplicación: trackear últimos message_id procesados
+const processedMessageIds = new Set();
+
 async function enqueueMessage(update) {
   const msg = update.message;
   if (!msg) return;
 
   // Solo procesar mensajes del chat autorizado
   if (String(msg.chat.id) !== String(CHAT_ID)) return;
+
+  // Deduplicar: no procesar el mismo message_id dos veces
+  if (processedMessageIds.has(msg.message_id)) {
+    log(`Duplicado ignorado: message_id=${msg.message_id}`);
+    return;
+  }
+  processedMessageIds.add(msg.message_id);
+  // Limpiar set si crece mucho (mantener últimos 100)
+  if (processedMessageIds.size > 100) {
+    const arr = [...processedMessageIds];
+    arr.slice(0, arr.length - 100).forEach(id => processedMessageIds.delete(id));
+  }
 
   const id = `${Date.now()}-${msg.message_id}`;
 
@@ -194,10 +209,15 @@ async function pollLoop() {
 
       if (result.ok && result.result?.length > 0) {
         for (const update of result.result) {
-          enqueueMessage(update);
+          try {
+            await enqueueMessage(update);
+          } catch (e) {
+            log(`Error procesando update ${update.update_id}: ${e.message}`);
+          }
           offset = update.update_id + 1;
         }
         saveOffset(offset);
+        log(`Procesados ${result.result.length} update(s), offset → ${offset}`);
       }
     } catch (e) {
       log(`Error en polling: ${e.message}`);
@@ -206,10 +226,7 @@ async function pollLoop() {
   }
 }
 
-// --- PID file ---
-fs.writeFileSync(path.join(PIPELINE, 'listener.pid'), String(process.pid));
-
-process.on('SIGINT', () => { log('Cerrando listener'); process.exit(0); });
-process.on('SIGTERM', () => { log('Cerrando listener'); process.exit(0); });
+// --- SINGLETON ---
+require('./singleton')('listener');
 
 pollLoop().catch(e => { log(`Fatal: ${e.message}`); process.exit(1); });

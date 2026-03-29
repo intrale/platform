@@ -52,6 +52,53 @@ function telegramSend(method, params) {
   });
 }
 
+/** Enviar documento/foto via multipart form-data */
+function telegramSendMultipart(method, fieldName, filePath, extra = {}) {
+  return new Promise((resolve, reject) => {
+    const boundary = '----PipelineV2' + Date.now();
+    const filename = path.basename(filePath);
+    const fileData = fs.readFileSync(filePath);
+
+    let body = '';
+    // chat_id field
+    body += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${CHAT_ID}\r\n`;
+    // extra fields (caption, parse_mode, etc.)
+    for (const [key, val] of Object.entries(extra)) {
+      body += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
+    }
+    // file field
+    const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
+    const fileFooter = `\r\n--${boundary}--\r\n`;
+
+    const bodyBuf = Buffer.concat([
+      Buffer.from(body + fileHeader),
+      fileData,
+      Buffer.from(fileFooter)
+    ]);
+
+    const options = {
+      hostname: 'api.telegram.org',
+      path: `/bot${BOT_TOKEN}/${method}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': bodyBuf.length
+      }
+    };
+    const req = https.request(options, (res) => {
+      let resp = '';
+      res.on('data', (c) => resp += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(resp)); } catch { resolve({ ok: false, description: resp }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(60000, () => { req.destroy(); reject(new Error('timeout')); });
+    req.write(bodyBuf);
+    req.end();
+  });
+}
+
 function listWorkFiles(dir) {
   try {
     return fs.readdirSync(dir)
@@ -73,11 +120,20 @@ async function processQueue() {
     try {
       const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
 
-      if (data.text) {
+      if (data.document && fs.existsSync(data.document)) {
+        // Enviar documento real via multipart
+        const extra = {};
+        if (data.caption) extra.caption = data.caption;
+        if (data.parse_mode) extra.parse_mode = data.parse_mode;
+        await telegramSendMultipart('sendDocument', 'document', data.document, extra);
+      } else if (data.photo && fs.existsSync(data.photo)) {
+        // Enviar foto real via multipart
+        const extra = {};
+        if (data.caption) extra.caption = data.caption;
+        if (data.parse_mode) extra.parse_mode = data.parse_mode;
+        await telegramSendMultipart('sendPhoto', 'photo', data.photo, extra);
+      } else if (data.text) {
         await telegramSend('sendMessage', { text: data.text, parse_mode: data.parse_mode || 'Markdown' });
-      } else if (data.document) {
-        // Para documentos se usa multipart, simplificamos con texto
-        await telegramSend('sendMessage', { text: `📎 Documento: ${data.document}` });
       }
 
       const listoPath = path.join(LISTO, file.name);
@@ -100,7 +156,6 @@ async function main() {
   }
 }
 
-fs.writeFileSync(path.join(PIPELINE, 'svc-telegram.pid'), String(process.pid));
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+// --- SINGLETON ---
+require('./singleton')('svc-telegram');
 main();

@@ -852,4 +852,19 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.client_notifications_event_order_cancelled to "Pedido #{code} de {business} cancelado",
     MessageKey.client_notifications_event_business_message to "Mensaje de {business}: {message}",
     MessageKey.client_notifications_push_placeholder to "Las notificaciones push se activarán próximamente.",
+
+    // Pedidos disponibles (flavor Delivery)
+    MessageKey.delivery_available_orders_tab to "Disponibles",
+    MessageKey.delivery_orders_tab_mine to "Mis Pedidos",
+    MessageKey.delivery_available_orders_title to "Pedidos disponibles",
+    MessageKey.delivery_available_orders_subtitle to "Pedidos sin repartidor asignado",
+    MessageKey.delivery_available_orders_empty to "No hay pedidos disponibles en este momento",
+    MessageKey.delivery_available_orders_error to "No pudimos cargar los pedidos. Intenta de nuevo.",
+    MessageKey.delivery_available_orders_retry to "Reintentar",
+    MessageKey.delivery_available_orders_refresh to "Actualizar",
+    MessageKey.delivery_order_take_action to "Tomar pedido",
+    MessageKey.delivery_order_take_success to "Pedido tomado correctamente",
+    MessageKey.delivery_order_take_already_taken to "Este pedido ya no esta disponible",
+    MessageKey.delivery_order_take_error to "Error al tomar el pedido. Intenta de nuevo.",
+    MessageKey.delivery_order_distance_placeholder to "-- km",
 )

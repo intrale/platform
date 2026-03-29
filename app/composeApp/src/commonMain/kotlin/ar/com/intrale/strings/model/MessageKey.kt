@@ -830,6 +830,20 @@ enum class MessageKey {
     client_notifications_event_business_message,
     client_notifications_push_placeholder,
 
+    // Pedidos disponibles (flavor Delivery)
+    delivery_available_orders_tab,
+    delivery_orders_tab_mine,
+    delivery_available_orders_title,
+    delivery_available_orders_subtitle,
+    delivery_available_orders_empty,
+    delivery_available_orders_error,
+    delivery_available_orders_retry,
+    delivery_available_orders_refresh,
+    delivery_order_take_action,
+    delivery_order_take_success,
+    delivery_order_take_already_taken,
+    delivery_order_take_error,
+    delivery_order_distance_placeholder,
     // Centro de notificaciones delivery
     delivery_tab_notifications,
     delivery_notifications_title,
