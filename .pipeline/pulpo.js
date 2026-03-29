@@ -609,11 +609,17 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     }
   }
 
-  const child = spawn('bash', ['-c', `./gradlew check 2>&1`], {
+  // Usar cmd.exe con windowsHide en vez de bash (bash abre ventana visible en Windows)
+  const gradlewCmd = process.platform === 'win32'
+    ? { cmd: 'cmd.exe', args: ['/c', 'gradlew.bat check 2>&1'] }
+    : { cmd: 'bash', args: ['-c', './gradlew check 2>&1'] };
+
+  const child = spawn(gradlewCmd.cmd, gradlewCmd.args, {
     cwd: buildCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    windowsHide: true
+    windowsHide: true,
+    shell: false
   });
 
   child.unref();
