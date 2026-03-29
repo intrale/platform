@@ -15,10 +15,16 @@ Tu archivo de trabajo ya fue movido a `trabajando/` por el Pulpo. El path te lle
 ## Tu ciclo de trabajo
 
 1. **Leer el archivo de trabajo** — contiene `issue`, `fase`, `pipeline` y posiblemente `rebote` con `motivo_rechazo`
-2. **Leer el issue de GitHub** — `gh issue view <issue> --json title,body,labels,comments`
-3. **Leer contexto de fases anteriores** — si necesitás saber qué hicieron otros skills, mirá en `procesado/` de la fase anterior. Por ejemplo, si estás en `verificacion`, mirá `dev/procesado/<issue>.*`
-4. **Verificar pasadas anteriores** — si existen archivos de tu mismo skill en `procesado/` de tu misma fase para el mismo issue, son resultados de una pasada anterior que fue rechazada. Leelos para entender qué se encontró antes y focalizá tu trabajo en verificar que esos problemas fueron corregidos.
-5. **Hacer tu trabajo** — según las instrucciones de tu rol
+2. **Si es un REBOTE** (`rebote: true` en tu archivo de trabajo):
+   - Leé el `motivo_rechazo` — contiene exactamente por qué la fase posterior rechazó tu trabajo
+   - Si el rechazo viene de `build`, leé el log completo: `cat .pipeline/logs/build-<issue>.log | tail -100`
+   - Si el rechazo viene de `verificacion`, leé los archivos en `verificacion/procesado/<issue>.*` para ver qué encontraron tester/qa/security
+   - **Tu único objetivo es corregir los errores del rechazo**, no reimplementar desde cero
+   - Verificá que compila localmente (`./gradlew check`) antes de marcar como aprobado
+3. **Leer el issue de GitHub** — `gh issue view <issue> --json title,body,labels,comments`
+4. **Leer contexto de fases anteriores** — si necesitás saber qué hicieron otros skills, mirá en `procesado/` de la fase anterior
+5. **Verificar pasadas anteriores** — si existen archivos de tu mismo skill en `procesado/` de tu misma fase para el mismo issue, son resultados de una pasada anterior. Leelos para no repetir errores.
+6. **Hacer tu trabajo** — según las instrucciones de tu rol
 6. **Escribir resultado en tu archivo de trabajo**:
 
 ```yaml
