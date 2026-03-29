@@ -53,10 +53,14 @@ function getPipelineState() {
       const listo = listWorkFiles(path.join(baseDir, 'listo'));
       const procesado = listWorkFiles(path.join(baseDir, 'procesado'));
 
+      // Para procesado: agrupar por issue (mostrar solo issues únicos, últimos 20)
+      const procesadoIssues = [...new Set(procesado.map(f => f.split('.')[0]))].slice(-20);
+
       state[pName][fase] = {
         pendiente: pendiente.map(f => parseWorkFile(f)),
         trabajando: trabajando.map(f => parseWorkFile(f)),
         listo: listo.map(f => parseWorkFile(f)),
+        procesado: procesadoIssues,
         procesado_count: procesado.length,
         total_active: pendiente.length + trabajando.length + listo.length
       };
@@ -128,9 +132,10 @@ function generateHTML(state) {
     let fasesHTML = '';
     for (const [fName, data] of Object.entries(fases)) {
       const total = data.total_active;
-      const statusClass = total > 0 ? 'active' : 'empty';
+      const hasProcesado = data.procesado && data.procesado.length > 0;
+      const statusClass = total > 0 ? 'active' : hasProcesado ? 'has-history' : 'empty';
 
-      // Agrupar por issue
+      // Agrupar activos por issue
       const issues = {};
       for (const item of [...data.pendiente, ...data.trabajando, ...data.listo]) {
         if (!issues[item.issue]) issues[item.issue] = { pendiente: [], trabajando: [], listo: [] };
@@ -140,6 +145,8 @@ function generateHTML(state) {
       for (const item of data.listo) issues[item.issue].listo.push(item);
 
       let issuesHTML = '';
+
+      // Issues activos (pendiente + trabajando + listo)
       for (const [issue, items] of Object.entries(issues)) {
         const skills = [];
         for (const s of items.listo) skills.push(`<span class="skill done">${s.skill} ✓</span>`);
@@ -148,13 +155,25 @@ function generateHTML(state) {
         issuesHTML += `<div class="issue"><span class="issue-num">#${issue}</span> ${skills.join(' ')}</div>`;
       }
 
+      // Issues procesados (finalizados) — colapsable
+      let procesadoHTML = '';
+      if (hasProcesado) {
+        const procIssues = data.procesado.map(i => `<span class="issue-num-done">#${i}</span>`).join(' ');
+        procesadoHTML = `
+          <div class="procesado-section">
+            <div class="procesado-label">✅ Finalizados (${data.procesado_count})</div>
+            <div class="procesado-list">${procIssues}</div>
+          </div>`;
+      }
+
       fasesHTML += `
         <div class="fase ${statusClass}">
           <div class="fase-header">
             <span class="fase-name">${fName}</span>
-            <span class="fase-count">${data.pendiente.length}○ ${data.trabajando.length}⚙ ${data.listo.length}✓</span>
+            <span class="fase-count">${data.pendiente.length}○ ${data.trabajando.length}⚙ ${data.listo.length}✓ ${data.procesado_count}✔</span>
           </div>
-          ${issuesHTML || '<div class="empty-label">vacía</div>'}
+          ${issuesHTML || (hasProcesado ? '' : '<div class="empty-label">vacía</div>')}
+          ${procesadoHTML}
         </div>`;
     }
 
@@ -250,6 +269,11 @@ function generateHTML(state) {
   .skill.working { color: var(--yellow); }
   .skill.pending { color: var(--text-dim); }
   .empty-label { color: var(--text-dim); font-size: 0.75em; font-style: italic; }
+  .fase.has-history { border-color: var(--green); border-style: dashed; }
+  .procesado-section { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
+  .procesado-label { font-size: 0.7em; color: var(--green); margin-bottom: 4px; }
+  .procesado-list { font-size: 0.7em; line-height: 1.6; }
+  .issue-num-done { color: var(--green); opacity: 0.7; margin-right: 4px; }
 
   .servicios { display: flex; gap: 12px; margin-top: 16px; }
   .servicio { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 16px; }
