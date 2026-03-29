@@ -13,7 +13,10 @@ const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = path.resolve(ROOT, '.pipeline');
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
+// Ejecutar claude via Node directo (evita cmd.exe y ventanas visibles)
+const CLAUDE_CLI_JS = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
+const USE_NODE_DIRECT = fs.existsSync(CLAUDE_CLI_JS);
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
@@ -90,21 +93,27 @@ function fileAgeMinutes(filepath) {
 }
 
 /** Buscar si un issue ya existe en alguna carpeta del pipeline */
-function issueExistsInPipeline(issueNum) {
+/** Verificar si un issue ya está ACTIVO en un pipeline (pendiente/trabajando/listo, NO procesado) */
+function issueExistsInPipeline(issueNum, pipelineName) {
+  const config = loadConfig();
+  const pipelines = pipelineName ? { [pipelineName]: config.pipelines[pipelineName] } : config.pipelines;
   const prefix = issueNum + '.';
-  function searchDir(dir) {
-    try {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          if (searchDir(path.join(dir, entry.name))) return true;
-        } else if (entry.name.startsWith(prefix) && entry.name !== '.gitkeep') {
-          return true;
-        }
+
+  for (const [pName, pConfig] of Object.entries(pipelines)) {
+    if (!pConfig) continue;
+    for (const fase of pConfig.fases) {
+      // Solo buscar en estados activos — procesado significa que ya terminó esa fase
+      for (const estado of ['pendiente', 'trabajando', 'listo']) {
+        const dir = path.join(PIPELINE, pName, fase, estado);
+        try {
+          for (const f of fs.readdirSync(dir)) {
+            if (f.startsWith(prefix) && f !== '.gitkeep') return true;
+          }
+        } catch {}
       }
-    } catch {}
-    return false;
+    }
   }
-  return searchDir(PIPELINE);
+  return false;
 }
 
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
@@ -129,12 +138,18 @@ function isProcessAlive(pid) {
 }
 
 function countRunningBySkill(skill) {
+  // Contar archivos en trabajando/ de TODAS las fases — fuente de verdad real
+  // No depender del Map de PIDs (se pierde al reiniciar)
+  const config = loadConfig();
   let count = 0;
-  for (const [key, info] of activeProcesses) {
-    if (key.startsWith(skill + ':') && isProcessAlive(info.pid)) {
-      count++;
-    } else if (!isProcessAlive(info.pid)) {
-      activeProcesses.delete(key);
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) {
+      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      try {
+        for (const f of fs.readdirSync(trabajandoDir)) {
+          if (f.endsWith(`.${skill}`) && !f.startsWith('.')) count++;
+        }
+      } catch {}
     }
   }
   return count;
@@ -454,11 +469,15 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   fs.writeFileSync(agentLogPath, `--- ${skill}:#${issue} fase:${fase} pipeline:${pipeline} ${new Date().toISOString()} ---\n`);
   const agentLogFd = fs.openSync(agentLogPath, 'a');
 
-  const child = spawn(CLAUDE_BIN, args, {
+  // Usar Node directo para evitar cmd.exe y ventanas visibles
+  const spawnCmd = USE_NODE_DIRECT ? process.execPath : CLAUDE_BIN;
+  const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
+
+  const child = spawn(spawnCmd, spawnArgs, {
     cwd: needsWorktree ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
     detached: true,
-    shell: true,
+    shell: !USE_NODE_DIRECT,
     windowsHide: true,
     env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase }
   });
@@ -766,8 +785,8 @@ function cmdIntake(args, config) {
   if (args) {
     // Intake de un issue específico
     const issueNum = args.replace('#', '').trim();
-    if (issueExistsInPipeline(issueNum)) {
-      return `⚠️ #${issueNum} ya está en el pipeline`;
+    if (issueExistsInPipeline(issueNum, 'desarrollo')) {
+      return `⚠️ #${issueNum} ya está activo en el pipeline de desarrollo`;
     }
 
     // Determinar pipeline de entrada (por defecto desarrollo/validacion)
@@ -879,11 +898,14 @@ function ejecutarClaude(prompt) {
     const cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
     delete cleanEnv.CLAUDECODE;
 
-    const proc = spawn(CLAUDE_BIN, args, {
+    const cmdSpawn = USE_NODE_DIRECT ? process.execPath : CLAUDE_BIN;
+    const cmdArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
+
+    const proc = spawn(cmdSpawn, cmdArgs, {
       cwd: ROOT,
       env: cleanEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: true,
+      shell: !USE_NODE_DIRECT,
       windowsHide: true
     });
 
@@ -1292,8 +1314,8 @@ function brazoIntake(config) {
       for (const issue of issues) {
         const issueNum = String(issue.number);
 
-        // Deduplicación: verificar que el issue no esté ya en el pipeline
-        if (issueExistsInPipeline(issueNum)) continue;
+        // Deduplicación: verificar que el issue no esté ya activo en este pipeline
+        if (issueExistsInPipeline(issueNum, pipelineName)) continue;
 
         // Crear archivos en pendiente/ de la fase de entrada
         const skills = pipelineConfig.skills_por_fase[faseEntrada] || [];
