@@ -170,6 +170,20 @@ function getPipelineState() {
     }
   }
 
+  // QA Environment
+  state.qaEnv = { dynamo: false, backend: false, emulator: false };
+  try {
+    const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+    for (const [svc, pid] of Object.entries(qaState)) {
+      if (pid) {
+        try {
+          const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
+          state.qaEnv[svc] = r.includes(`"${pid}"`);
+        } catch {}
+      }
+    }
+  } catch {}
+
   // Rechazos recientes
   state.rechazos = [];
   for (const { pipeline: pName, fase } of allFases) {
@@ -362,6 +376,18 @@ function generateHTML(state) {
   for (const [name, info] of Object.entries(state.procesos)) {
     const cls = info.pid ? 'proc-alive' : 'proc-dead';
     procHTML += `<span class="proc-chip ${cls}">${name}${info.pid ? ' '+info.pid : ''}</span>`;
+  }
+
+  // QA Environment
+  const qaLabels = { dynamo: '🗄️ DynamoDB', backend: '⚡ Backend', emulator: '📱 Emulador' };
+  const allQaUp = Object.values(state.qaEnv).every(v => v);
+  const anyQaUp = Object.values(state.qaEnv).some(v => v);
+  let qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
+    const cls = alive ? 'proc-alive' : 'proc-dead';
+    return `<span class="proc-chip ${cls}">${qaLabels[name] || name} ${alive ? '✓' : '✗'}</span>`;
+  }).join('');
+  if (!anyQaUp) {
+    qaEnvHTML += '<div style="margin-top:6px;font-size:0.82em;color:var(--dim)">Levantar: <code>node .pipeline/qa-environment.js start</code></div>';
   }
 
   // Rechazos recientes
@@ -643,6 +669,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
     <div class="bar-section"><h2>🧠 Skills activos</h2>${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
     <div class="bar-section"><h2>📡 Servicios</h2>${svcsHTML}</div>
     <div class="bar-section"><h2>⚡ Procesos</h2>${procHTML}</div>
+    <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
   </div>
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
