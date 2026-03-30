@@ -68,12 +68,21 @@ class BusinessPaymentMethodsFunction(
         return buildResponse(methods)
     }
 
+    companion object {
+        val VALID_TYPES = setOf("CASH", "TRANSFER", "CARD", "DIGITAL_WALLET", "MERCADOPAGO", "OTHER")
+    }
+
     private fun handlePut(business: String, textBody: String): Response {
         val body = parseBody<UpdatePaymentMethodsRequest>(textBody)
             ?: return RequestValidationException("Request body no encontrado")
 
         if (body.paymentMethods.isEmpty()) {
             return RequestValidationException("Debe indicar al menos un medio de pago")
+        }
+
+        val invalidTypes = body.paymentMethods.map { it.type.uppercase() }.filter { it !in VALID_TYPES }
+        if (invalidTypes.isNotEmpty()) {
+            return RequestValidationException("Tipo de medio de pago no valido: ${invalidTypes.joinToString()}")
         }
 
         val key = Business().apply { name = business }
