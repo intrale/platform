@@ -257,6 +257,14 @@ val appModule = DI.Module("appModule") {
         singleton { ClientProducts(instance(), instance(), instance()) }
     }
 
+    bind<ProductRecommendationRepository> {
+        singleton { ProductRecommendationRepository(instance(), instance()) }
+    }
+
+    bind<Function> (tag="products/recommendations") {
+        singleton { ProductRecommendations(instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="business/categories") {
         singleton { BusinessCategories(instance(), instance(), instance(), instance(), instance()) }
     }
