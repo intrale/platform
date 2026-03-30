@@ -157,6 +157,10 @@ val appModule = DI.Module("appModule") {
         singleton { DeliveryOrderRepository() }
     }
 
+    bind<RouteOptimizationService> {
+        singleton { RouteOptimizationService() }
+    }
+
     bind<Function> (tag="signup") {
         singleton  { SignUp(instance(), instance(), instance(), instance()) }
     }
@@ -271,6 +275,10 @@ val appModule = DI.Module("appModule") {
 
     bind<Function> (tag="business/schedules") {
         singleton { BusinessSchedulesFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="delivery/route-optimization") {
+        singleton { DeliveryRouteOptimizationFunction(instance(), instance(), instance(), instance(), instance()) }
     }
 
     bind<Function> (tag="business/delivery-zone") {
