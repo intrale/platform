@@ -518,8 +518,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: needsWorktree ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
-    detached: true,
-    shell: !USE_NODE_DIRECT,
+    detached: false,
+    shell: false,
     windowsHide: true,
     env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase }
   });
@@ -581,8 +581,6 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   log('lanzamiento', `BUILD #${issue} — ejecutando gradlew check`);
 
-  const timeout = (config.timeouts?.build_timeout_minutes || 15) * 60 * 1000;
-
   // Buscar el worktree del issue
   const worktreePattern = `platform.agent-${issue}-`;
   let buildCwd = ROOT;
@@ -617,15 +615,16 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && JAVA_HOME="${javaHome}" ./gradlew check`], {
     cwd: buildCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
+    detached: false,
     windowsHide: true
   });
 
   child.unref();
 
+  const buildStartTime = Date.now();
   activeProcesses.set(processKey('build', issue), {
     pid: child.pid,
-    startTime: Date.now(),
+    startTime: buildStartTime,
     trabajandoPath,
     pipeline,
     fase: 'build'
@@ -635,15 +634,8 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   child.stdout.on('data', (d) => { output += d; });
   child.stderr.on('data', (d) => { output += d; });
 
-  // Timeout
-  const buildTimer = setTimeout(() => {
-    log('build', `#${issue} TIMEOUT (${timeout / 60000}min) — matando proceso`);
-    try { process.kill(-child.pid); } catch {}
-    try { child.kill('SIGKILL'); } catch {}
-  }, timeout);
-
   child.on('exit', (code) => {
-    clearTimeout(buildTimer);
+    const durationMin = ((Date.now() - buildStartTime) / 60000).toFixed(1);
     const logFile = path.join(LOG_DIR, `build-${issue}.log`);
     fs.writeFileSync(logFile, output);
 
@@ -662,7 +654,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     const listoDir = path.join(fasePath(pipeline, 'build'), 'listo');
     try {
       moveFile(trabajandoPath, listoDir);
-      log('build', `#${issue} build ${code === 0 ? '✓' : '✗'} → listo/`);
+      log('build', `#${issue} build ${code === 0 ? '✓' : '✗'} (${durationMin}min) → listo/`);
     } catch (e) {
       log('build', `Error moviendo build result #${issue}: ${e.message}`);
     }
