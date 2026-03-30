@@ -609,30 +609,19 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     }
   }
 
-  // Windows: cmd.exe con cd /d para cambiar al worktree antes de ejecutar gradlew.bat
-  // cwd del spawn NO afecta cómo cmd.exe resuelve .bat — necesitamos cd /d explícito
-  const buildEnv = { ...process.env, JAVA_HOME: process.env.JAVA_HOME || 'C:\\Users\\Administrator\\.jdks\\temurin-21.0.7' };
-  const buildCmd = process.platform === 'win32'
-    ? { cmd: 'cmd.exe', args: ['/c', `cd /d "${buildCwd}" && gradlew.bat check`] }
-    : { cmd: 'bash', args: ['-c', `cd "${buildCwd}" && ./gradlew check`] };
+  // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
+  const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
+  const javaHome = (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
+  const cwdUnix = buildCwd.replace(/\\/g, '/');
 
-  const child = spawn(buildCmd.cmd, buildCmd.args, {
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && JAVA_HOME="${javaHome}" ./gradlew check`], {
     cwd: buildCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    windowsHide: true,
-    shell: false,
-    env: buildEnv
+    windowsHide: true
   });
 
   child.unref();
-
-  // Timeout real con setTimeout + kill (spawn no soporta timeout option)
-  const buildTimer = setTimeout(() => {
-    log('build', `#${issue} TIMEOUT (${timeout / 60000}min) — matando proceso`);
-    try { process.kill(-child.pid); } catch {}
-    try { child.kill('SIGKILL'); } catch {}
-  }, timeout);
 
   activeProcesses.set(processKey('build', issue), {
     pid: child.pid,
@@ -645,6 +634,13 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   let output = '';
   child.stdout.on('data', (d) => { output += d; });
   child.stderr.on('data', (d) => { output += d; });
+
+  // Timeout
+  const buildTimer = setTimeout(() => {
+    log('build', `#${issue} TIMEOUT (${timeout / 60000}min) — matando proceso`);
+    try { process.kill(-child.pid); } catch {}
+    try { child.kill('SIGKILL'); } catch {}
+  }, timeout);
 
   child.on('exit', (code) => {
     clearTimeout(buildTimer);
