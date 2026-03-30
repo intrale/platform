@@ -612,14 +612,31 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   const javaHome = (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
   const cwdUnix = buildCwd.replace(/\\/g, '/');
 
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && JAVA_HOME="${javaHome}" ./gradlew check`], {
+  // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
+  const gitUsrBin = 'C:/Program Files/Git/usr/bin';
+  const buildEnv = {
+    ...process.env,
+    JAVA_HOME: javaHome,
+    PATH: `${gitUsrBin}${path.delimiter}${process.env.PATH || ''}`
+  };
+
+  const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
+
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check`], {
     cwd: buildCwd,
+    env: buildEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
     windowsHide: true
   });
 
   child.unref();
+
+  // Timeout: matar el build si excede 30 minutos
+  const buildTimer = setTimeout(() => {
+    log('build', `#${issue} TIMEOUT — build excedió ${BUILD_TIMEOUT_MS / 60000} minutos, matando proceso`);
+    try { child.kill('SIGTERM'); } catch {}
+  }, BUILD_TIMEOUT_MS);
 
   const buildStartTime = Date.now();
   activeProcesses.set(processKey('build', issue), {
@@ -635,6 +652,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   child.stderr.on('data', (d) => { output += d; });
 
   child.on('exit', (code) => {
+    clearTimeout(buildTimer);
     const durationMin = ((Date.now() - buildStartTime) / 60000).toFixed(1);
     const logFile = path.join(LOG_DIR, `build-${issue}.log`);
     fs.writeFileSync(logFile, output);
