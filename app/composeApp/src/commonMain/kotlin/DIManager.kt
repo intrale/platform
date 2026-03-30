@@ -27,6 +27,8 @@ import asdo.client.DoRepeatOrder
 import asdo.client.DoGetNotifications
 import asdo.client.DoMarkNotificationRead
 import asdo.client.DoMarkAllNotificationsRead
+import asdo.client.DoGetRecommendedProducts
+import asdo.client.ToGetRecommendedProducts
 import asdo.client.ToDoCreateClientOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
@@ -172,6 +174,8 @@ import ext.client.CommClientAddressesService
 import ext.client.CommClientOrdersService
 import ext.client.CommClientProfileService
 import ext.client.CommPaymentMethodsService
+import ext.client.CommRecommendedProductsService
+import ext.client.ClientRecommendedProductsService
 import ext.client.PaymentMethodsService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
@@ -501,6 +505,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
     bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance()) }
+    bindSingleton<CommRecommendedProductsService> { ClientRecommendedProductsService(instance(), instance()) }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -515,6 +520,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoMarkNotificationRead> { DoMarkNotificationRead() }
     bindSingleton<ToDoMarkAllNotificationsRead> { DoMarkAllNotificationsRead() }
     bindSingleton<ToDoCreateClientOrder> { DoCreateClientOrder(instance()) }
+    bindSingleton<ToGetRecommendedProducts> { DoGetRecommendedProducts(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {

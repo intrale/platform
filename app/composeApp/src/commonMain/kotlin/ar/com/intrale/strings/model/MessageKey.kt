@@ -857,4 +857,9 @@ enum class MessageKey {
     delivery_notifications_event_delivered,
     delivery_notifications_event_not_delivered,
     delivery_notifications_view_available_orders,
+
+    // Recomendaciones de productos
+    client_home_recommended_title,
+    client_home_recommended_empty,
+    client_home_recommended_reason,
 }

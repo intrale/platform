@@ -6,6 +6,7 @@ import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import asdo.auth.ToDoResetLoginCache
 import asdo.business.ToGetBusinessProducts
+import asdo.client.ToGetRecommendedProducts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +20,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -73,9 +76,11 @@ import ui.th.spacing
 import ui.util.formatPrice
 
 const val CLIENT_HOME_PATH = "/client/home"
+private const val MAX_RECOMMENDATIONS = 8
 
 data class ClientHomeUiState(
     val productsState: ClientProductsState = ClientProductsState.Loading,
+    val recommendedState: RecommendedProductsState = RecommendedProductsState.Loading,
     val lastAddedProduct: ClientProduct? = null
 )
 
@@ -107,6 +112,8 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
         val cartContentDescription = Txt(MessageKey.client_home_cart_icon_content_description)
         val productsTitle = Txt(MessageKey.client_home_products_title)
         val featuredTitle = Txt(MessageKey.client_home_featured_title)
+        val recommendedTitle = Txt(MessageKey.client_home_recommended_title)
+        val recommendedEmpty = Txt(MessageKey.client_home_recommended_empty)
         val emptyMessage = Txt(MessageKey.client_home_products_empty)
         val errorMessage = Txt(MessageKey.client_home_products_error)
         val retryLabel = Txt(MessageKey.client_home_retry)
@@ -121,6 +128,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
 
         LaunchedEffect(Unit) {
             viewModel.loadProducts()
+            viewModel.loadRecommendedProducts()
         }
 
         LaunchedEffect(addedToCartMessage) {
@@ -186,6 +194,42 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                             onDeliveryClick = { navigate(CLIENT_CART_PATH) },
                             viewCatalogLabel = viewCatalogLabel
                         )
+                    }
+
+                    // Sección: Recomendados para vos
+                    when (val recState = uiState.recommendedState) {
+                        RecommendedProductsState.Loading -> { /* No mostrar nada mientras carga */ }
+                        RecommendedProductsState.Empty -> { /* No mostrar sección si no hay recomendaciones */ }
+                        is RecommendedProductsState.Loaded -> {
+                            item {
+                                Text(
+                                    text = recommendedTitle,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            item {
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
+                                    contentPadding = PaddingValues(horizontal = MaterialTheme.spacing.x1)
+                                ) {
+                                    items(recState.products, key = { "rec_${it.id}" }) { product ->
+                                        RecommendedProductCard(
+                                            product = product,
+                                            addLabel = Txt(MessageKey.client_home_add_label),
+                                            outOfStockLabel = outOfStockLabel,
+                                            onAddClick = {
+                                                viewModel.addRecommendedToCart(product)
+                                            },
+                                            onCardClick = {
+                                                ClientProductSelectionStore.select(product.id)
+                                                navigate(CLIENT_PRODUCT_DETAIL_PATH)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     when (val productsState = uiState.productsState) {
@@ -554,10 +598,80 @@ private fun ProductThumbnail(emoji: String, contentDescription: String) {
     }
 }
 
+@Composable
+private fun RecommendedProductCard(
+    product: RecommendedProduct,
+    addLabel: String,
+    outOfStockLabel: String,
+    onAddClick: () -> Unit,
+    onCardClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .width(180.dp)
+            .clickable(onClick = onCardClick),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = MaterialTheme.elevations.level1)
+    ) {
+        Column(
+            modifier = Modifier.padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            ProductThumbnail(product.emoji, contentDescription = product.name)
+            Text(
+                text = product.name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                maxLines = 2
+            )
+            if (product.promotionPrice != null) {
+                Text(
+                    text = formatPrice(product.promotionPrice),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = product.priceLabel,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        textDecoration = TextDecoration.LineThrough
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    text = product.priceLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (product.isAvailable) {
+                IntralePrimaryButton(
+                    text = addLabel,
+                    onClick = onAddClick,
+                    leadingIcon = Icons.Default.ShoppingCart,
+                    iconContentDescription = addLabel,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                Text(
+                    text = outOfStockLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
 class ClientHomeViewModel : ViewModel() {
 
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
     private val toGetBusinessProducts: ToGetBusinessProducts by DIManager.di.instance()
+    private val toGetRecommendedProducts: ToGetRecommendedProducts by DIManager.di.instance()
 
     private val logger = LoggerFactory.default.newLogger<ClientHomeViewModel>()
 
@@ -592,15 +706,70 @@ class ClientHomeViewModel : ViewModel() {
             )
     }
 
+    suspend fun loadRecommendedProducts() {
+        logger.info { "Cargando productos recomendados" }
+        state = state.copy(recommendedState = RecommendedProductsState.Loading)
+        state = runCatching { fetchRecommendedProducts() }
+            .fold(
+                onSuccess = { products ->
+                    val nextState = if (products.isEmpty()) {
+                        RecommendedProductsState.Empty
+                    } else {
+                        RecommendedProductsState.Loaded(products)
+                    }
+                    state.copy(recommendedState = nextState)
+                },
+                onFailure = {
+                    logger.warning(it) { "Error al cargar recomendaciones" }
+                    state.copy(recommendedState = RecommendedProductsState.Empty)
+                }
+            )
+    }
+
     fun addToCart(product: ClientProduct) {
         ClientCartStore.add(product)
         state = state.copy(lastAddedProduct = product)
+    }
+
+    fun addRecommendedToCart(product: RecommendedProduct) {
+        val clientProduct = ClientProduct(
+            id = product.id,
+            name = product.name,
+            priceLabel = product.priceLabel,
+            emoji = product.emoji,
+            unitPrice = product.unitPrice,
+            isAvailable = product.isAvailable,
+            promotionPrice = product.promotionPrice
+        )
+        ClientCartStore.add(clientProduct)
+        state = state.copy(lastAddedProduct = clientProduct)
     }
 
     fun clearLastAddedProduct() {
         if (state.lastAddedProduct != null) {
             state = state.copy(lastAddedProduct = null)
         }
+    }
+
+    private suspend fun fetchRecommendedProducts(): List<RecommendedProduct> {
+        val businessId = resolveBusinessId()
+        logger.info { "Cargando recomendaciones para negocio $businessId" }
+        return toGetRecommendedProducts.execute(businessId).getOrThrow()
+            .products
+            .filter { it.isAvailable }
+            .take(MAX_RECOMMENDATIONS)
+            .map { product ->
+                RecommendedProduct(
+                    id = product.id,
+                    name = product.name,
+                    priceLabel = formatPrice(product.basePrice),
+                    emoji = product.emoji ?: "\uD83D\uDED2",
+                    unitPrice = product.basePrice,
+                    isAvailable = product.isAvailable,
+                    promotionPrice = product.promotionPrice,
+                    reason = product.reason
+                )
+            }
     }
 
     private suspend fun fetchProducts(): List<ClientProduct> {

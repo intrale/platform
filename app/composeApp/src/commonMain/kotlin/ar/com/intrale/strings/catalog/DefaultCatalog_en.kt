@@ -867,4 +867,9 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_take_already_taken to "This order is no longer available",
     MessageKey.delivery_order_take_error to "Error taking the order. Please try again.",
     MessageKey.delivery_order_distance_placeholder to "-- km",
+
+    // Product recommendations
+    MessageKey.client_home_recommended_title to "Recommended for you",
+    MessageKey.client_home_recommended_empty to "Explore our catalog to discover products",
+    MessageKey.client_home_recommended_reason to "Based on your previous purchases",
 )
