@@ -34,6 +34,11 @@ data class DeliveryOrderDetailResponse(
     val collectOnDelivery: Boolean? = null,
     val createdAt: String? = null,
     val updatedAt: String? = null,
+    val businessAddress: String? = null,
+    val businessLatitude: Double? = null,
+    val businessLongitude: Double? = null,
+    val customerLatitude: Double? = null,
+    val customerLongitude: Double? = null,
     val responseStatus: HttpStatusCode = HttpStatusCode.OK
 ) : Response(statusCode = responseStatus)
 
