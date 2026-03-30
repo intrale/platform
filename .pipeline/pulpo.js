@@ -609,17 +609,19 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     }
   }
 
-  // spawn con shell:true + windowsHide:true — ejecuta gradlew.bat sin abrir ventana
-  // shell:true es necesario para que Windows resuelva .bat en cwd
-  const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+  // Windows: cmd.exe con cd /d para cambiar al worktree antes de ejecutar gradlew.bat
+  // cwd del spawn NO afecta cómo cmd.exe resuelve .bat — necesitamos cd /d explícito
   const buildEnv = { ...process.env, JAVA_HOME: process.env.JAVA_HOME || 'C:\\Users\\Administrator\\.jdks\\temurin-21.0.7' };
+  const buildCmd = process.platform === 'win32'
+    ? { cmd: 'cmd.exe', args: ['/c', `cd /d "${buildCwd}" && gradlew.bat check`] }
+    : { cmd: 'bash', args: ['-c', `cd "${buildCwd}" && ./gradlew check`] };
 
-  const child = spawn(gradlew, ['check'], {
+  const child = spawn(buildCmd.cmd, buildCmd.args, {
     cwd: buildCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     windowsHide: true,
-    shell: true,
+    shell: false,
     env: buildEnv
   });
 
