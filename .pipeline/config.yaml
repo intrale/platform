@@ -80,7 +80,6 @@ timeouts:
   poll_interval_seconds: 30       # Frecuencia de barrido/lanzamiento (local)
   intake_interval_seconds: 300    # Frecuencia de intake (GitHub API, 5 min)
   orphan_timeout_minutes: 10      # Archivo en trabajando/ sin proceso → vuelve a pendiente
-  build_timeout_minutes: 15       # Timeout del build de Gradle
 
 # GitHub
 github:
