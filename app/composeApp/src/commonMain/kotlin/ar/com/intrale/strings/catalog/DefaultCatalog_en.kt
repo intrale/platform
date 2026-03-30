@@ -570,6 +570,8 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_catalog_add_content_description to "Add to cart",
     MessageKey.client_catalog_added_to_cart to "Added {product} to your cart.",
     MessageKey.client_catalog_search_no_results to "No products found matching your search.",
+    MessageKey.client_catalog_recent_searches to "Recent searches",
+    MessageKey.client_catalog_clear_history to "Clear",
     MessageKey.client_onboarding_welcome_title to "Welcome to Intrale",
     MessageKey.client_onboarding_welcome_subtitle to "Your favorite store, now in your pocket.",
     MessageKey.client_onboarding_discover_title to "Discover products",

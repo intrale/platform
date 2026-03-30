@@ -7,6 +7,7 @@ import ar.com.intrale.shared.business.ProductDTO
 import ar.com.intrale.shared.business.ProductStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -86,6 +87,7 @@ class ClientCatalogViewModelTest {
 
     private fun setUp() {
         ClientCartStore.clear()
+        SearchHistoryStore.clearHistory()
     }
 
     private fun createViewModel(
@@ -224,5 +226,200 @@ class ClientCatalogViewModelTest {
         val products = (state.productsState as ClientProductsState.Loaded).products
         assertEquals(1, products.size)
         assertEquals("Manzana roja", products[0].name)
+    }
+
+    // --- Tests de sugerencias en tiempo real ---
+
+    @Test
+    fun `computeSuggestions con 2+ caracteres genera sugerencias`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.computeSuggestions("man")
+
+        val state = viewModel.state
+        assertTrue(state.showSuggestions)
+        assertEquals(1, state.suggestions.size)
+        assertEquals("Manzana roja", state.suggestions[0].product.name)
+    }
+
+    @Test
+    fun `computeSuggestions con menos de 2 caracteres no genera sugerencias`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.computeSuggestions("m")
+
+        assertFalse(viewModel.state.showSuggestions)
+        assertTrue(viewModel.state.suggestions.isEmpty())
+    }
+
+    @Test
+    fun `computeSuggestions filtra productos sin stock`() = runTest {
+        val productsWithUnavailable = listOf(
+            ProductDTO(
+                id = "prod-1", businessId = "biz-1", name = "Pan integral",
+                basePrice = 300.0, unit = "unidad", categoryId = "cat-1",
+                status = ProductStatus.Published, isAvailable = false
+            ),
+            ProductDTO(
+                id = "prod-2", businessId = "biz-1", name = "Pan lactal",
+                basePrice = 400.0, unit = "unidad", categoryId = "cat-1",
+                status = ProductStatus.Published, isAvailable = true
+            )
+        )
+        val viewModel = createViewModel(
+            toDoListProducts = FakeListProductsSuccess(productsWithUnavailable)
+        )
+        viewModel.loadCatalog()
+
+        viewModel.computeSuggestions("pan")
+
+        val suggestions = viewModel.state.suggestions
+        assertEquals(1, suggestions.size)
+        assertEquals("Pan lactal", suggestions[0].product.name)
+    }
+
+    @Test
+    fun `computeSuggestions genera rangos de match correctos`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.computeSuggestions("ana")
+
+        val suggestions = viewModel.state.suggestions
+        // "Banana" contiene "ana" en posicion 1 y 3
+        val bananaSuggestion = suggestions.find { it.product.name == "Banana" }
+        assertNotNull(bananaSuggestion)
+        assertTrue(bananaSuggestion.matchRanges.isNotEmpty())
+    }
+
+    @Test
+    fun `selectSuggestion guarda en historial y oculta sugerencias`() = runTest {
+        setUp()
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+        viewModel.computeSuggestions("man")
+
+        val suggestion = viewModel.state.suggestions.first()
+        viewModel.selectSuggestion(suggestion)
+
+        val state = viewModel.state
+        assertEquals("Manzana roja", state.searchQuery)
+        assertFalse(state.showSuggestions)
+        assertTrue(SearchHistoryStore.history.value.contains("Manzana roja"))
+    }
+
+    @Test
+    fun `confirmSearch guarda en historial con query de 2+ caracteres`() = runTest {
+        setUp()
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.onSearchChange("ban")
+        viewModel.confirmSearch()
+
+        assertTrue(SearchHistoryStore.history.value.contains("ban"))
+        assertFalse(viewModel.state.showSuggestions)
+    }
+
+    @Test
+    fun `confirmSearch no guarda en historial con query de menos de 2 caracteres`() = runTest {
+        setUp()
+        val viewModel = createViewModel()
+
+        viewModel.onSearchChange("b")
+        viewModel.confirmSearch()
+
+        assertTrue(SearchHistoryStore.history.value.isEmpty())
+    }
+
+    @Test
+    fun `selectHistoryItem aplica filtro y genera sugerencias`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.selectHistoryItem("Banana")
+
+        assertEquals("Banana", viewModel.state.searchQuery)
+        // computeSuggestions se ejecuta al final y encuentra match
+        assertTrue(viewModel.state.suggestions.isNotEmpty())
+    }
+
+    @Test
+    fun `clearSearch resetea query y oculta sugerencias`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.onSearchChange("man")
+        viewModel.computeSuggestions("man")
+        viewModel.clearSearch()
+
+        assertEquals("", viewModel.state.searchQuery)
+        assertFalse(viewModel.state.showSuggestions)
+        assertTrue(viewModel.state.suggestions.isEmpty())
+    }
+
+    @Test
+    fun `onSearchFocusChanged con foco y query vacio no muestra sugerencias`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.onSearchFocusChanged(true)
+
+        assertTrue(viewModel.state.isSearchFocused)
+        assertFalse(viewModel.state.showSuggestions)
+    }
+
+    @Test
+    fun `onSearchChange con 2+ caracteres activa showSuggestions`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.onSearchChange("ma")
+
+        assertTrue(viewModel.state.showSuggestions)
+    }
+
+    @Test
+    fun `onSearchChange con menos de 2 caracteres desactiva showSuggestions`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.onSearchChange("m")
+
+        assertFalse(viewModel.state.showSuggestions)
+    }
+
+    // --- Tests de findMatchRanges ---
+
+    @Test
+    fun `findMatchRanges encuentra coincidencias case-insensitive`() {
+        val ranges = ClientCatalogViewModel.findMatchRanges("Manzana roja", "man")
+
+        assertEquals(1, ranges.size)
+        assertEquals(0 until 3, ranges[0])
+    }
+
+    @Test
+    fun `findMatchRanges encuentra multiples coincidencias`() {
+        val ranges = ClientCatalogViewModel.findMatchRanges("banana", "an")
+
+        assertEquals(2, ranges.size)
+        assertEquals(1 until 3, ranges[0])
+        assertEquals(3 until 5, ranges[1])
+    }
+
+    @Test
+    fun `findMatchRanges retorna vacio con query en blanco`() {
+        val ranges = ClientCatalogViewModel.findMatchRanges("Manzana", "")
+
+        assertTrue(ranges.isEmpty())
+    }
+
+    @Test
+    fun `findMatchRanges retorna vacio sin coincidencias`() {
+        val ranges = ClientCatalogViewModel.findMatchRanges("Manzana", "xyz")
+
+        assertTrue(ranges.isEmpty())
     }
 }
