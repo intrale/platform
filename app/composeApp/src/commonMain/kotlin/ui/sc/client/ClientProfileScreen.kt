@@ -31,6 +31,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -151,6 +152,29 @@ class ClientProfileScreen : Screen(CLIENT_PROFILE_PATH) {
                                 viewModel.logout()
                                 navigate(CLIENT_ENTRY_PATH)
                             }
+                        }
+                    )
+                    PushNotificationsSection(
+                        preferences = state.preferences,
+                        onToggleEnabled = { value ->
+                            viewModel.onPushPreferenceChange { copy(pushNotificationsEnabled = value) }
+                            coroutineScope.launch { viewModel.savePushPreferences() }
+                        },
+                        onToggleOrderConfirmed = { value ->
+                            viewModel.onPushPreferenceChange { copy(pushOrderConfirmed = value) }
+                            coroutineScope.launch { viewModel.savePushPreferences() }
+                        },
+                        onToggleOrderDelivering = { value ->
+                            viewModel.onPushPreferenceChange { copy(pushOrderDelivering = value) }
+                            coroutineScope.launch { viewModel.savePushPreferences() }
+                        },
+                        onToggleOrderNearby = { value ->
+                            viewModel.onPushPreferenceChange { copy(pushOrderNearby = value) }
+                            coroutineScope.launch { viewModel.savePushPreferences() }
+                        },
+                        onToggleOrderDelivered = { value ->
+                            viewModel.onPushPreferenceChange { copy(pushOrderDelivered = value) }
+                            coroutineScope.launch { viewModel.savePushPreferences() }
                         }
                     )
                     AddressesSection(
@@ -628,5 +652,112 @@ private fun LanguageOption(
     ) {
         RadioButton(selected = selected, onClick = onSelect)
         Text(text = label)
+    }
+}
+
+@Composable
+private fun PushNotificationsSection(
+    preferences: asdo.client.ClientPreferences,
+    onToggleEnabled: (Boolean) -> Unit,
+    onToggleOrderConfirmed: (Boolean) -> Unit,
+    onToggleOrderDelivering: (Boolean) -> Unit,
+    onToggleOrderNearby: (Boolean) -> Unit,
+    onToggleOrderDelivered: (Boolean) -> Unit
+) {
+    val title = Txt(MessageKey.client_push_settings_title)
+    val enabledLabel = Txt(MessageKey.client_push_settings_enabled)
+    val enabledDescription = Txt(MessageKey.client_push_settings_enabled_description)
+    val categoryTitle = Txt(MessageKey.client_push_settings_category_title)
+    val orderConfirmedLabel = Txt(MessageKey.client_push_settings_order_confirmed)
+    val orderDeliveringLabel = Txt(MessageKey.client_push_settings_order_delivering)
+    val orderNearbyLabel = Txt(MessageKey.client_push_settings_order_nearby)
+    val orderDeliveredLabel = Txt(MessageKey.client_push_settings_order_delivered)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            PushToggleRow(
+                label = enabledLabel,
+                description = enabledDescription,
+                checked = preferences.pushNotificationsEnabled,
+                onCheckedChange = onToggleEnabled
+            )
+
+            if (preferences.pushNotificationsEnabled) {
+                Divider()
+                Text(
+                    text = categoryTitle,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                PushToggleRow(
+                    label = orderConfirmedLabel,
+                    checked = preferences.pushOrderConfirmed,
+                    onCheckedChange = onToggleOrderConfirmed
+                )
+                PushToggleRow(
+                    label = orderDeliveringLabel,
+                    checked = preferences.pushOrderDelivering,
+                    onCheckedChange = onToggleOrderDelivering
+                )
+                PushToggleRow(
+                    label = orderNearbyLabel,
+                    checked = preferences.pushOrderNearby,
+                    onCheckedChange = onToggleOrderNearby
+                )
+                PushToggleRow(
+                    label = orderDeliveredLabel,
+                    checked = preferences.pushOrderDelivered,
+                    onCheckedChange = onToggleOrderDelivered
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PushToggleRow(
+    label: String,
+    description: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = MaterialTheme.spacing.x1),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            if (description != null) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
     }
 }

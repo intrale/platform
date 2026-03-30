@@ -1,6 +1,7 @@
 package ui.sc.client
 
 import asdo.client.ClientNotification
+import asdo.client.ClientPreferences
 import asdo.client.NotificationEventType
 import asdo.client.ToDoGetNotifications
 import asdo.client.ToDoMarkAllNotificationsRead
@@ -19,21 +20,21 @@ class ClientNotificationsViewModelTest {
 
     private fun sampleNotifications() = listOf(
         ClientNotification(
-            id = "order1_PENDING",
+            id = "order1_CONFIRMED",
             orderId = "order1",
-            shortCode = "AB12",
-            businessName = "Panaderia Los Arcos",
-            eventType = NotificationEventType.ORDER_CREATED,
+            shortCode = "001",
+            businessName = "La Esquina",
+            eventType = NotificationEventType.ORDER_CONFIRMED,
             message = "",
             timestamp = "2026-03-25T10:00:00",
             isRead = false
         ),
         ClientNotification(
-            id = "order2_CONFIRMED",
+            id = "order2_DELIVERING",
             orderId = "order2",
-            shortCode = "CD34",
-            businessName = "La Esquina de Pepe",
-            eventType = NotificationEventType.ORDER_CONFIRMED,
+            shortCode = "002",
+            businessName = "Panaderia",
+            eventType = NotificationEventType.ORDER_DELIVERING,
             message = "",
             timestamp = "2026-03-25T09:30:00",
             isRead = true
@@ -41,7 +42,7 @@ class ClientNotificationsViewModelTest {
     )
 
     @Test
-    fun `loadNotifications actualiza estado con notificaciones`() = runTest {
+    fun `loadNotifications actualiza estado con notificaciones del store`() = runTest {
         val notifications = sampleNotifications()
         val vm = ClientNotificationsViewModel(
             getNotifications = FakeGetNotifications(Result.success(notifications)),
@@ -74,9 +75,9 @@ class ClientNotificationsViewModelTest {
     }
 
     @Test
-    fun `loadNotifications con error muestra mensaje de error`() = runTest {
+    fun `loadNotifications con error muestra estado Empty con mensaje`() = runTest {
         val vm = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(Result.failure(RuntimeException("Sin conexion"))),
+            getNotifications = FakeGetNotifications(Result.failure(RuntimeException("Error de red"))),
             markRead = FakeMarkNotificationRead(Result.success(Unit)),
             markAllRead = FakeMarkAllNotificationsRead(Result.success(Unit)),
             loggerFactory = testLoggerFactory
@@ -85,27 +86,11 @@ class ClientNotificationsViewModelTest {
         vm.loadNotifications()
 
         assertEquals(NotificationsStatus.Empty, vm.state.status)
-        assertEquals("Sin conexion", vm.state.errorMessage)
+        assertEquals("Error de red", vm.state.errorMessage)
     }
 
     @Test
-    fun `clearError limpia el mensaje de error`() = runTest {
-        val vm = ClientNotificationsViewModel(
-            getNotifications = FakeGetNotifications(Result.failure(RuntimeException("Error"))),
-            markRead = FakeMarkNotificationRead(Result.success(Unit)),
-            markAllRead = FakeMarkAllNotificationsRead(Result.success(Unit)),
-            loggerFactory = testLoggerFactory
-        )
-
-        vm.loadNotifications()
-        assertEquals("Error", vm.state.errorMessage)
-
-        vm.clearError()
-        assertNull(vm.state.errorMessage)
-    }
-
-    @Test
-    fun `markNotificationAsRead recarga notificaciones al exito`() = runTest {
+    fun `markNotificationAsRead recarga notificaciones`() = runTest {
         val notifications = sampleNotifications()
         var callCount = 0
         val vm = ClientNotificationsViewModel(
@@ -121,13 +106,13 @@ class ClientNotificationsViewModelTest {
         )
 
         vm.loadNotifications()
-        vm.markNotificationAsRead("order1_PENDING")
+        vm.markNotificationAsRead("order1_CONFIRMED")
 
         assertEquals(2, callCount)
     }
 
     @Test
-    fun `markAllNotificationsAsRead recarga notificaciones al exito`() = runTest {
+    fun `markAllNotificationsAsRead recarga notificaciones`() = runTest {
         val notifications = sampleNotifications()
         var callCount = 0
         val vm = ClientNotificationsViewModel(
@@ -165,7 +150,7 @@ class ClientNotificationsViewModelTest {
         )
 
         vm.loadNotifications()
-        vm.markNotificationAsRead("order1_PENDING")
+        vm.markNotificationAsRead("order1_CONFIRMED")
 
         assertEquals(1, loadCount)
     }
@@ -190,6 +175,76 @@ class ClientNotificationsViewModelTest {
         vm.markAllNotificationsAsRead()
 
         assertEquals(1, loadCount)
+    }
+
+    @Test
+    fun `clearError limpia el mensaje de error`() = runTest {
+        val vm = ClientNotificationsViewModel(
+            getNotifications = FakeGetNotifications(Result.failure(RuntimeException("Error"))),
+            markRead = FakeMarkNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+        assertEquals("Error", vm.state.errorMessage)
+
+        vm.clearError()
+        assertNull(vm.state.errorMessage)
+    }
+}
+
+class ClientNotificationStoreTest {
+
+    @Test
+    fun `updateFromOrders genera notificaciones por estado de pedido`() {
+        ClientNotificationStore.clear()
+        val orders = listOf(
+            asdo.client.ClientOrder(
+                id = "ord-1", publicId = "PUB-001", shortCode = "001",
+                businessName = "La Esquina", status = asdo.client.ClientOrderStatus.CONFIRMED,
+                createdAt = "2026-03-25T10:00:00", promisedAt = null, total = 100.0, itemCount = 2
+            ),
+            asdo.client.ClientOrder(
+                id = "ord-2", publicId = "PUB-002", shortCode = "002",
+                businessName = "Panaderia", status = asdo.client.ClientOrderStatus.DELIVERING,
+                createdAt = "2026-03-25T09:30:00", promisedAt = null, total = 50.0, itemCount = 1
+            )
+        )
+
+        ClientNotificationStore.updateFromOrders(orders)
+
+        assertEquals(2, ClientNotificationStore.notifications.value.size)
+        assertEquals(2, ClientNotificationStore.unreadCount)
+    }
+
+    @Test
+    fun `addBusinessMessage agrega notificacion de mensaje`() {
+        ClientNotificationStore.clear()
+
+        ClientNotificationStore.addBusinessMessage(
+            orderId = "ord-1",
+            shortCode = "001",
+            businessName = "La Esquina",
+            message = "Tu pedido esta listo!",
+            timestamp = "2026-03-25T11:00:00"
+        )
+
+        val notifs = ClientNotificationStore.notifications.value
+        assertEquals(1, notifs.size)
+        assertEquals(NotificationEventType.BUSINESS_MESSAGE, notifs.first().eventType)
+    }
+
+    @Test
+    fun `clear elimina todas las notificaciones`() {
+        ClientNotificationStore.addBusinessMessage(
+            "ord-1", "001", "Test", "msg", "2026-01-01"
+        )
+
+        ClientNotificationStore.clear()
+
+        assertTrue(ClientNotificationStore.notifications.value.isEmpty())
+        assertEquals(0, ClientNotificationStore.unreadCount)
     }
 }
 

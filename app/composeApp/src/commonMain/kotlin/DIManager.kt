@@ -26,9 +26,11 @@ import asdo.client.DoManageClientAddress
 import asdo.client.DoUpdateClientProfile
 import asdo.client.DoRepeatOrder
 import asdo.client.DoGetNotifications
+import asdo.client.DoGetPushPreferences
 import asdo.client.DoMarkNotificationRead
 import asdo.client.DoMarkAllNotificationsRead
 import asdo.client.ToDoCheckBusinessOpen
+import asdo.client.DoUpdatePushPreferences
 import asdo.client.ToDoCreateClientOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
@@ -38,8 +40,18 @@ import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
 import asdo.client.ToDoGetNotifications
+import asdo.client.ToDoGetPushPreferences
 import asdo.client.ToDoMarkNotificationRead
 import asdo.client.ToDoMarkAllNotificationsRead
+import asdo.client.ToDoUpdatePushPreferences
+import asdo.client.DoRegisterPushToken
+import asdo.client.DoUnregisterPushToken
+import asdo.client.DoPushNotificationHandler
+import asdo.client.ToDoRegisterPushToken
+import asdo.client.ToDoUnregisterPushToken
+import asdo.client.ToDoPushNotificationHandler
+import ext.client.CommPushTokenService
+import ext.client.PushTokenService
 import asdo.delivery.DoDeliveryStateChange
 import asdo.delivery.DoGetDeliveryNotifications
 import asdo.delivery.DoMarkAllDeliveryNotificationsRead
@@ -516,8 +528,16 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoGetNotifications> { DoGetNotifications() }
     bindSingleton<ToDoMarkNotificationRead> { DoMarkNotificationRead() }
     bindSingleton<ToDoMarkAllNotificationsRead> { DoMarkAllNotificationsRead() }
+    bindSingleton<ToDoGetPushPreferences> { DoGetPushPreferences(instance()) }
+    bindSingleton<ToDoUpdatePushPreferences> { DoUpdatePushPreferences(instance()) }
     bindSingleton<ToDoCreateClientOrder> { DoCreateClientOrder(instance()) }
     bindSingleton<ToDoCheckBusinessOpen> { DoCheckBusinessOpen(instance()) }
+
+    // Push notifications
+    bindSingleton<CommPushTokenService> { PushTokenService(instance(), instance()) }
+    bindSingleton<ToDoRegisterPushToken> { DoRegisterPushToken(instance()) }
+    bindSingleton<ToDoUnregisterPushToken> { DoUnregisterPushToken(instance()) }
+    bindSingleton<ToDoPushNotificationHandler> { DoPushNotificationHandler() }
 }
 
 private val deliveryModule = DI.Module("delivery") {

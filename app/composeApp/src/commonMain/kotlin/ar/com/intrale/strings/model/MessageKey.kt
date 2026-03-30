@@ -841,6 +841,19 @@ enum class MessageKey {
     client_notifications_event_business_message,
     client_notifications_push_placeholder,
 
+    // Preferencias de notificaciones push
+    client_push_settings_title,
+    client_push_settings_enabled,
+    client_push_settings_enabled_description,
+    client_push_settings_order_confirmed,
+    client_push_settings_order_delivering,
+    client_push_settings_order_nearby,
+    client_push_settings_order_delivered,
+    client_push_settings_saved,
+    client_push_settings_category_title,
+    client_push_status_active,
+    client_push_status_inactive,
+
     // Pedidos disponibles (flavor Delivery)
     delivery_available_orders_tab,
     delivery_orders_tab_mine,

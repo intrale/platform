@@ -11,3 +11,11 @@ interface ToDoMarkNotificationRead {
 interface ToDoMarkAllNotificationsRead {
     suspend fun execute(): Result<Unit>
 }
+
+interface ToDoGetPushPreferences {
+    suspend fun execute(): Result<ClientPreferences>
+}
+
+interface ToDoUpdatePushPreferences {
+    suspend fun execute(preferences: ClientPreferences): Result<ClientPreferences>
+}

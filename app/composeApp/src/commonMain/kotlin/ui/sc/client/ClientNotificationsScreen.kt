@@ -25,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,7 +55,10 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
         val title = Txt(MessageKey.client_notifications_title)
         val emptyMessage = Txt(MessageKey.client_notifications_empty)
         val markAllLabel = Txt(MessageKey.client_notifications_mark_all_read)
-        val pushPlaceholder = Txt(MessageKey.client_notifications_push_placeholder)
+        val pushActiveLabel = Txt(MessageKey.client_push_status_active)
+        val pushInactiveLabel = Txt(MessageKey.client_push_status_inactive)
+        val pushPrefs = ClientPushPreferencesStore.preferences.collectAsState()
+        val pushStatusText = if (pushPrefs.value.enabled) pushActiveLabel else pushInactiveLabel
 
         LaunchedEffect(Unit) {
             viewModel.loadNotifications()
@@ -101,11 +105,28 @@ class ClientNotificationsScreen : Screen(CLIENT_NOTIFICATIONS_PATH) {
                 }
 
                 item {
-                    Text(
-                        text = pushPlaceholder,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (pushPrefs.value.enabled)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.outline
+                                )
+                        )
+                        Text(
+                            text = pushStatusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
                 when (state.status) {

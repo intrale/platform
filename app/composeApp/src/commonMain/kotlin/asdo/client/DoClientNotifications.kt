@@ -4,6 +4,7 @@ import ext.client.toClientException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.client.ClientNotificationStore
+import ui.sc.client.ClientPushPreferencesStore
 
 class DoGetNotifications : ToDoGetNotifications {
 
@@ -40,6 +41,45 @@ class DoMarkAllNotificationsRead : ToDoMarkAllNotificationsRead {
         ClientNotificationStore.markAllAsRead()
     }.recoverCatching { throwable ->
         logger.error(throwable) { "Fallo al marcar todas las notificaciones como leidas" }
+        throw throwable.toClientException()
+    }
+}
+
+class DoGetPushPreferences(
+    private val profileService: ext.client.CommClientProfileService
+) : ToDoGetPushPreferences {
+
+    private val logger = LoggerFactory.default.newLogger<DoGetPushPreferences>()
+
+    override suspend fun execute(): Result<ClientPreferences> = runCatching {
+        logger.info { "Obteniendo preferencias de notificaciones push" }
+        ClientPushPreferencesStore.preferences.value.let { state ->
+            ClientPreferences(
+                pushNotificationsEnabled = state.enabled,
+                pushOrderConfirmed = state.orderConfirmed,
+                pushOrderDelivering = state.orderDelivering,
+                pushOrderNearby = state.orderNearby,
+                pushOrderDelivered = state.orderDelivered
+            )
+        }
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al obtener preferencias push" }
+        throw throwable.toClientException()
+    }
+}
+
+class DoUpdatePushPreferences(
+    private val profileService: ext.client.CommClientProfileService
+) : ToDoUpdatePushPreferences {
+
+    private val logger = LoggerFactory.default.newLogger<DoUpdatePushPreferences>()
+
+    override suspend fun execute(preferences: ClientPreferences): Result<ClientPreferences> = runCatching {
+        logger.info { "Actualizando preferencias de notificaciones push" }
+        ClientPushPreferencesStore.updateFromPreferences(preferences)
+        preferences
+    }.recoverCatching { throwable ->
+        logger.error(throwable) { "Fallo al actualizar preferencias push" }
         throw throwable.toClientException()
     }
 }
