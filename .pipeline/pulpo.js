@@ -116,6 +116,49 @@ function issueExistsInPipeline(issueNum, pipelineName) {
   return false;
 }
 
+// --- Circuit Breaker + Cooldown ---
+// Penalización exponencial: si un agente muere rápido, esperar antes de relanzar.
+// Base: 5 min, duplica en cada fallo consecutivo. Max: 60 min.
+const COOLDOWN_BASE_MS = 5 * 60 * 1000;    // 5 minutos
+const COOLDOWN_MAX_MS = 60 * 60 * 1000;    // 60 minutos
+const COOLDOWN_FILE = path.join(PIPELINE, 'cooldowns.json');
+
+function loadCooldowns() {
+  try { return JSON.parse(fs.readFileSync(COOLDOWN_FILE, 'utf8')); } catch { return {}; }
+}
+
+function saveCooldowns(cd) {
+  fs.writeFileSync(COOLDOWN_FILE, JSON.stringify(cd, null, 2));
+}
+
+/** Registrar un fallo rápido para un issue+skill. Incrementa el contador y calcula el cooldown. */
+function registerFastFail(skill, issue) {
+  const cd = loadCooldowns();
+  const key = `${skill}:${issue}`;
+  if (!cd[key]) cd[key] = { failures: 0, cooldownUntil: null };
+  cd[key].failures++;
+  const delay = Math.min(COOLDOWN_BASE_MS * Math.pow(2, cd[key].failures - 1), COOLDOWN_MAX_MS);
+  cd[key].cooldownUntil = new Date(Date.now() + delay).toISOString();
+  cd[key].lastFailure = new Date().toISOString();
+  saveCooldowns(cd);
+  return { failures: cd[key].failures, delayMin: Math.round(delay / 60000) };
+}
+
+/** Verificar si un issue+skill está en cooldown. */
+function isInCooldown(skill, issue) {
+  const cd = loadCooldowns();
+  const key = `${skill}:${issue}`;
+  if (!cd[key] || !cd[key].cooldownUntil) return false;
+  return new Date(cd[key].cooldownUntil) > new Date();
+}
+
+/** Limpiar cooldown de un issue+skill (cuando un agente termina exitosamente). */
+function clearCooldown(skill, issue) {
+  const cd = loadCooldowns();
+  const key = `${skill}:${issue}`;
+  if (cd[key]) { delete cd[key]; saveCooldowns(cd); }
+}
+
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
 
 const activeProcesses = new Map(); // key: "skill:issue" → { pid, startTime }
@@ -361,12 +404,19 @@ function brazoLanzamiento(config) {
         const issue = issueFromFile(archivo.name);
         const key = processKey(skill, issue);
 
-        // Ya hay un proceso activo para este skill+issue?
+        // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
+        const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
+        if (issueAlreadyWorking) continue;
+
+        // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
+        if (isInCooldown(skill, issue)) continue;
+
+        // 3. Ya hay un proceso activo para este skill+issue en memoria?
         if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
           continue;
         }
 
-        // Verificar concurrencia
+        // 4. Verificar concurrencia del rol (máximo global, NO por issue)
         const maxConcurrencia = (config.concurrencia || {})[skill] || 1;
         const running = countRunningBySkill(skill);
         if (running >= maxConcurrencia) continue;
@@ -541,26 +591,22 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   child.on('exit', (code) => {
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
-    // Si murió en menos de 15 segundos con error → es un fallo de infraestructura, no de código
-    // Devolver a pendiente en vez de marcar como listo (evita loop de rebotes infinitos)
+    // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     if (code !== 0 && elapsedSec < 15) {
-      log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo de infra, devolviendo a pendiente`);
-      const agentLog = path.join(LOG_DIR, `${issue}-${skill}.log`);
-      try {
-        const logContent = fs.readFileSync(agentLog, 'utf8').slice(-500);
-        log('lanzamiento', `  Log: ${logContent.replace(/\n/g, ' | ')}`);
-      } catch {}
+      const { failures, delayMin } = registerFastFail(skill, issue);
+      log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
-      sendTelegram(`⚠️ Agente ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo de infra. Revisar log.`);
+      sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
       return;
     }
 
+    // Éxito o finalización normal → limpiar cooldown
+    if (code === 0) clearCooldown(skill, issue);
+
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
-      // El agente debería haber escrito resultado en el archivo
-      // Si no lo hizo, marcamos como error
       const data = readYaml(trabajandoPath);
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
@@ -609,17 +655,36 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
   const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  const javaHome = (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
+  // Validar que JAVA_HOME apunte a un directorio existente; si no, usar Temurin 21
+  const envJavaHome = process.env.JAVA_HOME;
+  const javaHome = (envJavaHome && fs.existsSync(envJavaHome) ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
   const cwdUnix = buildCwd.replace(/\\/g, '/');
 
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && JAVA_HOME="${javaHome}" ./gradlew check`], {
+  // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
+  const gitUsrBin = 'C:/Program Files/Git/usr/bin';
+  const buildEnv = {
+    ...process.env,
+    JAVA_HOME: javaHome,
+    PATH: `${gitUsrBin}${path.delimiter}${process.env.PATH || ''}`
+  };
+
+  const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
+
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check`], {
     cwd: buildCwd,
+    env: buildEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
     windowsHide: true
   });
 
   child.unref();
+
+  // Timeout: matar el build si excede 30 minutos
+  const buildTimer = setTimeout(() => {
+    log('build', `#${issue} TIMEOUT — build excedió ${BUILD_TIMEOUT_MS / 60000} minutos, matando proceso`);
+    try { child.kill('SIGTERM'); } catch {}
+  }, BUILD_TIMEOUT_MS);
 
   const buildStartTime = Date.now();
   activeProcesses.set(processKey('build', issue), {
@@ -635,6 +700,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
   child.stderr.on('data', (d) => { output += d; });
 
   child.on('exit', (code) => {
+    clearTimeout(buildTimer);
     const durationMin = ((Date.now() - buildStartTime) / 60000).toFixed(1);
     const logFile = path.join(LOG_DIR, `build-${issue}.log`);
     fs.writeFileSync(logFile, output);
@@ -705,12 +771,14 @@ function brazoHuerfanos(config) {
             writeYaml(archivo.path, data);
             moveFile(archivo.path, listoDir);
             orphanRetries.delete(retryKey);
+            sendTelegram(`⛔ ${skill}:#${issue} rechazado tras ${MAX_ORPHAN_RETRIES} reintentos huérfanos. Requiere intervención manual.`);
           } catch (e) {
             log('huerfanos', `Error rechazando ${archivo.name}: ${e.message}`);
           }
         } else {
-          // Devolver a pendiente para reintento
-          log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min sin proceso → pendiente/ (intento ${retries}/${MAX_ORPHAN_RETRIES})`);
+          // Devolver a pendiente con cooldown para evitar loop inmediato
+          const { failures, delayMin } = registerFastFail(skill, issue);
+          log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min sin proceso → pendiente/ (intento ${retries}/${MAX_ORPHAN_RETRIES}, cooldown ${delayMin}min)`);
           try {
             moveFile(archivo.path, pendienteDir);
           } catch (e) {
