@@ -609,7 +609,10 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
   const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  const javaHome = (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
+  const temurinHome = 'C:/Users/Administrator/.jdks/temurin-21.0.7';
+  const envJavaHome = process.env.JAVA_HOME ? process.env.JAVA_HOME.replace(/\\/g, '/') : '';
+  // Usar JAVA_HOME del entorno solo si el directorio existe; si no, usar Temurin 21
+  const javaHome = (envJavaHome && fs.existsSync(envJavaHome)) ? envJavaHome : temurinHome;
   const cwdUnix = buildCwd.replace(/\\/g, '/');
 
   // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
