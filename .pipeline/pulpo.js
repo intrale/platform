@@ -609,21 +609,18 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     }
   }
 
-  // Usar cmd.exe con windowsHide en vez de bash (bash abre ventana visible en Windows)
-  // Path absoluto al gradlew.bat porque cmd.exe /c no busca en cwd
-  const gradlewBat = path.join(buildCwd, 'gradlew.bat');
-  const gradlewSh = path.join(buildCwd, 'gradlew');
-  const gradlewCmd = process.platform === 'win32'
-    ? { cmd: 'cmd.exe', args: ['/c', `"${gradlewBat}" check 2>&1`] }
-    : { cmd: 'bash', args: ['-c', `"${gradlewSh}" check 2>&1`] };
+  // spawn con shell:true + windowsHide:true — ejecuta gradlew.bat sin abrir ventana
+  // shell:true es necesario para que Windows resuelva .bat en cwd
+  const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+  const buildEnv = { ...process.env, JAVA_HOME: process.env.JAVA_HOME || 'C:\\Users\\Administrator\\.jdks\\temurin-21.0.7' };
 
-  const child = spawn(gradlewCmd.cmd, gradlewCmd.args, {
+  const child = spawn(gradlew, ['check'], {
     cwd: buildCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     windowsHide: true,
-    shell: false,
-    env: { ...process.env, JAVA_HOME: process.env.JAVA_HOME || 'C:\\Users\\Administrator\\.jdks\\temurin-21.0.7' }
+    shell: true,
+    env: buildEnv
   });
 
   child.unref();
