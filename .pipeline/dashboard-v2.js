@@ -25,6 +25,7 @@ const COMPONENTS = [
   { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'outbox-drain', script: 'outbox-drain.js', pid: 'outbox-drain.pid' },
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
 
@@ -264,7 +265,7 @@ function getPipelineState() {
 
   // Procesos
   state.procesos = {};
-  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'dashboard']) {
+  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'outbox-drain', 'dashboard']) {
     try {
       const pid = fs.readFileSync(path.join(PIPELINE, `${comp}.pid`), 'utf8').trim();
       const alive = isProcessAlive(pid);
