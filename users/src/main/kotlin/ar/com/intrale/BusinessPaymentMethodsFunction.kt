@@ -68,7 +68,9 @@ class BusinessPaymentMethodsFunction(
         return buildResponse(methods)
     }
 
-    private val validPaymentTypes = setOf("CASH", "TRANSFER", "MERCADOPAGO", "DIGITAL_WALLET")
+    companion object {
+        val VALID_TYPES = setOf("CASH", "TRANSFER", "CARD", "DIGITAL_WALLET", "MERCADOPAGO", "OTHER")
+    }
 
     private fun handlePut(business: String, textBody: String): Response {
         val body = parseBody<UpdatePaymentMethodsRequest>(textBody)
@@ -78,9 +80,9 @@ class BusinessPaymentMethodsFunction(
             return RequestValidationException("Debe indicar al menos un medio de pago")
         }
 
-        val invalidTypes = body.paymentMethods.map { it.type.uppercase() }.filter { it !in validPaymentTypes }
+        val invalidTypes = body.paymentMethods.map { it.type.uppercase() }.filter { it !in VALID_TYPES }
         if (invalidTypes.isNotEmpty()) {
-            return RequestValidationException("Tipo de medio de pago no válido: ${invalidTypes.joinToString()}")
+            return RequestValidationException("Tipo de medio de pago no valido: ${invalidTypes.joinToString()}")
         }
 
         val key = Business().apply { name = business }
