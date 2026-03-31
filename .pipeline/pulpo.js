@@ -654,6 +654,28 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     worktreePath: needsWorktree ? worktreePath : null
   });
 
+  // Crear canal de contexto para el agente (auto-join)
+  let contextChannelId = null;
+  try {
+    const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+    const channelId = 'agent-' + issue;
+    let channel = cm.getChannel(channelId);
+    if (!channel) {
+      channel = cm.createChannel(channelId, skill + ' #' + issue, {
+        type: 'agent', issue: '#' + issue, skill: skill,
+        branch: worktreeBranch || null, worktree: needsWorktree ? worktreePath : null,
+      });
+    }
+    cm.joinChannel(channelId, {
+      type: 'agent', session_id: String(child.pid),
+      label: skill + ' #' + issue,
+    });
+    contextChannelId = channelId;
+    log('lanzamiento', `Canal de contexto creado: ${channelId}`);
+  } catch (e) {
+    log('lanzamiento', `Error creando canal de contexto: ${e.message}`);
+  }
+
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
@@ -666,6 +688,13 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
+      // Salir del canal de contexto
+      if (contextChannelId) {
+        try {
+          const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+          cm.leaveChannelByType(contextChannelId, 'agent');
+        } catch (e) {}
+      }
       sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
       return;
     }
@@ -687,6 +716,18 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey(skill, issue));
+    // Salir del canal de contexto (el canal queda para que otros lo consulten)
+    if (contextChannelId) {
+      try {
+        const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+        cm.leaveChannelByType(contextChannelId, 'agent');
+        cm.postMessage(contextChannelId, {
+          from: 'system', from_label: 'Pipeline',
+          type: 'system',
+          content: skill + ' #' + issue + ' finalizó (code=' + code + ')',
+        });
+      } catch (e) {}
+    }
   });
 
   // stdout/stderr redirigidos al archivo de log via stdio fd
@@ -1620,6 +1661,18 @@ async function mainLoop() {
 
       // Commander SIEMPRE corre (incluso en pausa) — necesario para /reanudar
       await brazoCommander(config);
+
+      // Drain outbox de Telegram (context-relay, notificaciones, etc.)
+      try {
+        const outbox = require(path.join(ROOT, '.claude', 'hooks', 'telegram-outbox'));
+        await outbox.drainQueue();
+      } catch (e) {}
+
+      // Context bridge tick (sync preguntas pendientes, relay, cleanup)
+      try {
+        const bridge = require(path.join(ROOT, '.claude', 'hooks', 'context-bridge'));
+        bridge.tick();
+      } catch (e) {}
 
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
