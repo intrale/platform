@@ -666,7 +666,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
-      sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
+      // Solo notificar por Telegram si se agotaron los reintentos (circuit breaker)
+      // Las muertes individuales quedan solo en log — no son accionables para el usuario
+      if (failures >= 3) {
+        sendTelegram(`⛔ ${skill}:#${issue} — ${failures} fallos consecutivos. Circuit breaker activado. Requiere intervención manual.`);
+      }
       return;
     }
 
@@ -1218,11 +1222,110 @@ function cmdHelp() {
 /proponer — Proponer historias nuevas (vía Claude)
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
+/context — Canales de contexto compartido (agentes, terminales)
 /costos — Resumen de actividad/costos
 /help — Esta ayuda
 /stop — Apagar el Commander
 
 También podés escribir texto libre y te respondo con Claude.`;
+}
+
+/** /context — Context channels compartidos entre terminales, Telegram y agentes */
+function cmdContext(args) {
+  try {
+    const hooksDir = path.join(REPO_ROOT, '.claude', 'hooks');
+    const cliPath = path.join(hooksDir, 'context-cli.js');
+    if (!fs.existsSync(cliPath)) return '⚠️ context-cli.js no encontrado.';
+
+    // Map args for the CLI
+    const cliArgs = (args || '').trim();
+    let cmdArgs = [];
+
+    if (!cliArgs) {
+      cmdArgs = ['status'];
+    } else if (cliArgs === 'list') {
+      cmdArgs = ['list'];
+    } else if (cliArgs === 'leave') {
+      cmdArgs = ['leave'];
+    } else if (cliArgs.startsWith('answer ')) {
+      cmdArgs = ['answer', ...cliArgs.substring(7).split(/\s+/)];
+    } else if (cliArgs.startsWith('say ')) {
+      cmdArgs = ['say', ...cliArgs.substring(4).split(/\s+/)];
+    } else if (cliArgs.startsWith('create ')) {
+      cmdArgs = ['create', ...cliArgs.substring(7).split(/\s+/)];
+    } else if (cliArgs.startsWith('history')) {
+      cmdArgs = ['history', ...cliArgs.substring(7).trim().split(/\s+/).filter(Boolean)];
+    } else if (cliArgs === 'telegram') {
+      cmdArgs = ['join', 'telegram'];
+    } else {
+      // Assume agent reference: "android-dev #1913" or "#1913"
+      const parts = cliArgs.replace(/#/g, '').split(/\s+/);
+      cmdArgs = ['join', ...parts];
+    }
+
+    const { execSync } = require('child_process');
+    const result = execSync(`node "${cliPath}" ${cmdArgs.join(' ')}`, {
+      cwd: hooksDir, timeout: 10000, encoding: 'utf8', windowsHide: true,
+      env: { ...process.env, CLAUDE_SESSION_ID: 'telegram' }
+    }).trim();
+
+    // Parse JSON result and format for Telegram
+    try {
+      const data = JSON.parse(result);
+      if (!data.ok) return '⚠️ ' + (data.error || 'Error desconocido');
+
+      switch (data.command) {
+        case 'list': {
+          if (!data.channels || data.channels.length === 0) return '📡 No hay canales activos.';
+          let text = '📡 *Context Channels*\n\n';
+          for (const ch of data.channels) {
+            text += `• *${ch.name || ch.id}* — 👥${ch.participants} 💬${ch.messages}`;
+            if (ch.pending_questions > 0) text += ` ❓${ch.pending_questions}`;
+            text += '\n';
+          }
+          return text;
+        }
+        case 'join': {
+          const ch = data.channel || {};
+          let text = `📡 *Unido a: ${ch.name || ch.id}*\n`;
+          text += `👥 ${(ch.participants || []).length} participantes\n`;
+          const pq = ch.pending_questions || [];
+          if (pq.length > 0) text += `❓ ${pq.length} pregunta(s) pendiente(s)\n→ /context answer <respuesta>\n`;
+          const msgs = (data.recent_messages || []).slice(-5);
+          if (msgs.length > 0) {
+            text += '\n_Últimos:_\n';
+            for (const m of msgs) {
+              const prefix = m.type === 'question' ? '❓ ' : m.type === 'activity' ? '🔧 ' : '';
+              text += `${m.from_label || '?'}: ${prefix}${(m.content || '').slice(0, 80)}\n`;
+            }
+          }
+          return text;
+        }
+        case 'leave':
+          return `📡 Saliste del canal ${data.channel_id}`;
+        case 'say':
+          return '💬 Mensaje enviado.';
+        case 'answer':
+          return '✅ Respuesta enviada.';
+        case 'status': {
+          const ac = data.active_channel;
+          if (!ac) return `📡 No estás en ningún canal. ${data.total_channels || 0} canal(es) activo(s).`;
+          let text = `📡 *${ac.name || ac.id}*\n`;
+          text += `👥 ${(ac.participants || []).length} | 💬 ${ac.total_messages || 0}\n`;
+          if ((ac.pending_questions || []).length > 0) text += `❓ ${ac.pending_questions.length} pendiente(s)\n`;
+          return text;
+        }
+        case 'cleanup':
+          return `🧹 Limpieza: ${(data.removed || []).length} canales eliminados.`;
+        default:
+          return result;
+      }
+    } catch (e) {
+      return result; // Return raw if not JSON
+    }
+  } catch (e) {
+    return '⚠️ Error en /context: ' + (e.message || '').slice(0, 200);
+  }
 }
 
 /** Detectar si un mensaje es un comando y extraer nombre + argumentos */
@@ -1245,6 +1348,7 @@ function parseCommand(text) {
     { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
     { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa])\b/i, cmd: 'intake' },
     { pattern: /\b(proponer|propon[eé]|historias nuevas|ideas)\b/i, cmd: 'proponer' },
+    { pattern: /\b(contexto|context|canal compartido|unirme al agente)\b/i, cmd: 'context' },
     { pattern: /\b(stop|apag[áa]|cerr[áa])\b/i, cmd: 'stop' },
   ];
 
@@ -1347,6 +1451,9 @@ async function brazoCommander(config) {
           break;
         case 'proponer':
           respuesta = await cmdProponer(parsed.args, config);
+          break;
+        case 'context':
+          respuesta = cmdContext(parsed.args);
           break;
         default:
           // Comando desconocido — delegar a Claude como texto libre
@@ -1452,6 +1559,18 @@ Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
   // Persistir sesión conversacional
   saveSession(session);
+
+  // Context bridge tick — sincronizar canales con pending-questions y Telegram
+  try {
+    const bridgePath = path.join(REPO_ROOT, '.claude', 'hooks', 'context-bridge.js');
+    if (fs.existsSync(bridgePath)) {
+      const bridge = require(bridgePath);
+      bridge.tick();
+    }
+  } catch (e) {
+    log('commander', `context-bridge tick error: ${(e.message || '').slice(0, 100)}`);
+  }
+
   activeProcesses.delete(key);
 }
 
