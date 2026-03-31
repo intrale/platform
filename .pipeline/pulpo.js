@@ -20,6 +20,53 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const USE_NODE_DIRECT = fs.existsSync(CLAUDE_CLI_JS);
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
+// --- Rate Limit (cuota Anthropic) ---
+const RATE_LIMIT_FILE = path.join(PIPELINE, 'rate-limit-pause.json');
+
+function isRateLimited() {
+  try {
+    const data = JSON.parse(fs.readFileSync(RATE_LIMIT_FILE, 'utf8'));
+    if (data.pausedUntil && new Date(data.pausedUntil) > new Date()) {
+      return data;
+    }
+    // Expiró — limpiar
+    fs.unlinkSync(RATE_LIMIT_FILE);
+  } catch {}
+  return null;
+}
+
+function activateRateLimitPause(logContent) {
+  // Extraer hora de reset del mensaje (ej: "resets 1pm", "resets 5pm")
+  const resetMatch = logContent.match(/resets?\s+(\d{1,2})(am|pm)/i);
+  let pausedUntil;
+  if (resetMatch) {
+    let hour = parseInt(resetMatch[1]);
+    if (resetMatch[2].toLowerCase() === 'pm' && hour < 12) hour += 12;
+    if (resetMatch[2].toLowerCase() === 'am' && hour === 12) hour = 0;
+    const now = new Date();
+    pausedUntil = new Date(now);
+    pausedUntil.setHours(hour, 5, 0, 0); // 5 min de margen después del reset
+    // Si la hora ya pasó hoy, es mañana
+    if (pausedUntil <= now) pausedUntil.setDate(pausedUntil.getDate() + 1);
+  } else {
+    // Fallback: pausar 1 hora
+    pausedUntil = new Date(Date.now() + 60 * 60 * 1000);
+  }
+
+  const data = { pausedUntil: pausedUntil.toISOString(), detectedAt: new Date().toISOString(), reason: 'Anthropic rate limit hit' };
+  fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify(data, null, 2));
+  log('rate-limit', `⛔ Cuota de Anthropic agotada — pipeline pausado hasta ${pausedUntil.toISOString()}`);
+  sendTelegram(`⛔ Cuota de Anthropic agotada. Pipeline pausado automáticamente hasta ${pausedUntil.toLocaleString('es-AR', { timeZone: 'America/Buenos_Aires' })}`);
+  return data;
+}
+
+function detectRateLimitInLog(logPath) {
+  try {
+    const content = fs.readFileSync(logPath, 'utf8');
+    return /You've hit your limit|hit your limit|rate.limit|quota.exceeded/i.test(content) ? content : null;
+  } catch { return null; }
+}
+
 // --- Gradle Daemon Cleanup ---
 // Mata daemons de Gradle que quedaron vivos en un worktree específico o globalmente
 function killGradleDaemons(cwd) {
@@ -487,6 +534,16 @@ function determinarDevSkill(issue, config) {
 // =============================================================================
 
 function brazoLanzamiento(config) {
+  // GATE DE RATE LIMIT: no lanzar agentes si estamos pausados por cuota de Anthropic
+  const rl = isRateLimited();
+  if (rl) {
+    const remaining = Math.round((new Date(rl.pausedUntil) - Date.now()) / 60000);
+    if (remaining > 0) {
+      log('rate-limit', `⏸️ Pipeline pausado por cuota — reanuda en ${remaining}min`);
+      return;
+    }
+  }
+
   // GATE DE RECURSOS: no lanzar nuevos agentes si CPU o RAM están sobrecargados
   if (isSystemOverloaded(config)) return;
 
@@ -709,6 +766,24 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const launchTime = Date.now();
   child.on('exit', (code) => {
     const elapsedSec = (Date.now() - launchTime) / 1000;
+
+    // Detectar rate limit de Anthropic en el log del agente
+    const rateLimitContent = detectRateLimitInLog(agentLogPath);
+    if (rateLimitContent) {
+      log('rate-limit', `⛔ ${skill}:#${issue} falló por cuota de Anthropic`);
+      activateRateLimitPause(rateLimitContent);
+      // Devolver a pendiente sin registrar como fallo (no es culpa del issue)
+      const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+      try { moveFile(trabajandoPath, pendienteDir); } catch {}
+      activeProcesses.delete(processKey(skill, issue));
+      if (contextChannelId) {
+        try {
+          const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+          cm.leaveChannelByType(contextChannelId, 'agent');
+        } catch (e) {}
+      }
+      return;
+    }
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     if (code !== 0 && elapsedSec < 15) {
