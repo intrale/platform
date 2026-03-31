@@ -13,6 +13,7 @@ class Business(
     var description: String? = null,
     var state: BusinessState = BusinessState.PENDING,
     var autoAcceptDeliveries: Boolean = false,
+    var autoResponseEnabled: Boolean = false,
     var fonts: MutableMap<String, String> = mutableMapOf(),
     var address: String? = null,
     var phone: String? = null,
