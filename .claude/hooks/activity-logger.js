@@ -112,6 +112,93 @@ function getBranch() {
     return "unknown";
 }
 
+// ─── Context Channel relay ───────────────────────────────────────────────────
+// Post tool activity to context channels when an agent has an open channel
+// Uses in-memory cache (60s TTL) to avoid reading disk on every tool use
+
+let _contextChannelCache = { channelId: null, checkedAt: 0, issueNum: null };
+let _terminalChannelCache = { channelId: null, checkedAt: 0 };
+const CONTEXT_CACHE_TTL_MS = 60 * 1000;
+
+function postToContextChannel(sessionId, toolName, target) {
+    try {
+        if (["Read", "Glob", "Grep", "TaskList", "TaskGet"].includes(toolName)) return;
+        const now = Date.now();
+        let issueNum = _contextChannelCache.issueNum;
+        if (!issueNum || (now - _contextChannelCache.checkedAt) > CONTEXT_CACHE_TTL_MS) {
+            issueNum = null;
+            const branch = getBranch();
+            const branchMatch = (branch || "").match(/(?:agent|feature|bugfix)\/(\d+)/);
+            if (branchMatch) issueNum = branchMatch[1];
+            if (!issueNum && agentRegistry && sessionId) {
+                try {
+                    const agents = agentRegistry.getAllAgents ? agentRegistry.getAllAgents() : [];
+                    const myAgent = agents.find(a => (a.session_id || "").substring(0, 8) === sessionId.substring(0, 8));
+                    if (myAgent && myAgent.issue) issueNum = String(myAgent.issue).replace(/^#/, "");
+                } catch (e) {}
+            }
+            _contextChannelCache.issueNum = issueNum;
+            _contextChannelCache.checkedAt = now;
+        }
+        if (!issueNum) return;
+        let channelId = _contextChannelCache.channelId;
+        if (!channelId || (now - _contextChannelCache.checkedAt) > CONTEXT_CACHE_TTL_MS) {
+            channelId = null;
+            try {
+                const contextManager = require("./context-manager");
+                const channel = contextManager.findChannelByIssue(issueNum);
+                if (channel) channelId = channel.id;
+            } catch (e) {}
+            _contextChannelCache.channelId = channelId;
+        }
+        if (!channelId) return;
+        try {
+            const contextManager = require("./context-manager");
+            const agentLabel = getSprintAgentName(parseInt(issueNum, 10)) || "Agente #" + issueNum;
+            contextManager.postMessage(channelId, {
+                from: "agent-" + sessionId, from_label: agentLabel,
+                type: "activity", content: "[" + toolName + "] " + (target || "--").substring(0, 120),
+            });
+        } catch (e) {}
+    } catch (e) {}
+}
+
+// ─── Terminal Context Channel relay ─────────────────────────────────────────
+function postToTerminalContextChannel(sessionId, toolName, target) {
+    try {
+        if (["Read", "Glob", "Grep", "TaskList", "TaskGet"].includes(toolName)) return;
+        const now = Date.now();
+        const shortSession = (sessionId || "").substring(0, 8) || "local";
+        let channelId = _terminalChannelCache.channelId;
+        if (!channelId || (now - _terminalChannelCache.checkedAt) > CONTEXT_CACHE_TTL_MS) {
+            channelId = null;
+            const candidates = [
+                path.join(REPO_ROOT, ".claude", "hooks", "context-active-" + shortSession + ".json"),
+                path.join(REPO_ROOT, ".claude", "hooks", "context-active-local.json"),
+            ];
+            for (const activeFile of candidates) {
+                try {
+                    const active = JSON.parse(fs.readFileSync(activeFile, "utf8"));
+                    if (active && active.channel_id) { channelId = active.channel_id; break; }
+                } catch (e) {}
+            }
+            _terminalChannelCache.channelId = channelId;
+            _terminalChannelCache.checkedAt = now;
+        }
+        if (!channelId) return;
+        if (_contextChannelCache.channelId === channelId) return;
+        const contextManager = require("./context-manager");
+        contextManager.postMessage(channelId, {
+            from: "terminal-" + shortSession, from_label: "Terminal (" + shortSession + ")",
+            type: "activity", content: "[" + toolName + "] " + (target || "--").substring(0, 120),
+        });
+        try {
+            const bridge = require("./context-bridge");
+            bridge.relayToTelegram(channelId);
+        } catch (e) {}
+    } catch (e) {}
+}
+
 function handleInput() {
     try {
         let data;
@@ -226,6 +313,12 @@ function handleInput() {
         if (sessionId) {
             updateSession(sessionId, ts, toolName, target, ti, data.usage || null);
         }
+
+        // Post actividad a context channels (si el agente tiene canal abierto)
+        postToContextChannel(sessionId, toolName, target);
+
+        // Post actividad al canal activo de la terminal (e.g., telegram)
+        postToTerminalContextChannel(sessionId, toolName, target);
 
         // Detectar sesiones stale periódicamente (cada ~10 invocaciones)
         markStaleSessions();

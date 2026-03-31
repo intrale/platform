@@ -4900,8 +4900,9 @@ function cleanup() {
   if (puppeteerBrowser) { try { puppeteerBrowser.close(); } catch {} }
 }
 
-// --- Telegram Heartbeat ---
-const { startHeartbeat } = require("./hooks/heartbeat-manager.js");
+// --- Telegram Heartbeat (opcional — puede haber sido eliminado) ---
+let startHeartbeat;
+try { startHeartbeat = require("./hooks/heartbeat-manager.js").startHeartbeat; } catch { startHeartbeat = () => {}; }
 
 // --- Start server ---
 const server = http.createServer(handleRequest);
