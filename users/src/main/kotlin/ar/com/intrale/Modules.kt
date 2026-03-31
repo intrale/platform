@@ -284,6 +284,18 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="client/payment-methods") {
         singleton { ClientPaymentMethodsFunction(instance(), instance(), instance()) }
     }
+
+    bind<AiResponseService> {
+        singleton { ClaudeAiResponseService() }
+    }
+
+    bind<Function> (tag="auto-response") {
+        singleton { AutoResponseFunction(instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/auto-response-config") {
+        singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
 }
 
 private fun Config.stringValue(path: String): String = getValue(path).unwrapped().toString()
