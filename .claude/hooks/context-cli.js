@@ -261,7 +261,37 @@ function cmdJoinTelegram() {
     // Auto-unir a Telegram como participante para que el bridge retransmita
     contextManager.joinChannel(channel.id, { type: "telegram", label: "Telegram" });
 
+    // Auto-start outbox drain si el Pulpo no está corriendo
+    ensureOutboxDrain();
+
     joinAndOutput(channel.id);
+}
+
+function ensureOutboxDrain() {
+    try {
+        const { spawnSync, spawn } = require("child_process");
+        const drainScript = path.join(__dirname, "..", "..", ".pipeline", "outbox-drain.js");
+        if (!fs.existsSync(drainScript)) return;
+
+        // Check si ya hay un Pulpo o drain corriendo
+        const r = spawnSync("wmic", [
+            "process", "where", "name='node.exe'",
+            "get", "ProcessId,CommandLine", "/format:csv"
+        ], { encoding: "utf8", timeout: 10000, windowsHide: true });
+        const stdout = r.stdout || "";
+        if (stdout.includes("pulpo.js") || stdout.includes("outbox-drain.js")) return;
+
+        // Lanzar drain en background
+        const logPath = path.join(__dirname, "..", "..", ".pipeline", "logs", "outbox-drain.log");
+        const logFd = fs.openSync(logPath, "a");
+        const child = spawn(process.execPath, [drainScript], {
+            detached: true, stdio: ["ignore", logFd, logFd], windowsHide: true
+        });
+        child.unref();
+        fs.closeSync(logFd);
+    } catch (e) {
+        // Silent fail — no bloquear el join
+    }
 }
 
 function joinAndOutput(channelId) {
