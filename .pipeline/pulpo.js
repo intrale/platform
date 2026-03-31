@@ -314,12 +314,103 @@ function getSystemResourceUsage() {
   return { cpuPercent, memPercent };
 }
 
+// =============================================================================
+// Detección de saturación persistente — busca zombies si el sistema está
+// sobrecargado durante varios ciclos consecutivos
+// =============================================================================
+let saturationStreak = 0;
+let lastZombieHunt = 0;
+
+function trackSaturation(overloaded, config) {
+  if (overloaded) {
+    saturationStreak++;
+  } else {
+    if (saturationStreak > 0) {
+      log('recursos', `Saturación resuelta tras ${saturationStreak} ciclo(s)`);
+    }
+    saturationStreak = 0;
+    return;
+  }
+
+  const thresholds = config.resource_limits || {};
+  const streakThreshold = thresholds.saturation_streak_threshold || 3;
+  const cooldownMs = (thresholds.zombie_hunt_cooldown_minutes || 5) * 60 * 1000;
+
+  const now = Date.now();
+  if (saturationStreak >= streakThreshold && now - lastZombieHunt > cooldownMs) {
+    lastZombieHunt = now;
+    log('recursos', `⚠️ Saturación persistente (${saturationStreak} ciclos) — buscando procesos zombies…`);
+    huntZombieProcesses(config);
+  }
+}
+
+function huntZombieProcesses(config) {
+  const killed = [];
+
+  try {
+    // 1. Buscar procesos claude/node huérfanos que no están en activeProcesses
+    const activePids = new Set([...activeProcesses.values()].map(p => p.pid));
+    let processList;
+    try {
+      processList = execSync('tasklist /FO CSV /NH', { encoding: 'utf8', timeout: 15000, windowsHide: true });
+    } catch { return; }
+
+    const suspectPatterns = /node\.exe|java\.exe|gradle/i;
+    const lines = processList.split('\n').filter(l => suspectPatterns.test(l));
+
+    // 2. Buscar Gradle daemons huérfanos
+    try {
+      const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      const daemons = jpsOut.split('\n').filter(l => l.includes('GradleDaemon'));
+      if (daemons.length > 0 && activeProcesses.size === 0) {
+        log('zombie-hunter', `🧟 ${daemons.length} Gradle daemon(s) huérfano(s) sin agentes activos — limpiando`);
+        killGradleDaemons(ROOT);
+        killed.push(`${daemons.length} Gradle daemon(s)`);
+      }
+    } catch {}
+
+    // 3. Buscar archivos en trabajando/ sin proceso vivo correspondiente
+    const pipelines = config.pipelines || {};
+    for (const [pipelineName, pipelineConfig] of Object.entries(pipelines)) {
+      const fases = pipelineConfig.fases || [];
+      for (const fase of fases) {
+        const trabajandoDir = path.join(PIPELINE, pipelineName, fase, 'trabajando');
+        if (!fs.existsSync(trabajandoDir)) continue;
+        const archivos = listWorkFiles(trabajandoDir);
+        for (const archivo of archivos) {
+          const issue = archivo.name.split('.')[0];
+          const skill = skillFromFile(archivo.name);
+          const key = processKey(skill, issue);
+          const entry = activeProcesses.get(key);
+          if (entry && !isProcessAlive(entry.pid)) {
+            log('zombie-hunter', `🧟 Proceso muerto detectado: ${skill}:#${issue} (PID ${entry.pid}) — limpiando registro`);
+            activeProcesses.delete(key);
+            killed.push(`${skill}:#${issue}`);
+          }
+        }
+      }
+    }
+
+    // 4. Reportar hallazgos
+    if (killed.length > 0) {
+      const msg = `🧟 Zombie hunter: limpiados ${killed.length} proceso(s) zombies tras ${saturationStreak} ciclos de saturación:\n${killed.map(k => `  • ${k}`).join('\n')}`;
+      log('zombie-hunter', msg);
+      sendTelegram(msg);
+      saturationStreak = 0; // Reset para dar tiempo a que surta efecto
+    } else {
+      log('zombie-hunter', `No se encontraron zombies — la saturación puede ser carga legítima (${activeProcesses.size} agente(s) activo(s))`);
+    }
+  } catch (e) {
+    log('zombie-hunter', `Error en búsqueda de zombies: ${e.message}`);
+  }
+}
+
 /** Verificar si el sistema está sobrecargado según los thresholds configurados */
 let lastResourceLog = 0;
 function isSystemOverloaded(config) {
   const thresholds = config.resource_limits || {};
-  const maxCpu = thresholds.max_cpu_percent || 80;
-  const maxMem = thresholds.max_mem_percent || 80;
+  const maxCpu = thresholds.max_cpu_percent || 70;
+  const maxMem = thresholds.max_mem_percent || 70;
 
   const { cpuPercent, memPercent } = getSystemResourceUsage();
 
@@ -332,6 +423,9 @@ function isSystemOverloaded(config) {
     log('recursos', `${status} — CPU: ${cpuPercent}% (max ${maxCpu}%) | RAM: ${memPercent}% (max ${maxMem}%)`);
     lastResourceLog = now;
   }
+
+  // Detección de saturación persistente → buscar zombies
+  trackSaturation(overloaded, config);
 
   return overloaded;
 }
@@ -1157,8 +1251,8 @@ function cmdStatus(config) {
   // Recursos del sistema
   const { cpuPercent, memPercent } = getSystemResourceUsage();
   const thresholds = config.resource_limits || {};
-  const maxCpu = thresholds.max_cpu_percent || 80;
-  const maxMem = thresholds.max_mem_percent || 80;
+  const maxCpu = thresholds.max_cpu_percent || 70;
+  const maxMem = thresholds.max_mem_percent || 70;
   const cpuIcon = cpuPercent >= maxCpu ? '🔴' : cpuPercent >= maxCpu * 0.8 ? '🟡' : '🟢';
   const memIcon = memPercent >= maxMem ? '🔴' : memPercent >= maxMem * 0.8 ? '🟡' : '🟢';
   lines.push(`\n*Recursos del sistema*`);

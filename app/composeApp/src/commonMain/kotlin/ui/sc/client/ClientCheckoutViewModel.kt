@@ -28,13 +28,16 @@ data class ClientCheckoutUiState(
     val notes: String = "",
     val errorMessage: String? = null,
     val shortCode: String? = null,
-    val orderId: String? = null
+    val orderId: String? = null,
+    val businessClosed: Boolean = false,
+    val businessClosedInfo: String = ""
 ) {
     val canConfirm: Boolean
         get() = status == CheckoutStatus.Review &&
                 items.isNotEmpty() &&
                 selectedAddress != null &&
-                selectedPaymentMethod != null
+                selectedPaymentMethod != null &&
+                !businessClosed
 }
 
 class ClientCheckoutViewModel(
@@ -55,6 +58,23 @@ class ClientCheckoutViewModel(
 
     override fun initInputState() {
         // No form validation needed for checkout
+    }
+
+    /**
+     * Verifica si el negocio está abierto consultando el store global.
+     * Si está cerrado, bloquea la confirmación del pedido.
+     */
+    fun checkBusinessOpenStatus() {
+        val openStatus = BusinessOpenStore.state.value
+        if (openStatus != null && !openStatus.isOpen) {
+            logger.warning { "Negocio cerrado — bloqueando confirmación de pedido" }
+            state = state.copy(
+                businessClosed = true,
+                businessClosedInfo = openStatus.nextOpeningInfo
+            )
+        } else {
+            state = state.copy(businessClosed = false, businessClosedInfo = "")
+        }
     }
 
     fun loadFromCart(
