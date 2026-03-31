@@ -312,8 +312,8 @@ function getPipelineState() {
   const resourceLimits = config.resource_limits || {};
   state.resources = {
     ...getSystemResourceUsage(),
-    maxCpu: resourceLimits.max_cpu_percent || 80,
-    maxMem: resourceLimits.max_mem_percent || 80
+    maxCpu: resourceLimits.max_cpu_percent || 70,
+    maxMem: resourceLimits.max_mem_percent || 70
   };
 
   return state;
