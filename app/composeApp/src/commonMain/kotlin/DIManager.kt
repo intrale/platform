@@ -16,6 +16,7 @@ import asdo.auth.ToDoPasswordRecovery
 import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
+import asdo.client.DoCheckBusinessOpen
 import asdo.client.DoCreateClientOrder
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
@@ -27,6 +28,7 @@ import asdo.client.DoRepeatOrder
 import asdo.client.DoGetNotifications
 import asdo.client.DoMarkNotificationRead
 import asdo.client.DoMarkAllNotificationsRead
+import asdo.client.ToDoCheckBusinessOpen
 import asdo.client.ToDoCreateClientOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
@@ -515,6 +517,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoMarkNotificationRead> { DoMarkNotificationRead() }
     bindSingleton<ToDoMarkAllNotificationsRead> { DoMarkAllNotificationsRead() }
     bindSingleton<ToDoCreateClientOrder> { DoCreateClientOrder(instance()) }
+    bindSingleton<ToDoCheckBusinessOpen> { DoCheckBusinessOpen(instance()) }
 }
 
 private val deliveryModule = DI.Module("delivery") {

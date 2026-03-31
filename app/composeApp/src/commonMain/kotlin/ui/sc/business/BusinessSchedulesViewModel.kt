@@ -28,12 +28,17 @@ data class DayScheduleUiState(
     val day: String = "",
     val isOpen: Boolean = false,
     val openTime: String = "09:00",
-    val closeTime: String = "18:00"
+    val closeTime: String = "18:00",
+    val hasSplitSchedule: Boolean = false,
+    val openTime2: String = "17:00",
+    val closeTime2: String = "21:00"
 )
 
 data class BusinessSchedulesUiState(
     val schedules: List<DayScheduleUiState> = defaultSchedules(),
-    val status: BusinessSchedulesStatus = BusinessSchedulesStatus.Idle
+    val status: BusinessSchedulesStatus = BusinessSchedulesStatus.Idle,
+    val temporarilyClosed: Boolean = false,
+    val reopenDate: String = ""
 )
 
 private fun defaultSchedules(): List<DayScheduleUiState> = listOf(
@@ -81,6 +86,32 @@ class BusinessSchedulesViewModel(
         state = state.copy(schedules = updated)
     }
 
+    fun toggleSplitSchedule(index: Int, hasSplit: Boolean) {
+        val updated = state.schedules.toMutableList()
+        updated[index] = updated[index].copy(hasSplitSchedule = hasSplit)
+        state = state.copy(schedules = updated)
+    }
+
+    fun updateOpenTime2(index: Int, time: String) {
+        val updated = state.schedules.toMutableList()
+        updated[index] = updated[index].copy(openTime2 = time)
+        state = state.copy(schedules = updated)
+    }
+
+    fun updateCloseTime2(index: Int, time: String) {
+        val updated = state.schedules.toMutableList()
+        updated[index] = updated[index].copy(closeTime2 = time)
+        state = state.copy(schedules = updated)
+    }
+
+    fun toggleTemporarilyClosed(closed: Boolean) {
+        state = state.copy(temporarilyClosed = closed)
+    }
+
+    fun updateReopenDate(date: String) {
+        state = state.copy(reopenDate = date)
+    }
+
     suspend fun loadSchedules(businessId: String?) {
         if (businessId.isNullOrBlank()) {
             state = state.copy(status = BusinessSchedulesStatus.MissingBusiness)
@@ -95,13 +126,21 @@ class BusinessSchedulesViewModel(
                             day = s.day,
                             isOpen = s.isOpen,
                             openTime = s.openTime,
-                            closeTime = s.closeTime
+                            closeTime = s.closeTime,
+                            hasSplitSchedule = s.hasSplitSchedule,
+                            openTime2 = s.openTime2,
+                            closeTime2 = s.closeTime2
                         )
                     }
                 } else {
                     defaultSchedules()
                 }
-                state = state.copy(schedules = loaded, status = BusinessSchedulesStatus.Loaded)
+                state = state.copy(
+                    schedules = loaded,
+                    status = BusinessSchedulesStatus.Loaded,
+                    temporarilyClosed = dto.temporarilyClosed,
+                    reopenDate = dto.reopenDate
+                )
             }
             .onFailure { error ->
                 logger.error(error) { "Error al cargar horarios" }
@@ -121,18 +160,33 @@ class BusinessSchedulesViewModel(
                     day = s.day,
                     isOpen = s.isOpen,
                     openTime = s.openTime,
-                    closeTime = s.closeTime
+                    closeTime = s.closeTime,
+                    hasSplitSchedule = s.hasSplitSchedule,
+                    openTime2 = s.openTime2,
+                    closeTime2 = s.closeTime2
                 )
-            }
+            },
+            temporarilyClosed = state.temporarilyClosed,
+            reopenDate = state.reopenDate
         )
         return toDoUpdateBusinessSchedules.execute(businessId, request)
             .map { dto ->
                 val updated = dto.schedules.map { s ->
-                    DayScheduleUiState(day = s.day, isOpen = s.isOpen, openTime = s.openTime, closeTime = s.closeTime)
+                    DayScheduleUiState(
+                        day = s.day,
+                        isOpen = s.isOpen,
+                        openTime = s.openTime,
+                        closeTime = s.closeTime,
+                        hasSplitSchedule = s.hasSplitSchedule,
+                        openTime2 = s.openTime2,
+                        closeTime2 = s.closeTime2
+                    )
                 }
                 state = state.copy(
                     schedules = if (updated.isNotEmpty()) updated else state.schedules,
-                    status = BusinessSchedulesStatus.Saved
+                    status = BusinessSchedulesStatus.Saved,
+                    temporarilyClosed = dto.temporarilyClosed,
+                    reopenDate = dto.reopenDate
                 )
             }
             .onFailure { error ->
