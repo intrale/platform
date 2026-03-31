@@ -20,6 +20,82 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const USE_NODE_DIRECT = fs.existsSync(CLAUDE_CLI_JS);
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
+// --- Rate Limit (cuota Anthropic) ---
+const RATE_LIMIT_FILE = path.join(PIPELINE, 'rate-limit-pause.json');
+
+function isRateLimited() {
+  try {
+    const data = JSON.parse(fs.readFileSync(RATE_LIMIT_FILE, 'utf8'));
+    if (data.pausedUntil && new Date(data.pausedUntil) > new Date()) {
+      return data;
+    }
+    // Expiró — limpiar
+    fs.unlinkSync(RATE_LIMIT_FILE);
+  } catch {}
+  return null;
+}
+
+function activateRateLimitPause(logContent) {
+  // Extraer hora de reset del mensaje (ej: "resets 1pm", "resets 5pm")
+  const resetMatch = logContent.match(/resets?\s+(\d{1,2})(am|pm)/i);
+  let pausedUntil;
+  if (resetMatch) {
+    let hour = parseInt(resetMatch[1]);
+    if (resetMatch[2].toLowerCase() === 'pm' && hour < 12) hour += 12;
+    if (resetMatch[2].toLowerCase() === 'am' && hour === 12) hour = 0;
+    const now = new Date();
+    pausedUntil = new Date(now);
+    pausedUntil.setHours(hour, 5, 0, 0); // 5 min de margen después del reset
+    // Si la hora ya pasó hoy, es mañana
+    if (pausedUntil <= now) pausedUntil.setDate(pausedUntil.getDate() + 1);
+  } else {
+    // Fallback: pausar 1 hora
+    pausedUntil = new Date(Date.now() + 60 * 60 * 1000);
+  }
+
+  const data = { pausedUntil: pausedUntil.toISOString(), detectedAt: new Date().toISOString(), reason: 'Anthropic rate limit hit' };
+  fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify(data, null, 2));
+  log('rate-limit', `⛔ Cuota de Anthropic agotada — pipeline pausado hasta ${pausedUntil.toISOString()}`);
+  sendTelegram(`⛔ Cuota de Anthropic agotada. Pipeline pausado automáticamente hasta ${pausedUntil.toLocaleString('es-AR', { timeZone: 'America/Buenos_Aires' })}`);
+  return data;
+}
+
+function detectRateLimitInLog(logPath) {
+  try {
+    const content = fs.readFileSync(logPath, 'utf8');
+    return /You've hit your limit|hit your limit|rate.limit|quota.exceeded/i.test(content) ? content : null;
+  } catch { return null; }
+}
+
+// --- Gradle Daemon Cleanup ---
+// Mata daemons de Gradle que quedaron vivos en un worktree específico o globalmente
+function killGradleDaemons(cwd) {
+  try {
+    const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
+    const cwdUnix = (cwd || ROOT).replace(/\\/g, '/');
+    execSync(`"${bashExe}" -c 'cd "${cwdUnix}" && ./gradlew --stop 2>/dev/null || true'`, {
+      cwd: cwd || ROOT, timeout: 30000, windowsHide: true,
+      env: { ...process.env, JAVA_HOME: (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/') }
+    });
+    log('cleanup', `Gradle daemons detenidos (cwd: ${path.basename(cwd || ROOT)})`);
+  } catch (e) {
+    log('cleanup', `Gradle --stop falló: ${e.message.slice(0, 100)}`);
+  }
+}
+
+// Barrido periódico: mata daemons Gradle huérfanos si no hay agentes ni builds activos
+function barridoGradleDaemons() {
+  if (activeProcesses.size > 0) return; // hay agentes/builds corriendo, no tocar
+  try {
+    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const daemons = jpsOut.split('\n').filter(l => l.includes('GradleDaemon'));
+    if (daemons.length > 0) {
+      log('cleanup', `${daemons.length} Gradle daemon(s) huérfano(s) detectado(s) — limpiando`);
+      killGradleDaemons(ROOT);
+    }
+  } catch {}
+}
+
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
 let lastGhCallTime = 0;
 function ghThrottle() {
@@ -458,6 +534,16 @@ function determinarDevSkill(issue, config) {
 // =============================================================================
 
 function brazoLanzamiento(config) {
+  // GATE DE RATE LIMIT: no lanzar agentes si estamos pausados por cuota de Anthropic
+  const rl = isRateLimited();
+  if (rl) {
+    const remaining = Math.round((new Date(rl.pausedUntil) - Date.now()) / 60000);
+    if (remaining > 0) {
+      log('rate-limit', `⏸️ Pipeline pausado por cuota — reanuda en ${remaining}min`);
+      return;
+    }
+  }
+
   // GATE DE RECURSOS: no lanzar nuevos agentes si CPU o RAM están sobrecargados
   if (isSystemOverloaded(config)) return;
 
@@ -681,6 +767,24 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   child.on('exit', (code) => {
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
+    // Detectar rate limit de Anthropic en el log del agente
+    const rateLimitContent = detectRateLimitInLog(agentLogPath);
+    if (rateLimitContent) {
+      log('rate-limit', `⛔ ${skill}:#${issue} falló por cuota de Anthropic`);
+      activateRateLimitPause(rateLimitContent);
+      // Devolver a pendiente sin registrar como fallo (no es culpa del issue)
+      const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+      try { moveFile(trabajandoPath, pendienteDir); } catch {}
+      activeProcesses.delete(processKey(skill, issue));
+      if (contextChannelId) {
+        try {
+          const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+          cm.leaveChannelByType(contextChannelId, 'agent');
+        } catch (e) {}
+      }
+      return;
+    }
+
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     if (code !== 0 && elapsedSec < 15) {
       const { failures, delayMin } = registerFastFail(skill, issue);
@@ -716,6 +820,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey(skill, issue));
+
+    // Cleanup: matar Gradle daemons que puedan haber quedado del agente
+    // (los agentes corren ./gradlew check como parte de su flujo)
+    barridoGradleDaemons();
+
     // Salir del canal de contexto (el canal queda para que otros lo consulten)
     if (contextChannelId) {
       try {
@@ -783,7 +892,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check`], {
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew --no-daemon check`], {
     cwd: buildCwd,
     env: buildEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -838,6 +947,9 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
       log('build', `Error moviendo build result #${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey('build', issue));
+
+    // Cleanup: matar Gradle daemons que hayan quedado del build
+    killGradleDaemons(buildCwd);
   });
 }
 
@@ -1680,6 +1792,7 @@ async function mainLoop() {
         brazoBarrido(config);   // Tercero: promover entre fases
         brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
         brazoHuerfanos(config); // Quinto: recuperar trabajo trabado
+        barridoGradleDaemons(); // Sexto: limpiar Gradle daemons huérfanos
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
