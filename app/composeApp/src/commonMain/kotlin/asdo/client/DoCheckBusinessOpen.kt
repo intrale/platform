@@ -50,7 +50,7 @@ class DoCheckBusinessOpen(
 
         val now = clock.now().toLocalDateTime(timeZone)
         val currentDayName = dayOfWeekToSpanish(now.dayOfWeek)
-        val currentTime = "%02d:%02d".format(now.hour, now.minute)
+        val currentTime = "${now.hour.toString().padStart(2, '0')}:${now.minute.toString().padStart(2, '0')}"
 
         val todaySchedule = dto.schedules.firstOrNull {
             it.day.equals(currentDayName, ignoreCase = true)
