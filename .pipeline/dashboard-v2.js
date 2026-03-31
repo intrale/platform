@@ -8,6 +8,8 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
@@ -15,6 +17,110 @@ const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
+
+// --- Componentes gestionables (start/stop) ---
+const COMPONENTS = [
+  { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
+  { name: 'listener', script: 'listener-telegram.js', pid: 'listener.pid' },
+  { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
+  { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
+  { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'outbox-drain', script: 'outbox-drain.js', pid: 'outbox-drain.pid' },
+];
+// Nota: dashboard no se incluye (no puede matarse a sí mismo)
+
+function isProcessAlive(pid) {
+  if (!pid) return false;
+  try {
+    const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
+    return r.includes(`"${pid}"`);
+  } catch { return false; }
+}
+
+function getComponentPid(comp) {
+  try {
+    return parseInt(fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim()) || null;
+  } catch { return null; }
+}
+
+function stopComponent(name) {
+  const comp = COMPONENTS.find(c => c.name === name);
+  if (!comp) return { ok: false, msg: `Componente "${name}" no encontrado` };
+  const pid = getComponentPid(comp);
+  if (!pid || !isProcessAlive(pid)) return { ok: true, msg: `${name} no estaba corriendo` };
+  try {
+    execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true });
+    try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
+    return { ok: true, msg: `${name} detenido (PID ${pid})` };
+  } catch (e) { return { ok: false, msg: `Error deteniendo ${name}: ${e.message}` }; }
+}
+
+function startComponent(name) {
+  const comp = COMPONENTS.find(c => c.name === name);
+  if (!comp) return { ok: false, msg: `Componente "${name}" no encontrado` };
+  const pid = getComponentPid(comp);
+  if (pid && isProcessAlive(pid)) return { ok: true, msg: `${name} ya está corriendo (PID ${pid})` };
+  const scriptPath = path.join(PIPELINE, comp.script);
+  if (!fs.existsSync(scriptPath)) return { ok: false, msg: `Script ${comp.script} no existe` };
+  try {
+    const logPath = path.join(LOG_DIR, `${comp.name}.log`);
+    const logFd = fs.openSync(logPath, 'a');
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: ROOT, stdio: ['ignore', logFd, logFd], detached: true, windowsHide: true
+    });
+    child.unref();
+    fs.closeSync(logFd);
+    return { ok: true, msg: `${name} iniciado (PID ${child.pid})` };
+  } catch (e) { return { ok: false, msg: `Error iniciando ${name}: ${e.message}` }; }
+}
+
+// QA Environment
+const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
+
+function qaAction(action) {
+  if (!fs.existsSync(QA_ENV_SCRIPT)) return { ok: false, msg: 'qa-environment.js no existe' };
+  try {
+    const output = execSync(`"${process.execPath}" "${QA_ENV_SCRIPT}" ${action}`, {
+      cwd: ROOT, encoding: 'utf8', timeout: 60000, windowsHide: true
+    });
+    return { ok: true, msg: output.trim().slice(-200) };
+  } catch (e) { return { ok: false, msg: `Error: ${(e.stderr || e.message || '').slice(0, 200)}` }; }
+}
+
+// --- Resource Monitor: CPU y Memoria ---
+let lastCpuSnapshot = null;
+
+function cpuSnapshot() {
+  const cpus = os.cpus();
+  let idle = 0, total = 0;
+  for (const cpu of cpus) {
+    for (const type in cpu.times) total += cpu.times[type];
+    idle += cpu.times.idle;
+  }
+  return { idle, total };
+}
+
+function getSystemResourceUsage() {
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const memPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
+  const memUsedGB = ((totalMem - freeMem) / (1024 ** 3)).toFixed(1);
+  const memTotalGB = (totalMem / (1024 ** 3)).toFixed(1);
+
+  const current = cpuSnapshot();
+  let cpuPercent = 0;
+  if (lastCpuSnapshot) {
+    const idleDelta = current.idle - lastCpuSnapshot.idle;
+    const totalDelta = current.total - lastCpuSnapshot.total;
+    cpuPercent = totalDelta > 0 ? Math.round(((totalDelta - idleDelta) / totalDelta) * 100) : 0;
+  }
+  lastCpuSnapshot = current;
+
+  return { cpuPercent, memPercent, memUsedGB, memTotalGB, cpuCores: os.cpus().length };
+}
+
+// Snapshot inicial
+lastCpuSnapshot = cpuSnapshot();
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -142,10 +248,8 @@ function getPipelineState() {
   const concurrencia = config.concurrencia || {};
   for (const [skill, max] of Object.entries(concurrencia)) {
     let running = 0;
-    for (const { pipeline: pName } of allFases) {
-      for (const fase of (config.pipelines[pName]?.fases || [])) {
-        running += listWorkFiles(path.join(PIPELINE, pName, fase, 'trabajando')).filter(f => f.endsWith(`.${skill}`)).length;
-      }
+    for (const { pipeline: pName, fase } of allFases) {
+      running += listWorkFiles(path.join(PIPELINE, pName, fase, 'trabajando')).filter(f => f.endsWith(`.${skill}`)).length;
     }
     state.skillLoad[skill] = { running, max };
   }
@@ -161,12 +265,13 @@ function getPipelineState() {
 
   // Procesos
   state.procesos = {};
-  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'dashboard']) {
+  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'outbox-drain', 'dashboard']) {
     try {
       const pid = fs.readFileSync(path.join(PIPELINE, `${comp}.pid`), 'utf8').trim();
-      state.procesos[comp] = { pid };
+      const alive = isProcessAlive(pid);
+      state.procesos[comp] = { pid, alive };
     } catch {
-      state.procesos[comp] = { pid: null };
+      state.procesos[comp] = { pid: null, alive: false };
     }
   }
 
@@ -203,6 +308,14 @@ function getPipelineState() {
   state.rechazos.sort((a, b) => b.ts - a.ts);
   state.rechazos = state.rechazos.slice(0, 10);
 
+  // Recursos del sistema
+  const resourceLimits = config.resource_limits || {};
+  state.resources = {
+    ...getSystemResourceUsage(),
+    maxCpu: resourceLimits.max_cpu_percent || 80,
+    maxMem: resourceLimits.max_mem_percent || 80
+  };
+
   return state;
 }
 
@@ -224,15 +337,44 @@ function generateHTML(state) {
 
   // KPIs
   const matrixEntries = Object.entries(state.issueMatrix);
-  const activos = matrixEntries.filter(([_, d]) => d.estadoActual).length;
+  const activosList = matrixEntries.filter(([_, d]) => d.estadoActual);
+  const activos = activosList.length;
   const totalIssues = matrixEntries.length;
-  const trabajando = matrixEntries.filter(([_, d]) => d.estadoActual === 'trabajando').length;
-  const pendientes = matrixEntries.filter(([_, d]) => d.estadoActual === 'pendiente').length;
-  const stale = matrixEntries.filter(([_, d]) => {
+  const trabajandoList = matrixEntries.filter(([_, d]) => d.estadoActual === 'trabajando');
+  const trabajando = trabajandoList.length;
+  const pendientesList = matrixEntries.filter(([_, d]) => d.estadoActual === 'pendiente');
+  const pendientes = pendientesList.length;
+  const staleList = matrixEntries.filter(([_, d]) => {
     if (d.estadoActual !== 'trabajando' || !d.faseActual) return false;
     const entries = d.fases[d.faseActual] || [];
     return entries.some(e => e.ageMin > 10);
-  }).length;
+  });
+  const stale = staleList.length;
+
+  // Helpers para tooltips (JSON embebido, el HTML lo arma el cliente)
+  const buildTtData = (title, list, labelFn) => {
+    const items = list.map(([id, d]) => ({ id, label: labelFn ? labelFn(id, d) : '' }));
+    return JSON.stringify({ title, items }).replace(/'/g, '&#39;');
+  };
+  // Extraer skills activos de un issue en su fase actual
+  const activeSkills = (d) => {
+    if (!d.faseActual) return '';
+    const entries = d.fases[d.faseActual] || [];
+    const skills = entries.filter(e => e.estado === 'trabajando' || e.estado === 'pendiente').map(e => e.skill);
+    return skills.length > 0 ? skills.join(', ') : '';
+  };
+  const ttLabel = (d) => {
+    const parts = [];
+    if (d.faseActual) parts.push(d.faseActual);
+    const skills = activeSkills(d);
+    if (skills) parts.push(skills);
+    if (d.estadoActual) parts.push(d.estadoActual);
+    return parts.join(' · ');
+  };
+  const ttActivos   = buildTtData('Issues activos',       activosList,   (_, d) => ttLabel(d));
+  const ttTrabajando= buildTtData('En ejecución',          trabajandoList,(_, d) => ttLabel(d));
+  const ttPendientes= buildTtData('En cola',               pendientesList,(_, d) => ttLabel(d));
+  const ttStale     = buildTtData('Bloqueados / stale',    staleList,     (_, d) => ttLabel(d));
 
   // Definidos = completaron la fase final de definición (sizing/procesado)
   const defFasesKpi = config.pipelines?.definicion?.fases || [];
@@ -255,9 +397,50 @@ function generateHTML(state) {
   const defFases = config.pipelines?.definicion?.fases || [];
   const devFases = config.pipelines?.desarrollo?.fases || [];
 
+  // Contadores por fase: pendiente/trabajando/listo con lista de issues
+  const faseCounts = {};
+  for (const { pipeline: pName, fase } of allFases) {
+    const key = `${pName}/${fase}`;
+    faseCounts[key] = { pendiente: [], trabajando: [], listo: [] };
+  }
+  for (const [issueNum, data] of matrixEntries) {
+    for (const [key, entries] of Object.entries(data.fases)) {
+      if (!faseCounts[key]) continue;
+      for (const e of entries) {
+        if (e.estado === 'pendiente' || e.estado === 'trabajando' || e.estado === 'listo') {
+          if (!faseCounts[key][e.estado].includes(issueNum)) {
+            faseCounts[key][e.estado].push(issueNum);
+          }
+        }
+      }
+    }
+  }
+
+  // Generar header con badges y tooltips por fase
+  const faseHeader = (f, pName, thClass) => {
+    const key = `${pName}/${f}`;
+    const c = faseCounts[key] || { pendiente: [], trabajando: [], listo: [] };
+    const total = c.pendiente.length + c.trabajando.length + c.listo.length;
+    if (total === 0) return `<th class="${thClass}">${f}</th>`;
+
+    const badge = (list, icon, cls) => {
+      if (list.length === 0) return '';
+      const ttData = JSON.stringify({ title: `${f} — ${cls}`, items: list.map(id => ({ id })) }).replace(/'/g, '&#39;');
+      return `<span class="fase-badge fase-${cls}" data-fase-tt='${ttData}'>${icon}${list.length}</span>`;
+    };
+
+    const badges = [
+      badge(c.pendiente, '○', 'pendiente'),
+      badge(c.trabajando, '⚙', 'trabajando'),
+      badge(c.listo, '✓', 'listo')
+    ].join('');
+
+    return `<th class="${thClass}">${f}<div class="fase-badges">${badges}</div></th>`;
+  };
+
   const headerCells = [
-    ...defFases.map(f => `<th class="th-def">${f}</th>`),
-    ...devFases.map(f => `<th class="th-dev">${f}</th>`)
+    ...defFases.map(f => faseHeader(f, 'definicion', 'th-def')),
+    ...devFases.map(f => faseHeader(f, 'desarrollo', 'th-dev'))
   ].join('');
 
   const groupHeader = `<tr class="group-header">
@@ -401,14 +584,40 @@ function generateHTML(state) {
     svcsHTML += `<span class="svc-chip ${dot}">${name} ${data.pendiente}○ ${data.trabajando}⚙ ${data.listo}✓</span>`;
   }
 
-  // Procesos
+  // Procesos (con botones start/stop)
   let procHTML = '';
   for (const [name, info] of Object.entries(state.procesos)) {
-    const cls = info.pid ? 'proc-alive' : 'proc-dead';
-    procHTML += `<span class="proc-chip ${cls}">${name}${info.pid ? ' '+info.pid : ''}</span>`;
+    const alive = info.alive;
+    const cls = alive ? 'proc-alive' : 'proc-dead';
+    const isDashboard = name === 'dashboard';
+    const btn = isDashboard ? '' :
+      alive
+        ? `<button class="ctl-btn ctl-stop" onclick="ctlAction('${name}','stop')" title="Detener ${name}">■</button>`
+        : `<button class="ctl-btn ctl-start" onclick="ctlAction('${name}','start')" title="Iniciar ${name}">▶</button>`;
+    procHTML += `<span class="proc-chip ${cls}">${btn}${name}${info.pid && alive ? ' <span class="pid-num">'+info.pid+'</span>' : ''}</span>`;
   }
 
-  // QA Environment
+  // System Resources (CPU + RAM gauges)
+  const res = state.resources;
+  const cpuCls = res.cpuPercent >= res.maxCpu ? 'gauge-danger' : res.cpuPercent >= res.maxCpu * 0.8 ? 'gauge-warn' : 'gauge-ok';
+  const memCls = res.memPercent >= res.maxMem ? 'gauge-danger' : res.memPercent >= res.maxMem * 0.8 ? 'gauge-warn' : 'gauge-ok';
+  const blocked = res.cpuPercent >= res.maxCpu || res.memPercent >= res.maxMem;
+  const resourcesHTML = `
+    <div class="gauge-row">
+      <div class="gauge ${cpuCls}">
+        <div class="gauge-label">CPU</div>
+        <div class="gauge-bar"><div class="gauge-fill" style="width:${Math.min(res.cpuPercent, 100)}%"></div><div class="gauge-threshold" style="left:${res.maxCpu}%"></div></div>
+        <div class="gauge-value">${res.cpuPercent}% <span class="gauge-detail">${res.cpuCores} cores · max ${res.maxCpu}%</span></div>
+      </div>
+      <div class="gauge ${memCls}">
+        <div class="gauge-label">RAM</div>
+        <div class="gauge-bar"><div class="gauge-fill" style="width:${Math.min(res.memPercent, 100)}%"></div><div class="gauge-threshold" style="left:${res.maxMem}%"></div></div>
+        <div class="gauge-value">${res.memPercent}% <span class="gauge-detail">${res.memUsedGB}/${res.memTotalGB} GB · max ${res.maxMem}%</span></div>
+      </div>
+    </div>
+    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}`;
+
+  // QA Environment (con botones start/stop globales)
   const qaLabels = { dynamo: '🗄️ DynamoDB', backend: '⚡ Backend', emulator: '📱 Emulador' };
   const allQaUp = Object.values(state.qaEnv).every(v => v);
   const anyQaUp = Object.values(state.qaEnv).some(v => v);
@@ -416,9 +625,10 @@ function generateHTML(state) {
     const cls = alive ? 'proc-alive' : 'proc-dead';
     return `<span class="proc-chip ${cls}">${qaLabels[name] || name} ${alive ? '✓' : '✗'}</span>`;
   }).join('');
-  if (!anyQaUp) {
-    qaEnvHTML += '<div style="margin-top:6px;font-size:0.82em;color:var(--dim)">Levantar: <code>node .pipeline/qa-environment.js start</code></div>';
-  }
+  const qaBtn = anyQaUp
+    ? `<button class="ctl-btn ctl-stop ctl-wide" onclick="ctlAction('qa','stop')">■ Detener QA</button>`
+    : `<button class="ctl-btn ctl-start ctl-wide" onclick="ctlAction('qa','start')">▶ Levantar QA</button>`;
+  qaEnvHTML += `<div class="qa-controls">${qaBtn}</div>`;
 
   // Rechazos recientes
   let rechazosHTML = '';
@@ -547,6 +757,17 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .group-def{color:var(--or);text-align:center;border-right:2px solid var(--bd)}.group-dev{color:var(--ac);text-align:center}
 .th-def:last-of-type,.col-def:last-of-type{border-right:2px solid var(--bd)}
 
+/* ── Fase header badges ────────────────────────────────────────────────── */
+.fase-badges{display:flex;gap:6px;justify-content:left;margin-top:5px}
+.fase-badge{
+  font-size:0.72em;font-weight:600;padding:1px 6px;border-radius:10px;
+  cursor:default;position:relative;letter-spacing:0.5px;
+  display:inline-flex;align-items:center;gap:2px;
+}
+.fase-pendiente{color:var(--dim);background:rgba(139,148,158,0.12);border:1px solid rgba(139,148,158,0.25)}
+.fase-trabajando{color:var(--yl);background:rgba(210,153,34,0.12);border:1px solid rgba(210,153,34,0.3)}
+.fase-listo{color:var(--gn);background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.25)}
+
 /* ── Issue column ───────────────────────────────────────────────────────── */
 .issue-col{min-width:88px}
 .issue-link{color:var(--ac);font-weight:700;font-size:1.05em}
@@ -634,6 +855,65 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
 }
 .proc-alive{color:var(--gn)}.proc-dead{color:var(--rd)}
+.pid-num{font-size:0.8em;color:var(--dim2)}
+
+/* ── Control buttons ───────────────────────────────────────────────────── */
+.ctl-btn{
+  border:none;cursor:pointer;border-radius:4px;font-size:0.72em;
+  padding:2px 6px;margin-right:4px;font-weight:700;line-height:1;
+  vertical-align:middle;transition:opacity 0.2s,transform 0.1s;
+}
+.ctl-btn:hover{opacity:0.85;transform:scale(1.1)}
+.ctl-btn:active{transform:scale(0.95)}
+.ctl-btn.loading{opacity:0.4;pointer-events:none}
+.ctl-start{background:var(--gn2);color:var(--gn)}
+.ctl-stop{background:var(--rd2);color:var(--rd)}
+.ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
+.qa-controls{margin-top:8px}
+
+/* Toast notification */
+.toast{
+  position:fixed;bottom:20px;right:20px;z-index:999;
+  background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius-sm);
+  padding:10px 16px;font-size:0.88em;color:var(--tx);
+  box-shadow:0 4px 12px rgba(0,0,0,0.4);
+  animation:slideIn 0.3s ease;max-width:350px;
+}
+.toast.toast-ok{border-left:4px solid var(--gn)}
+.toast.toast-err{border-left:4px solid var(--rd)}
+@keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+/* ── Resource Gauges ───────────────────────────────────────────────────── */
+.gauge-row{display:flex;gap:16px;flex-wrap:wrap}
+.gauge{flex:1;min-width:180px}
+.gauge-label{font-size:0.82em;font-weight:700;color:var(--dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
+.gauge-bar{
+  position:relative;height:10px;background:var(--bd);border-radius:5px;overflow:visible;
+}
+.gauge-fill{
+  height:100%;border-radius:5px;transition:width 0.6s ease;
+}
+.gauge-threshold{
+  position:absolute;top:-2px;bottom:-2px;width:2px;
+  background:var(--rd);opacity:0.6;border-radius:1px;
+}
+.gauge-ok .gauge-fill{background:var(--gn)}
+.gauge-warn .gauge-fill{background:var(--yl)}
+.gauge-danger .gauge-fill{background:var(--rd);animation:pulse 1.8s infinite}
+.gauge-value{
+  font-size:0.9em;font-weight:600;margin-top:6px;
+  font-variant-numeric:tabular-nums;
+}
+.gauge-ok .gauge-value{color:var(--gn)}
+.gauge-warn .gauge-value{color:var(--yl)}
+.gauge-danger .gauge-value{color:var(--rd)}
+.gauge-detail{font-weight:400;color:var(--dim);font-size:0.85em;margin-left:4px}
+.resource-alert{
+  margin-top:10px;padding:8px 12px;
+  background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.4);
+  border-left:4px solid var(--rd);border-radius:var(--radius-sm);
+  color:var(--rd);font-size:0.88em;font-weight:600;
+}
 
 /* ── Rechazos / Actividad ───────────────────────────────────────────────── */
 .rechazo-row{font-size:0.85em;padding:5px 2px;border-bottom:1px solid var(--bd2);color:var(--rd);display:flex;gap:8px;align-items:baseline}
@@ -664,29 +944,44 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 
 /* ── Empty state ────────────────────────────────────────────────────────── */
 .empty-label{color:var(--dim);font-size:0.82em;font-style:italic}
+
+/* ── KPI Tooltip ────────────────────────────────────────────────────────── */
+.kpi[data-tooltip]{cursor:pointer;position:relative}
+.kpi-tooltip{
+  display:none;position:fixed;z-index:1000;
+  background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius-sm);
+  padding:10px 14px;font-size:0.82em;color:var(--tx);
+  box-shadow:0 8px 24px rgba(0,0,0,0.4);max-width:320px;min-width:160px;
+  pointer-events:none;white-space:nowrap;
+}
+.kpi-tooltip .tt-title{color:var(--dim);font-size:0.85em;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:600}
+.kpi-tooltip .tt-item{padding:2px 0;color:var(--ac)}
+.kpi-tooltip .tt-item a{color:var(--ac)}
+.kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 </style></head>
 <body>
   <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span></h1>
 
   ${stale > 0 ? `<div class="alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 10 min en trabajando — posible huérfano</div>` : ''}
 
+  <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
-    <div class="kpi kpi-activos">
+    <div class="kpi kpi-activos" data-tt='${ttActivos}'>
       <span class="kpi-icon">🔄</span>
       <div class="kpi-value">${activos}</div>
       <div class="kpi-label">Activos en pipeline</div>
     </div>
-    <div class="kpi kpi-working">
+    <div class="kpi kpi-working" data-tt='${ttTrabajando}'>
       <span class="kpi-icon">⚙️</span>
       <div class="kpi-value ${trabajando > 0 ? 'warn' : 'muted'}">${trabajando}</div>
       <div class="kpi-label">En ejecución ahora</div>
     </div>
-    <div class="kpi kpi-pendientes">
+    <div class="kpi kpi-pendientes" data-tt='${ttPendientes}'>
       <span class="kpi-icon">⏳</span>
       <div class="kpi-value ${pendientes > 0 ? '' : 'muted'}" style="color:var(--or)">${pendientes}</div>
       <div class="kpi-label">Pendientes en cola</div>
     </div>
-    <div class="kpi kpi-blocked">
+    <div class="kpi kpi-blocked" data-tt='${ttStale}'>
       <span class="kpi-icon">🚨</span>
       <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
       <div class="kpi-label">Bloqueados / stale</div>
@@ -703,7 +998,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
     </div>
   </div>
 
-  ${matrixHTML}
+  <div class="bar-section" style="margin-bottom:20px"><h2>💻 Recursos del sistema</h2>${resourcesHTML}</div>
 
   <div class="bar-row">
     <div class="bar-section"><h2>🧠 Skills activos</h2>${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
@@ -711,6 +1006,8 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
     <div class="bar-section"><h2>⚡ Procesos</h2>${procHTML}</div>
     <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
   </div>
+
+  ${matrixHTML}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
@@ -727,6 +1024,91 @@ es.onmessage = e => {
   lastHash = e.data;
 };
 es.onerror = () => { setTimeout(() => location.reload(), 10000); };
+
+// KPI Tooltips
+const tt = document.getElementById('kpi-tooltip');
+const GH_BASE = 'https://github.com/intrale/platform/issues/';
+const MAX_TT = 20;
+document.querySelectorAll('.kpi[data-tt]').forEach(el => {
+  el.addEventListener('mouseenter', e => {
+    try {
+      const d = JSON.parse(el.dataset.tt);
+      const shown = d.items.slice(0, MAX_TT);
+      const rows = shown.map(it =>
+        '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a>' +
+        (it.label ? ' <span style="color:var(--dim)">— ' + it.label + '</span>' : '') + '</div>'
+      ).join('');
+      const more = d.items.length > MAX_TT
+        ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
+      tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
+      tt.style.display = 'block';
+      positionTt(e);
+    } catch(_) {}
+  });
+  el.addEventListener('mousemove', positionTt);
+  el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
+});
+function positionTt(e) {
+  const pad = 14;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  const r = tt.getBoundingClientRect();
+  if (x + r.width > window.innerWidth - 10) x = e.clientX - r.width - pad;
+  if (y + r.height > window.innerHeight - 10) y = e.clientY - r.height - pad;
+  tt.style.left = x + 'px';
+  tt.style.top = y + 'px';
+}
+
+// --- Start/Stop actions ---
+async function ctlAction(target, action) {
+  // Find the button that was clicked and show loading state
+  const btns = document.querySelectorAll('.ctl-btn');
+  btns.forEach(b => { if (b.onclick && b.onclick.toString().includes(target)) b.classList.add('loading'); });
+
+  try {
+    const resp = await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, action })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    // Reload after a short delay to show updated state
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
+  btns.forEach(b => b.classList.remove('loading'));
+}
+
+function showToast(msg, ok) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// Fase badge tooltips (reutiliza el mismo tooltip div)
+document.querySelectorAll('.fase-badge[data-fase-tt]').forEach(el => {
+  el.addEventListener('mouseenter', e => {
+    try {
+      const d = JSON.parse(el.dataset.faseTt);
+      const shown = d.items.slice(0, MAX_TT);
+      const rows = shown.map(it =>
+        '<div class="tt-item"><a href="' + GH_BASE + it.id + '" target="_blank">#' + it.id + '</a></div>'
+      ).join('');
+      const more = d.items.length > MAX_TT
+        ? '<div class="tt-more">+ ' + (d.items.length - MAX_TT) + ' más…</div>' : '';
+      tt.innerHTML = '<div class="tt-title">' + d.title + ' (' + d.items.length + ')</div>' + rows + more;
+      tt.style.display = 'block';
+      positionTt(e);
+    } catch(_) {}
+  });
+  el.addEventListener('mousemove', positionTt);
+  el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
+});
 </script>
 </body></html>`;
 }
@@ -760,6 +1142,34 @@ const server = http.createServer((req, res) => {
     send();
     const interval = setInterval(send, 5000);
     req.on('close', () => clearInterval(interval));
+    return;
+  }
+
+  // API: acciones start/stop
+  if (req.url === '/api/action' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { target, action } = JSON.parse(body);
+        let result;
+        if (target === 'qa') {
+          result = qaAction(action); // 'start' o 'stop'
+        } else if (action === 'start') {
+          result = startComponent(target);
+        } else if (action === 'stop') {
+          result = stopComponent(target);
+        } else {
+          result = { ok: false, msg: `Acción "${action}" no válida` };
+        }
+        log(`Action: ${action} ${target} → ${result.ok ? '✓' : '✗'} ${result.msg}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
     return;
   }
 
