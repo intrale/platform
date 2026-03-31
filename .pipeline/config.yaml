@@ -77,8 +77,8 @@ prioridad_labels:
 
 # Límites de recursos del sistema — bloquea lanzamiento de nuevos agentes si se excede
 resource_limits:
-  max_cpu_percent: 80              # No lanzar si CPU >= 80%
-  max_mem_percent: 80              # No lanzar si RAM >= 80%
+  max_cpu_percent: 70              # No lanzar si CPU >= 70%
+  max_mem_percent: 70              # No lanzar si RAM >= 70%
 
 # Timeouts
 timeouts:
