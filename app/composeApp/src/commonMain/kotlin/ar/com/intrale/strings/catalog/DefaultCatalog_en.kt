@@ -817,6 +817,28 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_notifications_event_delivered to "Order delivered",
     MessageKey.delivery_notifications_event_not_delivered to "Order not delivered",
     MessageKey.delivery_notifications_view_available_orders to "View available orders",
+
+    // Order sound notifications (Business)
+    MessageKey.business_notification_sound_title to "Order sound",
+    MessageKey.business_notification_sound_enabled to "Sound notifications enabled",
+    MessageKey.business_notification_sound_disabled to "Sound notifications disabled",
+    MessageKey.business_notification_sound_volume to "Volume",
+    MessageKey.business_notification_sound_type to "Sound type",
+    MessageKey.business_notification_sound_type_default to "Default",
+    MessageKey.business_notification_sound_type_bell to "Bell",
+    MessageKey.business_notification_sound_type_chime to "Chime",
+    MessageKey.business_notification_sound_type_urgent to "Urgent",
+    MessageKey.business_notification_sound_vibration to "Vibration",
+    MessageKey.business_notification_sound_muted to "Sound muted",
+    MessageKey.business_notification_sound_unmuted to "Sound enabled",
+    MessageKey.business_notification_sound_mute_action to "Mute",
+    MessageKey.business_notification_sound_unmute_action to "Unmute",
+    MessageKey.business_notification_sound_new_order to "New order #{code}",
+    MessageKey.business_notification_sound_dismiss to "Dismiss",
+    MessageKey.business_notification_sound_dismiss_all to "Dismiss all",
+    MessageKey.business_notification_sound_repeat_info to "Sound repeats every {seconds} seconds",
+    MessageKey.business_notification_sound_config_title to "Sound settings",
+
     // Checkout
     MessageKey.client_checkout_title to "Confirm order",
     MessageKey.client_checkout_subtitle to "Review your order before confirming",

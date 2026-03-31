@@ -271,6 +271,7 @@ import ui.sc.business.BusinessSchedulesScreen
 import ui.sc.business.BusinessDeliveryZoneScreen
 import ui.sc.business.BusinessDeliveryPeopleScreen
 import ui.sc.business.BusinessPaymentMethodsScreen
+import ui.sc.business.BusinessSoundConfigScreen
 import ui.sc.business.BusinessOnboardingScreen
 import ui.sc.business.BusinessOrdersScreen
 import ui.sc.business.BusinessOrderDetailScreen
@@ -371,6 +372,7 @@ public const val BUSINESS_SCHEDULES = "businessSchedules"
 public const val BUSINESS_DELIVERY_ZONE = "businessDeliveryZone"
 public const val BUSINESS_DELIVERY_PEOPLE = "businessDeliveryPeople"
 public const val BUSINESS_PAYMENT_METHODS = "businessPaymentMethods"
+public const val BUSINESS_SOUND_CONFIG = "businessSoundConfig"
 
 const val LOGIN_PATH = "/login"
 
@@ -596,6 +598,7 @@ private val screensModule = DI.Module("screens") {
     bindSingleton(tag = BUSINESS_SCHEDULES) { BusinessSchedulesScreen() }
     bindSingleton(tag = BUSINESS_DELIVERY_ZONE) { BusinessDeliveryZoneScreen() }
     bindSingleton(tag = BUSINESS_DELIVERY_PEOPLE) { BusinessDeliveryPeopleScreen() }
+    bindSingleton(tag = BUSINESS_SOUND_CONFIG) { BusinessSoundConfigScreen() }
 
     bindSingleton(tag = SCREENS) {
         val appType = AppRuntimeConfig.appType
@@ -677,6 +680,7 @@ private val screensModule = DI.Module("screens") {
                     add(instance(tag = BUSINESS_SCHEDULES))
                     add(instance(tag = BUSINESS_DELIVERY_ZONE))
                     add(instance(tag = BUSINESS_DELIVERY_PEOPLE))
+                    add(instance(tag = BUSINESS_SOUND_CONFIG))
                     add(instance(tag = TWO_FACTOR_SETUP))
                     add(instance(tag = TWO_FACTOR_VERIFY))
                 }

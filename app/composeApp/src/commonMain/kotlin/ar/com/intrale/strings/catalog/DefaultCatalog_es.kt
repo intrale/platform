@@ -817,6 +817,28 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_notifications_event_delivered to "Pedido entregado",
     MessageKey.delivery_notifications_event_not_delivered to "Pedido no entregado",
     MessageKey.delivery_notifications_view_available_orders to "Ver pedidos disponibles",
+
+    // Notificaciones sonoras de pedidos (Business)
+    MessageKey.business_notification_sound_title to "Sonido de pedidos",
+    MessageKey.business_notification_sound_enabled to "Notificaciones sonoras activadas",
+    MessageKey.business_notification_sound_disabled to "Notificaciones sonoras desactivadas",
+    MessageKey.business_notification_sound_volume to "Volumen",
+    MessageKey.business_notification_sound_type to "Tipo de sonido",
+    MessageKey.business_notification_sound_type_default to "Predeterminado",
+    MessageKey.business_notification_sound_type_bell to "Campana",
+    MessageKey.business_notification_sound_type_chime to "Campanilla",
+    MessageKey.business_notification_sound_type_urgent to "Urgente",
+    MessageKey.business_notification_sound_vibration to "Vibracion",
+    MessageKey.business_notification_sound_muted to "Sonido silenciado",
+    MessageKey.business_notification_sound_unmuted to "Sonido activado",
+    MessageKey.business_notification_sound_mute_action to "Silenciar",
+    MessageKey.business_notification_sound_unmute_action to "Activar sonido",
+    MessageKey.business_notification_sound_new_order to "Nuevo pedido #{code}",
+    MessageKey.business_notification_sound_dismiss to "Descartar",
+    MessageKey.business_notification_sound_dismiss_all to "Descartar todas",
+    MessageKey.business_notification_sound_repeat_info to "El sonido se repite cada {seconds} segundos",
+    MessageKey.business_notification_sound_config_title to "Configuracion de sonido",
+
     // Checkout / Confirmación de pedido
     MessageKey.client_checkout_title to "Confirmar pedido",
     MessageKey.client_checkout_subtitle to "Revisá tu pedido antes de confirmar",

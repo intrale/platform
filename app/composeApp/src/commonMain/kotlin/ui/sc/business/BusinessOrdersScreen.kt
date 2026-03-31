@@ -50,6 +50,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import ui.cp.OrderSoundAlertBanner
 import ui.sc.shared.Screen
 import ui.th.spacing
 
@@ -105,6 +106,16 @@ class BusinessOrdersScreen : Screen(BUSINESS_ORDERS_PATH) {
                 verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x3),
                 contentPadding = PaddingValues(vertical = MaterialTheme.spacing.x4)
             ) {
+                // Banner de alertas sonoras de pedidos nuevos
+                item {
+                    OrderSoundAlertBanner(
+                        onOrderClick = { orderId ->
+                            BusinessOrderSelectionStore.select(orderId)
+                            navigate(BUSINESS_ORDER_DETAIL_PATH)
+                        }
+                    )
+                }
+
                 item {
                     Text(
                         text = Txt(MessageKey.business_orders_title),

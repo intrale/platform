@@ -104,6 +104,11 @@ class BusinessOrdersViewModel(
         getBusinessOrders.execute(businessId)
             .onSuccess { orders ->
                 logger.info { "Pedidos cargados: ${orders.size}" }
+                // Detectar pedidos nuevos y disparar notificacion sonora
+                val newOrders = BusinessOrderNotificationStore.processOrders(orders)
+                if (newOrders.isNotEmpty()) {
+                    logger.info { "Nuevos pedidos detectados para alerta sonora: ${newOrders.size}" }
+                }
                 state = state.copy(isLoading = false, orders = orders, isEmpty = orders.isEmpty())
             }
             .onFailure { e ->
