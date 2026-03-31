@@ -75,6 +75,11 @@ prioridad_labels:
   - "priority:medium"    # Default si no tiene label
   - "priority:low"
 
+# Límites de recursos del sistema — bloquea lanzamiento de nuevos agentes si se excede
+resource_limits:
+  max_cpu_percent: 80              # No lanzar si CPU >= 80%
+  max_mem_percent: 80              # No lanzar si RAM >= 80%
+
 # Timeouts
 timeouts:
   poll_interval_seconds: 30       # Frecuencia de barrido/lanzamiento (local)
