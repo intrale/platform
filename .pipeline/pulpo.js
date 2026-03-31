@@ -20,6 +20,35 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const USE_NODE_DIRECT = fs.existsSync(CLAUDE_CLI_JS);
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
+// --- Gradle Daemon Cleanup ---
+// Mata daemons de Gradle que quedaron vivos en un worktree específico o globalmente
+function killGradleDaemons(cwd) {
+  try {
+    const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
+    const cwdUnix = (cwd || ROOT).replace(/\\/g, '/');
+    execSync(`"${bashExe}" -c 'cd "${cwdUnix}" && ./gradlew --stop 2>/dev/null || true'`, {
+      cwd: cwd || ROOT, timeout: 30000, windowsHide: true,
+      env: { ...process.env, JAVA_HOME: (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/') }
+    });
+    log('cleanup', `Gradle daemons detenidos (cwd: ${path.basename(cwd || ROOT)})`);
+  } catch (e) {
+    log('cleanup', `Gradle --stop falló: ${e.message.slice(0, 100)}`);
+  }
+}
+
+// Barrido periódico: mata daemons Gradle huérfanos si no hay agentes ni builds activos
+function barridoGradleDaemons() {
+  if (activeProcesses.size > 0) return; // hay agentes/builds corriendo, no tocar
+  try {
+    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const daemons = jpsOut.split('\n').filter(l => l.includes('GradleDaemon'));
+    if (daemons.length > 0) {
+      log('cleanup', `${daemons.length} Gradle daemon(s) huérfano(s) detectado(s) — limpiando`);
+      killGradleDaemons(ROOT);
+    }
+  } catch {}
+}
+
 // Rate limiting para GitHub API (máx 1 call cada 2 segundos)
 let lastGhCallTime = 0;
 function ghThrottle() {
@@ -716,6 +745,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey(skill, issue));
+
+    // Cleanup: matar Gradle daemons que puedan haber quedado del agente
+    // (los agentes corren ./gradlew check como parte de su flujo)
+    barridoGradleDaemons();
+
     // Salir del canal de contexto (el canal queda para que otros lo consulten)
     if (contextChannelId) {
       try {
@@ -783,7 +817,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check`], {
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew --no-daemon check`], {
     cwd: buildCwd,
     env: buildEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -838,6 +872,9 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
       log('build', `Error moviendo build result #${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey('build', issue));
+
+    // Cleanup: matar Gradle daemons que hayan quedado del build
+    killGradleDaemons(buildCwd);
   });
 }
 
@@ -1680,6 +1717,7 @@ async function mainLoop() {
         brazoBarrido(config);   // Tercero: promover entre fases
         brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
         brazoHuerfanos(config); // Quinto: recuperar trabajo trabado
+        barridoGradleDaemons(); // Sexto: limpiar Gradle daemons huérfanos
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
