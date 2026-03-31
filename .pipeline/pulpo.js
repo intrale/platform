@@ -70,16 +70,35 @@ function detectRateLimitInLog(logPath) {
 // --- Gradle Daemon Cleanup ---
 // Mata daemons de Gradle que quedaron vivos en un worktree específico o globalmente
 function killGradleDaemons(cwd) {
+  // Intentar gradlew --stop primero
   try {
     const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
     const cwdUnix = (cwd || ROOT).replace(/\\/g, '/');
-    execSync(`"${bashExe}" -c 'cd "${cwdUnix}" && ./gradlew --stop 2>/dev/null || true'`, {
+    execSync(`"${bashExe}" -c "cd '${cwdUnix}' && ./gradlew --stop 2>/dev/null || true"`, {
       cwd: cwd || ROOT, timeout: 30000, windowsHide: true,
       env: { ...process.env, JAVA_HOME: (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/') }
     });
     log('cleanup', `Gradle daemons detenidos (cwd: ${path.basename(cwd || ROOT)})`);
+    return;
   } catch (e) {
-    log('cleanup', `Gradle --stop falló: ${e.message.slice(0, 100)}`);
+    log('cleanup', `Gradle --stop falló, intentando taskkill directo: ${e.message.slice(0, 80)}`);
+  }
+  // Fallback: matar daemons directamente vía jps + taskkill
+  try {
+    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const daemonPids = jpsOut.split('\n')
+      .filter(l => l.includes('GradleDaemon') || l.includes('GradleWrapperMain'))
+      .map(l => l.trim().split(/\s+/)[0])
+      .filter(Boolean);
+    for (const pid of daemonPids) {
+      try {
+        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, windowsHide: true });
+        log('cleanup', `Gradle proceso PID ${pid} eliminado vía taskkill`);
+      } catch {}
+    }
+    if (daemonPids.length > 0) log('cleanup', `${daemonPids.length} proceso(s) Gradle eliminados vía taskkill`);
+  } catch (e) {
+    log('cleanup', `Taskkill fallback también falló: ${e.message.slice(0, 80)}`);
   }
 }
 
