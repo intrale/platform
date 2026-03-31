@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
@@ -197,6 +198,70 @@ function countRunningBySkill(skill) {
   }
   return count;
 }
+
+// --- Resource Monitor: CPU y Memoria del sistema ---
+
+/** Snapshot de CPU para cálculo diferencial (os.cpus() da totales acumulados) */
+let lastCpuSnapshot = null;
+
+function cpuSnapshot() {
+  const cpus = os.cpus();
+  let idle = 0, total = 0;
+  for (const cpu of cpus) {
+    for (const type in cpu.times) total += cpu.times[type];
+    idle += cpu.times.idle;
+  }
+  return { idle, total };
+}
+
+/**
+ * Obtener uso de recursos del sistema.
+ * CPU se calcula como delta entre dos snapshots (requiere al menos 2 ciclos).
+ * Memoria usa os.freemem / os.totalmem.
+ */
+function getSystemResourceUsage() {
+  // Memoria
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const memPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
+
+  // CPU (diferencial entre snapshots)
+  const current = cpuSnapshot();
+  let cpuPercent = 0;
+  if (lastCpuSnapshot) {
+    const idleDelta = current.idle - lastCpuSnapshot.idle;
+    const totalDelta = current.total - lastCpuSnapshot.total;
+    cpuPercent = totalDelta > 0 ? Math.round(((totalDelta - idleDelta) / totalDelta) * 100) : 0;
+  }
+  lastCpuSnapshot = current;
+
+  return { cpuPercent, memPercent };
+}
+
+/** Verificar si el sistema está sobrecargado según los thresholds configurados */
+let lastResourceLog = 0;
+function isSystemOverloaded(config) {
+  const thresholds = config.resource_limits || {};
+  const maxCpu = thresholds.max_cpu_percent || 80;
+  const maxMem = thresholds.max_mem_percent || 80;
+
+  const { cpuPercent, memPercent } = getSystemResourceUsage();
+
+  const overloaded = cpuPercent >= maxCpu || memPercent >= maxMem;
+
+  // Loguear cada 60s para no spamear
+  const now = Date.now();
+  if (overloaded || now - lastResourceLog > 60000) {
+    const status = overloaded ? '🔴 SOBRECARGADO' : '🟢 OK';
+    log('recursos', `${status} — CPU: ${cpuPercent}% (max ${maxCpu}%) | RAM: ${memPercent}% (max ${maxMem}%)`);
+    lastResourceLog = now;
+  }
+
+  return overloaded;
+}
+
+// Tomar snapshot inicial de CPU al arrancar (el primer delta necesita dos puntos)
+lastCpuSnapshot = cpuSnapshot();
 
 // =============================================================================
 // BRAZO 1: BARRIDO — Conecta fases, promueve o rechaza
@@ -393,6 +458,9 @@ function determinarDevSkill(issue, config) {
 // =============================================================================
 
 function brazoLanzamiento(config) {
+  // GATE DE RECURSOS: no lanzar nuevos agentes si CPU o RAM están sobrecargados
+  if (isSystemOverloaded(config)) return;
+
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     for (const fase of pipelineConfig.fases) {
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
@@ -655,9 +723,13 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
   const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  // Validar que JAVA_HOME apunte a un directorio existente; si no, usar Temurin 21
+  // Validar que JAVA_HOME tenga un java.exe válido; si no, usar Temurin 21
+  // IMPORTANTE: solo chequear existencia del directorio no alcanza — IntelliJ JBR puede existir
+  // pero no ser un JDK válido (sin bin/java.exe). Hay que validar el binario.
   const envJavaHome = process.env.JAVA_HOME;
-  const javaHome = (envJavaHome && fs.existsSync(envJavaHome) ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
+  const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
+  const isValidJavaHome = envJavaHome && fs.existsSync(path.join(envJavaHome, 'bin', javaExe));
+  const javaHome = (isValidJavaHome ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
   const cwdUnix = buildCwd.replace(/\\/g, '/');
 
   // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
@@ -866,6 +938,20 @@ function cmdStatus(config) {
     const svcDir = path.join(PIPELINE, 'servicios', svc, 'pendiente');
     const count = listWorkFiles(svcDir).length;
     if (count > 0) lines.push(`  ${svc}: ${count} pendientes`);
+  }
+
+  // Recursos del sistema
+  const { cpuPercent, memPercent } = getSystemResourceUsage();
+  const thresholds = config.resource_limits || {};
+  const maxCpu = thresholds.max_cpu_percent || 80;
+  const maxMem = thresholds.max_mem_percent || 80;
+  const cpuIcon = cpuPercent >= maxCpu ? '🔴' : cpuPercent >= maxCpu * 0.8 ? '🟡' : '🟢';
+  const memIcon = memPercent >= maxMem ? '🔴' : memPercent >= maxMem * 0.8 ? '🟡' : '🟢';
+  lines.push(`\n*Recursos del sistema*`);
+  lines.push(`  ${cpuIcon} CPU: ${cpuPercent}% (max ${maxCpu}%)`);
+  lines.push(`  ${memIcon} RAM: ${memPercent}% (max ${maxMem}%)`);
+  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
+    lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
   // Estado pausa
