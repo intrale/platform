@@ -172,17 +172,18 @@ tasks.matching { it.name == "build" }.configureEach {
     dependsOn("verifyNoLegacyStrings")
 }
 
-// Pinear binaryen v118 para evitar SIGSEGV en GitHub Actions (binaryen v123 crashea con exit 139)
+// Pinear binaryen v122 para evitar SIGSEGV en GitHub Actions (binaryen v123 crashea con exit 139)
+// v118 incompatible con Kotlin 2.2.21 ("Cannot pass multiple pass arguments to no-inline")
 // Ver: https://github.com/intrale/platform/issues/1751
 // TODO: volver a versión default cuando binaryen resuelva el crash upstream
 @OptIn(ExperimentalWasmDsl::class)
 plugins.withType<WasmBinaryenPlugin> {
-    extensions.getByType<WasmBinaryenEnvSpec>().version.set("version_118")
+    extensions.getByType<WasmBinaryenEnvSpec>().version.set("122")
 }
 @OptIn(ExperimentalWasmDsl::class)
 allprojects {
     plugins.withType<WasmBinaryenPlugin> {
-        extensions.getByType<WasmBinaryenEnvSpec>().version.set("version_118")
+        extensions.getByType<WasmBinaryenEnvSpec>().version.set("122")
     }
 }
 
