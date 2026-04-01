@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DoNotDisturb
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -125,7 +126,12 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
                 .onFailure { logger.error(it) { "Error cargando medios de pago para checkout" } }
 
             viewModel.loadFromCart(itemsList, address, paymentMethod)
+            viewModel.checkBusinessOpenStatus()
         }
+
+        // Strings para negocio cerrado
+        val businessClosedTitle = Txt(MessageKey.client_checkout_business_closed_title)
+        val businessClosedMessage = Txt(MessageKey.client_checkout_business_closed_message)
 
         Scaffold { padding ->
             when (viewModel.state.status) {
@@ -164,6 +170,17 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
                                     text = subtitleText,
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        // Banner de negocio cerrado
+                        if (viewModel.state.businessClosed) {
+                            item {
+                                BusinessClosedBanner(
+                                    title = businessClosedTitle,
+                                    message = businessClosedMessage,
+                                    nextOpeningInfo = viewModel.state.businessClosedInfo
                                 )
                             }
                         }
@@ -552,6 +569,59 @@ private fun CheckoutSuccessContent(
                 text = backHomeLabel,
                 fontWeight = FontWeight.SemiBold
             )
+        }
+    }
+}
+
+@Composable
+private fun BusinessClosedBanner(
+    title: String,
+    message: String,
+    nextOpeningInfo: String
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MaterialTheme.spacing.x3),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+        ) {
+            Icon(
+                imageVector = Icons.Default.DoNotDisturb,
+                contentDescription = title,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(24.dp)
+            )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+                if (nextOpeningInfo.isNotBlank()) {
+                    Text(
+                        text = Txt(
+                            MessageKey.client_checkout_business_closed_next,
+                            mapOf("info" to nextOpeningInfo)
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
         }
     }
 }

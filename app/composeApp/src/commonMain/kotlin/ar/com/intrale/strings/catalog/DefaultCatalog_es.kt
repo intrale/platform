@@ -720,6 +720,12 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.business_schedules_open_time to "Hora de apertura",
     MessageKey.business_schedules_close_time to "Hora de cierre",
     MessageKey.business_schedules_is_open to "Abierto",
+    MessageKey.business_schedules_split_label to "Horario cortado (dos franjas)",
+    MessageKey.business_schedules_open_time_2 to "Apertura 2da franja",
+    MessageKey.business_schedules_close_time_2 to "Cierre 2da franja",
+    MessageKey.business_schedules_temp_closed_label to "Cerrado temporalmente",
+    MessageKey.business_schedules_temp_closed_hint to "Tu negocio no recibira pedidos hasta que desactives esta opcion o se cumpla la fecha de reapertura",
+    MessageKey.business_schedules_reopen_date to "Fecha de reapertura (opcional, ej: 2026-04-15)",
     MessageKey.dashboard_menu_business_schedules to "Horarios de atencion",
     MessageKey.dashboard_card_schedules_title to "Horarios",
     MessageKey.dashboard_card_schedules_description to "Configura los dias y horarios de atencion de tu negocio",
@@ -817,6 +823,17 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_notifications_event_delivered to "Pedido entregado",
     MessageKey.delivery_notifications_event_not_delivered to "Pedido no entregado",
     MessageKey.delivery_notifications_view_available_orders to "Ver pedidos disponibles",
+
+    // Estado abierto/cerrado del negocio (vista cliente)
+    MessageKey.business_status_open to "Abierto",
+    MessageKey.business_status_closed to "Cerrado",
+    MessageKey.business_status_temp_closed to "Cerrado temporalmente",
+    MessageKey.business_status_next_opening to "{info}",
+    MessageKey.business_status_checking to "Verificando horarios...",
+    MessageKey.client_checkout_business_closed_title to "Negocio cerrado",
+    MessageKey.client_checkout_business_closed_message to "Este negocio no esta atendiendo en este momento. No es posible confirmar pedidos fuera del horario de atencion.",
+    MessageKey.client_checkout_business_closed_next to "{info}",
+
     // Checkout / Confirmación de pedido
     MessageKey.client_checkout_title to "Confirmar pedido",
     MessageKey.client_checkout_subtitle to "Revisá tu pedido antes de confirmar",
