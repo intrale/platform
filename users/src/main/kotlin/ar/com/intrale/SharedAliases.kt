@@ -48,6 +48,11 @@ import ar.com.intrale.shared.delivery.DeliveryOrderDTO as SharedDeliveryOrderDTO
 import ar.com.intrale.shared.delivery.DeliveryOrderStatusUpdateRequest as SharedDeliveryOrderStatusUpdateRequest
 import ar.com.intrale.shared.delivery.DeliveryStateChangeRequest as SharedDeliveryStateChangeRequest
 
+// --- Chat ---
+import ar.com.intrale.shared.chat.ChatMessageDTO as SharedChatMessageDTO
+import ar.com.intrale.shared.chat.SendChatMessageRequest as SharedSendChatMessageRequest
+import ar.com.intrale.shared.chat.ChatMessagesResponseDTO as SharedChatMessagesResponseDTO
+
 // Type aliases para mantener naming del backend y minimizar cambios en archivos existentes.
 
 // Auth
@@ -97,3 +102,8 @@ typealias DeliveryOrderItemPayload = SharedDeliveryOrderItemDTO
 typealias DeliveryOrderPayload = SharedDeliveryOrderDTO
 typealias DeliveryOrderStatusUpdateRequest = SharedDeliveryOrderStatusUpdateRequest
 typealias DeliveryStateChangeRequest = SharedDeliveryStateChangeRequest
+
+// Chat
+typealias ChatMessagePayload = SharedChatMessageDTO
+typealias SendChatMessagePayload = SharedSendChatMessageRequest
+typealias ChatMessagesResponsePayload = SharedChatMessagesResponseDTO

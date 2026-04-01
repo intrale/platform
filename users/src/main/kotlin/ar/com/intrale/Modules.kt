@@ -289,6 +289,18 @@ val appModule = DI.Module("appModule") {
         singleton { ClaudeAiResponseService() }
     }
 
+    bind<TranslationService> {
+        singleton { ClaudeTranslationService() }
+    }
+
+    bind<ChatMessageRepository> {
+        singleton { ChatMessageRepository() }
+    }
+
+    bind<Function> (tag="chat/messages") {
+        singleton { ChatFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="auto-response") {
         singleton { AutoResponseFunction(instance(), instance(), instance(), instance()) }
     }
