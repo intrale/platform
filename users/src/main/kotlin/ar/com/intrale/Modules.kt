@@ -289,12 +289,24 @@ val appModule = DI.Module("appModule") {
         singleton { ClaudeAiResponseService() }
     }
 
+    bind<PhotoQualityService> {
+        singleton { ClaudePhotoQualityService() }
+    }
+
+    bind<PhotoQualityRepository> {
+        singleton { PhotoQualityRepository() }
+    }
+
     bind<Function> (tag="auto-response") {
         singleton { AutoResponseFunction(instance(), instance(), instance(), instance()) }
     }
 
     bind<Function> (tag="business/auto-response-config") {
         singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/photo-quality") {
+        singleton { PhotoQualityFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
     }
 }
 
