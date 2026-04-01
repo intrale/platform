@@ -289,6 +289,18 @@ val appModule = DI.Module("appModule") {
         singleton { ClaudeAiResponseService() }
     }
 
+    bind<DemandPredictionService> {
+        singleton { ClaudeDemandPredictionService() }
+    }
+
+    bind<Function> (tag="business/sales-metrics") {
+        singleton { BusinessSalesMetricsFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/demand-prediction") {
+        singleton { DemandPredictionFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="auto-response") {
         singleton { AutoResponseFunction(instance(), instance(), instance(), instance()) }
     }
