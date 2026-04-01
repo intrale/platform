@@ -1,34 +1,46 @@
 # Watchdog V2 — Vigila Pulpo + Listener Telegram
 # Se ejecuta cada 2 minutos via Windows Task Scheduler
+# SIEMPRE lanza desde platform.ops (worktree en main) si está disponible
 
-$PipelineDir = 'C:\Workspaces\Intrale\platform\.pipeline'
-$LogFile = "$PipelineDir\logs\watchdog.log"
+ = 'C:WorkspacesIntraleplatform.ops'
+ = 'C:WorkspacesIntraleplatform'
 
-function Write-Log($msg) {
-    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    "[$ts] $msg" | Out-File -Append -FilePath $LogFile -Encoding utf8
+if (Test-Path "\.pipelinepulpo.js") {
+     = "\.pipeline"
+     = } else {
+     = "\.pipeline"
+     = }
+
+ = "\.pipeline"
+ = "\logswatchdog.log"
+
+function Write-Log() {
+     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    "[] " | Out-File -Append -FilePath  -Encoding utf8
 }
 
-function Test-ProcessAlive($pidFile) {
-    if (-not (Test-Path $pidFile)) { return $false }
-    $procId = [int](Get-Content $pidFile -ErrorAction SilentlyContinue)
-    if (-not $procId -or $procId -eq 0) { return $false }
+function Test-ProcessAlive() {
+    if (-not (Test-Path )) { return  }
+     = [int](Get-Content  -ErrorAction SilentlyContinue)
+    if (-not  -or  -eq 0) { return  }
     try {
-        $proc = Get-Process -Id $procId -ErrorAction Stop
-        return ($proc.ProcessName -eq 'node')
+         = Get-Process -Id  -ErrorAction Stop
+        return (.ProcessName -eq 'node')
     } catch {
-        return $false
-    }
+        return     }
 }
 
-# --- Pulpo ---
-if (-not (Test-ProcessAlive "$PipelineDir\pulpo.pid")) {
-    Write-Log 'Pulpo caido - relanzando via .bat'
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "$PipelineDir\start-pulpo.bat" -WindowStyle Minimized
+if ( -eq ) {
+    try {
+        git -C  fetch origin main 2>        git -C  checkout FETCH_HEAD --force 2>    } catch {}
 }
 
-# --- Listener Telegram ---
-if (-not (Test-ProcessAlive "$PipelineDir\listener.pid")) {
-    Write-Log 'Listener caido - relanzando via .bat'
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "$PipelineDir\start-listener.bat" -WindowStyle Minimized
+if (-not (Test-ProcessAlive "\pulpo.pid")) {
+    Write-Log "Pulpo caido - relanzando desde "
+    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "\start-pulpo.bat" -WindowStyle Minimized
+}
+
+if (-not (Test-ProcessAlive "\listener.pid")) {
+    Write-Log "Listener caido - relanzando desde "
+    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "\start-listener.bat" -WindowStyle Minimized
 }

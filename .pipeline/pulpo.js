@@ -10,8 +10,9 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
-const ROOT = path.resolve(__dirname, '..');
-const PIPELINE = path.resolve(ROOT, '.pipeline');
+// PIPELINE_STATE_DIR y PIPELINE_MAIN_ROOT: seteados por restart.js cuando corre desde platform.ops
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(ROOT, '.pipeline');
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 // Ejecutar claude via Node directo (evita cmd.exe y ventanas visibles)

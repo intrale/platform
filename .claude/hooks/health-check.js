@@ -573,6 +573,8 @@ function checkDeadWorktrees() {
         for (const wt of gitWorktrees) {
             const wtNorm = (wt.path || "").replace(/\\/g, "/");
             if (wtNorm === mainWorktreePath || wt.bare) continue;
+            // NUNCA tocar el worktree ops
+            if (path.basename(wt.path || "").endsWith(".ops")) continue;
             if (!fs.existsSync(wt.path)) {
                 // Directorio inexistente — git worktree prune es suficiente
                 try {
