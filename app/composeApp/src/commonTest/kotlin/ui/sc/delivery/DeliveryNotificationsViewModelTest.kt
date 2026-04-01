@@ -175,6 +175,66 @@ class DeliveryNotificationsViewModelTest {
         assertEquals(DeliveryNotificationsStatus.Empty, vm.state.status)
         assertEquals("Access denied", vm.state.errorMessage)
     }
+
+    @Test
+    fun `markNotificationAsRead con error no recarga notificaciones`() = runTest {
+        var callCount = 0
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = object : ToDoGetDeliveryNotifications {
+                override suspend fun execute(): Result<List<DeliveryNotification>> {
+                    callCount++
+                    return Result.success(sampleNotifications())
+                }
+            },
+            markRead = FakeMarkDeliveryNotificationRead(Result.failure(RuntimeException("Error de red"))),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+        vm.markNotificationAsRead("order1_PENDING")
+
+        // Solo se llamó una vez (loadNotifications inicial), no recargó tras el error
+        assertEquals(1, callCount)
+    }
+
+    @Test
+    fun `markAllNotificationsAsRead con error no recarga notificaciones`() = runTest {
+        var callCount = 0
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = object : ToDoGetDeliveryNotifications {
+                override suspend fun execute(): Result<List<DeliveryNotification>> {
+                    callCount++
+                    return Result.success(sampleNotifications())
+                }
+            },
+            markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.failure(RuntimeException("Error de red"))),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+        vm.markAllNotificationsAsRead()
+
+        // Solo se llamó una vez (loadNotifications inicial), no recargó tras el error
+        assertEquals(1, callCount)
+    }
+
+    @Test
+    fun `clearError limpia el mensaje de error`() = runTest {
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = FakeGetDeliveryNotifications(Result.failure(RuntimeException("Error"))),
+            markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+        assertEquals("Error", vm.state.errorMessage)
+
+        vm.clearError()
+        assertEquals(null, vm.state.errorMessage)
+    }
 }
 
 class DeliveryNotificationStoreTest {
