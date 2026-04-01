@@ -422,4 +422,157 @@ class ClientCatalogViewModelTest {
 
         assertTrue(ranges.isEmpty())
     }
+
+    // --- Tests de dismissSuggestions ---
+
+    @Test
+    fun `dismissSuggestions oculta las sugerencias`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+        viewModel.computeSuggestions("man")
+        assertTrue(viewModel.state.showSuggestions)
+
+        viewModel.dismissSuggestions()
+
+        assertFalse(viewModel.state.showSuggestions)
+    }
+
+    // --- Tests de clearLastAddedProduct ---
+
+    @Test
+    fun `clearLastAddedProduct limpia el ultimo producto agregado`() = runTest {
+        setUp()
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        val loaded = viewModel.state.productsState as ClientProductsState.Loaded
+        viewModel.addToCart(loaded.products.first())
+        assertNotNull(viewModel.state.lastAddedProduct)
+
+        viewModel.clearLastAddedProduct()
+
+        assertNull(viewModel.state.lastAddedProduct)
+    }
+
+    @Test
+    fun `clearLastAddedProduct sin producto previo no cambia estado`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.clearLastAddedProduct()
+
+        assertNull(viewModel.state.lastAddedProduct)
+    }
+
+    // --- Tests adicionales de cobertura ---
+
+    @Test
+    fun `loadCatalog con error en categorias muestra error`() = runTest {
+        val viewModel = createViewModel(
+            toDoListCategories = FakeListCategoriesFailure("Error categorias")
+        )
+
+        viewModel.loadCatalog()
+
+        assertIs<ClientProductsState.Error>(viewModel.state.productsState)
+    }
+
+    @Test
+    fun `onSearchFocusChanged con foco false actualiza estado`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.onSearchFocusChanged(true)
+        assertTrue(viewModel.state.isSearchFocused)
+
+        viewModel.onSearchFocusChanged(false)
+
+        assertFalse(viewModel.state.isSearchFocused)
+    }
+
+    @Test
+    fun `computeSuggestions limita a MAX_SUGGESTIONS resultados`() = runTest {
+        val manyProducts = (1..15).map { i ->
+            ProductDTO(
+                id = "prod-$i",
+                businessId = "biz-1",
+                name = "Producto test $i",
+                basePrice = 100.0 * i,
+                unit = "unidad",
+                categoryId = "cat-1",
+                status = ProductStatus.Published,
+                isAvailable = true
+            )
+        }
+        val viewModel = createViewModel(
+            toDoListProducts = FakeListProductsSuccess(manyProducts)
+        )
+        viewModel.loadCatalog()
+
+        viewModel.computeSuggestions("producto")
+
+        assertTrue(viewModel.state.suggestions.size <= ClientCatalogViewModel.MAX_SUGGESTIONS)
+    }
+
+    @Test
+    fun `computeSuggestions sin matches oculta sugerencias`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.computeSuggestions("zzzzz")
+
+        assertFalse(viewModel.state.showSuggestions)
+        assertTrue(viewModel.state.suggestions.isEmpty())
+    }
+
+    @Test
+    fun `addToCart incrementa cantidad en carrito existente`() = runTest {
+        setUp()
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        val loaded = viewModel.state.productsState as ClientProductsState.Loaded
+        val product = loaded.products.first()
+        viewModel.addToCart(product)
+        viewModel.addToCart(product)
+
+        val cartItems = ClientCartStore.items.value
+        assertEquals(2, cartItems[product.id]?.quantity)
+    }
+
+    @Test
+    fun `selectCategory y luego busqueda combinada filtra correctamente`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.selectCategory("cat-2")
+        viewModel.onSearchChange("ban")
+
+        val state = viewModel.state
+        assertIs<ClientProductsState.Loaded>(state.productsState)
+        val products = (state.productsState as ClientProductsState.Loaded).products
+        assertEquals(1, products.size)
+        assertEquals("Banana", products[0].name)
+    }
+
+    @Test
+    fun `confirmSearch con query largo guarda en historial`() = runTest {
+        setUp()
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+
+        viewModel.onSearchChange("manzana roja")
+        viewModel.confirmSearch()
+
+        assertTrue(SearchHistoryStore.history.value.contains("manzana roja"))
+    }
+
+    @Test
+    fun `onSearchFocusChanged con foco y query no vacio mantiene sugerencias`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadCatalog()
+        viewModel.onSearchChange("man")
+
+        viewModel.onSearchFocusChanged(true)
+
+        assertTrue(viewModel.state.isSearchFocused)
+        assertTrue(viewModel.state.showSuggestions)
+    }
 }
