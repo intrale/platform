@@ -497,10 +497,75 @@ function isSystemOverloaded(config) {
     lastResourceLog = now;
   }
 
+  // Tracking de saturación: registrar snapshot para aprendizaje
+  trackResourceSnapshot(cpuPercent, memPercent, overloaded, config);
+
   // Detección de saturación persistente → buscar zombies
   trackSaturation(overloaded, config);
 
   return overloaded;
+}
+
+// =============================================================================
+// Tracking de recursos — registra snapshots para aprender límites óptimos
+// =============================================================================
+const RESOURCE_HISTORY_FILE = path.join(LOG_DIR, 'resource-history.jsonl');
+let lastSnapshotTime = 0;
+const SNAPSHOT_INTERVAL_MS = 60000; // Un snapshot por minuto máximo
+
+function trackResourceSnapshot(cpuPercent, memPercent, overloaded, config) {
+  const now = Date.now();
+  if (now - lastSnapshotTime < SNAPSHOT_INTERVAL_MS) return;
+  lastSnapshotTime = now;
+
+  // Contar agentes activos por tipo
+  const devSkills = ['backend-dev', 'android-dev', 'web-dev'];
+  const devCounts = {};
+  let totalDevs = 0;
+  for (const skill of devSkills) {
+    const n = countRunningBySkill(skill);
+    devCounts[skill] = n;
+    totalDevs += n;
+  }
+
+  const totalAgents = activeProcesses.size;
+  const buildRunning = countRunningBySkill('build');
+  const qaRunning = countRunningBySkill('qa');
+  const testerRunning = countRunningBySkill('tester');
+  const reviewRunning = countRunningBySkill('review');
+
+  const snapshot = {
+    ts: new Date(now).toISOString(),
+    cpu: cpuPercent,
+    ram: memPercent,
+    overloaded,
+    agents: totalAgents,
+    devs: totalDevs,
+    devDetail: devCounts,
+    build: buildRunning,
+    qa: qaRunning,
+    tester: testerRunning,
+    review: reviewRunning,
+    saturationStreak
+  };
+
+  try {
+    fs.appendFileSync(RESOURCE_HISTORY_FILE, JSON.stringify(snapshot) + '\n');
+  } catch (e) {
+    // Si el directorio no existe, crearlo
+    try {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+      fs.appendFileSync(RESOURCE_HISTORY_FILE, JSON.stringify(snapshot) + '\n');
+    } catch {}
+  }
+
+  // Rotar: mantener últimas 24hs (max ~1440 líneas a 1/min)
+  try {
+    const lines = fs.readFileSync(RESOURCE_HISTORY_FILE, 'utf8').trim().split('\n');
+    if (lines.length > 2000) {
+      fs.writeFileSync(RESOURCE_HISTORY_FILE, lines.slice(-1440).join('\n') + '\n');
+    }
+  } catch {}
 }
 
 // Tomar snapshot inicial de CPU al arrancar (el primer delta necesita dos puntos)
@@ -714,8 +779,16 @@ function brazoLanzamiento(config) {
   // GATE DE RECURSOS: no lanzar nuevos agentes si CPU o RAM están sobrecargados
   if (isSystemOverloaded(config)) return;
 
+  // Skills de desarrollo (cuentan para el límite global de devs)
+  const DEV_SKILLS = ['backend-dev', 'android-dev', 'web-dev'];
+
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
-    for (const fase of pipelineConfig.fases) {
+    // PRIORIZACIÓN: procesar fases en orden inverso (post-dev primero)
+    // Esto garantiza que build/qa/review/delivery tengan prioridad sobre dev,
+    // evitando que el backlog de desarrollo bloquee las fases siguientes.
+    const fasesOrdenadas = [...pipelineConfig.fases].reverse();
+
+    for (const fase of fasesOrdenadas) {
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
       const archivos = listWorkFiles(pendienteDir);
@@ -737,7 +810,18 @@ function brazoLanzamiento(config) {
           continue;
         }
 
-        // 4. Verificar concurrencia del rol (se reduce si QA env está activo)
+        // 4. LÍMITE GLOBAL DE DEVS: máximo N desarrolladores simultáneos (android+backend+web)
+        if (DEV_SKILLS.includes(skill)) {
+          const maxDevs = config.resource_limits?.max_concurrent_devs || 2;
+          let totalDevs = 0;
+          for (const ds of DEV_SKILLS) totalDevs += countRunningBySkill(ds);
+          if (totalDevs >= maxDevs) {
+            // Log una sola vez por ciclo
+            continue;
+          }
+        }
+
+        // 5. Verificar concurrencia del rol (se reduce si QA env está activo)
         const maxConcurrencia = getEffectiveConcurrency(config, skill);
         const running = countRunningBySkill(skill);
         if (running >= maxConcurrencia) continue;
