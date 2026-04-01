@@ -13,6 +13,8 @@ import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
+import ui.session.SessionStore
+import ui.session.UserRole
 
 enum class DeliveryNotificationsStatus { Idle, Loading, Loaded, Empty }
 
@@ -42,6 +44,15 @@ class DeliveryNotificationsViewModel(
     }
 
     suspend fun loadNotifications() {
+        if (SessionStore.sessionState.value.role != UserRole.Delivery) {
+            logger.warning { "Acceso denegado: rol ${SessionStore.sessionState.value.role} no es Delivery" }
+            state = state.copy(
+                status = DeliveryNotificationsStatus.Empty,
+                errorMessage = "Access denied"
+            )
+            return
+        }
+
         state = state.copy(status = DeliveryNotificationsStatus.Loading, errorMessage = null)
         getNotifications.execute()
             .onSuccess { notifications ->

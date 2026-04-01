@@ -319,6 +319,49 @@ class DeliveryHomeViewModelTest {
         assertTrue(activeState is DeliveryActiveOrdersState.Error)
         assertTrue(activeState.message.contains("timeout"))
     }
+
+    @Test
+    fun `clearStatusFeedback limpia success y error de actualizacion`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.loadData()
+        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+        assertTrue(viewModel.state.statusUpdateSuccess)
+
+        viewModel.clearStatusFeedback()
+        assertFalse(viewModel.state.statusUpdateSuccess)
+        assertNull(viewModel.state.statusUpdateError)
+    }
+
+    @Test
+    fun `refreshActive recarga pedidos activos`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        var callCount = 0
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = object : ToDoGetActiveDeliveryOrders {
+                override suspend fun execute(): Result<List<DeliveryOrder>> {
+                    callCount++
+                    return Result.success(sampleActiveOrders)
+                }
+            },
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.loadData()
+        assertEquals(1, callCount)
+
+        viewModel.refreshActive()
+        assertEquals(2, callCount)
+
+        val activeState = viewModel.state.activeOrdersState
+        assertTrue(activeState is DeliveryActiveOrdersState.Loaded)
+    }
 }
 
 // ==================== Tests DeliveryProfileViewModel ====================
