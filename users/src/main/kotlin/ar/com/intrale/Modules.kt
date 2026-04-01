@@ -289,6 +289,14 @@ val appModule = DI.Module("appModule") {
         singleton { ClaudeAiResponseService() }
     }
 
+    bind<ConversationalSearchService> {
+        singleton { ClaudeConversationalSearchService() }
+    }
+
+    bind<Function> (tag="conversational-search") {
+        singleton { ConversationalSearchFunction(instance(), instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="auto-response") {
         singleton { AutoResponseFunction(instance(), instance(), instance(), instance()) }
     }
