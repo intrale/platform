@@ -296,6 +296,26 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="business/auto-response-config") {
         singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
     }
+
+    bind<MessageDeliveryService>(tag = "telegram") {
+        singleton { TelegramDeliveryService() }
+    }
+
+    bind<MessageDeliveryService>(tag = "whatsapp") {
+        singleton { WhatsAppDeliveryService() }
+    }
+
+    bind<WeeklyReportService> {
+        singleton { DefaultWeeklyReportService(instance(), instance(tag = "telegram"), instance(tag = "whatsapp")) }
+    }
+
+    bind<Function> (tag="business/weekly-report-config") {
+        singleton { WeeklyReportConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/weekly-report") {
+        singleton { WeeklyReportFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
 }
 
 private fun Config.stringValue(path: String): String = getValue(path).unwrapped().toString()
