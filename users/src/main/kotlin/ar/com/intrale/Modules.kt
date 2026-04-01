@@ -289,12 +289,24 @@ val appModule = DI.Module("appModule") {
         singleton { ClaudeAiResponseService() }
     }
 
+    bind<SentimentAnalysisService> {
+        singleton { ClaudeSentimentAnalysisService() }
+    }
+
+    bind<ReviewSentimentRepository> {
+        singleton { ReviewSentimentRepository() }
+    }
+
     bind<Function> (tag="auto-response") {
         singleton { AutoResponseFunction(instance(), instance(), instance(), instance()) }
     }
 
     bind<Function> (tag="business/auto-response-config") {
         singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/review-sentiment") {
+        singleton { ReviewSentimentFunction(instance(), instance(), instance(), instance(), instance(), instance(), instance()) }
     }
 }
 
