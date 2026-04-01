@@ -545,6 +545,8 @@ enum class MessageKey {
     client_catalog_add_content_description,
     client_catalog_added_to_cart,
     client_catalog_search_no_results,
+    client_catalog_recent_searches,
+    client_catalog_clear_history,
     client_onboarding_welcome_title,
     client_onboarding_welcome_subtitle,
     client_onboarding_discover_title,

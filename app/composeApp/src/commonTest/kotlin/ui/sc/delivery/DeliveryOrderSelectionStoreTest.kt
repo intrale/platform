@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class DeliveryOrderSelectionStoreTest {
 
@@ -31,6 +32,20 @@ class DeliveryOrderSelectionStoreTest {
     fun `clear limpia seleccion y readOnly`() {
         DeliveryOrderSelectionStore.select("order1", readOnly = true)
         DeliveryOrderSelectionStore.clear()
+        assertNull(DeliveryOrderSelectionStore.selectedOrderId.value)
+        assertFalse(DeliveryOrderSelectionStore.readOnly.value)
+    }
+
+    @Test
+    fun `select reemplaza seleccion anterior`() {
+        DeliveryOrderSelectionStore.select("order-1")
+        DeliveryOrderSelectionStore.select("order-2")
+
+        assertEquals("order-2", DeliveryOrderSelectionStore.selectedOrderId.value)
+    }
+
+    @Test
+    fun `estado inicial es null y false`() {
         assertNull(DeliveryOrderSelectionStore.selectedOrderId.value)
         assertFalse(DeliveryOrderSelectionStore.readOnly.value)
     }
