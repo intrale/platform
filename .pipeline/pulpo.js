@@ -319,7 +319,7 @@ function getSystemResourceUsage() {
 // sobrecargado durante varios ciclos consecutivos
 // =============================================================================
 let saturationStreak = 0;
-let lastZombieHunt = 0;
+let lastResourceAction = 0;
 
 function trackSaturation(overloaded, config) {
   if (overloaded) {
@@ -333,32 +333,50 @@ function trackSaturation(overloaded, config) {
   }
 
   const thresholds = config.resource_limits || {};
-  const streakThreshold = thresholds.saturation_streak_threshold || 3;
   const cooldownMs = (thresholds.zombie_hunt_cooldown_minutes || 5) * 60 * 1000;
-
   const now = Date.now();
-  if (saturationStreak >= streakThreshold && now - lastZombieHunt > cooldownMs) {
-    lastZombieHunt = now;
+  if (now - lastResourceAction < cooldownMs) return;
+
+  const streakThreshold = thresholds.saturation_streak_threshold || 3;
+  const gradleKillStreak = thresholds.gradle_kill_streak || 4;
+  const agentKillStreak = thresholds.agent_kill_streak || 6;
+  const criticalMem = thresholds.critical_mem_percent || 90;
+  const { memPercent } = getSystemResourceUsage();
+
+  // Nivel 3: RAM crítica + saturación extrema → matar agente más nuevo
+  if (saturationStreak >= agentKillStreak && memPercent >= criticalMem) {
+    lastResourceAction = now;
+    log('recursos', `🔴 Saturación crítica (${saturationStreak} ciclos, RAM ${memPercent}%) — escalando: kill Gradle + agente más nuevo`);
+    forceKillGradleDaemons();
+    killNewestAgent(config);
+    return;
+  }
+
+  // Nivel 2: saturación prolongada → forzar kill de Gradle daemons aunque haya agentes
+  if (saturationStreak >= gradleKillStreak) {
+    lastResourceAction = now;
+    log('recursos', `🟠 Saturación prolongada (${saturationStreak} ciclos) — forzando kill de Gradle daemons`);
+    const killed = forceKillGradleDaemons();
+    if (killed > 0) {
+      sendTelegram(`🔧 Auto-fix: ${killed} Gradle daemon(s) eliminados por saturación prolongada (${saturationStreak} ciclos, RAM ${memPercent}%)`);
+    }
+    return;
+  }
+
+  // Nivel 1: búsqueda de zombies
+  if (saturationStreak >= streakThreshold) {
+    lastResourceAction = now;
     log('recursos', `⚠️ Saturación persistente (${saturationStreak} ciclos) — buscando procesos zombies…`);
     huntZombieProcesses(config);
   }
 }
 
+/** Nivel 1: buscar y limpiar procesos muertos */
 function huntZombieProcesses(config) {
   const killed = [];
 
   try {
-    // 1. Buscar procesos claude/node huérfanos que no están en activeProcesses
-    const activePids = new Set([...activeProcesses.values()].map(p => p.pid));
-    let processList;
-    try {
-      processList = execSync('tasklist /FO CSV /NH', { encoding: 'utf8', timeout: 15000, windowsHide: true });
-    } catch { return; }
-
-    const suspectPatterns = /node\.exe|java\.exe|gradle/i;
-    const lines = processList.split('\n').filter(l => suspectPatterns.test(l));
-
-    // 2. Buscar Gradle daemons huérfanos
+    // 1. Buscar Gradle daemons huérfanos (solo si no hay agentes activos)
     try {
       const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
       const daemons = jpsOut.split('\n').filter(l => l.includes('GradleDaemon'));
@@ -369,7 +387,7 @@ function huntZombieProcesses(config) {
       }
     } catch {}
 
-    // 3. Buscar archivos en trabajando/ sin proceso vivo correspondiente
+    // 2. Buscar archivos en trabajando/ sin proceso vivo correspondiente
     const pipelines = config.pipelines || {};
     for (const [pipelineName, pipelineConfig] of Object.entries(pipelines)) {
       const fases = pipelineConfig.fases || [];
@@ -391,18 +409,73 @@ function huntZombieProcesses(config) {
       }
     }
 
-    // 4. Reportar hallazgos
+    // 3. Reportar hallazgos
     if (killed.length > 0) {
       const msg = `🧟 Zombie hunter: limpiados ${killed.length} proceso(s) zombies tras ${saturationStreak} ciclos de saturación:\n${killed.map(k => `  • ${k}`).join('\n')}`;
       log('zombie-hunter', msg);
       sendTelegram(msg);
-      saturationStreak = 0; // Reset para dar tiempo a que surta efecto
+      saturationStreak = 0;
     } else {
       log('zombie-hunter', `No se encontraron zombies — la saturación puede ser carga legítima (${activeProcesses.size} agente(s) activo(s))`);
     }
   } catch (e) {
     log('zombie-hunter', `Error en búsqueda de zombies: ${e.message}`);
   }
+}
+
+/** Nivel 2: matar TODOS los Gradle daemons/wrappers sin importar si hay agentes activos */
+function forceKillGradleDaemons() {
+  let killed = 0;
+  try {
+    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const targets = jpsOut.split('\n')
+      .filter(l => l.includes('GradleDaemon') || l.includes('GradleWrapperMain'))
+      .map(l => l.trim().split(/\s+/)[0])
+      .filter(Boolean);
+    for (const pid of targets) {
+      try {
+        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, windowsHide: true });
+        killed++;
+      } catch {}
+    }
+    if (killed > 0) log('recursos', `🔧 ${killed} proceso(s) Gradle eliminados forzadamente`);
+  } catch (e) {
+    log('recursos', `Error en force-kill Gradle: ${e.message.slice(0, 80)}`);
+  }
+  return killed;
+}
+
+/** Nivel 3: matar el agente más nuevo para liberar recursos */
+function killNewestAgent(config) {
+  if (activeProcesses.size === 0) {
+    log('recursos', `No hay agentes activos para matar`);
+    return;
+  }
+
+  // Encontrar el agente más nuevo (startTime más alto)
+  let newest = null;
+  let newestKey = null;
+  for (const [key, info] of activeProcesses) {
+    if (!newest || info.startTime > newest.startTime) {
+      newest = info;
+      newestKey = key;
+    }
+  }
+
+  if (!newest || !newestKey) return;
+
+  const ageSec = Math.round((Date.now() - newest.startTime) / 1000);
+  const msg = `🔴 Saturación crítica: matando agente más nuevo ${newestKey} (PID ${newest.pid}, ${ageSec}s activo) para liberar recursos`;
+  log('recursos', msg);
+
+  try {
+    process.kill(newest.pid, 'SIGTERM');
+  } catch {
+    try { execSync(`taskkill /F /PID ${newest.pid}`, { timeout: 5000, windowsHide: true }); } catch {}
+  }
+
+  activeProcesses.delete(newestKey);
+  sendTelegram(msg + `\n\nAgentes restantes: ${activeProcesses.size}`);
 }
 
 /** Verificar si el sistema está sobrecargado según los thresholds configurados */
