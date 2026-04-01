@@ -44,7 +44,7 @@ class ProductSearchHistory(
      * GET — Devuelve el historial de búsquedas recientes del usuario.
      */
     private fun handleGet(email: String, business: String): Response {
-        logger.debug("Obteniendo historial de busquedas para usuario=$email negocio=$business")
+        logger.debug("Obteniendo historial de busquedas para usuario=${sanitizeForLog(email)} negocio=${sanitizeForLog(business)}")
         val history = searchHistoryRepository.getHistory(email, business)
         return SearchHistoryResponse(history = history, status = HttpStatusCode.OK)
     }
@@ -61,7 +61,7 @@ class ProductSearchHistory(
             return RequestValidationException("La query no puede estar vacia")
         }
 
-        logger.debug("Agregando busqueda='${body.query}' al historial de usuario=$email negocio=$business")
+        logger.debug("Agregando busqueda='${sanitizeForLog(body.query)}' al historial de usuario=${sanitizeForLog(email)} negocio=${sanitizeForLog(business)}")
         val updatedHistory = searchHistoryRepository.addSearch(email, business, body.query)
         return SearchHistoryResponse(history = updatedHistory, status = HttpStatusCode.OK)
     }
@@ -70,10 +70,16 @@ class ProductSearchHistory(
      * DELETE — Elimina todo el historial de búsquedas del usuario.
      */
     private fun handleDelete(email: String, business: String): Response {
-        logger.debug("Limpiando historial de busquedas para usuario=$email negocio=$business")
+        logger.debug("Limpiando historial de busquedas para usuario=${sanitizeForLog(email)} negocio=${sanitizeForLog(business)}")
         searchHistoryRepository.clearHistory(email, business)
         return NoContentResponse()
     }
+
+    /**
+     * Sanitiza valores para logging, eliminando caracteres de control
+     * que podrían usarse para log injection (CWE-117).
+     */
+    private fun sanitizeForLog(value: String): String = value.replace(Regex("[\\r\\n\\t]"), " ")
 
     private fun resolveEmail(headers: Map<String, String>): String? {
         val token = headers["Authorization"] ?: headers["authorization"]
@@ -84,6 +90,5 @@ class ProductSearchHistory(
 
         return decoded?.getClaim("email")?.asString()
             ?: decoded?.subject
-            ?: headers["X-Debug-User"]
     }
 }

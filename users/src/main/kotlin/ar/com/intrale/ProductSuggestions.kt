@@ -19,6 +19,12 @@ class ProductSuggestions(
     override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
 ) : SecuredFunction(config = config, logger = logger, jwtValidator = jwtValidator) {
 
+    /**
+     * Sanitiza valores para logging, eliminando caracteres de control
+     * que podrían usarse para log injection (CWE-117).
+     */
+    private fun sanitizeForLog(value: String): String = value.replace(Regex("[\\r\\n\\t]"), " ")
+
     companion object {
         const val MIN_QUERY_LENGTH = 2
         const val DEFAULT_SUGGESTION_LIMIT = 10
@@ -48,7 +54,7 @@ class ProductSuggestions(
             )
         }
 
-        logger.debug("Buscando sugerencias de productos para query='$query' limit=$limit negocio=$business")
+        logger.debug("Buscando sugerencias de productos para query='${sanitizeForLog(query)}' limit=$limit negocio=${sanitizeForLog(business)}")
 
         val queryLower = query.lowercase()
 
@@ -64,7 +70,7 @@ class ProductSuggestions(
             .take(limit)
             .map { it.toSuggestionPayload() }
 
-        logger.debug("Sugerencias encontradas: ${suggestions.size} para query='$query' en negocio=$business")
+        logger.debug("Sugerencias encontradas: ${suggestions.size} para query='${sanitizeForLog(query)}' en negocio=${sanitizeForLog(business)}")
 
         return ProductSuggestionsResponse(
             suggestions = suggestions,

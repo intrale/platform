@@ -151,4 +151,48 @@ class ProductSearchHistoryTest {
 
         assertTrue(response is UnauthorizedException)
     }
+
+    @Test
+    fun `X-Debug-User no permite acceder al historial de otro usuario`() = runBlocking {
+        // Generar token válido pero SIN claim email — solo tiene subject
+        val tokenSinEmail = jwtValidator.generateTokenWithoutEmail("user@test.com")
+
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "products/search-history",
+            headers = mapOf(
+                "Authorization" to tokenSinEmail,
+                "X-Http-Method" to "GET",
+                "X-Debug-User" to "victima@empresa.com"
+            ),
+            textBody = ""
+        )
+
+        // El header X-Debug-User NO debe permitir impersonación.
+        // Sin email en el token y sin fallback a X-Debug-User, debe retornar
+        // historial del subject (user@test.com), NO de victima@empresa.com
+        assertTrue(response is SearchHistoryResponse)
+        val historyResponse = response as SearchHistoryResponse
+        // El historial debe estar vacío porque user@test.com no tiene búsquedas,
+        // confirmando que NO se usó el email de X-Debug-User (victima@empresa.com)
+        assertTrue(historyResponse.history.isEmpty())
+    }
+
+    @Test
+    fun `token sin email ni subject retorna UnauthorizedException incluso con X-Debug-User`() = runBlocking {
+        // Token con email inválido que no se puede decodificar correctamente
+        val response = function.securedExecute(
+            business = "la-carne",
+            function = "products/search-history",
+            headers = mapOf(
+                "Authorization" to "Bearer invalid.token.here",
+                "X-Http-Method" to "GET",
+                "X-Debug-User" to "victima@empresa.com"
+            ),
+            textBody = ""
+        )
+
+        // X-Debug-User NO debe servir como fallback — debe retornar Unauthorized
+        assertTrue(response is UnauthorizedException)
+    }
 }
