@@ -10,6 +10,9 @@ import asdo.delivery.ToDoMarkDeliveryNotificationRead
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend
+import ui.session.SessionStore
+import ui.session.UserRole
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -17,6 +20,12 @@ import kotlin.test.assertTrue
 class DeliveryNotificationsViewModelTest {
 
     private val testLoggerFactory = LoggerFactory(simplePrintFrontend)
+
+    @BeforeTest
+    fun setUp() {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Delivery)
+    }
 
     private fun sampleNotifications() = listOf(
         DeliveryNotification(
@@ -129,6 +138,42 @@ class DeliveryNotificationsViewModelTest {
         vm.markAllNotificationsAsRead()
 
         assertEquals(2, callCount)
+    }
+
+    @Test
+    fun `loadNotifications con rol no Delivery queda en Empty con Access denied`() = runTest {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Client)
+
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = FakeGetDeliveryNotifications(Result.success(sampleNotifications())),
+            markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+
+        assertEquals(DeliveryNotificationsStatus.Empty, vm.state.status)
+        assertEquals("Access denied", vm.state.errorMessage)
+        assertTrue(vm.state.notifications.isEmpty())
+    }
+
+    @Test
+    fun `loadNotifications sin rol asignado queda en Empty con Access denied`() = runTest {
+        SessionStore.clear()
+
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = FakeGetDeliveryNotifications(Result.success(sampleNotifications())),
+            markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+
+        assertEquals(DeliveryNotificationsStatus.Empty, vm.state.status)
+        assertEquals("Access denied", vm.state.errorMessage)
     }
 }
 
