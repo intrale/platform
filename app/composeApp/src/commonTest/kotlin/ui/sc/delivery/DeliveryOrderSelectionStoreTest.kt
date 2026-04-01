@@ -15,27 +15,23 @@ class DeliveryOrderSelectionStoreTest {
     }
 
     @Test
-    fun `select establece orderId y readOnly por defecto en false`() {
-        DeliveryOrderSelectionStore.select("order-123")
+    fun `select almacena orderId y readOnly`() {
+        DeliveryOrderSelectionStore.select("order1", readOnly = true)
+        assertEquals("order1", DeliveryOrderSelectionStore.selectedOrderId.value)
+        assertEquals(true, DeliveryOrderSelectionStore.readOnly.value)
+    }
 
-        assertEquals("order-123", DeliveryOrderSelectionStore.selectedOrderId.value)
+    @Test
+    fun `select sin readOnly usa false por defecto`() {
+        DeliveryOrderSelectionStore.select("order2")
+        assertEquals("order2", DeliveryOrderSelectionStore.selectedOrderId.value)
         assertFalse(DeliveryOrderSelectionStore.readOnly.value)
     }
 
     @Test
-    fun `select con readOnly true establece ambos valores`() {
-        DeliveryOrderSelectionStore.select("order-456", readOnly = true)
-
-        assertEquals("order-456", DeliveryOrderSelectionStore.selectedOrderId.value)
-        assertTrue(DeliveryOrderSelectionStore.readOnly.value)
-    }
-
-    @Test
-    fun `clear resetea orderId y readOnly`() {
-        DeliveryOrderSelectionStore.select("order-789", readOnly = true)
-
+    fun `clear limpia seleccion y readOnly`() {
+        DeliveryOrderSelectionStore.select("order1", readOnly = true)
         DeliveryOrderSelectionStore.clear()
-
         assertNull(DeliveryOrderSelectionStore.selectedOrderId.value)
         assertFalse(DeliveryOrderSelectionStore.readOnly.value)
     }

@@ -49,6 +49,11 @@ concurrencia:
   # Commander — singleton
   commander: 1
 
+# Priorización de fases: el Pulpo procesa fases en orden inverso (post-dev primero)
+# Esto garantiza que build/qa/review/delivery tengan slots antes que dev,
+# evitando que el backlog de desarrollo bloquee el avance de issues ya codificados.
+# Orden efectivo: entrega → aprobacion → verificacion → build → dev → validacion
+
 # Intake: qué labels de GitHub disparan la entrada a cada pipeline
 intake:
   definicion:
@@ -79,6 +84,7 @@ prioridad_labels:
 resource_limits:
   max_cpu_percent: 70              # No lanzar si CPU >= 70%
   max_mem_percent: 70              # No lanzar si RAM >= 70%
+  max_concurrent_devs: 2           # Máximo de desarrolladores simultáneos (android+backend+web combinados)
   saturation_streak_threshold: 3   # Ciclos consecutivos de sobrecarga antes de buscar zombies
   zombie_hunt_cooldown_minutes: 5  # Cooldown entre búsquedas de zombies
   gradle_kill_streak: 4            # Forzar kill de Gradle daemons aunque haya agentes
