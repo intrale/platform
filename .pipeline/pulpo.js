@@ -762,20 +762,11 @@ function brazoBarrido(config) {
 /** Determinar qué skill de dev corresponde a un issue (por labels de GitHub) */
 function determinarDevSkill(issue, config) {
   const mapping = config.dev_skill_mapping || {};
+  const labels = getIssueLabels(issue);
 
-  // Buscar en archivos procesados de fases anteriores si ya se determinó
-  // Por ahora: intentar leer labels del issue de GitHub
-  try {
-    ghThrottle();
-    const result = execSync(
-      `"${GH_BIN}" issue view ${issue} --json labels --jq ".labels[].name"`,
-      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
-    ).trim().split('\n');
-
-    for (const label of result) {
-      if (mapping[label]) return mapping[label];
-    }
-  } catch { /* ignorar */ }
+  for (const label of labels) {
+    if (mapping[label]) return mapping[label];
+  }
 
   return mapping.default || 'backend-dev';
 }
@@ -783,6 +774,64 @@ function determinarDevSkill(issue, config) {
 // =============================================================================
 // BRAZO 2: LANZAMIENTO — Detecta trabajo pendiente, lanza agentes
 // =============================================================================
+
+// Cache de labels de issues (evita llamadas repetidas a GitHub API)
+const issueLabelsCache = new Map(); // issueNum → { labels: [...], fetchedAt: timestamp }
+const LABELS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+
+function getIssueLabels(issueNum) {
+  const cached = issueLabelsCache.get(issueNum);
+  if (cached && (Date.now() - cached.fetchedAt) < LABELS_CACHE_TTL_MS) {
+    return cached.labels;
+  }
+  try {
+    ghThrottle();
+    const result = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json labels --jq ".labels[].name"`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    ).trim().split('\n').filter(Boolean);
+    issueLabelsCache.set(issueNum, { labels: result, fetchedAt: Date.now() });
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+/** Calcular score de prioridad para un issue (menor = más prioritario) */
+function calcularPrioridad(issueNum, config) {
+  const labels = getIssueLabels(issueNum);
+  const prioLabels = config.prioridad_labels || [];
+  const featurePrio = config.feature_priority || {};
+
+  // Score base: prioridad directa del label (0=critical, 1=high, 2=medium, 3=low)
+  let prioScore = 999;
+  for (let i = 0; i < prioLabels.length; i++) {
+    if (labels.includes(prioLabels[i])) { prioScore = i; break; }
+  }
+
+  // Score secundario: prioridad de feature (0=critical, 1=high, 2=medium, 3=low)
+  let featureScore = 999;
+  for (const [nivel, featureLabels] of Object.entries(featurePrio)) {
+    const nivelIdx = prioLabels.indexOf(`priority:${nivel}`);
+    if (nivelIdx === -1) continue;
+    for (const fl of featureLabels) {
+      if (labels.includes(fl)) { featureScore = Math.min(featureScore, nivelIdx); break; }
+    }
+  }
+
+  // Score combinado: priority label tiene peso principal, feature es desempate
+  return prioScore * 10 + featureScore;
+}
+
+/** Ordenar archivos pendientes por prioridad del issue */
+function sortByPriority(archivos, config) {
+  if (archivos.length <= 1) return archivos;
+  return archivos.sort((a, b) => {
+    const issueA = issueFromFile(a.name);
+    const issueB = issueFromFile(b.name);
+    return calcularPrioridad(issueA, config) - calcularPrioridad(issueB, config);
+  });
+}
 
 function brazoLanzamiento(config) {
   // GATE DE RATE LIMIT: no lanzar agentes si estamos pausados por cuota de Anthropic
@@ -810,7 +859,7 @@ function brazoLanzamiento(config) {
     for (const fase of fasesOrdenadas) {
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
-      const archivos = listWorkFiles(pendienteDir);
+      const archivos = sortByPriority(listWorkFiles(pendienteDir), config);
 
       for (const archivo of archivos) {
         const skill = skillFromFile(archivo.name);
@@ -2011,12 +2060,15 @@ function brazoIntake(config) {
 
       if (issues.length === 0) continue;
 
-      // Ordenar por prioridad
-      const prioLabels = config.prioridad_labels || [];
+      // Cachear labels de los issues recién traídos de GitHub
+      for (const issue of issues) {
+        const labelNames = (issue.labels || []).map(l => l.name);
+        issueLabelsCache.set(String(issue.number), { labels: labelNames, fetchedAt: Date.now() });
+      }
+
+      // Ordenar por prioridad combinada (priority label + feature priority)
       issues.sort((a, b) => {
-        const prioA = prioLabels.findIndex(p => a.labels?.some(l => l.name === p));
-        const prioB = prioLabels.findIndex(p => b.labels?.some(l => l.name === p));
-        return (prioA === -1 ? 999 : prioA) - (prioB === -1 ? 999 : prioB);
+        return calcularPrioridad(String(a.number), config) - calcularPrioridad(String(b.number), config);
       });
 
       for (const issue of issues) {
