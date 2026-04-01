@@ -81,6 +81,9 @@ resource_limits:
   max_mem_percent: 70              # No lanzar si RAM >= 70%
   saturation_streak_threshold: 3   # Ciclos consecutivos de sobrecarga antes de buscar zombies
   zombie_hunt_cooldown_minutes: 5  # Cooldown entre búsquedas de zombies
+  gradle_kill_streak: 4            # Forzar kill de Gradle daemons aunque haya agentes
+  agent_kill_streak: 6             # Matar agente más nuevo si RAM > critical_mem_percent
+  critical_mem_percent: 90         # Umbral crítico para matar agentes
 
 # Timeouts
 timeouts:
