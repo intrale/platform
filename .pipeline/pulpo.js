@@ -70,16 +70,35 @@ function detectRateLimitInLog(logPath) {
 // --- Gradle Daemon Cleanup ---
 // Mata daemons de Gradle que quedaron vivos en un worktree específico o globalmente
 function killGradleDaemons(cwd) {
+  // Intentar gradlew --stop primero
   try {
     const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
     const cwdUnix = (cwd || ROOT).replace(/\\/g, '/');
-    execSync(`"${bashExe}" -c 'cd "${cwdUnix}" && ./gradlew --stop 2>/dev/null || true'`, {
+    execSync(`"${bashExe}" -c "cd '${cwdUnix}' && ./gradlew --stop 2>/dev/null || true"`, {
       cwd: cwd || ROOT, timeout: 30000, windowsHide: true,
       env: { ...process.env, JAVA_HOME: (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/') }
     });
     log('cleanup', `Gradle daemons detenidos (cwd: ${path.basename(cwd || ROOT)})`);
+    return;
   } catch (e) {
-    log('cleanup', `Gradle --stop falló: ${e.message.slice(0, 100)}`);
+    log('cleanup', `Gradle --stop falló, intentando taskkill directo: ${e.message.slice(0, 80)}`);
+  }
+  // Fallback: matar daemons directamente vía jps + taskkill
+  try {
+    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const daemonPids = jpsOut.split('\n')
+      .filter(l => l.includes('GradleDaemon') || l.includes('GradleWrapperMain'))
+      .map(l => l.trim().split(/\s+/)[0])
+      .filter(Boolean);
+    for (const pid of daemonPids) {
+      try {
+        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, windowsHide: true });
+        log('cleanup', `Gradle proceso PID ${pid} eliminado vía taskkill`);
+      } catch {}
+    }
+    if (daemonPids.length > 0) log('cleanup', `${daemonPids.length} proceso(s) Gradle eliminados vía taskkill`);
+  } catch (e) {
+    log('cleanup', `Taskkill fallback también falló: ${e.message.slice(0, 80)}`);
   }
 }
 
@@ -314,12 +333,176 @@ function getSystemResourceUsage() {
   return { cpuPercent, memPercent };
 }
 
+// =============================================================================
+// Detección de saturación persistente — busca zombies si el sistema está
+// sobrecargado durante varios ciclos consecutivos
+// =============================================================================
+let saturationStreak = 0;
+let lastResourceAction = 0;
+
+function trackSaturation(overloaded, config) {
+  if (overloaded) {
+    saturationStreak++;
+  } else {
+    if (saturationStreak > 0) {
+      log('recursos', `Saturación resuelta tras ${saturationStreak} ciclo(s)`);
+    }
+    saturationStreak = 0;
+    return;
+  }
+
+  const thresholds = config.resource_limits || {};
+  const cooldownMs = (thresholds.zombie_hunt_cooldown_minutes || 5) * 60 * 1000;
+  const now = Date.now();
+  if (now - lastResourceAction < cooldownMs) return;
+
+  const streakThreshold = thresholds.saturation_streak_threshold || 3;
+  const gradleKillStreak = thresholds.gradle_kill_streak || 4;
+  const agentKillStreak = thresholds.agent_kill_streak || 6;
+  const criticalMem = thresholds.critical_mem_percent || 90;
+  const { memPercent } = getSystemResourceUsage();
+
+  // Nivel 3: RAM crítica + saturación extrema → matar agente más nuevo
+  if (saturationStreak >= agentKillStreak && memPercent >= criticalMem) {
+    lastResourceAction = now;
+    log('recursos', `🔴 Saturación crítica (${saturationStreak} ciclos, RAM ${memPercent}%) — escalando: kill Gradle + agente más nuevo`);
+    forceKillGradleDaemons();
+    killNewestAgent(config);
+    return;
+  }
+
+  // Nivel 2: saturación prolongada → forzar kill de Gradle daemons aunque haya agentes
+  if (saturationStreak >= gradleKillStreak) {
+    lastResourceAction = now;
+    log('recursos', `🟠 Saturación prolongada (${saturationStreak} ciclos) — forzando kill de Gradle daemons`);
+    const killed = forceKillGradleDaemons();
+    if (killed > 0) {
+      sendTelegram(`🔧 Auto-fix: ${killed} Gradle daemon(s) eliminados por saturación prolongada (${saturationStreak} ciclos, RAM ${memPercent}%)`);
+    }
+    return;
+  }
+
+  // Nivel 1: búsqueda de zombies
+  if (saturationStreak >= streakThreshold) {
+    lastResourceAction = now;
+    log('recursos', `⚠️ Saturación persistente (${saturationStreak} ciclos) — buscando procesos zombies…`);
+    huntZombieProcesses(config);
+  }
+}
+
+/** Nivel 1: buscar y limpiar procesos muertos */
+function huntZombieProcesses(config) {
+  const killed = [];
+
+  try {
+    // 1. Buscar Gradle daemons huérfanos (solo si no hay agentes activos)
+    try {
+      const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      const daemons = jpsOut.split('\n').filter(l => l.includes('GradleDaemon'));
+      if (daemons.length > 0 && activeProcesses.size === 0) {
+        log('zombie-hunter', `🧟 ${daemons.length} Gradle daemon(s) huérfano(s) sin agentes activos — limpiando`);
+        killGradleDaemons(ROOT);
+        killed.push(`${daemons.length} Gradle daemon(s)`);
+      }
+    } catch {}
+
+    // 2. Buscar archivos en trabajando/ sin proceso vivo correspondiente
+    const pipelines = config.pipelines || {};
+    for (const [pipelineName, pipelineConfig] of Object.entries(pipelines)) {
+      const fases = pipelineConfig.fases || [];
+      for (const fase of fases) {
+        const trabajandoDir = path.join(PIPELINE, pipelineName, fase, 'trabajando');
+        if (!fs.existsSync(trabajandoDir)) continue;
+        const archivos = listWorkFiles(trabajandoDir);
+        for (const archivo of archivos) {
+          const issue = archivo.name.split('.')[0];
+          const skill = skillFromFile(archivo.name);
+          const key = processKey(skill, issue);
+          const entry = activeProcesses.get(key);
+          if (entry && !isProcessAlive(entry.pid)) {
+            log('zombie-hunter', `🧟 Proceso muerto detectado: ${skill}:#${issue} (PID ${entry.pid}) — limpiando registro`);
+            activeProcesses.delete(key);
+            killed.push(`${skill}:#${issue}`);
+          }
+        }
+      }
+    }
+
+    // 3. Reportar hallazgos
+    if (killed.length > 0) {
+      const msg = `🧟 Zombie hunter: limpiados ${killed.length} proceso(s) zombies tras ${saturationStreak} ciclos de saturación:\n${killed.map(k => `  • ${k}`).join('\n')}`;
+      log('zombie-hunter', msg);
+      sendTelegram(msg);
+      saturationStreak = 0;
+    } else {
+      log('zombie-hunter', `No se encontraron zombies — la saturación puede ser carga legítima (${activeProcesses.size} agente(s) activo(s))`);
+    }
+  } catch (e) {
+    log('zombie-hunter', `Error en búsqueda de zombies: ${e.message}`);
+  }
+}
+
+/** Nivel 2: matar TODOS los Gradle daemons/wrappers sin importar si hay agentes activos */
+function forceKillGradleDaemons() {
+  let killed = 0;
+  try {
+    const jpsOut = execSync('jps -l', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const targets = jpsOut.split('\n')
+      .filter(l => l.includes('GradleDaemon') || l.includes('GradleWrapperMain'))
+      .map(l => l.trim().split(/\s+/)[0])
+      .filter(Boolean);
+    for (const pid of targets) {
+      try {
+        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, windowsHide: true });
+        killed++;
+      } catch {}
+    }
+    if (killed > 0) log('recursos', `🔧 ${killed} proceso(s) Gradle eliminados forzadamente`);
+  } catch (e) {
+    log('recursos', `Error en force-kill Gradle: ${e.message.slice(0, 80)}`);
+  }
+  return killed;
+}
+
+/** Nivel 3: matar el agente más nuevo para liberar recursos */
+function killNewestAgent(config) {
+  if (activeProcesses.size === 0) {
+    log('recursos', `No hay agentes activos para matar`);
+    return;
+  }
+
+  // Encontrar el agente más nuevo (startTime más alto)
+  let newest = null;
+  let newestKey = null;
+  for (const [key, info] of activeProcesses) {
+    if (!newest || info.startTime > newest.startTime) {
+      newest = info;
+      newestKey = key;
+    }
+  }
+
+  if (!newest || !newestKey) return;
+
+  const ageSec = Math.round((Date.now() - newest.startTime) / 1000);
+  const msg = `🔴 Saturación crítica: matando agente más nuevo ${newestKey} (PID ${newest.pid}, ${ageSec}s activo) para liberar recursos`;
+  log('recursos', msg);
+
+  try {
+    process.kill(newest.pid, 'SIGTERM');
+  } catch {
+    try { execSync(`taskkill /F /PID ${newest.pid}`, { timeout: 5000, windowsHide: true }); } catch {}
+  }
+
+  activeProcesses.delete(newestKey);
+  sendTelegram(msg + `\n\nAgentes restantes: ${activeProcesses.size}`);
+}
+
 /** Verificar si el sistema está sobrecargado según los thresholds configurados */
 let lastResourceLog = 0;
 function isSystemOverloaded(config) {
   const thresholds = config.resource_limits || {};
-  const maxCpu = thresholds.max_cpu_percent || 80;
-  const maxMem = thresholds.max_mem_percent || 80;
+  const maxCpu = thresholds.max_cpu_percent || 70;
+  const maxMem = thresholds.max_mem_percent || 70;
 
   const { cpuPercent, memPercent } = getSystemResourceUsage();
 
@@ -332,6 +515,9 @@ function isSystemOverloaded(config) {
     log('recursos', `${status} — CPU: ${cpuPercent}% (max ${maxCpu}%) | RAM: ${memPercent}% (max ${maxMem}%)`);
     lastResourceLog = now;
   }
+
+  // Detección de saturación persistente → buscar zombies
+  trackSaturation(overloaded, config);
 
   return overloaded;
 }
@@ -570,8 +756,8 @@ function brazoLanzamiento(config) {
           continue;
         }
 
-        // 4. Verificar concurrencia del rol (máximo global, NO por issue)
-        const maxConcurrencia = (config.concurrencia || {})[skill] || 1;
+        // 4. Verificar concurrencia del rol (se reduce si QA env está activo)
+        const maxConcurrencia = getEffectiveConcurrency(config, skill);
         const running = countRunningBySkill(skill);
         if (running >= maxConcurrencia) continue;
 
@@ -598,17 +784,38 @@ function brazoLanzamiento(config) {
   }
 }
 
-/** Asegurar que el QA environment está levantado. Se llama una vez por ciclo de verificación. */
-let qaEnvChecked = false;
+/**
+ * QA Environment — asíncrono con reserva de recursos.
+ * El QA env (DynamoDB + backend + emulador) consume ~2GB RAM + CPU Gradle.
+ * Se levanta asíncrono para no bloquear el loop del Pulpo.
+ * Mientras está activo, la concurrencia de dev se reduce para no saturar.
+ */
+let qaEnvActive = false;
+let qaEnvStarting = false;
+const QA_ENV_RESERVE_DEV_SLOTS = 1; // Reducir concurrencia dev en N cuando QA env activo
+
+function isQaEnvActive() {
+  if (qaEnvActive) {
+    const stateFile = path.join(PIPELINE, 'qa-env-state.json');
+    try {
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      for (const [, pid] of Object.entries(state)) {
+        if (pid && isProcessAlive(pid)) return true;
+      }
+    } catch {}
+    qaEnvActive = false;
+  }
+  return qaEnvActive;
+}
+
 function ensureQaEnvironment() {
-  if (qaEnvChecked) return; // Solo chequear una vez por vida del Pulpo
+  if (qaEnvActive || qaEnvStarting) return;
 
   const stateFile = path.join(PIPELINE, 'qa-env-state.json');
   let needsStart = false;
 
   try {
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    // Verificar si todos los servicios están vivos
     for (const [name, pid] of Object.entries(state)) {
       if (!pid || !isProcessAlive(pid)) {
         log('qa-env', `${name} no está corriendo (PID: ${pid || 'null'})`);
@@ -620,23 +827,47 @@ function ensureQaEnvironment() {
     needsStart = true;
   }
 
-  if (needsStart) {
-    log('qa-env', 'Levantando QA environment automáticamente...');
-    try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" start`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('qa-env', 'QA environment levantado OK');
-      sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
-    } catch (e) {
-      log('qa-env', `Error levantando QA environment: ${e.message}`);
-      sendTelegram('⚠️ Error levantando QA environment: ' + e.message.slice(0, 100));
-    }
-  } else {
+  if (!needsStart) {
     log('qa-env', 'QA environment OK — ya corriendo');
+    qaEnvActive = true;
+    return;
   }
 
-  qaEnvChecked = true;
+  // Lanzar asíncrono para no bloquear el loop del Pulpo
+  qaEnvStarting = true;
+  log('qa-env', 'Levantando QA environment en background...');
+
+  const child = spawn('node', [path.join(PIPELINE, 'qa-environment.js'), 'start'], {
+    cwd: ROOT, stdio: 'ignore', windowsHide: true
+  });
+
+  child.on('close', (code) => {
+    qaEnvStarting = false;
+    if (code === 0) {
+      qaEnvActive = true;
+      log('qa-env', 'QA environment levantado OK');
+      sendTelegram('🧪 QA Environment levantado (emulador + backend + DynamoDB)');
+    } else {
+      log('qa-env', `Error levantando QA environment (exit code: ${code})`);
+      sendTelegram(`⚠️ Error levantando QA environment (exit code: ${code})`);
+    }
+  });
+
+  child.on('error', (e) => {
+    qaEnvStarting = false;
+    log('qa-env', `Error spawn QA environment: ${e.message}`);
+    sendTelegram('⚠️ Error levantando QA environment: ' + e.message.slice(0, 100));
+  });
+}
+
+/** Concurrencia efectiva: se reduce para dev/build cuando el QA env consume recursos */
+function getEffectiveConcurrency(config, skill) {
+  const base = (config.concurrencia || {})[skill] || 1;
+  const devSkills = ['backend-dev', 'android-dev', 'web-dev', 'build'];
+  if (QA_ENV_RESERVE_DEV_SLOTS > 0 && devSkills.includes(skill) && (isQaEnvActive() || qaEnvStarting)) {
+    return Math.max(1, base - QA_ENV_RESERVE_DEV_SLOTS);
+  }
+  return base;
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
@@ -693,10 +924,26 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       worktreePath = path.join(ROOT, '..', `platform.agent-${issue}-${skill}`);
 
       if (!fs.existsSync(worktreePath)) {
-        execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main`, {
-          cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-        });
-        log('lanzamiento', `Worktree creado: ${worktreePath}`);
+        // Verificar si la rama ya existe (agente previo dejó commits)
+        let branchExists = false;
+        try {
+          execSync(`git rev-parse --verify "${worktreeBranch}"`, { cwd: ROOT, stdio: 'ignore', timeout: 5000, windowsHide: true });
+          branchExists = true;
+        } catch {}
+
+        if (branchExists) {
+          // Reusar rama existente con su trabajo previo
+          execSync(`git worktree add "${worktreePath}" "${worktreeBranch}"`, {
+            cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
+          });
+          log('lanzamiento', `Worktree creado (rama existente): ${worktreePath}`);
+        } else {
+          // Crear rama nueva desde origin/main
+          execSync(`git worktree add "${worktreePath}" -b "${worktreeBranch}" origin/main`, {
+            cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
+          });
+          log('lanzamiento', `Worktree creado (rama nueva): ${worktreePath}`);
+        }
       }
     } catch (e) {
       log('lanzamiento', `Error creando worktree para #${issue}: ${e.message}`);
@@ -1096,8 +1343,8 @@ function cmdStatus(config) {
   // Recursos del sistema
   const { cpuPercent, memPercent } = getSystemResourceUsage();
   const thresholds = config.resource_limits || {};
-  const maxCpu = thresholds.max_cpu_percent || 80;
-  const maxMem = thresholds.max_mem_percent || 80;
+  const maxCpu = thresholds.max_cpu_percent || 70;
+  const maxMem = thresholds.max_mem_percent || 70;
   const cpuIcon = cpuPercent >= maxCpu ? '🔴' : cpuPercent >= maxCpu * 0.8 ? '🟡' : '🟢';
   const memIcon = memPercent >= maxMem ? '🔴' : memPercent >= maxMem * 0.8 ? '🟡' : '🟢';
   lines.push(`\n*Recursos del sistema*`);
