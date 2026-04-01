@@ -80,6 +80,26 @@ prioridad_labels:
   - "priority:medium"    # Default si no tiene label
   - "priority:low"
 
+# Priorización por features — el pipeline ordena issues por feature priority
+# Issues con feature de mayor prioridad se procesan primero dentro de cada nivel de priority
+feature_priority:
+  # MVP Core — estas features tienen máxima prioridad de entrega
+  critical:
+    - "feature:usuarios-auth"
+    - "feature:catalogo-productos"
+    - "feature:checkout-pagos"
+    - "feature:delivery"
+  # Post-MVP
+  high:
+    - "feature:configuracion-negocio"
+    - "feature:comunicacion"
+  medium:
+    - "feature:stock-inventario"
+    - "feature:dashboard-analitica"
+  low:
+    - "feature:marketing-engagement"
+    - "feature:ia"
+
 # Límites de recursos del sistema — bloquea lanzamiento de nuevos agentes si se excede
 resource_limits:
   max_cpu_percent: 70              # No lanzar si CPU >= 70%
