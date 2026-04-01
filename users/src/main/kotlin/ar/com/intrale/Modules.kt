@@ -296,6 +296,19 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="business/auto-response-config") {
         singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
     }
+
+    bind<VoiceOnboardingService> {
+        singleton { ClaudeVoiceOnboardingService() }
+    }
+
+    bind<Function> (tag="business/voice-onboarding") {
+        singleton {
+            VoiceOnboardingFunction(
+                instance(), instance(), instance(), instance(),
+                instance(), instance(), instance(), instance()
+            )
+        }
+    }
 }
 
 private fun Config.stringValue(path: String): String = getValue(path).unwrapped().toString()
