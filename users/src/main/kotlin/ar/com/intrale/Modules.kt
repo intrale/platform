@@ -301,6 +301,14 @@ val appModule = DI.Module("appModule") {
         singleton { ClaudeAiResponseService() }
     }
 
+    bind<VisionStockCountService> {
+        singleton { ClaudeVisionStockCountService() }
+    }
+
+    bind<Function> (tag="business/stock-count") {
+        singleton { StockCountFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
     bind<Function> (tag="auto-response") {
         singleton { AutoResponseFunction(instance(), instance(), instance(), instance()) }
     }
