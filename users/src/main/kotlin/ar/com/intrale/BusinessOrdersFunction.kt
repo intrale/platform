@@ -56,6 +56,7 @@ class BusinessOrdersFunction(
     override val logger: Logger,
     private val repository: ClientOrderRepository,
     private val deliveryProfileRepository: DeliveryProfileRepository,
+    private val productRepository: ProductRepository = ProductRepository(),
     override val jwtValidator: JwtValidator = CognitoJwtValidator(config)
 ) : SecuredFunction(config, logger, jwtValidator) {
 
@@ -197,6 +198,11 @@ class BusinessOrdersFunction(
                 val updated = repository.updateOrderStatus(business, request.orderId, request.newStatus.uppercase(), request.reason)
                     ?: return ExceptionResponse("Failed to update order status", HttpStatusCode.InternalServerError)
 
+                // Descontar stock automaticamente al pasar a PREPARING
+                if (request.newStatus.uppercase() == "PREPARING") {
+                    deductStockForOrder(business, currentItem.order)
+                }
+
                 BusinessOrderStatusUpdateResponse(
                     orderId = request.orderId,
                     newStatus = updated.order.status.uppercase(),
@@ -206,5 +212,36 @@ class BusinessOrdersFunction(
 
             else -> RequestValidationException("Unsupported method for business orders: " + method + " (" + subPath + ")")
         }
+    }
+
+    /**
+     * Descuenta stock automaticamente para todos los items de un pedido.
+     * Loguea alertas de stock bajo pero no bloquea la operacion.
+     */
+    private fun deductStockForOrder(business: String, order: ClientOrderPayload) {
+        val items = order.items.mapNotNull { item ->
+            if (item.productId.isBlank()) return@mapNotNull null
+            StockDeductionItem(productId = item.productId, quantity = item.quantity)
+        }
+
+        if (items.isEmpty()) {
+            logger.debug("Pedido ${order.id} sin items con productId para descontar stock")
+            return
+        }
+
+        val result = productRepository.deductStockBatch(business, items)
+
+        if (result.lowStockAlerts.isNotEmpty()) {
+            logger.warn(
+                "Alerta de stock bajo tras pedido ${order.id}: {}",
+                result.lowStockAlerts.joinToString { "${it.name} (stock: ${it.stockQuantity}/${it.minStock})" }
+            )
+        }
+
+        if (result.errors.isNotEmpty()) {
+            logger.warn("Errores al descontar stock del pedido ${order.id}: {}", result.errors)
+        }
+
+        logger.info("Stock descontado para pedido ${order.id}: ${result.updatedProducts.size} productos actualizados")
     }
 }

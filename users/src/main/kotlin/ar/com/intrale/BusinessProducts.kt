@@ -67,6 +67,7 @@ class BusinessProducts(
             status = normalizeStatus(body.status),
             isAvailable = body.isAvailable,
             stockQuantity = body.stockQuantity,
+            minStock = body.minStock,
             isFeatured = body.isFeatured,
             promotionPrice = body.promotionPrice
         )
@@ -93,6 +94,7 @@ class BusinessProducts(
             status = normalizeStatus(body.status),
             isAvailable = body.isAvailable,
             stockQuantity = body.stockQuantity,
+            minStock = body.minStock,
             isFeatured = body.isFeatured,
             promotionPrice = body.promotionPrice
         )

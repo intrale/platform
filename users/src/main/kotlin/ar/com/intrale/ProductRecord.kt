@@ -11,6 +11,7 @@ data class ProductRecord(
     val status: String = "DRAFT",
     val isAvailable: Boolean = true,
     val stockQuantity: Int? = null,
+    val minStock: Int? = null,
     val isFeatured: Boolean = false,
     val promotionPrice: Double? = null
 )

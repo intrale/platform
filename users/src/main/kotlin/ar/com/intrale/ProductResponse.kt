@@ -13,6 +13,7 @@ data class ProductPayload(
     val status: String,
     val isAvailable: Boolean,
     val stockQuantity: Int?,
+    val minStock: Int? = null,
     val isFeatured: Boolean = false,
     val promotionPrice: Double? = null
 )
@@ -38,6 +39,7 @@ fun ProductRecord.toPayload() = ProductPayload(
     status = status,
     isAvailable = isAvailable,
     stockQuantity = stockQuantity,
+    minStock = minStock,
     isFeatured = isFeatured,
     promotionPrice = promotionPrice
 )
