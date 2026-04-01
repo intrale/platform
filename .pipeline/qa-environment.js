@@ -79,7 +79,7 @@ function startAll() {
     log('Levantando backend :users:run en :80...');
     const backend = spawn(path.join(ROOT, 'gradlew.bat'), [':users:run'], {
       cwd: ROOT,
-      stdio: 'ignore', detached: true, windowsHide: true, env
+      stdio: 'ignore', detached: true, windowsHide: true, env, shell: true
     });
     backend.unref();
     state.backend = backend.pid;

@@ -722,6 +722,12 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.business_schedules_open_time to "Opening time",
     MessageKey.business_schedules_close_time to "Closing time",
     MessageKey.business_schedules_is_open to "Open",
+    MessageKey.business_schedules_split_label to "Split hours (two time ranges)",
+    MessageKey.business_schedules_open_time_2 to "2nd range opening",
+    MessageKey.business_schedules_close_time_2 to "2nd range closing",
+    MessageKey.business_schedules_temp_closed_label to "Temporarily closed",
+    MessageKey.business_schedules_temp_closed_hint to "Your business will not receive orders until you disable this option or the reopening date arrives",
+    MessageKey.business_schedules_reopen_date to "Reopening date (optional, e.g. 2026-04-15)",
     MessageKey.dashboard_menu_business_schedules to "Business hours",
     MessageKey.dashboard_card_schedules_title to "Schedules",
     MessageKey.dashboard_card_schedules_description to "Set days and hours your business accepts orders",
@@ -819,6 +825,17 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_notifications_event_delivered to "Order delivered",
     MessageKey.delivery_notifications_event_not_delivered to "Order not delivered",
     MessageKey.delivery_notifications_view_available_orders to "View available orders",
+
+    // Business open/closed status (client-side)
+    MessageKey.business_status_open to "Open",
+    MessageKey.business_status_closed to "Closed",
+    MessageKey.business_status_temp_closed to "Temporarily closed",
+    MessageKey.business_status_next_opening to "{info}",
+    MessageKey.business_status_checking to "Checking hours...",
+    MessageKey.client_checkout_business_closed_title to "Store closed",
+    MessageKey.client_checkout_business_closed_message to "This store is not taking orders right now. Orders cannot be confirmed outside business hours.",
+    MessageKey.client_checkout_business_closed_next to "{info}",
+
     // Checkout
     MessageKey.client_checkout_title to "Confirm order",
     MessageKey.client_checkout_subtitle to "Review your order before confirming",

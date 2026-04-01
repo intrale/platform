@@ -312,8 +312,8 @@ function getPipelineState() {
   const resourceLimits = config.resource_limits || {};
   state.resources = {
     ...getSystemResourceUsage(),
-    maxCpu: resourceLimits.max_cpu_percent || 80,
-    maxMem: resourceLimits.max_mem_percent || 80
+    maxCpu: resourceLimits.max_cpu_percent || 70,
+    maxMem: resourceLimits.max_mem_percent || 70
   };
 
   return state;
@@ -449,12 +449,21 @@ function generateHTML(state) {
     <th colspan="${devFases.length}" class="group-dev">DESARROLLO</th>
   </tr>`;
 
-  // Sort: trabajando first, then pendiente, then listo, then procesado
+  // Sort: trabajando first (by phase advancement desc), then pendiente (by phase desc), then listo, then rest
+  const faseIndex = (data) => {
+    if (!data.faseActual) return -1;
+    return allFases.findIndex(f => `${f.pipeline}/${f.fase}` === data.faseActual);
+  };
   const sorted = matrixEntries.sort((a, b) => {
     const order = { trabajando: 0, pendiente: 1, listo: 2 };
     const aO = a[1].estadoActual ? (order[a[1].estadoActual] ?? 3) : 4;
     const bO = b[1].estadoActual ? (order[b[1].estadoActual] ?? 3) : 4;
-    return aO - bO || parseInt(b[0]) - parseInt(a[0]);
+    if (aO !== bO) return aO - bO;
+    // Dentro del mismo estado, los más avanzados en el pipeline primero
+    const aF = faseIndex(a[1]);
+    const bF = faseIndex(b[1]);
+    if (aF !== bF) return bF - aF;
+    return parseInt(b[0]) - parseInt(a[0]);
   });
 
   // Show activos + last 15 procesados
@@ -790,8 +799,8 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   font-weight:500;
 }
 .st-working{
-  color:var(--yl);background:rgba(210,153,34,0.12);border-color:rgba(210,153,34,0.3);
-  font-weight:600;
+  color:var(--ac);background:rgba(88,166,255,0.12);border-color:rgba(88,166,255,0.3);
+  font-weight:600;animation:pulseBlue 2s infinite;
 }
 .st-done{color:var(--gn);background:rgba(63,185,80,0.1);border-color:rgba(63,185,80,0.25)}
 .st-processed{color:var(--gn);opacity:0.55}
@@ -807,10 +816,11 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   margin-left:1px;vertical-align:super;line-height:1;
 }
 .stale-chip{
-  color:var(--rd)!important;background:rgba(248,81,73,0.12)!important;
-  border-color:rgba(248,81,73,0.4)!important;animation:pulse 1.8s infinite
+  color:var(--ac)!important;background:rgba(88,166,255,0.15)!important;
+  border-color:rgba(88,166,255,0.5)!important;animation:pulseBlue 1.8s infinite;
 }
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+@keyframes pulseBlue{0%,100%{opacity:1;box-shadow:0 0 4px rgba(88,166,255,0.3)}50%{opacity:0.5;box-shadow:none}}
 .log-link{text-decoration:none}
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
