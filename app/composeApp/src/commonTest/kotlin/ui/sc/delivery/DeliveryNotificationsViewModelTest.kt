@@ -10,6 +10,8 @@ import asdo.delivery.ToDoMarkDeliveryNotificationRead
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend
+import ui.session.SessionStore
+import ui.session.UserRole
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -40,7 +42,45 @@ class DeliveryNotificationsViewModelTest {
     )
 
     @Test
+    fun `loadNotifications sin rol Delivery muestra Access denied`() = runTest {
+        SessionStore.clear()
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = FakeGetDeliveryNotifications(Result.success(sampleNotifications())),
+            markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+
+        assertEquals(DeliveryNotificationsStatus.Empty, vm.state.status)
+        assertEquals("Access denied", vm.state.errorMessage)
+        assertTrue(vm.state.notifications.isEmpty())
+        assertEquals(0, vm.state.unreadCount)
+    }
+
+    @Test
+    fun `loadNotifications con rol Client muestra Access denied`() = runTest {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Client)
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = FakeGetDeliveryNotifications(Result.success(sampleNotifications())),
+            markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        vm.loadNotifications()
+
+        assertEquals(DeliveryNotificationsStatus.Empty, vm.state.status)
+        assertEquals("Access denied", vm.state.errorMessage)
+        assertTrue(vm.state.notifications.isEmpty())
+    }
+
+    @Test
     fun `loadNotifications actualiza estado con notificaciones del store`() = runTest {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Delivery)
         val notifications = sampleNotifications()
         val vm = DeliveryNotificationsViewModel(
             getNotifications = FakeGetDeliveryNotifications(Result.success(notifications)),
@@ -58,6 +98,8 @@ class DeliveryNotificationsViewModelTest {
 
     @Test
     fun `loadNotifications con lista vacia muestra estado Empty`() = runTest {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Delivery)
         val vm = DeliveryNotificationsViewModel(
             getNotifications = FakeGetDeliveryNotifications(Result.success(emptyList())),
             markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
@@ -74,6 +116,8 @@ class DeliveryNotificationsViewModelTest {
 
     @Test
     fun `loadNotifications con error muestra estado Empty con mensaje`() = runTest {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Delivery)
         val vm = DeliveryNotificationsViewModel(
             getNotifications = FakeGetDeliveryNotifications(Result.failure(RuntimeException("Error de red"))),
             markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
@@ -89,6 +133,8 @@ class DeliveryNotificationsViewModelTest {
 
     @Test
     fun `markNotificationAsRead recarga notificaciones despues de marcar`() = runTest {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Delivery)
         val notifications = sampleNotifications()
         var callCount = 0
         val vm = DeliveryNotificationsViewModel(
@@ -111,6 +157,8 @@ class DeliveryNotificationsViewModelTest {
 
     @Test
     fun `markAllNotificationsAsRead recarga notificaciones despues de marcar`() = runTest {
+        SessionStore.clear()
+        SessionStore.updateRole(UserRole.Delivery)
         val notifications = sampleNotifications()
         var callCount = 0
         val vm = DeliveryNotificationsViewModel(
