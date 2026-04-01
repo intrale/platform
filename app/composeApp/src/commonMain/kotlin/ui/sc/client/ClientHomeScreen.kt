@@ -6,6 +6,8 @@ import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import asdo.auth.ToDoResetLoginCache
 import asdo.business.ToGetBusinessProducts
+import asdo.client.BusinessOpenStatus
+import asdo.client.ToDoCheckBusinessOpen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -76,7 +78,8 @@ const val CLIENT_HOME_PATH = "/client/home"
 
 data class ClientHomeUiState(
     val productsState: ClientProductsState = ClientProductsState.Loading,
-    val lastAddedProduct: ClientProduct? = null
+    val lastAddedProduct: ClientProduct? = null,
+    val businessOpenStatus: BusinessOpenStatus? = null
 )
 
 class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
@@ -121,6 +124,7 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
 
         LaunchedEffect(Unit) {
             viewModel.loadProducts()
+            viewModel.checkBusinessOpen()
         }
 
         LaunchedEffect(addedToCartMessage) {
@@ -173,7 +177,8 @@ class ClientHomeScreen : Screen(CLIENT_HOME_PATH) {
                             headerSubtitle = headerSubtitle,
                             cartCount = cartCount,
                             cartContentDescription = cartContentDescription,
-                            onCartClick = { navigate(CLIENT_CART_PATH) }
+                            onCartClick = { navigate(CLIENT_CART_PATH) },
+                            businessOpenStatus = uiState.businessOpenStatus
                         )
                     }
                     item {
@@ -281,19 +286,25 @@ private fun ClientHomeHeader(
     headerSubtitle: String,
     cartCount: Int,
     cartContentDescription: String,
-    onCartClick: () -> Unit
+    onCartClick: () -> Unit,
+    businessOpenStatus: BusinessOpenStatus? = null
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
+            modifier = Modifier.weight(1f)
+        ) {
             Text(
                 text = businessName.uppercase(),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
             )
+            // Badge abierto/cerrado
+            BusinessOpenStatusBadge(businessOpenStatus)
             Text(
                 text = headerTitle,
                 style = MaterialTheme.typography.headlineSmall,
@@ -558,6 +569,7 @@ class ClientHomeViewModel : ViewModel() {
 
     private val toDoResetLoginCache: ToDoResetLoginCache by DIManager.di.instance()
     private val toGetBusinessProducts: ToGetBusinessProducts by DIManager.di.instance()
+    private val toDoCheckBusinessOpen: ToDoCheckBusinessOpen by DIManager.di.instance()
 
     private val logger = LoggerFactory.default.newLogger<ClientHomeViewModel>()
 
@@ -567,6 +579,25 @@ class ClientHomeViewModel : ViewModel() {
     override fun getState(): Any = state
 
     override fun initInputState() { /* No-op */ }
+
+    suspend fun checkBusinessOpen() {
+        val businessId = resolveBusinessId()
+        logger.info { "Verificando estado abierto/cerrado del negocio $businessId" }
+        toDoCheckBusinessOpen.execute(businessId)
+            .onSuccess { openStatus ->
+                logger.info { "Negocio $businessId: isOpen=${openStatus.isOpen}" }
+                state = state.copy(businessOpenStatus = openStatus)
+                // Almacenar en store global para uso en checkout
+                BusinessOpenStore.update(openStatus)
+            }
+            .onFailure { error ->
+                logger.error(error) { "Error al verificar estado del negocio" }
+                // En caso de error, asumir abierto para no bloquear
+                val fallback = BusinessOpenStatus(isOpen = true)
+                state = state.copy(businessOpenStatus = fallback)
+                BusinessOpenStore.update(fallback)
+            }
+    }
 
     suspend fun loadProducts() {
         logger.info { "Cargando productos para cliente" }
@@ -641,5 +672,87 @@ class ClientHomeViewModel : ViewModel() {
         val sessionBusiness = SessionStore.sessionState.value.selectedBusinessId
         return (sessionBusiness ?: BuildKonfig.BUSINESS).takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("Business no configurado")
+    }
+}
+
+/**
+ * Badge que muestra si el negocio está abierto o cerrado,
+ * con el próximo horario de apertura si corresponde.
+ */
+@Composable
+private fun BusinessOpenStatusBadge(status: BusinessOpenStatus?) {
+    if (status == null) {
+        // Todavía se está verificando
+        Text(
+            text = Txt(MessageKey.business_status_checking),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+
+    val isOpen = status.isOpen
+    val badgeColor = if (isOpen) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.error
+    }
+    val badgeBgColor = if (isOpen) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    } else {
+        MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+    }
+    val badgeText = when {
+        status.temporarilyClosed -> Txt(MessageKey.business_status_temp_closed)
+        isOpen -> Txt(MessageKey.business_status_open)
+        else -> Txt(MessageKey.business_status_closed)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(MaterialTheme.spacing.x2))
+                .background(badgeBgColor)
+                .padding(
+                    horizontal = MaterialTheme.spacing.x2,
+                    vertical = MaterialTheme.spacing.x1
+                )
+        ) {
+            Text(
+                text = badgeText,
+                style = MaterialTheme.typography.labelMedium,
+                color = badgeColor,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        // Próximo horario de apertura
+        if (!isOpen && status.nextOpeningInfo.isNotBlank()) {
+            Text(
+                text = Txt(
+                    MessageKey.business_status_next_opening,
+                    mapOf("info" to status.nextOpeningInfo)
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * Store global para compartir el estado abierto/cerrado
+ * entre ClientHome y ClientCheckout.
+ */
+object BusinessOpenStore {
+    private val mutableState = kotlinx.coroutines.flow.MutableStateFlow<BusinessOpenStatus?>(null)
+    val state: kotlinx.coroutines.flow.StateFlow<BusinessOpenStatus?> = mutableState
+
+    fun update(status: BusinessOpenStatus) {
+        mutableState.value = status
+    }
+
+    fun clear() {
+        mutableState.value = null
     }
 }

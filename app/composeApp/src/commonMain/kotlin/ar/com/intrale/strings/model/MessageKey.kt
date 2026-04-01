@@ -724,6 +724,12 @@ enum class MessageKey {
     business_schedules_open_time,
     business_schedules_close_time,
     business_schedules_is_open,
+    business_schedules_split_label,
+    business_schedules_open_time_2,
+    business_schedules_close_time_2,
+    business_schedules_temp_closed_label,
+    business_schedules_temp_closed_hint,
+    business_schedules_reopen_date,
     dashboard_menu_business_schedules,
     dashboard_card_schedules_title,
     dashboard_card_schedules_description,
@@ -857,4 +863,14 @@ enum class MessageKey {
     delivery_notifications_event_delivered,
     delivery_notifications_event_not_delivered,
     delivery_notifications_view_available_orders,
+
+    // Business open/closed status (client-side)
+    business_status_open,
+    business_status_closed,
+    business_status_temp_closed,
+    business_status_next_opening,
+    business_status_checking,
+    client_checkout_business_closed_title,
+    client_checkout_business_closed_message,
+    client_checkout_business_closed_next,
 }
