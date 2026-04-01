@@ -39,23 +39,41 @@ Si algo no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
       ```
    e. **Validar evidencia de video** (OBLIGATORIO antes de aprobar):
       ```bash
-      # Verificar tamaño mínimo (>500KB = video real, <500KB = placeholder o grabación fallida)
       VIDEO=".pipeline/logs/media/qa-<issue>.mp4"
+      # Verificar tamaño mínimo (>500KB = video real)
       SIZE=$(stat -c%s "$VIDEO" 2>/dev/null || stat -f%z "$VIDEO" 2>/dev/null || echo "0")
       if [ "$SIZE" -lt 512000 ]; then
         echo "ERROR: Video pesa ${SIZE} bytes (<500KB) — grabación fallida"
       fi
-
       # Verificar duración mínima (>5 segundos)
       DURATION=$(ffmpeg -i "$VIDEO" 2>&1 | grep Duration | sed 's/.*Duration: \([^,]*\).*/\1/')
       echo "Duración: $DURATION"
       ```
       Si el video pesa <500KB o dura <5s: **NO aprobar**. Regrabar el video.
-   f. **Extraer frames clave** (para respaldo visual del PO):
+   f. **Generar relato del video** (OBLIGATORIO):
+      Crear archivo `.pipeline/logs/media/qa-<issue>-relato.md` con:
+      ```markdown
+      # QA Video Relato — Issue #<issue>
+      
+      ## Criterios de aceptación verificados
+      - [ ] Criterio 1: <descripción> — verificado en 0:05-0:10
+      - [ ] Criterio 2: <descripción> — verificado en 0:15-0:20
+      
+      ## Narración del video
+      - **0:00-0:05**: Se abre la app y se navega a <pantalla>
+      - **0:05-0:10**: Se ejecuta <acción> y se verifica <resultado esperado>
+      - **0:10-0:15**: Se prueba <caso borde> y se confirma <comportamiento>
+      - ...
+      
+      ## Resultado
+      Todos los criterios de aceptación verificados visualmente. Sin regresiones.
+      ```
+      El relato debe mapear cada criterio de aceptación a un momento del video.
+      El PO usará este relato para validar el video en la fase de aprobación.
+   g. **Extraer frames clave** (respaldo visual):
       ```bash
       ffmpeg -i "$VIDEO" -vf "fps=1/3" -q:v 2 ".pipeline/logs/media/qa-<issue>-frame-%02d.png" -y 2>/dev/null
       ```
-      Esto genera 1 frame cada 3 segundos como PNGs para revisión del PO.
 5. Si es cambio de backend/API:
    - Ejecutar requests con curl contra `http://localhost:80/`
    - Capturar request + response como evidencia
@@ -64,10 +82,11 @@ Si algo no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
 
 ### Resultado
 
-Si todo OK (video validado):
+Si todo OK (video validado + relato generado):
 ```yaml
 resultado: aprobado
 evidencia: ".pipeline/logs/media/qa-<issue>.mp4"
+evidencia_relato: ".pipeline/logs/media/qa-<issue>-relato.md"
 evidencia_frames: ".pipeline/logs/media/qa-<issue>-frame-*.png"
 video_size_kb: <tamaño en KB>
 video_duration: "<duración>"
@@ -78,6 +97,19 @@ Si hay defecto:
 resultado: rechazado
 motivo: "Descripcion clara del defecto encontrado"
 ```
+
+### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
+
+Encolar el video y el relato para subida a Google Drive:
+```bash
+# Video
+echo '{"action":"upload","file":".pipeline/logs/media/qa-<issue>.mp4","folder":"QA/evidence/<issue>","description":"QA video evidence #<issue>"}' > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json
+
+# Relato
+echo '{"action":"upload","file":".pipeline/logs/media/qa-<issue>-relato.md","folder":"QA/evidence/<issue>","description":"QA video narration #<issue>"}' > .pipeline/servicios/drive/pendiente/qa-<issue>-relato.json
+```
+
+**NUNCA aprobar sin haber encolado la subida a Drive.** La evidencia debe quedar respaldada.
 
 ### Labels de QA (encolar en servicio-github)
 
@@ -92,4 +124,5 @@ Al terminar, dejar pedido en `.pipeline/servicios/github/pendiente/`:
 - NUNCA levantar ni bajar el emulador, backend ni DynamoDB
 - Si el ambiente no esta disponible, rechazar con motivo "ambiente QA no disponible"
 - Si un criterio de aceptacion no es verificable (falta info), rechazar pidiendo mas detalle
-- SIEMPRE extraer frames del video antes de aprobar (el PO los necesita para validar)
+- SIEMPRE generar relato del video mapeando criterios de aceptación a timestamps
+- SIEMPRE extraer frames del video antes de aprobar
