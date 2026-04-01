@@ -285,6 +285,18 @@ val appModule = DI.Module("appModule") {
         singleton { ClientPaymentMethodsFunction(instance(), instance(), instance()) }
     }
 
+    bind<PromoSuggestionRepository> {
+        singleton { PromoSuggestionRepository() }
+    }
+
+    bind<LowRotationAnalyzer> {
+        singleton { LowRotationAnalyzer(instance(), instance()) }
+    }
+
+    bind<PromoGeneratorService> {
+        singleton { ClaudePromoGeneratorService() }
+    }
+
     bind<AiResponseService> {
         singleton { ClaudeAiResponseService() }
     }
@@ -295,6 +307,13 @@ val appModule = DI.Module("appModule") {
 
     bind<Function> (tag="business/auto-response-config") {
         singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/auto-promos") {
+        singleton { BusinessAutoPromosFunction(
+            instance(), instance(), instance(), instance(), instance(),
+            instance(), instance(), instance(), instance()
+        ) }
     }
 }
 

@@ -20,5 +20,7 @@ class Business(
     var logoUrl: String? = null,
     var schedulesJson: String? = null,
     var deliveryZoneJson: String? = null,
-    var paymentMethodsJson: String? = null
+    var paymentMethodsJson: String? = null,
+    var lowRotationThresholdDays: Int? = 7,
+    var autoPromoEnabled: Boolean = false
 )
