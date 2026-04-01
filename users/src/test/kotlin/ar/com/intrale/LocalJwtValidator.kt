@@ -38,6 +38,21 @@ class LocalJwtValidator(
             .sign(algorithm)
     }
 
+    /**
+     * Genera un token válido SIN claim "email" — útil para tests de seguridad
+     * que verifican que X-Debug-User no permite impersonación.
+     */
+    fun generateTokenWithoutEmail(subject: String): String {
+        return JWT.create()
+            .withIssuer(issuer)
+            .withClaim("token_use", "access")
+            .withClaim("client_id", clientId)
+            .withSubject(subject)
+            .withIssuedAt(Date())
+            .withExpiresAt(Date(System.currentTimeMillis() + 3600_000))
+            .sign(algorithm)
+    }
+
     override fun validate(token: String): DecodedJWT {
         val verifier = JWT.require(algorithm)
             .withIssuer(issuer)
