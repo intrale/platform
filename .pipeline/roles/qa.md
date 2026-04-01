@@ -37,6 +37,25 @@ Si algo no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
       sleep 32
       adb pull //sdcard/qa-evidence.mp4 .pipeline/logs/media/qa-<issue>.mp4
       ```
+   e. **Validar evidencia de video** (OBLIGATORIO antes de aprobar):
+      ```bash
+      # Verificar tamaño mínimo (>500KB = video real, <500KB = placeholder o grabación fallida)
+      VIDEO=".pipeline/logs/media/qa-<issue>.mp4"
+      SIZE=$(stat -c%s "$VIDEO" 2>/dev/null || stat -f%z "$VIDEO" 2>/dev/null || echo "0")
+      if [ "$SIZE" -lt 512000 ]; then
+        echo "ERROR: Video pesa ${SIZE} bytes (<500KB) — grabación fallida"
+      fi
+
+      # Verificar duración mínima (>5 segundos)
+      DURATION=$(ffmpeg -i "$VIDEO" 2>&1 | grep Duration | sed 's/.*Duration: \([^,]*\).*/\1/')
+      echo "Duración: $DURATION"
+      ```
+      Si el video pesa <500KB o dura <5s: **NO aprobar**. Regrabar el video.
+   f. **Extraer frames clave** (para respaldo visual del PO):
+      ```bash
+      ffmpeg -i "$VIDEO" -vf "fps=1/3" -q:v 2 ".pipeline/logs/media/qa-<issue>-frame-%02d.png" -y 2>/dev/null
+      ```
+      Esto genera 1 frame cada 3 segundos como PNGs para revisión del PO.
 5. Si es cambio de backend/API:
    - Ejecutar requests con curl contra `http://localhost:80/`
    - Capturar request + response como evidencia
@@ -45,10 +64,13 @@ Si algo no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
 
 ### Resultado
 
-Si todo OK:
+Si todo OK (video validado):
 ```yaml
 resultado: aprobado
 evidencia: ".pipeline/logs/media/qa-<issue>.mp4"
+evidencia_frames: ".pipeline/logs/media/qa-<issue>-frame-*.png"
+video_size_kb: <tamaño en KB>
+video_duration: "<duración>"
 ```
 
 Si hay defecto:
@@ -66,6 +88,8 @@ Al terminar, dejar pedido en `.pipeline/servicios/github/pendiente/`:
 ### Reglas
 
 - NUNCA aprobar sin evidencia (video o log de requests)
+- NUNCA aprobar si el video pesa <500KB o dura <5 segundos — regrabar
 - NUNCA levantar ni bajar el emulador, backend ni DynamoDB
 - Si el ambiente no esta disponible, rechazar con motivo "ambiente QA no disponible"
 - Si un criterio de aceptacion no es verificable (falta info), rechazar pidiendo mas detalle
+- SIEMPRE extraer frames del video antes de aprobar (el PO los necesita para validar)
