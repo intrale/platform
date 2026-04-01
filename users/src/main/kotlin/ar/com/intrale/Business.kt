@@ -20,5 +20,8 @@ class Business(
     var logoUrl: String? = null,
     var schedulesJson: String? = null,
     var deliveryZoneJson: String? = null,
-    var paymentMethodsJson: String? = null
+    var paymentMethodsJson: String? = null,
+    var dailyMenuEnabled: Boolean = false,
+    var dailyMenuSuggestionHour: Int = 8,
+    var lastMenusJson: String? = null
 )

@@ -296,6 +296,28 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="business/auto-response-config") {
         singleton { AutoResponseConfigFunction(instance(), instance(), instance(), instance(), instance()) }
     }
+
+    bind<DailyMenuRepository> {
+        singleton { DailyMenuRepository() }
+    }
+
+    bind<Function> (tag="business/daily-menu") {
+        singleton { DailyMenuSuggestionFunction(
+            instance(), instance(), instance(), instance(), instance(),
+            instance(), instance(), instance(), instance()
+        ) }
+    }
+
+    bind<Function> (tag="business/daily-menu-config") {
+        singleton { DailyMenuConfigFunction(instance(), instance(), instance(), instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/daily-menu-approve") {
+        singleton { DailyMenuApproveFunction(
+            instance(), instance(), instance(), instance(), instance(),
+            instance(), instance()
+        ) }
+    }
 }
 
 private fun Config.stringValue(path: String): String = getValue(path).unwrapped().toString()
