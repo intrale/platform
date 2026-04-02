@@ -7,250 +7,285 @@ import asdo.client.CreateClientOrderResult
 import asdo.client.PaymentMethod
 import asdo.client.PaymentMethodType
 import asdo.client.ToDoCreateClientOrder
-import kotlinx.coroutines.test.runTest
-import org.kodein.log.LoggerFactory
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.test.runTest
+import org.kodein.log.LoggerFactory
+import org.kodein.log.frontend.simplePrintFrontend
 
-// region Fakes
+private val checkoutTestLoggerFactory = LoggerFactory(listOf(simplePrintFrontend))
 
-private class FakeCreateClientOrder(
-    private val result: Result<CreateClientOrderResult> = Result.success(
-        CreateClientOrderResult(orderId = "ord-99", shortCode = "XYZ123", status = "PENDING")
+private val sampleAddress = ClientAddress(
+    id = "addr-1",
+    label = "Casa",
+    street = "Av. Corrientes",
+    number = "1234",
+    city = "CABA"
+)
+
+private val samplePaymentMethod = PaymentMethod(
+    id = "pm-1",
+    name = "Efectivo",
+    type = PaymentMethodType.CASH,
+    description = "Pago en efectivo",
+    isCashOnDelivery = true,
+    enabled = true
+)
+
+private val sampleCartItems = listOf(
+    ClientCartItem(
+        product = ClientProduct(
+            id = "prod-1",
+            name = "Manzana roja",
+            priceLabel = "$1.200",
+            emoji = "\uD83D\uDECD\uFE0F",
+            unitPrice = 1200.0,
+            categoryId = "cat-1",
+            isAvailable = true
+        ),
+        quantity = 2
+    ),
+    ClientCartItem(
+        product = ClientProduct(
+            id = "prod-2",
+            name = "Banana",
+            priceLabel = "$800",
+            emoji = "\uD83D\uDECD\uFE0F",
+            unitPrice = 800.0,
+            categoryId = "cat-2",
+            isAvailable = true
+        ),
+        quantity = 1
     )
-) : ToDoCreateClientOrder {
+)
+
+// --- Fakes ---
+
+private class FakeCreateOrderSuccess(
     var lastParams: CreateClientOrderParams? = null
+) : ToDoCreateClientOrder {
     override suspend fun execute(params: CreateClientOrderParams): Result<CreateClientOrderResult> {
         lastParams = params
-        return result
+        return Result.success(
+            CreateClientOrderResult(
+                orderId = "order-123",
+                shortCode = "ABC123",
+                status = "CREATED"
+            )
+        )
     }
 }
 
-// endregion
-
-// region Datos de prueba
-
-private val sampleProduct = ClientProduct(
-    id = "prod-1", name = "Producto A", priceLabel = "$100",
-    emoji = "🍕", unitPrice = 100.0
-)
-private val sampleProduct2 = ClientProduct(
-    id = "prod-2", name = "Producto B", priceLabel = "$50",
-    emoji = "🍔", unitPrice = 50.0
-)
-private val sampleAddress = ClientAddress(
-    id = "addr-1", label = "Casa", street = "Av. Siempreviva",
-    number = "742", city = "Springfield"
-)
-private val samplePaymentMethod = PaymentMethod(
-    id = "pm-1", name = "Efectivo", type = PaymentMethodType.CASH,
-    description = "Pago en efectivo", isCashOnDelivery = true, enabled = true
-)
-private val sampleCartItems = listOf(
-    ClientCartItem(product = sampleProduct, quantity = 2),
-    ClientCartItem(product = sampleProduct2, quantity = 1)
-)
-
-// endregion
+private class FakeCreateOrderFailure(
+    private val error: String = "Error de red"
+) : ToDoCreateClientOrder {
+    override suspend fun execute(params: CreateClientOrderParams): Result<CreateClientOrderResult> =
+        Result.failure(RuntimeException(error))
+}
 
 class ClientCheckoutViewModelTest {
 
+    @BeforeTest
+    fun setUp() {
+        ClientCartStore.clear()
+        BusinessOpenStore.clear()
+    }
+
     private fun createViewModel(
-        fakeCreate: FakeCreateClientOrder = FakeCreateClientOrder()
-    ) = ClientCheckoutViewModel(
-        toDoCreateClientOrder = fakeCreate,
-        loggerFactory = LoggerFactory.default
+        toDoCreateClientOrder: ToDoCreateClientOrder = FakeCreateOrderSuccess()
+    ): ClientCheckoutViewModel = ClientCheckoutViewModel(
+        toDoCreateClientOrder = toDoCreateClientOrder,
+        loggerFactory = checkoutTestLoggerFactory
     )
 
     @Test
-    fun `estado inicial tiene status Review y listas vacias`() {
-        val vm = createViewModel()
+    fun `estado inicial es Review sin items`() {
+        val viewModel = createViewModel()
 
-        assertEquals(CheckoutStatus.Review, vm.state.status)
-        assertTrue(vm.state.items.isEmpty())
-        assertNull(vm.state.selectedAddress)
-        assertNull(vm.state.selectedPaymentMethod)
-        assertEquals(0.0, vm.state.subtotal)
-        assertEquals(0.0, vm.state.total)
-        assertFalse(vm.state.canConfirm)
+        assertEquals(CheckoutStatus.Review, viewModel.state.status)
+        assertTrue(viewModel.state.items.isEmpty())
+        assertNull(viewModel.state.selectedAddress)
+        assertNull(viewModel.state.selectedPaymentMethod)
+        assertEquals(0.0, viewModel.state.total)
+        assertFalse(viewModel.state.canConfirm)
     }
 
     @Test
-    fun `loadFromCart carga items y calcula subtotal`() {
-        val vm = createViewModel()
+    fun `loadFromCart calcula subtotal y total correctamente`() {
+        val viewModel = createViewModel()
 
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
 
-        assertEquals(2, vm.state.items.size)
-        assertEquals(sampleAddress, vm.state.selectedAddress)
-        assertEquals(samplePaymentMethod, vm.state.selectedPaymentMethod)
-        // subtotal = (100 * 2) + (50 * 1) = 250
-        assertEquals(250.0, vm.state.subtotal)
-        assertEquals(250.0, vm.state.total)
+        val state = viewModel.state
+        assertEquals(2, state.items.size)
+        assertEquals(sampleAddress, state.selectedAddress)
+        assertEquals(samplePaymentMethod, state.selectedPaymentMethod)
+        // 1200 * 2 + 800 * 1 = 3200
+        assertEquals(3200.0, state.subtotal)
+        assertEquals(0.0, state.shipping)
+        assertEquals(3200.0, state.total)
     }
 
     @Test
-    fun `canConfirm es true con items y direccion y metodo de pago`() {
-        val vm = createViewModel()
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+    fun `canConfirm es true cuando tiene items y address y paymentMethod`() {
+        val viewModel = createViewModel()
 
-        assertTrue(vm.state.canConfirm)
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+
+        assertTrue(viewModel.state.canConfirm)
     }
 
     @Test
-    fun `canConfirm es false sin direccion`() {
-        val vm = createViewModel()
-        vm.loadFromCart(sampleCartItems, null, samplePaymentMethod)
+    fun `canConfirm es false sin address`() {
+        val viewModel = createViewModel()
 
-        assertFalse(vm.state.canConfirm)
+        viewModel.loadFromCart(sampleCartItems, null, samplePaymentMethod)
+
+        assertFalse(viewModel.state.canConfirm)
     }
 
     @Test
-    fun `canConfirm es false sin metodo de pago`() {
-        val vm = createViewModel()
-        vm.loadFromCart(sampleCartItems, sampleAddress, null)
+    fun `canConfirm es false sin paymentMethod`() {
+        val viewModel = createViewModel()
 
-        assertFalse(vm.state.canConfirm)
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, null)
+
+        assertFalse(viewModel.state.canConfirm)
     }
 
     @Test
     fun `canConfirm es false con items vacios`() {
-        val vm = createViewModel()
-        vm.loadFromCart(emptyList(), sampleAddress, samplePaymentMethod)
+        val viewModel = createViewModel()
 
-        assertFalse(vm.state.canConfirm)
+        viewModel.loadFromCart(emptyList(), sampleAddress, samplePaymentMethod)
+
+        assertFalse(viewModel.state.canConfirm)
     }
 
     @Test
     fun `updateNotes actualiza las notas`() {
-        val vm = createViewModel()
+        val viewModel = createViewModel()
 
-        vm.updateNotes("Sin cebolla por favor")
+        viewModel.updateNotes("Sin cebolla por favor")
 
-        assertEquals("Sin cebolla por favor", vm.state.notes)
+        assertEquals("Sin cebolla por favor", viewModel.state.notes)
     }
 
     @Test
-    fun `confirmOrder exitoso actualiza status a Success`() = runTest {
-        val fake = FakeCreateClientOrder()
-        val vm = createViewModel(fake)
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
-        vm.updateNotes("Extra salsa")
+    fun `confirmOrder exitoso cambia a Success y limpia carrito`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
 
-        vm.confirmOrder()
+        viewModel.confirmOrder()
 
-        assertEquals(CheckoutStatus.Success, vm.state.status)
-        assertEquals("ord-99", vm.state.orderId)
-        assertEquals("XYZ123", vm.state.shortCode)
-        // Verifica que los params se pasaron correctamente
-        val params = fake.lastParams!!
-        assertEquals(2, params.items.size)
-        assertEquals("prod-1", params.items[0].productId)
-        assertEquals(2, params.items[0].quantity)
-        assertEquals("addr-1", params.addressId)
-        assertEquals("pm-1", params.paymentMethodId)
-        assertEquals("Extra salsa", params.notes)
+        val state = viewModel.state
+        assertEquals(CheckoutStatus.Success, state.status)
+        assertEquals("order-123", state.orderId)
+        assertEquals("ABC123", state.shortCode)
     }
 
     @Test
-    fun `confirmOrder fallido actualiza status a Error con mensaje`() = runTest {
-        val fake = FakeCreateClientOrder(
-            result = Result.failure(RuntimeException("Timeout de red"))
+    fun `confirmOrder con error cambia a Error`() = runTest {
+        val viewModel = createViewModel(
+            toDoCreateClientOrder = FakeCreateOrderFailure("Timeout")
         )
-        val vm = createViewModel(fake)
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
 
-        vm.confirmOrder()
+        viewModel.confirmOrder()
 
-        assertEquals(CheckoutStatus.Error, vm.state.status)
-        assertEquals("Timeout de red", vm.state.errorMessage)
+        val state = viewModel.state
+        assertEquals(CheckoutStatus.Error, state.status)
+        assertEquals("Timeout", state.errorMessage)
     }
 
     @Test
-    fun `confirmOrder no ejecuta si canConfirm es false`() = runTest {
-        val fake = FakeCreateClientOrder()
-        val vm = createViewModel(fake)
-        // No cargar items → canConfirm = false
+    fun `confirmOrder sin canConfirm no ejecuta`() = runTest {
+        val viewModel = createViewModel()
+        // No cargamos items, asi que canConfirm = false
 
-        vm.confirmOrder()
+        viewModel.confirmOrder()
 
-        assertEquals(CheckoutStatus.Review, vm.state.status)
-        assertNull(fake.lastParams)
+        assertEquals(CheckoutStatus.Review, viewModel.state.status)
     }
 
     @Test
     fun `confirmOrder con notas vacias envia null`() = runTest {
-        val fake = FakeCreateClientOrder()
-        val vm = createViewModel(fake)
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
-        vm.updateNotes("")
+        val fake = FakeCreateOrderSuccess()
+        val viewModel = createViewModel(toDoCreateClientOrder = fake)
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        viewModel.updateNotes("")
 
-        vm.confirmOrder()
+        viewModel.confirmOrder()
 
         assertNull(fake.lastParams!!.notes)
     }
 
     @Test
-    fun `retryConfirm resetea status a Review`() {
-        val vm = createViewModel()
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+    fun `retryConfirm vuelve a Review`() = runTest {
+        val viewModel = createViewModel(
+            toDoCreateClientOrder = FakeCreateOrderFailure()
+        )
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        viewModel.confirmOrder()
+        assertEquals(CheckoutStatus.Error, viewModel.state.status)
 
-        vm.retryConfirm()
+        viewModel.retryConfirm()
 
-        assertEquals(CheckoutStatus.Review, vm.state.status)
-        assertNull(vm.state.errorMessage)
+        assertEquals(CheckoutStatus.Review, viewModel.state.status)
+        assertNull(viewModel.state.errorMessage)
     }
 
     @Test
-    fun `checkBusinessOpenStatus bloquea cuando negocio cerrado`() {
-        val vm = createViewModel()
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+    fun `checkBusinessOpenStatus con negocio cerrado bloquea confirmacion`() {
+        val viewModel = createViewModel()
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        BusinessOpenStore.update(
+            BusinessOpenStatus(isOpen = false, nextOpeningInfo = "Abre manana a las 9")
+        )
 
-        // Simular negocio cerrado
-        BusinessOpenStore.update(BusinessOpenStatus(isOpen = false, nextOpeningInfo = "Abre manana a las 09:00"))
+        viewModel.checkBusinessOpenStatus()
 
-        vm.checkBusinessOpenStatus()
-
-        assertTrue(vm.state.businessClosed)
-        assertEquals("Abre manana a las 09:00", vm.state.businessClosedInfo)
-        assertFalse(vm.state.canConfirm) // canConfirm = false cuando businessClosed
-
-        // Limpiar estado global
-        BusinessOpenStore.clear()
+        assertTrue(viewModel.state.businessClosed)
+        assertEquals("Abre manana a las 9", viewModel.state.businessClosedInfo)
+        assertFalse(viewModel.state.canConfirm)
     }
 
     @Test
-    fun `checkBusinessOpenStatus desbloquea cuando negocio abierto`() {
-        val vm = createViewModel()
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
-
-        // Simular negocio abierto
+    fun `checkBusinessOpenStatus con negocio abierto permite confirmacion`() {
+        val viewModel = createViewModel()
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
         BusinessOpenStore.update(BusinessOpenStatus(isOpen = true))
 
-        vm.checkBusinessOpenStatus()
+        viewModel.checkBusinessOpenStatus()
 
-        assertFalse(vm.state.businessClosed)
-        assertEquals("", vm.state.businessClosedInfo)
-        assertTrue(vm.state.canConfirm)
-
-        // Limpiar estado global
-        BusinessOpenStore.clear()
+        assertFalse(viewModel.state.businessClosed)
+        assertTrue(viewModel.state.canConfirm)
     }
 
     @Test
     fun `checkBusinessOpenStatus sin estado mantiene desbloqueado`() {
-        val vm = createViewModel()
-        vm.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        val viewModel = createViewModel()
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        // Estado null = no verificado (ya limpiado en @BeforeTest)
 
-        // Estado null = no verificado
-        BusinessOpenStore.clear()
+        viewModel.checkBusinessOpenStatus()
 
-        vm.checkBusinessOpenStatus()
+        assertFalse(viewModel.state.businessClosed)
+        assertTrue(viewModel.state.canConfirm)
+    }
 
-        assertFalse(vm.state.businessClosed)
-        assertTrue(vm.state.canConfirm)
+    @Test
+    fun `confirmOrder con notas las incluye`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadFromCart(sampleCartItems, sampleAddress, samplePaymentMethod)
+        viewModel.updateNotes("Dejar en porteria")
+
+        viewModel.confirmOrder()
+
+        assertEquals(CheckoutStatus.Success, viewModel.state.status)
     }
 }

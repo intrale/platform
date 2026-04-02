@@ -118,6 +118,13 @@ function cleanupWorktree(wtPath, branchName) {
     const entry = path.basename(wtPath);
     const results = { entry, steps: [], success: false };
 
+    // PROTECCIÓN: nunca borrar el worktree ops
+    if (entry.endsWith(".ops")) {
+        log("PROTEGIDO: " + entry + " es el worktree operativo");
+        results.steps.push("protegido: worktree ops");
+        return results;
+    }
+
     if (DRY_RUN) {
         log("[DRY-RUN] Limpiaría: " + entry + " (branch: " + (branchName || "desconocida") + ")");
         results.steps.push("dry-run: sin cambios");
@@ -234,6 +241,8 @@ function getTargetWorktrees(args) {
     for (const wt of allWt) {
         const wtNorm = (wt.path || "").replace(/\\/g, "/");
         if (wtNorm === mainPath || wt.bare) continue;
+        // NUNCA tocar el worktree ops
+        if (path.basename(wt.path || "").endsWith(".ops")) continue;
 
         let isDead = false;
         if (!fs.existsSync(wt.path)) {

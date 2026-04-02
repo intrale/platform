@@ -6,6 +6,9 @@ import ar.com.intrale.strings.Txt
 import ar.com.intrale.strings.model.MessageKey
 import asdo.business.ToDoListCategories
 import asdo.business.ToDoListProducts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,11 +28,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +46,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -47,18 +55,26 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ar.com.intrale.shared.business.CategoryDTO
 import ar.com.intrale.shared.business.ProductDTO
 import ar.com.intrale.shared.business.ProductStatus
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import org.kodein.di.direct
 import org.kodein.di.instance
@@ -79,12 +95,20 @@ data class CategoryItem(
     val name: String
 )
 
+data class SearchSuggestion(
+    val product: ClientProduct,
+    val matchRanges: List<IntRange> = emptyList()
+)
+
 data class ClientCatalogUiState(
     val productsState: ClientProductsState = ClientProductsState.Loading,
     val categories: List<CategoryItem> = emptyList(),
     val selectedCategoryId: String? = null,
     val searchQuery: String = "",
-    val lastAddedProduct: ClientProduct? = null
+    val lastAddedProduct: ClientProduct? = null,
+    val suggestions: List<SearchSuggestion> = emptyList(),
+    val showSuggestions: Boolean = false,
+    val isSearchFocused: Boolean = false
 )
 
 class ClientCatalogViewModel(
@@ -144,8 +168,87 @@ class ClientCatalogViewModel(
         applyFilters()
     }
 
+    /**
+     * Actualiza el query de busqueda. Las sugerencias se calculan
+     * via debounce en el Composable con [computeSuggestions].
+     */
     fun onSearchChange(query: String) {
-        state = state.copy(searchQuery = query)
+        state = state.copy(searchQuery = query, showSuggestions = query.length >= 2)
+        applyFilters()
+    }
+
+    /**
+     * Calcula las sugerencias filtrando productos disponibles con stock
+     * y generando rangos de match para highlighting.
+     */
+    fun computeSuggestions(query: String) {
+        if (query.length < 2) {
+            state = state.copy(suggestions = emptyList(), showSuggestions = false)
+            return
+        }
+
+        val suggestions = allProducts
+            .filter { it.isAvailable }
+            .mapNotNull { product ->
+                val matchRanges = findMatchRanges(product.name, query)
+                if (matchRanges.isNotEmpty()) {
+                    SearchSuggestion(product = product, matchRanges = matchRanges)
+                } else null
+            }
+            .take(MAX_SUGGESTIONS)
+
+        state = state.copy(suggestions = suggestions, showSuggestions = suggestions.isNotEmpty())
+    }
+
+    fun onSearchFocusChanged(focused: Boolean) {
+        state = state.copy(isSearchFocused = focused)
+        if (focused && state.searchQuery.isBlank()) {
+            // Mostrar historial cuando el campo esta vacio y tiene foco
+            state = state.copy(showSuggestions = false)
+        }
+    }
+
+    /**
+     * Selecciona una sugerencia: aplica el filtro, guarda en historial
+     * y oculta las sugerencias.
+     */
+    fun selectSuggestion(suggestion: SearchSuggestion) {
+        val query = suggestion.product.name
+        SearchHistoryStore.addSearch(query)
+        state = state.copy(
+            searchQuery = query,
+            showSuggestions = false
+        )
+        applyFilters()
+    }
+
+    /**
+     * Selecciona un termino del historial de busquedas.
+     */
+    fun selectHistoryItem(query: String) {
+        state = state.copy(searchQuery = query, showSuggestions = false)
+        applyFilters()
+        computeSuggestions(query)
+    }
+
+    /**
+     * Confirma la busqueda actual (al presionar enter/buscar).
+     * Guarda en historial y oculta sugerencias.
+     */
+    fun confirmSearch() {
+        val query = state.searchQuery.trim()
+        if (query.length >= 2) {
+            SearchHistoryStore.addSearch(query)
+        }
+        state = state.copy(showSuggestions = false)
+    }
+
+    fun dismissSuggestions() {
+        state = state.copy(showSuggestions = false)
+    }
+
+    fun clearSearch() {
+        state = state.copy(searchQuery = "", showSuggestions = false, suggestions = emptyList())
         applyFilters()
     }
 
@@ -189,7 +292,7 @@ class ClientCatalogViewModel(
                     id = product.id ?: "",
                     name = product.name,
                     priceLabel = formatPrice(product.basePrice),
-                    emoji = "🛍️",
+                    emoji = "\uD83D\uDECD\uFE0F",
                     unitPrice = product.basePrice,
                     categoryId = product.categoryId,
                     isAvailable = product.isAvailable,
@@ -213,12 +316,37 @@ class ClientCatalogViewModel(
         return (sessionBusiness ?: BuildKonfig.BUSINESS).takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("Business no configurado")
     }
+
+    companion object {
+        internal const val MAX_SUGGESTIONS = 8
+        internal const val DEBOUNCE_MS = 300L
+
+        /**
+         * Encuentra los rangos de match del query dentro del texto.
+         * Soporta busqueda case-insensitive.
+         */
+        internal fun findMatchRanges(text: String, query: String): List<IntRange> {
+            if (query.isBlank()) return emptyList()
+            val ranges = mutableListOf<IntRange>()
+            val lowerText = text.lowercase()
+            val lowerQuery = query.lowercase()
+            var startIndex = 0
+            while (startIndex < lowerText.length) {
+                val index = lowerText.indexOf(lowerQuery, startIndex)
+                if (index < 0) break
+                ranges.add(index until (index + query.length))
+                startIndex = index + 1
+            }
+            return ranges
+        }
+    }
 }
 
 class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
 
     override val messageTitle: MessageKey = MessageKey.client_catalog_title
 
+    @OptIn(FlowPreview::class)
     @Composable
     override fun screen() {
         val coroutineScope = rememberCoroutineScope()
@@ -226,6 +354,7 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
         val uiState = viewModel.state
         val cartItems by ClientCartStore.items.collectAsState()
         val cartCount = cartItems.values.sumOf { it.quantity }
+        val searchHistory by SearchHistoryStore.history.collectAsState()
 
         val title = Txt(MessageKey.client_catalog_title)
         val subtitle = Txt(MessageKey.client_catalog_subtitle)
@@ -239,13 +368,25 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
         val outOfStockLabel = Txt(MessageKey.client_product_out_of_stock)
         val noResultsMessage = Txt(MessageKey.client_catalog_search_no_results)
         val cartContentDescription = Txt(MessageKey.client_home_cart_icon_content_description)
+        val recentSearchesLabel = Txt(MessageKey.client_catalog_recent_searches)
+        val clearHistoryLabel = Txt(MessageKey.client_catalog_clear_history)
         val addedToCartMessage = uiState.lastAddedProduct?.let { product ->
             Txt(MessageKey.client_catalog_added_to_cart, mapOf("product" to product.name))
         }
         val snackbarHostState = remember { SnackbarHostState() }
 
+        // Debounce para sugerencias en tiempo real
         LaunchedEffect(Unit) {
             viewModel.loadCatalog()
+        }
+
+        LaunchedEffect(Unit) {
+            snapshotFlow { viewModel.state.searchQuery }
+                .debounce(ClientCatalogViewModel.DEBOUNCE_MS)
+                .distinctUntilChanged()
+                .collect { query ->
+                    viewModel.computeSuggestions(query)
+                }
         }
 
         LaunchedEffect(addedToCartMessage) {
@@ -286,17 +427,45 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                     )
                 }
 
+                // Barra de busqueda con focus tracking y boton clear
                 item {
-                    OutlinedTextField(
-                        value = uiState.searchQuery,
-                        onValueChange = { viewModel.onSearchChange(it) },
-                        placeholder = { Text(searchPlaceholder) },
-                        leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = searchPlaceholder)
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                    SearchField(
+                        query = uiState.searchQuery,
+                        placeholder = searchPlaceholder,
+                        onQueryChange = { viewModel.onSearchChange(it) },
+                        onFocusChange = { viewModel.onSearchFocusChanged(it) },
+                        onClear = { viewModel.clearSearch() },
+                        onConfirm = { viewModel.confirmSearch() }
                     )
+                }
+
+                // Sugerencias en tiempo real
+                if (uiState.showSuggestions && uiState.suggestions.isNotEmpty()) {
+                    item {
+                        SuggestionsDropdown(
+                            suggestions = uiState.suggestions,
+                            searchQuery = uiState.searchQuery,
+                            onSuggestionClick = { suggestion ->
+                                viewModel.selectSuggestion(suggestion)
+                                ClientProductSelectionStore.select(suggestion.product.id)
+                                this@ClientCatalogScreen.navigate(CLIENT_PRODUCT_DETAIL_PATH)
+                            }
+                        )
+                    }
+                }
+
+                // Historial de busquedas recientes (cuando el campo tiene foco y esta vacio)
+                if (uiState.isSearchFocused && uiState.searchQuery.isBlank() && searchHistory.isNotEmpty()) {
+                    item {
+                        SearchHistorySection(
+                            history = searchHistory,
+                            title = recentSearchesLabel,
+                            clearLabel = clearHistoryLabel,
+                            onHistoryItemClick = { viewModel.selectHistoryItem(it) },
+                            onRemoveItem = { SearchHistoryStore.removeSearch(it) },
+                            onClearAll = { SearchHistoryStore.clearHistory() }
+                        )
+                    }
                 }
 
                 if (uiState.categories.isNotEmpty()) {
@@ -375,6 +544,216 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                 }
 
                 item { Spacer(modifier = Modifier.height(MaterialTheme.spacing.x8)) }
+            }
+        }
+    }
+}
+
+// --- Composables privados ---
+
+@Composable
+private fun SearchField(
+    query: String,
+    placeholder: String,
+    onQueryChange: (String) -> Unit,
+    onFocusChange: (Boolean) -> Unit,
+    onClear: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        placeholder = { Text(placeholder) },
+        leadingIcon = {
+            Icon(Icons.Default.Search, contentDescription = placeholder)
+        },
+        trailingIcon = {
+            AnimatedVisibility(
+                visible = query.isNotEmpty(),
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                IconButton(onClick = onClear) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        },
+        singleLine = true,
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged { focusState -> onFocusChange(focusState.isFocused) }
+    )
+}
+
+@Composable
+private fun SuggestionsDropdown(
+    suggestions: List<SearchSuggestion>,
+    searchQuery: String,
+    onSuggestionClick: (SearchSuggestion) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(
+            topStart = 0.dp,
+            topEnd = 0.dp,
+            bottomStart = 12.dp,
+            bottomEnd = 12.dp
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column {
+            suggestions.forEachIndexed { index, suggestion ->
+                SuggestionItem(
+                    suggestion = suggestion,
+                    searchQuery = searchQuery,
+                    onClick = { onSuggestionClick(suggestion) }
+                )
+                if (index < suggestions.lastIndex) {
+                    Divider(
+                        modifier = Modifier.padding(horizontal = MaterialTheme.spacing.x3),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionItem(
+    suggestion: SearchSuggestion,
+    searchQuery: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(
+                horizontal = MaterialTheme.spacing.x3,
+                vertical = MaterialTheme.spacing.x2
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+    ) {
+        Icon(
+            Icons.Default.Search,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = buildHighlightedText(suggestion.product.name, suggestion.matchRanges),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = suggestion.product.priceLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * Construye un AnnotatedString con las porciones que matchean el query
+ * resaltadas en bold + color primario.
+ */
+@Composable
+private fun buildHighlightedText(
+    text: String,
+    matchRanges: List<IntRange>
+): androidx.compose.ui.text.AnnotatedString {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    return buildAnnotatedString {
+        var lastEnd = 0
+        for (range in matchRanges.sortedBy { it.first }) {
+            // Texto antes del match
+            if (range.first > lastEnd) {
+                append(text.substring(lastEnd, range.first))
+            }
+            // Texto matcheado con highlight
+            withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = primaryColor)) {
+                append(text.substring(range.first, (range.last + 1).coerceAtMost(text.length)))
+            }
+            lastEnd = (range.last + 1).coerceAtMost(text.length)
+        }
+        // Texto restante despues del ultimo match
+        if (lastEnd < text.length) {
+            append(text.substring(lastEnd))
+        }
+    }
+}
+
+@Composable
+private fun SearchHistorySection(
+    history: List<String>,
+    title: String,
+    clearLabel: String,
+    onHistoryItemClick: (String) -> Unit,
+    onRemoveItem: (String) -> Unit,
+    onClearAll: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+    ) {
+        Column(modifier = Modifier.padding(MaterialTheme.spacing.x3)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TextButton(onClick = onClearAll) {
+                    Text(
+                        text = clearLabel,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+            history.forEach { query ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onHistoryItemClick(query) }
+                        .padding(vertical = MaterialTheme.spacing.x1),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                ) {
+                    Icon(
+                        Icons.Default.History,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = query,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = { onRemoveItem(query) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
         }
     }

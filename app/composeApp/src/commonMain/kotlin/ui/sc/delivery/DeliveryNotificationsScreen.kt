@@ -248,10 +248,10 @@ private fun DeliveryNotificationCard(
 @Composable
 private fun DeliveryNotificationIcon(eventType: DeliveryNotificationEventType) {
     val eventTypeDescription = when (eventType) {
-        DeliveryNotificationEventType.ORDER_AVAILABLE -> "Pedido disponible"
-        DeliveryNotificationEventType.ORDER_ASSIGNED -> "Pedido asignado"
-        DeliveryNotificationEventType.ORDER_DELIVERED -> "Pedido entregado"
-        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> "Pedido no entregado"
+        DeliveryNotificationEventType.ORDER_AVAILABLE -> Txt(MessageKey.delivery_notifications_event_new_order)
+        DeliveryNotificationEventType.ORDER_ASSIGNED -> Txt(MessageKey.delivery_notifications_event_assigned)
+        DeliveryNotificationEventType.ORDER_DELIVERED -> Txt(MessageKey.delivery_notifications_event_delivered)
+        DeliveryNotificationEventType.ORDER_NOT_DELIVERED -> Txt(MessageKey.delivery_notifications_event_not_delivered)
     }
 
     val (emoji, bgColor) = when (eventType) {

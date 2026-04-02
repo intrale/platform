@@ -149,8 +149,9 @@ async function handleInput() {
             if (filePath) {
                 const normalized = filePath.replace(/\\/g, "/");
 
-                // Excepciones: .claude/, docs/, scripts/, CLAUDE.md
+                // Excepciones: .claude/, .pipeline/, docs/, scripts/, CLAUDE.md
                 if (normalized.includes("/.claude/") || normalized.includes("\\.claude\\") ||
+                    normalized.includes("/.pipeline/") || normalized.includes("\\.pipeline\\") ||
                     normalized.includes("/docs/") || normalized.includes("\\docs\\") ||
                     normalized.includes("/scripts/") || normalized.includes("\\scripts\\") ||
                     path.basename(normalized) === "CLAUDE.md") {
