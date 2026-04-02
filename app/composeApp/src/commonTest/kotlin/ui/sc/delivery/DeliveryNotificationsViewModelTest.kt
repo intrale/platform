@@ -7,6 +7,8 @@ import asdo.delivery.DeliveryOrderStatus
 import asdo.delivery.ToDoGetDeliveryNotifications
 import asdo.delivery.ToDoMarkAllDeliveryNotificationsRead
 import asdo.delivery.ToDoMarkDeliveryNotificationRead
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend
@@ -312,6 +314,33 @@ class DeliveryNotificationStoreTest {
         DeliveryNotificationStore.markAllAsRead()
 
         assertEquals(0, DeliveryNotificationStore.unreadCount)
+    }
+
+    @Test
+    fun `updateFromOrders concurrente no pierde notificaciones`() = runTest {
+        DeliveryNotificationStore.clear()
+
+        val ordersA = listOf(
+            DeliveryOrder("orderA1", "AAAA11", "Negocio A1", "Palermo", DeliveryOrderStatus.PENDING, null),
+            DeliveryOrder("orderA2", "AAAA22", "Negocio A2", "Belgrano", DeliveryOrderStatus.IN_PROGRESS, null)
+        )
+        val ordersB = listOf(
+            DeliveryOrder("orderB1", "BBBB11", "Negocio B1", "Recoleta", DeliveryOrderStatus.PENDING, null),
+            DeliveryOrder("orderB2", "BBBB22", "Negocio B2", "Caballito", DeliveryOrderStatus.DELIVERED, null)
+        )
+
+        // Ejecutar dos actualizaciones concurrentes
+        val deferredA = async { DeliveryNotificationStore.updateFromOrders(ordersA) }
+        val deferredB = async { DeliveryNotificationStore.updateFromOrders(ordersB) }
+        awaitAll(deferredA, deferredB)
+
+        // Ambas listas deben estar presentes — ninguna se perdió
+        val notifications = DeliveryNotificationStore.notifications.value
+        assertEquals(4, notifications.size, "Llamadas concurrentes no deben perder notificaciones")
+        assertTrue(notifications.any { it.id == "orderA1_PENDING" })
+        assertTrue(notifications.any { it.id == "orderA2_IN_PROGRESS" })
+        assertTrue(notifications.any { it.id == "orderB1_PENDING" })
+        assertTrue(notifications.any { it.id == "orderB2_DELIVERED" })
     }
 
     @Test

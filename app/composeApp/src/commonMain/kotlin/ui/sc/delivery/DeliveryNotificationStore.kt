@@ -18,23 +18,24 @@ object DeliveryNotificationStore {
         get() = _notifications.value.count { !it.isRead }
 
     fun updateFromOrders(orders: List<DeliveryOrder>) {
-        val existing = _notifications.value.associateBy { it.id }.toMutableMap()
-        orders.forEach { order ->
-            val notifId = "${order.id}_${order.status.name}"
-            if (!existing.containsKey(notifId)) {
-                existing[notifId] = DeliveryNotification(
-                    id = notifId,
-                    orderId = order.id,
-                    label = order.label,
-                    businessName = order.businessName,
-                    eventType = order.status.toNotificationEventType(),
-                    timestamp = "",
-                    isRead = false
-                )
+        _notifications.update { current ->
+            val existing = current.associateBy { it.id }.toMutableMap()
+            orders.forEach { order ->
+                val notifId = "${order.id}_${order.status.name}"
+                if (!existing.containsKey(notifId)) {
+                    existing[notifId] = DeliveryNotification(
+                        id = notifId,
+                        orderId = order.id,
+                        label = order.label,
+                        businessName = order.businessName,
+                        eventType = order.status.toNotificationEventType(),
+                        timestamp = "",
+                        isRead = false
+                    )
+                }
             }
+            existing.values.sortedByDescending { it.timestamp }
         }
-        _notifications.value = existing.values
-            .sortedByDescending { it.timestamp }
     }
 
     fun markAsRead(id: String) {
