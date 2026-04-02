@@ -90,13 +90,58 @@ class PaymentMethodModelsTest {
     }
 
     @Test
+    fun `toDomain convierte correctamente un DTO de Mercado Pago`() {
+        val dto = PaymentMethodDTO(
+            id = "pm-mp-1",
+            name = "Mercado Pago",
+            type = "MERCADO_PAGO",
+            description = "Pagá con QR, tarjeta o transferencia",
+            isCashOnDelivery = false,
+            enabled = true
+        )
+
+        val domain = dto.toDomain()
+
+        assertEquals("pm-mp-1", domain.id)
+        assertEquals(PaymentMethodType.MERCADO_PAGO, domain.type)
+        assertFalse(domain.isCashOnDelivery)
+        assertTrue(domain.type.requiresExternalPayment)
+    }
+
+    @Test
+    fun `toDomain convierte MERCADOPAGO sin guion bajo a MERCADO_PAGO`() {
+        val dto = PaymentMethodDTO(
+            id = "pm-mp-2",
+            name = "MercadoPago",
+            type = "MERCADOPAGO",
+            enabled = true
+        )
+
+        val domain = dto.toDomain()
+
+        assertEquals(PaymentMethodType.MERCADO_PAGO, domain.type)
+    }
+
+    @Test
     fun `PaymentMethodType fromString convierte tipos correctamente`() {
         assertEquals(PaymentMethodType.CASH, PaymentMethodType.fromString("CASH"))
         assertEquals(PaymentMethodType.CASH, PaymentMethodType.fromString("cash"))
         assertEquals(PaymentMethodType.TRANSFER, PaymentMethodType.fromString("TRANSFER"))
         assertEquals(PaymentMethodType.CARD, PaymentMethodType.fromString("CARD"))
         assertEquals(PaymentMethodType.DIGITAL_WALLET, PaymentMethodType.fromString("DIGITAL_WALLET"))
+        assertEquals(PaymentMethodType.MERCADO_PAGO, PaymentMethodType.fromString("MERCADO_PAGO"))
+        assertEquals(PaymentMethodType.MERCADO_PAGO, PaymentMethodType.fromString("MERCADOPAGO"))
         assertEquals(PaymentMethodType.OTHER, PaymentMethodType.fromString("unknown"))
+    }
+
+    @Test
+    fun `requiresExternalPayment es true solo para MERCADO_PAGO`() {
+        assertFalse(PaymentMethodType.CASH.requiresExternalPayment)
+        assertFalse(PaymentMethodType.TRANSFER.requiresExternalPayment)
+        assertFalse(PaymentMethodType.CARD.requiresExternalPayment)
+        assertFalse(PaymentMethodType.DIGITAL_WALLET.requiresExternalPayment)
+        assertFalse(PaymentMethodType.OTHER.requiresExternalPayment)
+        assertTrue(PaymentMethodType.MERCADO_PAGO.requiresExternalPayment)
     }
 
     @Test

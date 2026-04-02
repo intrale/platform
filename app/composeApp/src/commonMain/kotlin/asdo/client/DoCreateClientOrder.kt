@@ -32,7 +32,10 @@ class DoCreateClientOrder(
         CreateClientOrderResult(
             orderId = response.orderId,
             shortCode = response.shortCode,
-            status = response.status
+            status = response.status,
+            paymentUrl = response.paymentUrl,
+            paymentId = response.paymentId,
+            requiresPayment = response.requiresPayment
         )
     }.recoverCatching { throwable ->
         logger.error(throwable) { "Fallo al crear pedido" }

@@ -20,12 +20,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DoNotDisturb
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -55,6 +58,7 @@ import DIManager
 import ui.cp.buttons.IntralePrimaryButton
 import ui.sc.shared.Screen
 import ui.util.formatPrice
+import ui.util.rememberOpenExternalUrl
 import ui.th.elevations
 import ui.th.spacing
 
@@ -70,6 +74,7 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
         val cartItems by ClientCartStore.items.collectAsState()
         val coroutineScope = rememberCoroutineScope()
         val logger = remember { LoggerFactory.default.newLogger<ClientCheckoutScreen>() }
+        val openExternalUrl = rememberOpenExternalUrl()
 
         val getClientProfile: ToDoGetClientProfile = remember { DIManager.di.direct.instance() }
         val getPaymentMethods: ToDoGetPaymentMethods = remember { DIManager.di.direct.instance() }
@@ -95,6 +100,18 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
         val subtotalLabel = Txt(MessageKey.client_cart_subtotal_label)
         val shippingLabel = Txt(MessageKey.client_cart_shipping_label)
         val totalLabel = Txt(MessageKey.client_cart_total_label)
+
+        // Strings de pago
+        val paymentPendingTitle = Txt(MessageKey.client_checkout_payment_pending_title)
+        val paymentPendingSubtitle = Txt(MessageKey.client_checkout_payment_pending_subtitle)
+        val paymentOpenMp = Txt(MessageKey.client_checkout_payment_open_mp)
+        val paymentChecking = Txt(MessageKey.client_checkout_payment_checking)
+        val paymentApprovedTitle = Txt(MessageKey.client_checkout_payment_approved_title)
+        val paymentApprovedSubtitle = Txt(MessageKey.client_checkout_payment_approved_subtitle)
+        val paymentRejectedTitle = Txt(MessageKey.client_checkout_payment_rejected_title)
+        val paymentRejectedSubtitle = Txt(MessageKey.client_checkout_payment_rejected_subtitle)
+        val paymentRetryLabel = Txt(MessageKey.client_checkout_payment_retry)
+        val paymentErrorOpen = Txt(MessageKey.client_checkout_payment_error_open)
 
         LaunchedEffect(Unit) {
             val itemsList = cartItems.values.toList()
@@ -135,15 +152,52 @@ class ClientCheckoutScreen : Screen(CLIENT_CHECKOUT_PATH) {
 
         Scaffold { padding ->
             when (viewModel.state.status) {
-                CheckoutStatus.Success -> {
+                CheckoutStatus.Success, CheckoutStatus.PaymentApproved -> {
                     CheckoutSuccessContent(
                         shortCode = viewModel.state.shortCode.orEmpty(),
-                        successTitle = successTitle,
-                        successSubtitle = successSubtitle,
+                        successTitle = if (viewModel.state.status == CheckoutStatus.PaymentApproved)
+                            paymentApprovedTitle else successTitle,
+                        successSubtitle = if (viewModel.state.status == CheckoutStatus.PaymentApproved)
+                            paymentApprovedSubtitle else successSubtitle,
                         shortcodeLabel = shortcodeLabel,
                         viewOrdersLabel = viewOrdersLabel,
                         backHomeLabel = backHomeLabel,
                         onViewOrders = { navigate(CLIENT_ORDERS_PATH) },
+                        onBackHome = { navigateClearingBackStack(CLIENT_HOME_PATH) }
+                    )
+                }
+
+                CheckoutStatus.AwaitingPayment -> {
+                    CheckoutAwaitingPaymentContent(
+                        title = paymentPendingTitle,
+                        subtitle = paymentPendingSubtitle,
+                        openMpLabel = paymentOpenMp,
+                        checkingLabel = paymentChecking,
+                        errorOpenLabel = paymentErrorOpen,
+                        onOpenPayment = {
+                            viewModel.openPaymentUrl(openExternalUrl)
+                        },
+                        onCheckPayment = {
+                            coroutineScope.launch { viewModel.pollPaymentStatus() }
+                        },
+                        backHomeLabel = backHomeLabel,
+                        onBackHome = { navigateClearingBackStack(CLIENT_HOME_PATH) }
+                    )
+                }
+
+                CheckoutStatus.CheckingPayment -> {
+                    CheckoutCheckingPaymentContent(
+                        checkingLabel = paymentChecking
+                    )
+                }
+
+                CheckoutStatus.PaymentRejected -> {
+                    CheckoutPaymentRejectedContent(
+                        title = paymentRejectedTitle,
+                        subtitle = viewModel.state.paymentFailureReason ?: paymentRejectedSubtitle,
+                        retryLabel = paymentRetryLabel,
+                        backHomeLabel = backHomeLabel,
+                        onRetry = { viewModel.retryPayment() },
                         onBackHome = { navigateClearingBackStack(CLIENT_HOME_PATH) }
                     )
                 }
@@ -385,23 +439,33 @@ private fun CheckoutPaymentCard(method: asdo.client.PaymentMethod) {
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(MaterialTheme.spacing.x3),
-            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
         ) {
-            Text(
-                text = method.name,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold
-            )
-            method.description?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            if (method.type.requiresExternalPayment) {
+                Icon(
+                    imageVector = Icons.Default.Payment,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
                 )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = method.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                method.description?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -622,6 +686,175 @@ private fun BusinessClosedBanner(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Pantalla de espera de pago externo (Mercado Pago).
+ * Muestra un botón para abrir MP y otro para verificar el estado.
+ */
+@Composable
+private fun CheckoutAwaitingPaymentContent(
+    title: String,
+    subtitle: String,
+    openMpLabel: String,
+    checkingLabel: String,
+    errorOpenLabel: String,
+    onOpenPayment: () -> Boolean,
+    onCheckPayment: () -> Unit,
+    backHomeLabel: String,
+    onBackHome: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(96.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.HourglassTop,
+                contentDescription = title,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(56.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(32.dp))
+        IntralePrimaryButton(
+            text = openMpLabel,
+            onClick = { onOpenPayment() },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        OutlinedButton(
+            onClick = onCheckPayment,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = checkingLabel,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+        TextButton(onClick = onBackHome) {
+            Text(
+                text = backHomeLabel,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+/**
+ * Pantalla de verificación de pago en progreso (polling).
+ */
+@Composable
+private fun CheckoutCheckingPaymentContent(
+    checkingLabel: String
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(64.dp),
+            color = MaterialTheme.colorScheme.tertiary,
+            strokeWidth = 6.dp
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            text = checkingLabel,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+/**
+ * Pantalla de pago rechazado con opción de reintentar.
+ */
+@Composable
+private fun CheckoutPaymentRejectedContent(
+    title: String,
+    subtitle: String,
+    retryLabel: String,
+    backHomeLabel: String,
+    onRetry: () -> Unit,
+    onBackHome: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(96.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.error.copy(alpha = 0.1f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Error,
+                contentDescription = title,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(56.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(32.dp))
+        IntralePrimaryButton(
+            text = retryLabel,
+            onClick = onRetry,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        TextButton(onClick = onBackHome) {
+            Text(
+                text = backHomeLabel,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }

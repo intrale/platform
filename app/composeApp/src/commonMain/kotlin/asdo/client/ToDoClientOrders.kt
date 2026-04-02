@@ -42,7 +42,10 @@ data class CreateClientOrderItem(
 data class CreateClientOrderResult(
     val orderId: String,
     val shortCode: String,
-    val status: String
+    val status: String,
+    val paymentUrl: String? = null,
+    val paymentId: String? = null,
+    val requiresPayment: Boolean = false
 )
 
 interface ToDoCreateClientOrder {

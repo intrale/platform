@@ -97,5 +97,26 @@ data class CreateClientOrderResponseDTO(
     val statusCode: StatusCodeDTO? = null,
     val orderId: String = "",
     val shortCode: String = "",
-    val status: String = "PENDING"
+    val status: String = "PENDING",
+    val paymentUrl: String? = null,
+    val paymentId: String? = null,
+    val requiresPayment: Boolean = false
+)
+
+// --- Mercado Pago: estado de pago ---
+
+@Serializable
+data class PaymentStatusRequestDTO(
+    val orderId: String = ""
+)
+
+@Serializable
+data class PaymentStatusResponseDTO(
+    val statusCode: StatusCodeDTO? = null,
+    val orderId: String = "",
+    val paymentStatus: String = "PENDING",
+    val paymentId: String? = null,
+    val paymentMethod: String? = null,
+    val paidAmount: Double? = null,
+    val failureReason: String? = null
 )
