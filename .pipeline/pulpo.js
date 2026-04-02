@@ -514,10 +514,12 @@ function isSystemOverloaded(config) {
       sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
       lastEmergencyTelegramTs = now;
     }
-    // Re-evaluar
+    // Re-evaluar — NO resetear consecutiveRedCycles acá, porque el kill baja
+    // temporalmente los recursos pero vuelven a subir al siguiente ciclo,
+    // causando un loop infinito de kill + notificación. El counter solo se
+    // resetea cuando el sistema baja naturalmente a GREEN o YELLOW.
     const after = getResourcePressure(config);
     if (after.level !== PRESSURE_LEVELS.RED) {
-      consecutiveRedCycles = 0; // Se recuperó
       return isSystemOverloaded(config);
     }
   }
