@@ -300,6 +300,28 @@ function countRunningBySkill(skill) {
   return count;
 }
 
+/** Skills que cuentan como "desarrolladores" para el límite global */
+const DEV_SKILLS = ['backend-dev', 'android-dev', 'web-dev', 'hotfix'];
+
+/** Contar total de devs corriendo en TODAS las fases de TODOS los pipelines */
+function countRunningDevs() {
+  const config = loadConfig();
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) {
+      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      try {
+        for (const f of fs.readdirSync(trabajandoDir)) {
+          if (f.startsWith('.')) continue;
+          const s = f.split('.').pop();
+          if (DEV_SKILLS.includes(s)) count++;
+        }
+      } catch {}
+    }
+  }
+  return count;
+}
+
 // --- Resource Monitor: CPU y Memoria del sistema ---
 
 /** Snapshot de CPU para cálculo diferencial (os.cpus() da totales acumulados) */
@@ -1132,60 +1154,105 @@ function brazoLanzamiento(config) {
   // Fases de desarrollo que se bloquean durante QA Priority
   const DEV_PHASES = ['dev', 'validacion'];
 
+  // --- PIEZA 2+3: Recolectar TODOS los pendientes de TODAS las fases ---
+  // En vez de iterar fase por fase (que prioriza fases avanzadas),
+  // juntamos todo y ordenamos por: feature priority > fase inversa.
+  const candidates = [];
+
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
-    for (const fase of pipelineConfig.fases) {
+    const fases = pipelineConfig.fases;
+    for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
+      const fase = fases[faseIdx];
+
       // QA PRIORITY: si la ventana está activa, bloquear lanzamientos de fases dev
-      // pero permitir verificacion, build, aprobacion, entrega
-      if (qaPriority && DEV_PHASES.includes(fase)) {
-        continue;
-      }
+      if (qaPriority && DEV_PHASES.includes(fase)) continue;
 
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
-      const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
-      const archivos = sortByPriority(listWorkFiles(pendienteDir), config);
+      const archivos = listWorkFiles(pendienteDir);
 
       for (const archivo of archivos) {
-        const skill = skillFromFile(archivo.name);
-        const issue = issueFromFile(archivo.name);
-        const key = processKey(skill, issue);
+        candidates.push({
+          archivo,
+          pipelineName,
+          fase,
+          faseIdx,  // Índice original de la fase (para orden inverso)
+          totalFases: fases.length,
+        });
+      }
+    }
+  }
 
-        // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
-        const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
-        if (issueAlreadyWorking) continue;
+  // Ordenar candidatos: feature priority (menor=mejor) > fase inversa (mayor idx=más avanzada=primero)
+  candidates.sort((a, b) => {
+    const issueA = issueFromFile(a.archivo.name);
+    const issueB = issueFromFile(b.archivo.name);
+    const prioA = calcularPrioridad(issueA, config);
+    const prioB = calcularPrioridad(issueB, config);
 
-        // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
-        if (isInCooldown(skill, issue)) continue;
+    // Primer criterio: prioridad de feature (menor = más prioritario)
+    if (prioA !== prioB) return prioA - prioB;
 
-        // 3. Ya hay un proceso activo para este skill+issue en memoria?
-        if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
+    // Segundo criterio (desempate): fase inversa — fases más avanzadas primero
+    // faseIdx mayor = fase más avanzada = debe procesarse antes
+    return b.faseIdx - a.faseIdx;
+  });
+
+  // --- Procesar candidatos en orden unificado ---
+  for (const candidate of candidates) {
+    const { archivo, pipelineName, fase } = candidate;
+    const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
+    const skill = skillFromFile(archivo.name);
+    const issue = issueFromFile(archivo.name);
+    const key = processKey(skill, issue);
+
+    // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
+    const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
+    if (issueAlreadyWorking) continue;
+
+    // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
+    if (isInCooldown(skill, issue)) continue;
+
+    // 3. Ya hay un proceso activo para este skill+issue en memoria?
+    if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
+      continue;
+    }
+
+    // 4. Verificar concurrencia del rol — ADAPTATIVA según presión de recursos
+    const baseMax = (config.concurrencia || {})[skill] || 1;
+    const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
+    const running = countRunningBySkill(skill);
+    if (running >= maxConcurrencia) continue;
+
+    // 5. PIEZA 1: Límite global de devs — si este skill es de desarrollo,
+    // verificar que no se exceda el máximo total de devs simultáneos
+    if (DEV_SKILLS.includes(skill)) {
+      const maxDevs = (config.resource_limits || {}).max_concurrent_devs;
+      if (maxDevs != null) {
+        const totalDevs = countRunningDevs();
+        if (totalDevs >= maxDevs) {
+          log('lanzamiento', `Límite global de devs alcanzado (${totalDevs}/${maxDevs}). Postergando ${archivo.name}`);
           continue;
         }
-
-        // 4. Verificar concurrencia del rol — ADAPTATIVA según presión de recursos
-        const baseMax = (config.concurrencia || {})[skill] || 1;
-        const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
-        const running = countRunningBySkill(skill);
-        if (running >= maxConcurrencia) continue;
-
-        // Mover a trabajando/ (atómico)
-        try {
-          const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-
-          // Pre-requisitos por fase
-          if (fase === 'verificacion') {
-            ensureQaEnvironment(config);
-          }
-
-          // Lanzar agente
-          if (fase === 'build') {
-            lanzarBuild(issue, trabajandoPath, pipelineName, config);
-          } else {
-            lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
-          }
-        } catch (e) {
-          log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
-        }
       }
+    }
+
+    // Mover a trabajando/ (atómico)
+    try {
+      const trabajandoPath = moveFile(archivo.path, trabajandoDir);
+
+      // Pre-requisitos por fase
+      if (fase === 'verificacion') {
+        ensureQaEnvironment(config);
+      }
+
+      // Lanzar agente
+      if (fase === 'build') {
+        lanzarBuild(issue, trabajandoPath, pipelineName, config);
+      } else {
+        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+      }
+    } catch (e) {
+      log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
     }
   }
 }
