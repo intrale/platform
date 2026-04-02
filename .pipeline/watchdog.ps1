@@ -1,18 +1,9 @@
-# Watchdog V2 — Vigila todos los servicios del pipeline
+# Watchdog V2 — Vigila servicios del pipeline
 # Se ejecuta cada 2 minutos via Windows Task Scheduler
-# Usa platform.ops (worktree ops en main) si esta disponible
+# Todo corre desde platform/ (repo principal, siempre en main)
 
-$OpsRoot = 'C:\Workspaces\Intrale\platform.ops'
-$FallbackRoot = 'C:\Workspaces\Intrale\platform'
-
-if (Test-Path "$OpsRoot\.pipeline\pulpo.js") {
-    $PipelineDir = "$OpsRoot\.pipeline"
-    $WorkDir = $OpsRoot
-} else {
-    $PipelineDir = "$FallbackRoot\.pipeline"
-    $WorkDir = $FallbackRoot
-}
-
+$RepoRoot = 'C:\Workspaces\Intrale\platform'
+$PipelineDir = "$RepoRoot\.pipeline"
 $LogDir = "$PipelineDir\logs"
 $LogFile = "$LogDir\watchdog.log"
 
@@ -38,9 +29,7 @@ function Test-ProcessAlive($PidFile) {
     }
 }
 
-# Servicios escriben PIDs en su propio directorio (PipelineDir = ops o fallback)
-# NO sincronizar ops con git aquí — el checkout --force borra los .pid files
-# El restart.js ya hace git sync en su fase START
+# Servicios criticos — PIDs en el mismo directorio donde corren
 $Services = @(
     @{ Name = 'pulpo';         Pid = "$PipelineDir\pulpo.pid" },
     @{ Name = 'listener';      Pid = "$PipelineDir\listener.pid" },
@@ -63,7 +52,7 @@ if ($dead.Count -eq 0) {
     exit 0
 }
 
-# Hay servicios caidos — levantar individualmente con Start-Process (sobrevive al cierre del task)
+# Hay servicios caidos — levantar individualmente
 $deadList = $dead -join ', '
 Write-Log "Servicios caidos detectados: $deadList"
 
@@ -77,8 +66,13 @@ $ScriptMap = @{
     'dashboard'    = 'dashboard-v2.js'
 }
 
-$MainRoot = $FallbackRoot
-$NodeModules = "$MainRoot\node_modules"
+# Sincronizar con main antes de levantar (para tener scripts actualizados)
+try {
+    git -C $RepoRoot fetch origin main 2>$null
+    git -C $RepoRoot reset --hard FETCH_HEAD 2>$null
+} catch {}
+
+$NodeModules = "$RepoRoot\node_modules"
 
 foreach ($svcName in $dead) {
     $script = $ScriptMap[$svcName]
@@ -89,9 +83,9 @@ foreach ($svcName in $dead) {
         continue
     }
     try {
-        $cmd = "set `"PIPELINE_STATE_DIR=$MainRoot\.pipeline`" && set `"PIPELINE_MAIN_ROOT=$MainRoot`" && set `"NODE_PATH=$NodeModules`" && node `"$scriptPath`""
+        $cmd = "set `"NODE_PATH=$NodeModules`" && node `"$scriptPath`""
         $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $cmd `
-            -WorkingDirectory $WorkDir `
+            -WorkingDirectory $RepoRoot `
             -WindowStyle Hidden `
             -PassThru
         Write-Log "  $svcName : levantado PID $($proc.Id)"
