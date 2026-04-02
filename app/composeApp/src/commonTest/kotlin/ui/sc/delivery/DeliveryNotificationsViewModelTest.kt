@@ -13,6 +13,7 @@ import ui.session.UserRole
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DeliveryNotificationsViewModelTest {
@@ -231,7 +232,25 @@ class DeliveryNotificationsViewModelTest {
         assertEquals("Error", vm.state.errorMessage)
 
         vm.clearError()
-        assertEquals(null, vm.state.errorMessage)
+        assertNull(vm.state.errorMessage)
+    }
+
+    @Test
+    fun `getState retorna el estado actual del ViewModel`() = runTest {
+        val vm = DeliveryNotificationsViewModel(
+            getNotifications = FakeGetDeliveryNotifications(Result.success(sampleNotifications())),
+            markRead = FakeMarkDeliveryNotificationRead(Result.success(Unit)),
+            markAllRead = FakeMarkAllDeliveryNotificationsRead(Result.success(Unit)),
+            loggerFactory = testLoggerFactory
+        )
+
+        val initialState = vm.getState()
+        assertTrue(initialState is DeliveryNotificationsUiState)
+        assertEquals(DeliveryNotificationsStatus.Idle, (initialState as DeliveryNotificationsUiState).status)
+
+        vm.loadNotifications()
+        val loadedState = vm.getState() as DeliveryNotificationsUiState
+        assertEquals(DeliveryNotificationsStatus.Loaded, loadedState.status)
     }
 }
 
