@@ -170,49 +170,84 @@ function clearCooldown(skill, issue) {
  */
 function killGradleDaemonsForCwd(cwd, label) {
   if (!cwd) return 0;
+  let totalKilled = 0;
+
+  // 1. Intentar ./gradlew --stop en el directorio del agente
   try {
-    // Intentar ./gradlew --stop en el directorio del agente
     const gradlewPath = path.join(cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
     if (fs.existsSync(gradlewPath)) {
-      const { execSync } = require('child_process');
       const result = execSync(`"${gradlewPath}" --stop`, {
         cwd, encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
       });
       const match = result.match(/(\d+) Daemon/);
       const count = match ? parseInt(match[1]) : 0;
       if (count > 0) {
-        log('gradle-cleanup', `${label}: ${count} daemon(s) detenidos en ${cwd}`);
+        log('gradle-cleanup', `${label}: ${count} daemon(s) detenidos via --stop`);
+        totalKilled += count;
       }
-      return count;
     }
-  } catch (e) {
-    // Si --stop falla, intentar matar por PID los daemons de este directorio
-    try {
-      const wmicOut = execSync(
-        'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
-        { encoding: 'utf8', timeout: 10000, windowsHide: true }
-      );
-      let killed = 0;
-      const cwdNormalized = cwd.replace(/\\/g, '/').toLowerCase();
-      for (const line of wmicOut.split('\n')) {
-        if ((line.includes('GradleDaemon') || line.includes('gradle-launcher')) &&
-            line.toLowerCase().includes(cwdNormalized)) {
-          const pidMatch = line.match(/,(\d+)\s*$/);
-          if (pidMatch) {
-            try {
-              execSync(`taskkill /PID ${pidMatch[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-              killed++;
-            } catch {}
-          }
+  } catch {}
+
+  // 2. Matar wrappers lanzados desde este CWD (estos SÍ tienen el path en su CommandLine)
+  try {
+    const wmicOut = execSync(
+      'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    const cwdNormalized = cwd.replace(/\\/g, '/').toLowerCase();
+    for (const line of wmicOut.split('\n')) {
+      // Matchear wrappers de este CWD (gradle-wrapper.jar incluye el path del worktree)
+      if (line.includes('gradle-wrapper.jar') && line.toLowerCase().includes(cwdNormalized)) {
+        const pidMatch = line.match(/,(\d+)\s*$/);
+        if (pidMatch) {
+          // Matar el wrapper Y su árbol de procesos hijos (incluye el GradleDaemon forkeado)
+          try {
+            execSync(`taskkill /PID ${pidMatch[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+            totalKilled++;
+          } catch {}
         }
       }
-      if (killed > 0) {
-        log('gradle-cleanup', `${label}: ${killed} daemon(s) forzados en ${cwd}`);
-      }
-      return killed;
+    }
+  } catch {}
+
+  // 3. Matar GradleDaemons ociosos (sin wrapper padre activo = huérfanos)
+  //    Los daemons NO tienen el CWD en su CommandLine, así que los identificamos
+  //    como "huérfanos" si su proceso padre ya no existe.
+  try {
+    const wmicOut = execSync(
+      'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    // Preservar el proceso de QA backend
+    let qaBackendPid = null;
+    try {
+      const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+      qaBackendPid = qaState.backend ? String(qaState.backend) : null;
     } catch {}
+
+    for (const line of wmicOut.split('\n')) {
+      if (!line.includes('GradleDaemon')) continue;
+      // Formato CSV: Node,CommandLine,ProcessId,ParentProcessId
+      const parts = line.split(',');
+      const pid = parts[parts.length - 2]?.trim();
+      const ppid = parts[parts.length - 1]?.trim();
+      if (!pid || pid === qaBackendPid) continue;
+
+      // Si el padre del daemon ya murió, el daemon es huérfano → matarlo
+      if (ppid && !isProcessAlive(parseInt(ppid, 10))) {
+        try {
+          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+          totalKilled++;
+          log('gradle-cleanup', `${label}: daemon huérfano PID ${pid} (padre ${ppid} muerto) eliminado`);
+        } catch {}
+      }
+    }
+  } catch {}
+
+  if (totalKilled > 0) {
+    log('gradle-cleanup', `${label}: ${totalKilled} proceso(s) Gradle limpiados en total`);
   }
-  return 0;
+  return totalKilled;
 }
 
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
@@ -302,7 +337,18 @@ function isSystemOverloaded(config) {
 
   const { cpuPercent, memPercent } = getSystemResourceUsage();
 
-  const overloaded = cpuPercent >= maxCpu || memPercent >= maxMem;
+  let overloaded = cpuPercent >= maxCpu || memPercent >= maxMem;
+
+  // Si está sobrecargado, intentar liberar recursos automáticamente (Gradle daemons, zombies)
+  if (overloaded) {
+    const { freed, killed } = tryFreeResources();
+    if (freed) {
+      log('recursos', `Auto-limpieza por sobrecarga: ${killed.join(', ')}`);
+      // Re-chequear después de la limpieza
+      const after = getSystemResourceUsage();
+      overloaded = after.cpuPercent >= maxCpu || after.memPercent >= maxMem;
+    }
+  }
 
   // Loguear cada 60s para no spamear
   const now = Date.now();
@@ -816,7 +862,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
     userPrompt += `4. Diagnosticá la causa raíz del fallo\n`;
     userPrompt += `5. Corregí el código en tu worktree\n`;
-    userPrompt += `6. Verificá que compila: ./gradlew check\n`;
+    userPrompt += `6. Verificá que compila: ./gradlew check --no-daemon\n`;
     userPrompt += `7. Commiteá y pusheá los fixes\n`;
     userPrompt += `\nNO reimplementes desde cero. Focalizá solo en corregir los errores del rechazo.\n`;
   }
