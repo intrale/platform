@@ -1886,10 +1886,9 @@ async function brazoCommander(config) {
   const commanderPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
   const commanderTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
   const commanderListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
-  const archivos = listWorkFiles(commanderPendiente);
 
+  let archivos = listWorkFiles(commanderPendiente);
   log('commander', `${archivos.length} mensaje(s) pendiente(s)`);
-
   if (archivos.length === 0) return;
 
   // Commander es singleton — verificar si ya hay uno corriendo
@@ -1898,8 +1897,21 @@ async function brazoCommander(config) {
     log('commander', 'Ya hay un commander corriendo — skip');
     return;
   }
+  activeProcesses.set(key, { pid: process.pid, startTime: Date.now() });
 
-  // Tomar TODOS los mensajes pendientes
+  try {
+    await _brazoCommanderInner(config, archivos, commanderPendiente, commanderTrabajando, commanderListo, key);
+  } finally {
+    activeProcesses.delete(key);
+  }
+}
+
+/**
+ * Recoger mensajes nuevos de la cola pendiente y moverlos a trabajando.
+ * @returns {Array} mensajes leídos y movidos
+ */
+function recogerMensajes(commanderPendiente, commanderTrabajando) {
+  const archivos = listWorkFiles(commanderPendiente);
   const mensajes = [];
   for (const archivo of archivos) {
     try {
@@ -1911,101 +1923,145 @@ async function brazoCommander(config) {
       log('commander', `Error moviendo ${archivo.name}: ${e.message}`);
     }
   }
+  return mensajes;
+}
+
+async function _brazoCommanderInner(config, archivosIniciales, commanderPendiente, commanderTrabajando, commanderListo, key) {
+  // --- VENTANA DE CONSOLIDACIÓN (5s) ---
+  // Esperar brevemente para capturar mensajes que llegan juntos
+  // (ej: audio 1 + audio 2 enviados con segundos de diferencia)
+  const CONSOLIDATION_MS = 5000;
+  log('commander', `Ventana de consolidación (${CONSOLIDATION_MS}ms)...`);
+  await new Promise(r => setTimeout(r, CONSOLIDATION_MS));
+
+  // Tomar TODOS los mensajes (iniciales + los que llegaron en la ventana)
+  const mensajes = recogerMensajes(commanderPendiente, commanderTrabajando);
+
+  // También mover los iniciales si aún están en pendiente
+  for (const archivo of archivosIniciales) {
+    try {
+      if (fs.existsSync(archivo.path)) {
+        const trabajandoPath = moveFile(archivo.path, commanderTrabajando);
+        const data = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+        mensajes.push({ ...data, _path: trabajandoPath });
+        log('commander', `Tomado (inicial): ${archivo.name} → trabajando/`);
+      }
+    } catch (e) {}
+  }
 
   if (mensajes.length === 0) return;
+  log('commander', `Total mensajes consolidados: ${mensajes.length}`);
 
   const historyFile = path.join(PIPELINE, 'commander-history.jsonl');
   const botToken = getTelegramToken();
   const chatId = getTelegramChatId();
   log('commander', `Token: ${botToken ? 'OK' : 'FALTA'}, ChatId: ${chatId || 'FALTA'}`);
 
-  // Preprocesar multimedia
   const { preprocessMessage, textToSpeech, sendVoiceTelegram } = require('./multimedia');
-
   const session = loadSession();
 
+  // --- PREPROCESAR TODOS los mensajes (transcribir audios, etc.) ---
   for (const m of mensajes) {
-    log('commander', `Procesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
+    log('commander', `Preprocesando msg de ${m.from}: "${(m.text || '').slice(0, 50)}"`);
     const processed = await preprocessMessage(m, botToken);
-    const textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
-    log('commander', `Preprocesado: "${textoFinal.slice(0, 80)}"`);
+    m._textoFinal = processed.text + (processed.extras.length > 0 ? ' ' + processed.extras.join(' ') : '');
+    m._esAudio = !!(m.voice || m.voice_path);
+    log('commander', `Preprocesado: "${m._textoFinal.slice(0, 80)}"`);
 
     // Registrar entrada en historial
-    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: textoFinal, timestamp: new Date().toISOString() }) + '\n');
+    fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: m.from, text: m._textoFinal, timestamp: new Date().toISOString() }) + '\n');
+  }
 
-    let respuesta = null;
-    const parsed = parseCommand(textoFinal);
+  // --- SEPARAR: comandos nativos vs texto libre ---
+  const comandos = [];
+  const textoLibre = [];
 
+  for (const m of mensajes) {
+    const parsed = parseCommand(m._textoFinal);
     if (parsed) {
-      // Handler nativo de comando
-      log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
-      switch (parsed.cmd) {
-        case 'status':
-          respuesta = cmdStatus(config);
-          break;
-        case 'actividad':
-          respuesta = cmdActividad(parsed.args);
-          break;
-        case 'intake':
-          respuesta = cmdIntake(parsed.args, config);
-          break;
-        case 'pausar':
-          respuesta = cmdPausar();
-          break;
-        case 'reanudar':
-          respuesta = cmdReanudar();
-          break;
-        case 'costos':
-          respuesta = cmdCostos();
-          break;
-        case 'help':
-        case 'start':
-          respuesta = cmdHelp();
-          break;
-        case 'stop':
-          respuesta = '🛑 Commander apagándose...';
-          sendTelegram(respuesta);
-          running = false;
-          break;
-        case 'proponer':
-          respuesta = await cmdProponer(parsed.args, config);
-          break;
-        default:
-          // Comando desconocido — delegar a Claude como texto libre
-          respuesta = null;
-          break;
-      }
+      comandos.push({ m, parsed });
+    } else {
+      textoLibre.push(m);
+    }
+  }
 
-      // Guardar contexto del comando nativo en sesión
-      if (respuesta !== null) {
-        session.lastCommand = parsed.cmd;
-        session.lastTimestamp = new Date().toISOString();
-        session.context = `Último comando: /${parsed.cmd}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
-      }
+  // --- PROCESAR COMANDOS NATIVOS (rápidos, uno a uno) ---
+  for (const { m, parsed } of comandos) {
+    log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
+    let respuesta = null;
+    switch (parsed.cmd) {
+      case 'status': respuesta = cmdStatus(config); break;
+      case 'actividad': respuesta = cmdActividad(parsed.args); break;
+      case 'intake': respuesta = cmdIntake(parsed.args, config); break;
+      case 'pausar': respuesta = cmdPausar(); break;
+      case 'reanudar': respuesta = cmdReanudar(); break;
+      case 'costos': respuesta = cmdCostos(); break;
+      case 'help': case 'start': respuesta = cmdHelp(); break;
+      case 'stop':
+        respuesta = '🛑 Commander apagándose...';
+        sendTelegram(respuesta);
+        running = false;
+        break;
+      case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
+      default: respuesta = null; break;
     }
 
-    // Si no se resolvió con handler nativo → delegar a Claude
-    if (respuesta === null) {
+    if (respuesta !== null) {
+      session.lastCommand = parsed.cmd;
+      session.lastTimestamp = new Date().toISOString();
+      session.context = `Último comando: /${parsed.cmd}. Respuesta: ${(respuesta || '').slice(0, 200)}`;
+      sendTelegram(respuesta);
+      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+    } else {
+      // Comando no reconocido → mover a texto libre
+      textoLibre.push(m);
+    }
+
+    try { moveFile(m._path, commanderListo); } catch {}
+    const logFile = path.join(LOG_DIR, 'commander.log');
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] /${parsed.cmd}\n${respuesta || '(sin respuesta)'}\n---\n`);
+  }
+
+  // --- PROCESAR TEXTO LIBRE CONSOLIDADO (una sola llamada a Claude) ---
+  if (textoLibre.length > 0) {
+    const esAudio = textoLibre.some(m => m._esAudio);
+
+    // Consolidar mensajes en un solo texto para Claude
+    let mensajeConsolidado;
+    if (textoLibre.length === 1) {
+      mensajeConsolidado = textoLibre[0]._textoFinal;
+    } else {
+      // Múltiples mensajes → contexto unificado
+      mensajeConsolidado = textoLibre.map((m, i) =>
+        `[Mensaje ${i + 1}${m._esAudio ? ' (audio)' : ''}]: ${m._textoFinal}`
+      ).join('\n\n');
+      log('commander', `Mensajes consolidados: ${textoLibre.length} → 1 prompt`);
+    }
+
+    // ACK contextual
+    sendTelegram(generarAck(mensajeConsolidado, esAudio));
+
+    try {
+      // Construir prompt
+      let historial = '';
       try {
-        let historial = '';
-        try {
-          const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-          const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n')
-            .filter(l => { try { return JSON.parse(l).timestamp >= cutoff24h; } catch { return false; } })
-            .slice(-50); // Cap a 50 entries dentro de las 24hs
-          historial = '\nHistorial reciente (24hs):\n' + lines.join('\n');
-        } catch {}
+        const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const lines = fs.readFileSync(historyFile, 'utf8').trim().split('\n')
+          .filter(l => { try { return JSON.parse(l).timestamp >= cutoff24h; } catch { return false; } })
+          .slice(-50);
+        historial = '\nHistorial reciente (24hs):\n' + lines.join('\n');
+      } catch {}
 
-        // Incluir contexto de sesión para continuidad conversacional
-        let sessionCtx = '';
-        if (session.context && session.lastTimestamp) {
-          const ageMin = (Date.now() - new Date(session.lastTimestamp).getTime()) / 60000;
-          if (ageMin < 30) { // Solo si la sesión es reciente (< 30 min)
-            sessionCtx = `\n\nContexto de sesión: ${session.context}`;
-          }
+      let sessionCtx = '';
+      if (session.context && session.lastTimestamp) {
+        const ageMin = (Date.now() - new Date(session.lastTimestamp).getTime()) / 60000;
+        if (ageMin < 30) {
+          sessionCtx = `\n\nContexto de sesión: ${session.context}`;
         }
+      }
 
-        const userPrompt = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
+      const from = textoLibre[0].from || 'Leo';
+      const userPrompt = `Sos el Commander del pipeline V2 de Intrale. Respondés por Telegram.
 
 REGLAS:
 1. Si el usuario pide una ACCIÓN (revisar, arreglar, validar, verificar, levantar, etc): EJECUTALA primero con las herramientas que tengas, y después reportá qué hiciste y el resultado.
@@ -2019,63 +2075,94 @@ REGLAS:
    - Logs: .pipeline/logs/
    - Procesos: tasklist | grep node
 
-Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
+Mensaje de ${from}: ${mensajeConsolidado}${sessionCtx}${historial}`;
 
-        const esAudio = !!(m.voice || m.voice_path);
-        sendTelegram(generarAck(textoFinal, esAudio));
-        respuesta = await ejecutarClaude(userPrompt, textoFinal);
-        log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
+      let respuesta = await ejecutarClaude(userPrompt, mensajeConsolidado);
+      log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
-        // Actualizar sesión con respuesta de Claude
-        session.lastCommand = 'chat';
-        session.lastTimestamp = new Date().toISOString();
-        session.context = `Conversación libre. Último mensaje: "${textoFinal.slice(0, 100)}". Respuesta: "${(respuesta || '').slice(0, 100)}"`;
-      } catch (e) {
-        log('commander', `Error Claude: ${e.message}`);
-        respuesta = '⚠️ Error procesando tu mensaje. Intentá de nuevo.';
-      }
-    }
+      // --- CHECK DE SUPLEMENTOS ---
+      // Mensajes que llegaron MIENTRAS Claude procesaba (ej: segundo audio complementario)
+      const suplementosRaw = recogerMensajes(commanderPendiente, commanderTrabajando);
+      if (suplementosRaw.length > 0) {
+        log('commander', `${suplementosRaw.length} suplemento(s) llegaron durante procesamiento — integrando`);
 
-    // Enviar respuesta
-    if (respuesta) {
-      let enviado = false;
+        // Preprocesar suplementos
+        const suplementosTexto = [];
+        for (const s of suplementosRaw) {
+          const proc = await preprocessMessage(s, botToken);
+          const txt = proc.text + (proc.extras.length > 0 ? ' ' + proc.extras.join(' ') : '');
+          suplementosTexto.push(txt);
+          s._textoFinal = txt;
+          s._esAudio = !!(s.voice || s.voice_path);
+          fs.appendFileSync(historyFile, JSON.stringify({ direction: 'in', from: s.from, text: txt, timestamp: new Date().toISOString() }) + '\n');
+        }
 
-      // Si el mensaje original fue de voz → intentar TTS, siempre con fallback a texto
-      if (m.voice || m.voice_path) {
-        try {
-          const audioBuffer = await textToSpeech(respuesta);
-          if (audioBuffer) {
-            // Guardar audio a disco y enviar via sendVoice directo
-            const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}.ogg`);
-            fs.writeFileSync(audioPath, audioBuffer);
-            enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
-            if (enviado) log('telegram', `Audio TTS enviado (${audioBuffer.length} bytes)`);
-          }
-        } catch (e) {
-          log('commander', `TTS error: ${e.message}`);
+        sendTelegram('💬 Vi tu mensaje adicional, lo integro a la respuesta...');
+
+        // Re-llamar a Claude con contexto completo + suplementos
+        const supplementPrompt = `${userPrompt}
+
+RESPUESTA ANTERIOR (borrador, NO enviada al usuario todavía):
+${respuesta}
+
+Mientras generabas esa respuesta, el usuario envió mensaje(s) complementario(s):
+${suplementosTexto.map((t, i) => `[Complemento ${i + 1}]: ${t}`).join('\n')}
+
+INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA respuesta final unificada que contemple tanto el pedido original como los complementos. No menciones que hubo múltiples mensajes ni que reprocessaste.`;
+
+        respuesta = await ejecutarClaude(supplementPrompt, 'complemento integrado');
+        log('commander', `Claude (suplemento) respondió: ${(respuesta || '').length} chars`);
+
+        // Mover suplementos a listo
+        for (const s of suplementosRaw) {
+          try { moveFile(s._path, commanderListo); } catch {}
         }
       }
 
-      // SIEMPRE encolar texto en servicio-telegram como respaldo
-      // Si TTS funcionó, el usuario ya tiene el audio — el texto es backup
-      // Si TTS falló, el texto es la respuesta principal
-      sendTelegram(respuesta);
-      log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
+      // Actualizar sesión
+      session.lastCommand = 'chat';
+      session.lastTimestamp = new Date().toISOString();
+      session.context = `Conversación libre. Último mensaje: "${mensajeConsolidado.slice(0, 100)}". Respuesta: "${(respuesta || '').slice(0, 100)}"`;
 
-      // Registrar salida en historial
-      fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+      // --- ENVIAR RESPUESTA ---
+      if (respuesta) {
+        let enviado = false;
+
+        // Si hubo audio → intentar TTS
+        if (esAudio) {
+          try {
+            const audioBuffer = await textToSpeech(respuesta);
+            if (audioBuffer) {
+              const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}.ogg`);
+              fs.writeFileSync(audioPath, audioBuffer);
+              enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
+              if (enviado) log('telegram', `Audio TTS enviado (${audioBuffer.length} bytes)`);
+            }
+          } catch (e) {
+            log('commander', `TTS error: ${e.message}`);
+          }
+        }
+
+        sendTelegram(respuesta);
+        log('telegram', `Texto encolado como ${enviado ? 'backup' : 'principal'} (${respuesta.length} chars)`);
+        fs.appendFileSync(historyFile, JSON.stringify({ direction: 'out', text: respuesta.slice(0, 1000), timestamp: new Date().toISOString() }) + '\n');
+      }
+    } catch (e) {
+      log('commander', `Error Claude: ${e.message}`);
+      sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
     }
 
-    // Mover a listo
-    try { moveFile(m._path, commanderListo); } catch {}
+    // Mover todos los mensajes texto-libre a listo
+    for (const m of textoLibre) {
+      try { moveFile(m._path, commanderListo); } catch {}
+    }
 
     const logFile = path.join(LOG_DIR, 'commander.log');
-    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${parsed ? '/' + parsed.cmd : 'TEXT'}\n${respuesta || '(sin respuesta)'}\n---\n`);
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] TEXT (${textoLibre.length} msgs consolidados)\n---\n`);
   }
 
-  // Persistir sesión conversacional
+  // Persistir sesión
   saveSession(session);
-  activeProcesses.delete(key);
 }
 
 function sendTelegram(text) {
@@ -2244,8 +2331,9 @@ async function mainLoop() {
 
       const config = loadConfig(); // Reload cada ciclo para hot-reload
 
-      // Commander SIEMPRE corre (incluso en pausa) — necesario para /reanudar
-      await brazoCommander(config);
+      // Commander corre ASYNC — no bloquea el loop principal
+      // El singleton check dentro de brazoCommander evita ejecuciones concurrentes
+      brazoCommander(config).catch(e => log('commander', `Error async: ${e.message}`));
 
       // Drain outbox de Telegram (context-relay, notificaciones, etc.)
       try {
