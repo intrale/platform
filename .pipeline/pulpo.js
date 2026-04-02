@@ -1647,7 +1647,7 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
   sendTelegram('🔄 Analizando backlog para generar propuestas...');
 
   try {
-    const resultado = await ejecutarClaude(propositorPrompt);
+    const resultado = await ejecutarClaude(propositorPrompt, 'proponer historias');
 
     if (resultado) {
       const proposalFile = path.join(PIPELINE, 'commander-proposals.json');
@@ -1664,7 +1664,79 @@ Formato de respuesta: lista numerada, una propuesta por item.`;
 }
 
 /** Ejecutar Claude async con spawn + stream-json (patrón V1). Retorna el texto de respuesta. */
-function ejecutarClaude(prompt) {
+/**
+ * Genera un acknowledgment contextual basado en lo que el usuario pidió.
+ * @param {string} texto - El mensaje del usuario
+ * @param {boolean} esAudio - Si el mensaje vino de un audio
+ * @returns {string}
+ */
+function generarAck(texto, esAudio = false) {
+  const t = (texto || '').toLowerCase();
+  const icon = esAudio ? '🎙️' : '💬';
+
+  // Detectar intención específica
+  if (/reinici|restart|levant|arranc/.test(t)) return `${icon} Dale, arranco con el reinicio...`;
+  if (/status|estado|tablero|dashboard/.test(t)) return `${icon} Revisando el tablero...`;
+  if (/recurs|cpu|ram|memoria|saturad/.test(t)) return `${icon} Mirando los recursos del sistema...`;
+  if (/error|fall[oó]|roto|crash|bug/.test(t)) return `${icon} Voy a investigar qué pasó...`;
+  if (/test|prueba|verificar|check/.test(t)) return `${icon} Verificando, dame un momento...`;
+  if (/deploy|entreg|merge|push|pr\b/.test(t)) return `${icon} Revisando el delivery...`;
+  if (/propuesta|propon|diseñ|implement|rediseñ/.test(t)) return `${icon} Lo estoy pensando, ya te cuento...`;
+  if (/limpi|clean|kill|mat[aá]/.test(t)) return `${icon} Encargándome de la limpieza...`;
+  if (/\?|terminaste|pudiste|hiciste|cómo|cuánto|qué pas/.test(t)) return `${icon} Buena pregunta, ya te respondo...`;
+
+  // Variantes genéricas (no repetir)
+  const genericas = [
+    `${icon} Ya lo vi, dame un momento...`,
+    `${icon} Recibido, estoy en eso...`,
+    `${icon} Dale, ya me pongo...`,
+    `${icon} Un toque que lo proceso...`,
+    `${icon} Enterado, ya laburo en eso...`,
+  ];
+  return genericas[Math.floor(Math.random() * genericas.length)];
+}
+
+/**
+ * Genera mensajes de progreso contextuales que evolucionan con el tiempo.
+ * @param {number} count - Número de mensaje de progreso (0, 1, 2, ...)
+ * @param {number} elapsedSec - Segundos transcurridos
+ * @param {number} tools - Cantidad de herramientas usadas
+ * @param {string} lastTool - Descripción de la última herramienta
+ * @param {string} textoOriginal - El pedido original del usuario
+ * @returns {string}
+ */
+function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOriginal) {
+  const ctx = lastTool ? lastTool.slice(0, 40) : '';
+  const t = (textoOriginal || '').toLowerCase();
+
+  if (count === 0) {
+    // Primera actualización (~45s) — contextual al pedido, tranquiliza
+    if (/reinici|restart/.test(t)) return `⏳ Reiniciando servicios, lleva un poquito más de lo normal...`;
+    if (/recurs|cpu|ram/.test(t)) return `⏳ Analizando consumo de recursos en detalle...`;
+    if (/error|fall|crash/.test(t)) return `⏳ Revisando logs y estado del sistema, bancame...`;
+    if (/implement|rediseñ|cambi/.test(t)) return `⏳ Trabajando en los cambios, esto tiene varios pasos...`;
+    return `⏳ ${ctx ? `Trabajando en: ${ctx}` : 'Analizando tu pedido, necesito un ratito más'}...`;
+  }
+
+  if (count === 1) {
+    // Segunda (~1.5min) — noción de avance
+    if (tools > 5) return `⚙️ Ya llevo ${tools} operaciones, avanzando bien...`;
+    if (ctx) return `⚙️ Sigo en eso — ahora estoy con: ${ctx}`;
+    return `⚙️ Sigue en marcha, un ratito más...`;
+  }
+
+  // Tercera+ — variaciones naturales
+  const avanzadas = [
+    `🔧 Esto tiene laburo pero ya le falta menos...`,
+    `💪 Bancame un toque más, ya cierro esto...`,
+    `📋 Armando la respuesta con todo lo que encontré...`,
+    `🔍 Últimos detalles, enseguida te cuento...`,
+    `✨ Ya casi termino, un momento más...`,
+  ];
+  return avanzadas[(count - 2) % avanzadas.length];
+}
+
+function ejecutarClaude(prompt, textoOriginal) {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
     const args = [
@@ -1722,22 +1794,10 @@ function ejecutarClaude(prompt) {
     let stderr = '';
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-    // Mensajes de progreso cada 45s
-    const templates = [
-      (ctx, stats) => `⏳ ${ctx ? `Estoy en: ${ctx}` : 'Analizando tu pedido'}... ${stats}`,
-      (ctx, stats) => `⚙️ ${stats}. ${ctx ? `Último paso: ${ctx}` : 'Sigo laburando'}`,
-      (ctx, stats) => `🔧 Esto lleva laburo — ${stats}. ${ctx ? `Ahora: ${ctx}` : 'Ya casi'}`,
-      (ctx, stats) => `💪 ${stats}. Bancame que ya cierro esto`,
-      (ctx, stats) => `🔄 Varias cosas que revisar — ${stats}`,
-      (ctx, stats) => `📋 ${stats}. Un toque más`,
-      (ctx, stats) => `🔍 Casi termino — ${stats}`,
-      (ctx, stats) => `✨ Ya lo tengo, dame un segundo más — ${stats}`,
-    ];
+    // Mensajes de progreso contextuales cada 45s
     const progressTimer = setInterval(() => {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      const ctx = lastToolDesc ? lastToolDesc.slice(0, 40) : '';
-      const stats = `${toolCount} pasos en ${elapsed}s`;
-      const msg = templates[progressCount % templates.length](ctx, stats);
+      const msg = generarMensajeProgreso(progressCount, elapsed, toolCount, lastToolDesc, textoOriginal);
       progressCount++;
       sendTelegram(msg);
       log('commander', `Progreso: ${msg}`);
@@ -1961,8 +2021,9 @@ REGLAS:
 
 Mensaje de ${m.from}: ${textoFinal}${sessionCtx}${historial}`;
 
-        sendTelegram('🔄 Recibido, estoy trabajando en tu pedido...');
-        respuesta = await ejecutarClaude(userPrompt);
+        const esAudio = !!(m.voice || m.voice_path);
+        sendTelegram(generarAck(textoFinal, esAudio));
+        respuesta = await ejecutarClaude(userPrompt, textoFinal);
         log('commander', `Claude respondió: ${(respuesta || '').length} chars`);
 
         // Actualizar sesión con respuesta de Claude
