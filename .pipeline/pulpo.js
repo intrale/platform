@@ -261,6 +261,80 @@ function isSystemOverloaded(config) {
   return overloaded;
 }
 
+/**
+ * Intentar liberar recursos del sistema matando procesos zombies/huérfanos.
+ * Retorna { freed: boolean, killed: string[] } con detalle de lo limpiado.
+ */
+function tryFreeResources() {
+  const killed = [];
+
+  try {
+    // 1. Matar Gradle daemons huérfanos (consumen mucha RAM)
+    const tasklistOut = execSync('tasklist /FI "IMAGENAME eq java.exe" /FO CSV /NH', {
+      encoding: 'utf8', timeout: 10000, windowsHide: true
+    });
+
+    // Contar daemons Gradle (java.exe con GradleDaemon en command line)
+    let gradleKilled = 0;
+    try {
+      // wmic da la command line completa para identificar Gradle daemons
+      const wmicOut = execSync(
+        'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+        { encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+      const gradlePids = [];
+      for (const line of wmicOut.split('\n')) {
+        if (line.includes('GradleDaemon') || line.includes('gradle-launcher')) {
+          const match = line.match(/,(\d+)\s*$/);
+          if (match) gradlePids.push(match[1]);
+        }
+      }
+
+      // Preservar el que es del QA backend (si está vivo)
+      let qaBackendPid = null;
+      try {
+        const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+        qaBackendPid = qaState.backend ? String(qaState.backend) : null;
+      } catch {}
+
+      for (const pid of gradlePids) {
+        if (pid === qaBackendPid) continue; // No matar el backend QA
+        try {
+          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+          gradleKilled++;
+        } catch {}
+      }
+    } catch {}
+
+    if (gradleKilled > 0) {
+      killed.push(`${gradleKilled} Gradle daemon(s)`);
+    }
+
+    // 2. Limpiar procesos de agentes muertos del mapa activeProcesses
+    let staleAgents = 0;
+    for (const [key, info] of activeProcesses) {
+      if (!isProcessAlive(info.pid)) {
+        activeProcesses.delete(key);
+        staleAgents++;
+      }
+    }
+    if (staleAgents > 0) {
+      killed.push(`${staleAgents} agente(s) stale del registry`);
+    }
+
+  } catch (e) {
+    log('free-resources', `Error durante limpieza: ${e.message}`);
+  }
+
+  if (killed.length > 0) {
+    const summary = killed.join(', ');
+    log('free-resources', `Recursos liberados: ${summary}`);
+    sendTelegram(`🧹 Limpieza de recursos (pre-QA): ${summary}`);
+  }
+
+  return { freed: killed.length > 0, killed };
+}
+
 // Tomar snapshot inicial de CPU al arrancar (el primer delta necesita dos puntos)
 lastCpuSnapshot = cpuSnapshot();
 
@@ -569,10 +643,46 @@ function brazoLanzamiento(config) {
   }
 }
 
-/** Asegurar que el QA environment está levantado. Se llama una vez por ciclo de verificación. */
-let qaEnvChecked = false;
+/** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
+let lastQaEnvCheck = 0;
+const QA_ENV_CHECK_INTERVAL = 5 * 60 * 1000; // Re-verificar cada 5 minutos (no una sola vez)
+let qaEnvStartFailures = 0;
+const QA_ENV_MAX_FAILURES = 3; // Circuit breaker: después de 3 fallos, dejar de intentar
+
 function ensureQaEnvironment() {
-  if (qaEnvChecked) return; // Solo chequear una vez por vida del Pulpo
+  const now = Date.now();
+
+  // Cooldown entre verificaciones: no bombardear cada tick del loop
+  if (now - lastQaEnvCheck < QA_ENV_CHECK_INTERVAL) return;
+  lastQaEnvCheck = now;
+
+  // Circuit breaker: si falló muchas veces, no seguir intentando
+  if (qaEnvStartFailures >= QA_ENV_MAX_FAILURES) {
+    log('qa-env', `Circuit breaker activo (${qaEnvStartFailures} fallos). No se reintenta levantar QA env.`);
+    return;
+  }
+
+  // GATE DE RECURSOS: no levantar servicios pesados si el sistema está saturado
+  const { cpuPercent, memPercent } = getSystemResourceUsage();
+  if (cpuPercent >= 80 || memPercent >= 85) {
+    log('qa-env', `Sistema saturado (CPU: ${cpuPercent}% | RAM: ${memPercent}%). Intentando liberar recursos...`);
+
+    // Intentar limpiar zombies/daemons para destrabar
+    const { freed } = tryFreeResources();
+
+    if (freed) {
+      // Dar un momento para que el OS libere la memoria y re-chequear
+      const after = getSystemResourceUsage();
+      if (after.cpuPercent >= 80 || after.memPercent >= 85) {
+        log('qa-env', `Post-limpieza: aún saturado (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Posponiendo QA environment.`);
+        return;
+      }
+      log('qa-env', `Post-limpieza: recursos liberados (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Continuando con QA environment.`);
+    } else {
+      log('qa-env', `No se encontraron recursos para liberar. Posponiendo QA environment.`);
+      return;
+    }
+  }
 
   const stateFile = path.join(PIPELINE, 'qa-env-state.json');
   let needsStart = false;
@@ -598,16 +708,16 @@ function ensureQaEnvironment() {
         cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
       });
       log('qa-env', 'QA environment levantado OK');
+      qaEnvStartFailures = 0; // Reset circuit breaker en éxito
       sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
     } catch (e) {
-      log('qa-env', `Error levantando QA environment: ${e.message}`);
-      sendTelegram('⚠️ Error levantando QA environment: ' + e.message.slice(0, 100));
+      qaEnvStartFailures++;
+      log('qa-env', `Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ${e.message}`);
+      sendTelegram(`⚠️ Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ` + e.message.slice(0, 100));
     }
   } else {
     log('qa-env', 'QA environment OK — ya corriendo');
   }
-
-  qaEnvChecked = true;
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
