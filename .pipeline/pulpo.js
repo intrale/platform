@@ -522,6 +522,112 @@ function countTotalRunningAgents(config) {
   return count;
 }
 
+// =============================================================================
+// QA PRIORITY WINDOW — Cuando se acumulan issues de verificación sin poder correr,
+// bloquea nuevos lanzamientos dev para liberar recursos y dar prioridad a QA.
+// Puntos 1-3 de la propuesta conversada con Leo (2026-04-02).
+// =============================================================================
+
+let qaPriorityActive = false;
+let qaPriorityActivatedAt = 0;
+let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
+let qaPriorityNotifiedTelegram = false;
+
+/**
+ * Contar issues pendientes en fase verificación (todas las pipelines).
+ */
+function countPendingVerificacion(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('verificacion')) continue;
+    const pendDir = path.join(PIPELINE, pName, 'verificacion', 'pendiente');
+    count += listWorkFiles(pendDir).length;
+  }
+  return count;
+}
+
+/**
+ * Detectar si hay agentes de dev corriendo (archivos en trabajando/ de fase dev).
+ */
+function countRunningDev(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('dev')) continue;
+    const trabajandoDir = path.join(PIPELINE, pName, 'dev', 'trabajando');
+    count += listWorkFiles(trabajandoDir).length;
+  }
+  return count;
+}
+
+/**
+ * Evaluar si debe activarse/desactivarse la QA Priority Window.
+ * Retorna true si QA Priority está activa (dev debe bloquearse).
+ */
+function evaluateQaPriority(config) {
+  const limits = config.resource_limits || {};
+  const queueThreshold = limits.qa_priority_queue_threshold || 3;
+  const waitMinutes = limits.qa_priority_wait_minutes || 30;
+  const maxDurationMinutes = limits.qa_priority_max_duration_minutes || 15;
+  const now = Date.now();
+
+  const pendingQa = countPendingVerificacion(config);
+
+  // ---- Desactivación ----
+  if (qaPriorityActive) {
+    // Si ya no hay issues QA pendientes, desactivar
+    if (pendingQa === 0) {
+      log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
+      if (qaPriorityNotifiedTelegram) {
+        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Lanzamientos dev reactivados.');
+      }
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      qaPriorityNotifiedTelegram = false;
+      return false;
+    }
+    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
+    if (now - qaPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
+      log('qa-priority', `⏱️ QA Priority Window expiró después de ${maxDurationMinutes}min — ${pendingQa} issues QA aún pendientes`);
+      if (qaPriorityNotifiedTelegram) {
+        sendTelegram(`⏱️ QA Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingQa} issues de verificación pendientes. Lanzamientos dev reactivados.`);
+      }
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      qaPriorityNotifiedTelegram = false;
+      return false;
+    }
+    return true; // Sigue activa
+  }
+
+  // ---- Activación ----
+  // Condición: N+ issues QA pendientes Y llevan M+ minutos sin poder correr
+  if (pendingQa >= queueThreshold) {
+    if (qaFirstBlockedAt === 0) {
+      qaFirstBlockedAt = now;
+      log('qa-priority', `⚠️ Acumulación QA detectada: ${pendingQa} issues pendientes en verificación — esperando ${waitMinutes}min antes de activar QA Priority`);
+    }
+    const waitedMs = now - qaFirstBlockedAt;
+    if (waitedMs >= waitMinutes * 60 * 1000) {
+      qaPriorityActive = true;
+      qaPriorityActivatedAt = now;
+      qaPriorityNotifiedTelegram = true;
+      log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min sin verificar. Bloqueando lanzamientos dev.`);
+      sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min esperando verificación. Bloqueando nuevos lanzamientos de dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
+      return true;
+    }
+  } else {
+    // Si bajó del umbral, resetear el timer
+    if (qaFirstBlockedAt !== 0) {
+      log('qa-priority', `✅ Acumulación QA bajó a ${pendingQa} (< ${queueThreshold}) — timer de QA Priority reseteado`);
+      qaFirstBlockedAt = 0;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Logear los top 5 procesos por consumo de RAM.
  * Esto ayuda a diagnosticar QUÉ está consumiendo antes de actuar a ciegas.
@@ -953,12 +1059,24 @@ function brazoLanzamiento(config) {
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
 
+  // Evaluar QA Priority Window — bloquea dev si QA está acumulado
+  const qaPriority = evaluateQaPriority(config);
+
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
   const multiplier = concurrencyMultiplier(pressure.level);
 
+  // Fases de desarrollo que se bloquean durante QA Priority
+  const DEV_PHASES = ['dev', 'validacion'];
+
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     for (const fase of pipelineConfig.fases) {
+      // QA PRIORITY: si la ventana está activa, bloquear lanzamientos de fases dev
+      // pero permitir verificacion, build, aprobacion, entrega
+      if (qaPriority && DEV_PHASES.includes(fase)) {
+        continue;
+      }
+
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
       const archivos = sortByPriority(listWorkFiles(pendienteDir), config);
