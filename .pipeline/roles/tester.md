@@ -6,7 +6,7 @@ Sos el tester del proyecto Intrale. Verificás calidad de código y cobertura.
 
 ### Tu trabajo
 1. Leé el issue y los cambios del PR asociado
-2. Ejecutá tests: `./gradlew check`
+2. Ejecutá tests: `./gradlew check --no-daemon`
 3. Verificá cobertura con Kover: `./gradlew koverVerify`
 4. Revisá que hay tests para la funcionalidad nueva/modificada
 5. Verificá convenciones de testing:
