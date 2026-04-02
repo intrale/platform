@@ -43,7 +43,17 @@ data class DeliveryOrderDTO(
     @SerialName("createdAt")
     val createdAt: String? = null,
     @SerialName("updatedAt")
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    @SerialName("businessAddress")
+    val businessAddress: String? = null,
+    @SerialName("businessLatitude")
+    val businessLatitude: Double? = null,
+    @SerialName("businessLongitude")
+    val businessLongitude: Double? = null,
+    @SerialName("customerLatitude")
+    val customerLatitude: Double? = null,
+    @SerialName("customerLongitude")
+    val customerLongitude: Double? = null
 )
 
 @Serializable
