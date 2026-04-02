@@ -28,24 +28,27 @@ function Test-ProcessAlive($PidFile) {
     if (-not (Test-Path $PidFile)) { return $false }
     $pidStr = Get-Content $PidFile -ErrorAction SilentlyContinue
     if (-not $pidStr -or $pidStr.Trim() -eq '') { return $false }
-    $pid = [int]$pidStr.Trim()
-    if ($pid -eq 0) { return $false }
+    $procId = [int]$pidStr.Trim()
+    if ($procId -eq 0) { return $false }
     try {
-        $proc = Get-Process -Id $pid -ErrorAction Stop
+        $proc = Get-Process -Id $procId -ErrorAction Stop
         return ($proc.ProcessName -eq 'node')
     } catch {
         return $false
     }
 }
 
+# PIDs siempre se escriben en el repo principal (PIPELINE_STATE_DIR de restart.js)
+$PidDir = "$FallbackRoot\.pipeline"
+
 # Servicios criticos que deben estar siempre vivos
 $Services = @(
-    @{ Name = 'pulpo';         Pid = "$PipelineDir\pulpo.pid" },
-    @{ Name = 'listener';      Pid = "$PipelineDir\listener.pid" },
-    @{ Name = 'svc-telegram';  Pid = "$PipelineDir\svc-telegram.pid" },
-    @{ Name = 'svc-github';    Pid = "$PipelineDir\svc-github.pid" },
-    @{ Name = 'svc-drive';     Pid = "$PipelineDir\svc-drive.pid" },
-    @{ Name = 'dashboard';     Pid = "$PipelineDir\dashboard.pid" }
+    @{ Name = 'pulpo';         Pid = "$PidDir\pulpo.pid" },
+    @{ Name = 'listener';      Pid = "$PidDir\listener.pid" },
+    @{ Name = 'svc-telegram';  Pid = "$PidDir\svc-telegram.pid" },
+    @{ Name = 'svc-github';    Pid = "$PidDir\svc-github.pid" },
+    @{ Name = 'svc-drive';     Pid = "$PidDir\svc-drive.pid" },
+    @{ Name = 'dashboard';     Pid = "$PidDir\dashboard.pid" }
 )
 
 # Sincronizar worktree ops con main (silencioso)
