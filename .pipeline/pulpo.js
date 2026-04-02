@@ -183,21 +183,43 @@ function killGradleDaemonsForCwd(cwd, label) {
   if (!cwd) return 0;
   let totalKilled = 0;
 
-  // 1. Intentar ./gradlew --stop en el directorio del agente
-  try {
-    const gradlewPath = path.join(cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
-    if (fs.existsSync(gradlewPath)) {
-      const result = execSync(`"${gradlewPath}" --stop`, {
-        cwd, encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
-      });
-      const match = result.match(/(\d+) Daemon/);
-      const count = match ? parseInt(match[1]) : 0;
-      if (count > 0) {
-        log('gradle-cleanup', `${label}: ${count} daemon(s) detenidos via --stop`);
-        totalKilled += count;
-      }
+  // Verificar si hay otros procesos activos usando este mismo CWD.
+  // Si los hay, NO ejecutar --stop porque es una operación global que mata
+  // TODOS los daemons, incluyendo los de builds/agentes activos.
+  const cwdNorm = cwd.replace(/\\/g, '/').toLowerCase();
+  const rootNorm = ROOT.replace(/\\/g, '/').toLowerCase();
+  let hasOtherActiveInSameCwd = false;
+  for (const [key, info] of activeProcesses) {
+    if (!isProcessAlive(info.pid)) continue;
+    // Si el proceso activo usa ROOT como CWD (no worktree), y nuestro cwd es ROOT
+    // o si el proceso activo usa un worktree que coincide con nuestro cwd
+    const processCwd = info.worktreePath
+      ? info.worktreePath.replace(/\\/g, '/').toLowerCase()
+      : rootNorm;
+    if (processCwd === cwdNorm) {
+      hasOtherActiveInSameCwd = true;
+      log('gradle-cleanup', `${label}: omitiendo --stop, proceso activo ${key} (PID ${info.pid}) usa mismo CWD`);
+      break;
     }
-  } catch {}
+  }
+
+  // 1. Intentar ./gradlew --stop SOLO si no hay otros procesos activos en este CWD
+  if (!hasOtherActiveInSameCwd) {
+    try {
+      const gradlewPath = path.join(cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+      if (fs.existsSync(gradlewPath)) {
+        const result = execSync(`"${gradlewPath}" --stop`, {
+          cwd, encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
+        });
+        const match = result.match(/(\d+) Daemon/);
+        const count = match ? parseInt(match[1]) : 0;
+        if (count > 0) {
+          log('gradle-cleanup', `${label}: ${count} daemon(s) detenidos via --stop`);
+          totalKilled += count;
+        }
+      }
+    } catch {}
+  }
 
   // 2. Matar wrappers lanzados desde este CWD (estos SÍ tienen el path en su CommandLine)
   try {
@@ -1544,7 +1566,8 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     startTime: buildStartTime,
     trabajandoPath,
     pipeline,
-    fase: 'build'
+    fase: 'build',
+    worktreePath: buildCwd !== ROOT ? buildCwd : null
   });
 
   let output = '';
