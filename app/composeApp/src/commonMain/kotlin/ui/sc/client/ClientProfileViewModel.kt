@@ -13,6 +13,7 @@ import asdo.client.ManageAddressAction
 import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.client.ToDoUpdatePushPreferences
 import ar.com.intrale.strings.model.MessageKey
 import io.konform.validation.Validation
 import io.konform.validation.jsonschema.minLength
@@ -63,6 +64,7 @@ class ClientProfileViewModel(
     private val updateClientProfile: ToDoUpdateClientProfile = DIManager.di.direct.instance(),
     private val manageClientAddress: ToDoManageClientAddress = DIManager.di.direct.instance(),
     private val toDoResetLoginCache: ToDoResetLoginCache = DIManager.di.direct.instance(),
+    private val updatePushPreferences: ToDoUpdatePushPreferences = DIManager.di.direct.instance(),
     loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
@@ -230,6 +232,27 @@ class ClientProfileViewModel(
             }
     }
 
+    fun onPushPreferenceChange(transform: ClientPreferences.() -> ClientPreferences) {
+        state = state.copy(preferences = state.preferences.transform())
+    }
+
+    suspend fun savePushPreferences() {
+        logger.info { "Guardando preferencias de notificaciones push" }
+        updatePushPreferences.execute(state.preferences)
+            .onSuccess { updatedPrefs ->
+                state = state.copy(
+                    preferences = updatedPrefs,
+                    successKey = MessageKey.client_push_settings_saved
+                )
+            }
+            .onFailure { throwable ->
+                logger.error(throwable) { "No se pudieron guardar las preferencias push" }
+                state = state.copy(
+                    error = throwable.message ?: "No se pudieron guardar las preferencias"
+                )
+            }
+    }
+
     suspend fun logout() {
         toDoResetLoginCache.execute()
         SessionStore.clear()
@@ -249,6 +272,9 @@ class ClientProfileViewModel(
             address.copy(isDefault = address.id == defaultId)
         }
         val cleanAddressForm = if (resetAddressForm) AddressForm(isDefault = updatedAddresses.isEmpty()) else state.addressForm
+
+        // Sincronizar preferencias push con el store centralizado
+        ClientPushPreferencesStore.updateFromPreferences(data.preferences)
 
         state = state.copy(
             profileForm = ClientProfileForm(

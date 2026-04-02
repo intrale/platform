@@ -10,6 +10,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.tooling.preview.Preview
+import ext.push.AndroidPushNotificationDisplay
+import ext.push.PushDeepLinkStore
 import ui.App
 
 class MainActivity : ComponentActivity() {
@@ -17,9 +19,29 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Inicializar canales de notificacion push
+        AndroidPushNotificationDisplay(this).initializeChannels()
+
+        // Procesar deep link si viene de una notificacion push
+        handlePushDeepLink(intent)
+
         setContent {
             Box(modifier = Modifier.semantics { testTagsAsResourceId = true }) {
                 App()
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        handlePushDeepLink(intent)
+    }
+
+    private fun handlePushDeepLink(intent: android.content.Intent?) {
+        if (intent?.getBooleanExtra("fromPush", false) == true) {
+            val orderId = intent.getStringExtra("orderId")
+            if (!orderId.isNullOrBlank()) {
+                PushDeepLinkStore.setPendingOrderNavigation(orderId)
             }
         }
     }

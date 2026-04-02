@@ -30,7 +30,12 @@ data class ClientAddressDTO(
 
 @Serializable
 data class ClientPreferencesDTO(
-    val language: String = "es"
+    val language: String = "es",
+    val pushNotificationsEnabled: Boolean = true,
+    val pushOrderConfirmed: Boolean = true,
+    val pushOrderDelivering: Boolean = true,
+    val pushOrderNearby: Boolean = true,
+    val pushOrderDelivered: Boolean = true
 )
 
 @Serializable

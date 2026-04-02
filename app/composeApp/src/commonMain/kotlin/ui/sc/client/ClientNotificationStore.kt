@@ -57,6 +57,13 @@ object ClientNotificationStore {
         }
     }
 
+    fun addFromPush(notification: ClientNotification) {
+        _notifications.update { current ->
+            if (current.any { it.id == notification.id }) return@update current
+            (current + notification).sortedByDescending { it.timestamp }
+        }
+    }
+
     fun markAsRead(id: String) {
         _notifications.update { current ->
             current.map { if (it.id == id) it.copy(isRead = true) else it }
