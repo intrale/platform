@@ -875,6 +875,19 @@ internal val DefaultCatalog_en: Map<MessageKey, String> = mapOf(
     MessageKey.client_notifications_event_business_message to "Message from {business}: {message}",
     MessageKey.client_notifications_push_placeholder to "Push notifications will be activated soon.",
 
+    // Push notification preferences
+    MessageKey.client_push_settings_title to "Push notifications",
+    MessageKey.client_push_settings_enabled to "Enable push notifications",
+    MessageKey.client_push_settings_enabled_description to "Receive alerts when your order status changes",
+    MessageKey.client_push_settings_order_confirmed to "Order accepted by business",
+    MessageKey.client_push_settings_order_delivering to "Delivery person on the way",
+    MessageKey.client_push_settings_order_nearby to "Order arriving soon",
+    MessageKey.client_push_settings_order_delivered to "Order delivered",
+    MessageKey.client_push_settings_saved to "Notification preferences saved",
+    MessageKey.client_push_settings_category_title to "Notification types",
+    MessageKey.client_push_status_active to "Push active",
+    MessageKey.client_push_status_inactive to "Push disabled",
+
     // Available orders (Delivery flavor)
     MessageKey.delivery_available_orders_tab to "Available",
     MessageKey.delivery_orders_tab_mine to "My Orders",

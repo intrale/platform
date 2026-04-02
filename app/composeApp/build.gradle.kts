@@ -253,6 +253,7 @@ kotlin {
             dependencies {
                 implementation(compose.preview)
                 implementation(libs.androidx.activity.compose)
+                implementation(libs.androidx.core.ktx)
                 implementation(libs.ktor.client.android)
                 implementation("io.coil-kt:coil-compose:2.6.0")
                 implementation("io.coil-kt:coil-svg:2.6.0")

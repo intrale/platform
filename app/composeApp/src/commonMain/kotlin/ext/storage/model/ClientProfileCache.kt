@@ -8,5 +8,10 @@ data class ClientProfileCache(
     val email: String? = null,
     val phone: String? = null,
     val defaultAddressId: String? = null,
-    val preferredLanguage: String? = null
+    val preferredLanguage: String? = null,
+    val pushNotificationsEnabled: Boolean = true,
+    val pushOrderConfirmed: Boolean = true,
+    val pushOrderDelivering: Boolean = true,
+    val pushOrderNearby: Boolean = true,
+    val pushOrderDelivered: Boolean = true
 )
