@@ -261,6 +261,80 @@ function isSystemOverloaded(config) {
   return overloaded;
 }
 
+/**
+ * Intentar liberar recursos del sistema matando procesos zombies/huérfanos.
+ * Retorna { freed: boolean, killed: string[] } con detalle de lo limpiado.
+ */
+function tryFreeResources() {
+  const killed = [];
+
+  try {
+    // 1. Matar Gradle daemons huérfanos (consumen mucha RAM)
+    const tasklistOut = execSync('tasklist /FI "IMAGENAME eq java.exe" /FO CSV /NH', {
+      encoding: 'utf8', timeout: 10000, windowsHide: true
+    });
+
+    // Contar daemons Gradle (java.exe con GradleDaemon en command line)
+    let gradleKilled = 0;
+    try {
+      // wmic da la command line completa para identificar Gradle daemons
+      const wmicOut = execSync(
+        'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+        { encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+      const gradlePids = [];
+      for (const line of wmicOut.split('\n')) {
+        if (line.includes('GradleDaemon') || line.includes('gradle-launcher')) {
+          const match = line.match(/,(\d+)\s*$/);
+          if (match) gradlePids.push(match[1]);
+        }
+      }
+
+      // Preservar el que es del QA backend (si está vivo)
+      let qaBackendPid = null;
+      try {
+        const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+        qaBackendPid = qaState.backend ? String(qaState.backend) : null;
+      } catch {}
+
+      for (const pid of gradlePids) {
+        if (pid === qaBackendPid) continue; // No matar el backend QA
+        try {
+          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+          gradleKilled++;
+        } catch {}
+      }
+    } catch {}
+
+    if (gradleKilled > 0) {
+      killed.push(`${gradleKilled} Gradle daemon(s)`);
+    }
+
+    // 2. Limpiar procesos de agentes muertos del mapa activeProcesses
+    let staleAgents = 0;
+    for (const [key, info] of activeProcesses) {
+      if (!isProcessAlive(info.pid)) {
+        activeProcesses.delete(key);
+        staleAgents++;
+      }
+    }
+    if (staleAgents > 0) {
+      killed.push(`${staleAgents} agente(s) stale del registry`);
+    }
+
+  } catch (e) {
+    log('free-resources', `Error durante limpieza: ${e.message}`);
+  }
+
+  if (killed.length > 0) {
+    const summary = killed.join(', ');
+    log('free-resources', `Recursos liberados: ${summary}`);
+    sendTelegram(`🧹 Limpieza de recursos (pre-QA): ${summary}`);
+  }
+
+  return { freed: killed.length > 0, killed };
+}
+
 // Tomar snapshot inicial de CPU al arrancar (el primer delta necesita dos puntos)
 lastCpuSnapshot = cpuSnapshot();
 
@@ -552,7 +626,7 @@ function brazoLanzamiento(config) {
 
           // Pre-requisitos por fase
           if (fase === 'verificacion') {
-            ensureQaEnvironment();
+            ensureQaEnvironment(config);
           }
 
           // Lanzar agente
@@ -569,10 +643,50 @@ function brazoLanzamiento(config) {
   }
 }
 
-/** Asegurar que el QA environment está levantado. Se llama una vez por ciclo de verificación. */
-let qaEnvChecked = false;
-function ensureQaEnvironment() {
-  if (qaEnvChecked) return; // Solo chequear una vez por vida del Pulpo
+/** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
+let lastQaEnvCheck = 0;
+const QA_ENV_CHECK_INTERVAL = 5 * 60 * 1000; // Re-verificar cada 5 minutos (no una sola vez)
+let qaEnvStartFailures = 0;
+const QA_ENV_MAX_FAILURES = 3; // Circuit breaker: después de 3 fallos, dejar de intentar
+
+function ensureQaEnvironment(config) {
+  const now = Date.now();
+
+  // Cooldown entre verificaciones: no bombardear cada tick del loop
+  if (now - lastQaEnvCheck < QA_ENV_CHECK_INTERVAL) return;
+  lastQaEnvCheck = now;
+
+  // Circuit breaker: si falló muchas veces, no seguir intentando
+  if (qaEnvStartFailures >= QA_ENV_MAX_FAILURES) {
+    log('qa-env', `Circuit breaker activo (${qaEnvStartFailures} fallos). No se reintenta levantar QA env.`);
+    return;
+  }
+
+  // GATE DE RECURSOS: QA env usa umbrales más bajos que agentes porque levanta 3 servicios pesados
+  const limits = config.resource_limits || {};
+  const maxCpu = limits.qa_env_max_cpu_percent || 60;
+  const maxMem = limits.qa_env_max_mem_percent || 60;
+
+  const { cpuPercent, memPercent } = getSystemResourceUsage();
+  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
+    log('qa-env', `Sistema saturado para QA env (CPU: ${cpuPercent}% >= ${maxCpu}% | RAM: ${memPercent}% >= ${maxMem}%). Intentando liberar recursos...`);
+
+    // Intentar limpiar zombies/daemons para destrabar
+    const { freed } = tryFreeResources();
+
+    if (freed) {
+      // Re-chequear después de la limpieza
+      const after = getSystemResourceUsage();
+      if (after.cpuPercent >= maxCpu || after.memPercent >= maxMem) {
+        log('qa-env', `Post-limpieza: aún saturado (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Posponiendo QA environment.`);
+        return;
+      }
+      log('qa-env', `Post-limpieza: recursos liberados (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Continuando con QA environment.`);
+    } else {
+      log('qa-env', `No se encontraron recursos para liberar. Posponiendo QA environment.`);
+      return;
+    }
+  }
 
   const stateFile = path.join(PIPELINE, 'qa-env-state.json');
   let needsStart = false;
@@ -598,16 +712,16 @@ function ensureQaEnvironment() {
         cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
       });
       log('qa-env', 'QA environment levantado OK');
+      qaEnvStartFailures = 0; // Reset circuit breaker en éxito
       sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
     } catch (e) {
-      log('qa-env', `Error levantando QA environment: ${e.message}`);
-      sendTelegram('⚠️ Error levantando QA environment: ' + e.message.slice(0, 100));
+      qaEnvStartFailures++;
+      log('qa-env', `Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ${e.message}`);
+      sendTelegram(`⚠️ Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ` + e.message.slice(0, 100));
     }
   } else {
     log('qa-env', 'QA environment OK — ya corriendo');
   }
-
-  qaEnvChecked = true;
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
@@ -1332,27 +1446,34 @@ function parseCommand(text) {
   const match = trimmed.match(/^\/(\w+)\s*(.*)?$/s);
   if (match) return { cmd: match[1].toLowerCase(), args: (match[2] || '').trim() };
 
-  // Detección de intención por lenguaje natural (para audio transcripto)
+  // Detección de intención por lenguaje natural (solo para mensajes cortos tipo comando)
+  // Si el texto es largo (>80 chars), es conversación libre — delegar a Claude
   const lower = trimmed.toLowerCase();
-  const intentPatterns = [
-    { pattern: /\b(status|estado|tablero|cómo est[áa]|que hay en el pipeline)\b/i, cmd: 'status' },
-    { pattern: /\b(pausar|paus[áa]|fren[áa]|par[áa] el pulpo)\b/i, cmd: 'pausar' },
-    { pattern: /\b(reanudar|reanud[áa]|segui|continu[áa]|arrancá)\b/i, cmd: 'reanudar' },
-    { pattern: /\b(actividad|qué pas[óo]|movimientos|timeline)\b/i, cmd: 'actividad' },
-    { pattern: /\b(costos?|gasto|consumo|tokens?)\b/i, cmd: 'costos' },
-    { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
-    { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa])\b/i, cmd: 'intake' },
-    { pattern: /\b(proponer|propon[eé]|historias nuevas|ideas)\b/i, cmd: 'proponer' },
-    { pattern: /\b(stop|apag[áa]|cerr[áa])\b/i, cmd: 'stop' },
-  ];
+  const isShortMessage = trimmed.length <= 80;
 
-  for (const { pattern, cmd } of intentPatterns) {
-    if (pattern.test(lower)) {
-      // Extraer argumentos: todo lo que no es el keyword
-      const args = lower.replace(pattern, '').trim();
-      log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
-      return { cmd, args };
+  if (isShortMessage) {
+    // Patrones estrictos: solo matchean intenciones claras de comando, no menciones casuales
+    const intentPatterns = [
+      { pattern: /\b(status|estado del pipeline|tablero|que hay en el pipeline)\b/i, cmd: 'status' },
+      { pattern: /\b(pausar|paus[áa] el|fren[áa] el|par[áa] el pulpo)\b/i, cmd: 'pausar' },
+      { pattern: /\b(reanudar|reanud[áa] el|arranc[áa] el pulpo)\b/i, cmd: 'reanudar' },
+      { pattern: /\b(mostrame la actividad|qué pas[óo] en el pipeline|timeline)\b/i, cmd: 'actividad' },
+      { pattern: /\b(mostrame los costos|cuánto gastamos|reporte de costos)\b/i, cmd: 'costos' },
+      { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
+      { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, cmd: 'intake' },
+      { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
+      { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
+    ];
+
+    for (const { pattern, cmd } of intentPatterns) {
+      if (pattern.test(lower)) {
+        const args = lower.replace(pattern, '').trim();
+        log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
+        return { cmd, args };
+      }
     }
+  } else {
+    log('commander', `Texto largo (${trimmed.length} chars) — delegando a Claude como texto libre`);
   }
 
   return null; // Texto libre — delegar a Claude
