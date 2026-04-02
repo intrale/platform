@@ -7,6 +7,8 @@ import asdo.delivery.DeliveryOrderStatus
 import asdo.delivery.ToDoGetDeliveryNotifications
 import asdo.delivery.ToDoMarkAllDeliveryNotificationsRead
 import asdo.delivery.ToDoMarkDeliveryNotificationRead
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import org.kodein.log.LoggerFactory
 import org.kodein.log.frontend.simplePrintFrontend
@@ -312,6 +314,39 @@ class DeliveryNotificationStoreTest {
         DeliveryNotificationStore.markAllAsRead()
 
         assertEquals(0, DeliveryNotificationStore.unreadCount)
+    }
+
+    @Test
+    fun `updateFromOrders concurrente no pierde notificaciones`() = runTest {
+        DeliveryNotificationStore.clear()
+
+        // Dos listas de órdenes distintas que se procesan en paralelo
+        val ordersBatch1 = (1..50).map { i ->
+            DeliveryOrder("batch1_$i", "B1-$i", "Negocio Batch1 $i", "Zona A", DeliveryOrderStatus.PENDING, null)
+        }
+        val ordersBatch2 = (1..50).map { i ->
+            DeliveryOrder("batch2_$i", "B2-$i", "Negocio Batch2 $i", "Zona B", DeliveryOrderStatus.IN_PROGRESS, null)
+        }
+
+        // Lanzar ambas actualizaciones en paralelo (simula race condition)
+        val deferred1 = async { DeliveryNotificationStore.updateFromOrders(ordersBatch1) }
+        val deferred2 = async { DeliveryNotificationStore.updateFromOrders(ordersBatch2) }
+        awaitAll(deferred1, deferred2)
+
+        val notifications = DeliveryNotificationStore.notifications.value
+        // Ambos batches deben estar presentes — ninguna notificación se pierde
+        assertEquals(100, notifications.size, "Dos llamadas concurrentes con 50 órdenes cada una deben producir 100 notificaciones")
+
+        val batch1Ids = (1..50).map { "batch1_${it}_PENDING" }
+        val batch2Ids = (1..50).map { "batch2_${it}_IN_PROGRESS" }
+        val allIds = notifications.map { it.id }.toSet()
+
+        batch1Ids.forEach { id ->
+            assertTrue(id in allIds, "Falta notificación $id del batch 1")
+        }
+        batch2Ids.forEach { id ->
+            assertTrue(id in allIds, "Falta notificación $id del batch 2")
+        }
     }
 
     @Test
