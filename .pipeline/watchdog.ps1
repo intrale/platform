@@ -38,26 +38,17 @@ function Test-ProcessAlive($PidFile) {
     }
 }
 
-# PIDs siempre se escriben en el repo principal (PIPELINE_STATE_DIR de restart.js)
-$PidDir = "$FallbackRoot\.pipeline"
-
-# Servicios criticos que deben estar siempre vivos
+# Servicios escriben PIDs en su propio directorio (PipelineDir = ops o fallback)
+# NO sincronizar ops con git aquí — el checkout --force borra los .pid files
+# El restart.js ya hace git sync en su fase START
 $Services = @(
-    @{ Name = 'pulpo';         Pid = "$PidDir\pulpo.pid" },
-    @{ Name = 'listener';      Pid = "$PidDir\listener.pid" },
-    @{ Name = 'svc-telegram';  Pid = "$PidDir\svc-telegram.pid" },
-    @{ Name = 'svc-github';    Pid = "$PidDir\svc-github.pid" },
-    @{ Name = 'svc-drive';     Pid = "$PidDir\svc-drive.pid" },
-    @{ Name = 'dashboard';     Pid = "$PidDir\dashboard.pid" }
+    @{ Name = 'pulpo';         Pid = "$PipelineDir\pulpo.pid" },
+    @{ Name = 'listener';      Pid = "$PipelineDir\listener.pid" },
+    @{ Name = 'svc-telegram';  Pid = "$PipelineDir\svc-telegram.pid" },
+    @{ Name = 'svc-github';    Pid = "$PipelineDir\svc-github.pid" },
+    @{ Name = 'svc-drive';     Pid = "$PipelineDir\svc-drive.pid" },
+    @{ Name = 'dashboard';     Pid = "$PipelineDir\dashboard.pid" }
 )
-
-# Sincronizar worktree ops con main (silencioso)
-if ($WorkDir -eq $OpsRoot) {
-    try {
-        git -C $OpsRoot fetch origin main 2>$null
-        git -C $OpsRoot checkout FETCH_HEAD --force 2>$null
-    } catch {}
-}
 
 # Verificar cada servicio
 $dead = @()
@@ -72,17 +63,39 @@ if ($dead.Count -eq 0) {
     exit 0
 }
 
-# Hay servicios caidos — restart completo
+# Hay servicios caidos — levantar individualmente con Start-Process (sobrevive al cierre del task)
 $deadList = $dead -join ', '
-Write-Log "Servicios caidos detectados: $deadList -- ejecutando restart.js"
+Write-Log "Servicios caidos detectados: $deadList"
 
-try {
-    $restartScript = "$PipelineDir\restart.js"
-    $output = & node $restartScript 2>&1
-    foreach ($line in $output) {
-        Write-Log "  $line"
+# Mapeo de servicio a script
+$ScriptMap = @{
+    'pulpo'        = 'pulpo.js'
+    'listener'     = 'listener-telegram.js'
+    'svc-telegram' = 'servicio-telegram.js'
+    'svc-github'   = 'servicio-github.js'
+    'svc-drive'    = 'servicio-drive.js'
+    'dashboard'    = 'dashboard-v2.js'
+}
+
+$MainRoot = $FallbackRoot
+$NodeModules = "$MainRoot\node_modules"
+
+foreach ($svcName in $dead) {
+    $script = $ScriptMap[$svcName]
+    if (-not $script) { continue }
+    $scriptPath = "$PipelineDir\$script"
+    if (-not (Test-Path $scriptPath)) {
+        Write-Log "  $svcName : script no encontrado ($scriptPath)"
+        continue
     }
-    Write-Log "Restart completado"
-} catch {
-    Write-Log "ERROR en restart: $_"
+    try {
+        $cmd = "set `"PIPELINE_STATE_DIR=$MainRoot\.pipeline`" && set `"PIPELINE_MAIN_ROOT=$MainRoot`" && set `"NODE_PATH=$NodeModules`" && node `"$scriptPath`""
+        $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $cmd `
+            -WorkingDirectory $WorkDir `
+            -WindowStyle Hidden `
+            -PassThru
+        Write-Log "  $svcName : levantado PID $($proc.Id)"
+    } catch {
+        Write-Log "  $svcName : ERROR al levantar - $_"
+    }
 }
