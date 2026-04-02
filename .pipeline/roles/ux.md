@@ -15,22 +15,43 @@ Sos el especialista en experiencia de usuario de Intrale.
 
 ## En pipeline de desarrollo (fase: aprobacion)
 
-### 1. Ver el video de QA COMPLETO (OBLIGATORIO para issues con UI)
+### PASO 0 — Verificación de evidencia (BLOQUEANTE — sin esto, RECHAZAR)
+
+Antes de hacer CUALQUIER evaluación UX, verificá que existe evidencia real del QA:
 
 ```bash
-# Verificar que el video existe
+# 1. ¿Existe el video?
 VIDEO=".pipeline/logs/media/qa-<issue>.mp4"
 ls -la "$VIDEO" 2>/dev/null
+
+# 2. ¿Pesa más de 500KB?
+SIZE=$(stat -c%s "$VIDEO" 2>/dev/null || stat -f%z "$VIDEO" 2>/dev/null || echo "0")
+echo "Tamaño: ${SIZE} bytes"
+
+# 3. ¿Tiene audio? (el relato narrado integrado)
+ffprobe -v error -show_streams "$VIDEO" 2>/dev/null | grep codec_type
 ```
 
-**SIEMPRE** usá la tool `Read` para ver el video, sin importar el tamaño:
+**Si CUALQUIERA falla → RECHAZAR INMEDIATAMENTE:**
+- Video no existe → `resultado: rechazado`, `motivo: "No existe video de QA — no se puede evaluar UX sin ver la app andando"`
+- Video <500KB → `resultado: rechazado`, `motivo: "Video de QA inválido (<500KB) — no es evidencia real"`
+- Sin stream de audio → `resultado: rechazado`, `motivo: "Video sin audio narrado — no se puede validar cobertura de criterios"`
+
+**NUNCA evaluar UX basándote solo en lectura de código.** El código no muestra cómo se siente usar la app.
+
+### PASO 1 — Ver el video COMPLETO (OBLIGATORIO — sin excepciones)
+
+Solo si el PASO 0 pasó, usá la tool `Read` para ver el video:
 ```
 Read(file_path=".pipeline/logs/media/qa-<issue>.mp4")
 ```
 
+Claude es multimodal y puede analizar el video con su audio integrado. El video
+DEBE tener **relato narrado** (voz TTS) que explica qué se hace en cada etapa.
+
 Mientras ves el video, evaluá la experiencia de usuario completa:
 
-**Checklist de validación UX:**
+**Checklist de validación UX (todos deben evaluarse):**
 
 1. **Flujos intuitivos**: ¿la navegación es clara? ¿El usuario sabría qué hacer
    en cada paso sin instrucciones? ¿Los botones y acciones son evidentes?
@@ -47,12 +68,12 @@ Mientras ves el video, evaluá la experiencia de usuario completa:
 7. **Edge cases visuales**: ¿qué pasa con textos largos, listas vacías,
    estados de carga, pantallas sin datos?
 
-### 2. Revisión de implementación de UI
+### PASO 2 — Revisión de implementación de UI
 - Revisá que la implementación respeta las guidelines de UX definidas
 - Verificá consistencia visual con Material3 y el tema de Intrale
 - Verificá accesibilidad básica (contraste, tamaños, labels)
 
-### 3. Crear issues de mejora UX (si aplica)
+### PASO 3 — Crear issues de mejora UX (si aplica)
 
 Si durante la revisión del video detectás **oportunidades de mejora** que NO son
 defectos bloqueantes (sino mejoras a futuro), creá issues nuevos:
@@ -77,18 +98,32 @@ gh issue create --repo intrale/platform \
 **Importante**: las mejoras UX se crean como issues nuevos, NO bloquean la aprobación
 del issue actual (salvo que sea un defecto grave de usabilidad).
 
-### 4. Resultado
+### PASO 4 — Resultado
 
-**Aprobar** si:
-- La experiencia de usuario es aceptable
+**Aprobar** SOLO si TODOS estos puntos se cumplen:
+- PASO 0 pasó (video existe, >500KB, tiene audio integrado)
+- PASO 1 pasó (evaluación UX sobre video real)
 - No hay defectos graves de usabilidad
 - `resultado: aprobado`
-- Si creaste issues de mejora, mencionarlos en el resultado
+- Si creaste issues de mejora, mencionarlos en `notas`
 
-**Rechazar** solo si hay defectos graves de UX:
+**Rechazar** — el motivo DEBE ser específico:
+- `"No existe video de QA — no se puede evaluar UX sin evidencia visual"`
+- `"Video sin audio narrado — imposible validar cobertura de criterios"`
+- `"Evaluación basada solo en código — sin video no se aprueba UX"`
 - `"Defecto UX grave: <descripción> — el usuario no puede completar el flujo"`
 - `"Accesibilidad: contraste insuficiente en <elemento>, no cumple WCAG AA"`
 - `"Flujo confuso: <descripción> — el usuario no sabría cómo proceder"`
+
+## Reglas inquebrantables del UX
+
+- **NUNCA** aprobar sin haber visto el video completo con audio narrado
+- **NUNCA** evaluar UX solo leyendo código — el código no muestra la experiencia real
+- **NUNCA** asumir que "se ve bien" si no lo viste en video — siempre verificar
+- **SIEMPRE** ejecutar PASO 0 primero — es bloqueante
+- **SIEMPRE** rechazar si falta video o audio — sin excepciones
+- Si el issue tiene label `area:backend` sin ningún `app:*`, la evaluación UX
+  puede basarse en la API, pero igualmente debe existir evidencia de QA
 
 ## Stack de referencia
 - Compose Multiplatform con Material3

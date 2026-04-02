@@ -523,6 +523,45 @@ function countTotalRunningAgents(config) {
 }
 
 // =============================================================================
+// GATE DE EVIDENCIA QA — Validación automática de evidencia antes de promover
+// Si QA dice "aprobado" pero no hay video real con audio, se fuerza rechazo.
+// =============================================================================
+
+const QA_VIDEO_MIN_SIZE_BYTES = 512000; // 500KB mínimo para un video real
+
+/**
+ * Validar que el resultado del QA tiene evidencia real.
+ * Retorna array de problemas encontrados (vacío = OK).
+ */
+function validateQaEvidence(issue, qaData) {
+  const issues = [];
+
+  // 1. Verificar que el YAML tiene los campos obligatorios de evidencia
+  if (!qaData.evidencia) {
+    issues.push('falta campo "evidencia" en resultado QA');
+  }
+  if (!qaData.video_size_kb || qaData.video_size_kb < 500) {
+    issues.push(`video_size_kb ausente o muy chico (${qaData.video_size_kb || 0}KB < 500KB)`);
+  }
+  if (qaData.tiene_audio !== true) {
+    issues.push('falta audio narrado en el video (tiene_audio != true)');
+  }
+
+  // 2. Verificar que el archivo de video existe y tiene tamaño real
+  const videoPath = path.join(PIPELINE, 'logs', 'media', `qa-${issue}.mp4`);
+  try {
+    const stat = fs.statSync(videoPath);
+    if (stat.size < QA_VIDEO_MIN_SIZE_BYTES) {
+      issues.push(`video existe pero pesa ${Math.round(stat.size / 1024)}KB (mínimo 500KB)`);
+    }
+  } catch {
+    issues.push(`video no encontrado en ${videoPath}`);
+  }
+
+  return issues;
+}
+
+// =============================================================================
 // QA PRIORITY WINDOW — Cuando se acumulan issues de verificación sin poder correr,
 // bloquea nuevos lanzamientos dev para liberar recursos y dar prioridad a QA.
 // Puntos 1-3 de la propuesta conversada con Leo (2026-04-02).
@@ -850,6 +889,30 @@ function brazoBarrido(config) {
           ...readYaml(a.path),
           file: a
         }));
+
+        // --- GATE DE EVIDENCIA QA (fase verificacion) ---
+        // Si el QA dice "aprobado" pero no tiene evidencia real, forzar rechazo automático.
+        // Esto evita que issues pasen a aprobación sin video con audio narrado.
+        if (fase === 'verificacion') {
+          const qaResult = resultados.find(r => skillFromFile(r.file.name) === 'qa');
+          if (qaResult && qaResult.resultado === 'aprobado') {
+            const issues = validateQaEvidence(issue, qaResult);
+            if (issues.length > 0) {
+              log('barrido', `⛔ #${issue} QA aprobó SIN evidencia válida: ${issues.join(', ')}`);
+              qaResult.resultado = 'rechazado';
+              qaResult.motivo = `Evidencia QA incompleta: ${issues.join('; ')}`;
+              // Sobrescribir el archivo con el rechazo
+              writeYaml(qaResult.file.path, {
+                ...qaResult,
+                file: undefined,  // No persistir el campo 'file'
+                resultado: 'rechazado',
+                motivo: qaResult.motivo,
+                rechazado_por: 'gate-evidencia-automatico'
+              });
+              sendTelegram(`⛔ #${issue} — QA aprobó sin evidencia válida. Rechazo automático: ${issues.join('; ')}`);
+            }
+          }
+        }
 
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
 
@@ -1367,6 +1430,21 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
         writeYaml(trabajandoPath, data);
       }
+
+      // --- VALIDACIÓN ON-EXIT QA ---
+      // Si el agente QA terminó diciendo "aprobado" pero sin evidencia, forzar rechazo
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        const evidenceIssues = validateQaEvidence(issue, data);
+        if (evidenceIssues.length > 0) {
+          log('lanzamiento', `⛔ QA:#${issue} aprobó sin evidencia válida on-exit: ${evidenceIssues.join(', ')}`);
+          data.resultado = 'rechazado';
+          data.motivo = `Evidencia QA incompleta (gate on-exit): ${evidenceIssues.join('; ')}`;
+          data.rechazado_por = 'gate-evidencia-on-exit';
+          writeYaml(trabajandoPath, data);
+          sendTelegram(`⛔ QA:#${issue} — evidencia incompleta al terminar. Rechazo automático: ${evidenceIssues.join('; ')}`);
+        }
+      }
+
       moveFile(trabajandoPath, listoDir);
       log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
     } catch (e) {
