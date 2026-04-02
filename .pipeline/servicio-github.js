@@ -8,9 +8,9 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
-const PIPELINE = path.resolve(__dirname);
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github');
 const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
 const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
@@ -85,4 +85,20 @@ function main() {
 fs.writeFileSync(path.join(PIPELINE, 'svc-github.pid'), String(process.pid));
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
+
+// Crash handlers — loguear antes de morir para diagnóstico
+const LOG_DIR = path.join(PIPELINE, 'logs');
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+
 main();

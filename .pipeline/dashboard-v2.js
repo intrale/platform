@@ -13,8 +13,8 @@ const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
-const PIPELINE = path.resolve(__dirname);
-const ROOT = path.resolve(__dirname, '..');
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
@@ -1204,3 +1204,17 @@ server.listen(PORT, () => {
 fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid));
 process.on('SIGINT', () => { server.close(); process.exit(0); });
 process.on('SIGTERM', () => { server.close(); process.exit(0); });
+
+// Crash handlers — loguear antes de morir para diagnóstico
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [dashboard] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [dashboard] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});

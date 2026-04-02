@@ -29,19 +29,21 @@ platform/
 ## Comandos de build esenciales
 
 ```bash
-./gradlew clean build                # Build completo con todas las verificaciones
-./gradlew check                      # Tests + verificaciones
+./gradlew clean build --no-daemon    # Build completo con todas las verificaciones
+./gradlew check --no-daemon          # Tests + verificaciones
 ./gradlew :backend:run               # Levantar backend embebido
 ./gradlew :app:composeApp:run        # App escritorio (JVM)
 ./gradlew :app:composeApp:wasmJsBrowserDevelopmentRun  # App web (Wasm)
-./gradlew :app:composeApp:installDebug                 # App Android (flavor client)
-./gradlew :app:composeApp:assembleBusinessDebug        # APK Intrale Negocios (APP_TYPE=BUSINESS)
-./gradlew :app:composeApp:assembleDeliveryDebug        # APK Intrale Repartos (APP_TYPE=DELIVERY)
-./gradlew :users:shadowJar           # JAR para Lambda AWS
-./gradlew verifyNoLegacyStrings      # Verificar strings legacy
-./gradlew :app:composeApp:validateComposeResources     # Validar resource packs
-./gradlew :app:composeApp:scanNonAsciiFallbacks        # Verificar fallbacks ASCII
+./gradlew :app:composeApp:installDebug --no-daemon     # App Android (flavor client)
+./gradlew :app:composeApp:assembleBusinessDebug --no-daemon  # APK Intrale Negocios (APP_TYPE=BUSINESS)
+./gradlew :app:composeApp:assembleDeliveryDebug --no-daemon  # APK Intrale Repartos (APP_TYPE=DELIVERY)
+./gradlew :users:shadowJar --no-daemon  # JAR para Lambda AWS
+./gradlew verifyNoLegacyStrings --no-daemon  # Verificar strings legacy
+./gradlew :app:composeApp:validateComposeResources --no-daemon  # Validar resource packs
+./gradlew :app:composeApp:scanNonAsciiFallbacks --no-daemon    # Verificar fallbacks ASCII
 ```
+
+> **IMPORTANTE:** Siempre usar `--no-daemon` en builds. Los Gradle daemons consumen hasta 4GB de heap cada uno y persisten después de que el build termina, saturando el sistema.
 
 ## Arquitectura del App (capas)
 

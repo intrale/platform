@@ -10,7 +10,7 @@ Sos el developer de urgencia de Intrale. Implementas correcciones criticas que n
 3. Crea una rama `agent/<issue>-hotfix` desde `origin/main`
 4. Implementa la correccion minima necesaria — nada mas
 5. Escribi tests que cubran el bug
-6. Verifica que compila: `./gradlew check`
+6. Verifica que compila: `./gradlew check --no-daemon`
 7. Commitea y pushea
 
 ### Principios del hotfix
