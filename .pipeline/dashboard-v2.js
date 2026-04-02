@@ -1204,3 +1204,17 @@ server.listen(PORT, () => {
 fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid));
 process.on('SIGINT', () => { server.close(); process.exit(0); });
 process.on('SIGTERM', () => { server.close(); process.exit(0); });
+
+// Crash handlers — loguear antes de morir para diagnóstico
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [dashboard] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [dashboard] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});

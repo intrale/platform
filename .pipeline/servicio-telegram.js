@@ -157,6 +157,21 @@ async function main() {
   }
 }
 
+// Crash handlers — loguear antes de morir para diagnóstico
+const LOG_DIR = path.join(PIPELINE, 'logs');
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [svc-telegram] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [svc-telegram] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-telegram.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+
 // --- SINGLETON ---
 require('./singleton')('svc-telegram');
 main();
