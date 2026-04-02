@@ -16,6 +16,7 @@ const path = require('path');
 
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
+const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || 'C:\\Workspaces\\Intrale\\platform';
 
 
 // --- Worktree ops: los scripts operativos SIEMPRE corren desde platform.ops (main) ---
@@ -175,7 +176,7 @@ function launchAll() {
       stdio: ['ignore', logFd, logFd],
       detached: true,
       windowsHide: true,
-      env: { ...process.env, PIPELINE_STATE_DIR: PIPELINE, PIPELINE_MAIN_ROOT: ROOT, NODE_PATH: path.join(ROOT, "node_modules") }
+      env: { ...process.env, PIPELINE_STATE_DIR: PIPELINE, PIPELINE_MAIN_ROOT: MAIN_ROOT, NODE_PATH: path.join(MAIN_ROOT, "node_modules") }
     });
     child.unref();
     fs.closeSync(logFd);
