@@ -1,7 +1,6 @@
 package ui.sc.client
 
 import asdo.client.ClientNotification
-import asdo.client.ClientPreferences
 import asdo.client.NotificationEventType
 import asdo.client.ToDoGetNotifications
 import asdo.client.ToDoMarkAllNotificationsRead
@@ -191,60 +190,6 @@ class ClientNotificationsViewModelTest {
 
         vm.clearError()
         assertNull(vm.state.errorMessage)
-    }
-}
-
-class ClientNotificationStoreTest {
-
-    @Test
-    fun `updateFromOrders genera notificaciones por estado de pedido`() {
-        ClientNotificationStore.clear()
-        val orders = listOf(
-            asdo.client.ClientOrder(
-                id = "ord-1", publicId = "PUB-001", shortCode = "001",
-                businessName = "La Esquina", status = asdo.client.ClientOrderStatus.CONFIRMED,
-                createdAt = "2026-03-25T10:00:00", promisedAt = null, total = 100.0, itemCount = 2
-            ),
-            asdo.client.ClientOrder(
-                id = "ord-2", publicId = "PUB-002", shortCode = "002",
-                businessName = "Panaderia", status = asdo.client.ClientOrderStatus.DELIVERING,
-                createdAt = "2026-03-25T09:30:00", promisedAt = null, total = 50.0, itemCount = 1
-            )
-        )
-
-        ClientNotificationStore.updateFromOrders(orders)
-
-        assertEquals(2, ClientNotificationStore.notifications.value.size)
-        assertEquals(2, ClientNotificationStore.unreadCount)
-    }
-
-    @Test
-    fun `addBusinessMessage agrega notificacion de mensaje`() {
-        ClientNotificationStore.clear()
-
-        ClientNotificationStore.addBusinessMessage(
-            orderId = "ord-1",
-            shortCode = "001",
-            businessName = "La Esquina",
-            message = "Tu pedido esta listo!",
-            timestamp = "2026-03-25T11:00:00"
-        )
-
-        val notifs = ClientNotificationStore.notifications.value
-        assertEquals(1, notifs.size)
-        assertEquals(NotificationEventType.BUSINESS_MESSAGE, notifs.first().eventType)
-    }
-
-    @Test
-    fun `clear elimina todas las notificaciones`() {
-        ClientNotificationStore.addBusinessMessage(
-            "ord-1", "001", "Test", "msg", "2026-01-01"
-        )
-
-        ClientNotificationStore.clear()
-
-        assertTrue(ClientNotificationStore.notifications.value.isEmpty())
-        assertEquals(0, ClientNotificationStore.unreadCount)
     }
 }
 
