@@ -339,67 +339,201 @@ function getSystemResourceUsage() {
   return { cpuPercent, memPercent };
 }
 
-/** Verificar si el sistema está sobrecargado según los thresholds configurados */
+// =============================================================================
+// SISTEMA DE PRESIÓN DE RECURSOS — Graduado (green/yellow/orange/red)
+// En vez de binario "sobrecargado sí/no", responde proporcionalmente.
+// =============================================================================
+
+const PRESSURE_LEVELS = { GREEN: 'green', YELLOW: 'yellow', ORANGE: 'orange', RED: 'red' };
 let lastResourceLog = 0;
-function isSystemOverloaded(config) {
-  const thresholds = config.resource_limits || {};
-  const maxCpu = thresholds.max_cpu_percent || 80;
-  const maxMem = thresholds.max_mem_percent || 80;
+let lastPressureLevel = PRESSURE_LEVELS.GREEN;
+let proactiveCycleCounter = 0;
+
+/**
+ * Determinar el nivel de presión del sistema basado en CPU y RAM.
+ * Retorna { level, cpuPercent, memPercent, maxOfBoth }
+ */
+function getResourcePressure(config) {
+  const limits = config.resource_limits || {};
+  const greenMax  = limits.green_max_percent  || 50;
+  const yellowMax = limits.yellow_max_percent || 65;
+  const orangeMax = limits.orange_max_percent || 80;
+  // red = todo lo que esté por encima de orange
 
   const { cpuPercent, memPercent } = getSystemResourceUsage();
+  const maxOfBoth = Math.max(cpuPercent, memPercent);
 
-  let overloaded = cpuPercent >= maxCpu || memPercent >= maxMem;
+  let level;
+  if (maxOfBoth < greenMax)       level = PRESSURE_LEVELS.GREEN;
+  else if (maxOfBoth < yellowMax) level = PRESSURE_LEVELS.YELLOW;
+  else if (maxOfBoth < orangeMax) level = PRESSURE_LEVELS.ORANGE;
+  else                            level = PRESSURE_LEVELS.RED;
 
-  // Si está sobrecargado, intentar liberar recursos automáticamente (Gradle daemons, zombies)
-  if (overloaded) {
-    const { freed, killed } = tryFreeResources();
-    if (freed) {
-      log('recursos', `Auto-limpieza por sobrecarga: ${killed.join(', ')}`);
-      // Re-chequear después de la limpieza
-      const after = getSystemResourceUsage();
-      overloaded = after.cpuPercent >= maxCpu || after.memPercent >= maxMem;
-    }
-  }
-
-  // Loguear cada 60s para no spamear
-  const now = Date.now();
-  if (overloaded || now - lastResourceLog > 60000) {
-    const status = overloaded ? '🔴 SOBRECARGADO' : '🟢 OK';
-    log('recursos', `${status} — CPU: ${cpuPercent}% (max ${maxCpu}%) | RAM: ${memPercent}% (max ${maxMem}%)`);
-    lastResourceLog = now;
-  }
-
-  return overloaded;
+  return { level, cpuPercent, memPercent, maxOfBoth };
 }
 
 /**
- * Intentar liberar recursos del sistema matando procesos zombies/huérfanos.
- * Retorna { freed: boolean, killed: string[] } con detalle de lo limpiado.
+ * Obtener el multiplicador de concurrencia según la presión.
+ * GREEN=1.0, YELLOW=0.5, ORANGE=solo 1 agente, RED=0
  */
-function tryFreeResources() {
+function concurrencyMultiplier(level) {
+  switch (level) {
+    case PRESSURE_LEVELS.GREEN:  return 1.0;
+    case PRESSURE_LEVELS.YELLOW: return 0.5;
+    case PRESSURE_LEVELS.ORANGE: return 0;   // Se maneja especial: max 1 total
+    case PRESSURE_LEVELS.RED:    return 0;
+    default: return 1.0;
+  }
+}
+
+/**
+ * Verificar si el sistema permite lanzar un nuevo agente.
+ * Reemplaza isSystemOverloaded() con lógica graduada:
+ * - GREEN: todo OK, capacidad completa
+ * - YELLOW: limpieza suave + concurrencia reducida al 50%
+ * - ORANGE: limpieza agresiva + máximo 1 agente total
+ * - RED: bloqueo total + kill de emergencia
+ */
+function isSystemOverloaded(config) {
+  const pressure = getResourcePressure(config);
+  const { level, cpuPercent, memPercent } = pressure;
+
+  // Transición de nivel → logear y actuar
+  const levelChanged = level !== lastPressureLevel;
+  if (levelChanged) {
+    const emoji = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴' }[level];
+    log('recursos', `${emoji} Presión cambió: ${lastPressureLevel} → ${level} — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+    lastPressureLevel = level;
+  }
+
+  // Acciones según nivel
+  if (level === PRESSURE_LEVELS.GREEN) {
+    // Loguear cada 60s
+    const now = Date.now();
+    if (now - lastResourceLog > 60000) {
+      log('recursos', `🟢 OK — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastResourceLog = now;
+    }
+    return false;
+  }
+
+  if (level === PRESSURE_LEVELS.YELLOW) {
+    // Limpieza suave: solo Gradle daemons huérfanos
+    const { freed, killed } = tryFreeResources('soft');
+    if (freed) log('recursos', `🟡 Limpieza suave: ${killed.join(', ')}`);
+    // Re-evaluar — si bajó a green, permitir
+    const after = getResourcePressure(config);
+    if (after.level === PRESSURE_LEVELS.GREEN) return false;
+    // Yellow permite lanzar pero con concurrencia reducida (se aplica en brazoLanzamiento)
+    log('recursos', `🟡 YELLOW — CPU: ${cpuPercent}% | RAM: ${memPercent}% — concurrencia reducida`);
+    lastResourceLog = Date.now();
+    return false; // No bloquea, pero brazoLanzamiento reduce slots
+  }
+
+  if (level === PRESSURE_LEVELS.ORANGE) {
+    // Diagnóstico: ¿qué está consumiendo?
+    if (config.resource_limits?.diagnostic_on_orange !== false) {
+      logTopConsumers();
+    }
+    // Limpieza agresiva: daemons + kotlin daemons
+    const { freed, killed } = tryFreeResources('aggressive');
+    if (freed) {
+      log('recursos', `🟠 Limpieza agresiva: ${killed.join(', ')}`);
+      // Re-evaluar
+      const after = getResourcePressure(config);
+      if (after.level === PRESSURE_LEVELS.GREEN || after.level === PRESSURE_LEVELS.YELLOW) {
+        return false;
+      }
+    }
+    // Orange: permitir solo si hay menos de 1 agente total
+    const totalRunning = countTotalRunningAgents(config);
+    if (totalRunning >= 1) {
+      log('recursos', `🟠 ORANGE — ${totalRunning} agente(s) corriendo, bloqueando nuevos — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastResourceLog = Date.now();
+      return true;
+    }
+    return false; // Dejar pasar 1 agente
+  }
+
+  // RED: bloqueo total + kill de emergencia
+  logTopConsumers();
+  const { freed, killed } = tryFreeResources('emergency');
+  if (freed) {
+    log('recursos', `🔴 Kill de emergencia: ${killed.join(', ')}`);
+    sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+    // Re-evaluar
+    const after = getResourcePressure(config);
+    if (after.level !== PRESSURE_LEVELS.RED) {
+      return isSystemOverloaded(config); // Recurse con nivel nuevo
+    }
+  }
+  log('recursos', `🔴 RED — BLOQUEADO — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+  lastResourceLog = Date.now();
+  return true;
+}
+
+/**
+ * Contar total de agentes corriendo en todas las fases (filesystem = fuente de verdad)
+ */
+function countTotalRunningAgents(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) {
+      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
+      try {
+        for (const f of fs.readdirSync(trabajandoDir)) {
+          if (!f.startsWith('.')) count++;
+        }
+      } catch {}
+    }
+  }
+  return count;
+}
+
+/**
+ * Logear los top 5 procesos por consumo de RAM.
+ * Esto ayuda a diagnosticar QUÉ está consumiendo antes de actuar a ciegas.
+ */
+function logTopConsumers() {
+  try {
+    const wmicOut = execSync(
+      'wmic process get Name,ProcessId,WorkingSetSize /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    const processes = [];
+    for (const line of wmicOut.split('\n')) {
+      const parts = line.trim().split(',');
+      if (parts.length < 4) continue;
+      const name = parts[1];
+      const pid = parts[2];
+      const memBytes = parseInt(parts[3], 10);
+      if (!name || !memBytes || isNaN(memBytes)) continue;
+      processes.push({ name, pid, memMB: Math.round(memBytes / 1048576) });
+    }
+    processes.sort((a, b) => b.memMB - a.memMB);
+    const top5 = processes.slice(0, 5);
+    const lines = top5.map((p, i) => `  ${i + 1}. ${p.name} (PID ${p.pid}): ${p.memMB}MB`);
+    log('diagnostico', `Top 5 procesos por RAM:\n${lines.join('\n')}`);
+  } catch (e) {
+    log('diagnostico', `Error obteniendo top consumers: ${e.message}`);
+  }
+}
+
+/**
+ * Intentar liberar recursos con nivel de agresividad variable.
+ * Niveles: 'soft' (solo Gradle daemons), 'aggressive' (+Kotlin daemons), 'emergency' (+node huérfanos)
+ */
+function tryFreeResources(mode = 'soft') {
   const killed = [];
 
   try {
-    // 1. Matar Gradle daemons huérfanos (consumen mucha RAM)
-    const tasklistOut = execSync('tasklist /FI "IMAGENAME eq java.exe" /FO CSV /NH', {
-      encoding: 'utf8', timeout: 10000, windowsHide: true
-    });
-
-    // Contar daemons Gradle (java.exe con GradleDaemon en command line)
+    // 1. Matar Gradle daemons huérfanos (en todos los modos)
     let gradleKilled = 0;
     try {
-      // wmic da la command line completa para identificar Gradle daemons
       const wmicOut = execSync(
-        'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+        'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
         { encoding: 'utf8', timeout: 10000, windowsHide: true }
       );
-      const gradlePids = [];
-      for (const line of wmicOut.split('\n')) {
-        if (line.includes('GradleDaemon') || line.includes('gradle-launcher')) {
-          const match = line.match(/,(\d+)\s*$/);
-          if (match) gradlePids.push(match[1]);
-        }
-      }
 
       // Preservar el que es del QA backend (si está vivo)
       let qaBackendPid = null;
@@ -408,20 +542,49 @@ function tryFreeResources() {
         qaBackendPid = qaState.backend ? String(qaState.backend) : null;
       } catch {}
 
-      for (const pid of gradlePids) {
-        if (pid === qaBackendPid) continue; // No matar el backend QA
+      for (const line of wmicOut.split('\n')) {
+        if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
+        const parts = line.split(',');
+        const pid = parts[parts.length - 2]?.trim();
+        const ppid = parts[parts.length - 1]?.trim();
+        if (!pid || pid === qaBackendPid) continue;
+
+        // En modo soft: solo matar huérfanos (padre muerto)
+        // En modo aggressive/emergency: matar TODOS los daemons Gradle
+        const isOrphan = ppid && !isProcessAlive(parseInt(ppid, 10));
+        if (mode === 'soft' && !isOrphan) continue;
+
         try {
           execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
           gradleKilled++;
         } catch {}
       }
     } catch {}
+    if (gradleKilled > 0) killed.push(`${gradleKilled} Gradle daemon(s)`);
 
-    if (gradleKilled > 0) {
-      killed.push(`${gradleKilled} Gradle daemon(s)`);
+    // 2. Matar Kotlin compile daemons (en aggressive/emergency)
+    if (mode !== 'soft') {
+      let kotlinKilled = 0;
+      try {
+        const wmicOut = execSync(
+          'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+          { encoding: 'utf8', timeout: 10000, windowsHide: true }
+        );
+        for (const line of wmicOut.split('\n')) {
+          if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
+          const match = line.match(/,(\d+)\s*$/);
+          if (match) {
+            try {
+              execSync(`taskkill /PID ${match[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+              kotlinKilled++;
+            } catch {}
+          }
+        }
+      } catch {}
+      if (kotlinKilled > 0) killed.push(`${kotlinKilled} Kotlin daemon(s)`);
     }
 
-    // 2. Limpiar procesos de agentes muertos del mapa activeProcesses
+    // 3. Limpiar procesos de agentes muertos del mapa activeProcesses (todos los modos)
     let staleAgents = 0;
     for (const [key, info] of activeProcesses) {
       if (!isProcessAlive(info.pid)) {
@@ -429,21 +592,73 @@ function tryFreeResources() {
         staleAgents++;
       }
     }
-    if (staleAgents > 0) {
-      killed.push(`${staleAgents} agente(s) stale del registry`);
+    if (staleAgents > 0) killed.push(`${staleAgents} agente(s) stale`);
+
+    // 4. Emergency: matar node.exe huérfanos que sean agentes Claude ya terminados
+    if (mode === 'emergency') {
+      let nodeKilled = 0;
+      try {
+        const wmicOut = execSync(
+          'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+          { encoding: 'utf8', timeout: 10000, windowsHide: true }
+        );
+        // PIDs que el Pulpo conoce como activos — NO matar
+        const activePids = new Set();
+        for (const [, info] of activeProcesses) activePids.add(String(info.pid));
+        // PIDs de servicios del pipeline — NO matar
+        const servicePids = new Set();
+        try {
+          for (const f of fs.readdirSync(PIPELINE)) {
+            if (f.endsWith('.pid')) {
+              const pidVal = fs.readFileSync(path.join(PIPELINE, f), 'utf8').trim();
+              if (pidVal) servicePids.add(pidVal);
+            }
+          }
+        } catch {}
+        // El propio Pulpo
+        servicePids.add(String(process.pid));
+
+        for (const line of wmicOut.split('\n')) {
+          if (!line.includes('cli.js') && !line.includes('claude')) continue;
+          const match = line.match(/,(\d+)\s*$/);
+          if (!match) continue;
+          const pid = match[1];
+          if (activePids.has(pid) || servicePids.has(pid)) continue;
+          // Es un proceso Claude que el Pulpo no conoce = zombie
+          try {
+            execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+            nodeKilled++;
+          } catch {}
+        }
+      } catch {}
+      if (nodeKilled > 0) killed.push(`${nodeKilled} Claude zombie(s)`);
     }
 
   } catch (e) {
-    log('free-resources', `Error durante limpieza: ${e.message}`);
+    log('free-resources', `Error durante limpieza (${mode}): ${e.message}`);
   }
 
   if (killed.length > 0) {
-    const summary = killed.join(', ');
-    log('free-resources', `Recursos liberados: ${summary}`);
-    sendTelegram(`🧹 Limpieza de recursos (pre-QA): ${summary}`);
+    log('free-resources', `[${mode}] Recursos liberados: ${killed.join(', ')}`);
   }
 
   return { freed: killed.length > 0, killed };
+}
+
+/**
+ * Limpieza proactiva — se ejecuta cada N ciclos aunque no haya presión.
+ * Mata daemons huérfanos que se acumulan silenciosamente.
+ */
+function proactiveCleanup(config) {
+  const interval = config.resource_limits?.proactive_cleanup_cycles || 10;
+  proactiveCycleCounter++;
+  if (proactiveCycleCounter < interval) return;
+  proactiveCycleCounter = 0;
+
+  const { freed, killed } = tryFreeResources('soft');
+  if (freed) {
+    log('proactivo', `Limpieza periódica: ${killed.join(', ')}`);
+  }
 }
 
 // Tomar snapshot inicial de CPU al arrancar (el primer delta necesita dos puntos)
@@ -700,8 +915,15 @@ function sortByPriority(archivos, config) {
 }
 
 function brazoLanzamiento(config) {
-  // GATE DE RECURSOS: no lanzar nuevos agentes si CPU o RAM están sobrecargados
+  // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
+  proactiveCleanup(config);
+
+  // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
+
+  // Calcular multiplicador de concurrencia según presión actual
+  const pressure = getResourcePressure(config);
+  const multiplier = concurrencyMultiplier(pressure.level);
 
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     for (const fase of pipelineConfig.fases) {
@@ -726,8 +948,9 @@ function brazoLanzamiento(config) {
           continue;
         }
 
-        // 4. Verificar concurrencia del rol (máximo global, NO por issue)
-        const maxConcurrencia = (config.concurrencia || {})[skill] || 1;
+        // 4. Verificar concurrencia del rol — ADAPTATIVA según presión de recursos
+        const baseMax = (config.concurrencia || {})[skill] || 1;
+        const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
         const running = countRunningBySkill(skill);
         if (running >= maxConcurrencia) continue;
 
