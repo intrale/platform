@@ -6,11 +6,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
-const ROOT = path.resolve(__dirname, '..');
-const PIPELINE = path.resolve(ROOT, '.pipeline');
+// PIPELINE_STATE_DIR y PIPELINE_MAIN_ROOT: seteados por restart.js cuando corre desde platform.ops
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(ROOT, '.pipeline');
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 // Ejecutar claude via Node directo (evita cmd.exe y ventanas visibles)
@@ -116,6 +118,49 @@ function issueExistsInPipeline(issueNum, pipelineName) {
   return false;
 }
 
+// --- Circuit Breaker + Cooldown ---
+// Penalización exponencial: si un agente muere rápido, esperar antes de relanzar.
+// Base: 5 min, duplica en cada fallo consecutivo. Max: 60 min.
+const COOLDOWN_BASE_MS = 5 * 60 * 1000;    // 5 minutos
+const COOLDOWN_MAX_MS = 60 * 60 * 1000;    // 60 minutos
+const COOLDOWN_FILE = path.join(PIPELINE, 'cooldowns.json');
+
+function loadCooldowns() {
+  try { return JSON.parse(fs.readFileSync(COOLDOWN_FILE, 'utf8')); } catch { return {}; }
+}
+
+function saveCooldowns(cd) {
+  fs.writeFileSync(COOLDOWN_FILE, JSON.stringify(cd, null, 2));
+}
+
+/** Registrar un fallo rápido para un issue+skill. Incrementa el contador y calcula el cooldown. */
+function registerFastFail(skill, issue) {
+  const cd = loadCooldowns();
+  const key = `${skill}:${issue}`;
+  if (!cd[key]) cd[key] = { failures: 0, cooldownUntil: null };
+  cd[key].failures++;
+  const delay = Math.min(COOLDOWN_BASE_MS * Math.pow(2, cd[key].failures - 1), COOLDOWN_MAX_MS);
+  cd[key].cooldownUntil = new Date(Date.now() + delay).toISOString();
+  cd[key].lastFailure = new Date().toISOString();
+  saveCooldowns(cd);
+  return { failures: cd[key].failures, delayMin: Math.round(delay / 60000) };
+}
+
+/** Verificar si un issue+skill está en cooldown. */
+function isInCooldown(skill, issue) {
+  const cd = loadCooldowns();
+  const key = `${skill}:${issue}`;
+  if (!cd[key] || !cd[key].cooldownUntil) return false;
+  return new Date(cd[key].cooldownUntil) > new Date();
+}
+
+/** Limpiar cooldown de un issue+skill (cuando un agente termina exitosamente). */
+function clearCooldown(skill, issue) {
+  const cd = loadCooldowns();
+  const key = `${skill}:${issue}`;
+  if (cd[key]) { delete cd[key]; saveCooldowns(cd); }
+}
+
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
 
 const activeProcesses = new Map(); // key: "skill:issue" → { pid, startTime }
@@ -154,6 +199,144 @@ function countRunningBySkill(skill) {
   }
   return count;
 }
+
+// --- Resource Monitor: CPU y Memoria del sistema ---
+
+/** Snapshot de CPU para cálculo diferencial (os.cpus() da totales acumulados) */
+let lastCpuSnapshot = null;
+
+function cpuSnapshot() {
+  const cpus = os.cpus();
+  let idle = 0, total = 0;
+  for (const cpu of cpus) {
+    for (const type in cpu.times) total += cpu.times[type];
+    idle += cpu.times.idle;
+  }
+  return { idle, total };
+}
+
+/**
+ * Obtener uso de recursos del sistema.
+ * CPU se calcula como delta entre dos snapshots (requiere al menos 2 ciclos).
+ * Memoria usa os.freemem / os.totalmem.
+ */
+function getSystemResourceUsage() {
+  // Memoria
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const memPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
+
+  // CPU (diferencial entre snapshots)
+  const current = cpuSnapshot();
+  let cpuPercent = 0;
+  if (lastCpuSnapshot) {
+    const idleDelta = current.idle - lastCpuSnapshot.idle;
+    const totalDelta = current.total - lastCpuSnapshot.total;
+    cpuPercent = totalDelta > 0 ? Math.round(((totalDelta - idleDelta) / totalDelta) * 100) : 0;
+  }
+  lastCpuSnapshot = current;
+
+  return { cpuPercent, memPercent };
+}
+
+/** Verificar si el sistema está sobrecargado según los thresholds configurados */
+let lastResourceLog = 0;
+function isSystemOverloaded(config) {
+  const thresholds = config.resource_limits || {};
+  const maxCpu = thresholds.max_cpu_percent || 80;
+  const maxMem = thresholds.max_mem_percent || 80;
+
+  const { cpuPercent, memPercent } = getSystemResourceUsage();
+
+  const overloaded = cpuPercent >= maxCpu || memPercent >= maxMem;
+
+  // Loguear cada 60s para no spamear
+  const now = Date.now();
+  if (overloaded || now - lastResourceLog > 60000) {
+    const status = overloaded ? '🔴 SOBRECARGADO' : '🟢 OK';
+    log('recursos', `${status} — CPU: ${cpuPercent}% (max ${maxCpu}%) | RAM: ${memPercent}% (max ${maxMem}%)`);
+    lastResourceLog = now;
+  }
+
+  return overloaded;
+}
+
+/**
+ * Intentar liberar recursos del sistema matando procesos zombies/huérfanos.
+ * Retorna { freed: boolean, killed: string[] } con detalle de lo limpiado.
+ */
+function tryFreeResources() {
+  const killed = [];
+
+  try {
+    // 1. Matar Gradle daemons huérfanos (consumen mucha RAM)
+    const tasklistOut = execSync('tasklist /FI "IMAGENAME eq java.exe" /FO CSV /NH', {
+      encoding: 'utf8', timeout: 10000, windowsHide: true
+    });
+
+    // Contar daemons Gradle (java.exe con GradleDaemon en command line)
+    let gradleKilled = 0;
+    try {
+      // wmic da la command line completa para identificar Gradle daemons
+      const wmicOut = execSync(
+        'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+        { encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+      const gradlePids = [];
+      for (const line of wmicOut.split('\n')) {
+        if (line.includes('GradleDaemon') || line.includes('gradle-launcher')) {
+          const match = line.match(/,(\d+)\s*$/);
+          if (match) gradlePids.push(match[1]);
+        }
+      }
+
+      // Preservar el que es del QA backend (si está vivo)
+      let qaBackendPid = null;
+      try {
+        const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+        qaBackendPid = qaState.backend ? String(qaState.backend) : null;
+      } catch {}
+
+      for (const pid of gradlePids) {
+        if (pid === qaBackendPid) continue; // No matar el backend QA
+        try {
+          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+          gradleKilled++;
+        } catch {}
+      }
+    } catch {}
+
+    if (gradleKilled > 0) {
+      killed.push(`${gradleKilled} Gradle daemon(s)`);
+    }
+
+    // 2. Limpiar procesos de agentes muertos del mapa activeProcesses
+    let staleAgents = 0;
+    for (const [key, info] of activeProcesses) {
+      if (!isProcessAlive(info.pid)) {
+        activeProcesses.delete(key);
+        staleAgents++;
+      }
+    }
+    if (staleAgents > 0) {
+      killed.push(`${staleAgents} agente(s) stale del registry`);
+    }
+
+  } catch (e) {
+    log('free-resources', `Error durante limpieza: ${e.message}`);
+  }
+
+  if (killed.length > 0) {
+    const summary = killed.join(', ');
+    log('free-resources', `Recursos liberados: ${summary}`);
+    sendTelegram(`🧹 Limpieza de recursos (pre-QA): ${summary}`);
+  }
+
+  return { freed: killed.length > 0, killed };
+}
+
+// Tomar snapshot inicial de CPU al arrancar (el primer delta necesita dos puntos)
+lastCpuSnapshot = cpuSnapshot();
 
 // =============================================================================
 // BRAZO 1: BARRIDO — Conecta fases, promueve o rechaza
@@ -327,20 +510,11 @@ function brazoBarrido(config) {
 /** Determinar qué skill de dev corresponde a un issue (por labels de GitHub) */
 function determinarDevSkill(issue, config) {
   const mapping = config.dev_skill_mapping || {};
+  const labels = getIssueLabels(issue);
 
-  // Buscar en archivos procesados de fases anteriores si ya se determinó
-  // Por ahora: intentar leer labels del issue de GitHub
-  try {
-    ghThrottle();
-    const result = execSync(
-      `"${GH_BIN}" issue view ${issue} --json labels --jq ".labels[].name"`,
-      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
-    ).trim().split('\n');
-
-    for (const label of result) {
-      if (mapping[label]) return mapping[label];
-    }
-  } catch { /* ignorar */ }
+  for (const label of labels) {
+    if (mapping[label]) return mapping[label];
+  }
 
   return mapping.default || 'backend-dev';
 }
@@ -349,24 +523,99 @@ function determinarDevSkill(issue, config) {
 // BRAZO 2: LANZAMIENTO — Detecta trabajo pendiente, lanza agentes
 // =============================================================================
 
+// Cache de labels de issues (evita llamadas repetidas a GitHub API)
+const issueLabelsCache = new Map(); // issueNum → { labels: [...], fetchedAt: timestamp }
+const LABELS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+
+function getIssueLabels(issueNum) {
+  const cached = issueLabelsCache.get(issueNum);
+  if (cached && (Date.now() - cached.fetchedAt) < LABELS_CACHE_TTL_MS) {
+    return cached.labels;
+  }
+  try {
+    ghThrottle();
+    const result = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json labels --jq ".labels[].name"`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    ).trim().split('\n').filter(Boolean);
+    issueLabelsCache.set(issueNum, { labels: result, fetchedAt: Date.now() });
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+/** Calcular score de prioridad para un issue (menor = más prioritario) */
+function calcularPrioridad(issueNum, config) {
+  const labels = getIssueLabels(issueNum);
+  const prioLabels = config.prioridad_labels || [];
+  const featurePrio = config.feature_priority || {};
+
+  // Score base: prioridad directa del label (0=critical, 1=high, 2=medium, 3=low)
+  // Default: priority:medium si no tiene label explícito
+  let prioScore = prioLabels.indexOf('priority:medium');
+  if (prioScore === -1) prioScore = 999;
+  for (let i = 0; i < prioLabels.length; i++) {
+    if (labels.includes(prioLabels[i])) { prioScore = i; break; }
+  }
+
+  // Score de feature: hereda nivel de prioridad según config (critical=0, high=1, etc.)
+  let featureScore = 999;
+  for (const [nivel, featureLabels] of Object.entries(featurePrio)) {
+    const nivelIdx = prioLabels.indexOf(`priority:${nivel}`);
+    if (nivelIdx === -1) continue;
+    for (const fl of featureLabels) {
+      if (labels.includes(fl)) { featureScore = Math.min(featureScore, nivelIdx); break; }
+    }
+  }
+
+  // Feature priority PUEDE subir la prioridad efectiva (tomar el menor de ambos)
+  const effectivePrio = Math.min(prioScore, featureScore);
+
+  // Desempate: si empatan en prioridad efectiva, preferir el que tiene feature explícita
+  const tiebreaker = featureScore < 999 ? 0 : 1;
+
+  return effectivePrio * 10 + tiebreaker;
+}
+
+/** Ordenar archivos pendientes por prioridad del issue */
+function sortByPriority(archivos, config) {
+  if (archivos.length <= 1) return archivos;
+  return archivos.sort((a, b) => {
+    const issueA = issueFromFile(a.name);
+    const issueB = issueFromFile(b.name);
+    return calcularPrioridad(issueA, config) - calcularPrioridad(issueB, config);
+  });
+}
+
 function brazoLanzamiento(config) {
+  // GATE DE RECURSOS: no lanzar nuevos agentes si CPU o RAM están sobrecargados
+  if (isSystemOverloaded(config)) return;
+
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     for (const fase of pipelineConfig.fases) {
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
-      const archivos = listWorkFiles(pendienteDir);
+      const archivos = sortByPriority(listWorkFiles(pendienteDir), config);
 
       for (const archivo of archivos) {
         const skill = skillFromFile(archivo.name);
         const issue = issueFromFile(archivo.name);
         const key = processKey(skill, issue);
 
-        // Ya hay un proceso activo para este skill+issue?
+        // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
+        const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
+        if (issueAlreadyWorking) continue;
+
+        // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
+        if (isInCooldown(skill, issue)) continue;
+
+        // 3. Ya hay un proceso activo para este skill+issue en memoria?
         if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
           continue;
         }
 
-        // Verificar concurrencia
+        // 4. Verificar concurrencia del rol (máximo global, NO por issue)
         const maxConcurrencia = (config.concurrencia || {})[skill] || 1;
         const running = countRunningBySkill(skill);
         if (running >= maxConcurrencia) continue;
@@ -377,7 +626,7 @@ function brazoLanzamiento(config) {
 
           // Pre-requisitos por fase
           if (fase === 'verificacion') {
-            ensureQaEnvironment();
+            ensureQaEnvironment(config);
           }
 
           // Lanzar agente
@@ -394,10 +643,50 @@ function brazoLanzamiento(config) {
   }
 }
 
-/** Asegurar que el QA environment está levantado. Se llama una vez por ciclo de verificación. */
-let qaEnvChecked = false;
-function ensureQaEnvironment() {
-  if (qaEnvChecked) return; // Solo chequear una vez por vida del Pulpo
+/** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
+let lastQaEnvCheck = 0;
+const QA_ENV_CHECK_INTERVAL = 5 * 60 * 1000; // Re-verificar cada 5 minutos (no una sola vez)
+let qaEnvStartFailures = 0;
+const QA_ENV_MAX_FAILURES = 3; // Circuit breaker: después de 3 fallos, dejar de intentar
+
+function ensureQaEnvironment(config) {
+  const now = Date.now();
+
+  // Cooldown entre verificaciones: no bombardear cada tick del loop
+  if (now - lastQaEnvCheck < QA_ENV_CHECK_INTERVAL) return;
+  lastQaEnvCheck = now;
+
+  // Circuit breaker: si falló muchas veces, no seguir intentando
+  if (qaEnvStartFailures >= QA_ENV_MAX_FAILURES) {
+    log('qa-env', `Circuit breaker activo (${qaEnvStartFailures} fallos). No se reintenta levantar QA env.`);
+    return;
+  }
+
+  // GATE DE RECURSOS: QA env usa umbrales más bajos que agentes porque levanta 3 servicios pesados
+  const limits = config.resource_limits || {};
+  const maxCpu = limits.qa_env_max_cpu_percent || 60;
+  const maxMem = limits.qa_env_max_mem_percent || 60;
+
+  const { cpuPercent, memPercent } = getSystemResourceUsage();
+  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
+    log('qa-env', `Sistema saturado para QA env (CPU: ${cpuPercent}% >= ${maxCpu}% | RAM: ${memPercent}% >= ${maxMem}%). Intentando liberar recursos...`);
+
+    // Intentar limpiar zombies/daemons para destrabar
+    const { freed } = tryFreeResources();
+
+    if (freed) {
+      // Re-chequear después de la limpieza
+      const after = getSystemResourceUsage();
+      if (after.cpuPercent >= maxCpu || after.memPercent >= maxMem) {
+        log('qa-env', `Post-limpieza: aún saturado (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Posponiendo QA environment.`);
+        return;
+      }
+      log('qa-env', `Post-limpieza: recursos liberados (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Continuando con QA environment.`);
+    } else {
+      log('qa-env', `No se encontraron recursos para liberar. Posponiendo QA environment.`);
+      return;
+    }
+  }
 
   const stateFile = path.join(PIPELINE, 'qa-env-state.json');
   let needsStart = false;
@@ -423,16 +712,16 @@ function ensureQaEnvironment() {
         cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
       });
       log('qa-env', 'QA environment levantado OK');
+      qaEnvStartFailures = 0; // Reset circuit breaker en éxito
       sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
     } catch (e) {
-      log('qa-env', `Error levantando QA environment: ${e.message}`);
-      sendTelegram('⚠️ Error levantando QA environment: ' + e.message.slice(0, 100));
+      qaEnvStartFailures++;
+      log('qa-env', `Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ${e.message}`);
+      sendTelegram(`⚠️ Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ` + e.message.slice(0, 100));
     }
   } else {
     log('qa-env', 'QA environment OK — ya corriendo');
   }
-
-  qaEnvChecked = true;
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
@@ -536,31 +825,56 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     worktreePath: needsWorktree ? worktreePath : null
   });
 
+  // Crear canal de contexto para el agente (auto-join)
+  let contextChannelId = null;
+  try {
+    const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+    const channelId = 'agent-' + issue;
+    let channel = cm.getChannel(channelId);
+    if (!channel) {
+      channel = cm.createChannel(channelId, skill + ' #' + issue, {
+        type: 'agent', issue: '#' + issue, skill: skill,
+        branch: worktreeBranch || null, worktree: needsWorktree ? worktreePath : null,
+      });
+    }
+    cm.joinChannel(channelId, {
+      type: 'agent', session_id: String(child.pid),
+      label: skill + ' #' + issue,
+    });
+    contextChannelId = channelId;
+    log('lanzamiento', `Canal de contexto creado: ${channelId}`);
+  } catch (e) {
+    log('lanzamiento', `Error creando canal de contexto: ${e.message}`);
+  }
+
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
-    // Si murió en menos de 15 segundos con error → es un fallo de infraestructura, no de código
-    // Devolver a pendiente en vez de marcar como listo (evita loop de rebotes infinitos)
+    // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     if (code !== 0 && elapsedSec < 15) {
-      log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo de infra, devolviendo a pendiente`);
-      const agentLog = path.join(LOG_DIR, `${issue}-${skill}.log`);
-      try {
-        const logContent = fs.readFileSync(agentLog, 'utf8').slice(-500);
-        log('lanzamiento', `  Log: ${logContent.replace(/\n/g, ' | ')}`);
-      } catch {}
+      const { failures, delayMin } = registerFastFail(skill, issue);
+      log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
-      sendTelegram(`⚠️ Agente ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo de infra. Revisar log.`);
+      // Salir del canal de contexto
+      if (contextChannelId) {
+        try {
+          const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+          cm.leaveChannelByType(contextChannelId, 'agent');
+        } catch (e) {}
+      }
+      sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
       return;
     }
 
+    // Éxito o finalización normal → limpiar cooldown
+    if (code === 0) clearCooldown(skill, issue);
+
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
-      // El agente debería haber escrito resultado en el archivo
-      // Si no lo hizo, marcamos como error
       const data = readYaml(trabajandoPath);
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
@@ -573,6 +887,18 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey(skill, issue));
+    // Salir del canal de contexto (el canal queda para que otros lo consulten)
+    if (contextChannelId) {
+      try {
+        const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+        cm.leaveChannelByType(contextChannelId, 'agent');
+        cm.postMessage(contextChannelId, {
+          from: 'system', from_label: 'Pipeline',
+          type: 'system',
+          content: skill + ' #' + issue + ' finalizó (code=' + code + ')',
+        });
+      } catch (e) {}
+    }
   });
 
   // stdout/stderr redirigidos al archivo de log via stdio fd
@@ -609,7 +935,13 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
   const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  const javaHome = (process.env.JAVA_HOME || 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
+  // Validar que JAVA_HOME tenga un java.exe válido; si no, usar Temurin 21
+  // IMPORTANTE: solo chequear existencia del directorio no alcanza — IntelliJ JBR puede existir
+  // pero no ser un JDK válido (sin bin/java.exe). Hay que validar el binario.
+  const envJavaHome = process.env.JAVA_HOME;
+  const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
+  const isValidJavaHome = envJavaHome && fs.existsSync(path.join(envJavaHome, 'bin', javaExe));
+  const javaHome = (isValidJavaHome ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
   const cwdUnix = buildCwd.replace(/\\/g, '/');
 
   // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
@@ -723,12 +1055,14 @@ function brazoHuerfanos(config) {
             writeYaml(archivo.path, data);
             moveFile(archivo.path, listoDir);
             orphanRetries.delete(retryKey);
+            sendTelegram(`⛔ ${skill}:#${issue} rechazado tras ${MAX_ORPHAN_RETRIES} reintentos huérfanos. Requiere intervención manual.`);
           } catch (e) {
             log('huerfanos', `Error rechazando ${archivo.name}: ${e.message}`);
           }
         } else {
-          // Devolver a pendiente para reintento
-          log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min sin proceso → pendiente/ (intento ${retries}/${MAX_ORPHAN_RETRIES})`);
+          // Devolver a pendiente con cooldown para evitar loop inmediato
+          const { failures, delayMin } = registerFastFail(skill, issue);
+          log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min sin proceso → pendiente/ (intento ${retries}/${MAX_ORPHAN_RETRIES}, cooldown ${delayMin}min)`);
           try {
             moveFile(archivo.path, pendienteDir);
           } catch (e) {
@@ -816,6 +1150,20 @@ function cmdStatus(config) {
     const svcDir = path.join(PIPELINE, 'servicios', svc, 'pendiente');
     const count = listWorkFiles(svcDir).length;
     if (count > 0) lines.push(`  ${svc}: ${count} pendientes`);
+  }
+
+  // Recursos del sistema
+  const { cpuPercent, memPercent } = getSystemResourceUsage();
+  const thresholds = config.resource_limits || {};
+  const maxCpu = thresholds.max_cpu_percent || 80;
+  const maxMem = thresholds.max_mem_percent || 80;
+  const cpuIcon = cpuPercent >= maxCpu ? '🔴' : cpuPercent >= maxCpu * 0.8 ? '🟡' : '🟢';
+  const memIcon = memPercent >= maxMem ? '🔴' : memPercent >= maxMem * 0.8 ? '🟡' : '🟢';
+  lines.push(`\n*Recursos del sistema*`);
+  lines.push(`  ${cpuIcon} CPU: ${cpuPercent}% (max ${maxCpu}%)`);
+  lines.push(`  ${memIcon} RAM: ${memPercent}% (max ${maxMem}%)`);
+  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
+    lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
   // Estado pausa
@@ -1098,27 +1446,34 @@ function parseCommand(text) {
   const match = trimmed.match(/^\/(\w+)\s*(.*)?$/s);
   if (match) return { cmd: match[1].toLowerCase(), args: (match[2] || '').trim() };
 
-  // Detección de intención por lenguaje natural (para audio transcripto)
+  // Detección de intención por lenguaje natural (solo para mensajes cortos tipo comando)
+  // Si el texto es largo (>80 chars), es conversación libre — delegar a Claude
   const lower = trimmed.toLowerCase();
-  const intentPatterns = [
-    { pattern: /\b(status|estado|tablero|cómo est[áa]|que hay en el pipeline)\b/i, cmd: 'status' },
-    { pattern: /\b(pausar|paus[áa]|fren[áa]|par[áa] el pulpo)\b/i, cmd: 'pausar' },
-    { pattern: /\b(reanudar|reanud[áa]|segui|continu[áa]|arrancá)\b/i, cmd: 'reanudar' },
-    { pattern: /\b(actividad|qué pas[óo]|movimientos|timeline)\b/i, cmd: 'actividad' },
-    { pattern: /\b(costos?|gasto|consumo|tokens?)\b/i, cmd: 'costos' },
-    { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
-    { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa])\b/i, cmd: 'intake' },
-    { pattern: /\b(proponer|propon[eé]|historias nuevas|ideas)\b/i, cmd: 'proponer' },
-    { pattern: /\b(stop|apag[áa]|cerr[áa])\b/i, cmd: 'stop' },
-  ];
+  const isShortMessage = trimmed.length <= 80;
 
-  for (const { pattern, cmd } of intentPatterns) {
-    if (pattern.test(lower)) {
-      // Extraer argumentos: todo lo que no es el keyword
-      const args = lower.replace(pattern, '').trim();
-      log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
-      return { cmd, args };
+  if (isShortMessage) {
+    // Patrones estrictos: solo matchean intenciones claras de comando, no menciones casuales
+    const intentPatterns = [
+      { pattern: /\b(status|estado del pipeline|tablero|que hay en el pipeline)\b/i, cmd: 'status' },
+      { pattern: /\b(pausar|paus[áa] el|fren[áa] el|par[áa] el pulpo)\b/i, cmd: 'pausar' },
+      { pattern: /\b(reanudar|reanud[áa] el|arranc[áa] el pulpo)\b/i, cmd: 'reanudar' },
+      { pattern: /\b(mostrame la actividad|qué pas[óo] en el pipeline|timeline)\b/i, cmd: 'actividad' },
+      { pattern: /\b(mostrame los costos|cuánto gastamos|reporte de costos)\b/i, cmd: 'costos' },
+      { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
+      { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, cmd: 'intake' },
+      { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
+      { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
+    ];
+
+    for (const { pattern, cmd } of intentPatterns) {
+      if (pattern.test(lower)) {
+        const args = lower.replace(pattern, '').trim();
+        log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
+        return { cmd, args };
+      }
     }
+  } else {
+    log('commander', `Texto largo (${trimmed.length} chars) — delegando a Claude como texto libre`);
   }
 
   return null; // Texto libre — delegar a Claude
@@ -1391,12 +1746,15 @@ function brazoIntake(config) {
 
       if (issues.length === 0) continue;
 
-      // Ordenar por prioridad
-      const prioLabels = config.prioridad_labels || [];
+      // Cachear labels de los issues recién traídos de GitHub
+      for (const issue of issues) {
+        const labelNames = (issue.labels || []).map(l => l.name);
+        issueLabelsCache.set(String(issue.number), { labels: labelNames, fetchedAt: Date.now() });
+      }
+
+      // Ordenar por prioridad combinada (priority label + feature priority)
       issues.sort((a, b) => {
-        const prioA = prioLabels.findIndex(p => a.labels?.some(l => l.name === p));
-        const prioB = prioLabels.findIndex(p => b.labels?.some(l => l.name === p));
-        return (prioA === -1 ? 999 : prioA) - (prioB === -1 ? 999 : prioB);
+        return calcularPrioridad(String(a.number), config) - calcularPrioridad(String(b.number), config);
       });
 
       for (const issue of issues) {
@@ -1484,6 +1842,18 @@ async function mainLoop() {
 
       // Commander SIEMPRE corre (incluso en pausa) — necesario para /reanudar
       await brazoCommander(config);
+
+      // Drain outbox de Telegram (context-relay, notificaciones, etc.)
+      try {
+        const outbox = require(path.join(ROOT, '.claude', 'hooks', 'telegram-outbox'));
+        await outbox.drainQueue();
+      } catch (e) {}
+
+      // Context bridge tick (sync preguntas pendientes, relay, cleanup)
+      try {
+        const bridge = require(path.join(ROOT, '.claude', 'hooks', 'context-bridge'));
+        bridge.tick();
+      } catch (e) {}
 
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs

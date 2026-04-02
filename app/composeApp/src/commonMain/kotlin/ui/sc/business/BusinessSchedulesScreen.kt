@@ -1,5 +1,6 @@
 package ui.sc.business
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,8 +14,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -98,6 +102,9 @@ class BusinessSchedulesScreen : Screen(BUSINESS_SCHEDULES_PATH) {
                 style = MaterialTheme.typography.bodyLarge
             )
 
+            // Sección de cierre temporal
+            TemporaryClosureSection(viewModel)
+
             when (uiState.status) {
                 BusinessSchedulesStatus.Loading -> {
                     CircularProgressIndicator()
@@ -166,29 +173,78 @@ class BusinessSchedulesScreen : Screen(BUSINESS_SCHEDULES_PATH) {
                         }
                     }
 
-                    if (dayState.isOpen) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                    AnimatedVisibility(visible = dayState.isOpen) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
                         ) {
-                            val openTimeState = remember(index) { mutableStateOf(InputState("openTime_$index")) }
-                            TextField(
-                                label = MessageKey.business_schedules_open_time,
-                                value = dayState.openTime,
-                                state = openTimeState,
-                                onValueChange = { viewModel.updateOpenTime(index, it) },
-                                enabled = !isSaving,
-                                modifier = Modifier.weight(1f)
-                            )
-                            val closeTimeState = remember(index) { mutableStateOf(InputState("closeTime_$index")) }
-                            TextField(
-                                label = MessageKey.business_schedules_close_time,
-                                value = dayState.closeTime,
-                                state = closeTimeState,
-                                onValueChange = { viewModel.updateCloseTime(index, it) },
-                                enabled = !isSaving,
-                                modifier = Modifier.weight(1f)
-                            )
+                            // Primera franja horaria
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                            ) {
+                                val openTimeState = remember(index) { mutableStateOf(InputState("openTime_$index")) }
+                                TextField(
+                                    label = MessageKey.business_schedules_open_time,
+                                    value = dayState.openTime,
+                                    state = openTimeState,
+                                    onValueChange = { viewModel.updateOpenTime(index, it) },
+                                    enabled = !isSaving,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                val closeTimeState = remember(index) { mutableStateOf(InputState("closeTime_$index")) }
+                                TextField(
+                                    label = MessageKey.business_schedules_close_time,
+                                    value = dayState.closeTime,
+                                    state = closeTimeState,
+                                    onValueChange = { viewModel.updateCloseTime(index, it) },
+                                    enabled = !isSaving,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            // Toggle horario cortado
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                            ) {
+                                Checkbox(
+                                    checked = dayState.hasSplitSchedule,
+                                    onCheckedChange = { viewModel.toggleSplitSchedule(index, it) },
+                                    enabled = !isSaving
+                                )
+                                Text(
+                                    text = Txt(MessageKey.business_schedules_split_label),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+
+                            // Segunda franja horaria (horario cortado)
+                            AnimatedVisibility(visible = dayState.hasSplitSchedule) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x2)
+                                ) {
+                                    val openTime2State = remember(index) { mutableStateOf(InputState("openTime2_$index")) }
+                                    TextField(
+                                        label = MessageKey.business_schedules_open_time_2,
+                                        value = dayState.openTime2,
+                                        state = openTime2State,
+                                        onValueChange = { viewModel.updateOpenTime2(index, it) },
+                                        enabled = !isSaving,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    val closeTime2State = remember(index) { mutableStateOf(InputState("closeTime2_$index")) }
+                                    TextField(
+                                        label = MessageKey.business_schedules_close_time_2,
+                                        value = dayState.closeTime2,
+                                        state = closeTime2State,
+                                        onValueChange = { viewModel.updateCloseTime2(index, it) },
+                                        enabled = !isSaving,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -218,5 +274,67 @@ class BusinessSchedulesScreen : Screen(BUSINESS_SCHEDULES_PATH) {
                 color = MaterialTheme.colorScheme.primary
             )
         }
+    }
+
+    @Composable
+    private fun TemporaryClosureSection(viewModel: BusinessSchedulesViewModel) {
+        val uiState = viewModel.state
+        val isSaving = uiState.status == BusinessSchedulesStatus.Saving
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (uiState.temporarilyClosed)
+                    MaterialTheme.colorScheme.errorContainer
+                else
+                    MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(MaterialTheme.spacing.x3),
+                verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = Txt(MessageKey.business_schedules_temp_closed_label),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Switch(
+                        checked = uiState.temporarilyClosed,
+                        onCheckedChange = { viewModel.toggleTemporarilyClosed(it) },
+                        enabled = !isSaving
+                    )
+                }
+
+                AnimatedVisibility(visible = uiState.temporarilyClosed) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1)
+                    ) {
+                        Text(
+                            text = Txt(MessageKey.business_schedules_temp_closed_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        val reopenDateState = remember { mutableStateOf(InputState("reopenDate")) }
+                        TextField(
+                            label = MessageKey.business_schedules_reopen_date,
+                            value = uiState.reopenDate,
+                            state = reopenDateState,
+                            onValueChange = { viewModel.updateReopenDate(it) },
+                            enabled = !isSaving,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = MaterialTheme.spacing.x1))
     }
 }

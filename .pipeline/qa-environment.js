@@ -14,8 +14,8 @@ const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE = path.resolve(__dirname);
-const ROOT = path.resolve(PIPELINE, '..');
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(PIPELINE, '..');
 const STATE_FILE = path.join(PIPELINE, 'qa-env-state.json');
 
 const JAVA_HOME = 'C:\\Users\\Administrator\\.jdks\\temurin-21.0.7';
@@ -79,7 +79,7 @@ function startAll() {
     log('Levantando backend :users:run en :80...');
     const backend = spawn(path.join(ROOT, 'gradlew.bat'), [':users:run'], {
       cwd: ROOT,
-      stdio: 'ignore', detached: true, windowsHide: true, env
+      stdio: 'ignore', detached: true, windowsHide: true, env, shell: true
     });
     backend.unref();
     state.backend = backend.pid;

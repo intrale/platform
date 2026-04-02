@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE = path.resolve(__dirname);
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'drive');
 const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
 const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');

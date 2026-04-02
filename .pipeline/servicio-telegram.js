@@ -8,13 +8,14 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const PIPELINE = path.resolve(__dirname);
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'telegram');
 const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
 const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
 const LISTO = path.join(QUEUE_DIR, 'listo');
 
-const TELEGRAM_CONFIG = path.join(path.resolve(__dirname, '..'), '.claude', 'hooks', 'telegram-config.json');
+const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
+const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
 let BOT_TOKEN, CHAT_ID;
 
 try {
