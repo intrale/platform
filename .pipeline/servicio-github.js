@@ -85,4 +85,20 @@ function main() {
 fs.writeFileSync(path.join(PIPELINE, 'svc-github.pid'), String(process.pid));
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
+
+// Crash handlers — loguear antes de morir para diagnóstico
+const LOG_DIR = path.join(PIPELINE, 'logs');
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] [svc-github] CRASH uncaughtException: ${err.stack || err.message}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = `[${new Date().toISOString()}] [svc-github] CRASH unhandledRejection: ${reason?.stack || reason}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-github.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
+});
+
 main();

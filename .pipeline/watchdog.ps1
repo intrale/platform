@@ -1,46 +1,85 @@
-# Watchdog V2 — Vigila Pulpo + Listener Telegram
+# Watchdog V2 — Vigila todos los servicios del pipeline
 # Se ejecuta cada 2 minutos via Windows Task Scheduler
-# SIEMPRE lanza desde platform.ops (worktree en main) si está disponible
+# Usa platform.ops (worktree ops en main) si esta disponible
 
- = 'C:WorkspacesIntraleplatform.ops'
- = 'C:WorkspacesIntraleplatform'
+$OpsRoot = 'C:\Workspaces\Intrale\platform.ops'
+$FallbackRoot = 'C:\Workspaces\Intrale\platform'
 
-if (Test-Path "\.pipelinepulpo.js") {
-     = "\.pipeline"
-     = } else {
-     = "\.pipeline"
-     = }
-
- = "\.pipeline"
- = "\logswatchdog.log"
-
-function Write-Log() {
-     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    "[] " | Out-File -Append -FilePath  -Encoding utf8
+if (Test-Path "$OpsRoot\.pipeline\pulpo.js") {
+    $PipelineDir = "$OpsRoot\.pipeline"
+    $WorkDir = $OpsRoot
+} else {
+    $PipelineDir = "$FallbackRoot\.pipeline"
+    $WorkDir = $FallbackRoot
 }
 
-function Test-ProcessAlive() {
-    if (-not (Test-Path )) { return  }
-     = [int](Get-Content  -ErrorAction SilentlyContinue)
-    if (-not  -or  -eq 0) { return  }
+$LogDir = "$PipelineDir\logs"
+$LogFile = "$LogDir\watchdog.log"
+
+# Crear directorio de logs si no existe
+if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
+
+function Write-Log($Message) {
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    "[$ts] $Message" | Out-File -Append -FilePath $LogFile -Encoding utf8
+}
+
+function Test-ProcessAlive($PidFile) {
+    if (-not (Test-Path $PidFile)) { return $false }
+    $pidStr = Get-Content $PidFile -ErrorAction SilentlyContinue
+    if (-not $pidStr -or $pidStr.Trim() -eq '') { return $false }
+    $pid = [int]$pidStr.Trim()
+    if ($pid -eq 0) { return $false }
     try {
-         = Get-Process -Id  -ErrorAction Stop
-        return (.ProcessName -eq 'node')
+        $proc = Get-Process -Id $pid -ErrorAction Stop
+        return ($proc.ProcessName -eq 'node')
     } catch {
-        return     }
+        return $false
+    }
 }
 
-if ( -eq ) {
+# Servicios criticos que deben estar siempre vivos
+$Services = @(
+    @{ Name = 'pulpo';         Pid = "$PipelineDir\pulpo.pid" },
+    @{ Name = 'listener';      Pid = "$PipelineDir\listener.pid" },
+    @{ Name = 'svc-telegram';  Pid = "$PipelineDir\svc-telegram.pid" },
+    @{ Name = 'svc-github';    Pid = "$PipelineDir\svc-github.pid" },
+    @{ Name = 'svc-drive';     Pid = "$PipelineDir\svc-drive.pid" },
+    @{ Name = 'dashboard';     Pid = "$PipelineDir\dashboard.pid" }
+)
+
+# Sincronizar worktree ops con main (silencioso)
+if ($WorkDir -eq $OpsRoot) {
     try {
-        git -C  fetch origin main 2>        git -C  checkout FETCH_HEAD --force 2>    } catch {}
+        git -C $OpsRoot fetch origin main 2>$null
+        git -C $OpsRoot checkout FETCH_HEAD --force 2>$null
+    } catch {}
 }
 
-if (-not (Test-ProcessAlive "\pulpo.pid")) {
-    Write-Log "Pulpo caido - relanzando desde "
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "\start-pulpo.bat" -WindowStyle Minimized
+# Verificar cada servicio
+$dead = @()
+foreach ($svc in $Services) {
+    if (-not (Test-ProcessAlive $svc.Pid)) {
+        $dead += $svc.Name
+    }
 }
 
-if (-not (Test-ProcessAlive "\listener.pid")) {
-    Write-Log "Listener caido - relanzando desde "
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "\start-listener.bat" -WindowStyle Minimized
+if ($dead.Count -eq 0) {
+    # Todo vivo, no loguear para no llenar el log
+    exit 0
+}
+
+# Hay servicios caidos — restart completo
+$deadList = $dead -join ', '
+Write-Log "Servicios caidos detectados: $deadList -- ejecutando restart.js"
+
+try {
+    $restartScript = "$PipelineDir\restart.js"
+    $output = & node $restartScript 2>&1
+    foreach ($line in $output) {
+        Write-Log "  $line"
+    }
+    Write-Log "Restart completado"
+} catch {
+    Write-Log "ERROR en restart: $_"
 }
