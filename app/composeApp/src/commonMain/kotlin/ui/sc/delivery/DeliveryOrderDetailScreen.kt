@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -436,9 +437,16 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
     val sectionTitle = Txt(MessageKey.delivery_order_detail_section_location)
     val originLabel = Txt(MessageKey.delivery_order_detail_location_origin)
     val destinationLabel = Txt(MessageKey.delivery_order_detail_location_destination)
-    val openMapLabel = Txt(MessageKey.delivery_order_detail_location_open_map)
     val noAddressLabel = Txt(MessageKey.delivery_order_detail_location_no_address)
     val mapPlaceholderLabel = Txt(MessageKey.delivery_order_detail_location_map_placeholder)
+    val navigateOriginLabel = Txt(MessageKey.delivery_order_detail_location_navigate_origin)
+    val navigateDestinationLabel = Txt(MessageKey.delivery_order_detail_location_navigate_destination)
+    val etaLabel = detail.eta?.let {
+        Txt(MessageKey.delivery_order_detail_eta, mapOf("eta" to it))
+    }
+    val distanceLabel = detail.distance?.let {
+        Txt(MessageKey.delivery_order_detail_distance, mapOf("distance" to it))
+    }
 
     val openExternalMap = rememberOpenExternalMap()
 
@@ -473,7 +481,7 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
 
         HorizontalDivider(modifier = Modifier.padding(vertical = MaterialTheme.spacing.x1))
 
-        // Origen (comercio)
+        // Origen (comercio) con botón Navegar
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
@@ -502,9 +510,34 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            // Botón Navegar al comercio
+            OutlinedButton(
+                onClick = {
+                    val originAddress = "${detail.businessName}, ${detail.neighborhood}"
+                    val opened = openExternalMap(originAddress)
+                    if (!opened) onOpenMapFailed()
+                },
+                modifier = Modifier.semantics {
+                    contentDescription = navigateOriginLabel
+                },
+                contentPadding = ButtonDefaults.ContentPadding
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Navigation,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.size(ButtonDefaults.IconSpacing))
+                Text(
+                    text = Txt(MessageKey.delivery_order_detail_location_navigate),
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
         }
 
-        // Destino (cliente)
+        HorizontalDivider(modifier = Modifier.padding(vertical = MaterialTheme.spacing.x1))
+
+        // Destino (cliente) con botón Navegar + distancia/ETA
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.x1),
@@ -528,9 +561,17 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
-                    detail.distance?.let { distance ->
+                    // Distancia y tiempo estimado inline
+                    distanceLabel?.let { distance ->
                         Text(
                             text = distance,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    etaLabel?.let { eta ->
+                        Text(
+                            text = eta,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -543,20 +584,30 @@ private fun LocationSection(detail: DeliveryOrderDetail, onOpenMapFailed: () -> 
                     )
                 }
             }
-        }
-
-        // Botón "Abrir en mapa"
-        if (detail.address != null) {
-            IntralePrimaryButton(
-                text = openMapLabel,
-                onClick = {
-                    val opened = openExternalMap(detail.address)
-                    if (!opened) {
-                        onOpenMapFailed()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
+            // Botón Navegar al destino
+            if (detail.address != null) {
+                OutlinedButton(
+                    onClick = {
+                        val opened = openExternalMap(detail.address)
+                        if (!opened) onOpenMapFailed()
+                    },
+                    modifier = Modifier.semantics {
+                        contentDescription = navigateDestinationLabel
+                    },
+                    contentPadding = ButtonDefaults.ContentPadding
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Navigation,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.size(ButtonDefaults.IconSpacing))
+                    Text(
+                        text = Txt(MessageKey.delivery_order_detail_location_navigate),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
         }
     }
 }
