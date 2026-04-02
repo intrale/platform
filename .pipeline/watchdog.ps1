@@ -1,46 +1,95 @@
-# Watchdog V2 — Vigila Pulpo + Listener Telegram
+# Watchdog V2 — Vigila servicios del pipeline
 # Se ejecuta cada 2 minutos via Windows Task Scheduler
-# SIEMPRE lanza desde platform.ops (worktree en main) si está disponible
+# Todo corre desde platform/ (repo principal, siempre en main)
 
- = 'C:WorkspacesIntraleplatform.ops'
- = 'C:WorkspacesIntraleplatform'
+$RepoRoot = 'C:\Workspaces\Intrale\platform'
+$PipelineDir = "$RepoRoot\.pipeline"
+$LogDir = "$PipelineDir\logs"
+$LogFile = "$LogDir\watchdog.log"
 
-if (Test-Path "\.pipelinepulpo.js") {
-     = "\.pipeline"
-     = } else {
-     = "\.pipeline"
-     = }
+# Crear directorio de logs si no existe
+if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
 
- = "\.pipeline"
- = "\logswatchdog.log"
-
-function Write-Log() {
-     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    "[] " | Out-File -Append -FilePath  -Encoding utf8
+function Write-Log($Message) {
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    "[$ts] $Message" | Out-File -Append -FilePath $LogFile -Encoding utf8
 }
 
-function Test-ProcessAlive() {
-    if (-not (Test-Path )) { return  }
-     = [int](Get-Content  -ErrorAction SilentlyContinue)
-    if (-not  -or  -eq 0) { return  }
+function Test-ProcessAlive($PidFile) {
+    if (-not (Test-Path $PidFile)) { return $false }
+    $pidStr = Get-Content $PidFile -ErrorAction SilentlyContinue
+    if (-not $pidStr -or $pidStr.Trim() -eq '') { return $false }
+    $procId = [int]$pidStr.Trim()
+    if ($procId -eq 0) { return $false }
     try {
-         = Get-Process -Id  -ErrorAction Stop
-        return (.ProcessName -eq 'node')
+        $proc = Get-Process -Id $procId -ErrorAction Stop
+        return ($proc.ProcessName -eq 'node')
     } catch {
-        return     }
+        return $false
+    }
 }
 
-if ( -eq ) {
+# Servicios criticos — PIDs en el mismo directorio donde corren
+$Services = @(
+    @{ Name = 'pulpo';         Pid = "$PipelineDir\pulpo.pid" },
+    @{ Name = 'listener';      Pid = "$PipelineDir\listener.pid" },
+    @{ Name = 'svc-telegram';  Pid = "$PipelineDir\svc-telegram.pid" },
+    @{ Name = 'svc-github';    Pid = "$PipelineDir\svc-github.pid" },
+    @{ Name = 'svc-drive';     Pid = "$PipelineDir\svc-drive.pid" },
+    @{ Name = 'dashboard';     Pid = "$PipelineDir\dashboard.pid" }
+)
+
+# Verificar cada servicio
+$dead = @()
+foreach ($svc in $Services) {
+    if (-not (Test-ProcessAlive $svc.Pid)) {
+        $dead += $svc.Name
+    }
+}
+
+if ($dead.Count -eq 0) {
+    # Todo vivo, no loguear para no llenar el log
+    exit 0
+}
+
+# Hay servicios caidos — levantar individualmente
+$deadList = $dead -join ', '
+Write-Log "Servicios caidos detectados: $deadList"
+
+# Mapeo de servicio a script
+$ScriptMap = @{
+    'pulpo'        = 'pulpo.js'
+    'listener'     = 'listener-telegram.js'
+    'svc-telegram' = 'servicio-telegram.js'
+    'svc-github'   = 'servicio-github.js'
+    'svc-drive'    = 'servicio-drive.js'
+    'dashboard'    = 'dashboard-v2.js'
+}
+
+# Sincronizar con main antes de levantar (para tener scripts actualizados)
+try {
+    git -C $RepoRoot fetch origin main 2>$null
+    git -C $RepoRoot reset --hard FETCH_HEAD 2>$null
+} catch {}
+
+$NodeModules = "$RepoRoot\node_modules"
+
+foreach ($svcName in $dead) {
+    $script = $ScriptMap[$svcName]
+    if (-not $script) { continue }
+    $scriptPath = "$PipelineDir\$script"
+    if (-not (Test-Path $scriptPath)) {
+        Write-Log "  $svcName : script no encontrado ($scriptPath)"
+        continue
+    }
     try {
-        git -C  fetch origin main 2>        git -C  checkout FETCH_HEAD --force 2>    } catch {}
-}
-
-if (-not (Test-ProcessAlive "\pulpo.pid")) {
-    Write-Log "Pulpo caido - relanzando desde "
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "\start-pulpo.bat" -WindowStyle Minimized
-}
-
-if (-not (Test-ProcessAlive "\listener.pid")) {
-    Write-Log "Listener caido - relanzando desde "
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "\start-listener.bat" -WindowStyle Minimized
+        $cmd = "set `"NODE_PATH=$NodeModules`" && node `"$scriptPath`""
+        $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $cmd `
+            -WorkingDirectory $RepoRoot `
+            -WindowStyle Hidden `
+            -PassThru
+        Write-Log "  $svcName : levantado PID $($proc.Id)"
+    } catch {
+        Write-Log "  $svcName : ERROR al levantar - $_"
+    }
 }
