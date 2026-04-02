@@ -161,6 +161,60 @@ function clearCooldown(skill, issue) {
   if (cd[key]) { delete cd[key]; saveCooldowns(cd); }
 }
 
+// --- Limpieza de Gradle daemons post-agente ---
+
+/**
+ * Matar Gradle daemons asociados a un directorio de trabajo (worktree o ROOT).
+ * Los daemons Gradle persisten después de que el build/agente termina y consumen
+ * hasta 4GB de heap cada uno, saturando el sistema.
+ */
+function killGradleDaemonsForCwd(cwd, label) {
+  if (!cwd) return 0;
+  try {
+    // Intentar ./gradlew --stop en el directorio del agente
+    const gradlewPath = path.join(cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+    if (fs.existsSync(gradlewPath)) {
+      const { execSync } = require('child_process');
+      const result = execSync(`"${gradlewPath}" --stop`, {
+        cwd, encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
+      });
+      const match = result.match(/(\d+) Daemon/);
+      const count = match ? parseInt(match[1]) : 0;
+      if (count > 0) {
+        log('gradle-cleanup', `${label}: ${count} daemon(s) detenidos en ${cwd}`);
+      }
+      return count;
+    }
+  } catch (e) {
+    // Si --stop falla, intentar matar por PID los daemons de este directorio
+    try {
+      const wmicOut = execSync(
+        'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+        { encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+      let killed = 0;
+      const cwdNormalized = cwd.replace(/\\/g, '/').toLowerCase();
+      for (const line of wmicOut.split('\n')) {
+        if ((line.includes('GradleDaemon') || line.includes('gradle-launcher')) &&
+            line.toLowerCase().includes(cwdNormalized)) {
+          const pidMatch = line.match(/,(\d+)\s*$/);
+          if (pidMatch) {
+            try {
+              execSync(`taskkill /PID ${pidMatch[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+              killed++;
+            } catch {}
+          }
+        }
+      }
+      if (killed > 0) {
+        log('gradle-cleanup', `${label}: ${killed} daemon(s) forzados en ${cwd}`);
+      }
+      return killed;
+    } catch {}
+  }
+  return 0;
+}
+
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
 
 const activeProcesses = new Map(); // key: "skill:issue" → { pid, startTime }
@@ -859,6 +913,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
+      // Matar Gradle daemons incluso en fast-fail
+      killGradleDaemonsForCwd(needsWorktree ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
       // Salir del canal de contexto
       if (contextChannelId) {
         try {
@@ -887,6 +943,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey(skill, issue));
+
+    // Matar Gradle daemons del worktree para liberar RAM (cada daemon usa hasta 4GB)
+    killGradleDaemonsForCwd(needsWorktree ? worktreePath : ROOT, `${skill}:#${issue}`);
+
     // Salir del canal de contexto (el canal queda para que otros lo consulten)
     if (contextChannelId) {
       try {
@@ -954,7 +1014,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check`], {
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon`], {
     cwd: buildCwd,
     env: buildEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -1009,6 +1069,9 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
       log('build', `Error moviendo build result #${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey('build', issue));
+
+    // Matar Gradle daemons del build para liberar RAM
+    killGradleDaemonsForCwd(buildCwd, `build:#${issue}`);
   });
 }
 
