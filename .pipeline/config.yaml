@@ -116,6 +116,12 @@ resource_limits:
   proactive_cleanup_cycles: 10     # Cada N ciclos del Pulpo, limpiar aunque no haya presión
   kotlin_daemon_kill: true         # Matar también Kotlin compile daemons huérfanos
 
+  # QA Priority Window — cuando se acumulan issues de verificación sin poder correr,
+  # el Pulpo bloquea nuevos lanzamientos de dev para liberar recursos y dar prioridad a QA.
+  qa_priority_queue_threshold: 3   # Cantidad de issues en verificación pendiente para activar
+  qa_priority_wait_minutes: 30     # Minutos sin poder lanzar QA antes de activar la ventana
+  qa_priority_max_duration_minutes: 15  # Duración máxima de la ventana QA (auto-desactiva)
+
   # Diagnóstico
   log_top_consumers: true          # Logear top 5 procesos por RAM antes de actuar
   diagnostic_on_orange: true       # Diagnóstico completo al entrar en naranja/rojo

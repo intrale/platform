@@ -347,6 +347,10 @@ function getSystemResourceUsage() {
 const PRESSURE_LEVELS = { GREEN: 'green', YELLOW: 'yellow', ORANGE: 'orange', RED: 'red' };
 let lastResourceLog = 0;
 let lastPressureLevel = PRESSURE_LEVELS.GREEN;
+let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram con kill de emergencia
+let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED sin poder bajar
+const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de emergencia
+const MAX_RED_RETRIES = 3;              // Después de 3 ciclos en RED sin mejora, dejar de intentar kill
 let proactiveCycleCounter = 0;
 
 /**
@@ -408,6 +412,7 @@ function isSystemOverloaded(config) {
 
   // Acciones según nivel
   if (level === PRESSURE_LEVELS.GREEN) {
+    consecutiveRedCycles = 0; // Reset si bajamos a green
     // Loguear cada 60s
     const now = Date.now();
     if (now - lastResourceLog > 60000) {
@@ -418,6 +423,7 @@ function isSystemOverloaded(config) {
   }
 
   if (level === PRESSURE_LEVELS.YELLOW) {
+    consecutiveRedCycles = 0; // Reset si bajamos a yellow
     // Limpieza suave: solo Gradle daemons huérfanos
     const { freed, killed } = tryFreeResources('soft');
     if (freed) log('recursos', `🟡 Limpieza suave: ${killed.join(', ')}`);
@@ -431,6 +437,7 @@ function isSystemOverloaded(config) {
   }
 
   if (level === PRESSURE_LEVELS.ORANGE) {
+    consecutiveRedCycles = 0; // Reset si bajamos a orange
     // Diagnóstico: ¿qué está consumiendo?
     if (config.resource_limits?.diagnostic_on_orange !== false) {
       logTopConsumers();
@@ -455,19 +462,44 @@ function isSystemOverloaded(config) {
     return false; // Dejar pasar 1 agente
   }
 
-  // RED: bloqueo total + kill de emergencia
+  // RED: bloqueo total + kill de emergencia (con anti-spam)
+  consecutiveRedCycles++;
+
+  // Si ya intentamos N veces y no baja, no insistir con kill — el consumo es de procesos del sistema
+  if (consecutiveRedCycles > MAX_RED_RETRIES) {
+    // Loguear localmente cada 60s, sin Telegram
+    const now = Date.now();
+    if (now - lastResourceLog > 60000) {
+      log('recursos', `🔴 RED sostenido (ciclo ${consecutiveRedCycles}) — los consumidores son del sistema, no hay más que limpiar. CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastResourceLog = now;
+    }
+    // Notificar por Telegram UNA vez cada 5 minutos
+    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+      logTopConsumers();
+      sendTelegram(`🔴 RAM al ${memPercent}% hace ${consecutiveRedCycles} ciclos. No hay daemons Gradle/Kotlin para matar — el consumo es de Chrome, emulador, etc. Bloqueando lanzamientos hasta que baje.`);
+      lastEmergencyTelegramTs = now;
+    }
+    return true;
+  }
+
   logTopConsumers();
   const { freed, killed } = tryFreeResources('emergency');
   if (freed) {
     log('recursos', `🔴 Kill de emergencia: ${killed.join(', ')}`);
-    sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+    // Solo enviar Telegram si pasó el cooldown
+    const now = Date.now();
+    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+      sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastEmergencyTelegramTs = now;
+    }
     // Re-evaluar
     const after = getResourcePressure(config);
     if (after.level !== PRESSURE_LEVELS.RED) {
-      return isSystemOverloaded(config); // Recurse con nivel nuevo
+      consecutiveRedCycles = 0; // Se recuperó
+      return isSystemOverloaded(config);
     }
   }
-  log('recursos', `🔴 RED — BLOQUEADO — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+  log('recursos', `🔴 RED — BLOQUEADO (intento ${consecutiveRedCycles}/${MAX_RED_RETRIES}) — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
   lastResourceLog = Date.now();
   return true;
 }
@@ -488,6 +520,112 @@ function countTotalRunningAgents(config) {
     }
   }
   return count;
+}
+
+// =============================================================================
+// QA PRIORITY WINDOW — Cuando se acumulan issues de verificación sin poder correr,
+// bloquea nuevos lanzamientos dev para liberar recursos y dar prioridad a QA.
+// Puntos 1-3 de la propuesta conversada con Leo (2026-04-02).
+// =============================================================================
+
+let qaPriorityActive = false;
+let qaPriorityActivatedAt = 0;
+let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
+let qaPriorityNotifiedTelegram = false;
+
+/**
+ * Contar issues pendientes en fase verificación (todas las pipelines).
+ */
+function countPendingVerificacion(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('verificacion')) continue;
+    const pendDir = path.join(PIPELINE, pName, 'verificacion', 'pendiente');
+    count += listWorkFiles(pendDir).length;
+  }
+  return count;
+}
+
+/**
+ * Detectar si hay agentes de dev corriendo (archivos en trabajando/ de fase dev).
+ */
+function countRunningDev(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('dev')) continue;
+    const trabajandoDir = path.join(PIPELINE, pName, 'dev', 'trabajando');
+    count += listWorkFiles(trabajandoDir).length;
+  }
+  return count;
+}
+
+/**
+ * Evaluar si debe activarse/desactivarse la QA Priority Window.
+ * Retorna true si QA Priority está activa (dev debe bloquearse).
+ */
+function evaluateQaPriority(config) {
+  const limits = config.resource_limits || {};
+  const queueThreshold = limits.qa_priority_queue_threshold || 3;
+  const waitMinutes = limits.qa_priority_wait_minutes || 30;
+  const maxDurationMinutes = limits.qa_priority_max_duration_minutes || 15;
+  const now = Date.now();
+
+  const pendingQa = countPendingVerificacion(config);
+
+  // ---- Desactivación ----
+  if (qaPriorityActive) {
+    // Si ya no hay issues QA pendientes, desactivar
+    if (pendingQa === 0) {
+      log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
+      if (qaPriorityNotifiedTelegram) {
+        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Lanzamientos dev reactivados.');
+      }
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      qaPriorityNotifiedTelegram = false;
+      return false;
+    }
+    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
+    if (now - qaPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
+      log('qa-priority', `⏱️ QA Priority Window expiró después de ${maxDurationMinutes}min — ${pendingQa} issues QA aún pendientes`);
+      if (qaPriorityNotifiedTelegram) {
+        sendTelegram(`⏱️ QA Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingQa} issues de verificación pendientes. Lanzamientos dev reactivados.`);
+      }
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      qaPriorityNotifiedTelegram = false;
+      return false;
+    }
+    return true; // Sigue activa
+  }
+
+  // ---- Activación ----
+  // Condición: N+ issues QA pendientes Y llevan M+ minutos sin poder correr
+  if (pendingQa >= queueThreshold) {
+    if (qaFirstBlockedAt === 0) {
+      qaFirstBlockedAt = now;
+      log('qa-priority', `⚠️ Acumulación QA detectada: ${pendingQa} issues pendientes en verificación — esperando ${waitMinutes}min antes de activar QA Priority`);
+    }
+    const waitedMs = now - qaFirstBlockedAt;
+    if (waitedMs >= waitMinutes * 60 * 1000) {
+      qaPriorityActive = true;
+      qaPriorityActivatedAt = now;
+      qaPriorityNotifiedTelegram = true;
+      log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min sin verificar. Bloqueando lanzamientos dev.`);
+      sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min esperando verificación. Bloqueando nuevos lanzamientos de dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
+      return true;
+    }
+  } else {
+    // Si bajó del umbral, resetear el timer
+    if (qaFirstBlockedAt !== 0) {
+      log('qa-priority', `✅ Acumulación QA bajó a ${pendingQa} (< ${queueThreshold}) — timer de QA Priority reseteado`);
+      qaFirstBlockedAt = 0;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -921,12 +1059,24 @@ function brazoLanzamiento(config) {
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
 
+  // Evaluar QA Priority Window — bloquea dev si QA está acumulado
+  const qaPriority = evaluateQaPriority(config);
+
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
   const multiplier = concurrencyMultiplier(pressure.level);
 
+  // Fases de desarrollo que se bloquean durante QA Priority
+  const DEV_PHASES = ['dev', 'validacion'];
+
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     for (const fase of pipelineConfig.fases) {
+      // QA PRIORITY: si la ventana está activa, bloquear lanzamientos de fases dev
+      // pero permitir verificacion, build, aprobacion, entrega
+      if (qaPriority && DEV_PHASES.includes(fase)) {
+        continue;
+      }
+
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
       const archivos = sortByPriority(listWorkFiles(pendienteDir), config);
