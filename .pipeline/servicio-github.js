@@ -8,9 +8,9 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
-const PIPELINE = path.resolve(__dirname);
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github');
 const PENDIENTE = path.join(QUEUE_DIR, 'pendiente');
 const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');

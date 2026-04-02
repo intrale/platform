@@ -13,8 +13,8 @@ const { execSync, spawn } = require('child_process');
 const yaml = require('js-yaml');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
-const PIPELINE = path.resolve(__dirname);
-const ROOT = path.resolve(__dirname, '..');
+const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
+const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
