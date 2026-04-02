@@ -17,6 +17,33 @@ const path = require('path');
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
 
+
+// --- Worktree ops: los scripts operativos SIEMPRE corren desde platform.ops (main) ---
+const OPS_WORKTREE = path.resolve(ROOT, '..', 'platform.ops');
+const OPS_PIPELINE = path.join(OPS_WORKTREE, '.pipeline');
+
+function ensureOpsWorktree() {
+  if (!fs.existsSync(OPS_WORKTREE)) {
+    log('Creando worktree ops en origin/main...');
+    try {
+      execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
+      execSync(`git worktree add "${OPS_WORKTREE}" origin/main`, { cwd: ROOT, timeout: 60000, windowsHide: true });
+      log('Worktree ops creado OK');
+    } catch (e) {
+      log(`ERROR creando worktree ops: ${e.message}`);
+      return false;
+    }
+  }
+  try {
+    execSync('git fetch origin main && git checkout FETCH_HEAD --force', {
+      cwd: OPS_WORKTREE, timeout: 30000, windowsHide: true, encoding: 'utf8'
+    });
+    log('Worktree ops sincronizado con origin/main');
+  } catch (e) {
+    log(`Warning: no se pudo sincronizar ops: ${e.message.slice(0, 100)}`);
+  }
+  return true;
+}
 const COMPONENTS = [
   { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
   { name: 'listener', script: 'listener-telegram.js', pid: 'listener.pid' },
@@ -128,19 +155,27 @@ function killAll() {
 function launchAll() {
   log('=== START ===');
 
+  const opsReady = ensureOpsWorktree();
+  const activePipeline = opsReady ? OPS_PIPELINE : PIPELINE;
+  const activeRoot = opsReady ? OPS_WORKTREE : ROOT;
+  if (opsReady) log(`  Ejecutando desde worktree ops: ${OPS_WORKTREE}`);
+  else log('  Fallback: directorio principal');
+  const logsDir = path.join(PIPELINE, 'logs');
+
   for (const comp of COMPONENTS) {
-    const scriptPath = path.join(PIPELINE, comp.script);
+    const scriptPath = path.join(activePipeline, comp.script);
     if (!fs.existsSync(scriptPath)) continue;
 
-    const logPath = path.join(PIPELINE, 'logs', `${comp.name}.log`);
+    const logPath = path.join(logsDir, `${comp.name}.log`);
     fs.writeFileSync(logPath, `--- restart ${new Date().toISOString()} ---\n`);
     const logFd = fs.openSync(logPath, 'a');
 
     const child = spawn(process.execPath, [scriptPath], {
-      cwd: ROOT,
+      cwd: activeRoot,
       stdio: ['ignore', logFd, logFd],
       detached: true,
-      windowsHide: true
+      windowsHide: true,
+      env: { ...process.env, PIPELINE_STATE_DIR: PIPELINE, PIPELINE_MAIN_ROOT: ROOT, NODE_PATH: path.join(ROOT, "node_modules") }
     });
     child.unref();
     fs.closeSync(logFd);
