@@ -42,7 +42,12 @@ data class DeliveryOrderDetail(
     val paymentMethod: String?,
     val collectOnDelivery: Boolean?,
     val createdAt: String?,
-    val updatedAt: String?
+    val updatedAt: String?,
+    val businessAddress: String? = null,
+    val businessLatitude: Double? = null,
+    val businessLongitude: Double? = null,
+    val customerLatitude: Double? = null,
+    val customerLongitude: Double? = null
 )
 
 data class DeliveryOrderItem(
@@ -83,7 +88,12 @@ fun DeliveryOrderDTO.toDetailDomain(): DeliveryOrderDetail = DeliveryOrderDetail
     paymentMethod = paymentMethod,
     collectOnDelivery = collectOnDelivery,
     createdAt = createdAt,
-    updatedAt = updatedAt
+    updatedAt = updatedAt,
+    businessAddress = businessAddress,
+    businessLatitude = businessLatitude,
+    businessLongitude = businessLongitude,
+    customerLatitude = customerLatitude,
+    customerLongitude = customerLongitude
 )
 
 fun DeliveryOrderItemDTO.toDomain(): DeliveryOrderItem = DeliveryOrderItem(

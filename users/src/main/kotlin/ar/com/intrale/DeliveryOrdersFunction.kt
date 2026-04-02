@@ -86,6 +86,11 @@ class DeliveryOrdersFunction(
                     collectOnDelivery = order.collectOnDelivery,
                     createdAt = order.createdAt,
                     updatedAt = order.updatedAt,
+                    businessAddress = order.businessAddress,
+                    businessLatitude = order.businessLatitude,
+                    businessLongitude = order.businessLongitude,
+                    customerLatitude = order.customerLatitude,
+                    customerLongitude = order.customerLongitude,
                     responseStatus = HttpStatusCode.OK
                 )
             }
