@@ -106,7 +106,7 @@ resource_limits:
   max_mem_percent: 70              # No lanzar si RAM >= 70%
   qa_env_max_cpu_percent: 60       # QA env (3 servicios pesados) necesita más margen
   qa_env_max_mem_percent: 60       # QA env: DynamoDB + Gradle + emulador consumen mucha RAM
-  max_concurrent_devs: 2           # Máximo de desarrolladores simultáneos (android+backend+web combinados)
+  max_concurrent_devs: 1           # Máximo de desarrolladores simultáneos (limitado hasta estabilizar pipeline)
   saturation_streak_threshold: 3   # Ciclos consecutivos de sobrecarga antes de buscar zombies
   zombie_hunt_cooldown_minutes: 5  # Cooldown entre búsquedas de zombies
   gradle_kill_streak: 4            # Forzar kill de Gradle daemons aunque haya agentes

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // restart.js — Reinicio drástico y seguro del pipeline V2
 //
-// Estrategia: matar TODOS los node.exe del pipeline (por taskkill),
+// Estrategia: sincronizar con main, matar TODOS los node.exe del pipeline,
 // limpiar PID files, y relanzar. El pipeline es idempotente —
 // el estado vive en el filesystem, no en memoria.
 //
 // Uso:
-//   node .pipeline/restart.js          → kill all + relaunch
+//   node .pipeline/restart.js          → sync + kill all + relaunch
 //   node .pipeline/restart.js stop     → kill all
 //   node .pipeline/restart.js status   → verificar estado
 
@@ -17,33 +17,6 @@ const path = require('path');
 const PIPELINE = path.resolve(__dirname);
 const ROOT = path.resolve(PIPELINE, '..');
 
-
-// --- Worktree ops: los scripts operativos SIEMPRE corren desde platform.ops (main) ---
-const OPS_WORKTREE = path.resolve(ROOT, '..', 'platform.ops');
-const OPS_PIPELINE = path.join(OPS_WORKTREE, '.pipeline');
-
-function ensureOpsWorktree() {
-  if (!fs.existsSync(OPS_WORKTREE)) {
-    log('Creando worktree ops en origin/main...');
-    try {
-      execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
-      execSync(`git worktree add "${OPS_WORKTREE}" origin/main`, { cwd: ROOT, timeout: 60000, windowsHide: true });
-      log('Worktree ops creado OK');
-    } catch (e) {
-      log(`ERROR creando worktree ops: ${e.message}`);
-      return false;
-    }
-  }
-  try {
-    execSync('git fetch origin main && git checkout FETCH_HEAD --force', {
-      cwd: OPS_WORKTREE, timeout: 30000, windowsHide: true, encoding: 'utf8'
-    });
-    log('Worktree ops sincronizado con origin/main');
-  } catch (e) {
-    log(`Warning: no se pudo sincronizar ops: ${e.message.slice(0, 100)}`);
-  }
-  return true;
-}
 const COMPONENTS = [
   { name: 'pulpo', script: 'pulpo.js', pid: 'pulpo.pid' },
   { name: 'listener', script: 'listener-telegram.js', pid: 'listener.pid' },
@@ -63,6 +36,18 @@ function sleep(ms) {
   spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${ms})`], { timeout: ms + 2000 });
 }
 
+// --- SYNC: actualizar repo principal con main ---
+
+function syncWithMain() {
+  try {
+    execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
+    execSync('git reset --hard FETCH_HEAD', { cwd: ROOT, timeout: 15000, windowsHide: true, encoding: 'utf8' });
+    log('Sincronizado con origin/main');
+  } catch (e) {
+    log(`Warning: no se pudo sincronizar con main: ${e.message.slice(0, 100)}`);
+  }
+}
+
 // --- KILL: drástico — matar todo lo que sea del pipeline ---
 
 function killAll() {
@@ -77,9 +62,7 @@ function killAll() {
       { encoding: 'utf8', timeout: 10000 }
     );
     for (const line of output.split('\n')) {
-      // Matar si tiene .pipeline/ en su command line
       if (!line.includes('.pipeline')) continue;
-      // No matarse a sí mismo
       const match = line.match(/(\d+)\s*$/);
       if (!match) continue;
       const pid = parseInt(match[1]);
@@ -90,7 +73,7 @@ function killAll() {
     log(`  Error listando procesos: ${e.message}`);
   }
 
-  // También agregar PIDs de los archivos .pid (por si wmic no los encontró)
+  // También agregar PIDs de los archivos .pid
   for (const comp of COMPONENTS) {
     try {
       const pid = parseInt(fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim());
@@ -101,7 +84,6 @@ function killAll() {
   if (pidsToKill.size === 0) {
     log('  No hay procesos del pipeline corriendo');
   } else {
-    // Matar todos de un solo golpe con taskkill /T (tree kill — mata hijos también)
     for (const pid of pidsToKill) {
       try {
         execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
@@ -116,7 +98,7 @@ function killAll() {
     try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
   }
 
-  // Devolver archivos de trabajando/ a pendiente/ en commander (por si quedaron)
+  // Devolver archivos de trabajando/ a pendiente/ en commander
   const cmdTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
   const cmdPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
   try {
@@ -138,11 +120,11 @@ function killAll() {
     );
     const survivors = check.split('\n').filter(l => l.includes('.pipeline') && !l.includes('restart.js'));
     if (survivors.length > 0) {
-      log('  ⚠️ Quedan procesos vivos — segundo intento:');
+      log('  Quedan procesos vivos — segundo intento:');
       for (const line of survivors) {
         const m = line.match(/(\d+)\s*$/);
         if (m) {
-          execSync(`taskkill /PID ${m[1]} /F /T`, { timeout: 5000, stdio: 'ignore' }).catch(() => {});
+          try { execSync(`taskkill /PID ${m[1]} /F /T`, { timeout: 5000, stdio: 'ignore' }); } catch {}
           log(`    Force killed PID ${m[1]}`);
         }
       }
@@ -155,15 +137,11 @@ function killAll() {
 function launchAll() {
   log('=== START ===');
 
-  const opsReady = ensureOpsWorktree();
-  const activePipeline = opsReady ? OPS_PIPELINE : PIPELINE;
-  const activeRoot = opsReady ? OPS_WORKTREE : ROOT;
-  if (opsReady) log(`  Ejecutando desde worktree ops: ${OPS_WORKTREE}`);
-  else log('  Fallback: directorio principal');
   const logsDir = path.join(PIPELINE, 'logs');
+  if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
   for (const comp of COMPONENTS) {
-    const scriptPath = path.join(activePipeline, comp.script);
+    const scriptPath = path.join(PIPELINE, comp.script);
     if (!fs.existsSync(scriptPath)) continue;
 
     const logPath = path.join(logsDir, `${comp.name}.log`);
@@ -171,11 +149,11 @@ function launchAll() {
     const logFd = fs.openSync(logPath, 'a');
 
     const child = spawn(process.execPath, [scriptPath], {
-      cwd: activeRoot,
+      cwd: ROOT,
       stdio: ['ignore', logFd, logFd],
       detached: true,
       windowsHide: true,
-      env: { ...process.env, PIPELINE_STATE_DIR: PIPELINE, PIPELINE_MAIN_ROOT: ROOT, NODE_PATH: path.join(ROOT, "node_modules") }
+      env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') }
     });
     child.unref();
     fs.closeSync(logFd);
@@ -199,13 +177,13 @@ function status() {
       const pid = fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim();
       const check = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 5000 });
       if (check.includes(`"${pid}"`)) {
-        log(`  ✓ ${comp.name} (PID ${pid})`);
+        log(`  OK ${comp.name} (PID ${pid})`);
       } else {
-        log(`  ✗ ${comp.name}`);
+        log(`  FAIL ${comp.name}`);
         allOk = false;
       }
     } catch {
-      log(`  ✗ ${comp.name}`);
+      log(`  FAIL ${comp.name}`);
       allOk = false;
     }
   }
@@ -226,7 +204,8 @@ switch (action) {
     break;
   default:
     killAll();
+    syncWithMain();
     launchAll();
     const ok = status();
-    log(ok ? '=== Pipeline V2 operativo ===' : '=== ⚠️ Revisar componentes ===');
+    log(ok ? '=== Pipeline V2 operativo ===' : '=== Revisar componentes ===');
 }
