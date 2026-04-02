@@ -626,7 +626,7 @@ function brazoLanzamiento(config) {
 
           // Pre-requisitos por fase
           if (fase === 'verificacion') {
-            ensureQaEnvironment();
+            ensureQaEnvironment(config);
           }
 
           // Lanzar agente
@@ -649,7 +649,7 @@ const QA_ENV_CHECK_INTERVAL = 5 * 60 * 1000; // Re-verificar cada 5 minutos (no 
 let qaEnvStartFailures = 0;
 const QA_ENV_MAX_FAILURES = 3; // Circuit breaker: después de 3 fallos, dejar de intentar
 
-function ensureQaEnvironment() {
+function ensureQaEnvironment(config) {
   const now = Date.now();
 
   // Cooldown entre verificaciones: no bombardear cada tick del loop
@@ -662,18 +662,22 @@ function ensureQaEnvironment() {
     return;
   }
 
-  // GATE DE RECURSOS: no levantar servicios pesados si el sistema está saturado
+  // GATE DE RECURSOS: QA env usa umbrales más bajos que agentes porque levanta 3 servicios pesados
+  const limits = config.resource_limits || {};
+  const maxCpu = limits.qa_env_max_cpu_percent || 60;
+  const maxMem = limits.qa_env_max_mem_percent || 60;
+
   const { cpuPercent, memPercent } = getSystemResourceUsage();
-  if (cpuPercent >= 80 || memPercent >= 85) {
-    log('qa-env', `Sistema saturado (CPU: ${cpuPercent}% | RAM: ${memPercent}%). Intentando liberar recursos...`);
+  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
+    log('qa-env', `Sistema saturado para QA env (CPU: ${cpuPercent}% >= ${maxCpu}% | RAM: ${memPercent}% >= ${maxMem}%). Intentando liberar recursos...`);
 
     // Intentar limpiar zombies/daemons para destrabar
     const { freed } = tryFreeResources();
 
     if (freed) {
-      // Dar un momento para que el OS libere la memoria y re-chequear
+      // Re-chequear después de la limpieza
       const after = getSystemResourceUsage();
-      if (after.cpuPercent >= 80 || after.memPercent >= 85) {
+      if (after.cpuPercent >= maxCpu || after.memPercent >= maxMem) {
         log('qa-env', `Post-limpieza: aún saturado (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Posponiendo QA environment.`);
         return;
       }
@@ -1442,27 +1446,34 @@ function parseCommand(text) {
   const match = trimmed.match(/^\/(\w+)\s*(.*)?$/s);
   if (match) return { cmd: match[1].toLowerCase(), args: (match[2] || '').trim() };
 
-  // Detección de intención por lenguaje natural (para audio transcripto)
+  // Detección de intención por lenguaje natural (solo para mensajes cortos tipo comando)
+  // Si el texto es largo (>80 chars), es conversación libre — delegar a Claude
   const lower = trimmed.toLowerCase();
-  const intentPatterns = [
-    { pattern: /\b(status|estado|tablero|cómo est[áa]|que hay en el pipeline)\b/i, cmd: 'status' },
-    { pattern: /\b(pausar|paus[áa]|fren[áa]|par[áa] el pulpo)\b/i, cmd: 'pausar' },
-    { pattern: /\b(reanudar|reanud[áa]|segui|continu[áa]|arrancá)\b/i, cmd: 'reanudar' },
-    { pattern: /\b(actividad|qué pas[óo]|movimientos|timeline)\b/i, cmd: 'actividad' },
-    { pattern: /\b(costos?|gasto|consumo|tokens?)\b/i, cmd: 'costos' },
-    { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
-    { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa])\b/i, cmd: 'intake' },
-    { pattern: /\b(proponer|propon[eé]|historias nuevas|ideas)\b/i, cmd: 'proponer' },
-    { pattern: /\b(stop|apag[áa]|cerr[áa])\b/i, cmd: 'stop' },
-  ];
+  const isShortMessage = trimmed.length <= 80;
 
-  for (const { pattern, cmd } of intentPatterns) {
-    if (pattern.test(lower)) {
-      // Extraer argumentos: todo lo que no es el keyword
-      const args = lower.replace(pattern, '').trim();
-      log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
-      return { cmd, args };
+  if (isShortMessage) {
+    // Patrones estrictos: solo matchean intenciones claras de comando, no menciones casuales
+    const intentPatterns = [
+      { pattern: /\b(status|estado del pipeline|tablero|que hay en el pipeline)\b/i, cmd: 'status' },
+      { pattern: /\b(pausar|paus[áa] el|fren[áa] el|par[áa] el pulpo)\b/i, cmd: 'pausar' },
+      { pattern: /\b(reanudar|reanud[áa] el|arranc[áa] el pulpo)\b/i, cmd: 'reanudar' },
+      { pattern: /\b(mostrame la actividad|qué pas[óo] en el pipeline|timeline)\b/i, cmd: 'actividad' },
+      { pattern: /\b(mostrame los costos|cuánto gastamos|reporte de costos)\b/i, cmd: 'costos' },
+      { pattern: /\b(ayuda|help|comandos disponibles)\b/i, cmd: 'help' },
+      { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, cmd: 'intake' },
+      { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
+      { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
+    ];
+
+    for (const { pattern, cmd } of intentPatterns) {
+      if (pattern.test(lower)) {
+        const args = lower.replace(pattern, '').trim();
+        log('commander', `Intención detectada: "${trimmed.slice(0, 50)}" → /${cmd}`);
+        return { cmd, args };
+      }
     }
+  } else {
+    log('commander', `Texto largo (${trimmed.length} chars) — delegando a Claude como texto libre`);
   }
 
   return null; // Texto libre — delegar a Claude
