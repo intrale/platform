@@ -17,6 +17,7 @@ import asdo.auth.ToDoResetLoginCache
 import asdo.auth.ToDoTwoFactorSetup
 import asdo.auth.ToDoTwoFactorVerify
 import asdo.client.DoCheckBusinessOpen
+import asdo.client.DoCheckPaymentStatus
 import asdo.client.DoCreateClientOrder
 import asdo.client.DoGetClientOrders
 import asdo.client.DoGetClientOrderDetail
@@ -31,6 +32,7 @@ import asdo.client.DoMarkNotificationRead
 import asdo.client.DoMarkAllNotificationsRead
 import asdo.client.ToDoCheckBusinessOpen
 import asdo.client.DoUpdatePushPreferences
+import asdo.client.ToDoCheckPaymentStatus
 import asdo.client.ToDoCreateClientOrder
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
@@ -186,7 +188,9 @@ import ext.client.CommClientAddressesService
 import ext.client.CommClientOrdersService
 import ext.client.CommClientProfileService
 import ext.client.CommPaymentMethodsService
+import ext.client.CommPaymentStatusService
 import ext.client.PaymentMethodsService
+import ext.client.PaymentStatusService
 import ext.delivery.CommDeliveryAvailabilityService
 import ext.delivery.CommDeliveryProfileService
 import ext.delivery.CommDeliveryOrdersService
@@ -515,6 +519,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
     bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance()) }
+    bindSingleton<CommPaymentStatusService> { PaymentStatusService(instance(), instance()) }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
     bindSingleton<ToDoUpdateClientProfile> { DoUpdateClientProfile(instance(), instance(), instance()) }
@@ -532,6 +537,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<ToDoUpdatePushPreferences> { DoUpdatePushPreferences(instance()) }
     bindSingleton<ToDoCreateClientOrder> { DoCreateClientOrder(instance()) }
     bindSingleton<ToDoCheckBusinessOpen> { DoCheckBusinessOpen(instance()) }
+    bindSingleton<ToDoCheckPaymentStatus> { DoCheckPaymentStatus(instance()) }
 
     // Push notifications
     bindSingleton<CommPushTokenService> { PushTokenService(instance(), instance()) }

@@ -7,7 +7,7 @@ import ar.com.intrale.shared.client.PaymentMethodDTO
  * Extensible a futuro para pasarelas (MercadoPago, Stripe, etc.)
  */
 enum class PaymentMethodType {
-    CASH, TRANSFER, CARD, DIGITAL_WALLET, OTHER;
+    CASH, TRANSFER, CARD, DIGITAL_WALLET, MERCADO_PAGO, OTHER;
 
     companion object {
         fun fromString(value: String): PaymentMethodType = when (value.uppercase()) {
@@ -15,9 +15,16 @@ enum class PaymentMethodType {
             "TRANSFER" -> TRANSFER
             "CARD" -> CARD
             "DIGITAL_WALLET" -> DIGITAL_WALLET
+            "MERCADO_PAGO", "MERCADOPAGO" -> MERCADO_PAGO
             else -> OTHER
         }
     }
+
+    /**
+     * Indica si este medio de pago requiere redirect a pasarela externa.
+     */
+    val requiresExternalPayment: Boolean
+        get() = this == MERCADO_PAGO
 }
 
 data class PaymentMethod(
