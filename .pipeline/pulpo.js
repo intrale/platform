@@ -347,6 +347,10 @@ function getSystemResourceUsage() {
 const PRESSURE_LEVELS = { GREEN: 'green', YELLOW: 'yellow', ORANGE: 'orange', RED: 'red' };
 let lastResourceLog = 0;
 let lastPressureLevel = PRESSURE_LEVELS.GREEN;
+let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram con kill de emergencia
+let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED sin poder bajar
+const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de emergencia
+const MAX_RED_RETRIES = 3;              // Después de 3 ciclos en RED sin mejora, dejar de intentar kill
 let proactiveCycleCounter = 0;
 
 /**
@@ -408,6 +412,7 @@ function isSystemOverloaded(config) {
 
   // Acciones según nivel
   if (level === PRESSURE_LEVELS.GREEN) {
+    consecutiveRedCycles = 0; // Reset si bajamos a green
     // Loguear cada 60s
     const now = Date.now();
     if (now - lastResourceLog > 60000) {
@@ -418,6 +423,7 @@ function isSystemOverloaded(config) {
   }
 
   if (level === PRESSURE_LEVELS.YELLOW) {
+    consecutiveRedCycles = 0; // Reset si bajamos a yellow
     // Limpieza suave: solo Gradle daemons huérfanos
     const { freed, killed } = tryFreeResources('soft');
     if (freed) log('recursos', `🟡 Limpieza suave: ${killed.join(', ')}`);
@@ -431,6 +437,7 @@ function isSystemOverloaded(config) {
   }
 
   if (level === PRESSURE_LEVELS.ORANGE) {
+    consecutiveRedCycles = 0; // Reset si bajamos a orange
     // Diagnóstico: ¿qué está consumiendo?
     if (config.resource_limits?.diagnostic_on_orange !== false) {
       logTopConsumers();
@@ -455,19 +462,44 @@ function isSystemOverloaded(config) {
     return false; // Dejar pasar 1 agente
   }
 
-  // RED: bloqueo total + kill de emergencia
+  // RED: bloqueo total + kill de emergencia (con anti-spam)
+  consecutiveRedCycles++;
+
+  // Si ya intentamos N veces y no baja, no insistir con kill — el consumo es de procesos del sistema
+  if (consecutiveRedCycles > MAX_RED_RETRIES) {
+    // Loguear localmente cada 60s, sin Telegram
+    const now = Date.now();
+    if (now - lastResourceLog > 60000) {
+      log('recursos', `🔴 RED sostenido (ciclo ${consecutiveRedCycles}) — los consumidores son del sistema, no hay más que limpiar. CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastResourceLog = now;
+    }
+    // Notificar por Telegram UNA vez cada 5 minutos
+    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+      logTopConsumers();
+      sendTelegram(`🔴 RAM al ${memPercent}% hace ${consecutiveRedCycles} ciclos. No hay daemons Gradle/Kotlin para matar — el consumo es de Chrome, emulador, etc. Bloqueando lanzamientos hasta que baje.`);
+      lastEmergencyTelegramTs = now;
+    }
+    return true;
+  }
+
   logTopConsumers();
   const { freed, killed } = tryFreeResources('emergency');
   if (freed) {
     log('recursos', `🔴 Kill de emergencia: ${killed.join(', ')}`);
-    sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+    // Solo enviar Telegram si pasó el cooldown
+    const now = Date.now();
+    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+      sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastEmergencyTelegramTs = now;
+    }
     // Re-evaluar
     const after = getResourcePressure(config);
     if (after.level !== PRESSURE_LEVELS.RED) {
-      return isSystemOverloaded(config); // Recurse con nivel nuevo
+      consecutiveRedCycles = 0; // Se recuperó
+      return isSystemOverloaded(config);
     }
   }
-  log('recursos', `🔴 RED — BLOQUEADO — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+  log('recursos', `🔴 RED — BLOQUEADO (intento ${consecutiveRedCycles}/${MAX_RED_RETRIES}) — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
   lastResourceLog = Date.now();
   return true;
 }
