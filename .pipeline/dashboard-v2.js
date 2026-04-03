@@ -551,9 +551,23 @@ function generateHTML(state) {
         }
       }
     }
-    const issueEtaLabel = hasEta && issueEtaMs > 0
-      ? `<span class="issue-eta" title="ETA estimado para completar todas las fases restantes">⏱ ~${fmtDuration(issueEtaMs)}</span>`
-      : '';
+    // Para issues completados: calcular duración total real
+    let issueEtaLabel = '';
+    if (hasEta && issueEtaMs > 0) {
+      issueEtaLabel = `<span class="issue-eta" title="ETA estimado para completar fases restantes">⏱ ~${fmtDuration(issueEtaMs)}</span>`;
+    } else if (pct === 100) {
+      // Issue completado: calcular duración total desde timestamps
+      let minTs = Infinity, maxTs = 0;
+      for (const entries of Object.values(data.fases)) {
+        for (const e of entries) {
+          if (e.startedAt && e.startedAt < minTs) minTs = e.startedAt;
+          if (e.updatedAt && e.updatedAt > maxTs) maxTs = e.updatedAt;
+        }
+      }
+      if (maxTs > minTs && minTs < Infinity) {
+        issueEtaLabel = `<span class="issue-eta issue-done-time" title="Tiempo total de completación">✓ ${fmtDuration(maxTs - minTs)}</span>`;
+      }
+    }
 
     const issueCell = `<td class="issue-col">
       <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>
@@ -1027,6 +1041,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .eta-badge{font-size:0.7em;padding:1px 5px;border-radius:8px;background:var(--ac2);color:var(--ac);margin-left:4px;font-weight:600;white-space:nowrap}
 .eta-over{background:var(--or2);color:var(--or)}
 .issue-eta{display:block;font-size:0.72em;color:var(--ac);margin-top:2px;white-space:nowrap}
+.issue-done-time{color:var(--gn)}
 
 /* Toast notification */
 .toast{
@@ -1306,15 +1321,98 @@ document.querySelectorAll('.fase-badge[data-fase-tt]').forEach(el => {
 
 // --- Metrics ---
 
+/**
+ * Inferir actividad histórica desde timestamps de archivos procesados y activity log.
+ * Genera snapshots sintéticos para poblar /metrics cuando no hay datos del Pulpo.
+ */
+function inferHistoricalActivity() {
+  const events = []; // { ts, type, fase, skill }
+
+  // 1. Archivos procesados/listo de todas las fases — cada uno es un "agente terminó"
+  const config = loadConfig();
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) {
+      for (const estado of ['procesado', 'listo', 'trabajando', 'pendiente']) {
+        const dir = path.join(PIPELINE, pName, fase, estado);
+        for (const f of listWorkFiles(dir)) {
+          const st = fileStat(path.join(dir, f));
+          if (!st) continue;
+          const skill = f.split('.').slice(1).join('.');
+          // birthtime = creación, ctime = movido a este dir
+          if (st.birthtimeMs > 0) events.push({ ts: st.birthtimeMs, type: 'start', fase, skill });
+          if (st.ctimeMs > st.birthtimeMs) events.push({ ts: st.ctimeMs, type: 'end', fase, skill });
+        }
+      }
+    }
+  }
+
+  // 2. Activity log — tool calls como proxy de actividad
+  try {
+    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
+    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
+    for (const l of lines) {
+      try {
+        const d = JSON.parse(l);
+        const ts = typeof d.ts === 'string' ? new Date(d.ts).getTime() : d.ts;
+        if (ts > 0) events.push({ ts, type: 'tool', fase: 'agent', skill: d.session?.slice(0, 8) || '' });
+      } catch {}
+    }
+  } catch {}
+
+  if (events.length === 0) return [];
+
+  // Ordenar y agrupar en buckets de 5min
+  events.sort((a, b) => a.ts - b.ts);
+  const BUCKET_MS = 300000; // 5 minutos
+  const minTs = events[0].ts;
+  const maxTs = events[events.length - 1].ts;
+  const snapshots = [];
+
+  for (let t = minTs; t <= maxTs; t += BUCKET_MS) {
+    const bucketEnd = t + BUCKET_MS;
+    const inBucket = events.filter(e => e.ts >= t && e.ts < bucketEnd);
+    const agents = new Set(inBucket.filter(e => e.type === 'start' || e.type === 'tool').map(e => e.skill)).size;
+    const byFase = {};
+    for (const e of inBucket) {
+      if (!byFase[e.fase]) byFase[e.fase] = { working: 0, pending: 0 };
+      if (e.type === 'start') byFase[e.fase].working++;
+      if (e.type === 'end') byFase[e.fase].pending++;
+    }
+    // Estimar CPU/RAM basándose en cantidad de agentes activos
+    const estCpu = Math.min(95, agents * 20 + (inBucket.length > 5 ? 15 : 5));
+    const estMem = Math.min(95, 40 + agents * 12);
+    const level = estCpu > 90 || estMem > 90 ? 'red' : estCpu > 80 || estMem > 80 ? 'orange' : estCpu > 65 || estMem > 65 ? 'yellow' : 'green';
+
+    snapshots.push({
+      ts: t,
+      cpu: estCpu,
+      mem: estMem,
+      level,
+      agents,
+      byFase,
+      inferred: true // Marcar como dato inferido
+    });
+  }
+
+  return snapshots;
+}
+
 function getMetricsData() {
   const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
-  const snapshots = [];
+  let snapshots = [];
   try {
     const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
     for (const l of lines) {
       try { snapshots.push(JSON.parse(l)); } catch {}
     }
   } catch {}
+
+  // Si no hay snapshots del Pulpo, inferir actividad histórica desde archivos procesados
+  // Esto da una timeline de cuándo hubo trabajo en cada fase
+  if (snapshots.length < 10) {
+    const inferred = inferHistoricalActivity();
+    if (inferred.length > snapshots.length) snapshots = inferred;
+  }
 
   // Promedios de duración por fase/skill (reusar lógica de ETA)
   const state = getPipelineState();
@@ -1414,8 +1512,8 @@ function generateMetricsHTML() {
   const tokM = (tokenEstimates.totalEstimatedTokens / 1000000).toFixed(1);
   const costEst = (tokenEstimates.totalEstimatedTokens / 1000000 * 3).toFixed(2); // ~$3/MTok estimate
 
-  // Sparkline data (últimas 60 muestras = ~30min)
-  const sparkData = snap1h.slice(-60);
+  // Sparkline y chart data
+  const sparkData = snap1h.length > 2 ? snap1h.slice(-60) : snapshots.slice(-120);
   const cpuSpark = sparkData.map(s => s.cpu);
   const memSpark = sparkData.map(s => s.mem);
   const agentSpark = sparkData.map(s => s.agents);
@@ -1427,6 +1525,52 @@ function generateMetricsHTML() {
     const points = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max * h)).toFixed(1)}`).join(' ');
     return `<svg width="${w}" height="${h}" class="sparkline"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
   }
+
+  // Gráfico grande (para sección de históricos)
+  function chart(values, max, color, label, unit, thresholds) {
+    if (values.length < 2) return '<div class="dim" style="padding:20px">Sin datos suficientes. El Pulpo genera snapshots cada 30s cuando corre.</div>';
+    const w = 800, h = 160, pad = 40;
+    const pw = w - pad * 2, ph = h - pad;
+    const step = pw / (values.length - 1);
+    const points = values.map((v, i) => `${(pad + i * step).toFixed(1)},${(h - pad - (v / max * ph)).toFixed(1)}`).join(' ');
+    // Area fill
+    const areaPoints = `${pad},${h - pad} ${points} ${(pad + (values.length - 1) * step).toFixed(1)},${h - pad}`;
+    // Y axis labels
+    const yLabels = [0, 25, 50, 75, 100].map(v => {
+      const y = h - pad - (v / max * ph);
+      return `<text x="${pad - 5}" y="${y + 4}" text-anchor="end" fill="#8b949e" font-size="10">${v}${unit}</text><line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="#21262d" stroke-width="0.5"/>`;
+    }).join('');
+    // X axis time labels (first, middle, last)
+    const tsFirst = sparkData[0]?.ts;
+    const tsLast = sparkData[sparkData.length - 1]?.ts;
+    const fmtTs = (ts) => ts ? new Date(ts).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) : '';
+    const xLabels = tsFirst ? `<text x="${pad}" y="${h - 5}" fill="#8b949e" font-size="10">${fmtTs(tsFirst)}</text><text x="${w - pad}" y="${h - 5}" text-anchor="end" fill="#8b949e" font-size="10">${fmtTs(tsLast)}</text>` : '';
+    // Threshold lines
+    let thresholdLines = '';
+    if (thresholds) {
+      for (const [val, col] of thresholds) {
+        const y = h - pad - (val / max * ph);
+        thresholdLines += `<line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="${col}" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>`;
+      }
+    }
+    // Avg line
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+    const avgY = h - pad - (avg / max * ph);
+
+    return `<svg viewBox="0 0 ${w} ${h}" class="chart">
+      ${yLabels}${xLabels}${thresholdLines}
+      <polygon points="${areaPoints}" fill="${color}" opacity="0.1"/>
+      <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2"/>
+      <line x1="${pad}" y1="${avgY}" x2="${w - pad}" y2="${avgY}" stroke="${color}" stroke-width="1" stroke-dasharray="2,4" opacity="0.6"/>
+      <text x="${w - pad + 5}" y="${avgY + 4}" fill="${color}" font-size="10">avg ${avg.toFixed(0)}${unit}</text>
+      <text x="${pad}" y="14" fill="#e6edf3" font-size="12" font-weight="600">${label}</text>
+    </svg>`;
+  }
+
+  const isInferred = snapshots.length > 0 && snapshots[0].inferred;
+  const dataSourceLabel = isInferred
+    ? '⚠️ Datos inferidos desde timestamps de archivos (el Pulpo no estaba corriendo). Precisión limitada.'
+    : `📊 ${snapshots.length} snapshots reales del Pulpo (${snapshots.length > 0 ? fmtDuration(now - snapshots[0].ts) : '0'} de historia)`;
 
   // ETA averages table
   let etaRows = '';
@@ -1473,6 +1617,8 @@ td{padding:6px 10px;border-bottom:1px solid var(--bd)}
 .level-bar{display:flex;height:20px;border-radius:6px;overflow:hidden;margin:8px 0}
 .level-bar>div{height:100%;display:flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;color:#000}
 .back-link{margin-bottom:16px;display:inline-block}
+.chart{width:100%;height:auto;max-height:200px}
+.chart-grid{display:grid;grid-template-columns:1fr;gap:12px}
 .section{margin-bottom:24px}
 </style></head><body>
 <a href="/" class="back-link">← Dashboard</a>
@@ -1530,6 +1676,16 @@ td{padding:6px 10px;border-bottom:1px solid var(--bd)}
 </div>
 
 <div class="section">
+<h2>📈 Gráficos históricos</h2>
+<div class="card-sub" style="margin-bottom:12px">${dataSourceLabel}</div>
+<div class="chart-grid">
+  <div class="card">${chart(snapshots.map(s => s.cpu), 100, '#f85149', 'CPU %', '%', [[65, '#d29922'], [80, '#db6d28'], [90, '#f85149']])}</div>
+  <div class="card">${chart(snapshots.map(s => s.mem), 100, '#d29922', 'RAM %', '%', [[65, '#d29922'], [80, '#db6d28'], [90, '#f85149']])}</div>
+  <div class="card">${chart(snapshots.map(s => s.agents), 6, '#58a6ff', 'Agentes activos', '', [])}</div>
+</div>
+</div>
+
+<div class="section">
 <h2>⏱ Velocidad por fase (promedios históricos)</h2>
 <table>
 <thead><tr><th>Fase</th><th>Promedio</th><th>Muestras</th><th>Detalle por skill</th></tr></thead>
@@ -1555,7 +1711,7 @@ ${reboteRate > 30 ? '<p class="orange">⚠️ Tasa de rechazo alta (>30%) — re
 ${levelPct.red > 10 ? '<p class="red">⚠️ Sistema en rojo >' + levelPct.red + '% del tiempo — hardware insuficiente para la carga actual</p>' : ''}
 ${levelPct.green > 80 ? '<p class="green">✅ Sistema saludable — recursos bien dimensionados</p>' : ''}
 ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ 0 entregas en 24h con pipeline activo — revisar cuellos de botella</p>' : ''}
-<p class="dim">Datos basados en ${snap24h.length} snapshots (${snap24h.length > 0 ? fmtDuration(now - snap24h[0].ts) : '0'} de historia)</p>
+<p class="dim">${dataSourceLabel}</p>
 </div>
 </div>
 
