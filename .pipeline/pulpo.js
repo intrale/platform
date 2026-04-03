@@ -595,6 +595,7 @@ let qaPriorityActive = false;
 let qaPriorityActivatedAt = 0;
 let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
 let qaPriorityNotifiedTelegram = false;
+let qaPriorityManual = false;       // true si fue activada manualmente desde el dashboard
 
 // =============================================================================
 // BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
@@ -606,6 +607,7 @@ let buildPriorityActive = false;
 let buildPriorityActivatedAt = 0;
 let buildFirstBlockedAt = 0;
 let buildPriorityNotifiedTelegram = false;
+let buildPriorityManual = false;    // true si fue activada manualmente desde el dashboard
 
 const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
 
@@ -619,12 +621,12 @@ function persistPriorityWindows() {
     qa: {
       active: qaPriorityActive,
       activatedAt: qaPriorityActivatedAt || null,
-      manual: false // se sobreescribe si fue activación manual
+      manual: qaPriorityManual
     },
     build: {
       active: buildPriorityActive,
       activatedAt: buildPriorityActivatedAt || null,
-      manual: false
+      manual: buildPriorityManual
     },
     updatedAt: Date.now()
   };
@@ -643,6 +645,7 @@ function readManualPriorityOverrides() {
     // QA manual override
     if (data.qa?.manualOverride === true && !qaPriorityActive) {
       qaPriorityActive = true;
+      qaPriorityManual = true;
       qaPriorityActivatedAt = Date.now();
       qaPriorityNotifiedTelegram = false;
       log('qa-priority', '🔧 QA Priority Window ACTIVADA MANUALMENTE desde dashboard');
@@ -650,6 +653,7 @@ function readManualPriorityOverrides() {
       persistPriorityWindows();
     } else if (data.qa?.manualOverride === false && qaPriorityActive) {
       qaPriorityActive = false;
+      qaPriorityManual = false;
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       log('qa-priority', '🔧 QA Priority Window DESACTIVADA MANUALMENTE desde dashboard');
@@ -659,6 +663,7 @@ function readManualPriorityOverrides() {
     // Build manual override
     if (data.build?.manualOverride === true && !buildPriorityActive) {
       buildPriorityActive = true;
+      buildPriorityManual = true;
       buildPriorityActivatedAt = Date.now();
       buildPriorityNotifiedTelegram = false;
       log('build-priority', '🔧 Build Priority Window ACTIVADA MANUALMENTE desde dashboard');
@@ -666,6 +671,7 @@ function readManualPriorityOverrides() {
       persistPriorityWindows();
     } else if (data.build?.manualOverride === false && buildPriorityActive) {
       buildPriorityActive = false;
+      buildPriorityManual = false;
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
       log('build-priority', '🔧 Build Priority Window DESACTIVADA MANUALMENTE desde dashboard');
@@ -722,8 +728,8 @@ function evaluateQaPriority(config) {
 
   // ---- Desactivación ----
   if (qaPriorityActive) {
-    // Si ya no hay issues QA pendientes, desactivar
-    if (pendingQa === 0) {
+    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
+    if (!qaPriorityManual && pendingQa === 0) {
       log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
       if (qaPriorityNotifiedTelegram) {
         sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Lanzamientos dev reactivados.');
@@ -742,6 +748,7 @@ function evaluateQaPriority(config) {
         sendTelegram(`⏱️ QA Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingQa} issues de verificación pendientes. Lanzamientos dev reactivados.`);
       }
       qaPriorityActive = false;
+      qaPriorityManual = false;
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       qaPriorityNotifiedTelegram = false;
@@ -823,8 +830,8 @@ function evaluateBuildPriority(config) {
 
   // ---- Desactivación ----
   if (buildPriorityActive) {
-    // Si ya no hay builds pendientes ni en curso, desactivar
-    if (pendingBuild === 0 && runningBuild === 0) {
+    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
+    if (!buildPriorityManual && pendingBuild === 0 && runningBuild === 0) {
       log('build-priority', '🟢 Build Priority Window desactivada — cola de build vacía');
       if (buildPriorityNotifiedTelegram) {
         sendTelegram('✅ Build Priority Window terminó — builds completados. Lanzamientos dev reactivados.');
@@ -843,6 +850,7 @@ function evaluateBuildPriority(config) {
         sendTelegram(`⏱️ Build Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingBuild} builds pendientes. Lanzamientos dev reactivados.`);
       }
       buildPriorityActive = false;
+      buildPriorityManual = false;
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
       buildPriorityNotifiedTelegram = false;
