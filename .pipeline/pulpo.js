@@ -1007,12 +1007,18 @@ function tryFreeResources(mode = 'soft') {
     }
     if (staleAgents > 0) killed.push(`${staleAgents} agente(s) stale`);
 
-    // 4. Emergency: matar node.exe huérfanos que sean agentes Claude ya terminados
+    // 4. Emergency: matar SOLO procesos Claude genuinamente zombies
+    //    Protecciones inteligentes:
+    //    - Sesiones interactivas (terminal del usuario) → NUNCA matar
+    //    - Agentes con heartbeat reciente (< 5 min) → están trabajando, no matar
+    //    - Agentes con uptime significativo (> 2 min) → trabajo real en curso, no matar
+    //    - Servicios del pipeline (.pid) → no matar
     if (mode === 'emergency') {
       let nodeKilled = 0;
+      const nodeSpared = [];
       try {
         const wmicOut = execSync(
-          'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+          'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine,CreationDate /FORMAT:CSV',
           { encoding: 'utf8', timeout: 10000, windowsHide: true }
         );
         // PIDs que el Pulpo conoce como activos — NO matar
@@ -1031,19 +1037,82 @@ function tryFreeResources(mode = 'soft') {
         // El propio Pulpo
         servicePids.add(String(process.pid));
 
+        // Heartbeats activos — agentes con actividad reciente
+        const recentHeartbeats = new Set();
+        const HEARTBEAT_MAX_AGE = 5 * 60 * 1000; // 5 minutos
+        try {
+          const hooksDir = path.join(path.dirname(PIPELINE), '.claude', 'hooks');
+          for (const f of fs.readdirSync(hooksDir)) {
+            if (!f.endsWith('.heartbeat')) continue;
+            try {
+              const hbContent = JSON.parse(fs.readFileSync(path.join(hooksDir, f), 'utf8'));
+              const hbAge = Date.now() - new Date(hbContent.ts || hbContent.timestamp || hbContent.lastSeen || 0).getTime();
+              if (hbAge < HEARTBEAT_MAX_AGE && hbContent.pid) {
+                recentHeartbeats.add(String(hbContent.pid));
+              }
+            } catch {}
+          }
+        } catch {}
+
+        const MIN_UPTIME_MS = 2 * 60 * 1000; // 2 minutos — si lleva más, está haciendo trabajo real
+
         for (const line of wmicOut.split('\n')) {
           if (!line.includes('cli.js') && !line.includes('claude')) continue;
           const match = line.match(/,(\d+)\s*$/);
           if (!match) continue;
           const pid = match[1];
-          if (activePids.has(pid) || servicePids.has(pid)) continue;
-          // Es un proceso Claude que el Pulpo no conoce = zombie
+
+          // Protección 1: PIDs conocidos del Pulpo
+          if (activePids.has(pid)) continue;
+
+          // Protección 2: Servicios del pipeline
+          if (servicePids.has(pid)) continue;
+
+          // Protección 3: Sesión interactiva del usuario
+          // Las sesiones interactivas NO tienen --print ni --output-format
+          // y no corren desde un worktree agent/
+          const isInteractive = line.includes('cli.js') &&
+            !line.includes('--print') &&
+            !line.includes('--output-format') &&
+            !line.includes('agent/');
+          if (isInteractive) {
+            nodeSpared.push(`PID ${pid} (sesión interactiva)`);
+            continue;
+          }
+
+          // Protección 4: Heartbeat reciente — agente trabajando activamente
+          if (recentHeartbeats.has(pid)) {
+            nodeSpared.push(`PID ${pid} (heartbeat activo)`);
+            continue;
+          }
+
+          // Protección 5: Uptime significativo — trabajo real en curso
+          // Parsear CreationDate de WMIC (formato: 20260403163200.000000-180)
+          const creationMatch = line.match(/(\d{14})\.\d+[+-]\d+/);
+          if (creationMatch) {
+            const cs = creationMatch[1]; // YYYYMMDDHHmmss
+            const creationDate = new Date(
+              parseInt(cs.slice(0, 4)), parseInt(cs.slice(4, 6)) - 1, parseInt(cs.slice(6, 8)),
+              parseInt(cs.slice(8, 10)), parseInt(cs.slice(10, 12)), parseInt(cs.slice(12, 14))
+            );
+            const uptimeMs = Date.now() - creationDate.getTime();
+            if (uptimeMs > MIN_UPTIME_MS) {
+              nodeSpared.push(`PID ${pid} (uptime ${Math.round(uptimeMs / 60000)}min)`);
+              continue;
+            }
+          }
+
+          // Pasó todas las protecciones → es genuinamente zombie (corta vida, sin heartbeat, no interactivo)
+          log('free-resources', `Matando Claude zombie PID ${pid} (sin heartbeat, sin uptime significativo, no interactivo)`);
           try {
             execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
             nodeKilled++;
           } catch {}
         }
       } catch {}
+      if (nodeSpared.length > 0) {
+        log('free-resources', `Protegidos del kill: ${nodeSpared.join(', ')}`);
+      }
       if (nodeKilled > 0) killed.push(`${nodeKilled} Claude zombie(s)`);
     }
 
