@@ -229,6 +229,39 @@ function getPipelineState() {
     data.pipelines = [...data.pipelines];
   }
 
+  // ETA: calcular promedios históricos por skill+fase desde archivos procesados
+  // Usa mtime (escritura resultado) - ctime (creación archivo) como proxy de duración
+  state.etaAverages = {}; // key: "fase/skill" → avgMs
+  for (const { pipeline: pName, fase } of allFases) {
+    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
+    const listoDir = path.join(PIPELINE, pName, fase, 'listo');
+    for (const dir of [procesadoDir, listoDir]) {
+      for (const f of listWorkFiles(dir)) {
+        const skill = f.split('.').slice(1).join('.');
+        const st = fileStat(path.join(dir, f));
+        if (!st) continue;
+        // duración = mtime - birthtime (en Windows birthtime es creación real)
+        const dur = st.mtimeMs - st.birthtimeMs;
+        if (dur <= 0 || dur > 4 * 3600000) continue; // descartar outliers >4h o negativos
+        const key = `${fase}/${skill}`;
+        if (!state.etaAverages[key]) state.etaAverages[key] = { total: 0, count: 0 };
+        state.etaAverages[key].total += dur;
+        state.etaAverages[key].count++;
+      }
+    }
+  }
+  // Calcular promedios y también por fase (sin skill)
+  for (const [key, data] of Object.entries(state.etaAverages)) {
+    data.avgMs = Math.round(data.total / data.count);
+    const fase = key.split('/')[0];
+    if (!state.etaAverages[fase]) state.etaAverages[fase] = { total: 0, count: 0 };
+    state.etaAverages[fase].total += data.total;
+    state.etaAverages[fase].count += data.count;
+  }
+  for (const [key, data] of Object.entries(state.etaAverages)) {
+    if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
+  }
+
   // Servicios
   state.servicios = {};
   try {
@@ -487,10 +520,48 @@ function generateHTML(state) {
     }).length;
     const pct = totalFases > 0 ? Math.round(completedFases / totalFases * 100) : 0;
 
+    // ETA por issue: suma de promedios de fases restantes + tiempo restante del agente activo
+    let issueEtaMs = 0;
+    let hasEta = false;
+    const isActive = data.estadoActual === 'trabajando' || data.estadoActual === 'pendiente';
+    if (isActive) {
+      // Fases que faltan completar
+      const devFasesList = devFases.map(f => f.fase);
+      let foundCurrent = false;
+      for (const faseName of devFasesList) {
+        const key = `desarrollo/${faseName}`;
+        const entries = data.fases[key] || [];
+        const isDone = entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+        const isWorking = entries.some(e => e.estado === 'trabajando');
+
+        if (isWorking) {
+          // Fase actual: ETA = promedio - tiempo transcurrido
+          const workingEntry = entries.find(e => e.estado === 'trabajando');
+          const avgKey = `${faseName}/${workingEntry.skill}`;
+          const avg = state.etaAverages[avgKey] || state.etaAverages[faseName];
+          if (avg?.avgMs && workingEntry.durationMs) {
+            issueEtaMs += Math.max(0, avg.avgMs - workingEntry.durationMs);
+            hasEta = true;
+          }
+          foundCurrent = true;
+        } else if (foundCurrent && !isDone) {
+          // Fases futuras: sumar promedio completo
+          const avg = state.etaAverages[faseName];
+          if (avg?.avgMs) {
+            issueEtaMs += avg.avgMs;
+            hasEta = true;
+          }
+        }
+      }
+    }
+    const issueEtaLabel = hasEta && issueEtaMs > 0
+      ? `<span class="issue-eta" title="ETA estimado para completar todas las fases restantes">⏱ ~${fmtDuration(issueEtaMs)}</span>`
+      : '';
+
     const issueCell = `<td class="issue-col">
       <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      <span class="progress-text">${completedFases}/${totalFases}</span>
+      <span class="progress-text">${completedFases}/${totalFases}</span>${issueEtaLabel}
     </td>`;
 
     let cells = '';
@@ -537,22 +608,46 @@ function generateHTML(state) {
         const priorClass = (e._isRetry && !e._isLatestRun) ? ' chip-prior' : '';
         const runLabel = e._isRetry ? `<sup class="run-idx">${e._runIndex}</sup>` : '';
 
+        // ETA por agente activo
+        let etaBadge = '';
+        let ttEta = '';
+        if (e.estado === 'trabajando' && e.durationMs) {
+          const avgKey = `${fase}/${e.skill}`;
+          const avg = state.etaAverages[avgKey] || state.etaAverages[fase];
+          if (avg?.avgMs) {
+            const remaining = Math.max(0, avg.avgMs - e.durationMs);
+            if (remaining > 0) {
+              etaBadge = `<span class="eta-badge">~${fmtDuration(remaining)}</span>`;
+              ttEta = `ETA: ~${fmtDuration(remaining)} (promedio: ${fmtDuration(avg.avgMs)})`;
+            } else {
+              const over = e.durationMs - avg.avgMs;
+              etaBadge = `<span class="eta-badge eta-over">+${fmtDuration(over)}</span>`;
+              ttEta = `Excedido: +${fmtDuration(over)} sobre promedio de ${fmtDuration(avg.avgMs)}`;
+            }
+          }
+        }
+
         // Tooltip content
         const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
         const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
         const ttRun = e._isRetry ? `Ejecución: ${e._runIndex}/${e._runTotal}` : '';
-        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttRes, ttMot].filter(Boolean);
+        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEta, ttRes, ttMot].filter(Boolean);
         const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
 
         // Prior runs: solo ícono + índice (sin nombre del skill)
         const chipContent = (e._isRetry && !e._isLatestRun)
           ? `${icon} ${skillIcon(e.skill)}${runLabel}`
-          : `${icon} ${skillIcon(e.skill)} ${e.skill}${runLabel}`;
+          : `${icon} ${skillIcon(e.skill)} ${e.skill}${runLabel}${etaBadge}`;
+
+        // Botón de cancelar para agentes activos (trabajando)
+        const killBtn = e.estado === 'trabajando'
+          ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
+          : '';
 
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${killBtn}${tooltip}</span>`;
         if (e.hasLog) {
           return `<a href="/logs/${e.logFile}" target="_blank" class="log-link">${inner}</a>`;
         }
@@ -928,6 +1023,13 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .pw-active{background:var(--yl2);color:var(--yl);border:1px solid var(--yl)}
 .pw-inactive{background:var(--bd2);color:var(--dim);border:1px solid var(--bd)}
 .pw-desc{font-size:0.72em;color:var(--dim);width:100%;margin-top:2px}
+/* Kill agent button */
+.kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
+.kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
+/* ETA badges */
+.eta-badge{font-size:0.7em;padding:1px 5px;border-radius:8px;background:var(--ac2);color:var(--ac);margin-left:4px;font-weight:600;white-space:nowrap}
+.eta-over{background:var(--or2);color:var(--or)}
+.issue-eta{display:block;font-size:0.72em;color:var(--ac);margin-top:2px;white-space:nowrap}
 
 /* Toast notification */
 .toast{
@@ -1139,6 +1241,23 @@ async function ctlAction(target, action) {
   btns.forEach(b => b.classList.remove('loading'));
 }
 
+// Kill agent
+async function killAgent(issue, skill, pipeline, fase) {
+  if (!confirm('¿Cancelar agente ' + skill + ' en #' + issue + '?')) return;
+  try {
+    const resp = await fetch('/api/kill-agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue, skill, pipeline, fase })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error: ' + e.message, false);
+  }
+}
+
 // Priority Window toggle
 async function pwAction(window, action) {
   try {
@@ -1240,6 +1359,63 @@ const server = http.createServer((req, res) => {
         log(`Action: ${action} ${target} → ${result.ok ? '✓' : '✗'} ${result.msg}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: Kill agent (cancelar agente activo)
+  if (req.url === '/api/kill-agent' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { issue, skill, pipeline: pl, fase } = JSON.parse(body);
+        const trabajandoDir = path.join(PIPELINE, pl, fase, 'trabajando');
+        const pendienteDir = path.join(PIPELINE, pl, fase, 'pendiente');
+        const filename = `${issue}.${skill}`;
+
+        // Buscar el archivo en trabajando/
+        const filepath = path.join(trabajandoDir, filename);
+        if (!fs.existsSync(filepath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `No encontrado: ${filename} en ${pl}/${fase}/trabajando` }));
+          return;
+        }
+
+        // Buscar PID del agente en agent-registry
+        let killed = false;
+        try {
+          const registry = JSON.parse(fs.readFileSync(path.join(path.dirname(PIPELINE), '.claude', 'hooks', 'agent-registry.json'), 'utf8'));
+          for (const [, agent] of Object.entries(registry.agents || {})) {
+            if (agent.issue === `#${issue}` && agent.pid) {
+              try {
+                execSync(`taskkill /PID ${agent.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+                killed = true;
+              } catch {}
+            }
+          }
+        } catch {}
+
+        // Mover de trabajando/ a pendiente/ (para que pueda ser relanzado)
+        try {
+          const dest = path.join(pendienteDir, filename);
+          fs.renameSync(filepath, dest);
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Error moviendo archivo: ${e.message}` }));
+          return;
+        }
+
+        const msg = killed
+          ? `Agente ${skill} #${issue} cancelado (proceso terminado + devuelto a pendiente)`
+          : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado en registry)`;
+        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? 'PID killed' : 'no PID'}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
