@@ -607,6 +607,80 @@ let buildPriorityActivatedAt = 0;
 let buildFirstBlockedAt = 0;
 let buildPriorityNotifiedTelegram = false;
 
+const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
+
+/**
+ * Persistir el estado actual de las priority windows a disco.
+ * El dashboard lee este archivo para mostrar estado y el usuario puede
+ * activar/desactivar ventanas manualmente escribiendo en él.
+ */
+function persistPriorityWindows() {
+  const state = {
+    qa: {
+      active: qaPriorityActive,
+      activatedAt: qaPriorityActivatedAt || null,
+      manual: false // se sobreescribe si fue activación manual
+    },
+    build: {
+      active: buildPriorityActive,
+      activatedAt: buildPriorityActivatedAt || null,
+      manual: false
+    },
+    updatedAt: Date.now()
+  };
+  try { fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(state, null, 2)); } catch {}
+}
+
+/**
+ * Leer activaciones/desactivaciones manuales desde el archivo.
+ * El dashboard escribe { qa: { manualOverride: true/false }, build: { manualOverride: true/false } }
+ * y el Pulpo las consume acá.
+ */
+function readManualPriorityOverrides() {
+  try {
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+
+    // QA manual override
+    if (data.qa?.manualOverride === true && !qaPriorityActive) {
+      qaPriorityActive = true;
+      qaPriorityActivatedAt = Date.now();
+      qaPriorityNotifiedTelegram = false;
+      log('qa-priority', '🔧 QA Priority Window ACTIVADA MANUALMENTE desde dashboard');
+      sendTelegram('🔧 QA Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
+      persistPriorityWindows();
+    } else if (data.qa?.manualOverride === false && qaPriorityActive) {
+      qaPriorityActive = false;
+      qaPriorityActivatedAt = 0;
+      qaFirstBlockedAt = 0;
+      log('qa-priority', '🔧 QA Priority Window DESACTIVADA MANUALMENTE desde dashboard');
+      persistPriorityWindows();
+    }
+
+    // Build manual override
+    if (data.build?.manualOverride === true && !buildPriorityActive) {
+      buildPriorityActive = true;
+      buildPriorityActivatedAt = Date.now();
+      buildPriorityNotifiedTelegram = false;
+      log('build-priority', '🔧 Build Priority Window ACTIVADA MANUALMENTE desde dashboard');
+      sendTelegram('🔧 Build Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
+      persistPriorityWindows();
+    } else if (data.build?.manualOverride === false && buildPriorityActive) {
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      log('build-priority', '🔧 Build Priority Window DESACTIVADA MANUALMENTE desde dashboard');
+      persistPriorityWindows();
+    }
+
+    // Limpiar overrides consumidos
+    if (data.qa?.manualOverride !== undefined || data.build?.manualOverride !== undefined) {
+      delete data.qa?.manualOverride;
+      delete data.build?.manualOverride;
+      fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(data, null, 2));
+    }
+  } catch {}
+}
+
 /**
  * Contar issues pendientes en fase verificación (todas las pipelines).
  */
@@ -658,6 +732,7 @@ function evaluateQaPriority(config) {
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       qaPriorityNotifiedTelegram = false;
+      persistPriorityWindows();
       return false;
     }
     // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
@@ -670,6 +745,7 @@ function evaluateQaPriority(config) {
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       qaPriorityNotifiedTelegram = false;
+      persistPriorityWindows();
       return false;
     }
     return true; // Sigue activa
@@ -689,6 +765,7 @@ function evaluateQaPriority(config) {
       qaPriorityNotifiedTelegram = true;
       log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min sin verificar. Bloqueando lanzamientos dev.`);
       sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min esperando verificación. Bloqueando nuevos lanzamientos de dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
+      persistPriorityWindows();
       return true;
     }
   } else {
@@ -756,6 +833,7 @@ function evaluateBuildPriority(config) {
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
       buildPriorityNotifiedTelegram = false;
+      persistPriorityWindows();
       return false;
     }
     // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
@@ -768,6 +846,7 @@ function evaluateBuildPriority(config) {
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
       buildPriorityNotifiedTelegram = false;
+      persistPriorityWindows();
       return false;
     }
     return true; // Sigue activa
@@ -787,6 +866,7 @@ function evaluateBuildPriority(config) {
       buildPriorityNotifiedTelegram = true;
       log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues llevan ${Math.round(waitedMs / 60000)}min sin buildear. Bloqueando lanzamientos dev.`);
       sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build hace ${Math.round(waitedMs / 60000)}min. Bloqueando nuevos dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
+      persistPriorityWindows();
       return true;
     }
   } else {
@@ -1274,6 +1354,9 @@ function sortByPriority(archivos, config) {
 function brazoLanzamiento(config) {
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
+
+  // Leer activaciones/desactivaciones manuales del dashboard
+  readManualPriorityOverrides();
 
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;

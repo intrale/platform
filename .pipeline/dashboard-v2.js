@@ -289,6 +289,14 @@ function getPipelineState() {
     }
   } catch {}
 
+  // Priority Windows (estado persistido por el Pulpo)
+  state.priorityWindows = { qa: { active: false }, build: { active: false } };
+  try {
+    const pwData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'priority-windows.json'), 'utf8'));
+    if (pwData.qa) state.priorityWindows.qa = pwData.qa;
+    if (pwData.build) state.priorityWindows.build = pwData.build;
+  } catch {}
+
   // Rechazos recientes
   state.rechazos = [];
   for (const { pipeline: pName, fase } of allFases) {
@@ -639,6 +647,38 @@ function generateHTML(state) {
     : `<button class="ctl-btn ctl-start ctl-wide" onclick="ctlAction('qa','start')">▶ Levantar QA</button>`;
   qaEnvHTML += `<div class="qa-controls">${qaBtn}</div>`;
 
+  // Priority Windows (QA + Build)
+  const pwQa = state.priorityWindows.qa;
+  const pwBuild = state.priorityWindows.build;
+  const pwQaElapsed = pwQa.active && pwQa.activatedAt ? Math.round((Date.now() - pwQa.activatedAt) / 60000) : 0;
+  const pwBuildElapsed = pwBuild.active && pwBuild.activatedAt ? Math.round((Date.now() - pwBuild.activatedAt) / 60000) : 0;
+
+  const pwQaStatus = pwQa.active
+    ? `<span class="pw-badge pw-active">ACTIVA${pwQaElapsed > 0 ? ` (${pwQaElapsed}min)` : ''}</span>`
+    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
+  const pwBuildStatus = pwBuild.active
+    ? `<span class="pw-badge pw-active">ACTIVA${pwBuildElapsed > 0 ? ` (${pwBuildElapsed}min)` : ''}</span>`
+    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
+
+  const pwQaBtn = pwQa.active
+    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('qa','off')">■ Desactivar</button>`
+    : `<button class="ctl-btn ctl-start" onclick="pwAction('qa','on')">▶ Activar</button>`;
+  const pwBuildBtn = pwBuild.active
+    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('build','off')">■ Desactivar</button>`
+    : `<button class="ctl-btn ctl-start" onclick="pwAction('build','on')">▶ Activar</button>`;
+
+  const priorityWindowsHTML = `
+    <div class="pw-row">
+      <div class="pw-item">
+        <span class="pw-label">🔍 QA Priority</span> ${pwQaStatus} ${pwQaBtn}
+        <span class="pw-desc">Bloquea dev → prioriza verificación</span>
+      </div>
+      <div class="pw-item">
+        <span class="pw-label">🔨 Build Priority</span> ${pwBuildStatus} ${pwBuildBtn}
+        <span class="pw-desc">Bloquea dev → prioriza builds</span>
+      </div>
+    </div>`;
+
   // Rechazos recientes
   let rechazosHTML = '';
   if (state.rechazos.length > 0) {
@@ -880,6 +920,14 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
 .qa-controls{margin-top:8px}
+/* Priority Windows */
+.pw-row{display:flex;gap:16px;flex-wrap:wrap}
+.pw-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;background:var(--sf2);border-radius:var(--radius-sm);border:1px solid var(--bd2);flex:1;min-width:260px}
+.pw-label{font-weight:600;font-size:0.9em;white-space:nowrap}
+.pw-badge{font-size:0.75em;padding:2px 8px;border-radius:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
+.pw-active{background:var(--yl2);color:var(--yl);border:1px solid var(--yl)}
+.pw-inactive{background:var(--bd2);color:var(--dim);border:1px solid var(--bd)}
+.pw-desc{font-size:0.72em;color:var(--dim);width:100%;margin-top:2px}
 
 /* Toast notification */
 .toast{
@@ -1015,6 +1063,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
     <div class="bar-section"><h2>📡 Servicios</h2>${svcsHTML}</div>
     <div class="bar-section"><h2>⚡ Procesos</h2>${procHTML}</div>
     <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
+    <div class="bar-section"><h2>🚦 Priority Windows</h2>${priorityWindowsHTML}</div>
   </div>
 
   ${matrixHTML}
@@ -1088,6 +1137,22 @@ async function ctlAction(target, action) {
     showToast('Error de conexión: ' + e.message, false);
   }
   btns.forEach(b => b.classList.remove('loading'));
+}
+
+// Priority Window toggle
+async function pwAction(window, action) {
+  try {
+    const resp = await fetch('/api/priority-window', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ window, action })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
 }
 
 function showToast(msg, ok) {
@@ -1175,6 +1240,41 @@ const server = http.createServer((req, res) => {
         log(`Action: ${action} ${target} → ${result.ok ? '✓' : '✗'} ${result.msg}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: Priority Windows toggle (on/off manual)
+  if (req.url === '/api/priority-window' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { window: win, action } = JSON.parse(body);
+        if (!['qa', 'build'].includes(win)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Window "${win}" no válida (qa|build)` }));
+          return;
+        }
+        const pwFile = path.join(PIPELINE, 'priority-windows.json');
+        let current = {};
+        try { current = JSON.parse(fs.readFileSync(pwFile, 'utf8')); } catch {}
+        if (!current.qa) current.qa = { active: false };
+        if (!current.build) current.build = { active: false };
+
+        // Escribir manualOverride para que el Pulpo lo consuma en su próximo ciclo
+        current[win].manualOverride = (action === 'on');
+        fs.writeFileSync(pwFile, JSON.stringify(current, null, 2));
+
+        const label = win === 'qa' ? 'QA Priority' : 'Build Priority';
+        const verb = action === 'on' ? 'activada' : 'desactivada';
+        log(`Priority Window: ${label} ${verb} manualmente`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `${label} Window ${verb} — surte efecto en el próximo ciclo del Pulpo` }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
