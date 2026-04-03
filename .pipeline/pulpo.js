@@ -596,6 +596,17 @@ let qaPriorityActivatedAt = 0;
 let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
 let qaPriorityNotifiedTelegram = false;
 
+// =============================================================================
+// BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
+// priorización de recursos cuando hay builds en cola.
+// Cuando se acumulan issues esperando build, el Pulpo bloquea nuevos
+// lanzamientos dev para liberar recursos y dar prioridad al build.
+// =============================================================================
+let buildPriorityActive = false;
+let buildPriorityActivatedAt = 0;
+let buildFirstBlockedAt = 0;
+let buildPriorityNotifiedTelegram = false;
+
 /**
  * Contar issues pendientes en fase verificación (todas las pipelines).
  */
@@ -692,6 +703,104 @@ function evaluateQaPriority(config) {
 }
 
 /**
+ * Contar issues pendientes en fase build (todas las pipelines).
+ */
+function countPendingBuild(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('build')) continue;
+    const pendDir = path.join(PIPELINE, pName, 'build', 'pendiente');
+    count += listWorkFiles(pendDir).length;
+  }
+  return count;
+}
+
+/**
+ * Contar builds actualmente en ejecución (archivos en trabajando/ de fase build).
+ */
+function countRunningBuild(config) {
+  let count = 0;
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    if (!pConfig.fases.includes('build')) continue;
+    const trabajandoDir = path.join(PIPELINE, pName, 'build', 'trabajando');
+    count += listWorkFiles(trabajandoDir).length;
+  }
+  return count;
+}
+
+/**
+ * Evaluar si debe activarse/desactivarse la Build Priority Window.
+ * Cuando hay builds en cola, bloquea nuevos dev para liberar recursos
+ * y evitar que el kill de emergencia mate builds activos.
+ * Retorna true si Build Priority está activa (dev debe bloquearse).
+ */
+function evaluateBuildPriority(config) {
+  const limits = config.resource_limits || {};
+  const queueThreshold = limits.build_priority_queue_threshold || 2;
+  const waitMinutes = limits.build_priority_wait_minutes || 5;
+  const maxDurationMinutes = limits.build_priority_max_duration_minutes || 20;
+  const now = Date.now();
+
+  const pendingBuild = countPendingBuild(config);
+  const runningBuild = countRunningBuild(config);
+
+  // ---- Desactivación ----
+  if (buildPriorityActive) {
+    // Si ya no hay builds pendientes ni en curso, desactivar
+    if (pendingBuild === 0 && runningBuild === 0) {
+      log('build-priority', '🟢 Build Priority Window desactivada — cola de build vacía');
+      if (buildPriorityNotifiedTelegram) {
+        sendTelegram('✅ Build Priority Window terminó — builds completados. Lanzamientos dev reactivados.');
+      }
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      return false;
+    }
+    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
+    if (now - buildPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
+      log('build-priority', `⏱️ Build Priority Window expiró después de ${maxDurationMinutes}min — ${pendingBuild} builds pendientes, ${runningBuild} en curso`);
+      if (buildPriorityNotifiedTelegram) {
+        sendTelegram(`⏱️ Build Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingBuild} builds pendientes. Lanzamientos dev reactivados.`);
+      }
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      return false;
+    }
+    return true; // Sigue activa
+  }
+
+  // ---- Activación ----
+  // Condición: N+ builds pendientes Y llevan M+ minutos sin poder correr
+  if (pendingBuild >= queueThreshold) {
+    if (buildFirstBlockedAt === 0) {
+      buildFirstBlockedAt = now;
+      log('build-priority', `⚠️ Acumulación build detectada: ${pendingBuild} issues pendientes en build — esperando ${waitMinutes}min antes de activar Build Priority`);
+    }
+    const waitedMs = now - buildFirstBlockedAt;
+    if (waitedMs >= waitMinutes * 60 * 1000) {
+      buildPriorityActive = true;
+      buildPriorityActivatedAt = now;
+      buildPriorityNotifiedTelegram = true;
+      log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues llevan ${Math.round(waitedMs / 60000)}min sin buildear. Bloqueando lanzamientos dev.`);
+      sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build hace ${Math.round(waitedMs / 60000)}min. Bloqueando nuevos dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
+      return true;
+    }
+  } else {
+    // Si bajó del umbral, resetear el timer
+    if (buildFirstBlockedAt !== 0) {
+      log('build-priority', `✅ Acumulación build bajó a ${pendingBuild} (< ${queueThreshold}) — timer de Build Priority reseteado`);
+      buildFirstBlockedAt = 0;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Logear los top 5 procesos por consumo de RAM.
  * Esto ayuda a diagnosticar QUÉ está consumiendo antes de actuar a ciegas.
  */
@@ -743,6 +852,26 @@ function tryFreeResources(mode = 'soft') {
         qaBackendPid = qaState.backend ? String(qaState.backend) : null;
       } catch {}
 
+      // Preservar PIDs de builds activos — NUNCA matar un build en curso
+      // El kill de emergencia no debe auto-sabotear builds causando loops dev→build infinitos
+      const buildPids = new Set();
+      for (const [key, info] of activeProcesses) {
+        if (info.fase === 'build' && isProcessAlive(info.pid)) {
+          buildPids.add(String(info.pid));
+          // También proteger procesos hijos del build (java.exe spawneado por gradlew)
+          try {
+            const childrenOut = execSync(
+              `wmic process where "ParentProcessId=${info.pid}" get ProcessId /FORMAT:CSV`,
+              { encoding: 'utf8', timeout: 5000, windowsHide: true }
+            );
+            for (const cl of childrenOut.split('\n')) {
+              const cm = cl.match(/,(\d+)\s*$/);
+              if (cm) buildPids.add(cm[1]);
+            }
+          } catch {}
+        }
+      }
+
       for (const line of wmicOut.split('\n')) {
         if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
         const parts = line.split(',');
@@ -750,8 +879,11 @@ function tryFreeResources(mode = 'soft') {
         const ppid = parts[parts.length - 1]?.trim();
         if (!pid || pid === qaBackendPid) continue;
 
+        // PROTEGER builds activos — nunca matar procesos de un build en curso
+        if (buildPids.has(pid)) continue;
+
         // En modo soft: solo matar huérfanos (padre muerto)
-        // En modo aggressive/emergency: matar TODOS los daemons Gradle
+        // En modo aggressive/emergency: matar daemons Gradle que NO sean de builds activos
         const isOrphan = ppid && !isProcessAlive(parseInt(ppid, 10));
         if (mode === 'soft' && !isOrphan) continue;
 
@@ -1149,11 +1281,14 @@ function brazoLanzamiento(config) {
   // Evaluar QA Priority Window — bloquea dev si QA está acumulado
   const qaPriority = evaluateQaPriority(config);
 
+  // Evaluar Build Priority Window — bloquea dev si builds están acumulados
+  const buildPriority = evaluateBuildPriority(config);
+
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
   const multiplier = concurrencyMultiplier(pressure.level);
 
-  // Fases de desarrollo que se bloquean durante QA Priority
+  // Fases de desarrollo que se bloquean durante QA/Build Priority
   const DEV_PHASES = ['dev', 'validacion'];
 
   // --- PIEZA 2+3: Recolectar TODOS los pendientes de TODAS las fases ---
@@ -1166,8 +1301,8 @@ function brazoLanzamiento(config) {
     for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
       const fase = fases[faseIdx];
 
-      // QA PRIORITY: si la ventana está activa, bloquear lanzamientos de fases dev
-      if (qaPriority && DEV_PHASES.includes(fase)) continue;
+      // QA/BUILD PRIORITY: si alguna ventana está activa, bloquear lanzamientos de fases dev
+      if ((qaPriority || buildPriority) && DEV_PHASES.includes(fase)) continue;
 
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const archivos = listWorkFiles(pendienteDir);
