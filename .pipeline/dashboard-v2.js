@@ -1304,6 +1304,267 @@ document.querySelectorAll('.fase-badge[data-fase-tt]').forEach(el => {
 </body></html>`;
 }
 
+// --- Metrics ---
+
+function getMetricsData() {
+  const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
+  const snapshots = [];
+  try {
+    const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
+    for (const l of lines) {
+      try { snapshots.push(JSON.parse(l)); } catch {}
+    }
+  } catch {}
+
+  // Promedios de duración por fase/skill (reusar lógica de ETA)
+  const state = getPipelineState();
+  const etaAverages = state.etaAverages || {};
+
+  // Throughput: issues completados por período (de archivos en entrega/procesado)
+  const entregas = [];
+  try {
+    const dir = path.join(PIPELINE, 'desarrollo', 'entrega', 'procesado');
+    for (const f of listWorkFiles(dir)) {
+      const st = fileStat(path.join(dir, f));
+      if (st) entregas.push({ issue: f.split('.')[0], ts: st.ctimeMs });
+    }
+  } catch {}
+  entregas.sort((a, b) => a.ts - b.ts);
+
+  // Cuota Anthropic estimada (del activity log)
+  const tokenEstimates = { totalSessions: 0, totalTools: 0, totalEstimatedTokens: 0, bySession: [] };
+  try {
+    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
+    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
+    const sessions = {};
+    for (const l of lines) {
+      try {
+        const d = JSON.parse(l);
+        if (!d.session) continue;
+        if (!sessions[d.session]) sessions[d.session] = { tools: 0, firstTs: d.ts, lastTs: d.ts };
+        sessions[d.session].tools++;
+        sessions[d.session].lastTs = d.ts;
+      } catch {}
+    }
+    for (const [id, s] of Object.entries(sessions)) {
+      const durSeg = typeof s.firstTs === 'string' && typeof s.lastTs === 'string'
+        ? (new Date(s.lastTs) - new Date(s.firstTs)) / 1000
+        : typeof s.firstTs === 'number' ? (s.lastTs - s.firstTs) / 1000 : 0;
+      const estimated = Math.round((durSeg * 15) + (s.tools * 500));
+      tokenEstimates.totalSessions++;
+      tokenEstimates.totalTools += s.tools;
+      tokenEstimates.totalEstimatedTokens += estimated;
+      tokenEstimates.bySession.push({ id: id.slice(0, 8), tools: s.tools, durMin: Math.round(durSeg / 60), tokens: estimated });
+    }
+  } catch {}
+
+  // Tasa de rebotes (rechazos / total)
+  let totalProcessed = 0, totalRejected = 0;
+  const config = loadConfig();
+  const allFases = [];
+  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+    for (const fase of pConfig.fases) allFases.push({ pipeline: pName, fase });
+  }
+  for (const { pipeline: pName, fase } of allFases) {
+    for (const estado of ['procesado', 'listo']) {
+      const dir = path.join(PIPELINE, pName, fase, estado);
+      for (const f of listWorkFiles(dir)) {
+        totalProcessed++;
+        const data = readYamlSafe(path.join(dir, f));
+        if (data.resultado === 'rechazado') totalRejected++;
+      }
+    }
+  }
+
+  return { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected };
+}
+
+function generateMetricsHTML() {
+  const data = getMetricsData();
+  const { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected } = data;
+
+  // Últimas 1h, 6h, 24h de snapshots
+  const now = Date.now();
+  const snap1h = snapshots.filter(s => now - s.ts < 3600000);
+  const snap6h = snapshots.filter(s => now - s.ts < 21600000);
+  const snap24h = snapshots;
+
+  // CPU/RAM promedios
+  const avgCpu = (arr) => arr.length ? Math.round(arr.reduce((a, s) => a + s.cpu, 0) / arr.length) : 0;
+  const avgMem = (arr) => arr.length ? Math.round(arr.reduce((a, s) => a + s.mem, 0) / arr.length) : 0;
+  const maxCpu = (arr) => arr.length ? Math.max(...arr.map(s => s.cpu)) : 0;
+  const maxMem = (arr) => arr.length ? Math.max(...arr.map(s => s.mem)) : 0;
+  const avgAgents = (arr) => arr.length ? (arr.reduce((a, s) => a + s.agents, 0) / arr.length).toFixed(1) : 0;
+
+  // Throughput
+  const delivered24h = entregas.filter(e => now - e.ts < 86400000).length;
+  const delivered7d = entregas.length;
+
+  // Tiempo en cada nivel de presión (últimas 24h)
+  const levelCounts = { green: 0, yellow: 0, orange: 0, red: 0 };
+  for (const s of snap24h) levelCounts[s.level] = (levelCounts[s.level] || 0) + 1;
+  const totalSnaps = snap24h.length || 1;
+  const levelPct = {};
+  for (const [l, c] of Object.entries(levelCounts)) levelPct[l] = Math.round(c / totalSnaps * 100);
+
+  // Rebote rate
+  const reboteRate = totalProcessed > 0 ? Math.round(totalRejected / totalProcessed * 100) : 0;
+
+  // Cuota Anthropic
+  const tokM = (tokenEstimates.totalEstimatedTokens / 1000000).toFixed(1);
+  const costEst = (tokenEstimates.totalEstimatedTokens / 1000000 * 3).toFixed(2); // ~$3/MTok estimate
+
+  // Sparkline data (últimas 60 muestras = ~30min)
+  const sparkData = snap1h.slice(-60);
+  const cpuSpark = sparkData.map(s => s.cpu);
+  const memSpark = sparkData.map(s => s.mem);
+  const agentSpark = sparkData.map(s => s.agents);
+
+  function sparkline(values, max, color) {
+    if (values.length < 2) return '<span class="dim">sin datos</span>';
+    const w = 300, h = 40;
+    const step = w / (values.length - 1);
+    const points = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max * h)).toFixed(1)}`).join(' ');
+    return `<svg width="${w}" height="${h}" class="sparkline"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+  }
+
+  // ETA averages table
+  let etaRows = '';
+  const faseOrder = ['analisis', 'criterios', 'sizing', 'validacion', 'dev', 'build', 'verificacion', 'aprobacion', 'entrega'];
+  for (const fase of faseOrder) {
+    const avg = etaAverages[fase];
+    if (!avg?.avgMs) continue;
+    // Skills detail
+    const skills = Object.entries(etaAverages)
+      .filter(([k]) => k.startsWith(fase + '/'))
+      .map(([k, v]) => `${k.split('/')[1]}: ${fmtDuration(v.avgMs)}`)
+      .join(', ');
+    etaRows += `<tr><td>${fase}</td><td>${fmtDuration(avg.avgMs)}</td><td>${avg.count}</td><td class="dim">${skills}</td></tr>`;
+  }
+
+  // Session table (top 10 by tokens)
+  const topSessions = tokenEstimates.bySession.sort((a, b) => b.tokens - a.tokens).slice(0, 10);
+  let sessionRows = topSessions.map(s =>
+    `<tr><td>${s.id}</td><td>${s.tools}</td><td>${s.durMin}min</td><td>${(s.tokens / 1000).toFixed(0)}K</td></tr>`
+  ).join('');
+
+  return `<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Métricas — Pipeline V2</title>
+<style>
+:root{--bg:#0d1117;--sf:#161b22;--sf2:#1c2128;--bd:#30363d;--tx:#e6edf3;--dim:#8b949e;--ac:#58a6ff;--gn:#3fb950;--yl:#d29922;--or:#db6d28;--rd:#f85149;--radius:10px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;padding:20px 24px;font-size:15px;line-height:1.5}
+a{color:var(--ac);text-decoration:none}
+h1{font-size:1.5em;margin-bottom:20px;display:flex;align-items:center;gap:10px}
+h2{font-size:1.1em;color:var(--tx);margin-bottom:12px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);padding:16px}
+.card-value{font-size:2em;font-weight:700}
+.card-label{color:var(--dim);font-size:0.85em}
+.card-sub{color:var(--dim);font-size:0.78em;margin-top:4px}
+.green{color:var(--gn)}.yellow{color:var(--yl)}.orange{color:var(--or)}.red{color:var(--rd)}.blue{color:var(--ac)}
+table{width:100%;border-collapse:collapse;font-size:0.88em}
+th{text-align:left;color:var(--dim);padding:6px 10px;border-bottom:1px solid var(--bd);font-weight:600}
+td{padding:6px 10px;border-bottom:1px solid var(--bd)}
+.dim{color:var(--dim)}
+.sparkline{display:block;margin-top:8px}
+.level-bar{display:flex;height:20px;border-radius:6px;overflow:hidden;margin:8px 0}
+.level-bar>div{height:100%;display:flex;align-items:center;justify-content:center;font-size:0.7em;font-weight:700;color:#000}
+.back-link{margin-bottom:16px;display:inline-block}
+.section{margin-bottom:24px}
+</style></head><body>
+<a href="/" class="back-link">← Dashboard</a>
+<h1>📊 Métricas del Pipeline</h1>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-value blue">${snap24h.length}</div>
+    <div class="card-label">Snapshots (24h)</div>
+    <div class="card-sub">${snap1h.length} última hora · ${snap6h.length} últimas 6h</div>
+  </div>
+  <div class="card">
+    <div class="card-value">${avgCpu(snap1h)}%<span class="dim" style="font-size:0.5em"> / ${maxCpu(snap1h)}% max</span></div>
+    <div class="card-label">CPU promedio (1h)</div>
+    ${sparkline(cpuSpark, 100, '#f85149')}
+  </div>
+  <div class="card">
+    <div class="card-value">${avgMem(snap1h)}%<span class="dim" style="font-size:0.5em"> / ${maxMem(snap1h)}% max</span></div>
+    <div class="card-label">RAM promedio (1h)</div>
+    ${sparkline(memSpark, 100, '#d29922')}
+  </div>
+  <div class="card">
+    <div class="card-value">${avgAgents(snap1h)}</div>
+    <div class="card-label">Agentes promedio (1h)</div>
+    ${sparkline(agentSpark, 5, '#58a6ff')}
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-value green">${delivered24h}</div>
+    <div class="card-label">Issues entregados (24h)</div>
+    <div class="card-sub">${delivered7d} total histórico</div>
+  </div>
+  <div class="card">
+    <div class="card-value ${reboteRate > 30 ? 'red' : reboteRate > 15 ? 'yellow' : 'green'}">${reboteRate}%</div>
+    <div class="card-label">Tasa de rechazo</div>
+    <div class="card-sub">${totalRejected} rechazados / ${totalProcessed} procesados</div>
+  </div>
+  <div class="card">
+    <div class="card-value blue">${tokM}M</div>
+    <div class="card-label">Tokens estimados (total)</div>
+    <div class="card-sub">~$${costEst} USD · ${tokenEstimates.totalSessions} sesiones · ${tokenEstimates.totalTools} herramientas</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Presión de recursos (24h)</div>
+    <div class="level-bar">
+      ${levelPct.green > 0 ? `<div style="width:${levelPct.green}%;background:var(--gn)">${levelPct.green}%</div>` : ''}
+      ${levelPct.yellow > 0 ? `<div style="width:${levelPct.yellow}%;background:var(--yl)">${levelPct.yellow}%</div>` : ''}
+      ${levelPct.orange > 0 ? `<div style="width:${levelPct.orange}%;background:var(--or)">${levelPct.orange}%</div>` : ''}
+      ${levelPct.red > 0 ? `<div style="width:${levelPct.red}%;background:var(--rd)">${levelPct.red}%</div>` : ''}
+    </div>
+    <div class="card-sub">🟢 ${levelPct.green || 0}% · 🟡 ${levelPct.yellow || 0}% · 🟠 ${levelPct.orange || 0}% · 🔴 ${levelPct.red || 0}%</div>
+  </div>
+</div>
+
+<div class="section">
+<h2>⏱ Velocidad por fase (promedios históricos)</h2>
+<table>
+<thead><tr><th>Fase</th><th>Promedio</th><th>Muestras</th><th>Detalle por skill</th></tr></thead>
+<tbody>${etaRows || '<tr><td colspan="4" class="dim">Sin datos históricos</td></tr>'}</tbody>
+</table>
+</div>
+
+<div class="section">
+<h2>🤖 Cuota Anthropic — Top sesiones por consumo estimado</h2>
+<table>
+<thead><tr><th>Sesión</th><th>Herramientas</th><th>Duración</th><th>Tokens est.</th></tr></thead>
+<tbody>${sessionRows || '<tr><td colspan="4" class="dim">Sin datos</td></tr>'}</tbody>
+</table>
+<div class="card-sub" style="margin-top:8px">⚠️ Tokens estimados por proxy: (duración_seg × 15) + (tools × 500). Calibrar con dashboard de Anthropic.</div>
+</div>
+
+<div class="section">
+<h2>💡 Recomendaciones</h2>
+<div class="card">
+${maxMem(snap1h) > 85 ? '<p class="red">⚠️ RAM pico > 85% en la última hora — considerar upgrade de RAM o reducir concurrencia</p>' : ''}
+${maxCpu(snap1h) > 90 ? '<p class="red">⚠️ CPU pico > 90% en la última hora — considerar más cores o reducir builds paralelos</p>' : ''}
+${reboteRate > 30 ? '<p class="orange">⚠️ Tasa de rechazo alta (>30%) — revisar calidad de prompts de agentes dev</p>' : ''}
+${levelPct.red > 10 ? '<p class="red">⚠️ Sistema en rojo >' + levelPct.red + '% del tiempo — hardware insuficiente para la carga actual</p>' : ''}
+${levelPct.green > 80 ? '<p class="green">✅ Sistema saludable — recursos bien dimensionados</p>' : ''}
+${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ 0 entregas en 24h con pipeline activo — revisar cuellos de botella</p>' : ''}
+<p class="dim">Datos basados en ${snap24h.length} snapshots (${snap24h.length > 0 ? fmtDuration(now - snap24h[0].ts) : '0'} de historia)</p>
+</div>
+</div>
+
+<div style="color:var(--dim);font-size:0.8em;margin-top:20px">
+🔴 Live · <a href="/api/metrics">API JSON</a> · <a href="/">← Dashboard</a> · ${new Date().toLocaleString('es-AR')}
+</div>
+</body></html>`;
+}
+
 // --- Server ---
 
 const server = http.createServer((req, res) => {
@@ -1460,6 +1721,20 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/state' || req.url === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(getPipelineState(), null, 2));
+    return;
+  }
+
+  // /metrics — Métricas históricas para decisiones de hardware/servicio
+  if (req.url === '/metrics') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(generateMetricsHTML());
+    return;
+  }
+
+  // /api/metrics — Raw metrics data
+  if (req.url === '/api/metrics') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getMetricsData()));
     return;
   }
 

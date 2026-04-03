@@ -2836,6 +2836,58 @@ function rotateHistory() {
   } catch {}
 }
 
+// --- MÉTRICAS HISTÓRICAS ---
+// Persiste snapshot cada ciclo (30s) a metrics-history.jsonl.
+// El dashboard lee este archivo para /metrics.
+const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
+const METRICS_MAX_ENTRIES = 2880; // ~24h a 30s/ciclo
+let metricsLastRotation = 0;
+
+function persistMetricsSnapshot(config) {
+  try {
+    const pressure = getResourcePressure(config);
+    const totalRunning = countTotalRunningAgents(config);
+
+    // Contar por fase
+    const byFase = {};
+    for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+      for (const fase of pConfig.fases) {
+        const tDir = path.join(PIPELINE, pName, fase, 'trabajando');
+        const pDir = path.join(PIPELINE, pName, fase, 'pendiente');
+        byFase[fase] = {
+          working: (byFase[fase]?.working || 0) + listWorkFiles(tDir).length,
+          pending: (byFase[fase]?.pending || 0) + listWorkFiles(pDir).length
+        };
+      }
+    }
+
+    const snapshot = {
+      ts: Date.now(),
+      cpu: pressure.cpuPercent,
+      mem: pressure.memPercent,
+      level: pressure.level,
+      agents: totalRunning,
+      byFase,
+      qaPriority: qaPriorityActive,
+      buildPriority: buildPriorityActive
+    };
+
+    fs.appendFileSync(METRICS_FILE, JSON.stringify(snapshot) + '\n');
+
+    // Rotar cada 10min para no crecer indefinidamente
+    const now = Date.now();
+    if (now - metricsLastRotation > 600000) {
+      metricsLastRotation = now;
+      try {
+        const lines = fs.readFileSync(METRICS_FILE, 'utf8').split('\n').filter(Boolean);
+        if (lines.length > METRICS_MAX_ENTRIES) {
+          fs.writeFileSync(METRICS_FILE, lines.slice(-METRICS_MAX_ENTRIES).join('\n') + '\n');
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
@@ -2864,6 +2916,7 @@ async function mainLoop() {
 
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
+        persistMetricsSnapshot(config); // Métricas históricas para /metrics
         brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
         brazoBarrido(config);   // Tercero: promover entre fases
         brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
