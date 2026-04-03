@@ -516,7 +516,8 @@ function generateHTML(state) {
     const totalFases = defFases.length + devFases.length;
     const completedFases = allFases.filter(({ pipeline, fase }) => {
       const entries = data.fases[`${pipeline}/${fase}`] || [];
-      return entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+      const hasPendingOrWorking = entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
+      return !hasPendingOrWorking && entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
     }).length;
     const pct = totalFases > 0 ? Math.round(completedFases / totalFases * 100) : 0;
 
@@ -525,11 +526,12 @@ function generateHTML(state) {
     let hasEta = false;
     for (const pipeline of ['definicion', 'desarrollo']) {
       const fasesList = pipeline === 'definicion' ? defFases : devFases;
-      for (const { fase: faseName } of fasesList) {
+      for (const faseName of fasesList) {
         const key = `${pipeline}/${faseName}`;
         const entries = data.fases[key] || [];
-        const isDone = entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
-        if (isDone) continue; // Fase ya completada, no sumar
+        const hasPendingOrWorking = entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
+        const isDone = !hasPendingOrWorking && entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+        if (isDone) continue; // Fase completada sin trabajo pendiente, no sumar
 
         const isWorking = entries.some(e => e.estado === 'trabajando');
         if (isWorking) {
