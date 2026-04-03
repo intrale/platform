@@ -143,7 +143,7 @@ function readYamlSafe(filepath) {
 }
 
 function fileStat(filepath) {
-  try { const s = fs.statSync(filepath); return { ctimeMs: s.ctimeMs, mtimeMs: s.mtimeMs }; }
+  try { const s = fs.statSync(filepath); return { ctimeMs: s.ctimeMs, mtimeMs: s.mtimeMs, birthtimeMs: s.birthtimeMs }; }
   catch { return null; }
 }
 
@@ -240,9 +240,9 @@ function getPipelineState() {
         const skill = f.split('.').slice(1).join('.');
         const st = fileStat(path.join(dir, f));
         if (!st) continue;
-        // duración = mtime - birthtime (en Windows birthtime es creación real)
-        const dur = st.mtimeMs - st.birthtimeMs;
-        if (dur <= 0 || dur > 4 * 3600000) continue; // descartar outliers >4h o negativos
+        // duración = ctime - birthtime (ctime = movido a procesado, birthtime = creación original)
+        const dur = st.ctimeMs - st.birthtimeMs;
+        if (dur <= 5000 || dur > 4 * 3600000) continue; // descartar <5s o >4h
         const key = `${fase}/${skill}`;
         if (!state.etaAverages[key]) state.etaAverages[key] = { total: 0, count: 0 };
         state.etaAverages[key].total += dur;
@@ -520,22 +520,20 @@ function generateHTML(state) {
     }).length;
     const pct = totalFases > 0 ? Math.round(completedFases / totalFases * 100) : 0;
 
-    // ETA por issue: suma de promedios de fases restantes + tiempo restante del agente activo
+    // ETA por issue: suma de promedios de fases pendientes (independiente de agentes activos)
     let issueEtaMs = 0;
     let hasEta = false;
-    const isActive = data.estadoActual === 'trabajando' || data.estadoActual === 'pendiente';
-    if (isActive) {
-      // Fases que faltan completar
-      const devFasesList = devFases.map(f => f.fase);
-      let foundCurrent = false;
-      for (const faseName of devFasesList) {
-        const key = `desarrollo/${faseName}`;
+    for (const pipeline of ['definicion', 'desarrollo']) {
+      const fasesList = pipeline === 'definicion' ? defFases : devFases;
+      for (const { fase: faseName } of fasesList) {
+        const key = `${pipeline}/${faseName}`;
         const entries = data.fases[key] || [];
         const isDone = entries.some(e => e.estado === 'listo' || e.estado === 'procesado');
-        const isWorking = entries.some(e => e.estado === 'trabajando');
+        if (isDone) continue; // Fase ya completada, no sumar
 
+        const isWorking = entries.some(e => e.estado === 'trabajando');
         if (isWorking) {
-          // Fase actual: ETA = promedio - tiempo transcurrido
+          // Fase en curso: ETA = promedio - tiempo transcurrido
           const workingEntry = entries.find(e => e.estado === 'trabajando');
           const avgKey = `${faseName}/${workingEntry.skill}`;
           const avg = state.etaAverages[avgKey] || state.etaAverages[faseName];
@@ -543,9 +541,8 @@ function generateHTML(state) {
             issueEtaMs += Math.max(0, avg.avgMs - workingEntry.durationMs);
             hasEta = true;
           }
-          foundCurrent = true;
-        } else if (foundCurrent && !isDone) {
-          // Fases futuras: sumar promedio completo
+        } else {
+          // Fase pendiente o no iniciada: sumar promedio completo
           const avg = state.etaAverages[faseName];
           if (avg?.avgMs) {
             issueEtaMs += avg.avgMs;
