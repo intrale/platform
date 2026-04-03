@@ -1859,7 +1859,18 @@ const server = http.createServer((req, res) => {
         if (!current.build) current.build = { active: false };
 
         // Escribir manualOverride para que el Pulpo lo consuma en su próximo ciclo
+        // También actualizar active/manual inmediatamente para que el dashboard refleje el cambio
         current[win].manualOverride = (action === 'on');
+        if (action === 'on') {
+          current[win].active = true;
+          current[win].manual = true;
+          current[win].activatedAt = Date.now();
+        } else {
+          current[win].active = false;
+          current[win].manual = false;
+          current[win].activatedAt = null;
+        }
+        current.updatedAt = Date.now();
         fs.writeFileSync(pwFile, JSON.stringify(current, null, 2));
 
         const label = win === 'qa' ? 'QA Priority' : 'Build Priority';
