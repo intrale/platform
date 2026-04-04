@@ -369,10 +369,9 @@ function getSystemResourceUsage() {
 const PRESSURE_LEVELS = { GREEN: 'green', YELLOW: 'yellow', ORANGE: 'orange', RED: 'red' };
 let lastResourceLog = 0;
 let lastPressureLevel = PRESSURE_LEVELS.GREEN;
-let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram con kill de emergencia
-let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED sin poder bajar
-const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de emergencia
-const MAX_RED_RETRIES = 3;              // Después de 3 ciclos en RED sin mejora, dejar de intentar kill
+let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram en RED
+let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED (solo para logging)
+const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de RED
 let proactiveCycleCounter = 0;
 
 /**
@@ -484,47 +483,39 @@ function isSystemOverloaded(config) {
     return false; // Dejar pasar 1 agente
   }
 
-  // RED: bloqueo total + kill de emergencia (con anti-spam)
+  // RED: bloqueo total + limpieza de daemons (SIN kill de agentes/procesos Claude)
+  // Estrategia: solo limpiar Gradle/Kotlin huérfanos y esperar a que los procesos
+  // terminen naturalmente. NUNCA matar agentes ni builds en curso.
   consecutiveRedCycles++;
 
-  // Si ya intentamos N veces y no baja, no insistir con kill — el consumo es de procesos del sistema
-  if (consecutiveRedCycles > MAX_RED_RETRIES) {
-    // Loguear localmente cada 60s, sin Telegram
-    const now = Date.now();
-    if (now - lastResourceLog > 60000) {
-      log('recursos', `🔴 RED sostenido (ciclo ${consecutiveRedCycles}) — los consumidores son del sistema, no hay más que limpiar. CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
-      lastResourceLog = now;
-    }
-    // Notificar por Telegram UNA vez cada 5 minutos
-    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
-      logTopConsumers();
-      sendTelegram(`🔴 RAM al ${memPercent}% hace ${consecutiveRedCycles} ciclos. No hay daemons Gradle/Kotlin para matar — el consumo es de Chrome, emulador, etc. Bloqueando lanzamientos hasta que baje.`);
-      lastEmergencyTelegramTs = now;
-    }
-    return true;
+  // Limpieza agresiva de daemons (NO mata procesos Claude — solo Gradle/Kotlin sin worktree)
+  const { freed, killed } = tryFreeResources('aggressive');
+  if (freed) {
+    log('recursos', `🔴 Limpieza de daemons en RED: ${killed.join(', ')}`);
   }
 
-  logTopConsumers();
-  const { freed, killed } = tryFreeResources('emergency');
+  // Loguear cada 60s
+  const now = Date.now();
+  if (now - lastResourceLog > 60000) {
+    log('recursos', `🔴 RED — BLOQUEADO (ciclo ${consecutiveRedCycles}) — CPU: ${cpuPercent}% | RAM: ${memPercent}% — esperando que procesos terminen`);
+    lastResourceLog = now;
+  }
+
+  // Notificar por Telegram UNA vez cada 5 minutos
+  if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+    logTopConsumers();
+    sendTelegram(`🔴 Recursos críticos — CPU: ${cpuPercent}% | RAM: ${memPercent}% — bloqueando nuevos lanzamientos, esperando que los activos terminen (sin kill de emergencia)`);
+    lastEmergencyTelegramTs = now;
+  }
+
+  // Re-evaluar por si la limpieza de daemons bajó la presión
   if (freed) {
-    log('recursos', `🔴 Kill de emergencia: ${killed.join(', ')}`);
-    // Solo enviar Telegram si pasó el cooldown
-    const now = Date.now();
-    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
-      sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
-      lastEmergencyTelegramTs = now;
-    }
-    // Re-evaluar — NO resetear consecutiveRedCycles acá, porque el kill baja
-    // temporalmente los recursos pero vuelven a subir al siguiente ciclo,
-    // causando un loop infinito de kill + notificación. El counter solo se
-    // resetea cuando el sistema baja naturalmente a GREEN o YELLOW.
     const after = getResourcePressure(config);
     if (after.level !== PRESSURE_LEVELS.RED) {
       return isSystemOverloaded(config);
     }
   }
-  log('recursos', `🔴 RED — BLOQUEADO (intento ${consecutiveRedCycles}/${MAX_RED_RETRIES}) — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
-  lastResourceLog = Date.now();
+
   return true;
 }
 
@@ -815,7 +806,7 @@ function countRunningBuild(config) {
 /**
  * Evaluar si debe activarse/desactivarse la Build Priority Window.
  * Cuando hay builds en cola, bloquea nuevos dev para liberar recursos
- * y evitar que el kill de emergencia mate builds activos.
+ * y evitar saturación del sistema.
  * Retorna true si Build Priority está activa (dev debe bloquearse).
  */
 function evaluateBuildPriority(config) {
@@ -919,7 +910,8 @@ function logTopConsumers() {
 
 /**
  * Intentar liberar recursos con nivel de agresividad variable.
- * Niveles: 'soft' (solo Gradle daemons), 'aggressive' (+Kotlin daemons), 'emergency' (+node huérfanos)
+ * Niveles: 'soft' (solo Gradle daemons huérfanos), 'aggressive' (+Kotlin daemons sin worktree)
+ * NOTA: El modo 'emergency' fue eliminado — ya no se matan procesos Claude/Node.
  */
 function tryFreeResources(mode = 'soft') {
   const killed = [];
@@ -994,7 +986,7 @@ function tryFreeResources(mode = 'soft') {
         }
 
         // En modo soft: solo matar huérfanos (padre muerto)
-        // En modo aggressive/emergency: matar daemons Gradle que NO pertenezcan a ningún worktree activo
+        // En modo aggressive: matar daemons Gradle que NO pertenezcan a ningún worktree activo
         const isOrphan = ppid && !isProcessAlive(parseInt(ppid, 10));
         if (mode === 'soft' && !isOrphan) continue;
 
@@ -1007,7 +999,7 @@ function tryFreeResources(mode = 'soft') {
     } catch {}
     if (gradleKilled > 0) killed.push(`${gradleKilled} Gradle daemon(s)`);
 
-    // 2. Matar Kotlin compile daemons (en aggressive/emergency)
+    // 2. Matar Kotlin compile daemons (en aggressive)
     //    Misma protección por worktree que Gradle — no matar daemons de agentes activos
     if (mode !== 'soft') {
       let kotlinKilled = 0;
@@ -1041,34 +1033,10 @@ function tryFreeResources(mode = 'soft') {
       if (kotlinKilled > 0) killed.push(`${kotlinKilled} Kotlin daemon(s)`);
     }
 
-    // 3. Snapshot de PIDs de TODOS los agentes registrados ANTES de limpiar stale
-    //    Esto previene la race condition: bajo carga alta, isProcessAlive puede dar
-    //    false negativo (tasklist timeout), limpiar el agente del mapa, y luego el
-    //    emergency kill lo mata porque ya no está en activePids.
-    const snapshotPids = new Set();
-    const snapshotChildPids = new Set();
-    for (const [, info] of activeProcesses) {
-      snapshotPids.add(String(info.pid));
-      // Proteger hijos de TODOS los agentes (no solo builds)
-      // Un agente Claude spawna sub-node.exe (MCP servers, sub-agents) que no están
-      // registrados en activeProcesses pero son vitales para el agente padre
-      try {
-        const childrenOut = execSync(
-          `wmic process where "ParentProcessId=${info.pid}" get ProcessId /FORMAT:CSV`,
-          { encoding: 'utf8', timeout: 5000, windowsHide: true }
-        );
-        for (const cl of childrenOut.split('\n')) {
-          const cm = cl.match(/,(\d+)\s*$/);
-          if (cm) snapshotChildPids.add(cm[1]);
-        }
-      } catch {}
-    }
-
-    // Ahora sí limpiar stale — pero el snapshot ya tiene los PIDs protegidos
+    // 3. Limpieza de agentes stale del mapa interno (no mata procesos)
     let staleAgents = 0;
     for (const [key, info] of activeProcesses) {
       // Grace period: nunca limpiar agentes registrados hace menos de 30 min
-      // Bajo carga, isProcessAlive puede fallar por timeout de tasklist
       const ageMs = Date.now() - (info.startTime || 0);
       if (ageMs < 30 * 60 * 1000) continue;
       if (!isProcessAlive(info.pid)) {
@@ -1078,131 +1046,13 @@ function tryFreeResources(mode = 'soft') {
     }
     if (staleAgents > 0) killed.push(`${staleAgents} agente(s) stale`);
 
-    // 4. Emergency: matar SOLO procesos Claude genuinamente zombies
-    //    Protecciones (en orden de prioridad):
-    //    - PIDs del snapshot pre-limpieza (agentes + sus hijos) → NUNCA matar
-    //    - Servicios del pipeline (.pid) → NUNCA matar
-    //    - Sesiones interactivas (terminal del usuario) → NUNCA matar
-    //    - Agentes con heartbeat reciente (< 15 min) → están trabajando
-    //    - Procesos con uptime > 10 min → trabajo real en curso
-    //    Solo mata procesos de corta vida sin heartbeat ni registro
-    if (mode === 'emergency') {
-      let nodeKilled = 0;
-      const nodeSpared = [];
-      try {
-        const wmicOut = execSync(
-          'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine,CreationDate /FORMAT:CSV',
-          { encoding: 'utf8', timeout: 15000, windowsHide: true }
-        );
-        // PIDs de servicios del pipeline — NO matar
-        const servicePids = new Set();
-        try {
-          for (const f of fs.readdirSync(PIPELINE)) {
-            if (f.endsWith('.pid')) {
-              const pidVal = fs.readFileSync(path.join(PIPELINE, f), 'utf8').trim();
-              if (pidVal) servicePids.add(pidVal);
-            }
-          }
-        } catch {}
-        // El propio Pulpo
-        servicePids.add(String(process.pid));
-
-        // Heartbeats activos — agentes con actividad reciente
-        const recentHeartbeats = new Set();
-        const HEARTBEAT_MAX_AGE = 15 * 60 * 1000; // 15 minutos (antes 5 — era demasiado agresivo)
-        try {
-          const hooksDir = path.join(path.dirname(PIPELINE), '.claude', 'hooks');
-          for (const f of fs.readdirSync(hooksDir)) {
-            if (!f.endsWith('.heartbeat')) continue;
-            try {
-              const hbContent = JSON.parse(fs.readFileSync(path.join(hooksDir, f), 'utf8'));
-              const hbAge = Date.now() - new Date(hbContent.ts || hbContent.timestamp || hbContent.lastSeen || 0).getTime();
-              if (hbAge < HEARTBEAT_MAX_AGE && hbContent.pid) {
-                recentHeartbeats.add(String(hbContent.pid));
-              }
-            } catch {}
-          }
-        } catch {}
-
-        // 10 minutos — antes era 2 min, demasiado agresivo para agents que arrancan lento
-        const MIN_UPTIME_MS = 10 * 60 * 1000;
-
-        for (const line of wmicOut.split('\n')) {
-          if (!line.includes('cli.js') && !line.includes('claude')) continue;
-          const match = line.match(/,(\d+)\s*$/);
-          if (!match) continue;
-          const pid = match[1];
-
-          // Protección 1: PIDs del snapshot (agentes registrados — inmune a false negatives de isProcessAlive)
-          if (snapshotPids.has(pid)) {
-            nodeSpared.push(`PID ${pid} (agente registrado)`);
-            continue;
-          }
-
-          // Protección 2: Hijos directos de agentes registrados (MCP servers, sub-agents)
-          if (snapshotChildPids.has(pid)) {
-            nodeSpared.push(`PID ${pid} (hijo de agente)`);
-            continue;
-          }
-
-          // Protección 3: Servicios del pipeline
-          if (servicePids.has(pid)) {
-            nodeSpared.push(`PID ${pid} (servicio pipeline)`);
-            continue;
-          }
-
-          // Protección 4: Sesión interactiva del usuario
-          const isInteractive = line.includes('cli.js') &&
-            !line.includes('--print') &&
-            !line.includes('--output-format') &&
-            !line.includes('agent/');
-          if (isInteractive) {
-            nodeSpared.push(`PID ${pid} (sesión interactiva)`);
-            continue;
-          }
-
-          // Protección 5: Heartbeat reciente — agente trabajando activamente
-          if (recentHeartbeats.has(pid)) {
-            nodeSpared.push(`PID ${pid} (heartbeat activo)`);
-            continue;
-          }
-
-          // Protección 6: Uptime significativo — trabajo real en curso
-          // Parsear CreationDate de WMIC (formato: 20260403163200.000000-180)
-          const creationMatch = line.match(/(\d{14})\.\d+[+-]\d+/);
-          if (creationMatch) {
-            const cs = creationMatch[1]; // YYYYMMDDHHmmss
-            const creationDate = new Date(
-              parseInt(cs.slice(0, 4)), parseInt(cs.slice(4, 6)) - 1, parseInt(cs.slice(6, 8)),
-              parseInt(cs.slice(8, 10)), parseInt(cs.slice(10, 12)), parseInt(cs.slice(12, 14))
-            );
-            const uptimeMs = Date.now() - creationDate.getTime();
-            if (uptimeMs > MIN_UPTIME_MS) {
-              nodeSpared.push(`PID ${pid} (uptime ${Math.round(uptimeMs / 60000)}min)`);
-              continue;
-            }
-          } else {
-            // Si no se puede parsear CreationDate → NO matar (beneficio de la duda)
-            nodeSpared.push(`PID ${pid} (CreationDate no parseable — protegido)`);
-            continue;
-          }
-
-          // Pasó TODAS las protecciones → genuinamente zombie
-          // (corta vida <10min, sin heartbeat, no registrado, no interactivo, no servicio)
-          log('free-resources', `Matando Claude zombie PID ${pid} (vida <10min, sin heartbeat, no registrado, no interactivo)`);
-          try {
-            // SIN /T (tree kill) — solo matar el proceso específico
-            // /T puede matar hijos que pertenecen a otros agentes
-            execSync(`taskkill /PID ${pid} /F`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-            nodeKilled++;
-          } catch {}
-        }
-      } catch {}
-      if (nodeSpared.length > 0) {
-        log('free-resources', `Protegidos del kill: ${nodeSpared.join(', ')}`);
-      }
-      if (nodeKilled > 0) killed.push(`${nodeKilled} Claude zombie(s)`);
-    }
+    // NOTA: El kill de emergencia de procesos Claude/Node fue ELIMINADO.
+    // Motivo: bajo presión extrema (RAM >80%, CPU 100%), los mecanismos de detección
+    // (isProcessAlive, heartbeats, tasklist) fallan sistemáticamente, causando que se
+    // maten agentes y builds legítimos. Esto generaba ciclos infinitos de rebotes
+    // (19 issues afectados, 15 builds fallidos en 2 días, 80% por kill de emergencia).
+    // La estrategia ahora es PREVENCIÓN: throttle agresivo en YELLOW/ORANGE para que
+    // el sistema nunca llegue a RED con builds activos.
 
   } catch (e) {
     log('free-resources', `Error durante limpieza (${mode}): ${e.message}`);
@@ -1600,7 +1450,17 @@ function brazoLanzamiento(config) {
     const running = countRunningBySkill(skill);
     if (running >= maxConcurrencia) continue;
 
-    // 5. PIEZA 1: Límite global de devs — si este skill es de desarrollo,
+    // 5a. Límite de builds bajo presión — en YELLOW solo 1 build simultáneo
+    // Esto previene que múltiples builds saturen la RAM y lleven al sistema a RED
+    if (fase === 'build' && (pressure.level === PRESSURE_LEVELS.YELLOW || pressure.level === PRESSURE_LEVELS.ORANGE)) {
+      const runningBuilds = countRunningBuild(config);
+      if (runningBuilds >= 1) {
+        log('lanzamiento', `⚠️ ${pressure.level.toUpperCase()} — ${runningBuilds} build(s) en curso, postergando build de #${issue} para no saturar`);
+        continue;
+      }
+    }
+
+    // 5b. PIEZA 1: Límite global de devs — si este skill es de desarrollo,
     // verificar que no se exceda el máximo total de devs simultáneos
     if (DEV_SKILLS.includes(skill)) {
       const maxDevs = (config.resource_limits || {}).max_concurrent_devs;
