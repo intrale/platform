@@ -1,8 +1,10 @@
 # Heuristicas de Evaluacion UX — Intrale Platform
 
 > Base de conocimiento del UX Specialist.
-> Adaptadas de Nielsen, Material Design 3 y mejores practicas de apps de delivery/comercio.
-> Ultima actualizacion: 2026-03-01.
+> Fundamentadas en: Jakob Nielsen (heuristicas de usabilidad), Don Norman (affordances y diseño emocional),
+> Luke Wroblewski (mobile first y diseño de formularios).
+> Estandar duro: WCAG 2.2 AA. Estandares operativos: Material Design 3 + Apple HIG.
+> Ultima actualizacion: 2026-04-04.
 
 ---
 
@@ -177,17 +179,25 @@ La app debe sentirse rapida, aunque no lo sea.
 
 ---
 
-### 13. Accesibilidad
-La app debe ser usable por todos.
+### 13. Accesibilidad (WCAG 2.2 AA — estandar duro)
+La app debe ser usable por todos. WCAG 2.2 AA es el piso obligatorio, no una aspiracion.
 
-**Evaluar:**
-- ¿El contraste cumple WCAG AA (4.5:1 texto, 3:1 elementos)?
-- ¿Los elementos tienen `contentDescription` para TalkBack/VoiceOver?
-- ¿Los tamaños de texto respetan la configuracion del sistema?
-- ¿Los colores no son el unico indicador de estado? (icono + color)
-- ¿La app funciona sin animaciones? (reduce motion)
+**Evaluar — criterios WCAG 2.2:**
+- ¿El contraste cumple 4.5:1 texto normal, 3:1 texto grande y componentes UI? (1.4.3 + 1.4.11)
+- ¿Los elementos tienen `contentDescription` para TalkBack/VoiceOver? (1.1.1)
+- ¿Los tamaños de texto respetan la configuracion del sistema? (1.4.4)
+- ¿Los colores no son el unico indicador de estado? (1.4.1)
+- ¿La app funciona sin animaciones? (2.3.3 reduce motion)
+- ¿Los targets tactiles cumplen minimo 24x24 CSS px? (2.5.8 — nuevo en WCAG 2.2)
+- ¿Las funciones de drag tienen alternativa single-pointer? (2.5.7 — nuevo en WCAG 2.2)
+- ¿El focus es visible y consistente? (2.4.7 + 2.4.11 focus not obscured — nuevo en WCAG 2.2)
+- ¿Los inputs redundantes se autocompletan? (3.3.7 — nuevo en WCAG 2.2)
+- ¿La ayuda contextual esta disponible de forma consistente? (3.2.6 — nuevo en WCAG 2.2)
+- ¿La autenticacion no depende de funciones cognitivas? (3.3.8 — nuevo en WCAG 2.2)
 
-**En Intrale:** `semantics { contentDescription = ... }` en iconos y botones. Material3 theming respeta dynamic text size. Colores + iconos para estados.
+**Incumplimiento = defecto critico.** No es una "mejora pendiente" ni un "nice to have".
+
+**En Intrale:** `semantics { contentDescription = ... }` en iconos y botones. Material3 theming respeta dynamic text size. Colores + iconos para estados. Target size 48dp (supera WCAG 2.2 minimo de 24px).
 
 ---
 

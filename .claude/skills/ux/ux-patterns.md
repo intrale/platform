@@ -331,12 +331,16 @@ Antes de dar por terminada una pantalla nueva, verificar:
 - [ ] Back button funcional
 - [ ] Pull to refresh (si tiene datos remotos)
 
-### Accesibilidad
-- [ ] Content descriptions en iconos e imagenes
-- [ ] Contraste minimo 4.5:1
-- [ ] Tamaño tactil minimo 48dp
-- [ ] Texto respeta configuracion de tamaño del sistema
-- [ ] Estado comunicado con icono + color (no solo color)
+### Accesibilidad (WCAG 2.2 AA — obligatorio)
+- [ ] Content descriptions en iconos e imagenes (WCAG 1.1.1)
+- [ ] Contraste minimo 4.5:1 texto normal, 3:1 texto grande y componentes UI (WCAG 1.4.3 + 1.4.11)
+- [ ] Tamaño tactil minimo 48dp (supera WCAG 2.5.8 minimo 24px)
+- [ ] Texto respeta configuracion de tamaño del sistema (WCAG 1.4.4)
+- [ ] Estado comunicado con icono + color (no solo color) (WCAG 1.4.1)
+- [ ] Focus visible y no obstruido (WCAG 2.4.7 + 2.4.11)
+- [ ] Drag tiene alternativa single-pointer (WCAG 2.5.7)
+- [ ] Inputs redundantes con autocompletado (WCAG 3.3.7)
+- [ ] Ayuda contextual consistente (WCAG 3.2.6)
 
 ### Consistencia
 - [ ] Usa componentes estandar del proyecto
