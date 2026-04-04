@@ -82,6 +82,8 @@ import asdo.delivery.ToDoTakeDeliveryOrder
 import asdo.delivery.ToDoUpdateDeliveryAvailability
 import asdo.delivery.ToDoUpdateDeliveryOrderStatus
 import asdo.delivery.ToDoUpdateDeliveryProfile
+import asdo.business.DoAnalyzeProductPhoto
+import asdo.business.ToDoAnalyzeProductPhoto
 import asdo.business.DoCreateProduct
 import asdo.business.DoDeleteProduct
 import asdo.business.DoDeleteCategory
@@ -235,6 +237,8 @@ import ext.business.ClientSearchBusinessesService
 import ext.business.CommCategoryService
 import ext.business.CommGetBusinessDashboardSummaryService
 import ext.business.CommGetBusinessProductsService
+import ext.business.CommAnalyzeProductPhotoService
+import ext.business.ClientAnalyzeProductPhotoService
 import ext.business.CommProductService
 import ext.business.CommRegisterBusinessService
 import ext.business.CommRequestJoinBusinessService
@@ -460,6 +464,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<CommGetBusinessProductsService> { ClientGetBusinessProductsService(instance()) }
     bindSingleton<CommCategoryService> { ClientCategoryService(instance(), instance()) }
     bindSingleton<CommProductService> { ClientProductService(instance(), instance()) }
+    bindSingleton<CommAnalyzeProductPhotoService> { ClientAnalyzeProductPhotoService(instance(), instance()) }
     bindSingleton<CommFontsService> { ClientFontsService(instance(), instance()) }
     bindSingleton<CommBusinessConfigService> { ClientBusinessConfigService(instance(), instance()) }
     bindSingleton<CommBannerService> { ClientBannerService(instance(), instance()) }
@@ -482,6 +487,7 @@ private val businessModule = DI.Module("business") {
     bindSingleton<ToDoCreateProduct> { DoCreateProduct(instance()) }
     bindSingleton<ToDoUpdateProduct> { DoUpdateProduct(instance()) }
     bindSingleton<ToDoDeleteProduct> { DoDeleteProduct(instance()) }
+    bindSingleton<ToDoAnalyzeProductPhoto> { DoAnalyzeProductPhoto(instance()) }
     bindSingleton<ToDoCreateCategory> { DoCreateCategory(instance()) }
     bindSingleton<ToDoUpdateCategory> { DoUpdateCategory(instance()) }
     bindSingleton<ToDoDeleteCategory> { DoDeleteCategory(instance()) }

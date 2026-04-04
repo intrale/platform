@@ -902,4 +902,14 @@ internal val DefaultCatalog_es: Map<MessageKey, String> = mapOf(
     MessageKey.delivery_order_take_already_taken to "Este pedido ya no esta disponible",
     MessageKey.delivery_order_take_error to "Error al tomar el pedido. Intenta de nuevo.",
     MessageKey.delivery_order_distance_placeholder to "-- km",
+
+    // Carga de producto con foto (IA)
+    MessageKey.product_form_photo_button to "Cargar con foto",
+    MessageKey.product_form_photo_analyzing to "Analizando foto...",
+    MessageKey.product_form_photo_success to "Campos completados automaticamente",
+    MessageKey.product_form_photo_error to "No se pudo analizar la foto. Intenta de nuevo.",
+    MessageKey.product_form_photo_pick_title to "Seleccionar imagen",
+    MessageKey.product_form_photo_pick_camera to "Camara",
+    MessageKey.product_form_photo_pick_gallery to "Galeria",
+    MessageKey.product_form_photo_pick_cancel to "Cancelar",
 )

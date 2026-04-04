@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
@@ -27,6 +28,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -41,6 +43,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -51,6 +54,7 @@ import ar.com.intrale.shared.business.ProductStatus
 import kotlinx.coroutines.launch
 import ui.cp.buttons.IntralePrimaryButton
 import ui.cp.inputs.TextField
+import ui.cp.photo.ImagePickerResult
 import ui.sc.shared.Screen
 import ui.sc.shared.callService
 import ui.session.SessionStore
@@ -79,6 +83,8 @@ class ProductFormScreen(
         var showDeleteDialog by remember { mutableStateOf(false) }
         var unitExpanded by remember { mutableStateOf(false) }
 
+        var showPhotoPickerDialog by remember { mutableStateOf(false) }
+
         val businessId = sessionState.selectedBusinessId
         val productSavedMessage = Txt(MessageKey.product_form_saved)
         val genericErrorMessage = Txt(MessageKey.error_generic)
@@ -90,6 +96,8 @@ class ProductFormScreen(
         val deleteConfirmCancel = Txt(MessageKey.product_form_delete_confirm_cancel)
         val refreshCategoriesLabel = Txt(MessageKey.business_categories_retry)
         val stockHelperText = Txt(MessageKey.product_form_stock_helper)
+        val photoSuccessMessage = Txt(MessageKey.product_form_photo_success)
+        val photoErrorMessage = Txt(MessageKey.product_form_photo_error)
 
         LaunchedEffect(draft) {
             viewModel.applyDraft(draft)
@@ -133,6 +141,27 @@ class ProductFormScreen(
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.SemiBold
                 )
+
+                // Boton "Cargar con foto" — solo en modo creacion
+                if (viewModel.mode == ProductFormMode.Create) {
+                    PhotoUploadButton(
+                        analyzing = viewModel.photoAnalyzing,
+                        onImageSelected = { result ->
+                            coroutineScope.launch {
+                                viewModel.analyzePhoto(
+                                    businessId = businessId,
+                                    imageBase64 = result.base64,
+                                    mediaType = result.mediaType
+                                )
+                                if (viewModel.photoError == null) {
+                                    snackbarHostState.showSnackbar(photoSuccessMessage)
+                                } else {
+                                    snackbarHostState.showSnackbar(photoErrorMessage)
+                                }
+                            }
+                        }
+                    )
+                }
 
                 TextField(
                     label = MessageKey.product_form_name,
@@ -582,6 +611,43 @@ private fun PromotionPriceField(
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier.fillMaxWidth()
     )
+}
+
+/**
+ * Boton para cargar un producto a partir de una foto.
+ * Muestra un indicador de carga mientras la IA analiza la imagen.
+ */
+@Composable
+private fun PhotoUploadButton(
+    analyzing: Boolean,
+    onImageSelected: (ImagePickerResult) -> Unit
+) {
+    OutlinedButton(
+        onClick = {
+            // TODO: Integrar con image picker nativo por plataforma.
+            // Por ahora el boton queda visible como placeholder.
+            // La integracion del picker real requiere expect/actual
+            // con ActivityResultContracts en Android.
+        },
+        enabled = !analyzing,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        if (analyzing) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(MaterialTheme.spacing.x3),
+                strokeWidth = MaterialTheme.spacing.x0_5
+            )
+            Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+            Text(Txt(MessageKey.product_form_photo_analyzing))
+        } else {
+            Icon(
+                imageVector = Icons.Default.CameraAlt,
+                contentDescription = Txt(MessageKey.product_form_photo_button)
+            )
+            Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+            Text(Txt(MessageKey.product_form_photo_button))
+        }
+    }
 }
 
 @Composable

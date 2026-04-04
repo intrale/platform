@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import ar.com.intrale.strings.model.MessageKey
 import ar.com.intrale.strings.resolveMessage
+import asdo.business.ToDoAnalyzeProductPhoto
 import asdo.business.ToDoCreateProduct
 import asdo.business.ToDoDeleteProduct
 import asdo.business.ToDoListProducts
@@ -46,6 +47,7 @@ class ProductFormViewModel(
     private val deleteProduct: ToDoDeleteProduct = DIManager.di.direct.instance(),
     private val listProducts: ToDoListProducts = DIManager.di.direct.instance(),
     private val listCategories: ToDoListCategories = DIManager.di.direct.instance(),
+    private val analyzeProductPhoto: ToDoAnalyzeProductPhoto = DIManager.di.direct.instance(),
     loggerFactory: LoggerFactory = LoggerFactory.default
 ) : ViewModel() {
 
@@ -62,6 +64,10 @@ class ProductFormViewModel(
     var categoriesLoading by mutableStateOf(false)
         private set
     var categoryError by mutableStateOf<String?>(null)
+        private set
+    var photoAnalyzing by mutableStateOf(false)
+        private set
+    var photoError by mutableStateOf<String?>(null)
         private set
 
     override fun getState(): Any = uiState
@@ -158,6 +164,44 @@ class ProductFormViewModel(
 
     fun categoryName(categoryId: String): String =
         categories.firstOrNull { it.id == categoryId }?.name.orEmpty()
+
+    /**
+     * Analiza una foto de producto con IA y pre-llena los campos del formulario.
+     */
+    suspend fun analyzePhoto(businessId: String, imageBase64: String, mediaType: String) {
+        photoAnalyzing = true
+        photoError = null
+        val categoryNames = categories.mapNotNull { cat ->
+            cat.id?.let { id -> cat.name }
+        }
+        analyzeProductPhoto.execute(
+            businessId = businessId,
+            imageBase64 = imageBase64,
+            mediaType = mediaType,
+            existingCategories = categoryNames
+        ).onSuccess { response ->
+            if (response.suggestedName.isNotBlank()) {
+                uiState = uiState.copy(name = response.suggestedName)
+            }
+            if (response.suggestedDescription.isNotBlank()) {
+                uiState = uiState.copy(shortDescription = response.suggestedDescription)
+            }
+            // Intentar matchear la categoria sugerida con las existentes
+            if (response.suggestedCategory.isNotBlank()) {
+                val matchedCategory = categories.firstOrNull { cat ->
+                    cat.name.equals(response.suggestedCategory, ignoreCase = true)
+                }
+                if (matchedCategory?.id != null) {
+                    uiState = uiState.copy(categoryId = matchedCategory.id!!)
+                }
+            }
+            logger.info { "Foto analizada: nombre='${response.suggestedName}' confidence=${response.confidence}" }
+        }.onFailure { error ->
+            logger.error(error) { "Error al analizar foto de producto" }
+            photoError = error.message
+        }
+        photoAnalyzing = false
+    }
 
     suspend fun save(businessId: String): Result<ProductDTO> {
         if (!isValid()) {

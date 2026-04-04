@@ -891,4 +891,14 @@ enum class MessageKey {
     client_checkout_business_closed_title,
     client_checkout_business_closed_message,
     client_checkout_business_closed_next,
+
+    // Carga de producto con foto (IA)
+    product_form_photo_button,
+    product_form_photo_analyzing,
+    product_form_photo_success,
+    product_form_photo_error,
+    product_form_photo_pick_title,
+    product_form_photo_pick_camera,
+    product_form_photo_pick_gallery,
+    product_form_photo_pick_cancel,
 }
