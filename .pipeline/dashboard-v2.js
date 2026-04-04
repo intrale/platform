@@ -367,14 +367,28 @@ function generateHTML(state) {
   const allFases = state.allFases;
   const GH = (num) => `${GITHUB_BASE}/${num}`;
 
-  // Íconos por skill
-  const SKILL_ICON = {
-    guru: '🧠', security: '🔒', po: '📋', ux: '🎨', planner: '📐',
-    'backend-dev': '⚡', 'android-dev': '📱', 'web-dev': '🌐', hotfix: '🔥',
-    tester: '🧪', qa: '✅', review: '👁️', delivery: '🚀', build: '🏗️',
-    commander: '🤖'
+  // Agentes con personalidad — referentes del mercado
+  const AGENT_PERSONA = {
+    guru:          { icon: '🧠', name: 'Guru',        tagline: 'Rich Hickey · Kevlin Henney · Kleppmann', color: '#bc8cff' },
+    security:      { icon: '🔒', name: 'Security',    tagline: 'Troy Hunt · Bruce Schneier · OWASP',      color: '#f85149' },
+    po:            { icon: '📋', name: 'PO',           tagline: 'Marty Cagan · Teresa Torres · Jeff Patton', color: '#d29922' },
+    ux:            { icon: '🎨', name: 'UX',           tagline: 'Don Norman · Jakob Nielsen · Wroblewski',  color: '#f778ba' },
+    planner:       { icon: '📐', name: 'Planner',     tagline: 'Ryan Singer · Allen Ward · Reinertsen',    color: '#a371f7' },
+    'backend-dev': { icon: '⚡', name: 'BackendDev',  tagline: 'Martin Fowler · Uncle Bob · Sam Newman',   color: '#3fb950' },
+    'android-dev': { icon: '📱', name: 'AndroidDev',  tagline: 'Jake Wharton · Romain Guy · Chet Haase',   color: '#58a6ff' },
+    'web-dev':     { icon: '🌐', name: 'WebDev',      tagline: 'Addy Osmani · Alex Russell · Archibald',   color: '#79c0ff' },
+    tester:        { icon: '🧪', name: 'Tester',      tagline: 'Kent Beck · Meszaros · Martin Fowler',     color: '#d2a8ff' },
+    qa:            { icon: '✅', name: 'QA',           tagline: 'James Bach · Lisa Crispin · Bolton',       color: '#3fb950' },
+    review:        { icon: '👁️', name: 'Review',      tagline: 'Michaela Greiler · Google Eng Practices',  color: '#ffa657' },
+    delivery:      { icon: '🚀', name: 'Delivery',    tagline: 'Jez Humble · Dave Farley �� Forsgren',      color: '#f0883e' },
+    scrum:         { icon: '📊', name: 'Scrum',       tagline: 'Sutherland · Vacanti · Mike Cohn',         color: '#79c0ff' },
+    perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
+    build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
+    hotfix:        { icon: '🔥', name: 'Hotfix',      tagline: 'Emergency fix',                            color: '#f85149' },
+    commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
   };
-  const skillIcon = (skill) => SKILL_ICON[skill] || '⚙';
+  const skillIcon = (skill) => (AGENT_PERSONA[skill] || {}).icon || '⚙';
+  const skillColor = (skill) => (AGENT_PERSONA[skill] || {}).color || 'var(--dim)';
 
   // KPIs
   const matrixEntries = Object.entries(state.issueMatrix);
@@ -650,6 +664,7 @@ function generateHTML(state) {
         const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
 
         // Prior runs: solo ícono + índice (sin nombre del skill)
+        const agentColor = skillColor(e.skill);
         const chipContent = (e._isRetry && !e._isLatestRun)
           ? `${icon} ${skillIcon(e.skill)}${runLabel}`
           : `${icon} ${skillIcon(e.skill)} ${e.skill}${runLabel}${etaBadge}`;
@@ -797,6 +812,103 @@ function generateHTML(state) {
   }
 
   // Actividad
+  // --- Agent Team: agentes activos con personalidad ---
+  const activeAgents = {};
+  for (const [issueNum, data] of matrixEntries) {
+    if (!data.faseActual) continue;
+    const entries = data.fases[data.faseActual] || [];
+    for (const e of entries) {
+      if (e.estado === 'trabajando') {
+        if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
+        activeAgents[e.skill].push({ issue: issueNum, fase: data.faseActual.split('/')[1], duration: e.durationMs });
+      }
+    }
+  }
+
+  let agentTeamCards = '';
+  if (Object.keys(activeAgents).length > 0) {
+    for (const [skill, issues] of Object.entries(activeAgents)) {
+      const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, tagline: '', color: 'var(--dim)' };
+      const issueChips = issues.map(i =>
+        `<a href="${GH(i.issue)}" target="_blank" class="agent-issue">#${i.issue} <span class="agent-issue-fase">${i.fase}</span> <span class="agent-issue-dur">${fmtDuration(i.duration)}</span></a>`
+      ).join('');
+      agentTeamCards += `
+        <div class="agent-card" style="--agent-color:${p.color}">
+          <div class="agent-avatar">${p.icon}</div>
+          <div class="agent-info">
+            <div class="agent-name">${p.name}</div>
+            <div class="agent-tagline">${p.tagline}</div>
+            <div class="agent-issues">${issueChips}</div>
+          </div>
+          <div class="agent-pulse"></div>
+        </div>`;
+    }
+  }
+
+  const agentTeamHTML = Object.keys(activeAgents).length > 0 ? `
+    <div class="team-section">
+      <div class="matrix-header">
+        <h2>🤖 Equipo activo</h2>
+        <span class="matrix-count">${Object.keys(activeAgents).length} agentes · ${Object.values(activeAgents).reduce((a, b) => a + b.length, 0)} tareas</span>
+      </div>
+      <div class="agent-grid">${agentTeamCards}</div>
+    </div>` : '';
+
+  // --- Mini DORA metrics on main dashboard ---
+  let doraMinHTML = '';
+  try {
+    const metricsData = getMetricsData();
+    const { entregas: doraEntregas, totalProcessed: doraTP, totalRejected: doraRej, etaAverages: doraEta } = metricsData;
+    const doraDelivered7d = doraEntregas.filter(e => Date.now() - e.ts < 7 * 86400000).length;
+    const doraThroughput = (doraDelivered7d / 7).toFixed(1);
+    const doraFailRate = doraTP > 0 ? Math.round(doraRej / doraTP * 100) : 0;
+    // Lead time: promedio de duración completa de issues entregados en los últimos 7 días
+    const recentDeliveries = doraEntregas.filter(e => Date.now() - e.ts < 7 * 86400000);
+    let doraLeadTime = 0;
+    if (recentDeliveries.length > 0) {
+      // Estimar lead time sumando promedios de fases
+      let totalAvg = 0;
+      for (const [key, data] of Object.entries(doraEta)) {
+        if (!key.includes('/') && data.avgMs) totalAvg += data.avgMs;
+      }
+      doraLeadTime = totalAvg;
+    }
+
+    const ltColor = doraLeadTime > 0 && doraLeadTime < 6 * 3600000 ? 'var(--gn)' : doraLeadTime > 0 ? 'var(--yl)' : 'var(--dim)';
+    const tpColor = parseFloat(doraThroughput) >= 2 ? 'var(--gn)' : parseFloat(doraThroughput) > 0 ? 'var(--yl)' : 'var(--dim)';
+    const frColor = doraFailRate <= 15 ? 'var(--gn)' : doraFailRate <= 30 ? 'var(--yl)' : 'var(--rd)';
+
+    doraMinHTML = `
+    <div class="dora-mini">
+      <div class="matrix-header">
+        <h2>📐 DORA Metrics <span style="font-size:0.7em;color:var(--dim);text-transform:none;letter-spacing:0">(rolling 7d · Nicole Forsgren)</span></h2>
+        <a href="/metrics#dora" class="matrix-count" style="text-decoration:none">Ver detalle →</a>
+      </div>
+      <div class="dora-mini-grid">
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${ltColor}">${doraLeadTime > 0 ? fmtDuration(doraLeadTime) : '—'}</div>
+          <div class="dora-mini-label">Lead Time</div>
+          <div class="dora-mini-target">target &lt; 6h</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${tpColor}">${doraThroughput}/d</div>
+          <div class="dora-mini-label">Throughput</div>
+          <div class="dora-mini-target">target &gt; 2/día</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${frColor}">${doraFailRate}%</div>
+          <div class="dora-mini-label">Failure Rate</div>
+          <div class="dora-mini-target">target &lt; 15%</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--ac)">${doraDelivered7d}</div>
+          <div class="dora-mini-label">Entregas 7d</div>
+          <div class="dora-mini-target">${recentDeliveries.length > 0 ? Math.round(doraDelivered7d / 7 * 30) + '/mes proyectado' : 'sin datos'}</div>
+        </div>
+      </div>
+    </div>`;
+  } catch {}
+
   let actHTML = state.actividad.slice(-15).reverse().map(a => {
     const ts = a.ts ? a.ts.slice(11, 19) : '??';
     const dir = a.dir === 'in' ? '→' : '←';
@@ -838,6 +950,11 @@ h1{
   border-bottom:1px solid var(--bd);padding-bottom:14px;
 }
 h1 .subtitle{color:var(--dim);font-size:0.6em;font-weight:400;letter-spacing:1px}
+.health-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px}
+.health-active{background:var(--gn);box-shadow:0 0 8px var(--gn);animation:healthPulse 2s infinite}
+.health-warn{background:var(--yl);box-shadow:0 0 8px var(--yl);animation:healthPulse 1s infinite}
+.health-idle{background:var(--dim2)}
+@keyframes healthPulse{0%,100%{opacity:1}50%{opacity:0.4}}
 h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;font-weight:600}
 
 /* ── Alert ──────────────────────────────────────────────────────────────── */
@@ -1113,7 +1230,57 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .collapse-section summary:hover{background:rgba(255,255,255,0.03)}
 .collapse-body{padding:10px 18px 14px;border-top:1px solid var(--bd2)}
 
-/* ── Footer ─────────────────────────────────────────────────────────────── */
+/* ── Agent Team ────────────────────────────────────────────────────────── */
+.team-section{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:18px 20px;margin-bottom:20px;
+}
+.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.agent-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius);
+  padding:14px 16px;display:flex;gap:12px;align-items:flex-start;
+  border-left:3px solid var(--agent-color);
+  position:relative;overflow:hidden;
+  transition:border-color 0.2s,box-shadow 0.2s;
+}
+.agent-card:hover{border-color:var(--agent-color);box-shadow:0 0 12px rgba(88,166,255,0.1)}
+.agent-avatar{font-size:1.8em;line-height:1;min-width:36px;text-align:center}
+.agent-info{flex:1;min-width:0}
+.agent-name{font-weight:700;font-size:1em;color:var(--agent-color)}
+.agent-tagline{font-size:0.72em;color:var(--dim);margin-top:1px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-issues{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.agent-issue{
+  font-size:0.78em;padding:3px 8px;border-radius:12px;
+  background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.2);
+  color:var(--ac);display:inline-flex;align-items:center;gap:4px;
+  text-decoration:none;transition:background 0.15s;
+}
+.agent-issue:hover{background:rgba(88,166,255,0.15);text-decoration:none}
+.agent-issue-fase{color:var(--dim);font-size:0.9em}
+.agent-issue-dur{color:var(--dim2);font-size:0.85em}
+.agent-pulse{
+  position:absolute;top:10px;right:10px;width:8px;height:8px;
+  border-radius:50%;background:var(--agent-color);
+  animation:agentPulse 2s ease-in-out infinite;
+}
+@keyframes agentPulse{0%,100%{opacity:1;box-shadow:0 0 4px var(--agent-color)}50%{opacity:0.3;box-shadow:none}}
+
+/* ── DORA Mini ─────────────────────────────────────────────────────────── */
+.dora-mini{
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
+  padding:18px 20px;margin-bottom:20px;
+}
+.dora-mini-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.dora-mini-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:14px 12px;text-align:center;
+}
+.dora-mini-value{font-size:1.8em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.dora-mini-label{color:var(--dim);font-size:0.78em;font-weight:600;margin-top:4px;text-transform:uppercase;letter-spacing:0.5px}
+.dora-mini-target{font-size:0.7em;color:var(--dim2);margin-top:4px}
+@media(max-width:700px){.dora-mini-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ── Footer ──────────────────────────────────────────���──────────────────── */
 .footer{margin-top:22px;font-size:0.75em;color:var(--dim2);text-align:center;padding-top:12px;border-top:1px solid var(--bd2)}
 
 /* ── Empty state ────────────────────────────────────────────────────────── */
@@ -1134,7 +1301,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 </style></head>
 <body>
-  <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span></h1>
+  <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
 
   ${stale > 0 ? `<div class="alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 10 min en trabajando — posible huérfano</div>` : ''}
 
@@ -1183,6 +1350,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   </div>
 
   ${matrixHTML}
+
+  ${agentTeamHTML}
+
+  ${doraMinHTML}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
@@ -1476,12 +1647,52 @@ function getMetricsData() {
     }
   }
 
-  return { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected };
+  // Agent performance: issues procesados por skill, duración promedio, rechazos
+  const agentPerf = {};
+  for (const { pipeline: pName, fase } of allFases) {
+    for (const estado of ['procesado', 'listo']) {
+      const dir = path.join(PIPELINE, pName, fase, estado);
+      for (const f of listWorkFiles(dir)) {
+        const skill = f.split('.').slice(1).join('.');
+        if (!skill) continue;
+        if (!agentPerf[skill]) agentPerf[skill] = { issues: 0, rejected: 0, totalDurMs: 0, durCount: 0, toolCalls: 0 };
+        agentPerf[skill].issues++;
+        const data = readYamlSafe(path.join(dir, f));
+        if (data.resultado === 'rechazado') agentPerf[skill].rejected++;
+        const st = fileStat(path.join(dir, f));
+        if (st) {
+          const dur = st.ctimeMs - st.birthtimeMs;
+          if (dur > 5000 && dur < 4 * 3600000) {
+            agentPerf[skill].totalDurMs += dur;
+            agentPerf[skill].durCount++;
+          }
+        }
+      }
+    }
+  }
+  // Enriquecer con tool calls del activity log
+  try {
+    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
+    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
+    const sessionSkill = {};
+    for (const l of lines) {
+      try {
+        const d = JSON.parse(l);
+        if (d.session && d.skill) sessionSkill[d.session] = d.skill;
+        if (d.session && d.tool) {
+          const sk = sessionSkill[d.session] || d.session;
+          if (agentPerf[sk]) agentPerf[sk].toolCalls++;
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf };
 }
 
 function generateMetricsHTML() {
   const data = getMetricsData();
-  const { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected } = data;
+  const { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf } = data;
 
   // Últimas 1h, 6h, 24h de snapshots
   const now = Date.now();
@@ -1621,7 +1832,20 @@ td{padding:6px 10px;border-bottom:1px solid var(--bd)}
 .back-link{margin-bottom:16px;display:inline-block}
 .chart{width:100%;height:auto;max-height:200px}
 .chart-grid{display:grid;grid-template-columns:1fr;gap:12px}
-.section{margin-bottom:24px}
+.section{margin-bottom:28px}
+.section-ref{font-size:0.65em;color:var(--dim);font-weight:400;font-style:italic;letter-spacing:0;text-transform:none;margin-left:8px}
+.bar-h{position:relative;height:12px;background:var(--bd);border-radius:4px;overflow:hidden;min-width:80px}
+.bar-h-fill{height:100%;border-radius:4px;transition:width 0.4s}
+.bar-h-label{font-size:0.82em;margin-right:8px;min-width:70px;display:inline-block}
+.bar-h-value{font-size:0.82em;margin-left:8px;font-weight:600}
+.dora-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px}
+.dora-card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);padding:18px;text-align:center}
+.dora-value{font-size:2.2em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.dora-target{font-size:0.78em;color:var(--dim);margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px}
+.dora-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.reco-card p{margin-bottom:8px;line-height:1.5;font-size:0.9em}
+.reco-card strong{font-weight:700}
+.trend-up{color:var(--gn)}.trend-down{color:var(--rd)}.trend-flat{color:var(--dim)}
 </style></head><body>
 <a href="/" class="back-link">← Dashboard</a>
 <h1>📊 Métricas del Pipeline</h1>
@@ -1704,16 +1928,114 @@ td{padding:6px 10px;border-bottom:1px solid var(--bd)}
 <div class="card-sub" style="margin-top:8px">⚠️ Tokens estimados por proxy: (duración_seg × 15) + (tools × 500). Calibrar con dashboard de Anthropic.</div>
 </div>
 
+
+${(() => {
+  // --- Velocity Section ---
+  const now7d = Date.now() - 7 * 86400000;
+  const now14d = Date.now() - 14 * 86400000;
+  const delivered7d_v = entregas.filter(e => e.ts >= now7d).length;
+  const delivered14d_v = entregas.filter(e => e.ts >= now14d && e.ts < now7d).length;
+  const throughput7d = (delivered7d_v / 7).toFixed(1);
+  const throughputTrend = delivered14d_v > 0 ? Math.round((delivered7d_v - delivered14d_v) / delivered14d_v * 100) : 0;
+  const trendIcon = throughputTrend > 5 ? '↑' : throughputTrend < -5 ? '↓' : '→';
+  const trendColor = throughputTrend > 5 ? 'var(--gn)' : throughputTrend < -5 ? 'var(--rd)' : 'var(--dim)';
+
+  // Cycle time estimado (suma promedios de fases)
+  let cycleTimeMs = 0;
+  for (const [key, d] of Object.entries(etaAverages)) {
+    if (!key.includes('/') && d.avgMs) cycleTimeMs += d.avgMs;
+  }
+
+  // Daily series for sparkbar
+  const dailySeries = [];
+  for (let i = 6; i >= 0; i--) {
+    const dayStart = Date.now() - (i + 1) * 86400000;
+    const dayEnd = Date.now() - i * 86400000;
+    const count = entregas.filter(e => e.ts >= dayStart && e.ts < dayEnd).length;
+    const dayLabel = new Date(dayEnd).toLocaleDateString('es-AR', { weekday: 'short' }).slice(0, 2);
+    dailySeries.push({ label: dayLabel, count });
+  }
+  const maxD = Math.max(1, ...dailySeries.map(d => d.count));
+  const bars = dailySeries.map(d => {
+    const h = Math.max(2, Math.round(d.count / maxD * 32));
+    return '<div style="display:inline-flex;flex-direction:column;align-items:center;gap:2px;min-width:32px"><div style="height:' + h + 'px;width:16px;background:var(--ac);border-radius:3px 3px 0 0;opacity:' + (d.count > 0 ? '1' : '0.2') + '"></div><span style="font-size:0.7em;color:var(--dim)">' + d.label + '</span></div>';
+  }).join('');
+
+  return '<div id="velocidad" class="section"><h2>🚀 Velocidad de entrega <span class="section-ref">Jez Humble · DORA metrics</span></h2><div class="grid"><div class="card"><div class="card-value" style="color:' + trendColor + '">' + throughput7d + '<span class="dim" style="font-size:0.4em"> /día</span></div><div class="card-label">Throughput (7d) <span style="color:' + trendColor + '">' + trendIcon + ' ' + (throughputTrend > 0 ? '+' : '') + throughputTrend + '%</span></div><div style="display:flex;align-items:flex-end;gap:2px;margin-top:10px;height:40px">' + bars + '</div></div><div class="card"><div class="card-value blue">' + fmtDuration(cycleTimeMs) + '</div><div class="card-label">Cycle Time estimado</div><div class="card-sub">Suma de promedios por fase</div></div><div class="card"><div class="card-value green">' + delivered24h + '</div><div class="card-label">Entregados hoy</div><div class="card-sub">' + delivered7d + ' total histórico</div></div></div></div>';
+})()}
+
+${(() => {
+  // --- Agent Performance Section ---
+  const PERSONA = {
+    guru: { icon: '🧠', color: '#bc8cff', ref: 'Hickey · Henney' },
+    security: { icon: '🔒', color: '#f85149', ref: 'Hunt · Schneier' },
+    po: { icon: '📋', color: '#d29922', ref: 'Cagan · Torres' },
+    ux: { icon: '🎨', color: '#f778ba', ref: 'Norman · Nielsen' },
+    planner: { icon: '📐', color: '#a371f7', ref: 'Singer · Ward' },
+    'backend-dev': { icon: '⚡', color: '#3fb950', ref: 'Fowler · Martin' },
+    'android-dev': { icon: '📱', color: '#58a6ff', ref: 'Wharton · Guy' },
+    'web-dev': { icon: '🌐', color: '#79c0ff', ref: 'Osmani · Russell' },
+    tester: { icon: '🧪', color: '#d2a8ff', ref: 'Beck · Meszaros' },
+    qa: { icon: '✅', color: '#3fb950', ref: 'Bach · Crispin' },
+    review: { icon: '👁️', color: '#ffa657', ref: 'Greiler · Google' },
+    delivery: { icon: '🚀', color: '#f0883e', ref: 'Humble · Farley' },
+    build: { icon: '🏗️', color: '#8b949e', ref: 'Pipeline' },
+  };
+
+  const perfEntries = Object.entries(agentPerf || {}).sort((a, b) => b[1].issues - a[1].issues);
+  if (perfEntries.length === 0) return '';
+
+  const maxIssues = Math.max(1, ...perfEntries.map(([, a]) => a.issues));
+  const rows = perfEntries.map(([skill, a]) => {
+    const p = PERSONA[skill] || { icon: '⚙', color: 'var(--dim)', ref: '' };
+    const avgDur = a.durCount > 0 ? fmtDuration(Math.round(a.totalDurMs / a.durCount)) : '—';
+    const failRate = a.issues > 0 ? Math.round(a.rejected / a.issues * 100) : 0;
+    const failColor = failRate > 30 ? 'var(--rd)' : failRate > 15 ? 'var(--yl)' : 'var(--gn)';
+    const bw = Math.max(2, Math.round(a.issues / maxIssues * 100));
+    return '<tr><td><span style="color:' + p.color + '">' + p.icon + ' <strong>' + skill + '</strong></span><div style="font-size:0.7em;color:var(--dim);font-style:italic">' + p.ref + '</div></td><td>' + a.issues + '</td><td><div class="bar-h"><div class="bar-h-fill" style="width:' + bw + '%;background:' + p.color + '"></div></div></td><td>' + avgDur + '</td><td style="color:' + failColor + '">' + failRate + '%</td><td>' + a.toolCalls + '</td></tr>';
+  }).join('');
+
+  return '<div id="agentes" class="section"><h2>🤖 Rendimiento por agente</h2><table><thead><tr><th>Agente</th><th>Issues</th><th style="min-width:120px">Volumen</th><th>Duración avg</th><th>Rechazo %</th><th>Tool calls</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+})()}
+
+${(() => {
+  // --- DORA Section ---
+  const now7d = Date.now() - 7 * 86400000;
+  const d7 = entregas.filter(e => e.ts >= now7d).length;
+  const doraTP = (d7 / 7).toFixed(1);
+  const doraFR = totalProcessed > 0 ? Math.round(totalRejected / totalProcessed * 100) : 0;
+  let doraLT = 0;
+  for (const [key, d] of Object.entries(etaAverages)) {
+    if (!key.includes('/') && d.avgMs) doraLT += d.avgMs;
+  }
+
+  const chk = (val, target, inv) => {
+    if (!val) return { color: 'var(--dim)', label: 'SIN DATOS', cls: 'dim' };
+    return (inv ? val <= target : val >= target)
+      ? { color: 'var(--gn)', label: 'ELITE', cls: 'green' }
+      : (inv ? val <= target * 2 : val >= target / 2)
+        ? { color: 'var(--yl)', label: 'MEDIO', cls: 'yellow' }
+        : { color: 'var(--rd)', label: 'BAJO', cls: 'red' };
+  };
+
+  const lt = chk(doraLT, 6 * 3600000, true);
+  const tp = chk(parseFloat(doraTP), 2, false);
+  const cfr = chk(100 - doraFR, 85, false);
+
+  return '<div id="dora" class="section"><h2>📐 DORA Adaptado <span class="section-ref">Nicole Forsgren · Accelerate</span></h2><div class="card-sub" style="margin-bottom:12px">Métricas DORA adaptadas para pipeline de agentes AI · Ventana rolling 7d</div><div class="dora-grid"><div class="dora-card"><div class="dora-value" style="color:' + lt.color + '">' + (doraLT > 0 ? fmtDuration(doraLT) : '—') + '</div><div class="card-label">Lead Time</div><div class="dora-target"><span class="dora-dot" style="background:' + lt.color + '"></span>' + lt.label + ' · target < 6h</div></div><div class="dora-card"><div class="dora-value" style="color:' + tp.color + '">' + doraTP + '/día</div><div class="card-label">Throughput</div><div class="dora-target"><span class="dora-dot" style="background:' + tp.color + '"></span>' + tp.label + ' · target > 2/día</div></div><div class="dora-card"><div class="dora-value" style="color:' + cfr.color + '">' + doraFR + '%</div><div class="card-label">Change Failure Rate</div><div class="dora-target"><span class="dora-dot" style="background:' + cfr.color + '"></span>' + cfr.label + ' · target < 15%</div></div></div></div>';
+})()}
+
 <div class="section">
-<h2>💡 Recomendaciones</h2>
-<div class="card">
-${maxMem(snap1h) > 85 ? '<p class="red">⚠️ RAM pico > 85% en la última hora — considerar upgrade de RAM o reducir concurrencia</p>' : ''}
-${maxCpu(snap1h) > 90 ? '<p class="red">⚠️ CPU pico > 90% en la última hora — considerar más cores o reducir builds paralelos</p>' : ''}
-${reboteRate > 30 ? '<p class="orange">⚠️ Tasa de rechazo alta (>30%) — revisar calidad de prompts de agentes dev</p>' : ''}
-${levelPct.red > 10 ? '<p class="red">⚠️ Sistema en rojo >' + levelPct.red + '% del tiempo — hardware insuficiente para la carga actual</p>' : ''}
-${levelPct.green > 80 ? '<p class="green">✅ Sistema saludable — recursos bien dimensionados</p>' : ''}
-${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ 0 entregas en 24h con pipeline activo — revisar cuellos de botella</p>' : ''}
-<p class="dim">${dataSourceLabel}</p>
+<h2>💡 Recomendaciones inteligentes</h2>
+<div class="card reco-card">
+${maxMem(snap1h) > 85 ? '<p class="red">⚠️ <strong>Perf (Brendan Gregg):</strong> RAM pico > 85% — Saturation alta. Reducir concurrencia o upgrade memoria.</p>' : ''}
+${maxCpu(snap1h) > 90 ? '<p class="red">⚠️ <strong>Perf (Gregg):</strong> CPU pico > 90% — Utilization crítica. Reducir builds paralelos.</p>' : ''}
+${reboteRate > 30 ? '<p class="orange">⚠️ <strong>QA (James Bach):</strong> Tasa de rechazo ${reboteRate}% — Explorar root cause en prompts de agentes dev.</p>' : ''}
+${reboteRate > 15 && reboteRate <= 30 ? '<p class="yellow">⚠️ <strong>Delivery (Forsgren):</strong> Change failure rate ${reboteRate}% — Por encima del target DORA elite (< 15%).</p>' : ''}
+${levelPct.red > 10 ? '<p class="red">⚠️ <strong>Planner (Reinertsen):</strong> Sistema en rojo ' + levelPct.red + '% del tiempo — Batch size excesivo, limitar WIP.</p>' : ''}
+${levelPct.green > 80 ? '<p class="green">✅ <strong>Scrum (Vacanti):</strong> Flow saludable — recursos bien dimensionados para la carga actual.</p>' : ''}
+${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>PO (Cagan):</strong> 0 entregas en 24h con pipeline activo — Verificar si el trabajo avanza hacia outcomes.</p>' : ''}
+<p class="dim" style="margin-top:8px">${dataSourceLabel}</p>
 </div>
 </div>
 
