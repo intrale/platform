@@ -925,6 +925,17 @@ function tryFreeResources(mode = 'soft') {
   const killed = [];
 
   try {
+    // Recolectar worktree paths de TODOS los agentes activos (cualquier fase)
+    // Un daemon (Gradle/Kotlin) cuyo CommandLine contiene un worktree activo pertenece a un agente vivo
+    const activeWorktreePaths = new Set();
+    for (const [, info] of activeProcesses) {
+      if (info.worktreePath) {
+        activeWorktreePaths.add(info.worktreePath.replace(/\\/g, '/').toLowerCase());
+      }
+    }
+    // También incluir ROOT (sesión principal)
+    activeWorktreePaths.add(ROOT.replace(/\\/g, '/').toLowerCase());
+
     // 1. Matar Gradle daemons huérfanos (en todos los modos)
     let gradleKilled = 0;
     try {
@@ -940,13 +951,11 @@ function tryFreeResources(mode = 'soft') {
         qaBackendPid = qaState.backend ? String(qaState.backend) : null;
       } catch {}
 
-      // Preservar PIDs de builds activos — NUNCA matar un build en curso
-      // El kill de emergencia no debe auto-sabotear builds causando loops dev→build infinitos
+      // Preservar PIDs de builds activos como fallback adicional
       const buildPids = new Set();
-      for (const [key, info] of activeProcesses) {
+      for (const [, info] of activeProcesses) {
         if (info.fase === 'build' && isProcessAlive(info.pid)) {
           buildPids.add(String(info.pid));
-          // También proteger procesos hijos del build (java.exe spawneado por gradlew)
           try {
             const childrenOut = execSync(
               `wmic process where "ParentProcessId=${info.pid}" get ProcessId /FORMAT:CSV`,
@@ -967,14 +976,29 @@ function tryFreeResources(mode = 'soft') {
         const ppid = parts[parts.length - 1]?.trim();
         if (!pid || pid === qaBackendPid) continue;
 
-        // PROTEGER builds activos — nunca matar procesos de un build en curso
+        // PROTEGER builds activos por PID — fallback directo
         if (buildPids.has(pid)) continue;
 
+        // PROTEGER por worktree — si el CommandLine contiene un worktree activo, es de un agente vivo
+        const lineLower = line.replace(/\\/g, '/').toLowerCase();
+        let belongsToActiveWorktree = false;
+        for (const wtPath of activeWorktreePaths) {
+          if (lineLower.includes(wtPath)) {
+            belongsToActiveWorktree = true;
+            break;
+          }
+        }
+        if (belongsToActiveWorktree) {
+          log('free-resources', `Gradle PID ${pid} protegido (worktree activo: ${lineLower.slice(0, 120)})`);
+          continue;
+        }
+
         // En modo soft: solo matar huérfanos (padre muerto)
-        // En modo aggressive/emergency: matar daemons Gradle que NO sean de builds activos
+        // En modo aggressive/emergency: matar daemons Gradle que NO pertenezcan a ningún worktree activo
         const isOrphan = ppid && !isProcessAlive(parseInt(ppid, 10));
         if (mode === 'soft' && !isOrphan) continue;
 
+        log('free-resources', `Matando Gradle huérfano PID ${pid} (sin worktree activo)`);
         try {
           execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
           gradleKilled++;
@@ -984,22 +1008,34 @@ function tryFreeResources(mode = 'soft') {
     if (gradleKilled > 0) killed.push(`${gradleKilled} Gradle daemon(s)`);
 
     // 2. Matar Kotlin compile daemons (en aggressive/emergency)
+    //    Misma protección por worktree que Gradle — no matar daemons de agentes activos
     if (mode !== 'soft') {
       let kotlinKilled = 0;
       try {
-        const wmicOut = execSync(
+        const wmicOut2 = execSync(
           'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
           { encoding: 'utf8', timeout: 10000, windowsHide: true }
         );
-        for (const line of wmicOut.split('\n')) {
+        for (const line of wmicOut2.split('\n')) {
           if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
           const match = line.match(/,(\d+)\s*$/);
-          if (match) {
-            try {
-              execSync(`taskkill /PID ${match[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-              kotlinKilled++;
-            } catch {}
+          if (!match) continue;
+
+          // Proteger por worktree activo
+          const lineLower = line.replace(/\\/g, '/').toLowerCase();
+          let isActiveWt = false;
+          for (const wtPath of activeWorktreePaths) {
+            if (lineLower.includes(wtPath)) { isActiveWt = true; break; }
           }
+          if (isActiveWt) {
+            log('free-resources', `Kotlin daemon PID ${match[1]} protegido (worktree activo)`);
+            continue;
+          }
+
+          try {
+            execSync(`taskkill /PID ${match[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+            kotlinKilled++;
+          } catch {}
         }
       } catch {}
       if (kotlinKilled > 0) killed.push(`${kotlinKilled} Kotlin daemon(s)`);
