@@ -17,7 +17,7 @@ Sos veloz, confiable y siempre entregás en tiempo y forma.
 - `<descripcion>` — Descripción breve del cambio (obligatorio)
 - `--issue <N>` — Número de issue que cierra este PR (opcional, agrega `Closes #N` al body)
 - `--draft` — Crear el PR como draft (opcional)
-- `--all` — Entregar todos los worktrees activos con branch `agent/*` o `codex/*` (ejecuta el flujo completo por cada uno)
+- `--all` — Entregar todos los worktrees activos con branch `agent/*` (ejecuta el flujo completo por cada uno)
 - `--clean` — Limpiar worktrees innecesarios (sin cambios reales, PRs mergeados/cerrados)
 - `--dev-skill <nombre>` — Skill de developer a re-invocar si un gate de calidad rechaza (opcional). Valores válidos: `backend-dev`, `android-dev`, `ios-dev`, `web-dev`, `desktop-dev`. Si no se pasa, se detecta automáticamente desde el activity log o se usa `backend-dev` por defecto.
 
@@ -34,7 +34,7 @@ Si se pasó `--all`:
 git worktree list --porcelain
 ```
 
-2. Filtrar los worktrees cuya branch tenga prefijo `agent/` o `codex/` (parsear líneas `branch refs/heads/agent/...` y `branch refs/heads/codex/...`).
+2. Filtrar los worktrees cuya branch tenga prefijo `agent/` (parsear líneas `branch refs/heads/agent/...`).
 
 3. Para cada worktree encontrado:
    - `cd` al directorio del worktree
@@ -96,7 +96,7 @@ Antes de crear el PR, verificar que QA validó el issue:
 
 ```bash
 BRANCH=$(git branch --show-current)
-ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/(agent|codex)\/([0-9]+).*/\2/')
+ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/agent\/([0-9]+).*/\1/')
 ```
 
 ### 3.5.2: Buscar qa-report.json
@@ -129,13 +129,8 @@ QA_REPORT="qa/evidence/$ISSUE_NUM/qa-report.json"
 
 Si NO se pudo extraer `ISSUE_NUM` del branch (branch no sigue convención `agent/<N>-*`):
 
-Usar el check legacy:
-```bash
-find qa/build/test-results/test -name "*.xml" -mmin -120 2>/dev/null | head -5
-```
-
-- Si hay resultados recientes: `QA E2E: tests ejecutados [fecha]`
-- Si no hay resultados: BLOQUEAR como antes (pedir `/qa` o confirmación del usuario)
+- **BLOQUEAR**: "No se pudo extraer issue del branch. Usar `--issue <N>` o ejecutar `/qa validate <issue>` manualmente."
+- NO continuar hasta que el usuario confirme explícitamente que quiere saltear QA.
 
 ## Paso 3.6: Gate de tests con reintentos automáticos
 
@@ -392,12 +387,7 @@ gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
 ```
 
 2. Según el resultado:
-   - **Merge exitoso**: reportar como `MERGED`, **sincronizar roadmap.json** y **limpiar worktree** (ver Paso 6.6).
-
-     ```bash
-     # Sincronizar roadmap.json con el estado actual del sprint (best-effort)
-     node /c/Workspaces/Intrale/platform/.claude/hooks/sprint-manager.js sync --force 2>/dev/null
-     ```
+   - **Merge exitoso**: reportar como `MERGED` y **limpiar worktree** (ver Paso 6.6).
 
    - **Merge falla** (conflictos, checks requeridos, etc.):
      - Verificar CI checks: `gh pr checks "$PR_NUMBER" --repo intrale/platform`
@@ -405,7 +395,7 @@ gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
      - Si los checks **fallaron** o hay **conflictos de merge**: cerrar el PR, reabrir el issue con label `backlog-tecnico`, y agregar comentario explicativo:
        ```bash
        gh pr close "$PR_NUMBER" --repo intrale/platform --comment "Cerrado: conflictos irreconciliables. Issue reabierto en backlog técnico."
-       ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/(agent|codex)\/([0-9]+).*/\2/')
+       ISSUE_NUM=$(echo "$BRANCH" | sed -E 's/agent\/([0-9]+).*/\1/')
        gh issue reopen "$ISSUE_NUM" --repo intrale/platform
        gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "backlog-tecnico"
        gh issue comment "$ISSUE_NUM" --repo intrale/platform --body "PR #$PR_NUMBER cerrado por conflictos. Reimplementar desde main limpio."
@@ -451,7 +441,7 @@ Mostrar al usuario:
 - Branch pusheada
 - URL del PR creado (o existente)
 - Commits incluidos
-- Recordatorio: El Vigía está monitoreando el CI automáticamente
+- Estado del merge (MERGED / ERROR)
 
 ### 7.1: Enviar reporte PNG a Telegram
 
@@ -517,7 +507,7 @@ PR_STATE=$(gh pr list --repo intrale/platform --head "$BRANCH" --state all --jso
 | Branch              | Commits | Cambios | PR        | Acción    |
 |---------------------|---------|---------|-----------|-----------|
 | agent/123-feature   | 0       | 0       | —         | LIMPIAR   |
-| codex/456-bugfix    | 2       | 0       | #45 OPEN  | CONSERVAR |
+| agent/456-bugfix    | 2       | 0       | #45 OPEN  | CONSERVAR |
 ```
 
 6. Limpiar cada worktree candidato usando el mismo procedimiento seguro del Paso 6.6:
