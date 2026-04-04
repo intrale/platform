@@ -1005,9 +1005,36 @@ function tryFreeResources(mode = 'soft') {
       if (kotlinKilled > 0) killed.push(`${kotlinKilled} Kotlin daemon(s)`);
     }
 
-    // 3. Limpiar procesos de agentes muertos del mapa activeProcesses (todos los modos)
+    // 3. Snapshot de PIDs de TODOS los agentes registrados ANTES de limpiar stale
+    //    Esto previene la race condition: bajo carga alta, isProcessAlive puede dar
+    //    false negativo (tasklist timeout), limpiar el agente del mapa, y luego el
+    //    emergency kill lo mata porque ya no está en activePids.
+    const snapshotPids = new Set();
+    const snapshotChildPids = new Set();
+    for (const [, info] of activeProcesses) {
+      snapshotPids.add(String(info.pid));
+      // Proteger hijos de TODOS los agentes (no solo builds)
+      // Un agente Claude spawna sub-node.exe (MCP servers, sub-agents) que no están
+      // registrados en activeProcesses pero son vitales para el agente padre
+      try {
+        const childrenOut = execSync(
+          `wmic process where "ParentProcessId=${info.pid}" get ProcessId /FORMAT:CSV`,
+          { encoding: 'utf8', timeout: 5000, windowsHide: true }
+        );
+        for (const cl of childrenOut.split('\n')) {
+          const cm = cl.match(/,(\d+)\s*$/);
+          if (cm) snapshotChildPids.add(cm[1]);
+        }
+      } catch {}
+    }
+
+    // Ahora sí limpiar stale — pero el snapshot ya tiene los PIDs protegidos
     let staleAgents = 0;
     for (const [key, info] of activeProcesses) {
+      // Grace period: nunca limpiar agentes registrados hace menos de 30 min
+      // Bajo carga, isProcessAlive puede fallar por timeout de tasklist
+      const ageMs = Date.now() - (info.startTime || 0);
+      if (ageMs < 30 * 60 * 1000) continue;
       if (!isProcessAlive(info.pid)) {
         activeProcesses.delete(key);
         staleAgents++;
@@ -1016,22 +1043,21 @@ function tryFreeResources(mode = 'soft') {
     if (staleAgents > 0) killed.push(`${staleAgents} agente(s) stale`);
 
     // 4. Emergency: matar SOLO procesos Claude genuinamente zombies
-    //    Protecciones inteligentes:
+    //    Protecciones (en orden de prioridad):
+    //    - PIDs del snapshot pre-limpieza (agentes + sus hijos) → NUNCA matar
+    //    - Servicios del pipeline (.pid) → NUNCA matar
     //    - Sesiones interactivas (terminal del usuario) → NUNCA matar
-    //    - Agentes con heartbeat reciente (< 5 min) → están trabajando, no matar
-    //    - Agentes con uptime significativo (> 2 min) → trabajo real en curso, no matar
-    //    - Servicios del pipeline (.pid) → no matar
+    //    - Agentes con heartbeat reciente (< 15 min) → están trabajando
+    //    - Procesos con uptime > 10 min → trabajo real en curso
+    //    Solo mata procesos de corta vida sin heartbeat ni registro
     if (mode === 'emergency') {
       let nodeKilled = 0;
       const nodeSpared = [];
       try {
         const wmicOut = execSync(
           'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine,CreationDate /FORMAT:CSV',
-          { encoding: 'utf8', timeout: 10000, windowsHide: true }
+          { encoding: 'utf8', timeout: 15000, windowsHide: true }
         );
-        // PIDs que el Pulpo conoce como activos — NO matar
-        const activePids = new Set();
-        for (const [, info] of activeProcesses) activePids.add(String(info.pid));
         // PIDs de servicios del pipeline — NO matar
         const servicePids = new Set();
         try {
@@ -1047,7 +1073,7 @@ function tryFreeResources(mode = 'soft') {
 
         // Heartbeats activos — agentes con actividad reciente
         const recentHeartbeats = new Set();
-        const HEARTBEAT_MAX_AGE = 5 * 60 * 1000; // 5 minutos
+        const HEARTBEAT_MAX_AGE = 15 * 60 * 1000; // 15 minutos (antes 5 — era demasiado agresivo)
         try {
           const hooksDir = path.join(path.dirname(PIPELINE), '.claude', 'hooks');
           for (const f of fs.readdirSync(hooksDir)) {
@@ -1062,7 +1088,8 @@ function tryFreeResources(mode = 'soft') {
           }
         } catch {}
 
-        const MIN_UPTIME_MS = 2 * 60 * 1000; // 2 minutos — si lleva más, está haciendo trabajo real
+        // 10 minutos — antes era 2 min, demasiado agresivo para agents que arrancan lento
+        const MIN_UPTIME_MS = 10 * 60 * 1000;
 
         for (const line of wmicOut.split('\n')) {
           if (!line.includes('cli.js') && !line.includes('claude')) continue;
@@ -1070,15 +1097,25 @@ function tryFreeResources(mode = 'soft') {
           if (!match) continue;
           const pid = match[1];
 
-          // Protección 1: PIDs conocidos del Pulpo
-          if (activePids.has(pid)) continue;
+          // Protección 1: PIDs del snapshot (agentes registrados — inmune a false negatives de isProcessAlive)
+          if (snapshotPids.has(pid)) {
+            nodeSpared.push(`PID ${pid} (agente registrado)`);
+            continue;
+          }
 
-          // Protección 2: Servicios del pipeline
-          if (servicePids.has(pid)) continue;
+          // Protección 2: Hijos directos de agentes registrados (MCP servers, sub-agents)
+          if (snapshotChildPids.has(pid)) {
+            nodeSpared.push(`PID ${pid} (hijo de agente)`);
+            continue;
+          }
 
-          // Protección 3: Sesión interactiva del usuario
-          // Las sesiones interactivas NO tienen --print ni --output-format
-          // y no corren desde un worktree agent/
+          // Protección 3: Servicios del pipeline
+          if (servicePids.has(pid)) {
+            nodeSpared.push(`PID ${pid} (servicio pipeline)`);
+            continue;
+          }
+
+          // Protección 4: Sesión interactiva del usuario
           const isInteractive = line.includes('cli.js') &&
             !line.includes('--print') &&
             !line.includes('--output-format') &&
@@ -1088,13 +1125,13 @@ function tryFreeResources(mode = 'soft') {
             continue;
           }
 
-          // Protección 4: Heartbeat reciente — agente trabajando activamente
+          // Protección 5: Heartbeat reciente — agente trabajando activamente
           if (recentHeartbeats.has(pid)) {
             nodeSpared.push(`PID ${pid} (heartbeat activo)`);
             continue;
           }
 
-          // Protección 5: Uptime significativo — trabajo real en curso
+          // Protección 6: Uptime significativo — trabajo real en curso
           // Parsear CreationDate de WMIC (formato: 20260403163200.000000-180)
           const creationMatch = line.match(/(\d{14})\.\d+[+-]\d+/);
           if (creationMatch) {
@@ -1108,12 +1145,19 @@ function tryFreeResources(mode = 'soft') {
               nodeSpared.push(`PID ${pid} (uptime ${Math.round(uptimeMs / 60000)}min)`);
               continue;
             }
+          } else {
+            // Si no se puede parsear CreationDate → NO matar (beneficio de la duda)
+            nodeSpared.push(`PID ${pid} (CreationDate no parseable — protegido)`);
+            continue;
           }
 
-          // Pasó todas las protecciones → es genuinamente zombie (corta vida, sin heartbeat, no interactivo)
-          log('free-resources', `Matando Claude zombie PID ${pid} (sin heartbeat, sin uptime significativo, no interactivo)`);
+          // Pasó TODAS las protecciones → genuinamente zombie
+          // (corta vida <10min, sin heartbeat, no registrado, no interactivo, no servicio)
+          log('free-resources', `Matando Claude zombie PID ${pid} (vida <10min, sin heartbeat, no registrado, no interactivo)`);
           try {
-            execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+            // SIN /T (tree kill) — solo matar el proceso específico
+            // /T puede matar hijos que pertenecen a otros agentes
+            execSync(`taskkill /PID ${pid} /F`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
             nodeKilled++;
           } catch {}
         }
