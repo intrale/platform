@@ -49,13 +49,16 @@ private class FakeUpdateOrderStatus(
     )
 ) : ToDoUpdateDeliveryOrderStatus {
     var lastReason: String? = null
+    var lastNote: String? = null
 
     override suspend fun execute(
         orderId: String,
         newStatus: DeliveryOrderStatus,
-        reason: String?
+        reason: String?,
+        note: String?
     ): Result<DeliveryOrderStatusUpdateResult> {
         lastReason = reason
+        lastNote = note
         return result
     }
 }
@@ -380,5 +383,110 @@ class DeliveryOrderDetailViewModelTest {
         assertNull(detail.eta)
         // La dirección de destino sigue disponible para navegación
         assertNotNull(detail.address)
+    }
+
+    @Test
+    fun `confirmNotDelivered con nota adicional envia nota al servicio`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.ABSENT)
+        viewModel.updateNotDeliveredNote("Toque timbre 3 veces, no abrio nadie")
+        viewModel.confirmNotDelivered()
+
+        assertTrue(viewModel.state.notDeliveredSuccess)
+        assertEquals("absent", fakeUpdate.lastReason)
+        assertEquals("Toque timbre 3 veces, no abrio nadie", fakeUpdate.lastNote)
+    }
+
+    @Test
+    fun `confirmNotDelivered sin nota envia null como nota`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.WRONG_ADDRESS)
+        viewModel.confirmNotDelivered()
+
+        assertTrue(viewModel.state.notDeliveredSuccess)
+        assertEquals("wrong_address", fakeUpdate.lastReason)
+        assertNull(fakeUpdate.lastNote)
+    }
+
+    @Test
+    fun `confirmNotDelivered con nota en blanco envia null como nota`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.PAYMENT)
+        viewModel.updateNotDeliveredNote("   ")
+        viewModel.confirmNotDelivered()
+
+        assertTrue(viewModel.state.notDeliveredSuccess)
+        assertNull(fakeUpdate.lastNote)
+    }
+
+    @Test
+    fun `showNotDeliveredSheet resetea la nota`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.updateNotDeliveredNote("una nota previa")
+        assertEquals("una nota previa", viewModel.state.notDeliveredNote)
+
+        // Re-abrir el sheet debe resetear
+        viewModel.dismissNotDeliveredSheet()
+        viewModel.showNotDeliveredSheet()
+        assertEquals("", viewModel.state.notDeliveredNote)
+    }
+
+    @Test
+    fun `detalle con motivo de no entrega muestra reason y note`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val detailNotDelivered = sampleDetail.copy(
+            status = DeliveryOrderStatus.NOT_DELIVERED,
+            notDeliveryReason = "absent",
+            notDeliveryNote = "No habia nadie en casa"
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(Result.success(detailNotDelivered)),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.loadDetail()
+
+        val detail = viewModel.state.detail
+        assertNotNull(detail)
+        assertEquals(DeliveryOrderStatus.NOT_DELIVERED, detail.status)
+        assertEquals("absent", detail.notDeliveryReason)
+        assertEquals("No habia nadie en casa", detail.notDeliveryNote)
     }
 }

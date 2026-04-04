@@ -32,6 +32,7 @@ data class DeliveryOrderDetailUiState(
     val showNotDeliveredSheet: Boolean = false,
     val selectedNotDeliveredReason: NotDeliveredReason? = null,
     val notDeliveredOtherText: String = "",
+    val notDeliveredNote: String = "",
     val notDeliveredReasonError: Boolean = false,
     val notDeliveredOtherError: Boolean = false,
     val notDeliveredSuccess: Boolean = false
@@ -119,6 +120,7 @@ class DeliveryOrderDetailViewModel(
             showNotDeliveredSheet = true,
             selectedNotDeliveredReason = null,
             notDeliveredOtherText = "",
+            notDeliveredNote = "",
             notDeliveredReasonError = false,
             notDeliveredOtherError = false
         )
@@ -140,6 +142,10 @@ class DeliveryOrderDetailViewModel(
         state = state.copy(notDeliveredOtherText = text, notDeliveredOtherError = false)
     }
 
+    fun updateNotDeliveredNote(text: String) {
+        state = state.copy(notDeliveredNote = text)
+    }
+
     suspend fun confirmNotDelivered() {
         val reason = state.selectedNotDeliveredReason
         if (reason == null) {
@@ -156,8 +162,9 @@ class DeliveryOrderDetailViewModel(
         } else {
             reason.name.lowercase()
         }
+        val noteText = state.notDeliveredNote.trim().ifBlank { null }
         state = state.copy(showNotDeliveredSheet = false, notDeliveredSuccess = false, updatingStatus = true)
-        updateOrderStatus.execute(orderId, DeliveryOrderStatus.NOT_DELIVERED, reasonText)
+        updateOrderStatus.execute(orderId, DeliveryOrderStatus.NOT_DELIVERED, reasonText, noteText)
             .onSuccess { result ->
                 logger.info { "Pedido ${state.detail?.id} marcado como no entregado, motivo: $reasonText" }
                 state = state.copy(

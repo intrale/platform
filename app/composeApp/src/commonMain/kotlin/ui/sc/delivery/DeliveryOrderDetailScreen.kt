@@ -132,6 +132,7 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                 state = state,
                 onReasonSelected = { viewModel.selectNotDeliveredReason(it) },
                 onOtherTextChanged = { viewModel.updateNotDeliveredOtherText(it) },
+                onNoteChanged = { viewModel.updateNotDeliveredNote(it) },
                 onConfirm = { coroutineScope.launch { viewModel.confirmNotDelivered() } },
                 onDismiss = { viewModel.dismissNotDeliveredSheet() }
             )
@@ -192,6 +193,9 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                                 onConfirmDelivered = { viewModel.showDeliveredConfirm() },
                                 onNotDelivered = { viewModel.showNotDeliveredSheet() }
                             )
+                            if (detail.status == DeliveryOrderStatus.NOT_DELIVERED) {
+                                NotDeliveryReasonSection(detail)
+                            }
                             LocationSection(detail) {
                                 coroutineScope.launch {
                                     snackbarHostState.showSnackbar(noMapAppMessage)
@@ -352,6 +356,7 @@ private fun NotDeliveredBottomSheet(
     state: DeliveryOrderDetailUiState,
     onReasonSelected: (NotDeliveredReason) -> Unit,
     onOtherTextChanged: (String) -> Unit,
+    onNoteChanged: (String) -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -421,6 +426,16 @@ private fun NotDeliveredBottomSheet(
                 )
             }
 
+            // Campo de nota libre para detalles adicionales
+            OutlinedTextField(
+                value = state.notDeliveredNote,
+                onValueChange = onNoteChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(text = Txt(MessageKey.delivery_order_not_delivered_note_label)) },
+                placeholder = { Text(text = Txt(MessageKey.delivery_order_not_delivered_note_hint)) },
+                maxLines = 4
+            )
+
             Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2))
 
             IntralePrimaryButton(
@@ -430,6 +445,40 @@ private fun NotDeliveredBottomSheet(
             )
         }
     }
+}
+
+@Composable
+private fun NotDeliveryReasonSection(detail: DeliveryOrderDetail) {
+    val sectionTitle = Txt(MessageKey.delivery_order_detail_not_delivery_section)
+
+    if (detail.notDeliveryReason == null && detail.notDeliveryNote == null) return
+
+    SectionCard(title = sectionTitle) {
+        detail.notDeliveryReason?.let { reason ->
+            val reasonLabel = notDeliveryReasonLabel(reason)
+            Text(
+                text = Txt(MessageKey.delivery_order_detail_not_delivery_reason, mapOf("reason" to reasonLabel)),
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        detail.notDeliveryNote?.let { note ->
+            Text(
+                text = Txt(MessageKey.delivery_order_detail_not_delivery_note, mapOf("note" to note)),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun notDeliveryReasonLabel(reason: String): String = when (reason.lowercase()) {
+    "absent" -> Txt(MessageKey.delivery_order_not_delivered_reason_absent)
+    "wrong_address" -> Txt(MessageKey.delivery_order_not_delivered_reason_wrong_address)
+    "rejected" -> Txt(MessageKey.delivery_order_not_delivered_reason_rejected)
+    "payment" -> Txt(MessageKey.delivery_order_not_delivered_reason_payment)
+    else -> reason
 }
 
 @Composable

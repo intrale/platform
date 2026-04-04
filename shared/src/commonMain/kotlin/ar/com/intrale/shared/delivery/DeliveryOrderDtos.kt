@@ -53,7 +53,11 @@ data class DeliveryOrderDTO(
     @SerialName("customerLatitude")
     val customerLatitude: Double? = null,
     @SerialName("customerLongitude")
-    val customerLongitude: Double? = null
+    val customerLongitude: Double? = null,
+    @SerialName("notDeliveryReason")
+    val notDeliveryReason: String? = null,
+    @SerialName("notDeliveryNote")
+    val notDeliveryNote: String? = null
 )
 
 @Serializable
@@ -69,7 +73,8 @@ data class DeliveryOrderStatusUpdateRequest(
     @SerialName("orderId")
     val orderId: String,
     val status: String,
-    val reason: String? = null
+    val reason: String? = null,
+    val note: String? = null
 )
 
 @Serializable
