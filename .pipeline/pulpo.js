@@ -943,6 +943,21 @@ function tryFreeResources(mode = 'soft') {
     // También incluir ROOT (sesión principal)
     activeWorktreePaths.add(ROOT.replace(/\\/g, '/').toLowerCase());
 
+    // 0. Si hay CUALQUIER build activo, NO matar daemons — el build los necesita
+    //    Los Gradle/Kotlin daemons no siempre tienen el worktree path en su CommandLine,
+    //    así que la protección por worktree/PID puede fallar bajo carga alta.
+    let anyBuildActive = false;
+    for (const [, info] of activeProcesses) {
+      if (info.fase === 'build' && isProcessAlive(info.pid)) {
+        anyBuildActive = true;
+        break;
+      }
+    }
+    if (anyBuildActive) {
+      log('free-resources', `SKIP completo — hay build(s) activo(s)`);
+      return killed;
+    }
+
     // 1. Matar Gradle daemons huérfanos (en todos los modos)
     let gradleKilled = 0;
     try {
