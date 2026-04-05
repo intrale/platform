@@ -1724,7 +1724,17 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon`], {
+  // Excluir WasmJs test compilation (causa OOM) y targets iOS (no aplican en CI local)
+  // Mismo criterio que .github/workflows/pr-checks.yml
+  const excludeTasks = [
+    '-x compileTestDevelopmentExecutableKotlinWasmJs',
+    '-x compileTestKotlinIosX64',
+    '-x compileKotlinIosSimulatorArm64',
+    '-x compileTestKotlinIosSimulatorArm64',
+  ].join(' ');
+  buildEnv.GRADLE_OPTS = '-Xmx3g -Dfile.encoding=UTF-8';
+
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon ${excludeTasks}`], {
     cwd: buildCwd,
     env: buildEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
