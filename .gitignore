@@ -66,6 +66,8 @@ qa/evidence/**/*.mp4.tmp
 .claude/hooks/tg-approver-offset.json
 .claude/hooks/tg-commander-offset.json
 .claude/hooks/telegram-commander.lock
+.claude/hooks/telegram-commander.conflict
+.claude/hooks/telegram-messages.json
 .claude/hooks/planner-proposals.json
 .claude/hooks/tg-session-store.json
 .claude/hooks/activity-logger-stale-check.json
