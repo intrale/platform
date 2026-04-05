@@ -92,7 +92,7 @@ private class FakeUpdateDeliveryOrderStatusForHome(
         DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.IN_PROGRESS)
     )
 ) : ToDoUpdateDeliveryOrderStatus {
-    override suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus, reason: String?): Result<DeliveryOrderStatusUpdateResult> = result
+    override suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus, reason: String?, note: String?): Result<DeliveryOrderStatusUpdateResult> = result
 }
 
 // --- Fakes para DeliveryProfileViewModel ---
