@@ -177,103 +177,95 @@ function clearCooldown(skill, issue) {
 // --- Limpieza de Gradle daemons post-agente ---
 
 /**
- * Matar Gradle daemons asociados a un directorio de trabajo (worktree o ROOT).
- * Los daemons Gradle persisten después de que el build/agente termina y consumen
- * hasta 4GB de heap cada uno, saturando el sistema.
+ * Limpieza de Gradle daemons — DESACTIVADA en ciclo automatico.
+ * Ahora es no-op. La limpieza real se hace bajo demanda via limpiarDaemonsOnDemand().
  */
 function killGradleDaemonsForCwd(cwd, label) {
-  if (!cwd) return 0;
+  // No-op: el taskkill automatico fue eliminado por causar race conditions fatales
+  return 0;
+}
 
-  // Proteger builds activos: si hay un build corriendo en este mismo worktree, NO matar nada
-  const cwdResolved = path.resolve(cwd);
-  for (const [, info] of activeProcesses) {
-    if (info.fase === 'build'
-        && info.worktreePath
-        && path.resolve(info.worktreePath) === cwdResolved
-        && isProcessAlive(info.pid)) {
-      log('gradle-cleanup', `${label}: SKIP — build activo en ${cwd}`);
-      return 0;
-    }
-  }
-
+/**
+ * Limpieza bajo demanda de daemons Gradle/Kotlin huerfanos.
+ * Se invoca SOLO desde el comando /limpiar (via Telegram o skill).
+ * Protege daemons de worktrees activos.
+ * Retorna un resumen de lo que hizo.
+ */
+function limpiarDaemonsOnDemand() {
+  const results = [];
   let totalKilled = 0;
 
-  // 1. Intentar ./gradlew --stop en el directorio del agente
-  try {
-    const gradlewPath = path.join(cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
-    if (fs.existsSync(gradlewPath)) {
-      const result = execSync(`"${gradlewPath}" --stop`, {
-        cwd, encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
-      });
-      const match = result.match(/(\d+) Daemon/);
-      const count = match ? parseInt(match[1]) : 0;
-      if (count > 0) {
-        log('gradle-cleanup', `${label}: ${count} daemon(s) detenidos via --stop`);
-        totalKilled += count;
-      }
+  // Recolectar worktree paths de agentes activos para protegerlos
+  const activeWorktreePaths = new Set();
+  for (const [, info] of activeProcesses) {
+    if (info.worktreePath) {
+      activeWorktreePaths.add(info.worktreePath.replace(/\\/g, '/').toLowerCase());
     }
-  } catch {}
+  }
+  activeWorktreePaths.add(ROOT.replace(/\\/g, '/').toLowerCase());
 
-  // 2. Matar wrappers lanzados desde este CWD (estos SÍ tienen el path en su CommandLine)
-  try {
-    const wmicOut = execSync(
-      'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
-      { encoding: 'utf8', timeout: 10000, windowsHide: true }
-    );
-    const cwdNormalized = cwd.replace(/\\/g, '/').toLowerCase();
-    for (const line of wmicOut.split('\n')) {
-      // Matchear wrappers de este CWD (gradle-wrapper.jar incluye el path del worktree)
-      if (line.includes('gradle-wrapper.jar') && line.toLowerCase().includes(cwdNormalized)) {
-        const pidMatch = line.match(/,(\d+)\s*$/);
-        if (pidMatch) {
-          // Matar el wrapper Y su árbol de procesos hijos (incluye el GradleDaemon forkeado)
-          try {
-            execSync(`taskkill /PID ${pidMatch[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-            totalKilled++;
-          } catch {}
-        }
-      }
-    }
-  } catch {}
-
-  // 3. Matar GradleDaemons ociosos (sin wrapper padre activo = huérfanos)
-  //    Los daemons NO tienen el CWD en su CommandLine, así que los identificamos
-  //    como "huérfanos" si su proceso padre ya no existe.
+  // 1. Buscar Gradle daemons
   try {
     const wmicOut = execSync(
       'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     );
-    // Preservar el proceso de QA backend
-    let qaBackendPid = null;
-    try {
-      const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
-      qaBackendPid = qaState.backend ? String(qaState.backend) : null;
-    } catch {}
-
     for (const line of wmicOut.split('\n')) {
-      if (!line.includes('GradleDaemon')) continue;
-      // Formato CSV: Node,CommandLine,ProcessId,ParentProcessId
+      if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
       const parts = line.split(',');
       const pid = parts[parts.length - 2]?.trim();
-      const ppid = parts[parts.length - 1]?.trim();
-      if (!pid || pid === qaBackendPid) continue;
+      if (!pid) continue;
 
-      // Si el padre del daemon ya murió, el daemon es huérfano → matarlo
-      if (ppid && !isProcessAlive(parseInt(ppid, 10))) {
-        try {
-          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-          totalKilled++;
-          log('gradle-cleanup', `${label}: daemon huérfano PID ${pid} (padre ${ppid} muerto) eliminado`);
-        } catch {}
+      // Proteger por worktree activo
+      const lineLower = line.replace(/\\/g, '/').toLowerCase();
+      let isActive = false;
+      for (const wtPath of activeWorktreePaths) {
+        if (lineLower.includes(wtPath)) { isActive = true; break; }
       }
-    }
-  } catch {}
+      if (isActive) {
+        results.push('Gradle PID ' + pid + ' PROTEGIDO (worktree activo)');
+        continue;
+      }
 
-  if (totalKilled > 0) {
-    log('gradle-cleanup', `${label}: ${totalKilled} proceso(s) Gradle limpiados en total`);
-  }
-  return totalKilled;
+      try {
+        execSync('taskkill /PID ' + pid + ' /F /T', { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+        totalKilled++;
+        results.push('Gradle PID ' + pid + ' eliminado');
+      } catch {}
+    }
+  } catch (e) { results.push('Error buscando Gradle: ' + e.message); }
+
+  // 2. Buscar Kotlin compile daemons
+  try {
+    const wmicOut2 = execSync(
+      'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    for (const line of wmicOut2.split('\n')) {
+      if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
+      const match = line.match(/,(\d+)\s*$/);
+      if (!match) continue;
+
+      const lineLower = line.replace(/\\/g, '/').toLowerCase();
+      let isActive = false;
+      for (const wtPath of activeWorktreePaths) {
+        if (lineLower.includes(wtPath)) { isActive = true; break; }
+      }
+      if (isActive) {
+        results.push('Kotlin PID ' + match[1] + ' PROTEGIDO (worktree activo)');
+        continue;
+      }
+
+      try {
+        execSync('taskkill /PID ' + match[1] + ' /F /T', { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+        totalKilled++;
+        results.push('Kotlin PID ' + match[1] + ' eliminado');
+      } catch {}
+    }
+  } catch (e) { results.push('Error buscando Kotlin: ' + e.message); }
+
+  log('limpiar', 'Limpieza bajo demanda: ' + totalKilled + ' proceso(s) eliminados');
+  return { totalKilled, results };
 }
 
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
@@ -924,151 +916,17 @@ function logTopConsumers() {
 }
 
 /**
- * Intentar liberar recursos con nivel de agresividad variable.
- * Niveles: 'soft' (solo Gradle daemons huérfanos), 'aggressive' (+Kotlin daemons sin worktree)
- * NOTA: El modo 'emergency' fue eliminado — ya no se matan procesos Claude/Node.
+ * Liberar recursos: solo limpieza del mapa interno de activeProcesses.
+ * El taskkill de Gradle/Kotlin daemons fue ELIMINADO del ciclo automatico.
+ * Motivo: bajo carga alta, las heuristicas (wmic, worktree path, PID tree) fallan
+ * y matan builds/agentes legitimos, causando loops infinitos de rebotes.
+ * La limpieza de daemons ahora es SOLO bajo demanda via comando /limpiar.
  */
 function tryFreeResources(mode = 'soft') {
   const killed = [];
 
   try {
-    // Recolectar worktree paths de TODOS los agentes activos (cualquier fase)
-    // Un daemon (Gradle/Kotlin) cuyo CommandLine contiene un worktree activo pertenece a un agente vivo
-    const activeWorktreePaths = new Set();
-    for (const [, info] of activeProcesses) {
-      if (info.worktreePath) {
-        activeWorktreePaths.add(info.worktreePath.replace(/\\/g, '/').toLowerCase());
-      }
-    }
-    // También incluir ROOT (sesión principal)
-    activeWorktreePaths.add(ROOT.replace(/\\/g, '/').toLowerCase());
-
-    // 0. Si hay CUALQUIER build activo, NO matar daemons — el build los necesita
-    //    Los Gradle/Kotlin daemons no siempre tienen el worktree path en su CommandLine,
-    //    así que la protección por worktree/PID puede fallar bajo carga alta.
-    let anyBuildActive = false;
-    for (const [, info] of activeProcesses) {
-      if (info.fase === 'build' && isProcessAlive(info.pid)) {
-        anyBuildActive = true;
-        break;
-      }
-    }
-    if (anyBuildActive) {
-      log('free-resources', `SKIP completo — hay build(s) activo(s)`);
-      return killed;
-    }
-
-    // 1. Matar Gradle daemons huérfanos (en todos los modos)
-    let gradleKilled = 0;
-    try {
-      const wmicOut = execSync(
-        'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
-        { encoding: 'utf8', timeout: 10000, windowsHide: true }
-      );
-
-      // Preservar el que es del QA backend (si está vivo)
-      let qaBackendPid = null;
-      try {
-        const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
-        qaBackendPid = qaState.backend ? String(qaState.backend) : null;
-      } catch {}
-
-      // Preservar PIDs de builds activos como fallback adicional
-      // Buscar recursivamente hijos y nietos (bash → gradle-wrapper → GradleDaemon)
-      const buildPids = new Set();
-      for (const [, info] of activeProcesses) {
-        if (info.fase === 'build' && isProcessAlive(info.pid)) {
-          const queue = [String(info.pid)];
-          while (queue.length > 0) {
-            const parentPid = queue.shift();
-            buildPids.add(parentPid);
-            try {
-              const childrenOut = execSync(
-                `wmic process where "ParentProcessId=${parentPid}" get ProcessId /FORMAT:CSV`,
-                { encoding: 'utf8', timeout: 5000, windowsHide: true }
-              );
-              for (const cl of childrenOut.split('\n')) {
-                const cm = cl.match(/,(\d+)\s*$/);
-                if (cm && !buildPids.has(cm[1])) queue.push(cm[1]);
-              }
-            } catch {}
-          }
-        }
-      }
-
-      for (const line of wmicOut.split('\n')) {
-        if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
-        const parts = line.split(',');
-        const pid = parts[parts.length - 2]?.trim();
-        const ppid = parts[parts.length - 1]?.trim();
-        if (!pid || pid === qaBackendPid) continue;
-
-        // PROTEGER builds activos por PID — fallback directo
-        if (buildPids.has(pid)) continue;
-
-        // PROTEGER por worktree — si el CommandLine contiene un worktree activo, es de un agente vivo
-        const lineLower = line.replace(/\\/g, '/').toLowerCase();
-        let belongsToActiveWorktree = false;
-        for (const wtPath of activeWorktreePaths) {
-          if (lineLower.includes(wtPath)) {
-            belongsToActiveWorktree = true;
-            break;
-          }
-        }
-        if (belongsToActiveWorktree) {
-          log('free-resources', `Gradle PID ${pid} protegido (worktree activo: ${lineLower.slice(0, 120)})`);
-          continue;
-        }
-
-        // En modo soft: solo matar huérfanos (padre muerto)
-        // En modo aggressive: matar daemons Gradle que NO pertenezcan a ningún worktree activo
-        const isOrphan = ppid && !isProcessAlive(parseInt(ppid, 10));
-        if (mode === 'soft' && !isOrphan) continue;
-
-        log('free-resources', `Matando Gradle huérfano PID ${pid} (sin worktree activo)`);
-        try {
-          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-          gradleKilled++;
-        } catch {}
-      }
-    } catch {}
-    if (gradleKilled > 0) killed.push(`${gradleKilled} Gradle daemon(s)`);
-
-    // 2. Matar Kotlin compile daemons (en aggressive)
-    //    Misma protección por worktree que Gradle — no matar daemons de agentes activos
-    if (mode !== 'soft') {
-      let kotlinKilled = 0;
-      try {
-        const wmicOut2 = execSync(
-          'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
-          { encoding: 'utf8', timeout: 10000, windowsHide: true }
-        );
-        for (const line of wmicOut2.split('\n')) {
-          if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
-          const match = line.match(/,(\d+)\s*$/);
-          if (!match) continue;
-
-          // Proteger por worktree activo
-          const lineLower = line.replace(/\\/g, '/').toLowerCase();
-          let isActiveWt = false;
-          for (const wtPath of activeWorktreePaths) {
-            if (lineLower.includes(wtPath)) { isActiveWt = true; break; }
-          }
-          if (isActiveWt) {
-            log('free-resources', `Kotlin daemon PID ${match[1]} protegido (worktree activo)`);
-            continue;
-          }
-
-          try {
-            execSync(`taskkill /PID ${match[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-            kotlinKilled++;
-          } catch {}
-        }
-      } catch {}
-      if (kotlinKilled > 0) killed.push(`${kotlinKilled} Kotlin daemon(s)`);
-    }
-
-    // 3. Limpieza de agentes stale del mapa interno (no mata procesos)
+    // Limpieza de agentes stale del mapa interno (no mata procesos)
     let staleAgents = 0;
     for (const [key, info] of activeProcesses) {
       // Grace period: nunca limpiar agentes registrados hace menos de 30 min
@@ -1079,22 +937,14 @@ function tryFreeResources(mode = 'soft') {
         staleAgents++;
       }
     }
-    if (staleAgents > 0) killed.push(`${staleAgents} agente(s) stale`);
-
-    // NOTA: El kill de emergencia de procesos Claude/Node fue ELIMINADO.
-    // Motivo: bajo presión extrema (RAM >80%, CPU 100%), los mecanismos de detección
-    // (isProcessAlive, heartbeats, tasklist) fallan sistemáticamente, causando que se
-    // maten agentes y builds legítimos. Esto generaba ciclos infinitos de rebotes
-    // (19 issues afectados, 15 builds fallidos en 2 días, 80% por kill de emergencia).
-    // La estrategia ahora es PREVENCIÓN: throttle agresivo en YELLOW/ORANGE para que
-    // el sistema nunca llegue a RED con builds activos.
+    if (staleAgents > 0) killed.push(staleAgents + ' agente(s) stale');
 
   } catch (e) {
-    log('free-resources', `Error durante limpieza (${mode}): ${e.message}`);
+    log('free-resources', 'Error durante limpieza (' + mode + '): ' + e.message);
   }
 
   if (killed.length > 0) {
-    log('free-resources', `[${mode}] Recursos liberados: ${killed.join(', ')}`);
+    log('free-resources', '[' + mode + '] Recursos liberados: ' + killed.join(', '));
   }
 
   return { freed: killed.length > 0, killed };
@@ -2446,6 +2296,15 @@ function ejecutarClaude(prompt, textoOriginal) {
   });
 }
 
+function cmdLimpiar() {
+  const { totalKilled, results } = limpiarDaemonsOnDemand();
+  if (totalKilled === 0 && results.length === 0) {
+    return '✅ No hay daemons Gradle/Kotlin para limpiar.';
+  }
+  const lines = results.map(r => `  • ${r}`).join('\n');
+  return `🧹 *Limpieza de daemons*\n\n${lines}\n\n*Total eliminados:* ${totalKilled}`;
+}
+
 function cmdHelp() {
   return `🤖 *Comandos del Pipeline V2*
 
@@ -2453,6 +2312,7 @@ function cmdHelp() {
 /actividad [filtro] — Timeline (ej: /actividad 30m, /actividad #732)
 /intake [issue] — Meter trabajo al pipeline
 /proponer — Proponer historias nuevas (vía Claude)
+/limpiar — Matar daemons Gradle/Kotlin huérfanos
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
 /costos — Resumen de actividad/costos
@@ -2488,6 +2348,7 @@ function parseCommand(text) {
       { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, cmd: 'intake' },
       { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
       { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
+      { pattern: /\b(limpi[áa]|limpiar daemons|matar gradle|matar daemons|kill gradle)\b/i, cmd: 'limpiar' },
     ];
 
     for (const { pattern, cmd } of intentPatterns) {
@@ -2625,6 +2486,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         running = false;
         break;
       case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
+      case 'limpiar': respuesta = cmdLimpiar(); break;
       default: respuesta = null; break;
     }
 
