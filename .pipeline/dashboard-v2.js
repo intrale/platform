@@ -711,44 +711,95 @@ function generateHTML(state) {
       ${verMasBtn}
     </div>`;
 
-  // Skill capacity cards (mismo lenguaje visual que agent-cards)
+  // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
+  // Calcular frecuencia de uso de cada skill en el issue tracker
+  const skillUsageCount = {};
+  for (const [, data] of matrixEntries) {
+    for (const [, faseEntries] of Object.entries(data.fases || {})) {
+      for (const e of faseEntries) {
+        skillUsageCount[e.skill] = (skillUsageCount[e.skill] || 0) + 1;
+      }
+    }
+  }
+  // Ordenar: 1) más agentes activos (running desc), 2) más usados históricamente (usage desc)
+  const skillEntries = Object.entries(state.skillLoad)
+    .sort((a, b) => {
+      const diff = b[1].running - a[1].running;
+      if (diff !== 0) return diff;
+      return (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0);
+    });
+  // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
+  const MAX_CAP_VISIBLE = 6;
   let heatmapHTML = '';
-  for (const [skill, load] of Object.entries(state.skillLoad)) {
+  let shownCount = 0;
+  const idleSkills = [];
+  for (const [skill, load] of skillEntries) {
     const pct = load.max > 0 ? load.running / load.max : 0;
     const cls = pct >= 1 ? 'load-full' : pct > 0 ? 'load-partial' : 'load-idle';
+    if (cls === 'load-idle') { idleSkills.push([skill, load]); continue; }
     const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
     const barPct = Math.round(pct * 100);
     const countLabel = pct >= 1
-      ? `<span style="color:var(--rd);font-weight:700">${load.running}/${load.max} lleno</span>`
+      ? `<span style="color:var(--rd);font-weight:700">${load.running}/${load.max}</span>`
       : `${load.running}/${load.max}`;
-    heatmapHTML += `<div class="skill-cap-card ${cls}" style="--agent-color:${p.color}" title="${skill}: ${load.running}/${load.max}">
-      <div class="skill-cap-icon">${p.icon}</div>
-      <div class="skill-cap-info">
-        <div class="skill-cap-name">${p.name || skill}</div>
-        <div class="skill-cap-progress"><div class="skill-cap-fill" style="width:${barPct}%"></div></div>
-        <div class="skill-cap-count">${countLabel}</div>
+    heatmapHTML += `<div class="skill-cap-chip ${cls}" style="--agent-color:${p.color}" title="${skill}: ${load.running}/${load.max}">
+      <span class="skill-cap-icon">${p.icon}</span>
+      <span class="skill-cap-name">${p.name || skill}</span>
+      <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
+      <span class="skill-cap-count">${countLabel}</span>
+    </div>`;
+    shownCount++;
+  }
+  // Llenar slots restantes con idle más relevantes (por uso histórico)
+  const idleSlots = Math.max(0, MAX_CAP_VISIBLE - shownCount);
+  const shownIdle = idleSkills.slice(0, idleSlots);
+  const hiddenIdle = idleSkills.length - shownIdle.length;
+  for (const [skill, load] of shownIdle) {
+    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
+    heatmapHTML += `<div class="skill-cap-chip load-idle" style="--agent-color:${p.color}" title="${skill}: 0/${load.max}">
+      <span class="skill-cap-icon">${p.icon}</span>
+      <span class="skill-cap-name">${p.name || skill}</span>
+      <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
+      <span class="skill-cap-count">0/${load.max}</span>
+    </div>`;
+  }
+  if (hiddenIdle > 0) {
+    heatmapHTML += `<span class="skill-idle-summary" title="${hiddenIdle} skills más sin carga">+${hiddenIdle} más</span>`;
+  }
+
+  // Servicios + Procesos como cards unificadas
+  let svcCardsHTML = '';
+  for (const [name, data] of Object.entries(state.servicios)) {
+    const total = data.pendiente + data.trabajando + data.listo;
+    const busy = data.trabajando > 0;
+    const statusCls = busy ? 'svc-card-busy' : 'svc-card-ok';
+    svcCardsHTML += `<div class="svc-card ${statusCls}">
+      <div class="svc-card-header">
+        <span class="svc-card-name">${name}</span>
+        ${busy ? '<span class="svc-card-pulse"></span>' : ''}
+      </div>
+      <div class="svc-card-stats">
+        <span class="svc-stat" title="Pendiente">${data.pendiente}<span class="svc-stat-label">pend</span></span>
+        <span class="svc-stat svc-stat-work" title="Trabajando">${data.trabajando}<span class="svc-stat-label">work</span></span>
+        <span class="svc-stat svc-stat-done" title="Listo">${data.listo}<span class="svc-stat-label">listo</span></span>
       </div>
     </div>`;
   }
-
-  // Servicios
-  let svcsHTML = '';
-  for (const [name, data] of Object.entries(state.servicios)) {
-    const dot = data.pendiente > 0 ? 'svc-busy' : 'svc-ok';
-    svcsHTML += `<span class="svc-chip ${dot}">${name} ${data.pendiente}○ ${data.trabajando}⚙ ${data.listo}✓</span>`;
-  }
-
-  // Procesos (con botones start/stop)
-  let procHTML = '';
   for (const [name, info] of Object.entries(state.procesos)) {
     const alive = info.alive;
-    const cls = alive ? 'proc-alive' : 'proc-dead';
+    const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
     const isDashboard = name === 'dashboard';
     const btn = isDashboard ? '' :
       alive
         ? `<button class="ctl-btn ctl-stop" onclick="ctlAction('${name}','stop')" title="Detener ${name}">■</button>`
         : `<button class="ctl-btn ctl-start" onclick="ctlAction('${name}','start')" title="Iniciar ${name}">▶</button>`;
-    procHTML += `<span class="proc-chip ${cls}">${btn}${name}${info.pid && alive ? ' <span class="pid-num">'+info.pid+'</span>' : ''}</span>`;
+    svcCardsHTML += `<div class="svc-card ${statusCls}">
+      <div class="svc-card-header">
+        ${btn}<span class="svc-card-name">${name}</span>
+        ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+      </div>
+      ${info.pid && alive ? '<div class="svc-card-pid">PID ' + info.pid + '</div>' : '<div class="svc-card-pid">detenido</div>'}
+    </div>`;
   }
 
   // System Resources (CPU + RAM gauges)
@@ -851,7 +902,6 @@ function generateHTML(state) {
           <div class="agent-avatar">${p.icon}</div>
           <div class="agent-info">
             <div class="agent-name">${p.name}</div>
-            <div class="agent-tagline">${p.tagline}</div>
             <div class="agent-issues">${issueChips}</div>
           </div>
           <div class="agent-pulse"></div>
@@ -1116,18 +1166,35 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ver-mas-btn{background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:var(--radius);padding:6px 18px;cursor:pointer;font-size:0.88em;transition:background 0.2s}
 .ver-mas-btn:hover{background:var(--bd)}
 
-/* ── Bar row: skills / servicios / procesos ─────────────────────────────── */
-.bar-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+/* ── Dual row: Equipo | Sistema ──────────────────────────────────────── */
+.dual-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.dual-col{flex:1;min-width:320px}
 .bar-section{
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
-  padding:16px 18px;flex:1;min-width:200px;
+  padding:16px 18px;
 }
-.svc-chip{
-  display:inline-flex;align-items:center;gap:5px;
-  font-size:0.82em;padding:4px 10px;margin:3px;
-  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
+.sys-chips-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px}
+/* ── Service Cards ──────────────────────────────────────────────────────── */
+.svc-grid{display:flex;flex-wrap:wrap;gap:8px}
+.svc-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:8px 10px;min-width:90px;flex:1;max-width:140px;
+  border-left:3px solid var(--dim2);transition:box-shadow 0.2s;
 }
-.svc-busy{border-left:3px solid var(--yl)}.svc-ok{border-left:3px solid var(--gn)}
+.svc-card:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
+.svc-card-ok{border-left-color:var(--gn)}
+.svc-card-busy{border-left-color:var(--yl)}
+.svc-card-dead{border-left-color:var(--rd)}
+.svc-card-header{display:flex;align-items:center;gap:4px}
+.svc-card-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.svc-card-pulse{width:5px;height:5px;border-radius:50%;background:var(--gn);animation:agentPulse 2s infinite;margin-left:auto;flex-shrink:0}
+.svc-card-busy .svc-card-pulse{background:var(--yl)}
+.svc-card-stats{display:flex;gap:8px;margin-top:4px}
+.svc-stat{font-size:0.82em;font-weight:700;color:var(--dim);font-variant-numeric:tabular-nums}
+.svc-stat-work{color:var(--yl)}
+.svc-stat-done{color:var(--gn)}
+.svc-stat-label{font-size:0.8em;font-weight:400;color:var(--dim2);margin-left:2px}
+.svc-card-pid{font-size:0.68em;color:var(--dim2);margin-top:2px;font-variant-numeric:tabular-nums}
 .proc-chip{
   display:inline-flex;align-items:center;gap:5px;
   font-size:0.82em;padding:4px 8px;margin:3px;
@@ -1148,15 +1215,15 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-start{background:var(--gn2);color:var(--gn)}
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
-.qa-controls{margin-top:8px}
-/* Priority Windows */
-.pw-row{display:flex;gap:16px;flex-wrap:wrap}
-.pw-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;background:var(--sf2);border-radius:var(--radius-sm);border:1px solid var(--bd2);flex:1;min-width:260px}
-.pw-label{font-weight:600;font-size:0.9em;white-space:nowrap}
-.pw-badge{font-size:0.75em;padding:2px 8px;border-radius:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
+.qa-controls{margin-top:6px;display:inline-block}
+/* Priority Windows (compact for Sistema panel) */
+.pw-row{display:flex;gap:8px;flex-wrap:wrap}
+.pw-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 10px;background:var(--sf2);border-radius:var(--radius-sm);border:1px solid var(--bd2);flex:1;min-width:180px}
+.pw-label{font-weight:600;font-size:0.82em;white-space:nowrap}
+.pw-badge{font-size:0.7em;padding:2px 6px;border-radius:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
 .pw-active{background:var(--yl2);color:var(--yl);border:1px solid var(--yl)}
 .pw-inactive{background:var(--bd2);color:var(--dim);border:1px solid var(--bd)}
-.pw-desc{font-size:0.72em;color:var(--dim);width:100%;margin-top:2px}
+.pw-desc{display:none}
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
@@ -1239,31 +1306,31 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:18px 20px;margin-bottom:20px;
 }
-.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+/* ── Agent Cards (compact) ──────────────────────────────────────────────── */
+.agent-grid{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
 .agent-card{
-  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius);
-  padding:14px 16px;display:flex;gap:12px;align-items:flex-start;
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:8px 12px;display:flex;gap:8px;align-items:center;
   border-left:3px solid var(--agent-color);
-  position:relative;overflow:hidden;
+  position:relative;overflow:hidden;flex:1;min-width:200px;max-width:320px;
   transition:border-color 0.2s,box-shadow 0.2s;
 }
-.agent-card:hover{border-color:var(--agent-color);box-shadow:0 0 12px rgba(88,166,255,0.1)}
-.agent-avatar{font-size:1.8em;line-height:1;min-width:36px;text-align:center}
+.agent-card:hover{border-color:var(--agent-color);box-shadow:0 0 8px rgba(88,166,255,0.1)}
+.agent-avatar{font-size:1.2em;line-height:1}
 .agent-info{flex:1;min-width:0}
-.agent-name{font-weight:700;font-size:1em;color:var(--agent-color)}
-.agent-tagline{font-size:0.72em;color:var(--dim);margin-top:1px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.agent-issues{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.agent-name{font-weight:700;font-size:0.88em;color:var(--agent-color);line-height:1}
+.agent-issues{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .agent-issue{
-  font-size:0.78em;padding:3px 8px;border-radius:12px;
+  font-size:0.72em;padding:2px 6px;border-radius:10px;
   background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.2);
-  color:var(--ac);display:inline-flex;align-items:center;gap:4px;
+  color:var(--ac);display:inline-flex;align-items:center;gap:3px;
   text-decoration:none;transition:background 0.15s;
 }
 .agent-issue:hover{background:rgba(88,166,255,0.15);text-decoration:none}
 .agent-issue-fase{color:var(--dim);font-size:0.9em}
 .agent-issue-dur{color:var(--dim2);font-size:0.85em}
 .agent-pulse{
-  position:absolute;top:10px;right:10px;width:8px;height:8px;
+  position:absolute;top:6px;right:6px;width:6px;height:6px;
   border-radius:50%;background:var(--agent-color);
   animation:agentPulse 2s ease-in-out infinite;
 }
@@ -1271,31 +1338,32 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 
 /* ── Sub-section labels ─────────────────────────────────────────────────── */
 .subsection-label{
-  font-size:0.72em;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;
-  font-weight:600;margin-bottom:8px;margin-top:2px;
+  font-size:0.68em;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;
+  font-weight:600;margin-bottom:6px;margin-top:10px;
   display:flex;align-items:center;gap:8px;
 }
 .subsection-label::after{content:'';flex:1;height:1px;background:var(--bd2)}
 
-/* ── Skill Capacity Cards ───────────────────────────────────────────────── */
-.skill-cap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
-.skill-cap-card{
+/* ── Skill Capacity Chips (inline compact) ──────────────────────────────── */
+.skill-cap-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.skill-cap-chip{
+  display:inline-flex;align-items:center;gap:6px;
   background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
-  padding:10px 12px;display:flex;gap:10px;align-items:center;
-  border-left:3px solid var(--agent-color,var(--dim2));
-  transition:border-color 0.2s,box-shadow 0.2s;
+  padding:5px 10px;border-left:3px solid var(--agent-color,var(--dim2));
+  transition:box-shadow 0.2s;
 }
-.skill-cap-card:hover{box-shadow:0 0 8px rgba(88,166,255,0.08)}
-.load-full.skill-cap-card{border-left-color:var(--rd)}
-.skill-cap-icon{font-size:1.3em;line-height:1;min-width:22px;text-align:center}
-.skill-cap-info{flex:1;min-width:0}
-.skill-cap-name{font-size:0.82em;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.skill-cap-progress{height:4px;background:var(--bd);border-radius:2px;margin-top:5px;overflow:hidden}
-.skill-cap-fill{height:100%;border-radius:2px;transition:width 0.6s ease}
-.load-idle .skill-cap-fill{width:0!important}
+.skill-cap-chip:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
+.load-full.skill-cap-chip{border-left-color:var(--rd)}
+.skill-cap-icon{font-size:1em;line-height:1}
+.skill-cap-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap}
+.skill-cap-bar{width:32px;height:4px;background:var(--bd);border-radius:2px;overflow:hidden;display:inline-block}
+.skill-cap-fill{display:block;height:100%;border-radius:2px;transition:width 0.6s ease}
 .load-partial .skill-cap-fill{background:var(--yl)}
 .load-full .skill-cap-fill{background:var(--rd)}
-.skill-cap-count{font-size:0.72em;color:var(--dim);margin-top:3px;font-variant-numeric:tabular-nums}
+.skill-cap-count{font-size:0.72em;color:var(--dim);font-variant-numeric:tabular-nums}
+.load-idle.skill-cap-chip{opacity:0.5;border-left-color:var(--dim2)}
+.load-idle .skill-cap-name{color:var(--dim)}
+.skill-idle-summary{font-size:0.75em;color:var(--dim);font-style:italic;padding:4px 8px}
 
 /* ── DORA Mini ─────────────────────────────────────────────────────────── */
 .dora-mini{
@@ -1371,13 +1439,22 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
     </div>
   </div>
 
-  <div class="bar-section" style="margin-bottom:20px"><h2>💻 Recursos del sistema</h2>${resourcesHTML}</div>
-
-  <div class="bar-row">
-    <div class="bar-section"><h2>🧠 Equipo y Skills</h2>${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid" style="margin-bottom:16px">' + agentTeamCards + '</div>' : ''}${heatmapHTML ? (agentTeamCards ? '<div class="subsection-label">Capacidad del equipo</div>' : '') + '<div class="skill-cap-grid">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}</div>
-    <div class="bar-section"><h2>📡 Servicios y Procesos</h2><div style="margin-bottom:8px">${svcsHTML}</div>${procHTML}</div>
-    <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
-    <div class="bar-section"><h2>🚦 Priority Windows</h2>${priorityWindowsHTML}</div>
+  <div class="dual-row">
+    <div class="bar-section dual-col">
+      <h2>🧠 Equipo</h2>
+      ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
+      ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
+      <div class="subsection-label">Servicios</div>
+      <div class="svc-grid">${svcCardsHTML}</div>
+    </div>
+    <div class="bar-section dual-col">
+      <h2>💻 Sistema</h2>
+      ${resourcesHTML}
+      <div class="subsection-label" style="margin-top:14px">QA Environment</div>
+      <div class="sys-chips-row">${qaEnvHTML}</div>
+      <div class="subsection-label">Priority Windows</div>
+      ${priorityWindowsHTML}
+    </div>
   </div>
 
   ${matrixHTML}
