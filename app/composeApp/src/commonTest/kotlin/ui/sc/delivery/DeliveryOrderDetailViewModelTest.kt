@@ -49,13 +49,19 @@ private class FakeUpdateOrderStatus(
     )
 ) : ToDoUpdateDeliveryOrderStatus {
     var lastReason: String? = null
+    var lastNote: String? = null
+    var lastPhotoBase64: String? = null
 
     override suspend fun execute(
         orderId: String,
         newStatus: DeliveryOrderStatus,
-        reason: String?
+        reason: String?,
+        note: String?,
+        photoBase64: String?
     ): Result<DeliveryOrderStatusUpdateResult> {
         lastReason = reason
+        lastNote = note
+        lastPhotoBase64 = photoBase64
         return result
     }
 }
@@ -380,5 +386,135 @@ class DeliveryOrderDetailViewModelTest {
         assertNull(detail.eta)
         // La dirección de destino sigue disponible para navegación
         assertNotNull(detail.address)
+    }
+
+    @Test
+    fun `updateNotDeliveredNote actualiza la nota en el estado`() = runTest {
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.showNotDeliveredSheet()
+        viewModel.updateNotDeliveredNote("El portero no me dejo pasar")
+
+        assertEquals("El portero no me dejo pasar", viewModel.state.notDeliveredNote)
+    }
+
+    @Test
+    fun `updateNotDeliveredPhoto almacena bytes de la foto`() = runTest {
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        val fakePhotoBytes = byteArrayOf(1, 2, 3, 4, 5)
+        viewModel.showNotDeliveredSheet()
+        viewModel.updateNotDeliveredPhoto(fakePhotoBytes)
+
+        assertNotNull(viewModel.state.notDeliveredPhotoBytes)
+        assertEquals(5, viewModel.state.notDeliveredPhotoBytes?.size)
+    }
+
+    @Test
+    fun `removeNotDeliveredPhoto limpia la foto del estado`() = runTest {
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.showNotDeliveredSheet()
+        viewModel.updateNotDeliveredPhoto(byteArrayOf(1, 2, 3))
+        assertNotNull(viewModel.state.notDeliveredPhotoBytes)
+
+        viewModel.removeNotDeliveredPhoto()
+
+        assertNull(viewModel.state.notDeliveredPhotoBytes)
+    }
+
+    @Test
+    fun `confirmNotDelivered envia nota y foto al caso de uso`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.ABSENT)
+        viewModel.updateNotDeliveredNote("Toque el timbre varias veces")
+        viewModel.updateNotDeliveredPhoto(byteArrayOf(10, 20, 30))
+        viewModel.confirmNotDelivered()
+
+        assertTrue(viewModel.state.notDeliveredSuccess)
+        assertEquals("absent", fakeUpdate.lastReason)
+        assertEquals("Toque el timbre varias veces", fakeUpdate.lastNote)
+        assertNotNull(fakeUpdate.lastPhotoBase64)
+    }
+
+    @Test
+    fun `confirmNotDelivered sin nota ni foto envia null para ambos`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.WRONG_ADDRESS)
+        viewModel.confirmNotDelivered()
+
+        assertTrue(viewModel.state.notDeliveredSuccess)
+        assertEquals("wrong_address", fakeUpdate.lastReason)
+        assertNull(fakeUpdate.lastNote)
+        assertNull(fakeUpdate.lastPhotoBase64)
+    }
+
+    @Test
+    fun `showNotDeliveredSheet resetea nota y foto`() = runTest {
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = FakeUpdateOrderStatus()
+        )
+
+        viewModel.updateNotDeliveredNote("Nota previa")
+        viewModel.updateNotDeliveredPhoto(byteArrayOf(1, 2))
+
+        viewModel.showNotDeliveredSheet()
+
+        assertEquals("", viewModel.state.notDeliveredNote)
+        assertNull(viewModel.state.notDeliveredPhotoBytes)
+    }
+
+    @Test
+    fun `confirmNotDelivered exitoso actualiza detalle con motivo y nota`() = runTest {
+        DeliveryOrderSelectionStore.select("o1")
+        val fakeUpdate = FakeUpdateOrderStatus(
+            Result.success(DeliveryOrderStatusUpdateResult(orderId = "o1", newStatus = DeliveryOrderStatus.NOT_DELIVERED))
+        )
+        val viewModel = DeliveryOrderDetailViewModel(
+            getOrderDetail = FakeGetDeliveryOrderDetail(),
+            updateOrderStatus = fakeUpdate
+        )
+
+        viewModel.loadDetail()
+        viewModel.showNotDeliveredSheet()
+        viewModel.selectNotDeliveredReason(NotDeliveredReason.PAYMENT)
+        viewModel.updateNotDeliveredNote("No tenia cambio")
+        viewModel.confirmNotDelivered()
+
+        val detail = viewModel.state.detail
+        assertNotNull(detail)
+        assertEquals(DeliveryOrderStatus.NOT_DELIVERED, detail.status)
+        assertEquals("payment", detail.notDeliveryReason)
+        assertEquals("No tenia cambio", detail.notDeliveryNote)
     }
 }

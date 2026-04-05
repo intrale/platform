@@ -11,7 +11,7 @@ interface ToDoGetDeliveryOrdersSummary {
 }
 
 interface ToDoUpdateDeliveryOrderStatus {
-    suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus, reason: String? = null): Result<DeliveryOrderStatusUpdateResult>
+    suspend fun execute(orderId: String, newStatus: DeliveryOrderStatus, reason: String? = null, note: String? = null, photoBase64: String? = null): Result<DeliveryOrderStatusUpdateResult>
 }
 
 interface ToDoGetDeliveryOrderDetail {

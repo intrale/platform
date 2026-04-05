@@ -202,7 +202,7 @@ private class FakeDeliveryOrdersService(
     override suspend fun fetchSummary(date: LocalDate) = summaryResult
     override suspend fun fetchAvailableOrders() = availableResult
     override suspend fun fetchHistoryOrders() = historyResult
-    override suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String?) = updateStatusResult
+    override suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String?, note: String?, photoBase64: String?) = updateStatusResult
     override suspend fun fetchOrderDetail(orderId: String) = orderDetailResult
     override suspend fun takeOrder(orderId: String): Result<DeliveryOrderStatusUpdateResponse> =
         Result.failure(NotImplementedError("takeOrder not implemented in fake"))

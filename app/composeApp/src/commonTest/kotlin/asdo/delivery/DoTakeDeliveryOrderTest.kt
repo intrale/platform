@@ -22,7 +22,7 @@ private class FakeDeliveryOrdersServiceForTake(
     override suspend fun fetchHistoryOrders() =
         Result.failure<List<ar.com.intrale.shared.delivery.DeliveryOrderDTO>>(NotImplementedError())
     override suspend fun fetchAvailableOrders() = availableResult
-    override suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String?) =
+    override suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String?, note: String?, photoBase64: String?) =
         Result.failure<DeliveryOrderStatusUpdateResponse>(NotImplementedError())
     override suspend fun fetchOrderDetail(orderId: String) =
         Result.failure<ar.com.intrale.shared.delivery.DeliveryOrderDTO>(NotImplementedError())

@@ -10,7 +10,7 @@ interface CommDeliveryOrdersService {
     suspend fun fetchActiveOrders(): Result<List<DeliveryOrderDTO>>
     suspend fun fetchAvailableOrders(): Result<List<DeliveryOrderDTO>>
     suspend fun fetchHistoryOrders(): Result<List<DeliveryOrderDTO>>
-    suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String? = null): Result<DeliveryOrderStatusUpdateResponse>
+    suspend fun updateOrderStatus(orderId: String, newStatus: String, reason: String? = null, note: String? = null, photoBase64: String? = null): Result<DeliveryOrderStatusUpdateResponse>
     suspend fun fetchOrderDetail(orderId: String): Result<DeliveryOrderDTO>
     suspend fun takeOrder(orderId: String): Result<DeliveryOrderStatusUpdateResponse>
 }

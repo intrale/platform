@@ -14,6 +14,7 @@ import org.kodein.di.instance
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
 import ui.sc.shared.ViewModel
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 enum class DeliveryOrderDetailStatus { Idle, Loading, Loaded, Error }
 
@@ -32,10 +33,51 @@ data class DeliveryOrderDetailUiState(
     val showNotDeliveredSheet: Boolean = false,
     val selectedNotDeliveredReason: NotDeliveredReason? = null,
     val notDeliveredOtherText: String = "",
+    val notDeliveredNote: String = "",
+    val notDeliveredPhotoBytes: ByteArray? = null,
     val notDeliveredReasonError: Boolean = false,
     val notDeliveredOtherError: Boolean = false,
     val notDeliveredSuccess: Boolean = false
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DeliveryOrderDetailUiState) return false
+        return status == other.status &&
+            detail == other.detail &&
+            errorMessage == other.errorMessage &&
+            updatingStatus == other.updatingStatus &&
+            statusUpdateSuccess == other.statusUpdateSuccess &&
+            statusUpdateError == other.statusUpdateError &&
+            showDeliveredConfirmDialog == other.showDeliveredConfirmDialog &&
+            showNotDeliveredSheet == other.showNotDeliveredSheet &&
+            selectedNotDeliveredReason == other.selectedNotDeliveredReason &&
+            notDeliveredOtherText == other.notDeliveredOtherText &&
+            notDeliveredNote == other.notDeliveredNote &&
+            notDeliveredPhotoBytes.contentEquals(other.notDeliveredPhotoBytes) &&
+            notDeliveredReasonError == other.notDeliveredReasonError &&
+            notDeliveredOtherError == other.notDeliveredOtherError &&
+            notDeliveredSuccess == other.notDeliveredSuccess
+    }
+
+    override fun hashCode(): Int {
+        var result = status.hashCode()
+        result = 31 * result + (detail?.hashCode() ?: 0)
+        result = 31 * result + (errorMessage?.hashCode() ?: 0)
+        result = 31 * result + updatingStatus.hashCode()
+        result = 31 * result + statusUpdateSuccess.hashCode()
+        result = 31 * result + (statusUpdateError?.hashCode() ?: 0)
+        result = 31 * result + showDeliveredConfirmDialog.hashCode()
+        result = 31 * result + showNotDeliveredSheet.hashCode()
+        result = 31 * result + (selectedNotDeliveredReason?.hashCode() ?: 0)
+        result = 31 * result + notDeliveredOtherText.hashCode()
+        result = 31 * result + notDeliveredNote.hashCode()
+        result = 31 * result + (notDeliveredPhotoBytes?.contentHashCode() ?: 0)
+        result = 31 * result + notDeliveredReasonError.hashCode()
+        result = 31 * result + notDeliveredOtherError.hashCode()
+        result = 31 * result + notDeliveredSuccess.hashCode()
+        return result
+    }
+}
 
 class DeliveryOrderDetailViewModel(
     private val getOrderDetail: ToDoGetDeliveryOrderDetail = DIManager.di.direct.instance(),
@@ -119,6 +161,8 @@ class DeliveryOrderDetailViewModel(
             showNotDeliveredSheet = true,
             selectedNotDeliveredReason = null,
             notDeliveredOtherText = "",
+            notDeliveredNote = "",
+            notDeliveredPhotoBytes = null,
             notDeliveredReasonError = false,
             notDeliveredOtherError = false
         )
@@ -140,6 +184,19 @@ class DeliveryOrderDetailViewModel(
         state = state.copy(notDeliveredOtherText = text, notDeliveredOtherError = false)
     }
 
+    fun updateNotDeliveredNote(text: String) {
+        state = state.copy(notDeliveredNote = text)
+    }
+
+    fun updateNotDeliveredPhoto(bytes: ByteArray?) {
+        state = state.copy(notDeliveredPhotoBytes = bytes)
+    }
+
+    fun removeNotDeliveredPhoto() {
+        state = state.copy(notDeliveredPhotoBytes = null)
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
     suspend fun confirmNotDelivered() {
         val reason = state.selectedNotDeliveredReason
         if (reason == null) {
@@ -156,14 +213,22 @@ class DeliveryOrderDetailViewModel(
         } else {
             reason.name.lowercase()
         }
+        val noteText = state.notDeliveredNote.trim().ifBlank { null }
+        val photoBase64 = state.notDeliveredPhotoBytes?.let {
+            kotlin.io.encoding.Base64.encode(it)
+        }
         state = state.copy(showNotDeliveredSheet = false, notDeliveredSuccess = false, updatingStatus = true)
-        updateOrderStatus.execute(orderId, DeliveryOrderStatus.NOT_DELIVERED, reasonText)
+        updateOrderStatus.execute(orderId, DeliveryOrderStatus.NOT_DELIVERED, reasonText, noteText, photoBase64)
             .onSuccess { result ->
                 logger.info { "Pedido ${state.detail?.id} marcado como no entregado, motivo: $reasonText" }
                 state = state.copy(
                     updatingStatus = false,
                     notDeliveredSuccess = true,
-                    detail = state.detail?.copy(status = result.newStatus)
+                    detail = state.detail?.copy(
+                        status = result.newStatus,
+                        notDeliveryReason = reasonText,
+                        notDeliveryNote = noteText
+                    )
                 )
             }
             .onFailure { throwable ->

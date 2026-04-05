@@ -19,6 +19,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -132,6 +134,9 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                 state = state,
                 onReasonSelected = { viewModel.selectNotDeliveredReason(it) },
                 onOtherTextChanged = { viewModel.updateNotDeliveredOtherText(it) },
+                onNoteChanged = { viewModel.updateNotDeliveredNote(it) },
+                onPhotoPicked = { viewModel.updateNotDeliveredPhoto(it) },
+                onPhotoRemoved = { viewModel.removeNotDeliveredPhoto() },
                 onConfirm = { coroutineScope.launch { viewModel.confirmNotDelivered() } },
                 onDismiss = { viewModel.dismissNotDeliveredSheet() }
             )
@@ -201,6 +206,9 @@ class DeliveryOrderDetailScreen : Screen(DELIVERY_ORDER_DETAIL_PATH) {
                             CustomerSection(detail)
                             ItemsSection(detail.items)
                             PaymentSection(detail)
+                            if (detail.status == DeliveryOrderStatus.NOT_DELIVERED) {
+                                NotDeliveryReasonSection(detail)
+                            }
                             detail.notes?.let { notes ->
                                 NotesSection(notes)
                             }
@@ -352,10 +360,14 @@ private fun NotDeliveredBottomSheet(
     state: DeliveryOrderDetailUiState,
     onReasonSelected: (NotDeliveredReason) -> Unit,
     onOtherTextChanged: (String) -> Unit,
+    onNoteChanged: (String) -> Unit,
+    onPhotoPicked: (ByteArray?) -> Unit,
+    onPhotoRemoved: () -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val imagePicker = ui.util.rememberImagePicker(onImagePicked = onPhotoPicked)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -419,6 +431,68 @@ private fun NotDeliveredBottomSheet(
                     } else null,
                     maxLines = 3
                 )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = MaterialTheme.spacing.x1))
+
+            // Campo de nota libre
+            OutlinedTextField(
+                value = state.notDeliveredNote,
+                onValueChange = onNoteChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(text = Txt(MessageKey.delivery_order_not_delivered_note_label)) },
+                placeholder = { Text(text = Txt(MessageKey.delivery_order_not_delivered_note_hint)) },
+                maxLines = 4,
+                minLines = 2
+            )
+
+            // Foto como evidencia
+            if (state.notDeliveredPhotoBytes != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = Txt(MessageKey.delivery_order_not_delivered_photo_preview),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    IconButton(onClick = onPhotoRemoved) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = Txt(MessageKey.delivery_order_not_delivered_photo_remove),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "${state.notDeliveredPhotoBytes.size / 1024} KB",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { imagePicker() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhotoCamera,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.size(ButtonDefaults.IconSpacing))
+                    Text(text = Txt(MessageKey.delivery_order_not_delivered_photo_add))
+                }
             }
 
             Spacer(modifier = Modifier.height(MaterialTheme.spacing.x2))
@@ -733,6 +807,22 @@ private fun PaymentSection(detail: DeliveryOrderDetail) {
                 label = collectLabel,
                 value = if (collect) collectYes else collectNo
             )
+        }
+    }
+}
+
+@Composable
+private fun NotDeliveryReasonSection(detail: DeliveryOrderDetail) {
+    val reasonLabel = Txt(MessageKey.delivery_order_not_delivered_reason_label)
+    val noteLabel = Txt(MessageKey.delivery_order_not_delivered_note_label)
+    val sectionTitle = Txt(MessageKey.delivery_order_status_not_delivered)
+
+    SectionCard(title = sectionTitle) {
+        detail.notDeliveryReason?.let { reason ->
+            LabeledField(label = reasonLabel, value = reason)
+        }
+        detail.notDeliveryNote?.let { note ->
+            LabeledField(label = noteLabel, value = note)
         }
     }
 }

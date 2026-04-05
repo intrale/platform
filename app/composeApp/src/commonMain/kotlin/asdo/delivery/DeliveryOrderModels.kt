@@ -47,7 +47,10 @@ data class DeliveryOrderDetail(
     val businessLatitude: Double? = null,
     val businessLongitude: Double? = null,
     val customerLatitude: Double? = null,
-    val customerLongitude: Double? = null
+    val customerLongitude: Double? = null,
+    val notDeliveryReason: String? = null,
+    val notDeliveryNote: String? = null,
+    val notDeliveryPhotoUrl: String? = null
 )
 
 data class DeliveryOrderItem(
@@ -93,7 +96,10 @@ fun DeliveryOrderDTO.toDetailDomain(): DeliveryOrderDetail = DeliveryOrderDetail
     businessLatitude = businessLatitude,
     businessLongitude = businessLongitude,
     customerLatitude = customerLatitude,
-    customerLongitude = customerLongitude
+    customerLongitude = customerLongitude,
+    notDeliveryReason = notDeliveryReason,
+    notDeliveryNote = notDeliveryNote,
+    notDeliveryPhotoUrl = notDeliveryPhotoUrl
 )
 
 fun DeliveryOrderItemDTO.toDomain(): DeliveryOrderItem = DeliveryOrderItem(
