@@ -63,6 +63,7 @@ function readYaml(filepath) {
 }
 
 function writeYaml(filepath, data) {
+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
   fs.writeFileSync(filepath, yaml.dump(data, { lineWidth: -1 }));
 }
 
@@ -87,6 +88,7 @@ function skillFromFile(filename) {
 
 /** Mover archivo entre carpetas (atómico en filesystem) */
 function moveFile(src, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
   const dest = path.join(destDir, path.basename(src));
   fs.renameSync(src, dest);
   return dest;
