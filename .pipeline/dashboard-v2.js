@@ -1461,7 +1461,7 @@ function toggleIssues(btn) {
   const rows = document.querySelectorAll('.issue-overflow');
   const expanded = rows.length > 0 && rows[0].classList.contains('show');
   rows.forEach(r => r.classList.toggle('show', !expanded));
-  btn.textContent = expanded ? `Ver más (${rows.length} issues)` : 'Ver menos';
+  btn.textContent = expanded ? 'Ver más (' + rows.length + ' issues)' : 'Ver menos';
 }
 
 function showToast(msg, ok) {
