@@ -164,11 +164,77 @@ function status() {
   }
 }
 
+// --- Individual component control ---
+
+function startOne(component) {
+  const state = loadState();
+  const env = { ...process.env, JAVA_HOME, PATH: `${JAVA_HOME}\\bin;${process.env.PATH}` };
+
+  if (component === 'dynamo' && !isAlive(state.dynamo)) {
+    log('Levantando DynamoDB Local en :8000...');
+    const dynamo = spawn('java', [
+      '-Djava.library.path=DynamoDBLocal_lib',
+      '-jar', 'DynamoDBLocal.jar', '-sharedDb', '-port', '8000'
+    ], { cwd: path.dirname(DYNAMO_JAR), stdio: 'ignore', detached: true, windowsHide: true, env });
+    dynamo.unref();
+    state.dynamo = dynamo.pid;
+    log(`  DynamoDB PID: ${dynamo.pid}`);
+  } else if (component === 'backend' && !isAlive(state.backend)) {
+    log('Levantando backend :users:run en :80...');
+    const backend = spawn(path.join(ROOT, 'gradlew.bat'), [':users:run'], {
+      cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true, env, shell: true
+    });
+    backend.unref();
+    state.backend = backend.pid;
+    log(`  Backend PID: ${backend.pid}`);
+  } else if (component === 'emulator' && !isAlive(state.emulator)) {
+    log('Levantando emulador Android (virtualAndroid)...');
+    const emu = spawn(EMULATOR, [
+      '-avd', 'virtualAndroid', '-no-window', '-no-audio', '-gpu', 'swiftshader_indirect'
+    ], { stdio: 'ignore', detached: true, windowsHide: true });
+    emu.unref();
+    state.emulator = emu.pid;
+    log(`  Emulador PID: ${emu.pid}`);
+    setTimeout(() => {
+      try {
+        execSync(`"${ADB}" wait-for-device`, { timeout: 120000, windowsHide: true });
+        execSync(`"${ADB}" shell settings put global window_animation_scale 0`, { windowsHide: true });
+        execSync(`"${ADB}" shell settings put global transition_animation_scale 0`, { windowsHide: true });
+        execSync(`"${ADB}" shell settings put global animator_duration_scale 0`, { windowsHide: true });
+        log('  Animaciones desactivadas');
+      } catch (e) { log(`  Error configurando emulador: ${e.message}`); }
+    }, 5000);
+  } else {
+    log(`${component} ya corriendo o no reconocido`);
+  }
+  saveState(state);
+}
+
+function stopOne(component) {
+  const state = loadState();
+  const pid = state[component];
+  if (pid && isAlive(pid)) {
+    try {
+      execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+      log(`Stopped ${component} (PID ${pid})`);
+    } catch {}
+  }
+  state[component] = null;
+  saveState(state);
+}
+
 // --- MAIN ---
 
 const action = process.argv[2] || 'status';
-switch (action) {
-  case 'start': startAll(); break;
-  case 'stop': stopAll(); break;
-  default: status();
+const target = process.argv[3]; // optional: 'dynamo', 'backend', 'emulator'
+if (target && ['dynamo', 'backend', 'emulator'].includes(target)) {
+  if (action === 'start') startOne(target);
+  else if (action === 'stop') stopOne(target);
+  else status();
+} else {
+  switch (action) {
+    case 'start': startAll(); break;
+    case 'stop': stopAll(); break;
+    default: status();
+  }
 }
