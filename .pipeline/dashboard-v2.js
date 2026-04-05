@@ -848,14 +848,7 @@ function generateHTML(state) {
     }
   }
 
-  const agentTeamHTML = Object.keys(activeAgents).length > 0 ? `
-    <div class="team-section">
-      <div class="matrix-header">
-        <h2>🤖 Equipo activo</h2>
-        <span class="matrix-count">${Object.keys(activeAgents).length} agentes · ${Object.values(activeAgents).reduce((a, b) => a + b.length, 0)} tareas</span>
-      </div>
-      <div class="agent-grid">${agentTeamCards}</div>
-    </div>` : '';
+  // agentTeamCards se usa inline en la sección "Equipo y Skills"
 
   // --- Mini DORA metrics on main dashboard ---
   let doraMinHTML = '';
@@ -1350,16 +1343,13 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   <div class="bar-section" style="margin-bottom:20px"><h2>💻 Recursos del sistema</h2>${resourcesHTML}</div>
 
   <div class="bar-row">
-    <div class="bar-section"><h2>🧠 Skills activos</h2>${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
-    <div class="bar-section"><h2>📡 Servicios</h2>${svcsHTML}</div>
-    <div class="bar-section"><h2>⚡ Procesos</h2>${procHTML}</div>
+    <div class="bar-section"><h2>🧠 Equipo y Skills</h2>${agentTeamCards ? '<div class="agent-grid" style="margin-bottom:12px">' + agentTeamCards + '</div>' : ''}${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
+    <div class="bar-section"><h2>📡 Servicios y Procesos</h2><div style="margin-bottom:8px">${svcsHTML}</div>${procHTML}</div>
     <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
     <div class="bar-section"><h2>🚦 Priority Windows</h2>${priorityWindowsHTML}</div>
   </div>
 
   ${matrixHTML}
-
-  ${agentTeamHTML}
 
   ${doraMinHTML}
 
