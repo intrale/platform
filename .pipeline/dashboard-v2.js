@@ -521,11 +521,11 @@ function generateHTML(state) {
     return parseInt(b[0]) - parseInt(a[0]);
   });
 
-  // Show activos + last 15 procesados
-  const shown = sorted.slice(0, Math.max(activos, 0) + 15);
-
+  // Show all issues, but only first 5 visible by default
+  const ISSUE_VISIBLE_LIMIT = 5;
   let rows = '';
-  for (const [issueNum, data] of shown) {
+  let rowIndex = 0;
+  for (const [issueNum, data] of sorted) {
     // Progress bar
     const totalFases = defFases.length + devFases.length;
     const completedFases = allFases.filter(({ pipeline, fase }) => {
@@ -686,13 +686,15 @@ function generateHTML(state) {
     }
 
     const rowClass = data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done';
-    rows += `<tr class="${rowClass}">${issueCell}${cells}</tr>`;
+    const hiddenClass = rowIndex >= ISSUE_VISIBLE_LIMIT ? ' issue-overflow' : '';
+    rows += `<tr class="${rowClass}${hiddenClass}">${issueCell}${cells}</tr>`;
+    rowIndex++;
   }
 
-  const hiddenCount = sorted.length - shown.length;
-  if (hiddenCount > 0) {
-    rows += `<tr class="issue-done"><td colspan="${allFases.length + 1}" class="more-label">... y ${hiddenCount} issues más finalizados</td></tr>`;
-  }
+  const hiddenCount = sorted.length - ISSUE_VISIBLE_LIMIT;
+  const verMasBtn = hiddenCount > 0
+    ? `<div class="ver-mas-container"><button class="ver-mas-btn" onclick="toggleIssues(this)">Ver más (${hiddenCount} issues)</button></div>`
+    : '';
 
   const matrixHTML = `
     <div class="matrix-section">
@@ -706,6 +708,7 @@ function generateHTML(state) {
           <tbody>${rows}</tbody>
         </table>
       </div>
+      ${verMasBtn}
     </div>`;
 
   // Skill heatmap
@@ -845,14 +848,7 @@ function generateHTML(state) {
     }
   }
 
-  const agentTeamHTML = Object.keys(activeAgents).length > 0 ? `
-    <div class="team-section">
-      <div class="matrix-header">
-        <h2>🤖 Equipo activo</h2>
-        <span class="matrix-count">${Object.keys(activeAgents).length} agentes · ${Object.values(activeAgents).reduce((a, b) => a + b.length, 0)} tareas</span>
-      </div>
-      <div class="agent-grid">${agentTeamCards}</div>
-    </div>` : '';
+  // agentTeamCards se usa inline en la sección "Equipo y Skills"
 
   // --- Mini DORA metrics on main dashboard ---
   let doraMinHTML = '';
@@ -1103,6 +1099,11 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .chip .tt span:first-child{color:var(--tx);font-weight:700;font-size:1.05em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
 .chip:hover .tt{display:block}
 .more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
+.issue-overflow{display:none}
+.issue-overflow.show{display:table-row}
+.ver-mas-container{text-align:center;padding:10px 0}
+.ver-mas-btn{background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:var(--radius);padding:6px 18px;cursor:pointer;font-size:0.88em;transition:background 0.2s}
+.ver-mas-btn:hover{background:var(--bd)}
 
 /* ── Bar row: skills / servicios / procesos ─────────────────────────────── */
 .bar-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
@@ -1342,16 +1343,13 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   <div class="bar-section" style="margin-bottom:20px"><h2>💻 Recursos del sistema</h2>${resourcesHTML}</div>
 
   <div class="bar-row">
-    <div class="bar-section"><h2>🧠 Skills activos</h2>${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
-    <div class="bar-section"><h2>📡 Servicios</h2>${svcsHTML}</div>
-    <div class="bar-section"><h2>⚡ Procesos</h2>${procHTML}</div>
+    <div class="bar-section"><h2>🧠 Equipo y Skills</h2>${agentTeamCards ? '<div class="agent-grid" style="margin-bottom:12px">' + agentTeamCards + '</div>' : ''}${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
+    <div class="bar-section"><h2>📡 Servicios y Procesos</h2><div style="margin-bottom:8px">${svcsHTML}</div>${procHTML}</div>
     <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
     <div class="bar-section"><h2>🚦 Priority Windows</h2>${priorityWindowsHTML}</div>
   </div>
 
   ${matrixHTML}
-
-  ${agentTeamHTML}
 
   ${doraMinHTML}
 
@@ -1457,6 +1455,13 @@ async function pwAction(window, action) {
   } catch (e) {
     showToast('Error de conexión: ' + e.message, false);
   }
+}
+
+function toggleIssues(btn) {
+  const rows = document.querySelectorAll('.issue-overflow');
+  const expanded = rows.length > 0 && rows[0].classList.contains('show');
+  rows.forEach(r => r.classList.toggle('show', !expanded));
+  btn.textContent = expanded ? `Ver más (${rows.length} issues)` : 'Ver menos';
 }
 
 function showToast(msg, ok) {
