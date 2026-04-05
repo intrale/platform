@@ -77,10 +77,13 @@ function startComponent(name) {
 // QA Environment
 const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
 
-function qaAction(action) {
+function qaAction(action, component) {
   if (!fs.existsSync(QA_ENV_SCRIPT)) return { ok: false, msg: 'qa-environment.js no existe' };
   try {
-    const output = execSync(`"${process.execPath}" "${QA_ENV_SCRIPT}" ${action}`, {
+    const cmd = component
+      ? `"${process.execPath}" "${QA_ENV_SCRIPT}" ${action} ${component}`
+      : `"${process.execPath}" "${QA_ENV_SCRIPT}" ${action}`;
+    const output = execSync(cmd, {
       cwd: ROOT, encoding: 'utf8', timeout: 60000, windowsHide: true
     });
     return { ok: true, msg: output.trim().slice(-200) };
@@ -773,15 +776,17 @@ function generateHTML(state) {
     const total = data.pendiente + data.trabajando + data.listo;
     const busy = data.trabajando > 0;
     const statusCls = busy ? 'svc-card-busy' : 'svc-card-ok';
+    // Para números grandes (>99) usar formato compacto con tooltip
+    const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
     svcCardsHTML += `<div class="svc-card ${statusCls}">
       <div class="svc-card-header">
         <span class="svc-card-name">${name}</span>
         ${busy ? '<span class="svc-card-pulse"></span>' : ''}
       </div>
       <div class="svc-card-stats">
-        <span class="svc-stat" title="Pendiente">${data.pendiente}<span class="svc-stat-label">pend</span></span>
-        <span class="svc-stat svc-stat-work" title="Trabajando">${data.trabajando}<span class="svc-stat-label">work</span></span>
-        <span class="svc-stat svc-stat-done" title="Listo">${data.listo}<span class="svc-stat-label">listo</span></span>
+        <span class="svc-stat" title="Pendiente: ${data.pendiente}">○${fmtStat(data.pendiente)}</span>
+        <span class="svc-stat svc-stat-work" title="Trabajando: ${data.trabajando}">⚙${fmtStat(data.trabajando)}</span>
+        <span class="svc-stat svc-stat-done" title="Listo: ${data.listo}">✓${fmtStat(data.listo)}</span>
       </div>
     </div>`;
   }
@@ -822,18 +827,27 @@ function generateHTML(state) {
     </div>
     ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}`;
 
-  // QA Environment (con botones start/stop globales)
-  const qaLabels = { dynamo: '🗄️ DynamoDB', backend: '⚡ Backend', emulator: '📱 Emulador' };
+  // QA Environment — cards individuales con botones start/stop
+  const qaLabels = { dynamo: '🗄️', backend: '⚡', emulator: '📱' };
+  const qaNames = { dynamo: 'DynamoDB', backend: 'Backend', emulator: 'Emulador' };
   const allQaUp = Object.values(state.qaEnv).every(v => v);
   const anyQaUp = Object.values(state.qaEnv).some(v => v);
+  const qaGlobalBtn = anyQaUp
+    ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener todo QA">■</button>`
+    : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar todo QA">▶</button>`;
   let qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
-    const cls = alive ? 'proc-alive' : 'proc-dead';
-    return `<span class="proc-chip ${cls}">${qaLabels[name] || name} ${alive ? '✓' : '✗'}</span>`;
+    const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
+    const btn = alive
+      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener ${qaNames[name]}">■</button>`
+      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar ${qaNames[name]}">▶</button>`;
+    return `<div class="svc-card ${statusCls}">
+      <div class="svc-card-header">
+        ${btn}<span class="svc-card-name">${qaLabels[name] || ''} ${qaNames[name] || name}</span>
+        ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+      </div>
+      <div class="svc-card-pid">${alive ? 'activo' : 'detenido'}</div>
+    </div>`;
   }).join('');
-  const qaBtn = anyQaUp
-    ? `<button class="ctl-btn ctl-stop ctl-wide" onclick="ctlAction('qa','stop')">■ Detener QA</button>`
-    : `<button class="ctl-btn ctl-start ctl-wide" onclick="ctlAction('qa','start')">▶ Levantar QA</button>`;
-  qaEnvHTML += `<div class="qa-controls">${qaBtn}</div>`;
 
   // Priority Windows (QA + Build)
   const pwQa = state.priorityWindows.qa;
@@ -1189,11 +1203,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .svc-card-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .svc-card-pulse{width:5px;height:5px;border-radius:50%;background:var(--gn);animation:agentPulse 2s infinite;margin-left:auto;flex-shrink:0}
 .svc-card-busy .svc-card-pulse{background:var(--yl)}
-.svc-card-stats{display:flex;gap:8px;margin-top:4px}
-.svc-stat{font-size:0.82em;font-weight:700;color:var(--dim);font-variant-numeric:tabular-nums}
+.svc-card-stats{display:flex;gap:6px;margin-top:4px;overflow:hidden}
+.svc-stat{font-size:0.75em;font-weight:700;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:default}
 .svc-stat-work{color:var(--yl)}
 .svc-stat-done{color:var(--gn)}
-.svc-stat-label{font-size:0.8em;font-weight:400;color:var(--dim2);margin-left:2px}
 .svc-card-pid{font-size:0.68em;color:var(--dim2);margin-top:2px;font-variant-numeric:tabular-nums}
 .proc-chip{
   display:inline-flex;align-items:center;gap:5px;
@@ -1215,7 +1228,6 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-start{background:var(--gn2);color:var(--gn)}
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
-.qa-controls{margin-top:6px;display:inline-block}
 /* Priority Windows (compact for Sistema panel) */
 .pw-row{display:flex;gap:8px;flex-wrap:wrap}
 .pw-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 10px;background:var(--sf2);border-radius:var(--radius-sm);border:1px solid var(--bd2);flex:1;min-width:180px}
@@ -1450,8 +1462,8 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
     <div class="bar-section dual-col">
       <h2>💻 Sistema</h2>
       ${resourcesHTML}
-      <div class="subsection-label" style="margin-top:14px">QA Environment</div>
-      <div class="sys-chips-row">${qaEnvHTML}</div>
+      <div class="subsection-label" style="margin-top:14px">QA Environment ${qaGlobalBtn}</div>
+      <div class="svc-grid">${qaEnvHTML}</div>
       <div class="subsection-label">Priority Windows</div>
       ${priorityWindowsHTML}
     </div>
@@ -1530,6 +1542,28 @@ async function ctlAction(target, action) {
     showToast('Error de conexión: ' + e.message, false);
   }
   btns.forEach(b => b.classList.remove('loading'));
+}
+
+// QA component action (individual or all)
+async function qaComponentAction(component, action) {
+  const btn = event && event.target ? event.target : null;
+  if (btn) btn.classList.add('loading');
+  try {
+    const body = component === 'all'
+      ? { target: 'qa', action }
+      : { target: 'qa', action, component };
+    const resp = await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error: ' + e.message, false);
+  }
+  if (btn) btn.classList.remove('loading');
 }
 
 // Kill agent
@@ -2196,10 +2230,10 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const { target, action } = JSON.parse(body);
+        const { target, action, component } = JSON.parse(body);
         let result;
         if (target === 'qa') {
-          result = qaAction(action); // 'start' o 'stop'
+          result = qaAction(action, component); // component: 'dynamo'|'backend'|'emulator' or undefined for all
         } else if (action === 'start') {
           result = startComponent(target);
         } else if (action === 'stop') {
