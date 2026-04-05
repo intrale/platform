@@ -946,20 +946,25 @@ function tryFreeResources(mode = 'soft') {
       } catch {}
 
       // Preservar PIDs de builds activos como fallback adicional
+      // Buscar recursivamente hijos y nietos (bash → gradle-wrapper → GradleDaemon)
       const buildPids = new Set();
       for (const [, info] of activeProcesses) {
         if (info.fase === 'build' && isProcessAlive(info.pid)) {
-          buildPids.add(String(info.pid));
-          try {
-            const childrenOut = execSync(
-              `wmic process where "ParentProcessId=${info.pid}" get ProcessId /FORMAT:CSV`,
-              { encoding: 'utf8', timeout: 5000, windowsHide: true }
-            );
-            for (const cl of childrenOut.split('\n')) {
-              const cm = cl.match(/,(\d+)\s*$/);
-              if (cm) buildPids.add(cm[1]);
-            }
-          } catch {}
+          const queue = [String(info.pid)];
+          while (queue.length > 0) {
+            const parentPid = queue.shift();
+            buildPids.add(parentPid);
+            try {
+              const childrenOut = execSync(
+                `wmic process where "ParentProcessId=${parentPid}" get ProcessId /FORMAT:CSV`,
+                { encoding: 'utf8', timeout: 5000, windowsHide: true }
+              );
+              for (const cl of childrenOut.split('\n')) {
+                const cm = cl.match(/,(\d+)\s*$/);
+                if (cm && !buildPids.has(cm[1])) queue.push(cm[1]);
+              }
+            } catch {}
+          }
         }
       }
 
@@ -1162,14 +1167,23 @@ function brazoBarrido(config) {
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
 
         if (rechazados.length > 0 && faseRechazo) {
-          // Circuit breaker: contar rebotes previos del mismo issue en procesado/
-          const devProcessed = path.join(fasePath(pipelineName, faseRechazo), 'procesado');
+          // Circuit breaker: leer rebote_numero del archivo que originó este ciclo
+          // (puede estar en trabajando/ o pendiente/ de la fase de rechazo, o en el propio resultado)
+          // Buscar el máximo rebote_numero entre los archivos del issue en dev
           let reboteCount = 0;
-          try {
-            for (const f of fs.readdirSync(devProcessed)) {
-              if (f.startsWith(issue + '.')) reboteCount++;
-            }
-          } catch {}
+          for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+            const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
+            try {
+              for (const f of fs.readdirSync(dir)) {
+                if (f.startsWith(issue + '.')) {
+                  const data = readYaml(path.join(dir, f));
+                  if (data.rebote_numero && data.rebote_numero > reboteCount) {
+                    reboteCount = data.rebote_numero;
+                  }
+                }
+              }
+            } catch {}
+          }
 
           const MAX_REBOTES = 3;
           if (reboteCount >= MAX_REBOTES) {
@@ -1849,6 +1863,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     pid: child.pid,
     startTime: buildStartTime,
     trabajandoPath,
+    worktreePath: buildCwd,
     pipeline,
     fase: 'build'
   });
