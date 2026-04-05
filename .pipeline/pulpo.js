@@ -183,6 +183,19 @@ function clearCooldown(skill, issue) {
  */
 function killGradleDaemonsForCwd(cwd, label) {
   if (!cwd) return 0;
+
+  // Proteger builds activos: si hay un build corriendo en este mismo worktree, NO matar nada
+  const cwdResolved = path.resolve(cwd);
+  for (const [, info] of activeProcesses) {
+    if (info.fase === 'build'
+        && info.worktreePath
+        && path.resolve(info.worktreePath) === cwdResolved
+        && isProcessAlive(info.pid)) {
+      log('gradle-cleanup', `${label}: SKIP — build activo en ${cwd}`);
+      return 0;
+    }
+  }
+
   let totalKilled = 0;
 
   // 1. Intentar ./gradlew --stop en el directorio del agente
@@ -1773,7 +1786,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     activeProcesses.delete(processKey(skill, issue));
 
     // Matar Gradle daemons del worktree para liberar RAM (cada daemon usa hasta 4GB)
-    killGradleDaemonsForCwd(needsWorktree ? worktreePath : ROOT, `${skill}:#${issue}`);
+    // Delay de 10s para evitar race condition: si el barrido ya lanzó un build en este
+    // worktree, el guard dentro de killGradleDaemonsForCwd lo protegerá.
+    const cleanupCwd = needsWorktree ? worktreePath : ROOT;
+    const cleanupLabel = `${skill}:#${issue}`;
+    setTimeout(() => killGradleDaemonsForCwd(cleanupCwd, cleanupLabel), 10000);
 
     // Salir del canal de contexto (el canal queda para que otros lo consulten)
     if (contextChannelId) {
