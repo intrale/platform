@@ -405,9 +405,16 @@ function generateHTML(state) {
   const staleList = matrixEntries.filter(([_, d]) => {
     if (d.estadoActual !== 'trabajando' || !d.faseActual) return false;
     const entries = d.fases[d.faseActual] || [];
-    return entries.some(e => e.ageMin > 10);
+    return entries.some(e => e.ageMin > 30);
   });
   const stale = staleList.length;
+  const staleDetail = staleList.map(([id, d]) => {
+    const entries = d.fases[d.faseActual] || [];
+    const staleEntry = entries.find(e => e.estado === 'trabajando' && e.ageMin > 30);
+    const skill = staleEntry ? staleEntry.skill : d.faseActual;
+    const mins = staleEntry ? staleEntry.ageMin : '?';
+    return `#${id} (${skill}, ${mins} min)`;
+  }).join(', ');
 
   // Helpers para tooltips (JSON embebido, el HTML lo arma el cliente)
   const buildTtData = (title, list, labelFn) => {
@@ -437,18 +444,33 @@ function generateHTML(state) {
   // Definidos = completaron la fase final de definición (sizing/procesado)
   const defFasesKpi = config.pipelines?.definicion?.fases || [];
   const lastDefFase = defFasesKpi[defFasesKpi.length - 1];
-  const definidos = lastDefFase ? matrixEntries.filter(([_, d]) => {
+  const definidosList = lastDefFase ? matrixEntries.filter(([_, d]) => {
     const entries = d.fases[`definicion/${lastDefFase}`] || [];
     return entries.some(e => e.estado === 'procesado');
-  }).length : 0;
+  }) : [];
+  const definidos = definidosList.length;
 
   // Entregados = completaron la fase final de desarrollo (entrega/procesado)
   const devFasesKpi = config.pipelines?.desarrollo?.fases || [];
   const lastDevFase = devFasesKpi[devFasesKpi.length - 1];
-  const entregados = lastDevFase ? matrixEntries.filter(([_, d]) => {
+  const entregadosList = lastDevFase ? matrixEntries.filter(([_, d]) => {
     const entries = d.fases[`desarrollo/${lastDevFase}`] || [];
     return entries.some(e => e.estado === 'procesado');
-  }).length : 0;
+  }) : [];
+  const entregados = entregadosList.length;
+
+  const ttDefinidos  = buildTtData('Definidos listos',        definidosList, (_, d) => {
+    const label = ttLabel(d);
+    return label || 'definición completada';
+  });
+  const ttEntregados = buildTtData('Entregados a producción',  entregadosList, (_, d) => {
+    // Para entregados, buscar el skill que hizo la entrega
+    const entregaEntries = d.fases[`desarrollo/${lastDevFase}`] || [];
+    const proc = entregaEntries.find(e => e.estado === 'procesado');
+    const skill = proc?.skill || '';
+    const label = ttLabel(d);
+    return skill ? `${skill}` + (label ? ` · ${label}` : '') : (label || 'entregado');
+  });
 
   // --- Issue Tracker Matrix (unified) ---
   // Headers: definición phases | separator | desarrollo phases
@@ -633,7 +655,7 @@ function generateHTML(state) {
                      e.estado === 'trabajando' ? '⚙' :
                      e.estado === 'listo' ? '✓' :
                      e.estado === 'procesado' ? '✔' : '○';
-        const staleClass = (e.estado === 'trabajando' && e.ageMin > 10) ? ' stale-chip' : '';
+        const staleClass = (e.estado === 'trabajando' && e.ageMin > 30) ? ' stale-chip' : '';
         // Runs anteriores de un skill repetido se muestran compactos
         const priorClass = (e._isRetry && !e._isLatestRun) ? ' chip-prior' : '';
         const runLabel = e._isRetry ? `<sup class="run-idx">${e._runIndex}</sup>` : '';
@@ -770,27 +792,67 @@ function generateHTML(state) {
     heatmapHTML += `<span class="skill-idle-summary" title="${hiddenIdle} skills más sin carga">+${hiddenIdle} más</span>`;
   }
 
-  // Servicios + Procesos como cards unificadas
+  // Servicios agrupados + procesos standalone
+  const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
+  const SERVICE_GROUPS = [
+    { name: 'Telegram', icon: '📨', queues: ['commander', 'telegram'], processes: ['listener', 'svc-telegram'] },
+    { name: 'GitHub', icon: '🐙', queues: ['github'], processes: ['svc-github'] },
+    { name: 'Drive', icon: '📁', queues: ['drive'], processes: ['svc-drive'] },
+  ];
+  const STANDALONE_PROCESSES = ['pulpo', 'outbox-drain', 'dashboard'];
+  const groupedProcesses = new Set(SERVICE_GROUPS.flatMap(g => g.processes));
+  const groupedQueues = new Set(SERVICE_GROUPS.flatMap(g => g.queues));
+
   let svcCardsHTML = '';
-  for (const [name, data] of Object.entries(state.servicios)) {
-    const total = data.pendiente + data.trabajando + data.listo;
-    const busy = data.trabajando > 0;
-    const statusCls = busy ? 'svc-card-busy' : 'svc-card-ok';
-    // Para números grandes (>99) usar formato compacto con tooltip
-    const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
-    svcCardsHTML += `<div class="svc-card ${statusCls}">
+  for (const group of SERVICE_GROUPS) {
+    // Aggregate queue stats
+    let totalPend = 0, totalWork = 0, totalDone = 0;
+    for (const q of group.queues) {
+      const d = state.servicios[q];
+      if (d) { totalPend += d.pendiente; totalWork += d.trabajando; totalDone += d.listo; }
+    }
+    // Check if any process in group is alive
+    const anyAlive = group.processes.some(p => state.procesos[p]?.alive);
+    const anyDead = group.processes.some(p => !state.procesos[p]?.alive);
+    const groupStatus = totalWork > 0 ? 'svc-card-busy' : anyAlive ? 'svc-card-ok' : 'svc-card-dead';
+
+    // Group-level start/stop: starts or stops all processes in the group
+    const allAlive = group.processes.every(p => state.procesos[p]?.alive);
+    const groupBtn = allAlive
+      ? `<button class="ctl-btn ctl-stop" onclick="${group.processes.map(p => `ctlAction('${p}','stop')`).join(';')}" title="Detener ${group.name}">■</button>`
+      : `<button class="ctl-btn ctl-start" onclick="${group.processes.map(p => `ctlAction('${p}','start')`).join(';')}" title="Iniciar ${group.name}">▶</button>`;
+
+    // Sub-process indicators
+    const subProcs = group.processes.map(p => {
+      const info = state.procesos[p] || { pid: null, alive: false };
+      const dot = info.alive ? '🟢' : '🔴';
+      const label = p.replace('svc-', 'SBC ').replace('listener', 'Listener');
+      return `<span class="svc-group-proc" title="${label}: ${info.alive ? 'PID ' + info.pid : 'detenido'}">${dot} ${label}</span>`;
+    }).join('');
+
+    // Queue detail tooltips
+    const queueDetail = group.queues.map(q => {
+      const d = state.servicios[q];
+      if (!d) return '';
+      return `${q}: ○${d.pendiente} ⚙${d.trabajando} ✓${d.listo}`;
+    }).join(' | ');
+
+    svcCardsHTML += `<div class="svc-card svc-card-group ${groupStatus}">
       <div class="svc-card-header">
-        <span class="svc-card-name">${name}</span>
-        ${busy ? '<span class="svc-card-pulse"></span>' : ''}
+        ${groupBtn}<span class="svc-card-name">${group.icon} ${group.name}</span>
+        ${anyAlive ? '<span class="svc-card-pulse"></span>' : ''}
       </div>
-      <div class="svc-card-stats">
-        <span class="svc-stat" title="Pendiente: ${data.pendiente}">○${fmtStat(data.pendiente)}</span>
-        <span class="svc-stat svc-stat-work" title="Trabajando: ${data.trabajando}">⚙${fmtStat(data.trabajando)}</span>
-        <span class="svc-stat svc-stat-done" title="Listo: ${data.listo}">✓${fmtStat(data.listo)}</span>
+      <div class="svc-card-stats" title="${queueDetail}">
+        <span class="svc-stat" title="Pendiente: ${totalPend}">○${fmtStat(totalPend)}</span>
+        <span class="svc-stat svc-stat-work" title="Trabajando: ${totalWork}">⚙${fmtStat(totalWork)}</span>
+        <span class="svc-stat svc-stat-done" title="Listo: ${totalDone}">✓${fmtStat(totalDone)}</span>
       </div>
+      <div class="svc-group-procs">${subProcs}</div>
     </div>`;
   }
-  for (const [name, info] of Object.entries(state.procesos)) {
+  // Standalone processes (not in any group)
+  for (const name of STANDALONE_PROCESSES) {
+    const info = state.procesos[name] || { pid: null, alive: false };
     const alive = info.alive;
     const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
     const isDashboard = name === 'dashboard';
@@ -825,7 +887,8 @@ function generateHTML(state) {
         <div class="gauge-value">${res.memPercent}% <span class="gauge-detail">${res.memUsedGB}/${res.memTotalGB} GB · max ${res.maxMem}%</span></div>
       </div>
     </div>
-    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}`;
+    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
+    ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // QA Environment — cards individuales con botones start/stop
   const qaLabels = { dynamo: '🗄️', backend: '⚡', emulator: '📱' };
@@ -1208,6 +1271,9 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .svc-stat-work{color:var(--yl)}
 .svc-stat-done{color:var(--gn)}
 .svc-card-pid{font-size:0.68em;color:var(--dim2);margin-top:2px;font-variant-numeric:tabular-nums}
+.svc-card-group{min-width:160px;max-width:220px}
+.svc-group-procs{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.svc-group-proc{font-size:0.65em;color:var(--dim);white-space:nowrap;cursor:default}
 .proc-chip{
   display:inline-flex;align-items:center;gap:5px;
   font-size:0.82em;padding:4px 8px;margin:3px;
@@ -1415,7 +1481,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 <body>
   <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
 
-  ${stale > 0 ? `<div class="alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 10 min en trabajando — posible huérfano</div>` : ''}
+  <!-- orphan alert moved to system section -->
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
@@ -1439,12 +1505,12 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
       <div class="kpi-value ${stale > 0 ? 'danger' : 'muted'}">${stale}</div>
       <div class="kpi-label">Bloqueados / stale</div>
     </div>
-    <div class="kpi kpi-definidos">
+    <div class="kpi kpi-definidos" data-tt='${ttDefinidos}'>
       <span class="kpi-icon">📋</span>
       <div class="kpi-value" style="color:var(--pu)">${definidos}</div>
       <div class="kpi-label">Definidos listos</div>
     </div>
-    <div class="kpi kpi-entregados">
+    <div class="kpi kpi-entregados" data-tt='${ttEntregados}'>
       <span class="kpi-icon">🚀</span>
       <div class="kpi-value success">${entregados}</div>
       <div class="kpi-label">Entregados a prod</div>
