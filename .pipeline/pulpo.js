@@ -2302,7 +2302,37 @@ function ejecutarClaude(prompt, textoOriginal) {
     let toolCount = 0;
     let lastToolDesc = '';
     let progressCount = 0;
+    let resolved = false;
     const startTime = Date.now();
+
+    // Límite absoluto: 10 minutos — si Claude no terminó, matar y resolver
+    const HARD_TIMEOUT_MS = 10 * 60 * 1000;
+
+    function finish(code, reason) {
+      if (resolved) return;
+      resolved = true;
+      clearInterval(progressTimer);
+      clearTimeout(hardTimer);
+      rl.close();
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      log('commander', `Claude terminó (${reason}, code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
+      if (finalResult?.result) {
+        resolve(finalResult.result);
+      } else if (lastText) {
+        resolve(lastText);
+      } else {
+        log('commander', `stderr: ${stderr.slice(0, 300)}`);
+        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
+      }
+    }
+
+    function killProc() {
+      try { proc.kill('SIGTERM'); } catch {}
+      // En Windows SIGTERM no siempre funciona — forzar con taskkill /T (tree kill)
+      try {
+        if (proc.pid) execSync(`taskkill /PID ${proc.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+      } catch {}
+    }
 
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
     rl.on('line', (line) => {
@@ -2321,6 +2351,16 @@ function ejecutarClaude(prompt, textoOriginal) {
           }
         } else if (evt.type === 'result') {
           finalResult = evt;
+          // WORKAROUND para bug claude-code#25629: CLI no termina después del result event.
+          // Dar 3s de gracia para que el proceso salga solo, si no: matarlo.
+          log('commander', 'Result event recibido — esperando 3s para exit limpio...');
+          setTimeout(() => {
+            if (!resolved) {
+              log('commander', 'Claude no salió tras result — matando proceso (workaround #25629)');
+              killProc();
+              finish(null, 'result+kill');
+            }
+          }, 3000);
         }
       } catch {}
     });
@@ -2330,6 +2370,7 @@ function ejecutarClaude(prompt, textoOriginal) {
 
     // Mensajes de progreso contextuales cada 45s
     const progressTimer = setInterval(() => {
+      if (resolved) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const msg = generarMensajeProgreso(progressCount, elapsed, toolCount, lastToolDesc, textoOriginal);
       progressCount++;
@@ -2337,23 +2378,23 @@ function ejecutarClaude(prompt, textoOriginal) {
       log('commander', `Progreso: ${msg}`);
     }, 45000);
 
-    proc.on('exit', (code) => {
-      clearInterval(progressTimer);
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      log('commander', `Claude terminó (code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
-      if (finalResult?.result) {
-        resolve(finalResult.result);
-      } else if (lastText) {
-        resolve(lastText);
-      } else {
-        log('commander', `stderr: ${stderr.slice(0, 300)}`);
-        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
+    // Hard timeout: si nada resolvió en 10 min, forzar finalización
+    const hardTimer = setTimeout(() => {
+      if (!resolved) {
+        log('commander', `HARD TIMEOUT (${HARD_TIMEOUT_MS / 60000}min) — matando Claude`);
+        killProc();
+        finish(null, 'hard-timeout');
       }
-    });
+    }, HARD_TIMEOUT_MS);
+
+    proc.on('exit', (code) => finish(code, 'exit'));
+    proc.on('close', (code) => finish(code, 'close'));
+    proc.stdout.on('end', () => { if (!resolved) finish(proc.exitCode, 'stdout-end'); });
 
     proc.on('error', (e) => {
-      clearInterval(progressTimer);
-      reject(e);
+      if (resolved) return;
+      log('commander', `Error spawning Claude: ${e.message}`);
+      finish(null, 'error');
     });
   });
 }
