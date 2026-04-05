@@ -370,6 +370,16 @@ function generateHTML(state) {
   const allFases = state.allFases;
   const GH = (num) => `${GITHUB_BASE}/${num}`;
 
+  // Build timestamps para el encabezado
+  const fmtDate = (filepath) => {
+    try {
+      const st = fs.statSync(filepath);
+      return st.mtime.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return '—'; }
+  };
+  const dashboardBuild = fmtDate(path.join(PIPELINE, 'dashboard-v2.js'));
+  const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
+
   // Agentes con personalidad — referentes del mercado
   const AGENT_PERSONA = {
     guru:          { icon: '🧠', name: 'Guru',        tagline: 'Rich Hickey · Kevlin Henney · Kleppmann', color: '#bc8cff' },
@@ -1479,7 +1489,13 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 </style></head>
 <body>
-  <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+    <h1 style="margin:0">🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
+    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap">
+      <span>📊 Dashboard: <b style="color:var(--tx)">${dashboardBuild}</b></span>
+      <span>🐙 Pulpo: <b style="color:var(--tx)">${pulpoBuild}</b></span>
+    </div>
+  </div>
 
   <!-- orphan alert moved to system section -->
 
