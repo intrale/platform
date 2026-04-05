@@ -98,14 +98,17 @@ function killAll() {
     try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
   }
 
-  // Devolver archivos de trabajando/ a pendiente/ en commander
+  // Mover archivos de trabajando/ a listo/ en commander
+  // IMPORTANTE: NO devolver a pendiente/ — el mensaje que disparó el restart
+  // se re-procesaría y provocaría un loop infinito de reinicios
   const cmdTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
-  const cmdPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
+  const cmdListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
   try {
+    if (!fs.existsSync(cmdListo)) fs.mkdirSync(cmdListo, { recursive: true });
     for (const f of fs.readdirSync(cmdTrabajando)) {
       if (f.endsWith('.json')) {
-        fs.renameSync(path.join(cmdTrabajando, f), path.join(cmdPendiente, f));
-        log(`  Recuperado: commander/${f} → pendiente/`);
+        fs.renameSync(path.join(cmdTrabajando, f), path.join(cmdListo, f));
+        log(`  Completado: commander/${f} → listo/`);
       }
     }
   } catch {}
