@@ -728,12 +728,15 @@ function generateHTML(state) {
       if (diff !== 0) return diff;
       return (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0);
     });
+  // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
+  const MAX_CAP_VISIBLE = 6;
   let heatmapHTML = '';
-  let idleCount = 0;
+  let shownCount = 0;
+  const idleSkills = [];
   for (const [skill, load] of skillEntries) {
     const pct = load.max > 0 ? load.running / load.max : 0;
     const cls = pct >= 1 ? 'load-full' : pct > 0 ? 'load-partial' : 'load-idle';
-    if (cls === 'load-idle') { idleCount++; continue; }
+    if (cls === 'load-idle') { idleSkills.push([skill, load]); continue; }
     const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
     const barPct = Math.round(pct * 100);
     const countLabel = pct >= 1
@@ -745,29 +748,58 @@ function generateHTML(state) {
       <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
       <span class="skill-cap-count">${countLabel}</span>
     </div>`;
+    shownCount++;
   }
-  if (idleCount > 0) {
-    heatmapHTML += `<span class="skill-idle-summary" title="${idleCount} skills sin carga">+${idleCount} disponibles</span>`;
+  // Llenar slots restantes con idle más relevantes (por uso histórico)
+  const idleSlots = Math.max(0, MAX_CAP_VISIBLE - shownCount);
+  const shownIdle = idleSkills.slice(0, idleSlots);
+  const hiddenIdle = idleSkills.length - shownIdle.length;
+  for (const [skill, load] of shownIdle) {
+    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
+    heatmapHTML += `<div class="skill-cap-chip load-idle" style="--agent-color:${p.color}" title="${skill}: 0/${load.max}">
+      <span class="skill-cap-icon">${p.icon}</span>
+      <span class="skill-cap-name">${p.name || skill}</span>
+      <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
+      <span class="skill-cap-count">0/${load.max}</span>
+    </div>`;
+  }
+  if (hiddenIdle > 0) {
+    heatmapHTML += `<span class="skill-idle-summary" title="${hiddenIdle} skills más sin carga">+${hiddenIdle} más</span>`;
   }
 
-  // Servicios
-  let svcsHTML = '';
+  // Servicios + Procesos como cards unificadas
+  let svcCardsHTML = '';
   for (const [name, data] of Object.entries(state.servicios)) {
-    const dot = data.pendiente > 0 ? 'svc-busy' : 'svc-ok';
-    svcsHTML += `<span class="svc-chip ${dot}">${name} ${data.pendiente}○ ${data.trabajando}⚙ ${data.listo}✓</span>`;
+    const total = data.pendiente + data.trabajando + data.listo;
+    const busy = data.trabajando > 0;
+    const statusCls = busy ? 'svc-card-busy' : 'svc-card-ok';
+    svcCardsHTML += `<div class="svc-card ${statusCls}">
+      <div class="svc-card-header">
+        <span class="svc-card-name">${name}</span>
+        ${busy ? '<span class="svc-card-pulse"></span>' : ''}
+      </div>
+      <div class="svc-card-stats">
+        <span class="svc-stat" title="Pendiente">${data.pendiente}<span class="svc-stat-label">pend</span></span>
+        <span class="svc-stat svc-stat-work" title="Trabajando">${data.trabajando}<span class="svc-stat-label">work</span></span>
+        <span class="svc-stat svc-stat-done" title="Listo">${data.listo}<span class="svc-stat-label">listo</span></span>
+      </div>
+    </div>`;
   }
-
-  // Procesos (con botones start/stop)
-  let procHTML = '';
   for (const [name, info] of Object.entries(state.procesos)) {
     const alive = info.alive;
-    const cls = alive ? 'proc-alive' : 'proc-dead';
+    const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
     const isDashboard = name === 'dashboard';
     const btn = isDashboard ? '' :
       alive
         ? `<button class="ctl-btn ctl-stop" onclick="ctlAction('${name}','stop')" title="Detener ${name}">■</button>`
         : `<button class="ctl-btn ctl-start" onclick="ctlAction('${name}','start')" title="Iniciar ${name}">▶</button>`;
-    procHTML += `<span class="proc-chip ${cls}">${btn}${name}${info.pid && alive ? ' <span class="pid-num">'+info.pid+'</span>' : ''}</span>`;
+    svcCardsHTML += `<div class="svc-card ${statusCls}">
+      <div class="svc-card-header">
+        ${btn}<span class="svc-card-name">${name}</span>
+        ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+      </div>
+      ${info.pid && alive ? '<div class="svc-card-pid">PID ' + info.pid + '</div>' : '<div class="svc-card-pid">detenido</div>'}
+    </div>`;
   }
 
   // System Resources (CPU + RAM gauges)
@@ -1142,12 +1174,27 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   padding:16px 18px;
 }
 .sys-chips-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px}
-.svc-chip{
-  display:inline-flex;align-items:center;gap:5px;
-  font-size:0.82em;padding:4px 10px;margin:3px;
-  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
+/* ── Service Cards ──────────────────────────────────────────────────────── */
+.svc-grid{display:flex;flex-wrap:wrap;gap:8px}
+.svc-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:8px 10px;min-width:90px;flex:1;max-width:140px;
+  border-left:3px solid var(--dim2);transition:box-shadow 0.2s;
 }
-.svc-busy{border-left:3px solid var(--yl)}.svc-ok{border-left:3px solid var(--gn)}
+.svc-card:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
+.svc-card-ok{border-left-color:var(--gn)}
+.svc-card-busy{border-left-color:var(--yl)}
+.svc-card-dead{border-left-color:var(--rd)}
+.svc-card-header{display:flex;align-items:center;gap:4px}
+.svc-card-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.svc-card-pulse{width:5px;height:5px;border-radius:50%;background:var(--gn);animation:agentPulse 2s infinite;margin-left:auto;flex-shrink:0}
+.svc-card-busy .svc-card-pulse{background:var(--yl)}
+.svc-card-stats{display:flex;gap:8px;margin-top:4px}
+.svc-stat{font-size:0.82em;font-weight:700;color:var(--dim);font-variant-numeric:tabular-nums}
+.svc-stat-work{color:var(--yl)}
+.svc-stat-done{color:var(--gn)}
+.svc-stat-label{font-size:0.8em;font-weight:400;color:var(--dim2);margin-left:2px}
+.svc-card-pid{font-size:0.68em;color:var(--dim2);margin-top:2px;font-variant-numeric:tabular-nums}
 .proc-chip{
   display:inline-flex;align-items:center;gap:5px;
   font-size:0.82em;padding:4px 8px;margin:3px;
@@ -1314,6 +1361,8 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .load-partial .skill-cap-fill{background:var(--yl)}
 .load-full .skill-cap-fill{background:var(--rd)}
 .skill-cap-count{font-size:0.72em;color:var(--dim);font-variant-numeric:tabular-nums}
+.load-idle.skill-cap-chip{opacity:0.5;border-left-color:var(--dim2)}
+.load-idle .skill-cap-name{color:var(--dim)}
 .skill-idle-summary{font-size:0.75em;color:var(--dim);font-style:italic;padding:4px 8px}
 
 /* ── DORA Mini ─────────────────────────────────────────────────────────── */
@@ -1395,6 +1444,8 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
       <h2>🧠 Equipo</h2>
       ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
       ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
+      <div class="subsection-label">Servicios</div>
+      <div class="svc-grid">${svcCardsHTML}</div>
     </div>
     <div class="bar-section dual-col">
       <h2>💻 Sistema</h2>
@@ -1403,10 +1454,6 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
       <div class="sys-chips-row">${qaEnvHTML}</div>
       <div class="subsection-label">Priority Windows</div>
       ${priorityWindowsHTML}
-      <div class="subsection-label">Servicios</div>
-      <div class="sys-chips-row">${svcsHTML}</div>
-      <div class="subsection-label">Procesos</div>
-      <div class="sys-chips-row">${procHTML}</div>
     </div>
   </div>
 
