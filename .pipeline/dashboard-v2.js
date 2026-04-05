@@ -711,13 +711,24 @@ function generateHTML(state) {
       ${verMasBtn}
     </div>`;
 
-  // Skill heatmap
+  // Skill capacity cards (mismo lenguaje visual que agent-cards)
   let heatmapHTML = '';
   for (const [skill, load] of Object.entries(state.skillLoad)) {
     const pct = load.max > 0 ? load.running / load.max : 0;
     const cls = pct >= 1 ? 'load-full' : pct > 0 ? 'load-partial' : 'load-idle';
-    const dots = Array(load.max).fill(0).map((_, i) => i < load.running ? '●' : '○').join('');
-    heatmapHTML += `<span class="skill-load ${cls}" title="${skill}: ${load.running}/${load.max}">${skill} ${dots}</span>`;
+    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
+    const barPct = Math.round(pct * 100);
+    const countLabel = pct >= 1
+      ? `<span style="color:var(--rd);font-weight:700">${load.running}/${load.max} lleno</span>`
+      : `${load.running}/${load.max}`;
+    heatmapHTML += `<div class="skill-cap-card ${cls}" style="--agent-color:${p.color}" title="${skill}: ${load.running}/${load.max}">
+      <div class="skill-cap-icon">${p.icon}</div>
+      <div class="skill-cap-info">
+        <div class="skill-cap-name">${p.name || skill}</div>
+        <div class="skill-cap-progress"><div class="skill-cap-fill" style="width:${barPct}%"></div></div>
+        <div class="skill-cap-count">${countLabel}</div>
+      </div>
+    </div>`;
   }
 
   // Servicios
@@ -1111,14 +1122,6 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
   padding:16px 18px;flex:1;min-width:200px;
 }
-.skill-load{
-  display:inline-flex;align-items:center;gap:5px;
-  font-size:0.82em;padding:4px 8px;margin:3px;
-  border-radius:5px;background:var(--bg);border:1px solid var(--bd2);
-}
-.load-full{color:var(--rd);border-color:rgba(248,81,73,0.3)}
-.load-partial{color:var(--yl);border-color:rgba(210,153,34,0.3)}
-.load-idle{color:var(--dim2)}
 .svc-chip{
   display:inline-flex;align-items:center;gap:5px;
   font-size:0.82em;padding:4px 10px;margin:3px;
@@ -1266,6 +1269,34 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 @keyframes agentPulse{0%,100%{opacity:1;box-shadow:0 0 4px var(--agent-color)}50%{opacity:0.3;box-shadow:none}}
 
+/* ── Sub-section labels ─────────────────────────────────────────────────── */
+.subsection-label{
+  font-size:0.72em;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;
+  font-weight:600;margin-bottom:8px;margin-top:2px;
+  display:flex;align-items:center;gap:8px;
+}
+.subsection-label::after{content:'';flex:1;height:1px;background:var(--bd2)}
+
+/* ── Skill Capacity Cards ───────────────────────────────────────────────── */
+.skill-cap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.skill-cap-card{
+  background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
+  padding:10px 12px;display:flex;gap:10px;align-items:center;
+  border-left:3px solid var(--agent-color,var(--dim2));
+  transition:border-color 0.2s,box-shadow 0.2s;
+}
+.skill-cap-card:hover{box-shadow:0 0 8px rgba(88,166,255,0.08)}
+.load-full.skill-cap-card{border-left-color:var(--rd)}
+.skill-cap-icon{font-size:1.3em;line-height:1;min-width:22px;text-align:center}
+.skill-cap-info{flex:1;min-width:0}
+.skill-cap-name{font-size:0.82em;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.skill-cap-progress{height:4px;background:var(--bd);border-radius:2px;margin-top:5px;overflow:hidden}
+.skill-cap-fill{height:100%;border-radius:2px;transition:width 0.6s ease}
+.load-idle .skill-cap-fill{width:0!important}
+.load-partial .skill-cap-fill{background:var(--yl)}
+.load-full .skill-cap-fill{background:var(--rd)}
+.skill-cap-count{font-size:0.72em;color:var(--dim);margin-top:3px;font-variant-numeric:tabular-nums}
+
 /* ── DORA Mini ─────────────────────────────────────────────────────────── */
 .dora-mini{
   background:var(--sf);border:1px solid var(--bd);border-radius:var(--radius);
@@ -1343,7 +1374,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
   <div class="bar-section" style="margin-bottom:20px"><h2>💻 Recursos del sistema</h2>${resourcesHTML}</div>
 
   <div class="bar-row">
-    <div class="bar-section"><h2>🧠 Equipo y Skills</h2>${agentTeamCards ? '<div class="agent-grid" style="margin-bottom:12px">' + agentTeamCards + '</div>' : ''}${heatmapHTML || '<span class="empty-label">Sin carga</span>'}</div>
+    <div class="bar-section"><h2>🧠 Equipo y Skills</h2>${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid" style="margin-bottom:16px">' + agentTeamCards + '</div>' : ''}${heatmapHTML ? (agentTeamCards ? '<div class="subsection-label">Capacidad del equipo</div>' : '') + '<div class="skill-cap-grid">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}</div>
     <div class="bar-section"><h2>📡 Servicios y Procesos</h2><div style="margin-bottom:8px">${svcsHTML}</div>${procHTML}</div>
     <div class="bar-section"><h2>🧪 QA Environment</h2>${qaEnvHTML}</div>
     <div class="bar-section"><h2>🚦 Priority Windows</h2>${priorityWindowsHTML}</div>
