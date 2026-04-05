@@ -405,9 +405,16 @@ function generateHTML(state) {
   const staleList = matrixEntries.filter(([_, d]) => {
     if (d.estadoActual !== 'trabajando' || !d.faseActual) return false;
     const entries = d.fases[d.faseActual] || [];
-    return entries.some(e => e.ageMin > 10);
+    return entries.some(e => e.ageMin > 30);
   });
   const stale = staleList.length;
+  const staleDetail = staleList.map(([id, d]) => {
+    const entries = d.fases[d.faseActual] || [];
+    const staleEntry = entries.find(e => e.estado === 'trabajando' && e.ageMin > 30);
+    const skill = staleEntry ? staleEntry.skill : d.faseActual;
+    const mins = staleEntry ? staleEntry.ageMin : '?';
+    return `#${id} (${skill}, ${mins} min)`;
+  }).join(', ');
 
   // Helpers para tooltips (JSON embebido, el HTML lo arma el cliente)
   const buildTtData = (title, list, labelFn) => {
@@ -633,7 +640,7 @@ function generateHTML(state) {
                      e.estado === 'trabajando' ? '⚙' :
                      e.estado === 'listo' ? '✓' :
                      e.estado === 'procesado' ? '✔' : '○';
-        const staleClass = (e.estado === 'trabajando' && e.ageMin > 10) ? ' stale-chip' : '';
+        const staleClass = (e.estado === 'trabajando' && e.ageMin > 30) ? ' stale-chip' : '';
         // Runs anteriores de un skill repetido se muestran compactos
         const priorClass = (e._isRetry && !e._isLatestRun) ? ' chip-prior' : '';
         const runLabel = e._isRetry ? `<sup class="run-idx">${e._runIndex}</sup>` : '';
@@ -825,7 +832,8 @@ function generateHTML(state) {
         <div class="gauge-value">${res.memPercent}% <span class="gauge-detail">${res.memUsedGB}/${res.memTotalGB} GB · max ${res.maxMem}%</span></div>
       </div>
     </div>
-    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}`;
+    ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
+    ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // QA Environment — cards individuales con botones start/stop
   const qaLabels = { dynamo: '🗄️', backend: '⚡', emulator: '📱' };
@@ -1415,7 +1423,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 <body>
   <h1>🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
 
-  ${stale > 0 ? `<div class="alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 10 min en trabajando — posible huérfano</div>` : ''}
+  <!-- orphan alert moved to system section -->
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis">
