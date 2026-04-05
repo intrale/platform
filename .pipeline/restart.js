@@ -98,16 +98,32 @@ function killAll() {
     try { fs.unlinkSync(path.join(PIPELINE, comp.pid)); } catch {}
   }
 
-  // Devolver archivos de trabajando/ a pendiente/ en commander
-  const cmdTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
+  // Mover archivos de trabajando/ Y pendiente/ a listo/ en commander
+  // IMPORTANTE: limpiar AMBAS colas — si hay un mensaje de restart pendiente
+  // y el usuario ya hizo restart manual, el mensaje se re-procesaría
+  // provocando un segundo restart que mata el dashboard recién levantado
   const cmdPendiente = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
+  const cmdTrabajando = path.join(PIPELINE, 'servicios', 'commander', 'trabajando');
+  const cmdListo = path.join(PIPELINE, 'servicios', 'commander', 'listo');
   try {
-    for (const f of fs.readdirSync(cmdTrabajando)) {
-      if (f.endsWith('.json')) {
-        fs.renameSync(path.join(cmdTrabajando, f), path.join(cmdPendiente, f));
-        log(`  Recuperado: commander/${f} → pendiente/`);
+    if (!fs.existsSync(cmdListo)) fs.mkdirSync(cmdListo, { recursive: true });
+    for (const dir of [cmdTrabajando, cmdPendiente]) {
+      for (const f of fs.readdirSync(dir)) {
+        if (f.endsWith('.json')) {
+          fs.renameSync(path.join(dir, f), path.join(cmdListo, f));
+          const src = dir === cmdPendiente ? 'pendiente' : 'trabajando';
+          log(`  Completado: commander/${src}/${f} → listo/`);
+        }
       }
     }
+  } catch {}
+
+  // Escribir timestamp de último restart para evitar restarts encadenados
+  try {
+    fs.writeFileSync(
+      path.join(PIPELINE, 'last-restart.json'),
+      JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid })
+    );
   } catch {}
 
   sleep(2000);

@@ -63,6 +63,7 @@ function readYaml(filepath) {
 }
 
 function writeYaml(filepath, data) {
+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
   fs.writeFileSync(filepath, yaml.dump(data, { lineWidth: -1 }));
 }
 
@@ -87,6 +88,7 @@ function skillFromFile(filename) {
 
 /** Mover archivo entre carpetas (atómico en filesystem) */
 function moveFile(src, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
   const dest = path.join(destDir, path.basename(src));
   fs.renameSync(src, dest);
   return dest;
@@ -2568,6 +2570,22 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         `[Mensaje ${i + 1}${m._esAudio ? ' (audio)' : ''}]: ${m._textoFinal}`
       ).join('\n\n');
       log('commander', `Mensajes consolidados: ${textoLibre.length} → 1 prompt`);
+    }
+
+    // Protección anti-restart encadenado: si el mensaje pide restart y ya hubo
+    // uno reciente (< 2 min), responder directamente sin delegar a Claude
+    const restartPattern = /\b(reinici|restart|levant[aá]|arranc[aá])\b/i;
+    if (restartPattern.test(mensajeConsolidado)) {
+      try {
+        const lastRestart = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8'));
+        const ageSec = (Date.now() - new Date(lastRestart.timestamp).getTime()) / 1000;
+        if (ageSec < 120) {
+          log('commander', `Restart solicitado pero ya hubo uno hace ${Math.round(ageSec)}s — skip`);
+          sendTelegram(`✅ Ya reinicié hace ${Math.round(ageSec)}s, todo debería estar andando. Usá /status para verificar.`);
+          for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
+          return;
+        }
+      } catch {}
     }
 
     // ACK contextual
