@@ -33,23 +33,23 @@ Si algo no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
    c. Esperar que renderice (~15s con swiftshader)
    d. Grabar video de pantalla:
       ```
-      adb shell 'screenrecord --time-limit 30 --bit-rate 6000000 /sdcard/qa-evidence.mp4' &
-      sleep 32
+      adb shell 'screenrecord --time-limit 45 --bit-rate 12000000 /sdcard/qa-evidence.mp4' &
+      sleep 47
       adb pull //sdcard/qa-evidence.mp4 .pipeline/logs/media/qa-<issue>-raw.mp4
       ```
    e. **Validar grabación de pantalla** (antes de seguir):
       ```bash
       VIDEO_RAW=".pipeline/logs/media/qa-<issue>-raw.mp4"
-      # Verificar tamaño mínimo (>500KB = video real)
+      # Verificar tamaño mínimo (>200KB = video real, swiftshader genera videos chicos)
       SIZE=$(stat -c%s "$VIDEO_RAW" 2>/dev/null || stat -f%z "$VIDEO_RAW" 2>/dev/null || echo "0")
-      if [ "$SIZE" -lt 512000 ]; then
-        echo "ERROR: Video pesa ${SIZE} bytes (<500KB) — grabación fallida"
+      if [ "$SIZE" -lt 204800 ]; then
+        echo "ERROR: Video pesa ${SIZE} bytes (<200KB) — grabación fallida"
       fi
       # Verificar duración mínima (>5 segundos)
       DURATION=$(ffmpeg -i "$VIDEO_RAW" 2>&1 | grep Duration | sed 's/.*Duration: \([^,]*\).*/\1/')
       echo "Duración: $DURATION"
       ```
-      Si el video pesa <500KB o dura <5s: **NO aprobar**. Regrabar.
+      Si el video pesa <200KB o dura <5s: **NO aprobar**. Regrabar.
    f. **Generar audio con relato narrado** (OBLIGATORIO):
       Escribir un guión que narre lo que se ve en el video, etapa por etapa,
       mencionando explícitamente cada criterio de aceptación que se verifica.
@@ -128,7 +128,7 @@ Al terminar, dejar pedido en `.pipeline/servicios/github/pendiente/`:
 ### Reglas
 
 - NUNCA aprobar sin evidencia (video o log de requests)
-- NUNCA aprobar si el video pesa <500KB o dura <5 segundos — regrabar
+- NUNCA aprobar si el video pesa <200KB o dura <5 segundos — regrabar
 - NUNCA levantar ni bajar el emulador, backend ni DynamoDB
 - Si el ambiente no esta disponible, rechazar con motivo "ambiente QA no disponible"
 - Si un criterio de aceptacion no es verificable (falta info), rechazar pidiendo mas detalle
