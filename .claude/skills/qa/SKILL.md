@@ -204,7 +204,6 @@ No hay cleanup necesario.
 - Tiempo: Xs
 
 ### Entorno
-- **Modo REMOTO:** Backend Lambda (API Gateway), DynamoDB + Cognito reales en AWS
 - Backend Lambda (API Gateway), DynamoDB + Cognito reales en AWS
 - Datos seed: admin@intrale.com / Admin1234!
 
@@ -473,7 +472,7 @@ Si NO responde, **ABORTAR** — no hacer fallback a local.
 
 ### Tests API generados + pre-existentes (regresión):
 
-Usar la `QA_BASE_URL` determinada en el paso anterior (remota o local):
+Backend siempre remoto:
 
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
