@@ -559,12 +559,30 @@ function generateHTML(state) {
     <th colspan="${devFases.length}" class="group-dev">DESARROLLO</th>
   </tr>`;
 
-  // Sort: trabajando first (by phase advancement desc), then pendiente (by phase desc), then listo, then rest
+  // Sort: issues incompletos primero (trabajando > pendiente > listo entre ellos),
+  // luego finalizados. Dentro del mismo grupo, más avanzados en pipeline primero.
   const faseIndex = (data) => {
     if (!data.faseActual) return -1;
     return allFases.findIndex(f => `${f.pipeline}/${f.fase}` === data.faseActual);
   };
+  const isComplete = (data) => {
+    // Un issue está completo si todas sus fases están en listo/procesado (sin pendiente/trabajando)
+    const hasAnyActive = allFases.some(({ pipeline, fase }) => {
+      const entries = data.fases[`${pipeline}/${fase}`] || [];
+      return entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
+    });
+    if (hasAnyActive) return false;
+    // Además debe tener al menos la última fase de desarrollo como listo/procesado
+    const lastDev = devFases[devFases.length - 1];
+    const lastEntries = data.fases[`desarrollo/${lastDev}`] || [];
+    return lastEntries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+  };
   const sorted = matrixEntries.sort((a, b) => {
+    const aComplete = isComplete(a[1]);
+    const bComplete = isComplete(b[1]);
+    // Incompletos siempre arriba de completos
+    if (aComplete !== bComplete) return aComplete ? 1 : -1;
+    // Dentro del mismo grupo, ordenar por estado
     const order = { trabajando: 0, pendiente: 1, listo: 2 };
     const aO = a[1].estadoActual ? (order[a[1].estadoActual] ?? 3) : 4;
     const bO = b[1].estadoActual ? (order[b[1].estadoActual] ?? 3) : 4;
