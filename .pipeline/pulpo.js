@@ -549,7 +549,7 @@ function countTotalRunningAgents(config) {
 // Si QA dice "aprobado" pero no hay video real con audio, se fuerza rechazo.
 // =============================================================================
 
-const QA_VIDEO_MIN_SIZE_BYTES = 512000; // 500KB mínimo para un video real
+const QA_VIDEO_MIN_SIZE_BYTES = 204800; // 200KB mínimo — swiftshader genera videos chicos pero válidos
 
 /**
  * Validar que el resultado del QA tiene evidencia real.
@@ -562,8 +562,8 @@ function validateQaEvidence(issue, qaData) {
   if (!qaData.evidencia) {
     issues.push('falta campo "evidencia" en resultado QA');
   }
-  if (!qaData.video_size_kb || qaData.video_size_kb < 500) {
-    issues.push(`video_size_kb ausente o muy chico (${qaData.video_size_kb || 0}KB < 500KB)`);
+  if (!qaData.video_size_kb || qaData.video_size_kb < 200) {
+    issues.push(`video_size_kb ausente o muy chico (${qaData.video_size_kb || 0}KB < 200KB)`);
   }
   if (qaData.tiene_audio !== true) {
     issues.push('falta audio narrado en el video (tiene_audio != true)');
@@ -574,7 +574,7 @@ function validateQaEvidence(issue, qaData) {
   try {
     const stat = fs.statSync(videoPath);
     if (stat.size < QA_VIDEO_MIN_SIZE_BYTES) {
-      issues.push(`video existe pero pesa ${Math.round(stat.size / 1024)}KB (mínimo 500KB)`);
+      issues.push(`video existe pero pesa ${Math.round(stat.size / 1024)}KB (mínimo 200KB)`);
     }
   } catch {
     issues.push(`video no encontrado en ${videoPath}`);
