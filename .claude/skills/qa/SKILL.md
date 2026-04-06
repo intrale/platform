@@ -54,51 +54,34 @@ Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan.
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 ```
 
-### Deteccion de modo: remoto (default) vs local
+### Backend y DynamoDB: siempre REMOTO
 
-**Por defecto usar modo REMOTO** — el backend corre en Lambda AWS y el APK se toma de la fase Build previa. Esto ahorra ~5 GB de RAM al no levantar Docker, DynamoDB local ni backend Ktor.
-
-Usar modo LOCAL solo si el usuario pasa `--skip-env` (backend ya corriendo localmente) o si no hay conectividad al endpoint remoto.
-
-**Modo REMOTO (default):**
+El backend corre en Lambda AWS y DynamoDB/Cognito son los reales de AWS. **NO levantar Docker, DynamoDB local ni backend Ktor.** Lo unico local es el emulador Android.
 
 ```bash
-# Verificar conectividad al endpoint remoto
 REMOTE_URL="https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+QA_BASE_URL="$REMOTE_URL"
+```
+
+Verificar conectividad:
+```bash
 STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST "$REMOTE_URL/intrale/signin" -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
 ```
 
-Si el endpoint remoto responde (HTTP 400), usar modo remoto:
+Si el endpoint remoto responde (HTTP 400), continuar:
 ```bash
-# Levantar entorno remoto (liberacion pre-QA + deploy + health-check)
 bash qa/scripts/qa-env-up-remote.sh
 ```
 
-Si no hay conectividad, fallback a modo local.
-
-**Modo LOCAL (fallback o --skip-env):**
-
-### Si plataforma es `api` o `all`:
-
-#### Si NO se pasó `--skip-env`:
-
-Verificar si Docker está corriendo y el backend responde:
-
-```bash
-STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
-[ "$STATUS" = "400" ] && echo "BACKEND_UP" || echo "BACKEND_DOWN"
+Si NO hay conectividad, **ABORTAR con error claro** — no hacer fallback a local:
 ```
-
-Si `BACKEND_DOWN`, levantar el entorno:
-```bash
-bash qa/scripts/qa-env-up.sh
+ERROR: Endpoint remoto no disponible ($REMOTE_URL). Backend y DynamoDB son remotos.
+Verificar: 1) Conectividad de red  2) Estado del deploy en Lambda  3) gh workflow status
 ```
-
-Si `BACKEND_UP`, informar que se reutiliza el entorno existente.
 
 #### Si se pasó `--skip-env`:
 
-Verificar que el backend responde. Si no responde, avisar y abortar.
+Verificar que el endpoint remoto responde. Si no responde, avisar y abortar.
 
 ### APK: usar artefacto de la fase Build
 
@@ -121,15 +104,17 @@ Si no se encuentra APK pre-compilado, compilar como fallback:
 
 ### Plataforma `api` (default)
 
+Backend siempre remoto:
+
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  export QA_BASE_URL="http://localhost:80" && \
+  export QA_BASE_URL="https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev" && \
   ./gradlew :qa:test --info 2>&1 | tail -80
 ```
 
 ### Plataforma `desktop`
 
-Tests UI con compose.uiTest (no requiere entorno Docker):
+Tests UI con compose.uiTest (no requiere entorno backend):
 
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
@@ -197,18 +182,11 @@ Esto desactiva la QA Priority Window y permite que el pipeline reanude el lanzam
 
 #### Si plataforma fue `api` o `all`:
 
-##### Si NO se pasó `--keep-env`:
-
 ```bash
-bash qa/scripts/qa-env-down.sh
+bash qa/scripts/qa-env-down-remote.sh
 ```
 
-##### Si se pasó `--keep-env`:
-
-Informar que el entorno sigue corriendo y cómo detenerlo:
-```
-El entorno QA sigue corriendo. Para detenerlo: ./qa/scripts/qa-env-down.sh
-```
+Esto solo desactiva la QA Priority Window y limpia estado local — no hay Docker/backend que bajar.
 
 ### Si plataforma fue `desktop` o `android`:
 
@@ -226,8 +204,8 @@ No hay cleanup necesario.
 - Tiempo: Xs
 
 ### Entorno
-- Backend: localhost:80 (solo API)
-- Docker: DynamoDB-local + Moto (Cognito mock)
+- **Modo REMOTO:** Backend Lambda (API Gateway), DynamoDB + Cognito reales en AWS
+- Backend Lambda (API Gateway), DynamoDB + Cognito reales en AWS
 - Datos seed: admin@intrale.com / Admin1234!
 
 ### Fallos detectados (si hay)
@@ -476,23 +454,30 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 
 ### Verificar backend (si hay tests API):
 
+Backend siempre remoto — misma logica del Paso 1:
+
 ```bash
-STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
-[ "$STATUS" = "400" ] && echo "BACKEND_UP" || echo "BACKEND_DOWN"
+REMOTE_URL="https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+QA_BASE_URL="$REMOTE_URL"
+STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST "$REMOTE_URL/intrale/signin" -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
 ```
 
-Si `BACKEND_DOWN`, levantar:
+Si responde (HTTP 400):
 ```bash
-bash qa/scripts/qa-env-up.sh
+bash qa/scripts/qa-env-up-remote.sh
 ```
+
+Si NO responde, **ABORTAR** — no hacer fallback a local.
 
 ## Paso V6: Ejecutar tests
 
 ### Tests API generados + pre-existentes (regresión):
 
+Usar la `QA_BASE_URL` determinada en el paso anterior (remota o local):
+
 ```bash
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
-  export QA_BASE_URL="http://localhost:80" && \
+  export QA_BASE_URL="${QA_BASE_URL}" && \
   ./gradlew :qa:test --info 2>&1 | tail -80
 ```
 
@@ -680,9 +665,9 @@ Este paso es **best-effort**: si falla el envío a Telegram, continuar sin abort
 [APROBADO: todos los criterios validados | RECHAZADO: detalle de fallos]
 ```
 
-Limpiar entorno (si se levantó en V5):
+Limpiar entorno remoto:
 ```bash
-bash qa/scripts/qa-env-down.sh
+bash qa/scripts/qa-env-down-remote.sh
 ```
 
 Limpiar tests generados:
