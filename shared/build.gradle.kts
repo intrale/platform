@@ -43,4 +43,8 @@ android {
     defaultConfig {
         minSdk = libs.versions.android.minSdk.get().toInt()
     }
+    lint {
+        // PropertyEscape falla en worktrees por local.properties con paths Windows
+        disable += "PropertyEscape"
+    }
 }
