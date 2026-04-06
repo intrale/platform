@@ -221,8 +221,12 @@ function getPipelineState() {
         state.issueMatrix[issue].fases[`${pName}/${fase}`].push(entry);
 
         if (estado !== 'procesado') {
-          state.issueMatrix[issue].faseActual = `${pName}/${fase}`;
-          state.issueMatrix[issue].estadoActual = estado;
+          // 'trabajando' tiene prioridad: no sobreescribir con 'listo' o 'pendiente'
+          const prev = state.issueMatrix[issue].estadoActual;
+          if (!prev || prev !== 'trabajando' || estado === 'trabajando') {
+            state.issueMatrix[issue].faseActual = `${pName}/${fase}`;
+            state.issueMatrix[issue].estadoActual = estado;
+          }
         }
       }
     }
@@ -312,7 +316,7 @@ function getPipelineState() {
   }
 
   // QA Environment
-  state.qaEnv = { dynamo: false, backend: false, emulator: false };
+  state.qaEnv = { emulator: false };
   state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
@@ -555,12 +559,30 @@ function generateHTML(state) {
     <th colspan="${devFases.length}" class="group-dev">DESARROLLO</th>
   </tr>`;
 
-  // Sort: trabajando first (by phase advancement desc), then pendiente (by phase desc), then listo, then rest
+  // Sort: issues incompletos primero (trabajando > pendiente > listo entre ellos),
+  // luego finalizados. Dentro del mismo grupo, más avanzados en pipeline primero.
   const faseIndex = (data) => {
     if (!data.faseActual) return -1;
     return allFases.findIndex(f => `${f.pipeline}/${f.fase}` === data.faseActual);
   };
+  const isComplete = (data) => {
+    // Un issue está completo si todas sus fases están en listo/procesado (sin pendiente/trabajando)
+    const hasAnyActive = allFases.some(({ pipeline, fase }) => {
+      const entries = data.fases[`${pipeline}/${fase}`] || [];
+      return entries.some(e => e.estado === 'pendiente' || e.estado === 'trabajando');
+    });
+    if (hasAnyActive) return false;
+    // Además debe tener al menos la última fase de desarrollo como listo/procesado
+    const lastDev = devFases[devFases.length - 1];
+    const lastEntries = data.fases[`desarrollo/${lastDev}`] || [];
+    return lastEntries.some(e => e.estado === 'listo' || e.estado === 'procesado');
+  };
   const sorted = matrixEntries.sort((a, b) => {
+    const aComplete = isComplete(a[1]);
+    const bComplete = isComplete(b[1]);
+    // Incompletos siempre arriba de completos
+    if (aComplete !== bComplete) return aComplete ? 1 : -1;
+    // Dentro del mismo grupo, ordenar por estado
     const order = { trabajando: 0, pendiente: 1, listo: 2 };
     const aO = a[1].estadoActual ? (order[a[1].estadoActual] ?? 3) : 4;
     const bO = b[1].estadoActual ? (order[b[1].estadoActual] ?? 3) : 4;
@@ -917,8 +939,8 @@ function generateHTML(state) {
     ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // QA Environment — cards individuales con botones start/stop
-  const qaLabels = { dynamo: '🗄️', backend: '⚡', emulator: '📱' };
-  const qaNames = { dynamo: 'DynamoDB', backend: 'Backend', emulator: 'Emulador' };
+  const qaLabels = { emulator: '📱' };
+  const qaNames = { emulator: 'Emulador Android' };
   const allQaUp = Object.values(state.qaEnv).every(v => v);
   const anyQaUp = Object.values(state.qaEnv).some(v => v);
   const qaRemoteActive = state.qaRemote && state.qaRemote.active;
@@ -940,8 +962,8 @@ function generateHTML(state) {
   } else {
     // Modo local — cards individuales
     const qaGlobalBtn = anyQaUp
-      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener todo QA">■</button>`
-      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar todo QA">▶</button>`;
+      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener emulador">■</button>`
+      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar emulador">▶</button>`;
     qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
       const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
       const btn = alive
@@ -2350,7 +2372,7 @@ const server = http.createServer((req, res) => {
         const { target, action, component } = JSON.parse(body);
         let result;
         if (target === 'qa') {
-          result = qaAction(action, component); // component: 'dynamo'|'backend'|'emulator' or undefined for all
+          result = qaAction(action, component); // component: 'emulator' (dynamo/backend are remote AWS)
         } else if (action === 'start') {
           result = startComponent(target);
         } else if (action === 'stop') {
