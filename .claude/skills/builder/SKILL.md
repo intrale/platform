@@ -105,7 +105,40 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
   ./gradlew :app:composeApp:scanNonAsciiFallbacks 2>&1 | tail -30
 ```
 
-## Paso 4: Analizar resultado
+## Paso 4: Generar artefactos QA
+
+Despues de un build exitoso que incluya `users` o `app`, generar los artefactos que la fase QA necesita. Esto evita que QA tenga que recompilar (ahorra ~2.5 GB de RAM).
+
+### Si el build incluye el modulo `users`:
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
+  ./gradlew :users:shadowJar --no-daemon 2>&1 | tail -20
+```
+
+### Si el build incluye el modulo `app`:
+```bash
+export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7" && \
+  ./gradlew :app:composeApp:assembleClientDebug --no-daemon 2>&1 | tail -20
+```
+
+**IMPORTANTE:** El APK se compila SIN `-PLOCAL_BASE_URL` para que use el endpoint remoto de API Gateway por defecto.
+
+### Copiar artefactos a ubicacion fija:
+```bash
+mkdir -p qa/artifacts/
+# Backend JAR (si se compilo users)
+[ -f users/build/libs/users-all.jar ] && cp users/build/libs/users-all.jar qa/artifacts/
+# APK client (si se compilo app)
+APK=$(find app/composeApp/build/outputs/apk/client/debug/ -name '*.apk' 2>/dev/null | head -1)
+[ -n "$APK" ] && cp "$APK" qa/artifacts/composeApp-client-debug.apk
+# Metadata
+git rev-parse HEAD > qa/artifacts/BUILD_COMMIT
+date -u +%Y%m%d-%H%M%S > qa/artifacts/BUILD_TIMESTAMP
+echo "Artefactos QA copiados a qa/artifacts/"
+ls -lh qa/artifacts/
+```
+
+## Paso 5: Analizar resultado
 
 ### Si el build pasa
 
@@ -113,6 +146,7 @@ Reportar:
 - Modulos compilados
 - Tiempo total de build
 - Verificaciones ejecutadas y su resultado
+- Artefactos QA generados (si aplica)
 - "Build exitoso!" al final
 
 ### Si el build falla
@@ -136,7 +170,7 @@ Para cada error de compilacion:
 - Kotlin version mismatch → Verificar `gradle.properties` y `buildSrc`
 - `forbidden-strings-processor` bloqueando → Revisar uso de `stringResource` o `Res.string`
 
-## Paso 5: Reporte final
+## Paso 6: Reporte final
 
 ```
 ## Build: EXITOSO ✅ | FALLIDO ❌
