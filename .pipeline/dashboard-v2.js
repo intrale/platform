@@ -221,8 +221,12 @@ function getPipelineState() {
         state.issueMatrix[issue].fases[`${pName}/${fase}`].push(entry);
 
         if (estado !== 'procesado') {
-          state.issueMatrix[issue].faseActual = `${pName}/${fase}`;
-          state.issueMatrix[issue].estadoActual = estado;
+          // 'trabajando' tiene prioridad: no sobreescribir con 'listo' o 'pendiente'
+          const prev = state.issueMatrix[issue].estadoActual;
+          if (!prev || prev !== 'trabajando' || estado === 'trabajando') {
+            state.issueMatrix[issue].faseActual = `${pName}/${fase}`;
+            state.issueMatrix[issue].estadoActual = estado;
+          }
         }
       }
     }
