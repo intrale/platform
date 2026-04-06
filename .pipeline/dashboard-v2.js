@@ -313,6 +313,7 @@ function getPipelineState() {
 
   // QA Environment
   state.qaEnv = { dynamo: false, backend: false, emulator: false };
+  state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
     for (const [svc, pid] of Object.entries(qaState)) {
@@ -321,6 +322,21 @@ function getPipelineState() {
           const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
           state.qaEnv[svc] = r.includes(`"${pid}"`);
         } catch {}
+      }
+    }
+  } catch {}
+  // QA Remote state
+  try {
+    const remoteStateFile = path.join(ROOT, 'qa', '.qa-remote-state');
+    if (fs.existsSync(remoteStateFile)) {
+      const lines = fs.readFileSync(remoteStateFile, 'utf8').split('\n');
+      for (const line of lines) {
+        const [k, ...vParts] = line.split('=');
+        const v = vParts.join('=').trim();
+        if (k === 'QA_MODE' && v === 'remote') state.qaRemote.active = true;
+        if (k === 'QA_REMOTE_URL') state.qaRemote.url = v;
+        if (k === 'DEPLOY_REF') state.qaRemote.ref = v;
+        if (k === 'STARTED_AT') state.qaRemote.startedAt = v;
       }
     }
   } catch {}
@@ -905,22 +921,41 @@ function generateHTML(state) {
   const qaNames = { dynamo: 'DynamoDB', backend: 'Backend', emulator: 'Emulador' };
   const allQaUp = Object.values(state.qaEnv).every(v => v);
   const anyQaUp = Object.values(state.qaEnv).some(v => v);
-  const qaGlobalBtn = anyQaUp
-    ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener todo QA">■</button>`
-    : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar todo QA">▶</button>`;
-  let qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
-    const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
-    const btn = alive
-      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener ${qaNames[name]}">■</button>`
-      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar ${qaNames[name]}">▶</button>`;
-    return `<div class="svc-card ${statusCls}">
+  const qaRemoteActive = state.qaRemote && state.qaRemote.active;
+
+  let qaEnvHTML = '';
+
+  if (qaRemoteActive) {
+    // Modo remoto activo — mostrar card especial
+    qaEnvHTML = `<div class="svc-card svc-card-ok" style="grid-column: span 3; background: linear-gradient(135deg, #0984e3 0%, #6c5ce7 100%); color: white;">
       <div class="svc-card-header">
-        ${btn}<span class="svc-card-name">${qaLabels[name] || ''} ${qaNames[name] || name}</span>
-        ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+        <span class="svc-card-name">☁️ QA Remoto (Lambda AWS)</span>
+        <span class="svc-card-pulse"></span>
       </div>
-      <div class="svc-card-pid">${alive ? 'activo' : 'detenido'}</div>
+      <div class="svc-card-pid" style="color: rgba(255,255,255,0.9);">
+        Rama: ${state.qaRemote.ref || 'N/A'}<br>
+        Desde: ${state.qaRemote.startedAt || 'N/A'}
+      </div>
     </div>`;
-  }).join('');
+  } else {
+    // Modo local — cards individuales
+    const qaGlobalBtn = anyQaUp
+      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener todo QA">■</button>`
+      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar todo QA">▶</button>`;
+    qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
+      const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
+      const btn = alive
+        ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener ${qaNames[name]}">■</button>`
+        : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar ${qaNames[name]}">▶</button>`;
+      return `<div class="svc-card ${statusCls}">
+        <div class="svc-card-header">
+          ${btn}<span class="svc-card-name">${qaLabels[name] || ''} ${qaNames[name] || name}</span>
+          ${alive ? '<span class="svc-card-pulse"></span>' : ''}
+        </div>
+        <div class="svc-card-pid">${alive ? 'activo' : 'detenido'}</div>
+      </div>`;
+    }).join('');
+  }
 
   // Priority Windows (QA + Build)
   const pwQa = state.priorityWindows.qa;
@@ -1544,7 +1579,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
     <div class="bar-section dual-col">
       <h2>💻 Sistema</h2>
       ${resourcesHTML}
-      <div class="subsection-label" style="margin-top:14px">QA Environment ${qaGlobalBtn}</div>
+      <div class="subsection-label" style="margin-top:14px">QA Environment${qaRemoteActive ? ' ☁️ REMOTO' : (anyQaUp ? '' : '')}</div>
       <div class="svc-grid">${qaEnvHTML}</div>
       <div class="subsection-label">Priority Windows</div>
       ${priorityWindowsHTML}

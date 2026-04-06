@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# smoke-test.sh — Ciclo completo de validación QA local
+# smoke-test.sh — Ciclo completo de validación QA
 # Ejecuta: prerequisitos → backend up → healthcheck → emulador → APK → Maestro → evidencia
 #
 # Uso:
-#   bash qa/scripts/smoke-test.sh [--issue N] [--no-video] [--skip-backend]
+#   bash qa/scripts/smoke-test.sh [--issue N] [--no-video] [--skip-backend] [--remote]
 #
 # Opciones:
 #   --issue N       Número de issue para nombrar la evidencia (ej: --issue 1781)
 #   --no-video      Saltar grabación de video (más rápido, para pruebas de configuración)
 #   --skip-backend  Asumir que el backend ya está corriendo (no levanta Docker/Ktor)
 #   --skip-emulator Asumir que el emulador ya está corriendo
+#   --remote        Modo remoto: backend en Lambda AWS, APK de qa/artifacts/ (sin Docker ni Gradle)
 #
 # Env vars opcionales:
 #   QA_BASE_URL  — URL base del backend (default: http://localhost:80)
@@ -30,6 +31,7 @@ ISSUE_NUMBER="0"
 NO_VIDEO="false"
 SKIP_BACKEND="false"
 SKIP_EMULATOR="false"
+REMOTE_MODE="false"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -50,6 +52,10 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-emulator)
             SKIP_EMULATOR="true"
+            ;;
+        --remote)
+            REMOTE_MODE="true"
+            SKIP_BACKEND="true"  # No levantar backend local
             ;;
         --help|-h)
             head -22 "$0" | grep '^#' | sed 's/^# //'
@@ -93,11 +99,16 @@ step_end() {
 
 TOTAL_START=$(date +%s)
 
-log "=== Smoke Test QA — Ambiente Local ==="
+if [ "$REMOTE_MODE" = "true" ]; then
+    log "=== Smoke Test QA — Modo REMOTO (Lambda AWS) ==="
+else
+    log "=== Smoke Test QA — Ambiente Local ==="
+fi
 log "  Timestamp : $TIMESTAMP"
 log "  Issue     : #${ISSUE_NUMBER}"
 log "  Sin video : $NO_VIDEO"
-log "  Backend   : $([ "$SKIP_BACKEND" = "true" ] && echo "ya corriendo (--skip-backend)" || echo "levantar automáticamente")"
+log "  Modo      : $([ "$REMOTE_MODE" = "true" ] && echo "REMOTO (Lambda AWS)" || echo "LOCAL")"
+log "  Backend   : $([ "$REMOTE_MODE" = "true" ] && echo "Lambda AWS (remoto)" || ([ "$SKIP_BACKEND" = "true" ] && echo "ya corriendo (--skip-backend)" || echo "levantar automáticamente"))"
 log ""
 
 # ── JAVA_HOME ────────────────────────────────────────────────────────────────
@@ -129,7 +140,22 @@ fi
 step_end
 
 # ── PASO 2: Levantar backend ──────────────────────────────────────────────────
-if [ "$SKIP_BACKEND" = "false" ]; then
+if [ "$REMOTE_MODE" = "true" ]; then
+    step_start "2/7" "Levantando backend REMOTO (Lambda AWS)..."
+    REMOTE_ARGS=""
+    [ -n "${ISSUE_NUMBER}" ] && [ "$ISSUE_NUMBER" != "0" ] && REMOTE_ARGS="$REMOTE_ARGS"
+    if ! bash "${SCRIPT_DIR}/qa-env-up-remote.sh" >> "$LOG_FILE" 2>&1; then
+        log "  ✗ Backend remoto no pudo levantarse"
+        log "  Ver logs: $LOG_FILE"
+        exit 1
+    fi
+    # Leer el APK path del estado remoto
+    if [ -f "$PROJECT_ROOT/qa/.qa-remote-state" ]; then
+        REMOTE_APK_PATH=$(grep '^APK_PATH=' "$PROJECT_ROOT/qa/.qa-remote-state" | cut -d= -f2-)
+    fi
+    QA_BASE_URL="https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+    step_end
+elif [ "$SKIP_BACKEND" = "false" ]; then
     step_start "2/7" "Levantando backend (Docker + Ktor)..."
     if ! bash "${SCRIPT_DIR}/qa-env-up.sh" >> "$LOG_FILE" 2>&1; then
         log "  ✗ Backend no pudo levantarse"
@@ -145,11 +171,25 @@ fi
 # ── PASO 3: Health-check del backend ─────────────────────────────────────────
 step_start "3/7" "Verificando endpoints del backend..."
 HC_LOG="${EVIDENCE_RUN_DIR}/healthcheck.log"
-if ! bash "${SCRIPT_DIR}/backend-healthcheck.sh" 2>&1 | tee "$HC_LOG" >> "$LOG_FILE"; then
-    log "  ✗ Health-check falló"
-    log "  Detalle: $HC_LOG"
-    # No salir — el emulador puede seguir corriendo, el backend puede estar en warmup
-    log "  WARN: continuando a pesar del fallo de health-check..."
+if [ "$REMOTE_MODE" = "true" ]; then
+    # Health-check al endpoint remoto
+    HC_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+        -X POST "$QA_BASE_URL/intrale/signin" \
+        -H "Content-Type: application/json" \
+        -d '{}' 2>/dev/null)
+    echo "Health-check remoto: HTTP $HC_STATUS" > "$HC_LOG"
+    if [ "$HC_STATUS" = "400" ] || [ "$HC_STATUS" = "401" ]; then
+        log "  ✓ Lambda respondiendo correctamente (HTTP $HC_STATUS)"
+    else
+        log "  WARN: Health-check retorno HTTP $HC_STATUS (esperado 400 o 401)"
+        log "  Continuando igualmente..."
+    fi
+else
+    if ! bash "${SCRIPT_DIR}/backend-healthcheck.sh" 2>&1 | tee "$HC_LOG" >> "$LOG_FILE"; then
+        log "  ✗ Health-check falló"
+        log "  Detalle: $HC_LOG"
+        log "  WARN: continuando a pesar del fallo de health-check..."
+    fi
 fi
 step_end
 
@@ -238,22 +278,45 @@ else
 fi
 
 # ── PASO 5: Build e instalación del APK ──────────────────────────────────────
-step_start "5/7" "Compilando e instalando APK client debug..."
 cd "$PROJECT_ROOT"
 BUILD_LOG="${EVIDENCE_RUN_DIR}/build.log"
 
-if ! ./gradlew :app:composeApp:assembleClientDebug --no-daemon >> "$BUILD_LOG" 2>&1; then
-    log "  ✗ Build falló"
-    log "  Ver logs: $BUILD_LOG"
-    exit 1
-fi
+if [ "$REMOTE_MODE" = "true" ]; then
+    step_start "5/7" "Instalando APK pre-compilado (modo remoto)..."
 
-APK_PATH=$(find "${PROJECT_ROOT}/app/composeApp/build/outputs/apk/client/debug" -name "*.apk" -type f 2>/dev/null | head -1)
-if [ -z "$APK_PATH" ]; then
-    log "  ✗ APK no encontrado en build/outputs/apk/client/debug/"
-    exit 1
+    # Usar APK de qa-env-up-remote.sh o qa/artifacts/
+    if [ -n "${REMOTE_APK_PATH:-}" ] && [ -f "${REMOTE_APK_PATH}" ]; then
+        APK_PATH="$REMOTE_APK_PATH"
+    elif [ -f "${PROJECT_ROOT}/qa/artifacts/composeApp-client-debug.apk" ]; then
+        APK_PATH="${PROJECT_ROOT}/qa/artifacts/composeApp-client-debug.apk"
+    else
+        # Buscar en build/outputs como fallback
+        APK_PATH=$(find "${PROJECT_ROOT}/app/composeApp/build/outputs/apk/client/debug" -name "*.apk" -type f 2>/dev/null | head -1)
+    fi
+
+    if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+        log "  ✗ APK no encontrado. La fase Build debe generarlo primero."
+        log "  Buscado en: qa/artifacts/, build/outputs/, worktrees"
+        exit 1
+    fi
+    log "  APK (pre-compilado): $(basename "$APK_PATH") — $(du -h "$APK_PATH" | cut -f1)"
+    echo "APK pre-compilado: $APK_PATH" > "$BUILD_LOG"
+else
+    step_start "5/7" "Compilando e instalando APK client debug..."
+
+    if ! ./gradlew :app:composeApp:assembleClientDebug --no-daemon >> "$BUILD_LOG" 2>&1; then
+        log "  ✗ Build falló"
+        log "  Ver logs: $BUILD_LOG"
+        exit 1
+    fi
+
+    APK_PATH=$(find "${PROJECT_ROOT}/app/composeApp/build/outputs/apk/client/debug" -name "*.apk" -type f 2>/dev/null | head -1)
+    if [ -z "$APK_PATH" ]; then
+        log "  ✗ APK no encontrado en build/outputs/apk/client/debug/"
+        exit 1
+    fi
+    log "  APK: $(basename "$APK_PATH")"
 fi
-log "  APK: $(basename "$APK_PATH")"
 
 if command -v adb &>/dev/null; then
     if ! adb -s "$AVD_SERIAL" install -r "$APK_PATH" >> "$LOG_FILE" 2>&1; then
@@ -392,6 +455,13 @@ if [ "$TOTAL_ELAPSED" -gt 600 ]; then
 else
     log ""
     log "  ✓ Ciclo completado dentro del objetivo de 10 minutos"
+fi
+
+# Cleanup remoto si aplica
+if [ "$REMOTE_MODE" = "true" ]; then
+    log ""
+    log "Desactivando QA Priority Window..."
+    bash "${SCRIPT_DIR}/qa-env-down-remote.sh" >> "$LOG_FILE" 2>&1 || true
 fi
 
 exit 0

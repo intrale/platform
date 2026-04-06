@@ -47,6 +47,9 @@ deps_commonMain.txt
 qa/recordings/
 qa/.backend.pid
 
+# QA E2E — artefactos de build (JAR + APK generados por /builder)
+qa/artifacts/
+
 # QA E2E — tests generados (efímeros, se regeneran con /qa validate)
 qa/generated/
 

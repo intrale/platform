@@ -54,6 +54,30 @@ Antes de empezar, creá las tareas con `TaskCreate` mapeando los pasos del plan.
 export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 ```
 
+### Deteccion de modo: remoto (default) vs local
+
+**Por defecto usar modo REMOTO** — el backend corre en Lambda AWS y el APK se toma de la fase Build previa. Esto ahorra ~5 GB de RAM al no levantar Docker, DynamoDB local ni backend Ktor.
+
+Usar modo LOCAL solo si el usuario pasa `--skip-env` (backend ya corriendo localmente) o si no hay conectividad al endpoint remoto.
+
+**Modo REMOTO (default):**
+
+```bash
+# Verificar conectividad al endpoint remoto
+REMOTE_URL="https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST "$REMOTE_URL/intrale/signin" -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
+```
+
+Si el endpoint remoto responde (HTTP 400), usar modo remoto:
+```bash
+# Levantar entorno remoto (liberacion pre-QA + deploy + health-check)
+bash qa/scripts/qa-env-up-remote.sh
+```
+
+Si no hay conectividad, fallback a modo local.
+
+**Modo LOCAL (fallback o --skip-env):**
+
 ### Si plataforma es `api` o `all`:
 
 #### Si NO se pasó `--skip-env`:
@@ -61,7 +85,6 @@ export JAVA_HOME="/c/Users/Administrator/.jdks/temurin-21.0.7"
 Verificar si Docker está corriendo y el backend responde:
 
 ```bash
-# Verificar si el backend responde (signin con body vacio = 400 significa que esta vivo)
 STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
 [ "$STATUS" = "400" ] && echo "BACKEND_UP" || echo "BACKEND_DOWN"
 ```
@@ -76,6 +99,23 @@ Si `BACKEND_UP`, informar que se reutiliza el entorno existente.
 #### Si se pasó `--skip-env`:
 
 Verificar que el backend responde. Si no responde, avisar y abortar.
+
+### APK: usar artefacto de la fase Build
+
+En lugar de compilar el APK en QA, usar el artefacto pre-compilado de la fase Build:
+
+```bash
+# Buscar APK en orden de prioridad:
+# 1. qa/artifacts/composeApp-client-debug.apk (copiado por fase Build)
+# 2. app/composeApp/build/outputs/apk/client/debug/*.apk (build local)
+# 3. Worktrees de build del mismo issue
+APK_PATH="qa/artifacts/composeApp-client-debug.apk"
+```
+
+Si no se encuentra APK pre-compilado, compilar como fallback:
+```bash
+./gradlew :app:composeApp:assembleClientDebug --no-daemon
+```
 
 ## Paso 2: Correr tests E2E
 
@@ -146,15 +186,24 @@ ls -la qa/recordings/maestro-results.xml 2>/dev/null || echo "Sin reportes Maest
 
 ## Paso 4: Limpiar entorno
 
-### Si plataforma fue `api` o `all`:
+### Modo REMOTO:
 
-#### Si NO se pasó `--keep-env`:
+```bash
+bash qa/scripts/qa-env-down-remote.sh
+```
+Esto desactiva la QA Priority Window y permite que el pipeline reanude el lanzamiento de agentes.
+
+### Modo LOCAL:
+
+#### Si plataforma fue `api` o `all`:
+
+##### Si NO se pasó `--keep-env`:
 
 ```bash
 bash qa/scripts/qa-env-down.sh
 ```
 
-#### Si se pasó `--keep-env`:
+##### Si se pasó `--keep-env`:
 
 Informar que el entorno sigue corriendo y cómo detenerlo:
 ```
