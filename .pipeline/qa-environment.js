@@ -42,13 +42,6 @@ function isAlive(pid) {
   } catch { return false; }
 }
 
-function checkPort(port) {
-  try {
-    execSync(`netstat -an | findstr ":${port} "`, { encoding: 'utf8', timeout: 5000, windowsHide: true });
-    return true;
-  } catch { return false; }
-}
-
 // --- START ---
 
 function startAll() {
