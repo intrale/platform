@@ -3,17 +3,18 @@
 # Ejecuta: prerequisitos → backend up → healthcheck → emulador → APK → Maestro → evidencia
 #
 # Uso:
-#   bash qa/scripts/smoke-test.sh [--issue N] [--no-video] [--skip-backend] [--remote]
+#   bash qa/scripts/smoke-test.sh [--issue N] [--no-video] [--skip-emulator] [--local]
 #
 # Opciones:
 #   --issue N       Número de issue para nombrar la evidencia (ej: --issue 1781)
 #   --no-video      Saltar grabación de video (más rápido, para pruebas de configuración)
-#   --skip-backend  Asumir que el backend ya está corriendo (no levanta Docker/Ktor)
+#   --skip-backend  Asumir que el backend ya está corriendo (no levanta Docker/Ktor) — solo con --local
 #   --skip-emulator Asumir que el emulador ya está corriendo
-#   --remote        Modo remoto: backend en Lambda AWS, APK de qa/artifacts/ (sin Docker ni Gradle)
+#   --local         Modo local: levanta Docker + DynamoDB + backend Ktor (default: remoto Lambda AWS)
+#   --remote        (legacy, ahora es el default) Modo remoto explícito
 #
 # Env vars opcionales:
-#   QA_BASE_URL  — URL base del backend (default: http://localhost:80)
+#   QA_BASE_URL  — URL base del backend (default: Lambda AWS remoto)
 #   JAVA_HOME    — Path al JDK 21 (se detecta automáticamente si no está seteado)
 #
 # Salida:
@@ -31,7 +32,7 @@ ISSUE_NUMBER="0"
 NO_VIDEO="false"
 SKIP_BACKEND="false"
 SKIP_EMULATOR="false"
-REMOTE_MODE="false"
+REMOTE_MODE="true"
 SKIP_DEPLOY="false"
 
 while [ $# -gt 0 ]; do
@@ -58,6 +59,9 @@ while [ $# -gt 0 ]; do
             REMOTE_MODE="true"
             SKIP_BACKEND="true"  # No levantar backend local
             ;;
+        --local)
+            REMOTE_MODE="false"
+            ;;
         --skip-deploy)
             SKIP_DEPLOY="true"  # No deployar a Lambda (asumir versión actual)
             ;;
@@ -73,6 +77,11 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# En modo remoto, nunca levantar backend local
+if [ "$REMOTE_MODE" = "true" ]; then
+    SKIP_BACKEND="true"
+fi
 
 # ── Inicialización ────────────────────────────────────────────────────────────
 TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"

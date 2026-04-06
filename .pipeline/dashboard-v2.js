@@ -312,7 +312,7 @@ function getPipelineState() {
   }
 
   // QA Environment
-  state.qaEnv = { dynamo: false, backend: false, emulator: false };
+  state.qaEnv = { emulator: false };
   state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
@@ -917,8 +917,8 @@ function generateHTML(state) {
     ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // QA Environment — cards individuales con botones start/stop
-  const qaLabels = { dynamo: '🗄️', backend: '⚡', emulator: '📱' };
-  const qaNames = { dynamo: 'DynamoDB', backend: 'Backend', emulator: 'Emulador' };
+  const qaLabels = { emulator: '📱' };
+  const qaNames = { emulator: 'Emulador Android' };
   const allQaUp = Object.values(state.qaEnv).every(v => v);
   const anyQaUp = Object.values(state.qaEnv).some(v => v);
   const qaRemoteActive = state.qaRemote && state.qaRemote.active;
@@ -940,8 +940,8 @@ function generateHTML(state) {
   } else {
     // Modo local — cards individuales
     const qaGlobalBtn = anyQaUp
-      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener todo QA">■</button>`
-      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar todo QA">▶</button>`;
+      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener emulador">■</button>`
+      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar emulador">▶</button>`;
     qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
       const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
       const btn = alive
@@ -2350,7 +2350,7 @@ const server = http.createServer((req, res) => {
         const { target, action, component } = JSON.parse(body);
         let result;
         if (target === 'qa') {
-          result = qaAction(action, component); // component: 'dynamo'|'backend'|'emulator' or undefined for all
+          result = qaAction(action, component); // component: 'emulator' (dynamo/backend are remote AWS)
         } else if (action === 'start') {
           result = startComponent(target);
         } else if (action === 'stop') {
