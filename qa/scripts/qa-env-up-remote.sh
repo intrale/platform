@@ -29,7 +29,7 @@ QA_REMOTE_URL="https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
 # Parametros
 SKIP_DEPLOY=false
 DEPLOY_REF=""
-MIN_FREE_RAM_MB=3000
+MIN_FREE_RAM_MB=2000
 
 # Parse args
 while [ $# -gt 0 ]; do

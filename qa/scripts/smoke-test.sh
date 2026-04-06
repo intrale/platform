@@ -32,6 +32,7 @@ NO_VIDEO="false"
 SKIP_BACKEND="false"
 SKIP_EMULATOR="false"
 REMOTE_MODE="false"
+SKIP_DEPLOY="false"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -56,6 +57,9 @@ while [ $# -gt 0 ]; do
         --remote)
             REMOTE_MODE="true"
             SKIP_BACKEND="true"  # No levantar backend local
+            ;;
+        --skip-deploy)
+            SKIP_DEPLOY="true"  # No deployar a Lambda (asumir versión actual)
             ;;
         --help|-h)
             head -22 "$0" | grep '^#' | sed 's/^# //'
@@ -133,9 +137,30 @@ log "  JAVA_HOME : ${JAVA_HOME:-<no seteado>}"
 
 # ── PASO 1: Verificar prerequisitos ──────────────────────────────────────────
 step_start "1/7" "Verificando prerequisitos..."
-if ! bash "${PROJECT_ROOT}/scripts/validate-env.sh" >> "$LOG_FILE" 2>&1; then
-    log "  ✗ Prerequisitos faltantes (ver log: $LOG_FILE)"
-    exit 1
+if [ "$REMOTE_MODE" = "true" ]; then
+    # En modo remoto solo necesitamos Java, ADB y emulador (no Docker)
+    PREREQ_OK="true"
+    if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+        log "  ✗ JAVA_HOME no configurado o Java no encontrado"
+        PREREQ_OK="false"
+    else
+        log "  ✓ Java: $(${JAVA_HOME}/bin/java -version 2>&1 | head -1)"
+    fi
+    if ! command -v adb &>/dev/null; then
+        log "  ✗ adb no encontrado en PATH"
+        PREREQ_OK="false"
+    else
+        log "  ✓ ADB: $(adb version 2>&1 | head -1)"
+    fi
+    if [ "$PREREQ_OK" = "false" ]; then
+        log "  ✗ Prerequisitos faltantes para modo remoto"
+        exit 1
+    fi
+else
+    if ! bash "${PROJECT_ROOT}/scripts/validate-env.sh" >> "$LOG_FILE" 2>&1; then
+        log "  ✗ Prerequisitos faltantes (ver log: $LOG_FILE)"
+        exit 1
+    fi
 fi
 step_end
 
@@ -143,8 +168,8 @@ step_end
 if [ "$REMOTE_MODE" = "true" ]; then
     step_start "2/7" "Levantando backend REMOTO (Lambda AWS)..."
     REMOTE_ARGS=""
-    [ -n "${ISSUE_NUMBER}" ] && [ "$ISSUE_NUMBER" != "0" ] && REMOTE_ARGS="$REMOTE_ARGS"
-    if ! bash "${SCRIPT_DIR}/qa-env-up-remote.sh" >> "$LOG_FILE" 2>&1; then
+    [ "$SKIP_DEPLOY" = "true" ] && REMOTE_ARGS="$REMOTE_ARGS --skip-deploy"
+    if ! bash "${SCRIPT_DIR}/qa-env-up-remote.sh" $REMOTE_ARGS >> "$LOG_FILE" 2>&1; then
         log "  ✗ Backend remoto no pudo levantarse"
         log "  Ver logs: $LOG_FILE"
         exit 1
