@@ -12,6 +12,7 @@ import asdo.client.ToDoGetClientProfile
 import asdo.client.ToDoGetPaymentMethods
 import asdo.client.ToDoManageClientAddress
 import asdo.client.ToDoUpdateClientProfile
+import asdo.client.ToDoUpdatePushPreferences
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
