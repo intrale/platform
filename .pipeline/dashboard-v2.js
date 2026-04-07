@@ -750,7 +750,8 @@ function generateHTML(state) {
         // Wrap in link if log exists
         const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${killBtn}${tooltip}</span>`;
         if (e.hasLog) {
-          return `<a href="/logs/${e.logFile}" target="_blank" class="log-link">${inner}</a>`;
+          const isLive = e.estado === 'trabajando';
+          return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
         }
         return inner;
       }).join(' ');
@@ -1290,6 +1291,128 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link{text-decoration:none}
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
+/* ── Log Viewer Panel ──────────────────────────────────────────────────── */
+.log-overlay{
+  display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:500;
+  background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);
+}
+.log-overlay.open{display:block}
+.log-panel{
+  position:fixed;top:0;right:0;bottom:0;width:55%;min-width:480px;max-width:900px;
+  background:var(--bg);border-left:2px solid var(--bd);z-index:501;
+  display:flex;flex-direction:column;
+  transform:translateX(100%);transition:transform 0.25s ease-out;
+  box-shadow:-8px 0 32px rgba(0,0,0,0.6);
+}
+.log-overlay.open .log-panel{transform:translateX(0)}
+
+.log-header{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 16px;border-bottom:1px solid var(--bd);
+  background:var(--sf);flex-shrink:0;
+}
+.log-title{font-weight:700;font-size:1.05em;color:var(--tx);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.log-live-badge{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:0.75em;font-weight:700;color:var(--rd);
+  padding:2px 8px;border-radius:10px;
+  background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.3);
+}
+.log-live-dot{
+  width:6px;height:6px;border-radius:50%;background:var(--rd);
+  animation:pulse 1.5s infinite;
+}
+.log-done-badge{
+  font-size:0.75em;font-weight:600;color:var(--dim);
+  padding:2px 8px;border-radius:10px;
+  background:rgba(139,148,158,0.12);border:1px solid rgba(139,148,158,0.25);
+}
+.log-close{
+  background:none;border:1px solid var(--bd);color:var(--dim);
+  width:28px;height:28px;border-radius:6px;cursor:pointer;
+  font-size:1.1em;display:flex;align-items:center;justify-content:center;
+  transition:all 0.15s;
+}
+.log-close:hover{background:var(--rd);color:var(--tx);border-color:var(--rd)}
+.log-open-tab{
+  background:none;border:1px solid var(--bd);color:var(--dim);
+  padding:3px 8px;border-radius:6px;cursor:pointer;
+  font-size:0.78em;transition:all 0.15s;
+}
+.log-open-tab:hover{background:var(--sf2);color:var(--tx)}
+
+.log-toolbar{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 16px;border-bottom:1px solid var(--bd2);
+  background:var(--sf);flex-shrink:0;
+}
+.log-search{
+  flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:5px 10px;color:var(--tx);font-size:0.88em;font-family:inherit;
+  outline:none;
+}
+.log-search:focus{border-color:var(--ac)}
+.log-search::placeholder{color:var(--dim2)}
+.log-filter{
+  background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:5px 8px;color:var(--tx);font-size:0.82em;cursor:pointer;
+}
+.log-match-count{font-size:0.78em;color:var(--dim);white-space:nowrap;min-width:60px;text-align:center}
+.log-btn{
+  background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:4px 10px;color:var(--dim);font-size:0.82em;cursor:pointer;
+  transition:all 0.15s;white-space:nowrap;
+}
+.log-btn:hover{background:var(--sf2);color:var(--tx)}
+.log-btn.active{background:var(--ac2);color:var(--tx);border-color:var(--ac)}
+
+.log-body{
+  flex:1;overflow-y:auto;overflow-x:hidden;
+  padding:0;font-family:'SF Mono','Cascadia Code','Fira Code',Consolas,monospace;
+  font-size:0.82em;line-height:1.65;
+  scroll-behavior:smooth;
+}
+.log-line{
+  padding:1px 16px;display:flex;gap:8px;
+  border-bottom:1px solid rgba(48,54,61,0.3);
+  transition:background 0.1s;white-space:pre-wrap;word-break:break-all;
+}
+.log-line:hover{background:rgba(88,166,255,0.04)}
+.log-line-num{
+  color:var(--dim2);font-size:0.85em;min-width:40px;text-align:right;
+  user-select:none;flex-shrink:0;padding-top:1px;
+}
+.log-line-text{flex:1;min-width:0}
+.log-line.log-error{color:var(--rd);background:rgba(248,81,73,0.05)}
+.log-line.log-error:hover{background:rgba(248,81,73,0.1)}
+.log-line.log-warning{color:var(--yl)}
+.log-line.log-success{color:var(--gn)}
+.log-line.log-tool{color:var(--ac)}
+.log-line.log-meta{color:var(--dim)}
+.log-line.log-highlight{background:rgba(210,153,34,0.15)!important}
+.log-line.log-highlight-current{background:rgba(210,153,34,0.3)!important}
+.log-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--dim);gap:10px;
+}
+.log-empty-spinner{
+  width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);
+  border-radius:50%;animation:spin 1s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.log-footer{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 16px;border-top:1px solid var(--bd);
+  background:var(--sf);flex-shrink:0;font-size:0.78em;color:var(--dim);
+}
+.log-scroll-btn{
+  background:var(--ac2);color:var(--tx);border:none;border-radius:6px;
+  padding:3px 10px;cursor:pointer;font-size:0.85em;
+  display:none;
+}
+.log-scroll-btn.visible{display:inline-block}
+
 /* ── Tooltip ────────────────────────────────────────────────────────────── */
 .chip .tt{
   display:none;position:absolute;z-index:200;
@@ -1618,12 +1741,43 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 
   <div class="footer">🔴 Live · Auto-refresh 10s &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
+<!-- Log Viewer Panel -->
+<div id="log-overlay" class="log-overlay" onclick="if(event.target===this)closeLogViewer()">
+  <div class="log-panel">
+    <div class="log-header">
+      <span id="log-title" class="log-title"></span>
+      <span id="log-status-badge"></span>
+      <button class="log-open-tab" onclick="openLogInTab()" title="Abrir en nueva pestaña">↗ Tab</button>
+      <button class="log-close" onclick="closeLogViewer()" title="Cerrar (Esc)">✕</button>
+    </div>
+    <div class="log-toolbar">
+      <input type="text" id="log-search" class="log-search" placeholder="Buscar en el log…" oninput="filterLog()" onkeydown="if(event.key==='Enter')jumpToMatch(event.shiftKey?-1:1)">
+      <span id="log-match-count" class="log-match-count"></span>
+      <select id="log-filter" class="log-filter" onchange="filterLog()">
+        <option value="all">Todo</option>
+        <option value="error">❌ Errores</option>
+        <option value="warning">⚠ Warnings</option>
+        <option value="tool">🔧 Tools</option>
+        <option value="success">✓ Éxitos</option>
+      </select>
+      <button id="log-pause-btn" class="log-btn" onclick="togglePause()">⏸ Pause</button>
+    </div>
+    <div id="log-body" class="log-body"></div>
+    <div class="log-footer">
+      <span id="log-line-count"></span>
+      <span id="log-last-update"></span>
+      <button id="log-scroll-btn" class="log-scroll-btn" onclick="scrollLogToBottom()">⬇ Ir al final</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // SSE live refresh — solo recarga si el estado cambió
 let lastHash = null;
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash) location.reload();
+  // No recargar si el log viewer está abierto (perdería el panel)
+  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) location.reload();
   lastHash = e.data;
 };
 es.onerror = () => { setTimeout(() => location.reload(), 10000); };
@@ -1773,6 +1927,216 @@ document.querySelectorAll('.fase-badge[data-fase-tt]').forEach(el => {
   });
   el.addEventListener('mousemove', positionTt);
   el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
+});
+
+// ── Log Viewer ────────────────────────────────────────────────────────
+let logViewerES = null;
+let logViewerFile = null;
+let logViewerPaused = false;
+let logAllLines = [];
+let logMatchIndices = [];
+let logCurrentMatch = -1;
+let logAutoScroll = true;
+
+function classifyLine(text) {
+  if (/error|exception|fail|❌|CRASH|panic/i.test(text)) return 'log-error';
+  if (/warn|⚠|WARNING/i.test(text)) return 'log-warning';
+  if (/\[Tool:|tool_use|Edit\]|Read\]|Write\]|Bash\]|Grep\]|Glob\]/i.test(text)) return 'log-tool';
+  if (/✓|passed|success|✔|completed|APROBADO/i.test(text)) return 'log-success';
+  if (/^---\s|^\[.*\]\s*$|^=+$/.test(text)) return 'log-meta';
+  return '';
+}
+
+function renderLine(text, idx) {
+  const cls = classifyLine(text);
+  const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return '<div class="log-line ' + cls + '" data-idx="' + idx + '"><span class="log-line-num">' + (idx + 1) + '</span><span class="log-line-text">' + escaped + '</span></div>';
+}
+
+function openLogViewer(filename, title, isLive) {
+  logViewerFile = filename;
+  logAllLines = [];
+  logMatchIndices = [];
+  logCurrentMatch = -1;
+  logAutoScroll = true;
+  logViewerPaused = false;
+
+  document.getElementById('log-title').textContent = title;
+  document.getElementById('log-status-badge').innerHTML = isLive
+    ? '<span class="log-live-badge"><span class="log-live-dot"></span> LIVE</span>'
+    : '<span class="log-done-badge">Finalizado</span>';
+  document.getElementById('log-body').innerHTML = '<div class="log-empty"><div class="log-empty-spinner"></div>Cargando log…</div>';
+  document.getElementById('log-search').value = '';
+  document.getElementById('log-match-count').textContent = '';
+  document.getElementById('log-filter').value = 'all';
+  document.getElementById('log-pause-btn').textContent = '⏸ Pause';
+  document.getElementById('log-pause-btn').classList.toggle('active', false);
+  document.getElementById('log-pause-btn').style.display = isLive ? '' : 'none';
+  document.getElementById('log-line-count').textContent = '';
+  document.getElementById('log-scroll-btn').classList.remove('visible');
+  document.getElementById('log-overlay').classList.add('open');
+
+  // Close SSE if open
+  if (logViewerES) { logViewerES.close(); logViewerES = null; }
+
+  // Open SSE stream
+  logViewerES = new EventSource('/logs/stream/' + encodeURIComponent(filename));
+  logViewerES.onmessage = function(e) {
+    if (logViewerPaused) return;
+    try {
+      const msg = JSON.parse(e.data);
+      const body = document.getElementById('log-body');
+      if (msg.type === 'init') {
+        logAllLines = msg.lines;
+        body.innerHTML = msg.lines.map((l, i) => renderLine(l, i)).join('');
+        scrollLogToBottom();
+      } else if (msg.type === 'append') {
+        const startIdx = logAllLines.length;
+        logAllLines.push(...msg.lines);
+        const html = msg.lines.map((l, i) => renderLine(l, startIdx + i)).join('');
+        body.insertAdjacentHTML('beforeend', html);
+        if (logAutoScroll) scrollLogToBottom();
+      }
+      updateLogFooter();
+      // Re-apply filter/search if active
+      const searchVal = document.getElementById('log-search').value;
+      const filterVal = document.getElementById('log-filter').value;
+      if (searchVal || filterVal !== 'all') applyFilterVisual();
+    } catch(_) {}
+  };
+  logViewerES.onerror = function() {
+    // Connection lost — show in status
+    const badge = document.getElementById('log-status-badge');
+    if (badge) badge.innerHTML = '<span class="log-done-badge">Desconectado</span>';
+  };
+
+  // Track scroll for auto-scroll toggle
+  const body = document.getElementById('log-body');
+  body.onscroll = function() {
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+    logAutoScroll = atBottom;
+    document.getElementById('log-scroll-btn').classList.toggle('visible', !atBottom);
+  };
+}
+
+function closeLogViewer() {
+  document.getElementById('log-overlay').classList.remove('open');
+  if (logViewerES) { logViewerES.close(); logViewerES = null; }
+}
+
+function openLogInTab() {
+  if (logViewerFile) window.open('/logs/' + logViewerFile, '_blank');
+}
+
+function scrollLogToBottom() {
+  const body = document.getElementById('log-body');
+  body.scrollTop = body.scrollHeight;
+  logAutoScroll = true;
+  document.getElementById('log-scroll-btn').classList.remove('visible');
+}
+
+function togglePause() {
+  logViewerPaused = !logViewerPaused;
+  const btn = document.getElementById('log-pause-btn');
+  btn.textContent = logViewerPaused ? '▶ Resume' : '⏸ Pause';
+  btn.classList.toggle('active', logViewerPaused);
+}
+
+function updateLogFooter() {
+  document.getElementById('log-line-count').textContent = logAllLines.length + ' líneas';
+  document.getElementById('log-last-update').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
+}
+
+function filterLog() {
+  applyFilterVisual();
+}
+
+function applyFilterVisual() {
+  const searchVal = document.getElementById('log-search').value.toLowerCase();
+  const filterVal = document.getElementById('log-filter').value;
+  const body = document.getElementById('log-body');
+  const lines = body.querySelectorAll('.log-line');
+  logMatchIndices = [];
+
+  lines.forEach((el, i) => {
+    const text = logAllLines[i] || '';
+    const textLower = text.toLowerCase();
+    let visible = true;
+
+    // Category filter
+    if (filterVal !== 'all') {
+      const cls = classifyLine(text);
+      const filterMap = { error: 'log-error', warning: 'log-warning', tool: 'log-tool', success: 'log-success' };
+      if (cls !== filterMap[filterVal]) visible = false;
+    }
+
+    // Search filter
+    if (searchVal && visible) {
+      if (textLower.includes(searchVal)) {
+        logMatchIndices.push(i);
+        el.classList.add('log-highlight');
+      } else {
+        el.classList.remove('log-highlight');
+        visible = false;
+      }
+    } else {
+      el.classList.remove('log-highlight');
+    }
+
+    el.style.display = visible ? '' : 'none';
+    el.classList.remove('log-highlight-current');
+  });
+
+  // Update match count
+  const countEl = document.getElementById('log-match-count');
+  if (searchVal && logMatchIndices.length > 0) {
+    logCurrentMatch = 0;
+    highlightCurrentMatch();
+    countEl.textContent = logMatchIndices.length + ' coincidencias';
+  } else if (searchVal) {
+    countEl.textContent = '0 coincidencias';
+    logCurrentMatch = -1;
+  } else {
+    countEl.textContent = filterVal !== 'all' ? logMatchIndices.length + ' filtradas' : '';
+    // When only filter, show matching lines without search
+    if (filterVal !== 'all' && !searchVal) {
+      lines.forEach((el, i) => {
+        const text = logAllLines[i] || '';
+        const cls = classifyLine(text);
+        const filterMap = { error: 'log-error', warning: 'log-warning', tool: 'log-tool', success: 'log-success' };
+        el.style.display = cls === filterMap[filterVal] ? '' : 'none';
+      });
+    }
+  }
+}
+
+function highlightCurrentMatch() {
+  if (logCurrentMatch < 0 || logMatchIndices.length === 0) return;
+  const body = document.getElementById('log-body');
+  body.querySelectorAll('.log-highlight-current').forEach(el => el.classList.remove('log-highlight-current'));
+  const idx = logMatchIndices[logCurrentMatch];
+  const target = body.querySelector('.log-line[data-idx="' + idx + '"]');
+  if (target) {
+    target.classList.add('log-highlight-current');
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  document.getElementById('log-match-count').textContent = (logCurrentMatch + 1) + '/' + logMatchIndices.length;
+}
+
+function jumpToMatch(direction) {
+  if (logMatchIndices.length === 0) return;
+  logCurrentMatch = (logCurrentMatch + direction + logMatchIndices.length) % logMatchIndices.length;
+  highlightCurrentMatch();
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('log-overlay').classList.contains('open')) return;
+  if (e.key === 'Escape') { closeLogViewer(); e.preventDefault(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    document.getElementById('log-search').focus();
+  }
 });
 </script>
 </body></html>`;
@@ -2334,8 +2698,8 @@ ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>P
 // --- Server ---
 
 const server = http.createServer((req, res) => {
-  // Servir logs como archivos estáticos
-  if (req.url.startsWith('/logs/')) {
+  // Servir logs como archivos estáticos (fallback para abrir en nueva pestaña)
+  if (req.url.startsWith('/logs/') && !req.url.startsWith('/logs/stream/')) {
     const filename = path.basename(req.url.slice(6)).replace(/[^a-zA-Z0-9\-\.]/g, '');
     const logPath = path.join(LOG_DIR, filename);
     if (fs.existsSync(logPath)) {
@@ -2344,6 +2708,51 @@ const server = http.createServer((req, res) => {
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
     }
+    return;
+  }
+
+  // SSE log streaming — tail -f style
+  if (req.url.startsWith('/logs/stream/')) {
+    const filename = path.basename(req.url.slice(13)).replace(/[^a-zA-Z0-9\-\.]/g, '');
+    const logPath = path.join(LOG_DIR, filename);
+    if (!fs.existsSync(logPath)) {
+      res.writeHead(404); res.end('Log no encontrado');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+
+    // Send initial content (last 1000 lines)
+    const content = fs.readFileSync(logPath, 'utf8');
+    const lines = content.split('\n');
+    const initialLines = lines.slice(-1000);
+    res.write(`data: ${JSON.stringify({ type: 'init', lines: initialLines })}\n\n`);
+
+    // Watch for changes
+    let lastSize = fs.statSync(logPath).size;
+    const interval = setInterval(() => {
+      try {
+        if (!fs.existsSync(logPath)) return;
+        const stat = fs.statSync(logPath);
+        if (stat.size > lastSize) {
+          const fd = fs.openSync(logPath, 'r');
+          const buf = Buffer.alloc(stat.size - lastSize);
+          fs.readSync(fd, buf, 0, buf.length, lastSize);
+          fs.closeSync(fd);
+          const newLines = buf.toString('utf8').split('\n').filter(l => l.length > 0);
+          if (newLines.length > 0) {
+            res.write(`data: ${JSON.stringify({ type: 'append', lines: newLines })}\n\n`);
+          }
+          lastSize = stat.size;
+        }
+      } catch {}
+    }, 800);
+
+    req.on('close', () => clearInterval(interval));
     return;
   }
 
