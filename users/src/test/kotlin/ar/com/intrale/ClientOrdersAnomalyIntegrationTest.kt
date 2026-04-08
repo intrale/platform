@@ -13,14 +13,12 @@ class ClientOrdersAnomalyIntegrationTest {
     private val logger = NOPLogger.NOP_LOGGER
     private val config = testConfig("biz")
     private val repository = ClientOrderRepository()
-    private val anomalyRepository = OrderAnomalyRepository()
-    private val anomalyConfig = AnomalyDetectionConfig()
-    private val detector = OrderAnomalyDetector(repository, anomalyRepository, anomalyConfig)
+    private val detectionService = OrderAnomalyDetectionService(repository, logger)
     private val validator = LocalJwtValidator()
 
     @Test
     fun `crear pedido normal no queda flaggeado`() = runBlocking {
-        val function = ClientOrders(config, logger, repository, validator, detector)
+        val function = ClientOrders(config, logger, repository, validator, detectionService)
         val email = "client@test.com"
 
         val response = function.securedExecute(
@@ -41,7 +39,7 @@ class ClientOrdersAnomalyIntegrationTest {
 
     @Test
     fun `crear pedido duplicado queda flaggeado con estado FLAGGED`() = runBlocking {
-        val function = ClientOrders(config, logger, repository, validator, detector)
+        val function = ClientOrders(config, logger, repository, validator, detectionService)
         val email = "client@test.com"
 
         // Primer pedido
@@ -78,7 +76,7 @@ class ClientOrdersAnomalyIntegrationTest {
 
     @Test
     fun `crear pedido sin detector de anomalías funciona normalmente`() = runBlocking {
-        // Sin anomalyDetector (backward compatibility)
+        // Sin anomalyDetectionService (backward compatibility)
         val function = ClientOrders(config, logger, repository, validator, null)
         val email = "client@test.com"
 

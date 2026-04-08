@@ -173,6 +173,17 @@ class AnomalyRepository {
     }
 }
 
+/**
+ * Respuesta de creación de pedido con info de anomalías.
+ */
+data class CreateOrderAnomalyResponse(
+    val orderId: String = "",
+    val shortCode: String = "",
+    val flagged: Boolean = false,
+    val anomalies: List<AnomalyPayload> = emptyList(),
+    val status: HttpStatusCode = HttpStatusCode.Created
+) : Response(statusCode = status)
+
 // --- Function ---
 
 /**
