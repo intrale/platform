@@ -803,7 +803,9 @@ function generateHTML(state) {
       return (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0);
     });
   // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
-  const MAX_CAP_VISIBLE = 6;
+  // Sin agentes activos ni servicios en Equipo → más espacio para skills
+  const hasActiveAgents = Object.values(state.skillLoad).some(l => l.running > 0);
+  const MAX_CAP_VISIBLE = hasActiveAgents ? 6 : 12;
   let heatmapHTML = '';
   let shownCount = 0;
   const idleSkills = [];
