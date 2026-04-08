@@ -980,38 +980,6 @@ function generateHTML(state) {
     }).join('');
   }
 
-  // Priority Windows (QA + Build)
-  const pwQa = state.priorityWindows.qa;
-  const pwBuild = state.priorityWindows.build;
-  const pwQaElapsed = pwQa.active && pwQa.activatedAt ? Math.round((Date.now() - pwQa.activatedAt) / 60000) : 0;
-  const pwBuildElapsed = pwBuild.active && pwBuild.activatedAt ? Math.round((Date.now() - pwBuild.activatedAt) / 60000) : 0;
-
-  const pwQaStatus = pwQa.active
-    ? `<span class="pw-badge pw-active">ACTIVA${pwQaElapsed > 0 ? ` (${pwQaElapsed}min)` : ''}</span>`
-    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
-  const pwBuildStatus = pwBuild.active
-    ? `<span class="pw-badge pw-active">ACTIVA${pwBuildElapsed > 0 ? ` (${pwBuildElapsed}min)` : ''}</span>`
-    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
-
-  const pwQaBtn = pwQa.active
-    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('qa','off')">■ Desactivar</button>`
-    : `<button class="ctl-btn ctl-start" onclick="pwAction('qa','on')">▶ Activar</button>`;
-  const pwBuildBtn = pwBuild.active
-    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('build','off')">■ Desactivar</button>`
-    : `<button class="ctl-btn ctl-start" onclick="pwAction('build','on')">▶ Activar</button>`;
-
-  const priorityWindowsHTML = `
-    <div class="pw-row">
-      <div class="pw-item">
-        <span class="pw-label">🔍 QA Priority</span> ${pwQaStatus} ${pwQaBtn}
-        <span class="pw-desc">Bloquea dev → prioriza verificación</span>
-      </div>
-      <div class="pw-item">
-        <span class="pw-label">🔨 Build Priority</span> ${pwBuildStatus} ${pwBuildBtn}
-        <span class="pw-desc">Bloquea dev → prioriza builds</span>
-      </div>
-    </div>`;
-
   // Rechazos recientes
   let rechazosHTML = '';
   if (state.rechazos.length > 0) {
