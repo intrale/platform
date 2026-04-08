@@ -218,6 +218,11 @@ function getPipelineState() {
         entry.hasLog = fs.existsSync(path.join(LOG_DIR, logFile));
         entry.logFile = logFile;
 
+        // PDF de reporte de rechazo disponible?
+        const rejectionPdf = `rejection-${issue}-${skill}.pdf`;
+        entry.hasRejectionPdf = fs.existsSync(path.join(LOG_DIR, rejectionPdf));
+        entry.rejectionPdf = rejectionPdf;
+
         state.issueMatrix[issue].fases[`${pName}/${fase}`].push(entry);
 
         if (estado !== 'procesado') {
@@ -747,8 +752,13 @@ function generateHTML(state) {
           ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
           : '';
 
+        // PDF de rechazo disponible
+        const pdfBtn = e.hasRejectionPdf
+          ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
+          : '';
+
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${killBtn}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${killBtn}${pdfBtn}${tooltip}</span>`;
         if (e.hasLog) {
           const isLive = e.estado === 'trabajando';
           return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
@@ -798,7 +808,8 @@ function generateHTML(state) {
           if (!recentBySkill[e.skill]) recentBySkill[e.skill] = [];
           recentBySkill[e.skill].push({
             issue, resultado: e.resultado, logFile: e.logFile,
-            hasLog: e.hasLog, ts: e.updatedAt || e.startedAt || 0
+            hasLog: e.hasLog, hasRejectionPdf: e.hasRejectionPdf,
+            rejectionPdf: e.rejectionPdf, ts: e.updatedAt || e.startedAt || 0
           });
         }
       }
@@ -827,10 +838,13 @@ function generateHTML(state) {
     return '<div class="skill-recent">' + recents.map(r => {
       const icon = r.resultado === 'aprobado' ? '\u2705' : r.resultado === 'rechazado' ? '\u274C' : '\u23F3';
       const inner = '#' + r.issue;
+      const pdfLink = r.hasRejectionPdf
+        ? ' <a class="skill-recent-pdf" href="/logs/' + r.rejectionPdf + '" target="_blank" title="Reporte de rechazo PDF" onclick="event.stopPropagation()">\u{1F4C4}</a>'
+        : '';
       if (r.hasLog) {
-        return '<a class="skill-recent-item" href="#" onclick="event.preventDefault();openLogViewer(\'' + r.logFile + '\',\'#' + r.issue + ' ' + skill + '\')" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>';
+        return '<a class="skill-recent-item" href="#" onclick="event.preventDefault();openLogViewer(\'' + r.logFile + '\',\'#' + r.issue + ' ' + skill + '\')" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>' + pdfLink;
       }
-      return '<span class="skill-recent-item" title="' + (r.resultado || 'sin log') + '">' + icon + ' ' + inner + '</span>';
+      return '<span class="skill-recent-item" title="' + (r.resultado || 'sin log') + '">' + icon + ' ' + inner + '</span>' + pdfLink;
     }).join('') + '</div>';
   }
 
@@ -1629,6 +1643,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .skill-recent{display:flex;gap:4px;flex-wrap:wrap}
 .skill-recent-item{font-size:0.65em;color:var(--dim);text-decoration:none;cursor:pointer;padding:1px 4px;border-radius:4px;background:var(--sf2);white-space:nowrap;transition:background 0.15s}
 a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
+.skill-recent-pdf{font-size:0.65em;text-decoration:none;cursor:pointer;opacity:0.7;transition:opacity 0.15s}
+.skill-recent-pdf:hover{opacity:1}
+.rejection-pdf-btn{text-decoration:none;font-size:0.7em;margin-left:2px;opacity:0.7;transition:opacity 0.15s;cursor:pointer}
+.rejection-pdf-btn:hover{opacity:1}
 
 /* ── DORA Mini ─────────────────────────────────────────────────────────── */
 .dora-mini{
@@ -2707,13 +2725,17 @@ ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>P
 // --- Server ---
 
 const server = http.createServer((req, res) => {
-  // Servir logs como archivos estáticos (fallback para abrir en nueva pestaña)
+  // Servir logs y PDFs como archivos estáticos
   if (req.url.startsWith('/logs/') && !req.url.startsWith('/logs/stream/')) {
     const filename = path.basename(req.url.slice(6)).replace(/[^a-zA-Z0-9\-\.]/g, '');
     const logPath = path.join(LOG_DIR, filename);
     if (fs.existsSync(logPath)) {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(fs.readFileSync(logPath, 'utf8'));
+      const isPdf = filename.endsWith('.pdf');
+      const contentType = isPdf ? 'application/pdf' : 'text/plain; charset=utf-8';
+      const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache' };
+      if (isPdf) headers['Content-Disposition'] = `inline; filename="${filename}"`;
+      res.writeHead(200, headers);
+      res.end(fs.readFileSync(logPath));
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
     }

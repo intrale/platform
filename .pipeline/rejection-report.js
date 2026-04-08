@@ -339,8 +339,26 @@ async function main() {
       timeout: 120000
     });
 
-    // Limpiar HTML temporal
+    // Copiar el PDF generado a logs/ para que el dashboard pueda servirlo
+    const pdfName = `rejection-${issue}-${skill}.pdf`;
+    const pdfDest = path.join(LOG_DIR, pdfName);
+    const possiblePdfPaths = [
+      htmlPath.replace(/\.html$/, '.pdf'),
+      path.join(ROOT, 'docs', 'qa', pdfName),
+    ];
+    for (const src of possiblePdfPaths) {
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, pdfDest);
+        console.log(`[rejection-report] PDF copiado a ${pdfDest}`);
+        // Limpiar el original si no está en logs/
+        if (src !== pdfDest) try { fs.unlinkSync(src); } catch {}
+        break;
+      }
+    }
+
+    // Limpiar HTML temporal y copia en docs/qa
     try { fs.unlinkSync(htmlPath); } catch {}
+    try { fs.unlinkSync(path.join(ROOT, 'docs', 'qa', `rejection-${issue}-${skill}.html`)); } catch {}
 
     console.log(`[rejection-report] Reporte enviado a Telegram para #${issue} ${skill}`);
   } catch (e) {
