@@ -1725,6 +1725,18 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         } catch (e) {}
       }
       sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
+      // Reporte PDF de muerte prematura (background)
+      try {
+        const reportScript = path.join(PIPELINE, 'rejection-report.js');
+        const reportChild = spawn(process.execPath, [
+          reportScript,
+          '--issue', String(issue), '--skill', skill, '--fase', fase,
+          '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+          '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
+          '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+        ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
+        reportChild.unref();
+      } catch {}
       return;
     }
 
@@ -1761,6 +1773,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
       moveFile(trabajandoPath, listoDir);
       log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
+
+      // Generar reporte PDF de rechazo y enviar a Telegram (background, no bloquea)
+      if (data.resultado === 'rechazado') {
+        try {
+          const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          const reportArgs = [
+            reportScript,
+            '--issue', String(issue), '--skill', skill, '--fase', fase,
+            '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+            '--motivo', String(data.motivo || 'Sin motivo'),
+            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+          ];
+          const reportChild = spawn(process.execPath, reportArgs, {
+            cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true
+          });
+          reportChild.unref();
+          log('lanzamiento', `📄 Reporte de rechazo lanzado para ${skill}:#${issue}`);
+        } catch (reportErr) {
+          log('lanzamiento', `⚠️ Error lanzando reporte de rechazo: ${reportErr.message}`);
+        }
+      }
     } catch (e) {
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
