@@ -980,38 +980,6 @@ function generateHTML(state) {
     }).join('');
   }
 
-  // Priority Windows (QA + Build)
-  const pwQa = state.priorityWindows.qa;
-  const pwBuild = state.priorityWindows.build;
-  const pwQaElapsed = pwQa.active && pwQa.activatedAt ? Math.round((Date.now() - pwQa.activatedAt) / 60000) : 0;
-  const pwBuildElapsed = pwBuild.active && pwBuild.activatedAt ? Math.round((Date.now() - pwBuild.activatedAt) / 60000) : 0;
-
-  const pwQaStatus = pwQa.active
-    ? `<span class="pw-badge pw-active">ACTIVA${pwQaElapsed > 0 ? ` (${pwQaElapsed}min)` : ''}</span>`
-    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
-  const pwBuildStatus = pwBuild.active
-    ? `<span class="pw-badge pw-active">ACTIVA${pwBuildElapsed > 0 ? ` (${pwBuildElapsed}min)` : ''}</span>`
-    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
-
-  const pwQaBtn = pwQa.active
-    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('qa','off')">■ Desactivar</button>`
-    : `<button class="ctl-btn ctl-start" onclick="pwAction('qa','on')">▶ Activar</button>`;
-  const pwBuildBtn = pwBuild.active
-    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('build','off')">■ Desactivar</button>`
-    : `<button class="ctl-btn ctl-start" onclick="pwAction('build','on')">▶ Activar</button>`;
-
-  const priorityWindowsHTML = `
-    <div class="pw-row">
-      <div class="pw-item">
-        <span class="pw-label">🔍 QA Priority</span> ${pwQaStatus} ${pwQaBtn}
-        <span class="pw-desc">Bloquea dev → prioriza verificación</span>
-      </div>
-      <div class="pw-item">
-        <span class="pw-label">🔨 Build Priority</span> ${pwBuildStatus} ${pwBuildBtn}
-        <span class="pw-desc">Bloquea dev → prioriza builds</span>
-      </div>
-    </div>`;
-
   // Rechazos recientes
   let rechazosHTML = '';
   if (state.rechazos.length > 0) {
@@ -1484,14 +1452,14 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-start{background:var(--gn2);color:var(--gn)}
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
-/* Priority Windows (compact for Sistema panel) */
-.pw-row{display:flex;gap:8px;flex-wrap:wrap}
-.pw-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 10px;background:var(--sf2);border-radius:var(--radius-sm);border:1px solid var(--bd2);flex:1;min-width:180px}
-.pw-label{font-weight:600;font-size:0.82em;white-space:nowrap}
-.pw-badge{font-size:0.7em;padding:2px 6px;border-radius:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
-.pw-active{background:var(--yl2);color:var(--yl);border:1px solid var(--yl)}
-.pw-inactive{background:var(--bd2);color:var(--dim);border:1px solid var(--bd)}
-.pw-desc{display:none}
+/* Priority Windows (inline toggles in Equipo header) */
+.pw-toggles{margin-left:auto;display:inline-flex;gap:6px;font-size:0.65em;vertical-align:middle}
+.pw-toggle{padding:2px 10px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none}
+.pw-toggle-active{background:var(--yl2);color:var(--yl);border-color:var(--yl);animation:pwPulse 2.5s ease-in-out infinite}
+.pw-toggle-inactive{background:var(--sf2);color:var(--dim);border-color:var(--bd)}
+.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg)}
+.pw-toggle.pw-build.pw-toggle-active{background:var(--ac2);color:var(--ac);border-color:var(--ac)}
+@keyframes pwPulse{0%,100%{opacity:1}50%{opacity:0.65}}
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
@@ -1715,7 +1683,23 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 
   <div class="dual-row">
     <div class="bar-section dual-col">
-      <h2>🧠 Equipo</h2>
+      <h2>🧠 Equipo<span class="pw-toggles">${(() => {
+        const pw = state.priorityWindows;
+        const items = [
+          { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
+          { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
+        ];
+        return items.map(i => {
+          const s = pw[i.key];
+          const active = s && s.active;
+          const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
+          const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
+          const tip = active ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar' : 'Activar ' + i.label + ' Priority';
+          const action = active ? 'off' : 'on';
+          const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
+          return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
+        }).join('');
+      })()}</span></h2>
       ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
       ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
       <div class="subsection-label">Servicios</div>
@@ -1726,8 +1710,6 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
       ${resourcesHTML}
       <div class="subsection-label" style="margin-top:14px">QA Environment${qaRemoteActive ? ' ☁️ REMOTO' : (anyQaUp ? '' : '')}</div>
       <div class="svc-grid">${qaEnvHTML}</div>
-      <div class="subsection-label">Priority Windows</div>
-      ${priorityWindowsHTML}
     </div>
   </div>
 
