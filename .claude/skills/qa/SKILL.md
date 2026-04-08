@@ -95,8 +95,9 @@ En lugar de compilar el APK en QA, usar el artefacto pre-compilado de la fase Bu
 APK_PATH="qa/artifacts/composeApp-client-debug.apk"
 ```
 
-Si no se encuentra APK pre-compilado, compilar como fallback:
+Si no se encuentra APK pre-compilado, compilar como fallback **SIN `-PLOCAL_BASE_URL`**:
 ```bash
+# NUNCA usar -PLOCAL_BASE_URL — el APK debe apuntar al endpoint remoto de API Gateway
 ./gradlew :app:composeApp:assembleClientDebug --no-daemon
 ```
 
@@ -134,6 +135,48 @@ bash qa/scripts/qa-android.sh
 - Maestro instalado (`curl -Ls 'https://get.maestro.mobile.dev' | bash`)
 
 Si no hay emulador conectado, reportar instrucciones claras y NO fallar silenciosamente.
+
+**Post-ejecucion: validar video y generar relato narrado**
+
+Después de `qa-android.sh`, verificar que los videos de evidencia son válidos:
+```bash
+FFMPEG_BIN=$(which ffmpeg 2>/dev/null || echo "/c/Users/Administrator/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg")
+for VIDEO in qa/recordings/maestro-shard-*.mp4; do
+  [ -f "$VIDEO" ] || continue
+  SIZE=$(stat -c%s "$VIDEO" 2>/dev/null || echo "0")
+  if [ "$SIZE" -lt 204800 ]; then
+    echo "AVISO: $VIDEO pesa ${SIZE} bytes (<200KB) — posible grabacion fallida"
+  fi
+done
+```
+
+Generar relato narrado (OBLIGATORIO si hay video):
+
+Primero restaurar API keys y usar `qa-narration.js` (OpenAI TTS, misma voz que Telegram):
+```bash
+node .claude/hooks/api-keys-guardian.js restore 2>/dev/null || true
+node qa/scripts/qa-narration.js \
+  --video "qa/recordings/maestro-shard-<device>.mp4" \
+  --flows-dir .maestro/flows \
+  --output "qa/evidence/<issue>/qa-<issue>-narrated.mp4"
+```
+
+Si `qa-narration.js` falla (sin OpenAI key), usar edge-tts como fallback:
+1. Escribir guion en `qa/evidence/<issue>/qa-guion.txt` narrando cada criterio verificado
+2. Generar audio:
+   ```bash
+   python -m edge_tts \
+     --voice "es-AR-TomasNeural" \
+     --file "qa/evidence/<issue>/qa-guion.txt" \
+     --write-media "qa/evidence/<issue>/qa-narration.mp3"
+   ```
+3. Mergear video + audio:
+   ```bash
+   "$FFMPEG_BIN" -i "qa/recordings/maestro-shard-<device>.mp4" \
+     -i "qa/evidence/<issue>/qa-narration.mp3" \
+     -c:v copy -c:a aac -b:a 128k -shortest \
+     "qa/evidence/<issue>/qa-<issue>-narrated.mp4" -y
+   ```
 
 ### Plataforma `all`
 
