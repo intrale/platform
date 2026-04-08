@@ -803,7 +803,9 @@ function generateHTML(state) {
       return (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0);
     });
   // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
-  const MAX_CAP_VISIBLE = 6;
+  // Sin agentes activos ni servicios en Equipo → más espacio para skills
+  const hasActiveAgents = Object.values(state.skillLoad).some(l => l.running > 0);
+  const MAX_CAP_VISIBLE = hasActiveAgents ? 6 : 12;
   let heatmapHTML = '';
   let shownCount = 0;
   const idleSkills = [];
@@ -939,45 +941,30 @@ function generateHTML(state) {
     ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
     ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
-  // QA Environment — cards individuales con botones start/stop
-  const qaLabels = { emulator: '📱' };
-  const qaNames = { emulator: 'Emulador Android' };
-  const allQaUp = Object.values(state.qaEnv).every(v => v);
-  const anyQaUp = Object.values(state.qaEnv).some(v => v);
+  // Emulador Android — integrado como servicio más en svcCardsHTML
   const qaRemoteActive = state.qaRemote && state.qaRemote.active;
-
-  let qaEnvHTML = '';
-
   if (qaRemoteActive) {
-    // Modo remoto activo — mostrar card especial
-    qaEnvHTML = `<div class="svc-card svc-card-ok" style="grid-column: span 3; background: linear-gradient(135deg, #0984e3 0%, #6c5ce7 100%); color: white;">
+    svcCardsHTML += `<div class="svc-card svc-card-ok" style="background: linear-gradient(135deg, #0984e3 0%, #6c5ce7 100%); color: white;">
       <div class="svc-card-header">
-        <span class="svc-card-name">☁️ QA Remoto (Lambda AWS)</span>
+        <span class="svc-card-name">\u2601\uFE0F QA Remoto</span>
         <span class="svc-card-pulse"></span>
       </div>
-      <div class="svc-card-pid" style="color: rgba(255,255,255,0.9);">
-        Rama: ${state.qaRemote.ref || 'N/A'}<br>
-        Desde: ${state.qaRemote.startedAt || 'N/A'}
-      </div>
+      <div class="svc-card-pid" style="color: rgba(255,255,255,0.9);">${state.qaRemote.ref || 'Lambda AWS'}</div>
     </div>`;
   } else {
-    // Modo local — cards individuales
-    const qaGlobalBtn = anyQaUp
-      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener emulador">■</button>`
-      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar emulador">▶</button>`;
-    qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
+    Object.entries(state.qaEnv).forEach(([name, alive]) => {
       const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
       const btn = alive
-        ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener ${qaNames[name]}">■</button>`
-        : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar ${qaNames[name]}">▶</button>`;
-      return `<div class="svc-card ${statusCls}">
+        ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener Emulador">■</button>`
+        : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar Emulador">▶</button>`;
+      svcCardsHTML += `<div class="svc-card ${statusCls}">
         <div class="svc-card-header">
-          ${btn}<span class="svc-card-name">${qaLabels[name] || ''} ${qaNames[name] || name}</span>
+          ${btn}<span class="svc-card-name">\u{1F4F1} Emulador</span>
           ${alive ? '<span class="svc-card-pulse"></span>' : ''}
         </div>
         <div class="svc-card-pid">${alive ? 'activo' : 'detenido'}</div>
       </div>`;
-    }).join('');
+    });
   }
 
   // Rechazos recientes
@@ -1702,14 +1689,12 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
       })()}</span></h2>
       ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
       ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
-      <div class="subsection-label">Servicios</div>
-      <div class="svc-grid">${svcCardsHTML}</div>
     </div>
     <div class="bar-section dual-col">
       <h2>💻 Sistema</h2>
       ${resourcesHTML}
-      <div class="subsection-label" style="margin-top:14px">QA Environment${qaRemoteActive ? ' ☁️ REMOTO' : (anyQaUp ? '' : '')}</div>
-      <div class="svc-grid">${qaEnvHTML}</div>
+      <div class="subsection-label" style="margin-top:14px">Servicios</div>
+      <div class="svc-grid">${svcCardsHTML}</div>
     </div>
   </div>
 
