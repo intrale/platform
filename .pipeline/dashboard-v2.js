@@ -600,7 +600,7 @@ function generateHTML(state) {
   });
 
   // Show all issues, but only first 5 visible by default
-  const ISSUE_VISIBLE_LIMIT = 5;
+  const ISSUE_VISIBLE_LIMIT = 7;
   let rows = '';
   let rowIndex = 0;
   for (const [issueNum, data] of sorted) {
@@ -1765,8 +1765,6 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   </div>
 
   ${matrixHTML}
-
-  ${doraMinHTML}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
