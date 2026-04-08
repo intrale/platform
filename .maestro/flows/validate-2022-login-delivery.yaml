@@ -1,0 +1,60 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #2022 — Login delivery
+# Prerrequisito para todos los demás flows del issue 2022
+# Usa usuario QA: qa-automation@intrale.com / QaAutomation2026!
+
+- launchApp:
+    clearState: true
+
+- waitForAnimationToEnd
+
+# Saltar onboarding si aparece
+- extendedWaitUntil:
+    visible:
+      text: "Saltar"
+    timeout: 10000
+- tapOn:
+    text: "Saltar"
+    optional: true
+- waitForAnimationToEnd
+
+# Navegar al login
+- extendedWaitUntil:
+    visible:
+      text: "Ya tengo cuenta"
+    timeout: 10000
+- tapOn:
+    text: "Ya tengo cuenta"
+
+- extendedWaitUntil:
+    visible:
+      id: "login_screen"
+    timeout: 10000
+
+- takeScreenshot: 2022-login-01-empty
+
+# Ingresar credenciales QA
+- tapOn:
+    id: "field_Usuario"
+- inputText: "qa-automation@intrale.com"
+
+- tapOn:
+    id: "field_Contraseña"
+- inputText: "QaAutomation2026!"
+
+- takeScreenshot: 2022-login-02-filled
+
+# Enviar login
+- tapOn:
+    id: "btn_primary"
+
+- waitForAnimationToEnd
+
+# Esperar que cargue el home de delivery
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 20000
+
+- takeScreenshot: 2022-login-03-home

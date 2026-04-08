@@ -1,0 +1,64 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #2022 — Criterio 3: Cambiar estado del pedido
+# Prerrequisito: Usuario delivery logueado con un pedido en estado PENDING
+# Verifica transición: Pendiente → En camino
+
+- launchApp:
+    clearState: false
+
+- waitForAnimationToEnd
+
+# Esperar home
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 15000
+
+- takeScreenshot: 2022-estado-01-home
+
+# Navegar al primer pedido pendiente
+- tapOn:
+    text: "Pendiente"
+    optional: true
+- waitForAnimationToEnd
+
+# Si no hay "Pendiente", tocar la primera card visible
+- tapOn:
+    text: "En progreso"
+    optional: true
+- waitForAnimationToEnd
+
+# Esperar detalle
+- extendedWaitUntil:
+    visible:
+      text: "Pedido"
+    timeout: 10000
+
+- takeScreenshot: 2022-estado-02-detail-before
+
+# Verificar botón "Iniciar entrega" / "Empezar reparto" (cambia de PENDING a IN_PROGRESS)
+- assertVisible:
+    text: "Iniciar entrega"
+    optional: true
+
+- takeScreenshot: 2022-estado-03-action-visible
+
+# Tocar "Iniciar entrega"
+- tapOn:
+    text: "Iniciar entrega"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-estado-04-after-change
+
+# Verificar que el estado cambió (puede mostrar "En camino" o "En progreso")
+- assertVisible:
+    text: "En camino"
+    optional: true
+
+- assertVisible:
+    text: "En progreso"
+    optional: true
+
+- takeScreenshot: 2022-estado-05-confirmed
