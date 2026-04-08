@@ -313,6 +313,18 @@ val appModule = DI.Module("appModule") {
         singleton { ClientPaymentMethodsFunction(instance(), instance(), instance()) }
     }
 
+    bind<AnomalyRepository> {
+        singleton { AnomalyRepository() }
+    }
+
+    bind<OrderAnomalyDetectionService> {
+        singleton { OrderAnomalyDetectionService(instance(), instance()) }
+    }
+
+    bind<Function> (tag="business/anomalies") {
+        singleton { OrderAnomalyFunction(instance(), instance(), instance(), instance(), instance(), instance()) }
+    }
+
     bind<AiResponseService> {
         singleton { ClaudeAiResponseService() }
     }
