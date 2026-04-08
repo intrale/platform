@@ -63,7 +63,6 @@ function readYaml(filepath) {
 }
 
 function writeYaml(filepath, data) {
-  fs.mkdirSync(path.dirname(filepath), { recursive: true });
   fs.writeFileSync(filepath, yaml.dump(data, { lineWidth: -1 }));
 }
 
@@ -88,7 +87,6 @@ function skillFromFile(filename) {
 
 /** Mover archivo entre carpetas (atómico en filesystem) */
 function moveFile(src, destDir) {
-  fs.mkdirSync(destDir, { recursive: true });
   const dest = path.join(destDir, path.basename(src));
   fs.renameSync(src, dest);
   return dest;
@@ -174,238 +172,115 @@ function clearCooldown(skill, issue) {
   if (cd[key]) { delete cd[key]; saveCooldowns(cd); }
 }
 
-// --- Perfiles de consumo de recursos por skill ---
-// Promedios históricos de CPU/RAM que consume cada tipo de agente.
-// Se actualizan al terminar cada agente usando los snapshots de metrics-history.
-const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
-
-function loadSkillProfiles() {
-  try { return JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8')); } catch { return {}; }
-}
-
-function saveSkillProfiles(profiles) {
-  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(profiles, null, 2));
-}
-
-/**
- * Registrar el consumo de recursos de un agente que terminó.
- * Lee metrics-history.jsonl para el período de ejecución del agente,
- * calcula el promedio de CPU/RAM durante ese período, y actualiza
- * el perfil del skill con un rolling average ponderado.
- */
-function recordSkillResourceUsage(skill, startTime, endTime) {
-  try {
-    const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
-    if (!fs.existsSync(metricsFile)) return;
-
-    const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
-    const snapshots = [];
-    for (const line of lines) {
-      try {
-        const s = JSON.parse(line);
-        if (s.ts >= startTime && s.ts <= endTime) snapshots.push(s);
-      } catch {}
-    }
-
-    if (snapshots.length < 2) return; // Necesitamos al menos 2 snapshots para un promedio significativo
-
-    // Promedio de CPU y RAM durante la vida del agente
-    const avgCpu = snapshots.reduce((sum, s) => sum + s.cpu, 0) / snapshots.length;
-    const avgMem = snapshots.reduce((sum, s) => sum + s.mem, 0) / snapshots.length;
-    // Cantidad de agentes promedio corriendo durante el período (para estimar contribución individual)
-    const avgAgents = snapshots.reduce((sum, s) => sum + Math.max(1, s.agents), 0) / snapshots.length;
-    // Estimación de la contribución individual de este agente
-    const estCpuPerAgent = avgCpu / avgAgents;
-    const estMemPerAgent = avgMem / avgAgents;
-
-    const profiles = loadSkillProfiles();
-    const existing = profiles[skill] || { avgCpu: estCpuPerAgent, avgMem: estMemPerAgent, samples: 0 };
-
-    // Rolling average ponderado: más peso a la historia acumulada
-    const n = existing.samples;
-    const weight = Math.min(n, 20); // Cap en 20 para que samples nuevos sigan teniendo efecto
-    profiles[skill] = {
-      avgCpu: Math.round(((existing.avgCpu * weight + estCpuPerAgent) / (weight + 1)) * 10) / 10,
-      avgMem: Math.round(((existing.avgMem * weight + estMemPerAgent) / (weight + 1)) * 10) / 10,
-      samples: n + 1,
-      lastUpdated: new Date().toISOString()
-    };
-
-    saveSkillProfiles(profiles);
-    log('recursos', `📊 Perfil ${skill}: CPU ~${profiles[skill].avgCpu}% MEM ~${profiles[skill].avgMem}% (${profiles[skill].samples} muestras)`);
-  } catch (e) {
-    log('recursos', `Error registrando perfil de ${skill}: ${e.message}`);
-  }
-}
-
-/**
- * Gate predictivo: verificar si lanzar un agente de este skill
- * llevaría al sistema por encima de los umbrales seguros.
- * Retorna { safe: bool, reason: string, predicted: { cpu, mem } }
- *
- * Confianza de profiles:
- * - < MIN_RELIABLE_SAMPLES: blend progresivo hacia defaults (pocas muestras = ruido)
- * - Cap máximo por agente: ningún proceso Claude usa >25% CPU o >20% MEM realmente
- * - Profiles >24h sin actualizar: reducir confianza (el sistema puede haber cambiado)
- */
-const MIN_RELIABLE_SAMPLES = 5;
-const MAX_EST_CPU = 25;  // Cap: ningún agente Claude usa más que esto
-const MAX_EST_MEM = 20;  // Cap: un proceso Claude rara vez pasa de 3GB (~20% en 16GB)
-const PROFILE_STALE_HOURS = 24;
-
-function getEstimatedImpact(profile) {
-  const DEFAULT_CPU = 12;
-  const DEFAULT_MEM = 8;
-
-  if (!profile) return { cpu: DEFAULT_CPU, mem: DEFAULT_MEM };
-
-  const samples = profile.samples || 0;
-  const hoursOld = (Date.now() - new Date(profile.lastUpdated || 0).getTime()) / 3600000;
-
-  // Cap absoluto: nunca estimar más que el máximo razonable
-  let cpu = Math.min(profile.avgCpu, MAX_EST_CPU);
-  let mem = Math.min(profile.avgMem, MAX_EST_MEM);
-
-  // Blend hacia defaults si pocas muestras (confianza progresiva)
-  if (samples < MIN_RELIABLE_SAMPLES) {
-    const confidence = samples / MIN_RELIABLE_SAMPLES; // 0.0 a 1.0
-    cpu = DEFAULT_CPU * (1 - confidence) + cpu * confidence;
-    mem = DEFAULT_MEM * (1 - confidence) + mem * confidence;
-  }
-
-  // Decay si el profile es viejo (>24h sin actualizar)
-  if (hoursOld > PROFILE_STALE_HOURS) {
-    const decayFactor = Math.max(0.5, 1 - (hoursOld - PROFILE_STALE_HOURS) / 72); // decay gradual
-    cpu = DEFAULT_CPU * (1 - decayFactor) + cpu * decayFactor;
-    mem = DEFAULT_MEM * (1 - decayFactor) + mem * decayFactor;
-  }
-
-  return { cpu: Math.round(cpu * 10) / 10, mem: Math.round(mem * 10) / 10 };
-}
-
-function predictResourceImpact(skill, config) {
-  const profiles = loadSkillProfiles();
-  const profile = profiles[skill];
-  const usage = getSystemResourceUsage();
-  const limits = config.resource_limits || {};
-  const maxCpu = limits.orange_max_percent || 80;
-  const maxMem = limits.orange_max_percent || 80;
-
-  const est = getEstimatedImpact(profile);
-
-  const predictedCpu = usage.cpuPercent + est.cpu;
-  const predictedMem = usage.memPercent + est.mem;
-
-  const cpuSafe = predictedCpu < maxCpu;
-  const memSafe = predictedMem < maxMem;
-
-  if (cpuSafe && memSafe) {
-    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem } };
-  }
-
-  const reasons = [];
-  if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${est.cpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
-  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
-
-  return {
-    safe: false,
-    reason: reasons.join(' | '),
-    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) }
-  };
-}
-
 // --- Limpieza de Gradle daemons post-agente ---
 
 /**
- * Limpieza de Gradle daemons — DESACTIVADA en ciclo automatico.
- * Ahora es no-op. La limpieza real se hace bajo demanda via limpiarDaemonsOnDemand().
+ * Matar Gradle daemons asociados a un directorio de trabajo (worktree o ROOT).
+ * Los daemons Gradle persisten después de que el build/agente termina y consumen
+ * hasta 4GB de heap cada uno, saturando el sistema.
  */
 function killGradleDaemonsForCwd(cwd, label) {
-  // No-op: el taskkill automatico fue eliminado por causar race conditions fatales
-  return 0;
-}
-
-/**
- * Limpieza bajo demanda de daemons Gradle/Kotlin huerfanos.
- * Se invoca SOLO desde el comando /limpiar (via Telegram o skill).
- * Protege daemons de worktrees activos.
- * Retorna un resumen de lo que hizo.
- */
-function limpiarDaemonsOnDemand() {
-  const results = [];
+  if (!cwd) return 0;
   let totalKilled = 0;
 
-  // Recolectar worktree paths de agentes activos para protegerlos
-  const activeWorktreePaths = new Set();
-  for (const [, info] of activeProcesses) {
-    if (info.worktreePath) {
-      activeWorktreePaths.add(info.worktreePath.replace(/\\/g, '/').toLowerCase());
+  // Verificar si hay otros procesos activos usando este mismo CWD.
+  // Si los hay, NO ejecutar --stop porque es una operación global que mata
+  // TODOS los daemons, incluyendo los de builds/agentes activos.
+  const cwdNorm = cwd.replace(/\\/g, '/').toLowerCase();
+  const rootNorm = ROOT.replace(/\\/g, '/').toLowerCase();
+  let hasOtherActiveInSameCwd = false;
+  for (const [key, info] of activeProcesses) {
+    if (!isProcessAlive(info.pid)) continue;
+    // Si el proceso activo usa ROOT como CWD (no worktree), y nuestro cwd es ROOT
+    // o si el proceso activo usa un worktree que coincide con nuestro cwd
+    const processCwd = info.worktreePath
+      ? info.worktreePath.replace(/\\/g, '/').toLowerCase()
+      : rootNorm;
+    if (processCwd === cwdNorm) {
+      hasOtherActiveInSameCwd = true;
+      log('gradle-cleanup', `${label}: omitiendo --stop, proceso activo ${key} (PID ${info.pid}) usa mismo CWD`);
+      break;
     }
   }
-  activeWorktreePaths.add(ROOT.replace(/\\/g, '/').toLowerCase());
 
-  // 1. Buscar Gradle daemons
+  // 1. Intentar ./gradlew --stop SOLO si no hay otros procesos activos en este CWD
+  if (!hasOtherActiveInSameCwd) {
+    try {
+      const gradlewPath = path.join(cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+      if (fs.existsSync(gradlewPath)) {
+        const result = execSync(`"${gradlewPath}" --stop`, {
+          cwd, encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
+        });
+        const match = result.match(/(\d+) Daemon/);
+        const count = match ? parseInt(match[1]) : 0;
+        if (count > 0) {
+          log('gradle-cleanup', `${label}: ${count} daemon(s) detenidos via --stop`);
+          totalKilled += count;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Matar wrappers lanzados desde este CWD (estos SÍ tienen el path en su CommandLine)
+  try {
+    const wmicOut = execSync(
+      'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    const cwdNormalized = cwd.replace(/\\/g, '/').toLowerCase();
+    for (const line of wmicOut.split('\n')) {
+      // Matchear wrappers de este CWD (gradle-wrapper.jar incluye el path del worktree)
+      if (line.includes('gradle-wrapper.jar') && line.toLowerCase().includes(cwdNormalized)) {
+        const pidMatch = line.match(/,(\d+)\s*$/);
+        if (pidMatch) {
+          // Matar el wrapper Y su árbol de procesos hijos (incluye el GradleDaemon forkeado)
+          try {
+            execSync(`taskkill /PID ${pidMatch[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+            totalKilled++;
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Matar GradleDaemons ociosos (sin wrapper padre activo = huérfanos)
+  //    Los daemons NO tienen el CWD en su CommandLine, así que los identificamos
+  //    como "huérfanos" si su proceso padre ya no existe.
   try {
     const wmicOut = execSync(
       'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     );
+    // Preservar el proceso de QA backend
+    let qaBackendPid = null;
+    try {
+      const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+      qaBackendPid = qaState.backend ? String(qaState.backend) : null;
+    } catch {}
+
     for (const line of wmicOut.split('\n')) {
-      if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
+      if (!line.includes('GradleDaemon')) continue;
+      // Formato CSV: Node,CommandLine,ProcessId,ParentProcessId
       const parts = line.split(',');
       const pid = parts[parts.length - 2]?.trim();
-      if (!pid) continue;
+      const ppid = parts[parts.length - 1]?.trim();
+      if (!pid || pid === qaBackendPid) continue;
 
-      // Proteger por worktree activo
-      const lineLower = line.replace(/\\/g, '/').toLowerCase();
-      let isActive = false;
-      for (const wtPath of activeWorktreePaths) {
-        if (lineLower.includes(wtPath)) { isActive = true; break; }
+      // Si el padre del daemon ya murió, el daemon es huérfano → matarlo
+      if (ppid && !isProcessAlive(parseInt(ppid, 10))) {
+        try {
+          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+          totalKilled++;
+          log('gradle-cleanup', `${label}: daemon huérfano PID ${pid} (padre ${ppid} muerto) eliminado`);
+        } catch {}
       }
-      if (isActive) {
-        results.push('Gradle PID ' + pid + ' PROTEGIDO (worktree activo)');
-        continue;
-      }
-
-      try {
-        execSync('taskkill /PID ' + pid + ' /F /T', { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-        totalKilled++;
-        results.push('Gradle PID ' + pid + ' eliminado');
-      } catch {}
     }
-  } catch (e) { results.push('Error buscando Gradle: ' + e.message); }
+  } catch {}
 
-  // 2. Buscar Kotlin compile daemons
-  try {
-    const wmicOut2 = execSync(
-      'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
-      { encoding: 'utf8', timeout: 10000, windowsHide: true }
-    );
-    for (const line of wmicOut2.split('\n')) {
-      if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
-      const match = line.match(/,(\d+)\s*$/);
-      if (!match) continue;
-
-      const lineLower = line.replace(/\\/g, '/').toLowerCase();
-      let isActive = false;
-      for (const wtPath of activeWorktreePaths) {
-        if (lineLower.includes(wtPath)) { isActive = true; break; }
-      }
-      if (isActive) {
-        results.push('Kotlin PID ' + match[1] + ' PROTEGIDO (worktree activo)');
-        continue;
-      }
-
-      try {
-        execSync('taskkill /PID ' + match[1] + ' /F /T', { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-        totalKilled++;
-        results.push('Kotlin PID ' + match[1] + ' eliminado');
-      } catch {}
-    }
-  } catch (e) { results.push('Error buscando Kotlin: ' + e.message); }
-
-  log('limpiar', 'Limpieza bajo demanda: ' + totalKilled + ' proceso(s) eliminados');
-  return { totalKilled, results };
+  if (totalKilled > 0) {
+    log('gradle-cleanup', `${label}: ${totalKilled} proceso(s) Gradle limpiados en total`);
+  }
+  return totalKilled;
 }
 
 // --- Estado de procesos activos (PIDs lanzados por el Pulpo) ---
@@ -440,28 +315,6 @@ function countRunningBySkill(skill) {
       try {
         for (const f of fs.readdirSync(trabajandoDir)) {
           if (f.endsWith(`.${skill}`) && !f.startsWith('.')) count++;
-        }
-      } catch {}
-    }
-  }
-  return count;
-}
-
-/** Skills que cuentan como "desarrolladores" para el límite global */
-const DEV_SKILLS = ['backend-dev', 'android-dev', 'web-dev', 'hotfix'];
-
-/** Contar total de devs corriendo en TODAS las fases de TODOS los pipelines */
-function countRunningDevs() {
-  const config = loadConfig();
-  let count = 0;
-  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
-    for (const fase of pConfig.fases) {
-      const trabajandoDir = path.join(PIPELINE, pName, fase, 'trabajando');
-      try {
-        for (const f of fs.readdirSync(trabajandoDir)) {
-          if (f.startsWith('.')) continue;
-          const s = f.split('.').pop();
-          if (DEV_SKILLS.includes(s)) count++;
         }
       } catch {}
     }
@@ -516,16 +369,10 @@ function getSystemResourceUsage() {
 const PRESSURE_LEVELS = { GREEN: 'green', YELLOW: 'yellow', ORANGE: 'orange', RED: 'red' };
 let lastResourceLog = 0;
 let lastPressureLevel = PRESSURE_LEVELS.GREEN;
-let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram en RED
-let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED (solo para logging)
-
-// --- Deadlock breaker: detecta cuando TODOS los candidatos son bloqueados por el gate predictivo ---
-let consecutiveAllBlockedCycles = 0;    // Ciclos consecutivos donde el gate bloqueó TODO
-let lastDeadlockTelegramTs = 0;
-const DEADLOCK_TELEGRAM_COOLDOWN = 600000; // 10 min entre notificaciones de deadlock
-const DEADLOCK_TIER1_CYCLES = 3;        // ~1.5 min: intentar liberar emulador idle
-const DEADLOCK_TIER2_CYCLES = 6;        // ~3 min: forzar lanzamiento del más liviano
-const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de RED
+let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram con kill de emergencia
+let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED sin poder bajar
+const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de emergencia
+const MAX_RED_RETRIES = 3;              // Después de 3 ciclos en RED sin mejora, dejar de intentar kill
 let proactiveCycleCounter = 0;
 
 /**
@@ -637,39 +484,45 @@ function isSystemOverloaded(config) {
     return false; // Dejar pasar 1 agente
   }
 
-  // RED: bloqueo total + limpieza de daemons (SIN kill de agentes/procesos Claude)
-  // Estrategia: solo limpiar Gradle/Kotlin huérfanos y esperar a que los procesos
-  // terminen naturalmente. NUNCA matar agentes ni builds en curso.
+  // RED: bloqueo total + kill de emergencia (con anti-spam)
   consecutiveRedCycles++;
 
-  // Limpieza agresiva de daemons (NO mata procesos Claude — solo Gradle/Kotlin sin worktree)
-  const { freed, killed } = tryFreeResources('aggressive');
+  // Si ya intentamos N veces y no baja, no insistir con kill — el consumo es de procesos del sistema
+  if (consecutiveRedCycles > MAX_RED_RETRIES) {
+    // Loguear localmente cada 60s, sin Telegram
+    const now = Date.now();
+    if (now - lastResourceLog > 60000) {
+      log('recursos', `🔴 RED sostenido (ciclo ${consecutiveRedCycles}) — los consumidores son del sistema, no hay más que limpiar. CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastResourceLog = now;
+    }
+    // Notificar por Telegram UNA vez cada 5 minutos
+    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+      logTopConsumers();
+      sendTelegram(`🔴 RAM al ${memPercent}% hace ${consecutiveRedCycles} ciclos. No hay daemons Gradle/Kotlin para matar — el consumo es de Chrome, emulador, etc. Bloqueando lanzamientos hasta que baje.`);
+      lastEmergencyTelegramTs = now;
+    }
+    return true;
+  }
+
+  logTopConsumers();
+  const { freed, killed } = tryFreeResources('emergency');
   if (freed) {
-    log('recursos', `🔴 Limpieza de daemons en RED: ${killed.join(', ')}`);
-  }
-
-  // Loguear cada 60s
-  const now = Date.now();
-  if (now - lastResourceLog > 60000) {
-    log('recursos', `🔴 RED — BLOQUEADO (ciclo ${consecutiveRedCycles}) — CPU: ${cpuPercent}% | RAM: ${memPercent}% — esperando que procesos terminen`);
-    lastResourceLog = now;
-  }
-
-  // Notificar por Telegram UNA vez cada 5 minutos
-  if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
-    logTopConsumers();
-    sendTelegram(`🔴 Recursos críticos — CPU: ${cpuPercent}% | RAM: ${memPercent}% — bloqueando nuevos lanzamientos, esperando que los activos terminen (sin kill de emergencia)`);
-    lastEmergencyTelegramTs = now;
-  }
-
-  // Re-evaluar por si la limpieza de daemons bajó la presión
-  if (freed) {
+    log('recursos', `🔴 Kill de emergencia: ${killed.join(', ')}`);
+    // Solo enviar Telegram si pasó el cooldown
+    const now = Date.now();
+    if (now - lastEmergencyTelegramTs > EMERGENCY_TELEGRAM_COOLDOWN) {
+      sendTelegram(`🔴 Recursos críticos — kill de emergencia: ${killed.join(', ')}\nCPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+      lastEmergencyTelegramTs = now;
+    }
+    // Re-evaluar
     const after = getResourcePressure(config);
     if (after.level !== PRESSURE_LEVELS.RED) {
+      consecutiveRedCycles = 0; // Se recuperó
       return isSystemOverloaded(config);
     }
   }
-
+  log('recursos', `🔴 RED — BLOQUEADO (intento ${consecutiveRedCycles}/${MAX_RED_RETRIES}) — CPU: ${cpuPercent}% | RAM: ${memPercent}%`);
+  lastResourceLog = Date.now();
   return true;
 }
 
@@ -696,7 +549,7 @@ function countTotalRunningAgents(config) {
 // Si QA dice "aprobado" pero no hay video real con audio, se fuerza rechazo.
 // =============================================================================
 
-const QA_VIDEO_MIN_SIZE_BYTES = 204800; // 200KB mínimo — swiftshader genera videos chicos pero válidos
+const QA_VIDEO_MIN_SIZE_BYTES = 512000; // 500KB mínimo para un video real
 
 /**
  * Validar que el resultado del QA tiene evidencia real.
@@ -709,8 +562,8 @@ function validateQaEvidence(issue, qaData) {
   if (!qaData.evidencia) {
     issues.push('falta campo "evidencia" en resultado QA');
   }
-  if (!qaData.video_size_kb || qaData.video_size_kb < 200) {
-    issues.push(`video_size_kb ausente o muy chico (${qaData.video_size_kb || 0}KB < 200KB)`);
+  if (!qaData.video_size_kb || qaData.video_size_kb < 500) {
+    issues.push(`video_size_kb ausente o muy chico (${qaData.video_size_kb || 0}KB < 500KB)`);
   }
   if (qaData.tiene_audio !== true) {
     issues.push('falta audio narrado en el video (tiene_audio != true)');
@@ -721,7 +574,7 @@ function validateQaEvidence(issue, qaData) {
   try {
     const stat = fs.statSync(videoPath);
     if (stat.size < QA_VIDEO_MIN_SIZE_BYTES) {
-      issues.push(`video existe pero pesa ${Math.round(stat.size / 1024)}KB (mínimo 200KB)`);
+      issues.push(`video existe pero pesa ${Math.round(stat.size / 1024)}KB (mínimo 500KB)`);
     }
   } catch {
     issues.push(`video no encontrado en ${videoPath}`);
@@ -740,97 +593,6 @@ let qaPriorityActive = false;
 let qaPriorityActivatedAt = 0;
 let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
 let qaPriorityNotifiedTelegram = false;
-let qaPriorityManual = false;       // true si fue activada manualmente desde el dashboard
-
-// =============================================================================
-// BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
-// priorización de recursos cuando hay builds en cola.
-// Cuando se acumulan issues esperando build, el Pulpo bloquea nuevos
-// lanzamientos dev para liberar recursos y dar prioridad al build.
-// =============================================================================
-let buildPriorityActive = false;
-let buildPriorityActivatedAt = 0;
-let buildFirstBlockedAt = 0;
-let buildPriorityNotifiedTelegram = false;
-let buildPriorityManual = false;    // true si fue activada manualmente desde el dashboard
-
-const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
-
-/**
- * Persistir el estado actual de las priority windows a disco.
- * El dashboard lee este archivo para mostrar estado y el usuario puede
- * activar/desactivar ventanas manualmente escribiendo en él.
- */
-function persistPriorityWindows() {
-  const state = {
-    qa: {
-      active: qaPriorityActive,
-      activatedAt: qaPriorityActivatedAt || null,
-      manual: qaPriorityManual
-    },
-    build: {
-      active: buildPriorityActive,
-      activatedAt: buildPriorityActivatedAt || null,
-      manual: buildPriorityManual
-    },
-    updatedAt: Date.now()
-  };
-  try { fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(state, null, 2)); } catch {}
-}
-
-/**
- * Leer activaciones/desactivaciones manuales desde el archivo.
- * El dashboard escribe { qa: { manualOverride: true/false }, build: { manualOverride: true/false } }
- * y el Pulpo las consume acá.
- */
-function readManualPriorityOverrides() {
-  try {
-    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
-
-    // QA manual override
-    if (data.qa?.manualOverride === true && !qaPriorityActive) {
-      qaPriorityActive = true;
-      qaPriorityManual = true;
-      qaPriorityActivatedAt = Date.now();
-      qaPriorityNotifiedTelegram = false;
-      log('qa-priority', '🔧 QA Priority Window ACTIVADA MANUALMENTE desde dashboard');
-      sendTelegram('🔧 QA Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
-      persistPriorityWindows();
-    } else if (data.qa?.manualOverride === false && qaPriorityActive) {
-      qaPriorityActive = false;
-      qaPriorityManual = false;
-      qaPriorityActivatedAt = 0;
-      qaFirstBlockedAt = 0;
-      log('qa-priority', '🔧 QA Priority Window DESACTIVADA MANUALMENTE desde dashboard');
-      persistPriorityWindows();
-    }
-
-    // Build manual override
-    if (data.build?.manualOverride === true && !buildPriorityActive) {
-      buildPriorityActive = true;
-      buildPriorityManual = true;
-      buildPriorityActivatedAt = Date.now();
-      buildPriorityNotifiedTelegram = false;
-      log('build-priority', '🔧 Build Priority Window ACTIVADA MANUALMENTE desde dashboard');
-      sendTelegram('🔧 Build Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
-      persistPriorityWindows();
-    } else if (data.build?.manualOverride === false && buildPriorityActive) {
-      buildPriorityActive = false;
-      buildPriorityManual = false;
-      buildPriorityActivatedAt = 0;
-      buildFirstBlockedAt = 0;
-      log('build-priority', '🔧 Build Priority Window DESACTIVADA MANUALMENTE desde dashboard');
-      persistPriorityWindows();
-    }
-
-    // Limpiar overrides consumidos
-    if (data.qa?.manualOverride !== undefined || data.build?.manualOverride !== undefined) {
-      delete data.qa?.manualOverride;
-      delete data.build?.manualOverride;
-      fs.writeFileSync(PRIORITY_WINDOWS_FILE, JSON.stringify(data, null, 2));
-    }
-  } catch {}
-}
 
 /**
  * Contar issues pendientes en fase verificación (todas las pipelines).
@@ -873,8 +635,8 @@ function evaluateQaPriority(config) {
 
   // ---- Desactivación ----
   if (qaPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
-    if (!qaPriorityManual && pendingQa === 0) {
+    // Si ya no hay issues QA pendientes, desactivar
+    if (pendingQa === 0) {
       log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
       if (qaPriorityNotifiedTelegram) {
         sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Lanzamientos dev reactivados.');
@@ -883,7 +645,6 @@ function evaluateQaPriority(config) {
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       qaPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
       return false;
     }
     // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
@@ -893,11 +654,9 @@ function evaluateQaPriority(config) {
         sendTelegram(`⏱️ QA Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingQa} issues de verificación pendientes. Lanzamientos dev reactivados.`);
       }
       qaPriorityActive = false;
-      qaPriorityManual = false;
       qaPriorityActivatedAt = 0;
       qaFirstBlockedAt = 0;
       qaPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
       return false;
     }
     return true; // Sigue activa
@@ -917,7 +676,6 @@ function evaluateQaPriority(config) {
       qaPriorityNotifiedTelegram = true;
       log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min sin verificar. Bloqueando lanzamientos dev.`);
       sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min esperando verificación. Bloqueando nuevos lanzamientos de dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
-      persistPriorityWindows();
       return true;
     }
   } else {
@@ -925,108 +683,6 @@ function evaluateQaPriority(config) {
     if (qaFirstBlockedAt !== 0) {
       log('qa-priority', `✅ Acumulación QA bajó a ${pendingQa} (< ${queueThreshold}) — timer de QA Priority reseteado`);
       qaFirstBlockedAt = 0;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Contar issues pendientes en fase build (todas las pipelines).
- */
-function countPendingBuild(config) {
-  let count = 0;
-  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
-    if (!pConfig.fases.includes('build')) continue;
-    const pendDir = path.join(PIPELINE, pName, 'build', 'pendiente');
-    count += listWorkFiles(pendDir).length;
-  }
-  return count;
-}
-
-/**
- * Contar builds actualmente en ejecución (archivos en trabajando/ de fase build).
- */
-function countRunningBuild(config) {
-  let count = 0;
-  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
-    if (!pConfig.fases.includes('build')) continue;
-    const trabajandoDir = path.join(PIPELINE, pName, 'build', 'trabajando');
-    count += listWorkFiles(trabajandoDir).length;
-  }
-  return count;
-}
-
-/**
- * Evaluar si debe activarse/desactivarse la Build Priority Window.
- * Cuando hay builds en cola, bloquea nuevos dev para liberar recursos
- * y evitar saturación del sistema.
- * Retorna true si Build Priority está activa (dev debe bloquearse).
- */
-function evaluateBuildPriority(config) {
-  const limits = config.resource_limits || {};
-  const queueThreshold = limits.build_priority_queue_threshold || 2;
-  const waitMinutes = limits.build_priority_wait_minutes || 5;
-  const maxDurationMinutes = limits.build_priority_max_duration_minutes || 20;
-  const now = Date.now();
-
-  const pendingBuild = countPendingBuild(config);
-  const runningBuild = countRunningBuild(config);
-
-  // ---- Desactivación ----
-  if (buildPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
-    if (!buildPriorityManual && pendingBuild === 0 && runningBuild === 0) {
-      log('build-priority', '🟢 Build Priority Window desactivada — cola de build vacía');
-      if (buildPriorityNotifiedTelegram) {
-        sendTelegram('✅ Build Priority Window terminó — builds completados. Lanzamientos dev reactivados.');
-      }
-      buildPriorityActive = false;
-      buildPriorityActivatedAt = 0;
-      buildFirstBlockedAt = 0;
-      buildPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
-      return false;
-    }
-    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
-    if (now - buildPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
-      log('build-priority', `⏱️ Build Priority Window expiró después de ${maxDurationMinutes}min — ${pendingBuild} builds pendientes, ${runningBuild} en curso`);
-      if (buildPriorityNotifiedTelegram) {
-        sendTelegram(`⏱️ Build Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingBuild} builds pendientes. Lanzamientos dev reactivados.`);
-      }
-      buildPriorityActive = false;
-      buildPriorityManual = false;
-      buildPriorityActivatedAt = 0;
-      buildFirstBlockedAt = 0;
-      buildPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
-      return false;
-    }
-    return true; // Sigue activa
-  }
-
-  // ---- Activación ----
-  // Condición: N+ builds pendientes Y llevan M+ minutos sin poder correr
-  if (pendingBuild >= queueThreshold) {
-    if (buildFirstBlockedAt === 0) {
-      buildFirstBlockedAt = now;
-      log('build-priority', `⚠️ Acumulación build detectada: ${pendingBuild} issues pendientes en build — esperando ${waitMinutes}min antes de activar Build Priority`);
-    }
-    const waitedMs = now - buildFirstBlockedAt;
-    if (waitedMs >= waitMinutes * 60 * 1000) {
-      buildPriorityActive = true;
-      buildPriorityActivatedAt = now;
-      buildPriorityNotifiedTelegram = true;
-      log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues llevan ${Math.round(waitedMs / 60000)}min sin buildear. Bloqueando lanzamientos dev.`);
-      sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build hace ${Math.round(waitedMs / 60000)}min. Bloqueando nuevos dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
-      persistPriorityWindows();
-      return true;
-    }
-  } else {
-    // Si bajó del umbral, resetear el timer
-    if (buildFirstBlockedAt !== 0) {
-      log('build-priority', `✅ Acumulación build bajó a ${pendingBuild} (< ${queueThreshold}) — timer de Build Priority reseteado`);
-      buildFirstBlockedAt = 0;
     }
   }
 
@@ -1063,184 +719,129 @@ function logTopConsumers() {
 }
 
 /**
- * Liberar recursos: solo limpieza del mapa interno de activeProcesses.
- * El taskkill de Gradle/Kotlin daemons fue ELIMINADO del ciclo automatico.
- * Motivo: bajo carga alta, las heuristicas (wmic, worktree path, PID tree) fallan
- * y matan builds/agentes legitimos, causando loops infinitos de rebotes.
- * La limpieza de daemons ahora es SOLO bajo demanda via comando /limpiar.
+ * Intentar liberar recursos con nivel de agresividad variable.
+ * Niveles: 'soft' (solo Gradle daemons), 'aggressive' (+Kotlin daemons), 'emergency' (+node huérfanos)
  */
 function tryFreeResources(mode = 'soft') {
   const killed = [];
 
   try {
-    // Limpieza de agentes stale del mapa interno (no mata procesos)
+    // 1. Matar Gradle daemons huérfanos (en todos los modos)
+    let gradleKilled = 0;
+    try {
+      const wmicOut = execSync(
+        'wmic process where "name=\'java.exe\'" get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
+        { encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+
+      // Preservar el que es del QA backend (si está vivo)
+      let qaBackendPid = null;
+      try {
+        const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+        qaBackendPid = qaState.backend ? String(qaState.backend) : null;
+      } catch {}
+
+      for (const line of wmicOut.split('\n')) {
+        if (!line.includes('GradleDaemon') && !line.includes('gradle-launcher')) continue;
+        const parts = line.split(',');
+        const pid = parts[parts.length - 2]?.trim();
+        const ppid = parts[parts.length - 1]?.trim();
+        if (!pid || pid === qaBackendPid) continue;
+
+        // En modo soft: solo matar huérfanos (padre muerto)
+        // En modo aggressive/emergency: matar TODOS los daemons Gradle
+        const isOrphan = ppid && !isProcessAlive(parseInt(ppid, 10));
+        if (mode === 'soft' && !isOrphan) continue;
+
+        try {
+          execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+          gradleKilled++;
+        } catch {}
+      }
+    } catch {}
+    if (gradleKilled > 0) killed.push(`${gradleKilled} Gradle daemon(s)`);
+
+    // 2. Matar Kotlin compile daemons (en aggressive/emergency)
+    if (mode !== 'soft') {
+      let kotlinKilled = 0;
+      try {
+        const wmicOut = execSync(
+          'wmic process where "name=\'java.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+          { encoding: 'utf8', timeout: 10000, windowsHide: true }
+        );
+        for (const line of wmicOut.split('\n')) {
+          if (!line.includes('kotlin-compiler') && !line.includes('KotlinCompileDaemon')) continue;
+          const match = line.match(/,(\d+)\s*$/);
+          if (match) {
+            try {
+              execSync(`taskkill /PID ${match[1]} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+              kotlinKilled++;
+            } catch {}
+          }
+        }
+      } catch {}
+      if (kotlinKilled > 0) killed.push(`${kotlinKilled} Kotlin daemon(s)`);
+    }
+
+    // 3. Limpiar procesos de agentes muertos del mapa activeProcesses (todos los modos)
     let staleAgents = 0;
     for (const [key, info] of activeProcesses) {
-      // Grace period: nunca limpiar agentes registrados hace menos de 30 min
-      const ageMs = Date.now() - (info.startTime || 0);
-      if (ageMs < 30 * 60 * 1000) continue;
       if (!isProcessAlive(info.pid)) {
         activeProcesses.delete(key);
         staleAgents++;
       }
     }
-    if (staleAgents > 0) killed.push(staleAgents + ' agente(s) stale');
+    if (staleAgents > 0) killed.push(`${staleAgents} agente(s) stale`);
+
+    // 4. Emergency: matar node.exe huérfanos que sean agentes Claude ya terminados
+    if (mode === 'emergency') {
+      let nodeKilled = 0;
+      try {
+        const wmicOut = execSync(
+          'wmic process where "name=\'node.exe\'" get ProcessId,CommandLine /FORMAT:CSV',
+          { encoding: 'utf8', timeout: 10000, windowsHide: true }
+        );
+        // PIDs que el Pulpo conoce como activos — NO matar
+        const activePids = new Set();
+        for (const [, info] of activeProcesses) activePids.add(String(info.pid));
+        // PIDs de servicios del pipeline — NO matar
+        const servicePids = new Set();
+        try {
+          for (const f of fs.readdirSync(PIPELINE)) {
+            if (f.endsWith('.pid')) {
+              const pidVal = fs.readFileSync(path.join(PIPELINE, f), 'utf8').trim();
+              if (pidVal) servicePids.add(pidVal);
+            }
+          }
+        } catch {}
+        // El propio Pulpo
+        servicePids.add(String(process.pid));
+
+        for (const line of wmicOut.split('\n')) {
+          if (!line.includes('cli.js') && !line.includes('claude')) continue;
+          const match = line.match(/,(\d+)\s*$/);
+          if (!match) continue;
+          const pid = match[1];
+          if (activePids.has(pid) || servicePids.has(pid)) continue;
+          // Es un proceso Claude que el Pulpo no conoce = zombie
+          try {
+            execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+            nodeKilled++;
+          } catch {}
+        }
+      } catch {}
+      if (nodeKilled > 0) killed.push(`${nodeKilled} Claude zombie(s)`);
+    }
 
   } catch (e) {
-    log('free-resources', 'Error durante limpieza (' + mode + '): ' + e.message);
+    log('free-resources', `Error durante limpieza (${mode}): ${e.message}`);
   }
 
   if (killed.length > 0) {
-    log('free-resources', '[' + mode + '] Recursos liberados: ' + killed.join(', '));
+    log('free-resources', `[${mode}] Recursos liberados: ${killed.join(', ')}`);
   }
 
   return { freed: killed.length > 0, killed };
-}
-
-/**
- * Apagar el emulador QA si no hay nada en fase verificacion/trabajando.
- * El emulador consume ~2.5GB de RAM y ensureQaEnvironment() lo re-levanta cuando hace falta.
- * Retorna true si mató el emulador.
- */
-function shutdownIdleEmulator(config) {
-  try {
-    // ¿Hay algo en verificacion/trabajando?
-    for (const [pName, pConfig] of Object.entries(config.pipelines)) {
-      if (!pConfig.fases.includes('verificacion')) continue;
-      const trabajandoDir = path.join(fasePath(pName, 'verificacion'), 'trabajando');
-      const archivos = listWorkFiles(trabajandoDir);
-      if (archivos.length > 0) return false; // Hay agentes de QA corriendo, no tocar
-    }
-
-    // ¿Está corriendo el emulador? Verificar state file Y por nombre de proceso
-    let emulatorRunning = false;
-
-    // Check 1: state file
-    const stateFile = path.join(PIPELINE, 'qa-env-state.json');
-    if (fs.existsSync(stateFile)) {
-      try {
-        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-        const emulatorPid = state.emulator || state.emulador;
-        if (emulatorPid && isProcessAlive(emulatorPid)) emulatorRunning = true;
-      } catch {}
-    }
-
-    // Check 2: buscar proceso QEMU por nombre (el state puede perder track del PID)
-    if (!emulatorRunning) {
-      try {
-        const out = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
-          { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
-        if (out.includes('qemu-system')) emulatorRunning = true;
-      } catch {}
-    }
-
-    if (!emulatorRunning) return false;
-
-    // Apagar QA environment completo (emulador + backend local + DynamoDB)
-    log('recursos', '🔌 Apagando QA environment idle (emulador + servicios) para liberar ~2.5GB RAM');
-    try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" stop`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-      });
-    } catch (e) {
-      log('recursos', `Error apagando QA env vía script: ${e.message}`);
-    }
-
-    // Fallback: si QEMU sigue vivo después del stop, matarlo directo por nombre
-    try {
-      const check = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
-        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
-      if (check.includes('qemu-system')) {
-        execSync('taskkill /IM qemu-system-x86_64-headless.exe /F /T',
-          { timeout: 10000, windowsHide: true, stdio: 'ignore' });
-        log('recursos', '🔌 QEMU matado por nombre (fallback — state file había perdido el PID)');
-      }
-    } catch (e) {
-      log('recursos', `Error matando QEMU por nombre: ${e.message}`);
-    }
-    // Reset circuit breaker para que pueda re-levantarse después
-    qaEnvStartFailures = 0;
-    return true;
-  } catch (e) {
-    log('recursos', `Error verificando emulador idle: ${e.message}`);
-    return false;
-  }
-}
-
-/**
- * Deadlock breaker: cuando el gate predictivo bloquea TODOS los candidatos durante
- * varios ciclos consecutivos, escalar progresivamente para salir del deadlock.
- *
- * Tier 1 (3 ciclos / ~1.5min): Apagar emulador idle + resetear profiles poco confiables
- * Tier 2 (6 ciclos / ~3min): Forzar lanzamiento del candidato más liviano con threshold relajado
- */
-function handleDeadlock(candidates, config) {
-  if (consecutiveAllBlockedCycles < DEADLOCK_TIER1_CYCLES) return null;
-
-  const now = Date.now();
-
-  // --- TIER 1: liberar recursos pasivos ---
-  if (consecutiveAllBlockedCycles === DEADLOCK_TIER1_CYCLES) {
-    log('deadlock', `⚠️ Deadlock detectado: ${consecutiveAllBlockedCycles} ciclos con TODOS los candidatos bloqueados. Tier 1: liberando recursos pasivos.`);
-
-    // Apagar emulador si está idle
-    const emulatorKilled = shutdownIdleEmulator(config);
-    if (emulatorKilled) {
-      log('deadlock', '🔌 Emulador idle apagado — re-evaluando en el próximo ciclo');
-      if (now - lastDeadlockTelegramTs > DEADLOCK_TELEGRAM_COOLDOWN) {
-        sendTelegram('⚠️ Pipeline deadlocked — apagué el emulador idle para liberar RAM. Se re-levanta solo cuando haga falta.');
-        lastDeadlockTelegramTs = now;
-      }
-    }
-
-    // Resetear profiles con pocas muestras (no son confiables)
-    const profiles = loadSkillProfiles();
-    let resetCount = 0;
-    for (const [skill, profile] of Object.entries(profiles)) {
-      if ((profile.samples || 0) < MIN_RELIABLE_SAMPLES) {
-        delete profiles[skill];
-        resetCount++;
-      }
-    }
-    if (resetCount > 0) {
-      saveSkillProfiles(profiles);
-      log('deadlock', `🗑️ Reseteados ${resetCount} profiles con < ${MIN_RELIABLE_SAMPLES} muestras (poco confiables)`);
-    }
-
-    return null; // Dar un ciclo más para que surta efecto
-  }
-
-  // --- TIER 2: forzar lanzamiento del más liviano ---
-  if (consecutiveAllBlockedCycles >= DEADLOCK_TIER2_CYCLES) {
-    // Encontrar el candidato con menor impacto estimado
-    const profiles = loadSkillProfiles();
-    let lightest = null;
-    let lightestImpact = Infinity;
-
-    for (const candidate of candidates) {
-      const skill = skillFromFile(candidate.archivo.name);
-      const est = getEstimatedImpact(profiles[skill]);
-      const impact = est.cpu + est.mem;
-      if (impact < lightestImpact) {
-        lightestImpact = impact;
-        lightest = candidate;
-      }
-    }
-
-    if (lightest) {
-      const skill = skillFromFile(lightest.archivo.name);
-      const issue = issueFromFile(lightest.archivo.name);
-      log('deadlock', `🚀 Tier 2: forzando lanzamiento de ${skill}:#${issue} (el más liviano, impacto estimado: ${Math.round(lightestImpact)}%) tras ${consecutiveAllBlockedCycles} ciclos bloqueados`);
-      if (now - lastDeadlockTelegramTs > DEADLOCK_TELEGRAM_COOLDOWN) {
-        sendTelegram(`🔓 Pipeline deadlocked ${consecutiveAllBlockedCycles} ciclos — forzando ${skill}:#${issue} para desbloquear. El gate predictivo tenía profiles inflados o el sistema tiene procesos externos pesados.`);
-        lastDeadlockTelegramTs = now;
-      }
-      consecutiveAllBlockedCycles = 0; // Reset — le damos tiempo al agente lanzado
-      return lightest;
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -1256,12 +857,6 @@ function proactiveCleanup(config) {
   const { freed, killed } = tryFreeResources('soft');
   if (freed) {
     log('proactivo', `Limpieza periódica: ${killed.join(', ')}`);
-  }
-
-  // Auto-shutdown del emulador si no hay verificación activa — libera ~2.5GB RAM
-  const emulatorKilled = shutdownIdleEmulator(config);
-  if (emulatorKilled) {
-    sendTelegram('🔌 Emulador QA apagado automáticamente (sin verificación activa). Se re-levanta solo cuando haga falta.');
   }
 }
 
@@ -1344,23 +939,14 @@ function brazoBarrido(config) {
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
 
         if (rechazados.length > 0 && faseRechazo) {
-          // Circuit breaker: leer rebote_numero del archivo que originó este ciclo
-          // (puede estar en trabajando/ o pendiente/ de la fase de rechazo, o en el propio resultado)
-          // Buscar el máximo rebote_numero entre los archivos del issue en dev
+          // Circuit breaker: contar rebotes previos del mismo issue en procesado/
+          const devProcessed = path.join(fasePath(pipelineName, faseRechazo), 'procesado');
           let reboteCount = 0;
-          for (const estado of ['pendiente', 'trabajando', 'procesado']) {
-            const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
-            try {
-              for (const f of fs.readdirSync(dir)) {
-                if (f.startsWith(issue + '.')) {
-                  const data = readYaml(path.join(dir, f));
-                  if (data.rebote_numero && data.rebote_numero > reboteCount) {
-                    reboteCount = data.rebote_numero;
-                  }
-                }
-              }
-            } catch {}
-          }
+          try {
+            for (const f of fs.readdirSync(devProcessed)) {
+              if (f.startsWith(issue + '.')) reboteCount++;
+            }
+          } catch {}
 
           const MAX_REBOTES = 3;
           if (reboteCount >= MAX_REBOTES) {
@@ -1555,181 +1141,73 @@ function brazoLanzamiento(config) {
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
 
-  // Leer activaciones/desactivaciones manuales del dashboard
-  readManualPriorityOverrides();
-
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
 
   // Evaluar QA Priority Window — bloquea dev si QA está acumulado
   const qaPriority = evaluateQaPriority(config);
 
-  // Evaluar Build Priority Window — bloquea dev si builds están acumulados
-  const buildPriority = evaluateBuildPriority(config);
-
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
   const multiplier = concurrencyMultiplier(pressure.level);
 
-  // Fases de desarrollo que se bloquean durante QA/Build Priority
+  // Fases de desarrollo que se bloquean durante QA Priority
   const DEV_PHASES = ['dev', 'validacion'];
 
-  // --- PIEZA 2+3: Recolectar TODOS los pendientes de TODAS las fases ---
-  // En vez de iterar fase por fase (que prioriza fases avanzadas),
-  // juntamos todo y ordenamos por: feature priority > fase inversa.
-  const candidates = [];
-
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
-    const fases = pipelineConfig.fases;
-    for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
-      const fase = fases[faseIdx];
-
-      // QA/BUILD PRIORITY: si alguna ventana está activa, bloquear lanzamientos de fases dev
-      if ((qaPriority || buildPriority) && DEV_PHASES.includes(fase)) continue;
-
-      const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
-      const archivos = listWorkFiles(pendienteDir);
-
-      for (const archivo of archivos) {
-        candidates.push({
-          archivo,
-          pipelineName,
-          fase,
-          faseIdx,  // Índice original de la fase (para orden inverso)
-          totalFases: fases.length,
-        });
-      }
-    }
-  }
-
-  // Ordenar candidatos: feature priority (menor=mejor) > fase inversa (mayor idx=más avanzada=primero)
-  candidates.sort((a, b) => {
-    const issueA = issueFromFile(a.archivo.name);
-    const issueB = issueFromFile(b.archivo.name);
-    const prioA = calcularPrioridad(issueA, config);
-    const prioB = calcularPrioridad(issueB, config);
-
-    // Primer criterio: prioridad de feature (menor = más prioritario)
-    if (prioA !== prioB) return prioA - prioB;
-
-    // Segundo criterio (desempate): fase inversa — fases más avanzadas primero
-    // faseIdx mayor = fase más avanzada = debe procesarse antes
-    return b.faseIdx - a.faseIdx;
-  });
-
-  // --- Procesar candidatos en orden unificado ---
-  let anyLaunched = false;
-  let gateBlockedCount = 0;       // Candidatos bloqueados específicamente por el gate predictivo
-  let eligibleForGateCount = 0;   // Candidatos que llegaron hasta el gate (pasaron dedup/cooldown/concurrencia)
-  const gateBlockedCandidates = []; // Para el deadlock breaker
-
-  for (const candidate of candidates) {
-    const { archivo, pipelineName, fase } = candidate;
-    const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
-    const skill = skillFromFile(archivo.name);
-    const issue = issueFromFile(archivo.name);
-    const key = processKey(skill, issue);
-
-    // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
-    const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
-    if (issueAlreadyWorking) continue;
-
-    // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
-    if (isInCooldown(skill, issue)) continue;
-
-    // 3. Ya hay un proceso activo para este skill+issue en memoria?
-    if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
-      continue;
-    }
-
-    // 4. Verificar concurrencia del rol — ADAPTATIVA según presión de recursos
-    const baseMax = (config.concurrencia || {})[skill] || 1;
-    const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
-    const running = countRunningBySkill(skill);
-    if (running >= maxConcurrencia) continue;
-
-    // 5a. Límite de builds bajo presión — en YELLOW solo 1 build simultáneo
-    // Esto previene que múltiples builds saturen la RAM y lleven al sistema a RED
-    if (fase === 'build' && (pressure.level === PRESSURE_LEVELS.YELLOW || pressure.level === PRESSURE_LEVELS.ORANGE)) {
-      const runningBuilds = countRunningBuild(config);
-      if (runningBuilds >= 1) {
-        log('lanzamiento', `⚠️ ${pressure.level.toUpperCase()} — ${runningBuilds} build(s) en curso, postergando build de #${issue} para no saturar`);
+    for (const fase of pipelineConfig.fases) {
+      // QA PRIORITY: si la ventana está activa, bloquear lanzamientos de fases dev
+      // pero permitir verificacion, build, aprobacion, entrega
+      if (qaPriority && DEV_PHASES.includes(fase)) {
         continue;
       }
-    }
 
-    // 5b. PIEZA 1: Límite global de devs — si este skill es de desarrollo,
-    // verificar que no se exceda el máximo total de devs simultáneos
-    if (DEV_SKILLS.includes(skill)) {
-      const maxDevs = (config.resource_limits || {}).max_concurrent_devs;
-      if (maxDevs != null) {
-        const totalDevs = countRunningDevs();
-        if (totalDevs >= maxDevs) {
-          log('lanzamiento', `Límite global de devs alcanzado (${totalDevs}/${maxDevs}). Postergando ${archivo.name}`);
-          continue;
-        }
-      }
-    }
-
-    // 6. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
-    eligibleForGateCount++;
-    const impact = predictResourceImpact(skill, config);
-    if (!impact.safe) {
-      log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
-      gateBlockedCount++;
-      gateBlockedCandidates.push(candidate);
-      continue;
-    }
-
-    // Mover a trabajando/ (atómico)
-    try {
-      const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-
-      // Pre-requisitos por fase
-      if (fase === 'verificacion') {
-        ensureQaEnvironment(config);
-      }
-
-      // Lanzar agente
-      if (fase === 'build') {
-        lanzarBuild(issue, trabajandoPath, pipelineName, config);
-      } else {
-        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
-      }
-      anyLaunched = true;
-    } catch (e) {
-      log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
-    }
-  }
-
-  // --- DEADLOCK BREAKER ---
-  // Si había candidatos elegibles pero TODOS fueron bloqueados por el gate predictivo
-  if (eligibleForGateCount > 0 && gateBlockedCount === eligibleForGateCount && !anyLaunched) {
-    consecutiveAllBlockedCycles++;
-
-    const forced = handleDeadlock(gateBlockedCandidates, config);
-    if (forced) {
-      // Forzar lanzamiento del candidato elegido por el breaker
-      const { archivo, pipelineName, fase } = forced;
+      const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
-      try {
-        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-        if (fase === 'verificacion') ensureQaEnvironment(config);
+      const archivos = sortByPriority(listWorkFiles(pendienteDir), config);
+
+      for (const archivo of archivos) {
         const skill = skillFromFile(archivo.name);
         const issue = issueFromFile(archivo.name);
-        if (fase === 'build') {
-          lanzarBuild(issue, trabajandoPath, pipelineName, config);
-        } else {
-          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+        const key = processKey(skill, issue);
+
+        // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
+        const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
+        if (issueAlreadyWorking) continue;
+
+        // 2. COOLDOWN: ¿este issue+skill está penalizado por fallos previos?
+        if (isInCooldown(skill, issue)) continue;
+
+        // 3. Ya hay un proceso activo para este skill+issue en memoria?
+        if (activeProcesses.has(key) && isProcessAlive(activeProcesses.get(key).pid)) {
+          continue;
         }
-      } catch (e) {
-        log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
+
+        // 4. Verificar concurrencia del rol — ADAPTATIVA según presión de recursos
+        const baseMax = (config.concurrencia || {})[skill] || 1;
+        const maxConcurrencia = Math.max(1, Math.floor(baseMax * multiplier));
+        const running = countRunningBySkill(skill);
+        if (running >= maxConcurrencia) continue;
+
+        // Mover a trabajando/ (atómico)
+        try {
+          const trabajandoPath = moveFile(archivo.path, trabajandoDir);
+
+          // Pre-requisitos por fase
+          if (fase === 'verificacion') {
+            ensureQaEnvironment(config);
+          }
+
+          // Lanzar agente
+          if (fase === 'build') {
+            lanzarBuild(issue, trabajandoPath, pipelineName, config);
+          } else {
+            lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+          }
+        } catch (e) {
+          log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
+        }
       }
-    }
-  } else {
-    // Se lanzó algo o no había candidatos elegibles → reset deadlock counter
-    if (anyLaunched || eligibleForGateCount === 0) {
-      consecutiveAllBlockedCycles = 0;
     }
   }
 }
@@ -1960,28 +1438,11 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         } catch (e) {}
       }
       sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
-      // Reporte PDF de muerte prematura (background)
-      try {
-        const reportScript = path.join(PIPELINE, 'rejection-report.js');
-        const reportChild = spawn(process.execPath, [
-          reportScript,
-          '--issue', String(issue), '--skill', skill, '--fase', fase,
-          '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
-          '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
-          '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
-        ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
-        reportChild.unref();
-      } catch {}
       return;
     }
 
     // Éxito o finalización normal → limpiar cooldown
     if (code === 0) clearCooldown(skill, issue);
-
-    // Registrar consumo de recursos del agente para perfiles predictivos
-    if (elapsedSec > 30) { // Solo si corrió suficiente para tener snapshots
-      recordSkillResourceUsage(skill, launchTime, Date.now());
-    }
 
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
@@ -2008,38 +1469,13 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
       moveFile(trabajandoPath, listoDir);
       log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
-
-      // Generar reporte PDF de rechazo y enviar a Telegram (background, no bloquea)
-      if (data.resultado === 'rechazado') {
-        try {
-          const reportScript = path.join(PIPELINE, 'rejection-report.js');
-          const reportArgs = [
-            reportScript,
-            '--issue', String(issue), '--skill', skill, '--fase', fase,
-            '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
-            '--motivo', String(data.motivo || 'Sin motivo'),
-            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
-          ];
-          const reportChild = spawn(process.execPath, reportArgs, {
-            cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true
-          });
-          reportChild.unref();
-          log('lanzamiento', `📄 Reporte de rechazo lanzado para ${skill}:#${issue}`);
-        } catch (reportErr) {
-          log('lanzamiento', `⚠️ Error lanzando reporte de rechazo: ${reportErr.message}`);
-        }
-      }
     } catch (e) {
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
     activeProcesses.delete(processKey(skill, issue));
 
     // Matar Gradle daemons del worktree para liberar RAM (cada daemon usa hasta 4GB)
-    // Delay de 10s para evitar race condition: si el barrido ya lanzó un build en este
-    // worktree, el guard dentro de killGradleDaemonsForCwd lo protegerá.
-    const cleanupCwd = needsWorktree ? worktreePath : ROOT;
-    const cleanupLabel = `${skill}:#${issue}`;
-    setTimeout(() => killGradleDaemonsForCwd(cleanupCwd, cleanupLabel), 10000);
+    killGradleDaemonsForCwd(needsWorktree ? worktreePath : ROOT, `${skill}:#${issue}`);
 
     // Salir del canal de contexto (el canal queda para que otros lo consulten)
     if (contextChannelId) {
@@ -2108,17 +1544,7 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
 
   const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 
-  // Excluir WasmJs test compilation (causa OOM) y targets iOS (no aplican en CI local)
-  // Mismo criterio que .github/workflows/pr-checks.yml
-  const excludeTasks = [
-    '-x compileTestDevelopmentExecutableKotlinWasmJs',
-    '-x compileTestKotlinIosX64',
-    '-x compileKotlinIosSimulatorArm64',
-    '-x compileTestKotlinIosSimulatorArm64',
-  ].join(' ');
-  buildEnv.GRADLE_OPTS = '-Xmx3g -Dfile.encoding=UTF-8';
-
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon ${excludeTasks}`], {
+  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon`], {
     cwd: buildCwd,
     env: buildEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -2139,9 +1565,9 @@ function lanzarBuild(issue, trabajandoPath, pipeline, config) {
     pid: child.pid,
     startTime: buildStartTime,
     trabajandoPath,
-    worktreePath: buildCwd,
     pipeline,
-    fase: 'build'
+    fase: 'build',
+    worktreePath: buildCwd !== ROOT ? buildCwd : null
   });
 
   let output = '';
@@ -2593,37 +2019,7 @@ function ejecutarClaude(prompt, textoOriginal) {
     let toolCount = 0;
     let lastToolDesc = '';
     let progressCount = 0;
-    let resolved = false;
     const startTime = Date.now();
-
-    // Límite absoluto: 10 minutos — si Claude no terminó, matar y resolver
-    const HARD_TIMEOUT_MS = 10 * 60 * 1000;
-
-    function finish(code, reason) {
-      if (resolved) return;
-      resolved = true;
-      clearInterval(progressTimer);
-      clearTimeout(hardTimer);
-      rl.close();
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      log('commander', `Claude terminó (${reason}, code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
-      if (finalResult?.result) {
-        resolve(finalResult.result);
-      } else if (lastText) {
-        resolve(lastText);
-      } else {
-        log('commander', `stderr: ${stderr.slice(0, 300)}`);
-        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
-      }
-    }
-
-    function killProc() {
-      try { proc.kill('SIGTERM'); } catch {}
-      // En Windows SIGTERM no siempre funciona — forzar con taskkill /T (tree kill)
-      try {
-        if (proc.pid) execSync(`taskkill /PID ${proc.pid} /F /T`, { timeout: 5000, windowsHide: true, stdio: 'ignore' });
-      } catch {}
-    }
 
     const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
     rl.on('line', (line) => {
@@ -2642,16 +2038,6 @@ function ejecutarClaude(prompt, textoOriginal) {
           }
         } else if (evt.type === 'result') {
           finalResult = evt;
-          // WORKAROUND para bug claude-code#25629: CLI no termina después del result event.
-          // Dar 3s de gracia para que el proceso salga solo, si no: matarlo.
-          log('commander', 'Result event recibido — esperando 3s para exit limpio...');
-          setTimeout(() => {
-            if (!resolved) {
-              log('commander', 'Claude no salió tras result — matando proceso (workaround #25629)');
-              killProc();
-              finish(null, 'result+kill');
-            }
-          }, 3000);
         }
       } catch {}
     });
@@ -2661,7 +2047,6 @@ function ejecutarClaude(prompt, textoOriginal) {
 
     // Mensajes de progreso contextuales cada 45s
     const progressTimer = setInterval(() => {
-      if (resolved) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const msg = generarMensajeProgreso(progressCount, elapsed, toolCount, lastToolDesc, textoOriginal);
       progressCount++;
@@ -2669,34 +2054,25 @@ function ejecutarClaude(prompt, textoOriginal) {
       log('commander', `Progreso: ${msg}`);
     }, 45000);
 
-    // Hard timeout: si nada resolvió en 10 min, forzar finalización
-    const hardTimer = setTimeout(() => {
-      if (!resolved) {
-        log('commander', `HARD TIMEOUT (${HARD_TIMEOUT_MS / 60000}min) — matando Claude`);
-        killProc();
-        finish(null, 'hard-timeout');
+    proc.on('exit', (code) => {
+      clearInterval(progressTimer);
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      log('commander', `Claude terminó (code=${code}, tools=${toolCount}, ${elapsed}s, lastText=${(lastText||'').length}chars)`);
+      if (finalResult?.result) {
+        resolve(finalResult.result);
+      } else if (lastText) {
+        resolve(lastText);
+      } else {
+        log('commander', `stderr: ${stderr.slice(0, 300)}`);
+        resolve(`No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`);
       }
-    }, HARD_TIMEOUT_MS);
-
-    proc.on('exit', (code) => finish(code, 'exit'));
-    proc.on('close', (code) => finish(code, 'close'));
-    proc.stdout.on('end', () => { if (!resolved) finish(proc.exitCode, 'stdout-end'); });
+    });
 
     proc.on('error', (e) => {
-      if (resolved) return;
-      log('commander', `Error spawning Claude: ${e.message}`);
-      finish(null, 'error');
+      clearInterval(progressTimer);
+      reject(e);
     });
   });
-}
-
-function cmdLimpiar() {
-  const { totalKilled, results } = limpiarDaemonsOnDemand();
-  if (totalKilled === 0 && results.length === 0) {
-    return '✅ No hay daemons Gradle/Kotlin para limpiar.';
-  }
-  const lines = results.map(r => `  • ${r}`).join('\n');
-  return `🧹 *Limpieza de daemons*\n\n${lines}\n\n*Total eliminados:* ${totalKilled}`;
 }
 
 function cmdHelp() {
@@ -2706,7 +2082,6 @@ function cmdHelp() {
 /actividad [filtro] — Timeline (ej: /actividad 30m, /actividad #732)
 /intake [issue] — Meter trabajo al pipeline
 /proponer — Proponer historias nuevas (vía Claude)
-/limpiar — Matar daemons Gradle/Kotlin huérfanos
 /pausar — Pausar el Pulpo
 /reanudar — Reanudar el Pulpo
 /costos — Resumen de actividad/costos
@@ -2742,7 +2117,6 @@ function parseCommand(text) {
       { pattern: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, cmd: 'intake' },
       { pattern: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, cmd: 'proponer' },
       { pattern: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, cmd: 'stop' },
-      { pattern: /\b(limpi[áa]|limpiar daemons|matar gradle|matar daemons|kill gradle)\b/i, cmd: 'limpiar' },
     ];
 
     for (const { pattern, cmd } of intentPatterns) {
@@ -2880,7 +2254,6 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         running = false;
         break;
       case 'proponer': respuesta = await cmdProponer(parsed.args, config); break;
-      case 'limpiar': respuesta = cmdLimpiar(); break;
       default: respuesta = null; break;
     }
 
@@ -2914,22 +2287,6 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
         `[Mensaje ${i + 1}${m._esAudio ? ' (audio)' : ''}]: ${m._textoFinal}`
       ).join('\n\n');
       log('commander', `Mensajes consolidados: ${textoLibre.length} → 1 prompt`);
-    }
-
-    // Protección anti-restart encadenado: si el mensaje pide restart y ya hubo
-    // uno reciente (< 2 min), responder directamente sin delegar a Claude
-    const restartPattern = /\b(reinici|restart|levant[aá]|arranc[aá])\b/i;
-    if (restartPattern.test(mensajeConsolidado)) {
-      try {
-        const lastRestart = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8'));
-        const ageSec = (Date.now() - new Date(lastRestart.timestamp).getTime()) / 1000;
-        if (ageSec < 120) {
-          log('commander', `Restart solicitado pero ya hubo uno hace ${Math.round(ageSec)}s — skip`);
-          sendTelegram(`✅ Ya reinicié hace ${Math.round(ageSec)}s, todo debería estar andando. Usá /status para verificar.`);
-          for (const m of textoLibre) { try { moveFile(m._path, commanderListo); } catch {} }
-          return;
-        }
-      } catch {}
     }
 
     // ACK contextual
@@ -3215,66 +2572,6 @@ function rotateHistory() {
   } catch {}
 }
 
-// --- MÉTRICAS HISTÓRICAS ---
-// Persiste snapshot cada ciclo (30s) a metrics-history.jsonl.
-// El dashboard lee este archivo para /metrics.
-const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
-const METRICS_MAX_ENTRIES = 2880; // ~24h a 30s/ciclo
-let metricsLastRotation = 0;
-
-function persistMetricsSnapshot(config) {
-  try {
-    const pressure = getResourcePressure(config);
-    const totalRunning = countTotalRunningAgents(config);
-
-    // Contar por fase
-    const byFase = {};
-    for (const [pName, pConfig] of Object.entries(config.pipelines)) {
-      for (const fase of pConfig.fases) {
-        const tDir = path.join(PIPELINE, pName, fase, 'trabajando');
-        const pDir = path.join(PIPELINE, pName, fase, 'pendiente');
-        byFase[fase] = {
-          working: (byFase[fase]?.working || 0) + listWorkFiles(tDir).length,
-          pending: (byFase[fase]?.pending || 0) + listWorkFiles(pDir).length
-        };
-      }
-    }
-
-    // Contar por skill (para perfiles de consumo)
-    const bySkill = {};
-    for (const [key] of activeProcesses) {
-      const sk = key.split(':')[0];
-      bySkill[sk] = (bySkill[sk] || 0) + 1;
-    }
-
-    const snapshot = {
-      ts: Date.now(),
-      cpu: pressure.cpuPercent,
-      mem: pressure.memPercent,
-      level: pressure.level,
-      agents: totalRunning,
-      byFase,
-      bySkill,
-      qaPriority: qaPriorityActive,
-      buildPriority: buildPriorityActive
-    };
-
-    fs.appendFileSync(METRICS_FILE, JSON.stringify(snapshot) + '\n');
-
-    // Rotar cada 10min para no crecer indefinidamente
-    const now = Date.now();
-    if (now - metricsLastRotation > 600000) {
-      metricsLastRotation = now;
-      try {
-        const lines = fs.readFileSync(METRICS_FILE, 'utf8').split('\n').filter(Boolean);
-        if (lines.length > METRICS_MAX_ENTRIES) {
-          fs.writeFileSync(METRICS_FILE, lines.slice(-METRICS_MAX_ENTRIES).join('\n') + '\n');
-        }
-      } catch {}
-    }
-  } catch {}
-}
-
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
@@ -3303,7 +2600,6 @@ async function mainLoop() {
 
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
-        persistMetricsSnapshot(config); // Métricas históricas para /metrics
         brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
         brazoBarrido(config);   // Tercero: promover entre fases
         brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
