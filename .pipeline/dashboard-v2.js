@@ -786,14 +786,32 @@ function generateHTML(state) {
     </div>`;
 
   // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
-  // Calcular frecuencia de uso de cada skill en el issue tracker
+  // Calcular frecuencia de uso y últimos issues por skill
   const skillUsageCount = {};
-  for (const [, data] of matrixEntries) {
+  const recentBySkill = {}; // skill → [{ issue, resultado, logFile, hasLog, ts }] (últimos 3)
+  for (const [issue, data] of matrixEntries) {
     for (const [, faseEntries] of Object.entries(data.fases || {})) {
       for (const e of faseEntries) {
         skillUsageCount[e.skill] = (skillUsageCount[e.skill] || 0) + 1;
+        // Recolectar issues completados (listo/procesado) para historial reciente
+        if (e.estado === 'listo' || e.estado === 'procesado') {
+          if (!recentBySkill[e.skill]) recentBySkill[e.skill] = [];
+          recentBySkill[e.skill].push({
+            issue, resultado: e.resultado, logFile: e.logFile,
+            hasLog: e.hasLog, ts: e.updatedAt || e.startedAt || 0
+          });
+        }
       }
     }
+  }
+  // Ordenar cada skill por timestamp desc y quedarse con los últimos 3
+  for (const sk of Object.keys(recentBySkill)) {
+    // Deduplicar por issue (quedarse con el más reciente)
+    const byIssue = {};
+    for (const r of recentBySkill[sk]) {
+      if (!byIssue[r.issue] || r.ts > byIssue[r.issue].ts) byIssue[r.issue] = r;
+    }
+    recentBySkill[sk] = Object.values(byIssue).sort((a, b) => b.ts - a.ts).slice(0, 3);
   }
   // Ordenar: 1) más agentes activos (running desc), 2) más usados históricamente (usage desc)
   const skillEntries = Object.entries(state.skillLoad)
@@ -802,6 +820,20 @@ function generateHTML(state) {
       if (diff !== 0) return diff;
       return (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0);
     });
+  // Helper: genera mini-historial de los últimos 3 issues para un skill
+  function skillRecentHTML(skill) {
+    const recents = recentBySkill[skill];
+    if (!recents || recents.length === 0) return '';
+    return '<div class="skill-recent">' + recents.map(r => {
+      const icon = r.resultado === 'aprobado' ? '\u2705' : r.resultado === 'rechazado' ? '\u274C' : '\u23F3';
+      const inner = '#' + r.issue;
+      if (r.hasLog) {
+        return '<a class="skill-recent-item" href="#" onclick="event.preventDefault();openLogViewer(\'' + r.logFile + '\',\'#' + r.issue + ' ' + skill + '\')" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>';
+      }
+      return '<span class="skill-recent-item" title="' + (r.resultado || 'sin log') + '">' + icon + ' ' + inner + '</span>';
+    }).join('') + '</div>';
+  }
+
   // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
   // Sin agentes activos ni servicios en Equipo → más espacio para skills
   const hasActiveAgents = Object.values(state.skillLoad).some(l => l.running > 0);
@@ -819,10 +851,13 @@ function generateHTML(state) {
       ? `<span style="color:var(--rd);font-weight:700">${load.running}/${load.max}</span>`
       : `${load.running}/${load.max}`;
     heatmapHTML += `<div class="skill-cap-chip ${cls}" style="--agent-color:${p.color}" title="${skill}: ${load.running}/${load.max}">
-      <span class="skill-cap-icon">${p.icon}</span>
-      <span class="skill-cap-name">${p.name || skill}</span>
-      <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
-      <span class="skill-cap-count">${countLabel}</span>
+      <div class="skill-cap-main">
+        <span class="skill-cap-icon">${p.icon}</span>
+        <span class="skill-cap-name">${p.name || skill}</span>
+        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
+        <span class="skill-cap-count">${countLabel}</span>
+      </div>
+      ${skillRecentHTML(skill)}
     </div>`;
     shownCount++;
   }
@@ -833,10 +868,13 @@ function generateHTML(state) {
   for (const [skill, load] of shownIdle) {
     const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
     heatmapHTML += `<div class="skill-cap-chip load-idle" style="--agent-color:${p.color}" title="${skill}: 0/${load.max}">
-      <span class="skill-cap-icon">${p.icon}</span>
-      <span class="skill-cap-name">${p.name || skill}</span>
-      <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
-      <span class="skill-cap-count">0/${load.max}</span>
+      <div class="skill-cap-main">
+        <span class="skill-cap-icon">${p.icon}</span>
+        <span class="skill-cap-name">${p.name || skill}</span>
+        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
+        <span class="skill-cap-count">0/${load.max}</span>
+      </div>
+      ${skillRecentHTML(skill)}
     </div>`;
   }
   if (hiddenIdle > 0) {
@@ -1570,13 +1608,14 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── Skill Capacity Chips (inline compact) ──────────────────────────────── */
 .skill-cap-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .skill-cap-chip{
-  display:inline-flex;align-items:center;gap:6px;
+  display:inline-flex;flex-direction:column;gap:3px;
   background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
-  padding:5px 10px;border-left:3px solid var(--agent-color,var(--dim2));
-  transition:box-shadow 0.2s;
+  padding:6px 10px;border-left:3px solid var(--agent-color,var(--dim2));
+  transition:box-shadow 0.2s;min-width:110px;
 }
 .skill-cap-chip:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
 .load-full.skill-cap-chip{border-left-color:var(--rd)}
+.skill-cap-main{display:flex;align-items:center;gap:6px}
 .skill-cap-icon{font-size:1em;line-height:1}
 .skill-cap-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap}
 .skill-cap-bar{width:32px;height:4px;background:var(--bd);border-radius:2px;overflow:hidden;display:inline-block}
@@ -1587,6 +1626,9 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .load-idle.skill-cap-chip{opacity:0.5;border-left-color:var(--dim2)}
 .load-idle .skill-cap-name{color:var(--dim)}
 .skill-idle-summary{font-size:0.75em;color:var(--dim);font-style:italic;padding:4px 8px}
+.skill-recent{display:flex;gap:4px;flex-wrap:wrap}
+.skill-recent-item{font-size:0.65em;color:var(--dim);text-decoration:none;cursor:pointer;padding:1px 4px;border-radius:4px;background:var(--sf2);white-space:nowrap;transition:background 0.15s}
+a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 
 /* ── DORA Mini ─────────────────────────────────────────────────────────── */
 .dora-mini{
