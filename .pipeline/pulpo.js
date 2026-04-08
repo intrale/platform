@@ -174,6 +174,110 @@ function clearCooldown(skill, issue) {
   if (cd[key]) { delete cd[key]; saveCooldowns(cd); }
 }
 
+// --- Perfiles de consumo de recursos por skill ---
+// Promedios históricos de CPU/RAM que consume cada tipo de agente.
+// Se actualizan al terminar cada agente usando los snapshots de metrics-history.
+const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
+
+function loadSkillProfiles() {
+  try { return JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8')); } catch { return {}; }
+}
+
+function saveSkillProfiles(profiles) {
+  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(profiles, null, 2));
+}
+
+/**
+ * Registrar el consumo de recursos de un agente que terminó.
+ * Lee metrics-history.jsonl para el período de ejecución del agente,
+ * calcula el promedio de CPU/RAM durante ese período, y actualiza
+ * el perfil del skill con un rolling average ponderado.
+ */
+function recordSkillResourceUsage(skill, startTime, endTime) {
+  try {
+    const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
+    if (!fs.existsSync(metricsFile)) return;
+
+    const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
+    const snapshots = [];
+    for (const line of lines) {
+      try {
+        const s = JSON.parse(line);
+        if (s.ts >= startTime && s.ts <= endTime) snapshots.push(s);
+      } catch {}
+    }
+
+    if (snapshots.length < 2) return; // Necesitamos al menos 2 snapshots para un promedio significativo
+
+    // Promedio de CPU y RAM durante la vida del agente
+    const avgCpu = snapshots.reduce((sum, s) => sum + s.cpu, 0) / snapshots.length;
+    const avgMem = snapshots.reduce((sum, s) => sum + s.mem, 0) / snapshots.length;
+    // Cantidad de agentes promedio corriendo durante el período (para estimar contribución individual)
+    const avgAgents = snapshots.reduce((sum, s) => sum + Math.max(1, s.agents), 0) / snapshots.length;
+    // Estimación de la contribución individual de este agente
+    const estCpuPerAgent = avgCpu / avgAgents;
+    const estMemPerAgent = avgMem / avgAgents;
+
+    const profiles = loadSkillProfiles();
+    const existing = profiles[skill] || { avgCpu: estCpuPerAgent, avgMem: estMemPerAgent, samples: 0 };
+
+    // Rolling average ponderado: más peso a la historia acumulada
+    const n = existing.samples;
+    const weight = Math.min(n, 20); // Cap en 20 para que samples nuevos sigan teniendo efecto
+    profiles[skill] = {
+      avgCpu: Math.round(((existing.avgCpu * weight + estCpuPerAgent) / (weight + 1)) * 10) / 10,
+      avgMem: Math.round(((existing.avgMem * weight + estMemPerAgent) / (weight + 1)) * 10) / 10,
+      samples: n + 1,
+      lastUpdated: new Date().toISOString()
+    };
+
+    saveSkillProfiles(profiles);
+    log('recursos', `📊 Perfil ${skill}: CPU ~${profiles[skill].avgCpu}% MEM ~${profiles[skill].avgMem}% (${profiles[skill].samples} muestras)`);
+  } catch (e) {
+    log('recursos', `Error registrando perfil de ${skill}: ${e.message}`);
+  }
+}
+
+/**
+ * Gate predictivo: verificar si lanzar un agente de este skill
+ * llevaría al sistema por encima de los umbrales seguros.
+ * Retorna { safe: bool, reason: string, predicted: { cpu, mem } }
+ */
+function predictResourceImpact(skill, config) {
+  const profiles = loadSkillProfiles();
+  const profile = profiles[skill];
+  const usage = getSystemResourceUsage();
+  const limits = config.resource_limits || {};
+  const maxCpu = limits.orange_max_percent || 80;
+  const maxMem = limits.orange_max_percent || 80;
+
+  // Si no hay perfil histórico, usar estimación conservadora por defecto
+  const DEFAULT_CPU = 12; // ~12% CPU por agente (conservador)
+  const DEFAULT_MEM = 8;  // ~8% RAM por agente (conservador)
+  const estCpu = profile ? profile.avgCpu : DEFAULT_CPU;
+  const estMem = profile ? profile.avgMem : DEFAULT_MEM;
+
+  const predictedCpu = usage.cpuPercent + estCpu;
+  const predictedMem = usage.memPercent + estMem;
+
+  const cpuSafe = predictedCpu < maxCpu;
+  const memSafe = predictedMem < maxMem;
+
+  if (cpuSafe && memSafe) {
+    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem } };
+  }
+
+  const reasons = [];
+  if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${estCpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
+  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${estMem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
+
+  return {
+    safe: false,
+    reason: reasons.join(' | '),
+    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) }
+  };
+}
+
 // --- Limpieza de Gradle daemons post-agente ---
 
 /**
@@ -1367,6 +1471,13 @@ function brazoLanzamiento(config) {
       }
     }
 
+    // 6. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
+    const impact = predictResourceImpact(skill, config);
+    if (!impact.safe) {
+      log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
+      continue;
+    }
+
     // Mover a trabajando/ (atómico)
     try {
       const trabajandoPath = moveFile(archivo.path, trabajandoDir);
@@ -1614,11 +1725,28 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         } catch (e) {}
       }
       sendTelegram(`⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s — fallo #${failures}. Cooldown ${delayMin}min antes de reintentar.`);
+      // Reporte PDF de muerte prematura (background)
+      try {
+        const reportScript = path.join(PIPELINE, 'rejection-report.js');
+        const reportChild = spawn(process.execPath, [
+          reportScript,
+          '--issue', String(issue), '--skill', skill, '--fase', fase,
+          '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+          '--motivo', `Muerte prematura (${elapsedSec.toFixed(0)}s, fallo #${failures})`,
+          '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+        ], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true });
+        reportChild.unref();
+      } catch {}
       return;
     }
 
     // Éxito o finalización normal → limpiar cooldown
     if (code === 0) clearCooldown(skill, issue);
+
+    // Registrar consumo de recursos del agente para perfiles predictivos
+    if (elapsedSec > 30) { // Solo si corrió suficiente para tener snapshots
+      recordSkillResourceUsage(skill, launchTime, Date.now());
+    }
 
     const listoDir = path.join(fasePath(pipeline, fase), 'listo');
     try {
@@ -1645,6 +1773,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
       moveFile(trabajandoPath, listoDir);
       log('lanzamiento', `${skill}:#${issue} terminó (code=${code}, ${elapsedSec.toFixed(0)}s) → listo/`);
+
+      // Generar reporte PDF de rechazo y enviar a Telegram (background, no bloquea)
+      if (data.resultado === 'rechazado') {
+        try {
+          const reportScript = path.join(PIPELINE, 'rejection-report.js');
+          const reportArgs = [
+            reportScript,
+            '--issue', String(issue), '--skill', skill, '--fase', fase,
+            '--code', String(code), '--elapsed', String(Math.round(elapsedSec)),
+            '--motivo', String(data.motivo || 'Sin motivo'),
+            '--log', `${issue}-${skill}.log`, '--pipeline', pipeline
+          ];
+          const reportChild = spawn(process.execPath, reportArgs, {
+            cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true
+          });
+          reportChild.unref();
+          log('lanzamiento', `📄 Reporte de rechazo lanzado para ${skill}:#${issue}`);
+        } catch (reportErr) {
+          log('lanzamiento', `⚠️ Error lanzando reporte de rechazo: ${reportErr.message}`);
+        }
+      }
     } catch (e) {
       log('lanzamiento', `Error post-proceso ${skill}:#${issue}: ${e.message}`);
     }
@@ -2856,6 +3005,13 @@ function persistMetricsSnapshot(config) {
       }
     }
 
+    // Contar por skill (para perfiles de consumo)
+    const bySkill = {};
+    for (const [key] of activeProcesses) {
+      const sk = key.split(':')[0];
+      bySkill[sk] = (bySkill[sk] || 0) + 1;
+    }
+
     const snapshot = {
       ts: Date.now(),
       cpu: pressure.cpuPercent,
@@ -2863,6 +3019,7 @@ function persistMetricsSnapshot(config) {
       level: pressure.level,
       agents: totalRunning,
       byFase,
+      bySkill,
       qaPriority: qaPriorityActive,
       buildPriority: buildPriorityActive
     };
