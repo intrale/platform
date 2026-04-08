@@ -1037,7 +1037,8 @@ function generateHTML(state) {
     for (const e of entries) {
       if (e.estado === 'trabajando') {
         if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
-        activeAgents[e.skill].push({ issue: issueNum, fase: data.faseActual.split('/')[1], duration: e.durationMs });
+        const [pline, fse] = data.faseActual.split('/');
+        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs });
       }
     }
   }
@@ -1049,6 +1050,7 @@ function generateHTML(state) {
       const issueChips = issues.map(i =>
         `<a href="${GH(i.issue)}" target="_blank" class="agent-issue">#${i.issue} <span class="agent-issue-fase">${i.fase}</span> <span class="agent-issue-dur">${fmtDuration(i.duration)}</span></a>`
       ).join('');
+      const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
       agentTeamCards += `
         <div class="agent-card" style="--agent-color:${p.color}">
           <div class="agent-avatar">${p.icon}</div>
@@ -1056,6 +1058,7 @@ function generateHTML(state) {
             <div class="agent-name">${p.name}</div>
             <div class="agent-issues">${issueChips}</div>
           </div>
+          <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
           <div class="agent-pulse"></div>
         </div>`;
     }
@@ -1502,6 +1505,9 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
+.kill-group-btn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:14px;font-weight:700;cursor:pointer;opacity:0;transition:opacity 0.2s,background 0.15s;line-height:1;flex-shrink:0;margin-left:auto}
+.agent-card:hover .kill-group-btn{opacity:0.6}
+.kill-group-btn:hover{opacity:1!important;background:var(--rd);color:#fff}
 /* ETA badges */
 .eta-badge{font-size:0.7em;padding:1px 5px;border-radius:8px;background:var(--ac2);color:var(--ac);margin-left:4px;font-weight:600;white-space:nowrap}
 .eta-over{background:var(--or2);color:var(--or)}
@@ -1901,6 +1907,25 @@ async function killAgent(issue, skill, pipeline, fase) {
   } catch (e) {
     showToast('Error: ' + e.message, false);
   }
+}
+
+// Kill all agents of a skill group
+async function killSkillGroup(skill, agents) {
+  if (!confirm('¿Cancelar todos los agentes ' + skill + ' (' + agents.length + ' activos)?')) return;
+  let ok = 0, fail = 0;
+  for (const a of agents) {
+    try {
+      const resp = await fetch('/api/kill-agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase })
+      });
+      const result = await resp.json();
+      if (result.ok) ok++; else fail++;
+    } catch { fail++; }
+  }
+  showToast(skill + ': ' + ok + ' cancelados' + (fail > 0 ? ', ' + fail + ' fallaron' : ''), fail === 0);
+  setTimeout(() => location.reload(), 1500);
 }
 
 // Priority Window toggle
