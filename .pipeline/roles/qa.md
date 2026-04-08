@@ -79,38 +79,40 @@ Si el emulador no esta levantado: avisar en el resultado (NO intentar levantarlo
       echo "Duracion: $DURATION"
       ```
       Si el video pesa <200KB o dura <5s: **NO aprobar**. Regrabar.
-   g. **Generar audio con relato narrado** (OBLIGATORIO):
-      Escribir un guion que narre lo que se ve en el video, etapa por etapa,
-      mencionando explicitamente cada criterio de aceptacion que se verifica.
-      Guardar el guion en `qa/evidence/qa-<issue>-guion.txt`.
+   g. **Generar video con relato narrado** (OBLIGATORIO):
+      Usar `qa-narration.js` que genera TTS con OpenAI `gpt-4o-mini-tts` (misma voz que Telegram)
+      y mergea automáticamente el audio con el video usando FFmpeg.
 
-      Ejemplo de guion:
-      ```
-      Verificacion del issue mil ochocientos ochenta y dos.
-      Criterio uno: validar rol antes de cargar notificaciones.
-      Abrimos la app con rol Delivery. Se ve la pantalla de notificaciones cargando correctamente.
-      Criterio dos: si el rol no coincide, el estado queda vacio con error Access denied.
-      Cambiamos al rol Client. Se observa que las notificaciones no cargan y aparece el mensaje de acceso denegado.
-      Todos los criterios de aceptacion fueron verificados exitosamente.
+      Primero, restaurar API keys si es necesario:
+      ```bash
+      node .claude/hooks/api-keys-guardian.js restore 2>/dev/null || true
       ```
 
-      Generar el audio con edge-tts (voz argentina):
+      Luego generar el video narrado:
       ```bash
-      python -m edge_tts \
-        --voice "es-AR-TomasNeural" \
-        --file "qa/evidence/qa-<issue>-guion.txt" \
-        --write-media "qa/evidence/qa-<issue>-narration.mp3"
+      node qa/scripts/qa-narration.js \
+        --video "qa/evidence/qa-<issue>-raw.mp4" \
+        --flows-dir .maestro/flows \
+        --output "qa/evidence/qa-<issue>.mp4"
       ```
-   h. **Mergear video + audio con ffmpeg** (OBLIGATORIO):
-      ```bash
-      FFMPEG_BIN=$(which ffmpeg 2>/dev/null || echo "/c/Users/Administrator/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg")
-      "$FFMPEG_BIN" -i "qa/evidence/qa-<issue>-raw.mp4" \
-        -i "qa/evidence/qa-<issue>-narration.mp3" \
-        -c:v copy -c:a aac -b:a 128k \
-        -shortest \
-        "qa/evidence/qa-<issue>.mp4" -y
-      ```
-      El archivo final `qa-<issue>.mp4` tiene video + relato narrado integrado.
+
+      Si `qa-narration.js` falla (sin API key), usar edge-tts como fallback:
+      1. Escribir guion en `qa/evidence/qa-<issue>-guion.txt` narrando cada criterio verificado
+      2. Generar audio:
+         ```bash
+         python -m edge_tts \
+           --voice "es-AR-TomasNeural" \
+           --file "qa/evidence/qa-<issue>-guion.txt" \
+           --write-media "qa/evidence/qa-<issue>-narration.mp3"
+         ```
+      3. Mergear:
+         ```bash
+         FFMPEG_BIN=$(which ffmpeg 2>/dev/null || echo "/c/Users/Administrator/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg")
+         "$FFMPEG_BIN" -i "qa/evidence/qa-<issue>-raw.mp4" \
+           -i "qa/evidence/qa-<issue>-narration.mp3" \
+           -c:v copy -c:a aac -b:a 128k -shortest \
+           "qa/evidence/qa-<issue>.mp4" -y
+         ```
    i. **Extraer frames clave** (respaldo visual):
       ```bash
       "$FFMPEG_BIN" -i "qa/evidence/qa-<issue>.mp4" -vf "fps=1/3" -q:v 2 \

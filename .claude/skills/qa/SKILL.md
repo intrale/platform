@@ -150,8 +150,19 @@ for VIDEO in qa/recordings/maestro-shard-*.mp4; do
 done
 ```
 
-Generar relato narrado con edge-tts (OBLIGATORIO si hay video):
-1. Escribir guion en `qa/evidence/<issue>/qa-guion.txt` narrando cada criterio de aceptacion verificado
+Generar relato narrado (OBLIGATORIO si hay video):
+
+Primero restaurar API keys y usar `qa-narration.js` (OpenAI TTS, misma voz que Telegram):
+```bash
+node .claude/hooks/api-keys-guardian.js restore 2>/dev/null || true
+node qa/scripts/qa-narration.js \
+  --video "qa/recordings/maestro-shard-<device>.mp4" \
+  --flows-dir .maestro/flows \
+  --output "qa/evidence/<issue>/qa-<issue>-narrated.mp4"
+```
+
+Si `qa-narration.js` falla (sin OpenAI key), usar edge-tts como fallback:
+1. Escribir guion en `qa/evidence/<issue>/qa-guion.txt` narrando cada criterio verificado
 2. Generar audio:
    ```bash
    python -m edge_tts \
