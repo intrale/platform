@@ -1,12 +1,15 @@
 package asdo.client
 
-import ext.client.ClientExceptionResponse
 import ar.com.intrale.shared.client.ClientOrderDTO
 import ar.com.intrale.shared.client.ClientOrderDetailDTO
 import ar.com.intrale.shared.client.ClientOrderItemDTO
 import ar.com.intrale.shared.client.CreateClientOrderRequestDTO
 import ar.com.intrale.shared.client.CreateClientOrderResponseDTO
+import ar.com.intrale.shared.client.ProductAvailabilityItemDTO
+import ar.com.intrale.shared.client.SkipReason
+import ext.client.ClientExceptionResponse
 import ext.client.CommClientOrdersService
+import ext.client.CommClientProductsAvailabilityService
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -155,17 +158,31 @@ class DoGetClientOrderDetailTest {
 
 // region DoRepeatOrder
 
+private class FakeAvailabilityService(
+    private val availabilityResult: Result<List<ProductAvailabilityItemDTO>> = Result.success(emptyList())
+) : CommClientProductsAvailabilityService {
+    override suspend fun checkAvailability(productIds: List<String>): Result<List<ProductAvailabilityItemDTO>> =
+        availabilityResult
+}
+
+/** Helper para crear un servicio que marca todos los productos como disponibles */
+private fun allAvailableService(productIds: List<String>) = FakeAvailabilityService(
+    availabilityResult = Result.success(
+        productIds.map { ProductAvailabilityItemDTO(productId = it, available = true) }
+    )
+)
+
 class DoRepeatOrderTest {
 
     @Test
-    fun `repetir pedido con items con ID agrega todos al resultado`() = runTest {
+    fun `repetir pedido con items con ID todos disponibles agrega todos al resultado`() = runTest {
         val orderWithAllIds = sampleDeliveredOrder.copy(
             items = listOf(
                 ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
                 ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
             )
         )
-        val sut = DoRepeatOrder()
+        val sut = DoRepeatOrder(allAvailableService(listOf("item-1", "item-2")))
 
         val result = sut.execute(orderWithAllIds)
 
@@ -178,8 +195,8 @@ class DoRepeatOrderTest {
     }
 
     @Test
-    fun `repetir pedido omite items sin ID`() = runTest {
-        val sut = DoRepeatOrder()
+    fun `repetir pedido omite items sin ID con motivo UNKNOWN_PRODUCT`() = runTest {
+        val sut = DoRepeatOrder(allAvailableService(listOf("item-1", "item-2")))
 
         val result = sut.execute(sampleDeliveredOrder)
 
@@ -187,7 +204,8 @@ class DoRepeatOrderTest {
         val repeatResult = result.getOrThrow()
         assertEquals(2, repeatResult.addedItems.size)
         assertEquals(1, repeatResult.skippedItems.size)
-        assertEquals("Producto sin ID", repeatResult.skippedItems[0].name)
+        assertEquals("Producto sin ID", repeatResult.skippedItems[0].item.name)
+        assertEquals(SkipReason.UNKNOWN_PRODUCT, repeatResult.skippedItems[0].reason)
     }
 
     @Test
@@ -198,7 +216,7 @@ class DoRepeatOrderTest {
                 ClientOrderItem(id = null, name = "Sin ID 2", quantity = 2, unitPrice = 20.0, subtotal = 40.0)
             )
         )
-        val sut = DoRepeatOrder()
+        val sut = DoRepeatOrder(FakeAvailabilityService())
 
         val result = sut.execute(orderWithNoIds)
 
@@ -211,7 +229,7 @@ class DoRepeatOrderTest {
     @Test
     fun `repetir pedido vacio retorna listas vacias`() = runTest {
         val emptyOrder = sampleDeliveredOrder.copy(items = emptyList())
-        val sut = DoRepeatOrder()
+        val sut = DoRepeatOrder(FakeAvailabilityService())
 
         val result = sut.execute(emptyOrder)
 
@@ -219,6 +237,109 @@ class DoRepeatOrderTest {
         val repeatResult = result.getOrThrow()
         assertTrue(repeatResult.addedItems.isEmpty())
         assertTrue(repeatResult.skippedItems.isEmpty())
+    }
+
+    @Test
+    fun `repetir pedido con producto no disponible lo marca como skipped con motivo`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
+                ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            )
+        )
+        val service = FakeAvailabilityService(
+            availabilityResult = Result.success(listOf(
+                ProductAvailabilityItemDTO(productId = "item-1", available = true),
+                ProductAvailabilityItemDTO(productId = "item-2", available = false, reason = SkipReason.OUT_OF_STOCK)
+            ))
+        )
+        val sut = DoRepeatOrder(service)
+
+        val result = sut.execute(order)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(1, repeatResult.addedItems.size)
+        assertEquals("item-1", repeatResult.addedItems[0].id)
+        assertEquals(1, repeatResult.skippedItems.size)
+        assertEquals("item-2", repeatResult.skippedItems[0].item.id)
+        assertEquals(SkipReason.OUT_OF_STOCK, repeatResult.skippedItems[0].reason)
+    }
+
+    @Test
+    fun `repetir pedido con producto descontinuado lo marca como DISCONTINUED`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "item-1", name = "Producto viejo", quantity = 1, unitPrice = 100.0, subtotal = 100.0)
+            )
+        )
+        val service = FakeAvailabilityService(
+            availabilityResult = Result.success(listOf(
+                ProductAvailabilityItemDTO(productId = "item-1", available = false, reason = SkipReason.DISCONTINUED)
+            ))
+        )
+        val sut = DoRepeatOrder(service)
+
+        val result = sut.execute(order)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertTrue(repeatResult.addedItems.isEmpty())
+        assertEquals(1, repeatResult.skippedItems.size)
+        assertEquals(SkipReason.DISCONTINUED, repeatResult.skippedItems[0].reason)
+    }
+
+    @Test
+    fun `repetir pedido con fallo en servicio de disponibilidad agrega todos los items con ID`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0),
+                ClientOrderItem(id = "item-2", name = "Producto B", quantity = 1, unitPrice = 50.0, subtotal = 50.0)
+            )
+        )
+        val service = FakeAvailabilityService(
+            availabilityResult = Result.failure(RuntimeException("Error de red"))
+        )
+        val sut = DoRepeatOrder(service)
+
+        val result = sut.execute(order)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(2, repeatResult.addedItems.size)
+        assertTrue(repeatResult.skippedItems.isEmpty())
+    }
+
+    @Test
+    fun `repetir pedido con mix de items sin ID y no disponibles`() = runTest {
+        val order = sampleDeliveredOrder.copy(
+            items = listOf(
+                ClientOrderItem(id = "item-1", name = "Disponible", quantity = 1, unitPrice = 50.0, subtotal = 50.0),
+                ClientOrderItem(id = null, name = "Sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0),
+                ClientOrderItem(id = "item-3", name = "Agotado", quantity = 1, unitPrice = 30.0, subtotal = 30.0)
+            )
+        )
+        val service = FakeAvailabilityService(
+            availabilityResult = Result.success(listOf(
+                ProductAvailabilityItemDTO(productId = "item-1", available = true),
+                ProductAvailabilityItemDTO(productId = "item-3", available = false, reason = SkipReason.UNAVAILABLE)
+            ))
+        )
+        val sut = DoRepeatOrder(service)
+
+        val result = sut.execute(order)
+
+        assertTrue(result.isSuccess)
+        val repeatResult = result.getOrThrow()
+        assertEquals(1, repeatResult.addedItems.size)
+        assertEquals("item-1", repeatResult.addedItems[0].id)
+        assertEquals(2, repeatResult.skippedItems.size)
+        // Item sin ID
+        val noIdSkipped = repeatResult.skippedItems.first { it.item.name == "Sin ID" }
+        assertEquals(SkipReason.UNKNOWN_PRODUCT, noIdSkipped.reason)
+        // Item agotado
+        val unavailableSkipped = repeatResult.skippedItems.first { it.item.name == "Agotado" }
+        assertEquals(SkipReason.UNAVAILABLE, unavailableSkipped.reason)
     }
 }
 

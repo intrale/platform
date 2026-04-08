@@ -257,6 +257,10 @@ val appModule = DI.Module("appModule") {
         singleton { ClientProducts(instance(), instance(), instance()) }
     }
 
+    bind<Function> (tag="client/products/availability") {
+        singleton { ClientProductsAvailability(instance(), instance(), instance()) }
+    }
+
     bind<SearchHistoryRepository> {
         singleton { SearchHistoryRepository() }
     }

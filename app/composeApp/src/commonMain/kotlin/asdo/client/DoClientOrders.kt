@@ -1,6 +1,8 @@
 package asdo.client
 
+import ar.com.intrale.shared.client.SkipReason
 import ext.client.CommClientOrdersService
+import ext.client.CommClientProductsAvailabilityService
 import ext.client.toClientException
 import org.kodein.log.LoggerFactory
 import org.kodein.log.newLogger
@@ -35,22 +37,56 @@ class DoGetClientOrderDetail(
     }
 }
 
-class DoRepeatOrder : ToDoRepeatOrder {
+class DoRepeatOrder(
+    private val availabilityService: CommClientProductsAvailabilityService
+) : ToDoRepeatOrder {
 
     private val logger = LoggerFactory.default.newLogger<DoRepeatOrder>()
 
     override suspend fun execute(order: ClientOrderDetail): Result<RepeatOrderResult> = runCatching {
         logger.info { "Repitiendo pedido ${order.id} con ${order.items.size} items" }
-        val addedItems = mutableListOf<ClientOrderItem>()
-        val skippedItems = mutableListOf<ClientOrderItem>()
-        order.items.forEach { item ->
-            if (item.id != null) {
-                addedItems.add(item)
-            } else {
-                logger.info { "Item '${item.name}' sin ID, omitido" }
-                skippedItems.add(item)
-            }
+
+        // Separar items con y sin ID
+        val itemsWithId = order.items.filter { it.id != null }
+        val itemsWithoutId = order.items.filter { it.id == null }
+
+        // Items sin ID se omiten con motivo UNKNOWN_PRODUCT
+        val skippedItems = itemsWithoutId.map { item ->
+            logger.info { "Item '${item.name}' sin ID, omitido" }
+            SkippedItem(item = item, reason = SkipReason.UNKNOWN_PRODUCT)
+        }.toMutableList()
+
+        if (itemsWithId.isEmpty()) {
+            logger.info { "Pedido repetido: 0 agregados, ${skippedItems.size} omitidos" }
+            return@runCatching RepeatOrderResult(addedItems = emptyList(), skippedItems = skippedItems)
         }
+
+        // Consultar disponibilidad de los items con ID
+        val productIds = itemsWithId.mapNotNull { it.id }
+        val availabilityResult = availabilityService.checkAvailability(productIds)
+
+        val addedItems = mutableListOf<ClientOrderItem>()
+
+        if (availabilityResult.isSuccess) {
+            val availabilityMap = availabilityResult.getOrThrow().associateBy { it.productId }
+
+            itemsWithId.forEach { item ->
+                val availability = availabilityMap[item.id]
+                if (availability == null || availability.available) {
+                    addedItems.add(item)
+                } else {
+                    val reason = availability.reason ?: SkipReason.UNKNOWN_PRODUCT
+                    logger.info { "Item '${item.name}' no disponible: $reason" }
+                    skippedItems.add(SkippedItem(item = item, reason = reason))
+                }
+            }
+        } else {
+            // Si falla la consulta de disponibilidad, agregar todos los items con ID
+            // (comportamiento degradado: mejor intentar que bloquear)
+            logger.warning { "Fallo al consultar disponibilidad, agregando todos los items con ID" }
+            addedItems.addAll(itemsWithId)
+        }
+
         logger.info { "Pedido repetido: ${addedItems.size} agregados, ${skippedItems.size} omitidos" }
         RepeatOrderResult(addedItems = addedItems, skippedItems = skippedItems)
     }.recoverCatching { throwable ->
