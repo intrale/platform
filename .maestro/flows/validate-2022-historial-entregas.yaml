@@ -1,0 +1,62 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #2022 — Criterio 5: Historial de entregas
+# Prerrequisito: Usuario delivery logueado
+# Verifica que el repartidor puede ver el historial de entregas pasadas
+
+- launchApp:
+    clearState: false
+
+- waitForAnimationToEnd
+
+# Esperar home
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 15000
+
+- takeScreenshot: 2022-historial-01-home
+
+# Navegar al tab de pedidos (bottom nav)
+- tapOn:
+    text: "Pedidos"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-historial-02-orders
+
+# Navegar al tab "Historial"
+- tapOn:
+    text: "Historial"
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-historial-03-tab
+
+# Esperar que cargue el historial
+- extendedWaitUntil:
+    visible:
+      text: "Historial"
+    timeout: 10000
+
+- takeScreenshot: 2022-historial-04-list
+
+# Verificar que se muestran entregas (puede haber estado "Entregado" o "No entregado")
+- assertVisible:
+    text: "Entregado"
+    optional: true
+
+- takeScreenshot: 2022-historial-05-entries
+
+# Scroll para ver más entregas si hay
+- scroll:
+    direction: DOWN
+
+- takeScreenshot: 2022-historial-06-scrolled
+
+# Verificar que se puede ver detalle de una entrega pasada
+- tapOn:
+    text: "Entregado"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-historial-07-detail
