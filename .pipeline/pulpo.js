@@ -242,7 +242,47 @@ function recordSkillResourceUsage(skill, startTime, endTime) {
  * Gate predictivo: verificar si lanzar un agente de este skill
  * llevaría al sistema por encima de los umbrales seguros.
  * Retorna { safe: bool, reason: string, predicted: { cpu, mem } }
+ *
+ * Confianza de profiles:
+ * - < MIN_RELIABLE_SAMPLES: blend progresivo hacia defaults (pocas muestras = ruido)
+ * - Cap máximo por agente: ningún proceso Claude usa >25% CPU o >20% MEM realmente
+ * - Profiles >24h sin actualizar: reducir confianza (el sistema puede haber cambiado)
  */
+const MIN_RELIABLE_SAMPLES = 5;
+const MAX_EST_CPU = 25;  // Cap: ningún agente Claude usa más que esto
+const MAX_EST_MEM = 20;  // Cap: un proceso Claude rara vez pasa de 3GB (~20% en 16GB)
+const PROFILE_STALE_HOURS = 24;
+
+function getEstimatedImpact(profile) {
+  const DEFAULT_CPU = 12;
+  const DEFAULT_MEM = 8;
+
+  if (!profile) return { cpu: DEFAULT_CPU, mem: DEFAULT_MEM };
+
+  const samples = profile.samples || 0;
+  const hoursOld = (Date.now() - new Date(profile.lastUpdated || 0).getTime()) / 3600000;
+
+  // Cap absoluto: nunca estimar más que el máximo razonable
+  let cpu = Math.min(profile.avgCpu, MAX_EST_CPU);
+  let mem = Math.min(profile.avgMem, MAX_EST_MEM);
+
+  // Blend hacia defaults si pocas muestras (confianza progresiva)
+  if (samples < MIN_RELIABLE_SAMPLES) {
+    const confidence = samples / MIN_RELIABLE_SAMPLES; // 0.0 a 1.0
+    cpu = DEFAULT_CPU * (1 - confidence) + cpu * confidence;
+    mem = DEFAULT_MEM * (1 - confidence) + mem * confidence;
+  }
+
+  // Decay si el profile es viejo (>24h sin actualizar)
+  if (hoursOld > PROFILE_STALE_HOURS) {
+    const decayFactor = Math.max(0.5, 1 - (hoursOld - PROFILE_STALE_HOURS) / 72); // decay gradual
+    cpu = DEFAULT_CPU * (1 - decayFactor) + cpu * decayFactor;
+    mem = DEFAULT_MEM * (1 - decayFactor) + mem * decayFactor;
+  }
+
+  return { cpu: Math.round(cpu * 10) / 10, mem: Math.round(mem * 10) / 10 };
+}
+
 function predictResourceImpact(skill, config) {
   const profiles = loadSkillProfiles();
   const profile = profiles[skill];
@@ -251,14 +291,10 @@ function predictResourceImpact(skill, config) {
   const maxCpu = limits.orange_max_percent || 80;
   const maxMem = limits.orange_max_percent || 80;
 
-  // Si no hay perfil histórico, usar estimación conservadora por defecto
-  const DEFAULT_CPU = 12; // ~12% CPU por agente (conservador)
-  const DEFAULT_MEM = 8;  // ~8% RAM por agente (conservador)
-  const estCpu = profile ? profile.avgCpu : DEFAULT_CPU;
-  const estMem = profile ? profile.avgMem : DEFAULT_MEM;
+  const est = getEstimatedImpact(profile);
 
-  const predictedCpu = usage.cpuPercent + estCpu;
-  const predictedMem = usage.memPercent + estMem;
+  const predictedCpu = usage.cpuPercent + est.cpu;
+  const predictedMem = usage.memPercent + est.mem;
 
   const cpuSafe = predictedCpu < maxCpu;
   const memSafe = predictedMem < maxMem;
@@ -268,8 +304,8 @@ function predictResourceImpact(skill, config) {
   }
 
   const reasons = [];
-  if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${estCpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
-  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${estMem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
+  if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${est.cpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
+  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
 
   return {
     safe: false,
@@ -482,6 +518,13 @@ let lastResourceLog = 0;
 let lastPressureLevel = PRESSURE_LEVELS.GREEN;
 let lastEmergencyTelegramTs = 0;       // Cooldown para NO spamear Telegram en RED
 let consecutiveRedCycles = 0;           // Cuántos ciclos seguidos en RED (solo para logging)
+
+// --- Deadlock breaker: detecta cuando TODOS los candidatos son bloqueados por el gate predictivo ---
+let consecutiveAllBlockedCycles = 0;    // Ciclos consecutivos donde el gate bloqueó TODO
+let lastDeadlockTelegramTs = 0;
+const DEADLOCK_TELEGRAM_COOLDOWN = 600000; // 10 min entre notificaciones de deadlock
+const DEADLOCK_TIER1_CYCLES = 3;        // ~1.5 min: intentar liberar emulador idle
+const DEADLOCK_TIER2_CYCLES = 6;        // ~3 min: forzar lanzamiento del más liviano
 const EMERGENCY_TELEGRAM_COOLDOWN = 300000; // 5 minutos entre mensajes de RED
 let proactiveCycleCounter = 0;
 
@@ -1055,6 +1098,152 @@ function tryFreeResources(mode = 'soft') {
 }
 
 /**
+ * Apagar el emulador QA si no hay nada en fase verificacion/trabajando.
+ * El emulador consume ~2.5GB de RAM y ensureQaEnvironment() lo re-levanta cuando hace falta.
+ * Retorna true si mató el emulador.
+ */
+function shutdownIdleEmulator(config) {
+  try {
+    // ¿Hay algo en verificacion/trabajando?
+    for (const [pName, pConfig] of Object.entries(config.pipelines)) {
+      if (!pConfig.fases.includes('verificacion')) continue;
+      const trabajandoDir = path.join(fasePath(pName, 'verificacion'), 'trabajando');
+      const archivos = listWorkFiles(trabajandoDir);
+      if (archivos.length > 0) return false; // Hay agentes de QA corriendo, no tocar
+    }
+
+    // ¿Está corriendo el emulador? Verificar state file Y por nombre de proceso
+    let emulatorRunning = false;
+
+    // Check 1: state file
+    const stateFile = path.join(PIPELINE, 'qa-env-state.json');
+    if (fs.existsSync(stateFile)) {
+      try {
+        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        const emulatorPid = state.emulator || state.emulador;
+        if (emulatorPid && isProcessAlive(emulatorPid)) emulatorRunning = true;
+      } catch {}
+    }
+
+    // Check 2: buscar proceso QEMU por nombre (el state puede perder track del PID)
+    if (!emulatorRunning) {
+      try {
+        const out = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+          { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+        if (out.includes('qemu-system')) emulatorRunning = true;
+      } catch {}
+    }
+
+    if (!emulatorRunning) return false;
+
+    // Apagar QA environment completo (emulador + backend local + DynamoDB)
+    log('recursos', '🔌 Apagando QA environment idle (emulador + servicios) para liberar ~2.5GB RAM');
+    try {
+      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" stop`, {
+        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
+      });
+    } catch (e) {
+      log('recursos', `Error apagando QA env vía script: ${e.message}`);
+    }
+
+    // Fallback: si QEMU sigue vivo después del stop, matarlo directo por nombre
+    try {
+      const check = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+      if (check.includes('qemu-system')) {
+        execSync('taskkill /IM qemu-system-x86_64-headless.exe /F /T',
+          { timeout: 10000, windowsHide: true, stdio: 'ignore' });
+        log('recursos', '🔌 QEMU matado por nombre (fallback — state file había perdido el PID)');
+      }
+    } catch (e) {
+      log('recursos', `Error matando QEMU por nombre: ${e.message}`);
+    }
+    // Reset circuit breaker para que pueda re-levantarse después
+    qaEnvStartFailures = 0;
+    return true;
+  } catch (e) {
+    log('recursos', `Error verificando emulador idle: ${e.message}`);
+    return false;
+  }
+}
+
+/**
+ * Deadlock breaker: cuando el gate predictivo bloquea TODOS los candidatos durante
+ * varios ciclos consecutivos, escalar progresivamente para salir del deadlock.
+ *
+ * Tier 1 (3 ciclos / ~1.5min): Apagar emulador idle + resetear profiles poco confiables
+ * Tier 2 (6 ciclos / ~3min): Forzar lanzamiento del candidato más liviano con threshold relajado
+ */
+function handleDeadlock(candidates, config) {
+  if (consecutiveAllBlockedCycles < DEADLOCK_TIER1_CYCLES) return null;
+
+  const now = Date.now();
+
+  // --- TIER 1: liberar recursos pasivos ---
+  if (consecutiveAllBlockedCycles === DEADLOCK_TIER1_CYCLES) {
+    log('deadlock', `⚠️ Deadlock detectado: ${consecutiveAllBlockedCycles} ciclos con TODOS los candidatos bloqueados. Tier 1: liberando recursos pasivos.`);
+
+    // Apagar emulador si está idle
+    const emulatorKilled = shutdownIdleEmulator(config);
+    if (emulatorKilled) {
+      log('deadlock', '🔌 Emulador idle apagado — re-evaluando en el próximo ciclo');
+      if (now - lastDeadlockTelegramTs > DEADLOCK_TELEGRAM_COOLDOWN) {
+        sendTelegram('⚠️ Pipeline deadlocked — apagué el emulador idle para liberar RAM. Se re-levanta solo cuando haga falta.');
+        lastDeadlockTelegramTs = now;
+      }
+    }
+
+    // Resetear profiles con pocas muestras (no son confiables)
+    const profiles = loadSkillProfiles();
+    let resetCount = 0;
+    for (const [skill, profile] of Object.entries(profiles)) {
+      if ((profile.samples || 0) < MIN_RELIABLE_SAMPLES) {
+        delete profiles[skill];
+        resetCount++;
+      }
+    }
+    if (resetCount > 0) {
+      saveSkillProfiles(profiles);
+      log('deadlock', `🗑️ Reseteados ${resetCount} profiles con < ${MIN_RELIABLE_SAMPLES} muestras (poco confiables)`);
+    }
+
+    return null; // Dar un ciclo más para que surta efecto
+  }
+
+  // --- TIER 2: forzar lanzamiento del más liviano ---
+  if (consecutiveAllBlockedCycles >= DEADLOCK_TIER2_CYCLES) {
+    // Encontrar el candidato con menor impacto estimado
+    const profiles = loadSkillProfiles();
+    let lightest = null;
+    let lightestImpact = Infinity;
+
+    for (const candidate of candidates) {
+      const skill = skillFromFile(candidate.archivo.name);
+      const est = getEstimatedImpact(profiles[skill]);
+      const impact = est.cpu + est.mem;
+      if (impact < lightestImpact) {
+        lightestImpact = impact;
+        lightest = candidate;
+      }
+    }
+
+    if (lightest) {
+      const skill = skillFromFile(lightest.archivo.name);
+      const issue = issueFromFile(lightest.archivo.name);
+      log('deadlock', `🚀 Tier 2: forzando lanzamiento de ${skill}:#${issue} (el más liviano, impacto estimado: ${Math.round(lightestImpact)}%) tras ${consecutiveAllBlockedCycles} ciclos bloqueados`);
+      if (now - lastDeadlockTelegramTs > DEADLOCK_TELEGRAM_COOLDOWN) {
+        sendTelegram(`🔓 Pipeline deadlocked ${consecutiveAllBlockedCycles} ciclos — forzando ${skill}:#${issue} para desbloquear. El gate predictivo tenía profiles inflados o el sistema tiene procesos externos pesados.`);
+        lastDeadlockTelegramTs = now;
+      }
+      consecutiveAllBlockedCycles = 0; // Reset — le damos tiempo al agente lanzado
+      return lightest;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Limpieza proactiva — se ejecuta cada N ciclos aunque no haya presión.
  * Mata daemons huérfanos que se acumulan silenciosamente.
  */
@@ -1067,6 +1256,12 @@ function proactiveCleanup(config) {
   const { freed, killed } = tryFreeResources('soft');
   if (freed) {
     log('proactivo', `Limpieza periódica: ${killed.join(', ')}`);
+  }
+
+  // Auto-shutdown del emulador si no hay verificación activa — libera ~2.5GB RAM
+  const emulatorKilled = shutdownIdleEmulator(config);
+  if (emulatorKilled) {
+    sendTelegram('🔌 Emulador QA apagado automáticamente (sin verificación activa). Se re-levanta solo cuando haga falta.');
   }
 }
 
@@ -1423,6 +1618,11 @@ function brazoLanzamiento(config) {
   });
 
   // --- Procesar candidatos en orden unificado ---
+  let anyLaunched = false;
+  let gateBlockedCount = 0;       // Candidatos bloqueados específicamente por el gate predictivo
+  let eligibleForGateCount = 0;   // Candidatos que llegaron hasta el gate (pasaron dedup/cooldown/concurrencia)
+  const gateBlockedCandidates = []; // Para el deadlock breaker
+
   for (const candidate of candidates) {
     const { archivo, pipelineName, fase } = candidate;
     const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
@@ -1472,9 +1672,12 @@ function brazoLanzamiento(config) {
     }
 
     // 6. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
+    eligibleForGateCount++;
     const impact = predictResourceImpact(skill, config);
     if (!impact.safe) {
       log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
+      gateBlockedCount++;
+      gateBlockedCandidates.push(candidate);
       continue;
     }
 
@@ -1493,8 +1696,40 @@ function brazoLanzamiento(config) {
       } else {
         lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
       }
+      anyLaunched = true;
     } catch (e) {
       log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
+    }
+  }
+
+  // --- DEADLOCK BREAKER ---
+  // Si había candidatos elegibles pero TODOS fueron bloqueados por el gate predictivo
+  if (eligibleForGateCount > 0 && gateBlockedCount === eligibleForGateCount && !anyLaunched) {
+    consecutiveAllBlockedCycles++;
+
+    const forced = handleDeadlock(gateBlockedCandidates, config);
+    if (forced) {
+      // Forzar lanzamiento del candidato elegido por el breaker
+      const { archivo, pipelineName, fase } = forced;
+      const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
+      try {
+        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
+        if (fase === 'verificacion') ensureQaEnvironment(config);
+        const skill = skillFromFile(archivo.name);
+        const issue = issueFromFile(archivo.name);
+        if (fase === 'build') {
+          lanzarBuild(issue, trabajandoPath, pipelineName, config);
+        } else {
+          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+        }
+      } catch (e) {
+        log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
+      }
+    }
+  } else {
+    // Se lanzó algo o no había candidatos elegibles → reset deadlock counter
+    if (anyLaunched || eligibleForGateCount === 0) {
+      consecutiveAllBlockedCycles = 0;
     }
   }
 }

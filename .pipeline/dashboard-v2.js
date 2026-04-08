@@ -680,12 +680,22 @@ function generateHTML(state) {
         continue;
       }
 
-      // Detectar skills repetidos para mostrar índice y diferenciar runs anteriores
+      // Fase completada: si TODOS los entries están procesados y aprobados,
+      // colapsar a un indicador compacto en vez de N chips individuales
+      const allProcessed = entries.every(e => e.estado === 'procesado');
+      const allApproved = entries.every(e => !e.resultado || e.resultado === 'aprobado');
+      if (allProcessed && allApproved && !isCurrent) {
+        const skillCount = new Set(entries.map(e => e.skill)).size;
+        cells += `<td class="${pipeline === 'definicion' ? 'col-def' : 'col-dev'}"><span class="phase-done" title="${skillCount} skill(s) completados">✔</span></td>`;
+        continue;
+      }
+
+      // Detectar skills repetidos y colapsar: solo mostrar el último run de cada skill
+      // Los runs anteriores (procesados) son ruido visual — se indican con badge ×N
       const skillRunCount = {};
       for (const e of entries) {
         skillRunCount[e.skill] = (skillRunCount[e.skill] || 0) + 1;
       }
-      // Asignar índice por orden de aparición (más viejo primero)
       const skillRunIndex = {};
       const sortedEntries = [...entries].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
       for (const e of sortedEntries) {
@@ -696,7 +706,10 @@ function generateHTML(state) {
         e._isLatestRun = skillRunIndex[e.skill] === skillRunCount[e.skill];
       }
 
-      const chips = entries.map(e => {
+      // Filtrar: solo el último run de cada skill (colapsar runs anteriores)
+      const visibleEntries = entries.filter(e => e._isLatestRun);
+
+      const chips = visibleEntries.map(e => {
         // Estado rechazado: resultado explícito de rechazo
         const isRejected = e.resultado && e.resultado !== 'aprobado';
 
@@ -709,9 +722,8 @@ function generateHTML(state) {
                      e.estado === 'listo' ? '✓' :
                      e.estado === 'procesado' ? '✔' : '○';
         const staleClass = (e.estado === 'trabajando' && e.ageMin > 30) ? ' stale-chip' : '';
-        // Runs anteriores de un skill repetido se muestran compactos
-        const priorClass = (e._isRetry && !e._isLatestRun) ? ' chip-prior' : '';
-        const runLabel = e._isRetry ? `<sup class="run-idx">${e._runIndex}</sup>` : '';
+        // Badge de reintentos: ×N si hubo más de 1 run
+        const retryBadge = e._isRetry ? `<sup class="retry-badge" title="${e._runTotal} intentos">×${e._runTotal}</sup>` : '';
 
         // ETA por agente activo
         let etaBadge = '';
@@ -737,15 +749,12 @@ function generateHTML(state) {
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
         const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
-        const ttRun = e._isRetry ? `Ejecución: ${e._runIndex}/${e._runTotal}` : '';
+        const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
         const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEta, ttRes, ttMot].filter(Boolean);
         const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
 
-        // Prior runs: solo ícono + índice (sin nombre del skill)
         const agentColor = skillColor(e.skill);
-        const chipContent = (e._isRetry && !e._isLatestRun)
-          ? `${icon} ${skillIcon(e.skill)}${runLabel}`
-          : `${icon} ${skillIcon(e.skill)} ${e.skill}${runLabel}${etaBadge}`;
+        const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
 
         // Botón de cancelar para agentes activos (trabajando)
         const killBtn = e.estado === 'trabajando'
@@ -758,7 +767,7 @@ function generateHTML(state) {
           : '';
 
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${killBtn}${pdfBtn}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}">${chipContent}${killBtn}${pdfBtn}${tooltip}</span>`;
         if (e.hasLog) {
           const isLive = e.estado === 'trabajando';
           return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
@@ -1283,15 +1292,12 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .st-processed{color:var(--gn);opacity:0.55}
 .st-pending{color:var(--dim);background:rgba(139,148,158,0.08);border-color:rgba(139,148,158,0.2)}
 .st-rejected{color:var(--rd);background:rgba(248,81,73,0.1);border-color:rgba(248,81,73,0.3);opacity:0.7}
-.chip-prior{
-  font-size:0.72em;padding:2px 6px;opacity:0.5;
-  transform:scale(0.85);transform-origin:center;
+.retry-badge{
+  font-size:0.7em;font-weight:700;color:var(--yl);
+  margin-left:2px;vertical-align:super;line-height:1;
+  opacity:0.85;
 }
-.chip-prior:hover{opacity:0.85}
-.run-idx{
-  font-size:0.7em;font-weight:700;color:var(--ac);
-  margin-left:1px;vertical-align:super;line-height:1;
-}
+.phase-done{color:var(--gn);opacity:0.4;font-size:1.1em;cursor:default}
 .stale-chip{
   color:var(--ac)!important;background:rgba(88,166,255,0.15)!important;
   border-color:rgba(88,166,255,0.5)!important;animation:pulseBlue 1.8s infinite;
