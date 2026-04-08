@@ -7,10 +7,15 @@ import ar.com.intrale.strings.model.MessageKey
 import asdo.business.ToDoListCategories
 import asdo.business.ToDoListProducts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,6 +65,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -370,6 +377,9 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
         val cartContentDescription = Txt(MessageKey.client_home_cart_icon_content_description)
         val recentSearchesLabel = Txt(MessageKey.client_catalog_recent_searches)
         val clearHistoryLabel = Txt(MessageKey.client_catalog_clear_history)
+        val clearSearchDescription = Txt(MessageKey.client_catalog_clear_search_content_description)
+        val removeHistoryDescription = Txt(MessageKey.client_catalog_remove_history_content_description)
+        val recentSearchDescription = Txt(MessageKey.client_catalog_recent_search_content_description)
         val addedToCartMessage = uiState.lastAddedProduct?.let { product ->
             Txt(MessageKey.client_catalog_added_to_cart, mapOf("product" to product.name))
         }
@@ -432,6 +442,7 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                     SearchField(
                         query = uiState.searchQuery,
                         placeholder = searchPlaceholder,
+                        clearContentDescription = clearSearchDescription,
                         onQueryChange = { viewModel.onSearchChange(it) },
                         onFocusChange = { viewModel.onSearchFocusChanged(it) },
                         onClear = { viewModel.clearSearch() },
@@ -439,9 +450,19 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                     )
                 }
 
-                // Sugerencias en tiempo real
-                if (uiState.showSuggestions && uiState.suggestions.isNotEmpty()) {
-                    item {
+                // Sugerencias en tiempo real con transición animada
+                item {
+                    AnimatedVisibility(
+                        visible = uiState.showSuggestions && uiState.suggestions.isNotEmpty(),
+                        enter = expandVertically(
+                            expandFrom = Alignment.Top,
+                            animationSpec = tween(200)
+                        ),
+                        exit = shrinkVertically(
+                            shrinkTowards = Alignment.Top,
+                            animationSpec = tween(200)
+                        )
+                    ) {
                         SuggestionsDropdown(
                             suggestions = uiState.suggestions,
                             searchQuery = uiState.searchQuery,
@@ -461,6 +482,8 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
                             history = searchHistory,
                             title = recentSearchesLabel,
                             clearLabel = clearHistoryLabel,
+                            removeItemContentDescription = removeHistoryDescription,
+                            historyIconContentDescription = recentSearchDescription,
                             onHistoryItemClick = { viewModel.selectHistoryItem(it) },
                             onRemoveItem = { SearchHistoryStore.removeSearch(it) },
                             onClearAll = { SearchHistoryStore.clearHistory() }
@@ -555,11 +578,13 @@ class ClientCatalogScreen : Screen(CLIENT_CATALOG_PATH) {
 private fun SearchField(
     query: String,
     placeholder: String,
+    clearContentDescription: String,
     onQueryChange: (String) -> Unit,
     onFocusChange: (Boolean) -> Unit,
     onClear: () -> Unit,
     onConfirm: () -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
@@ -576,12 +601,17 @@ private fun SearchField(
                 IconButton(onClick = onClear) {
                     Icon(
                         Icons.Default.Close,
-                        contentDescription = null,
+                        contentDescription = clearContentDescription,
                         modifier = Modifier.size(20.dp)
                     )
                 }
             }
         },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = {
+            onConfirm()
+            focusManager.clearFocus()
+        }),
         singleLine = true,
         modifier = Modifier
             .fillMaxWidth()
@@ -696,6 +726,8 @@ private fun SearchHistorySection(
     history: List<String>,
     title: String,
     clearLabel: String,
+    removeItemContentDescription: String,
+    historyIconContentDescription: String,
     onHistoryItemClick: (String) -> Unit,
     onRemoveItem: (String) -> Unit,
     onClearAll: () -> Unit
@@ -733,7 +765,7 @@ private fun SearchHistorySection(
                 ) {
                     Icon(
                         Icons.Default.History,
-                        contentDescription = null,
+                        contentDescription = historyIconContentDescription,
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -748,7 +780,7 @@ private fun SearchHistorySection(
                     ) {
                         Icon(
                             Icons.Default.Close,
-                            contentDescription = null,
+                            contentDescription = removeItemContentDescription,
                             modifier = Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
