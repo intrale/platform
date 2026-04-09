@@ -175,9 +175,9 @@ Si la ventana QA lleva mas de **2 horas** activa sin completar ningun issue:
 |------|---------------------------------|--------------------------------|
 | 1    | Ventanas de QA Exclusivas       | **Este documento** — aprobado  |
 | 2    | Pre-Flight Checks en Pulpo      | **Aprobado** — `preflight-checks-spec.md` |
-| 3    | Separar QA-API de QA-Android    | Pendiente de revision con Leo  |
+| 3    | Separar QA-API de QA-Android    | **Implementado** — `qa-api-spec.md` + `qa-api.sh` + ruteo en Pulpo |
 | 4    | APK como Artefacto de Build     | **Aprobado** — cada issue genera su APK en fase build |
-| 5    | Evidencia con Degradacion Gradual | Pendiente de revision con Leo |
+| 5    | Blindaje de Captura de Evidencia  | **Implementado** — `blindaje-evidencia-spec.md` (4 blindajes en qa-android.sh + pulpo.js) |
 
 ## Decisiones clave (registro)
 

@@ -2012,8 +2012,9 @@ function preflightQaChecks(issue) {
     return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
-  // --- Check 4: Emulador disponible via ADB ---
+  // --- Check 4: Emulador disponible via ADB + test de screenrecord (Blindaje 2) ---
   let emulatorReady = false;
+  let emulatorSerial = '';
   try {
     const adbOutput = execSync('adb devices', {
       encoding: 'utf8', timeout: 5000, windowsHide: true
@@ -2021,6 +2022,9 @@ function preflightQaChecks(issue) {
     // Buscar linea con "emulator" y estado "device" (no "offline")
     const lines = adbOutput.split('\n').filter(l => l.includes('emulator') && l.includes('device'));
     emulatorReady = lines.length > 0;
+    if (emulatorReady) {
+      emulatorSerial = lines[0].split('\t')[0].trim();
+    }
   } catch {}
 
   if (!emulatorReady) {
@@ -2029,8 +2033,40 @@ function preflightQaChecks(issue) {
     logPreflight(issue, checks, 'waiting:emulator', startMs);
     return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
   }
-  checks.emulator = 'ok';
-  log('preflight', `#${issue}: check 4 OK (emulador disponible via ADB)`);
+
+  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar
+  // Si falla, reintentar hasta 3 veces con espera progresiva
+  let screenrecordOk = false;
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Grabar 2 segundos de prueba
+      execSync(
+        `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
+        { encoding: 'utf8', timeout: 15000, windowsHide: true }
+      );
+      screenrecordOk = true;
+      log('preflight', `#${issue}: check 4b OK — screenrecord test passed (intento ${attempt}/${maxRetries})`);
+      break;
+    } catch (e) {
+      log('preflight', `#${issue}: check 4b — screenrecord test FAIL intento ${attempt}/${maxRetries}: ${e.message.slice(0, 60)}`);
+      if (attempt < maxRetries) {
+        // Espera progresiva: 3s, 6s
+        execSync(`sleep ${attempt * 3}`, { windowsHide: true });
+      }
+    }
+  }
+
+  if (!screenrecordOk) {
+    checks.emulator = 'screenrecord-fail';
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona despues de ${maxRetries} intentos → blocked:infra`);
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendTelegram(`⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
+    return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  checks.emulator = 'ok+screenrecord';
+  log('preflight', `#${issue}: check 4 OK (emulador disponible + screenrecord verificado)`);
 
   // --- Todos los checks pasaron ---
   logPreflight(issue, checks, 'pass', startMs);
