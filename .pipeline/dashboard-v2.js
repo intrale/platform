@@ -1699,9 +1699,12 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 <body>
   <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
     <h1 style="margin:0">🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
-    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap">
+    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap;align-items:center">
       <span>📊 Dashboard: <b style="color:var(--tx)">${dashboardBuild}</b></span>
       <span>🐙 Pulpo: <b style="color:var(--tx)">${pulpoBuild}</b></span>
+      ${fs.existsSync(path.join(PIPELINE, '.paused'))
+        ? '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:#f0a500;color:#000;border-radius:6px;" onclick="pauseAction(\'resume\')" title="Pipeline pausado — click para reanudar">▶ Reanudar</button>'
+        : '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:rgba(251,188,5,0.18);color:#f0a500;border:1px solid rgba(251,188,5,0.4);border-radius:6px;" onclick="pauseAction(\'pause\')" title="Pausar lanzamientos del pipeline">⏸ Pausar</button>'}
     </div>
   </div>
 
