@@ -3,6 +3,7 @@ package ui.sc.delivery
 import asdo.delivery.DeliveryNotificationEventType
 import asdo.delivery.DeliveryOrder
 import asdo.delivery.DeliveryOrderStatus
+import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,6 +15,21 @@ class DeliveryNotificationStoreTest {
     @BeforeTest
     fun setup() {
         DeliveryNotificationStore.clear()
+    }
+
+    @AfterTest
+    fun cleanup() {
+        DeliveryNotificationStore.clear()
+    }
+
+    @Test
+    fun `unreadCount retorna 0 cuando no hay notificaciones`() {
+        assertEquals(0, DeliveryNotificationStore.unreadCount)
+    }
+
+    @Test
+    fun `notifications inicia vacio`() {
+        assertTrue(DeliveryNotificationStore.notifications.value.isEmpty())
     }
 
     @Test
@@ -84,7 +100,14 @@ class DeliveryNotificationStoreTest {
     @Test
     fun `updateFromOrders no duplica notificaciones existentes`() {
         val orders = listOf(
-            DeliveryOrder("order1", "BCDF23", "Test", "Palermo", DeliveryOrderStatus.PENDING, null)
+            DeliveryOrder(
+                id = "order1",
+                label = "BCDF23",
+                businessName = "Test Business",
+                neighborhood = "Palermo",
+                status = DeliveryOrderStatus.PENDING,
+                eta = null
+            )
         )
 
         DeliveryNotificationStore.updateFromOrders(orders)
@@ -172,5 +195,25 @@ class DeliveryNotificationStoreTest {
 
         assertTrue(DeliveryNotificationStore.notifications.value.isEmpty())
         assertEquals(0, DeliveryNotificationStore.unreadCount)
+    }
+
+    @Test
+    fun `updateFromOrders mapea event types correctamente`() {
+        val orders = listOf(
+            DeliveryOrder("o1", "P1", "B1", "N1", DeliveryOrderStatus.PENDING, null),
+            DeliveryOrder("o2", "P2", "B2", "N2", DeliveryOrderStatus.IN_PROGRESS, null),
+            DeliveryOrder("o3", "P3", "B3", "N3", DeliveryOrderStatus.DELIVERED, null),
+            DeliveryOrder("o4", "P4", "B4", "N4", DeliveryOrderStatus.NOT_DELIVERED, null)
+        )
+
+        DeliveryNotificationStore.updateFromOrders(orders)
+
+        val notifs = DeliveryNotificationStore.notifications.value
+        val byId = notifs.associateBy { it.id }
+
+        assertEquals(DeliveryNotificationEventType.ORDER_AVAILABLE, byId["o1_PENDING"]?.eventType)
+        assertEquals(DeliveryNotificationEventType.ORDER_ASSIGNED, byId["o2_IN_PROGRESS"]?.eventType)
+        assertEquals(DeliveryNotificationEventType.ORDER_DELIVERED, byId["o3_DELIVERED"]?.eventType)
+        assertEquals(DeliveryNotificationEventType.ORDER_NOT_DELIVERED, byId["o4_NOT_DELIVERED"]?.eventType)
     }
 }

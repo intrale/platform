@@ -334,6 +334,7 @@ class DeliveryHomeViewModelTest {
         assertTrue(viewModel.state.statusUpdateSuccess)
 
         viewModel.clearStatusFeedback()
+
         assertFalse(viewModel.state.statusUpdateSuccess)
         assertNull(viewModel.state.statusUpdateError)
     }
@@ -361,6 +362,57 @@ class DeliveryHomeViewModelTest {
 
         val activeState = viewModel.state.activeOrdersState
         assertTrue(activeState is DeliveryActiveOrdersState.Loaded)
+        assertTrue(activeState.orders.isNotEmpty())
+    }
+
+    @Test
+    fun `refreshActive con error muestra error`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(Result.failure(RuntimeException("conexion perdida"))),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.refreshActive()
+
+        val activeState = viewModel.state.activeOrdersState
+        assertTrue(activeState is DeliveryActiveOrdersState.Error)
+        assertTrue(activeState.message.contains("conexion perdida"))
+    }
+
+    @Test
+    fun `refreshSummary con error muestra error en summaryState`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(Result.failure(RuntimeException("servicio caido"))),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome()
+        )
+
+        viewModel.refreshSummary()
+
+        val summaryState = viewModel.state.summaryState
+        assertTrue(summaryState is DeliverySummaryState.Error)
+        assertTrue(summaryState.message.contains("servicio caido"))
+    }
+
+    @Test
+    fun `updateStatus con error sin mensaje usa mensaje por defecto`() = runTest {
+        SessionStore.updateRole(UserRole.Delivery)
+        val viewModel = DeliveryHomeViewModel(
+            getActiveOrders = FakeGetActiveDeliveryOrders(),
+            getOrdersSummary = FakeGetDeliveryOrdersSummary(),
+            updateOrderStatus = FakeUpdateDeliveryOrderStatusForHome(
+                Result.failure(RuntimeException())
+            )
+        )
+
+        viewModel.loadData()
+        viewModel.updateStatus("o1", DeliveryOrderStatus.IN_PROGRESS)
+
+        assertTrue(viewModel.state.statusUpdateError != null)
+        assertNull(viewModel.state.updatingOrderId)
     }
 }
 
@@ -487,5 +539,216 @@ class DeliveryProfileViewModelTest2 {
 
         assertTrue(resetCache.called)
         assertNull(SessionStore.sessionState.value.role)
+    }
+
+    @Test
+    fun `onEmailChange actualiza email en formulario`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onEmailChange("nuevo@email.com")
+
+        assertEquals("nuevo@email.com", viewModel.state.form.email)
+    }
+
+    @Test
+    fun `onPhoneChange actualiza telefono en formulario`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onPhoneChange("+5491145667788")
+
+        assertEquals("+5491145667788", viewModel.state.form.phone)
+    }
+
+    @Test
+    fun `onVehicleModelChange actualiza modelo de vehiculo`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onVehicleModelChange("Yamaha FZ")
+
+        assertEquals("Yamaha FZ", viewModel.state.form.vehicleModel)
+    }
+
+    @Test
+    fun `onVehiclePlateChange actualiza patente de vehiculo`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onVehiclePlateChange("XY789ZZ")
+
+        assertEquals("XY789ZZ", viewModel.state.form.vehiclePlate)
+    }
+
+    @Test
+    fun `onTimezoneChange actualiza timezone y limpia error`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onTimezoneChange("America/Buenos_Aires")
+
+        assertEquals("America/Buenos_Aires", viewModel.state.availability.timezone)
+        assertNull(viewModel.state.availabilityErrorKey)
+    }
+
+    @Test
+    fun `onToggleDay habilita dia con valores por defecto`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onToggleDay(DayOfWeek.TUESDAY, true)
+
+        val tuesdaySlot = viewModel.state.availability.slots.first { it.dayOfWeek == DayOfWeek.TUESDAY }
+        assertTrue(tuesdaySlot.enabled)
+        assertEquals("06:00", tuesdaySlot.start)
+        assertEquals("12:00", tuesdaySlot.end)
+    }
+
+    @Test
+    fun `onBlockSelected cambia bloque y activa dia`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onBlockSelected(DayOfWeek.WEDNESDAY, DeliveryAvailabilityBlock.AFTERNOON)
+
+        val wednesdaySlot = viewModel.state.availability.slots.first { it.dayOfWeek == DayOfWeek.WEDNESDAY }
+        assertTrue(wednesdaySlot.enabled)
+        assertEquals(DeliveryAvailabilityBlock.AFTERNOON, wednesdaySlot.block)
+        assertEquals("12:00", wednesdaySlot.start)
+        assertEquals("18:00", wednesdaySlot.end)
+    }
+
+    @Test
+    fun `onCustomSelected cambia modo a CUSTOM`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onCustomSelected(DayOfWeek.THURSDAY)
+
+        val thursdaySlot = viewModel.state.availability.slots.first { it.dayOfWeek == DayOfWeek.THURSDAY }
+        assertTrue(thursdaySlot.enabled)
+        assertEquals(DeliveryAvailabilityMode.CUSTOM, thursdaySlot.mode)
+    }
+
+    @Test
+    fun `onCustomStartChange y onCustomEndChange actualizan horarios`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.onCustomStartChange(DayOfWeek.FRIDAY, "08:30")
+        viewModel.onCustomEndChange(DayOfWeek.FRIDAY, "17:00")
+
+        val fridaySlot = viewModel.state.availability.slots.first { it.dayOfWeek == DayOfWeek.FRIDAY }
+        assertEquals("08:30", fridaySlot.start)
+        assertEquals("17:00", fridaySlot.end)
+    }
+
+    @Test
+    fun `saveProfile con error en perfil muestra error`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(Result.failure(RuntimeException("Error de red"))),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadProfile()
+        viewModel.saveProfile()
+
+        assertFalse(viewModel.state.saving)
+        assertEquals("Error de red", viewModel.state.error)
+    }
+
+    @Test
+    fun `saveProfile con error en disponibilidad muestra error`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(Result.failure(RuntimeException("Error disponibilidad"))),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadProfile()
+        viewModel.saveProfile()
+
+        assertFalse(viewModel.state.saving)
+        assertEquals("Error disponibilidad", viewModel.state.error)
+    }
+
+    @Test
+    fun `loadProfile con error en disponibilidad mantiene perfil cargado`() = runTest {
+        val viewModel = DeliveryProfileViewModel(
+            getDeliveryProfile = FakeGetDeliveryProfile(),
+            updateDeliveryProfile = FakeUpdateDeliveryProfile(),
+            getDeliveryAvailability = FakeGetDeliveryAvailability(Result.failure(RuntimeException("Sin disponibilidad"))),
+            updateDeliveryAvailability = FakeUpdateDeliveryAvailability(),
+            toDoResetLoginCache = FakeResetCache(),
+            loggerFactory = testLoggerFactory
+        )
+
+        viewModel.loadProfile()
+
+        assertFalse(viewModel.state.loading)
+        assertEquals("Carlos Delivery", viewModel.state.form.fullName)
+        assertEquals("Sin disponibilidad", viewModel.state.error)
     }
 }

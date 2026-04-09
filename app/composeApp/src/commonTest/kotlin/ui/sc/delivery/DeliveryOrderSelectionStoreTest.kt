@@ -1,5 +1,6 @@
 package ui.sc.delivery
 
+import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -12,6 +13,17 @@ class DeliveryOrderSelectionStoreTest {
     @BeforeTest
     fun setUp() {
         DeliveryOrderSelectionStore.clear()
+    }
+
+    @AfterTest
+    fun cleanup() {
+        DeliveryOrderSelectionStore.clear()
+    }
+
+    @Test
+    fun `estado inicial es null y false`() {
+        assertNull(DeliveryOrderSelectionStore.selectedOrderId.value)
+        assertFalse(DeliveryOrderSelectionStore.readOnly.value)
     }
 
     @Test
@@ -38,15 +50,10 @@ class DeliveryOrderSelectionStoreTest {
 
     @Test
     fun `select reemplaza seleccion anterior`() {
-        DeliveryOrderSelectionStore.select("order-1")
-        DeliveryOrderSelectionStore.select("order-2")
+        DeliveryOrderSelectionStore.select("order1", readOnly = true)
+        DeliveryOrderSelectionStore.select("order2", readOnly = false)
 
-        assertEquals("order-2", DeliveryOrderSelectionStore.selectedOrderId.value)
-    }
-
-    @Test
-    fun `estado inicial es null y false`() {
-        assertNull(DeliveryOrderSelectionStore.selectedOrderId.value)
+        assertEquals("order2", DeliveryOrderSelectionStore.selectedOrderId.value)
         assertFalse(DeliveryOrderSelectionStore.readOnly.value)
     }
 }
