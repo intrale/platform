@@ -30,10 +30,35 @@ issue al script correcto segun sus labels.
 El ruteo se determina en `preflightQaChecks()` (Capa 2) que ya clasifica el issue. La Capa 3
 extiende esa clasificacion para distinguir entre QA-API y validacion estructural.
 
+## Auto-clasificacion inteligente de issues sin labels
+
+Si un issue llega al pre-flight sin ningun label de ruteo (`app:*`, `area:backend`, `area:infra`,
+`docs`), el Pulpo **no cae ciegamente en structural**. En su lugar:
+
+1. **Lee titulo y body del issue** desde GitHub
+2. **Matchea contra reglas de keywords** organizadas por categoria:
+   - UI/Android: pantalla, compose, viewmodel, carrito, login, etc. → `app:client`
+   - Backend/API: endpoint, lambda, cognito, ktor, jwt, etc. → `area:backend`
+   - Infra: pipeline, hook, gradle, deploy, etc. → `area:infra`
+   - Docs: documentacion, spec, guia, etc. → `docs`
+3. **Gana la categoria con mas hits** (mas keywords encontradas)
+4. **Asigna el label en GitHub** automaticamente, asi queda clasificado para siempre
+5. **Invalida la cache** y re-lee los labels para continuar con el ruteo normal
+6. **Notifica por Telegram** que el issue fue auto-clasificado
+
+Si la auto-clasificacion no encuentra matches (issue con texto ambiguo), cae en `structural`
+como fallback final y loguea la situacion para revision manual.
+
+**Implementacion:** `autoClassifyIssue()` en `pulpo.js`, invocada desde `preflightQaChecks()`.
+
 ## Clasificacion extendida del issue
 
 ```
 Labels del issue
+  ├── tiene label de ruteo?
+  │   ├── SI → usar label existente
+  │   └── NO → autoClassifyIssue() → asignar label → re-leer
+  │
   ├── tiene app:* → QA-Android (qa-android.sh)
   ├── tiene area:backend (sin app:*) → QA-API (qa-api.sh)
   └── otros (infra, docs, hooks) → Estructural (validacion minima por agente)
