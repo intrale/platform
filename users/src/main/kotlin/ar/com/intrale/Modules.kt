@@ -231,6 +231,9 @@ val appModule = DI.Module("appModule") {
     bind<Function> (tag="client/order-detail") {
         singleton { ClientOrderDetail(instance(), instance(), instance(), instance()) }
     }
+    bind<Function> (tag="client/payment-status") {
+        singleton { ClientPaymentStatus(instance(), instance(), instance(), instance()) }
+    }
     bind<Function> (tag="delivery/profile") {
         singleton { DeliveryProfileFunction(instance(), instance(), instance(), instance()) }
     }

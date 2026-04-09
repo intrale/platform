@@ -30,7 +30,14 @@ data class ClientOrderDTO(
     val promisedAt: String? = null,
     val itemCount: Int = 0,
     val assignedDeliveryPersonEmail: String? = null,
-    val statusHistory: List<ClientOrderStatusEventDTO> = emptyList()
+    val statusHistory: List<ClientOrderStatusEventDTO> = emptyList(),
+    // Campos de pago (Mercado Pago)
+    val paymentStatus: String? = null,
+    val paymentId: String? = null,
+    val paymentMethod: String? = null,
+    val paidAmount: Double? = null,
+    val failureReason: String? = null,
+    val paymentUrl: String? = null
 )
 
 @Serializable
