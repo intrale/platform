@@ -487,12 +487,18 @@
       </tbody>
     </table>
 
-    <h3>Implementación</h3>
+    <h3>Implementación — COMPLETADA</h3>
     <ul>
-      <li>Pulpo determina el modo QA según los labels del issue</li>
-      <li>Crear script <code>qa/scripts/qa-api.sh</code> para testing HTTP puro</li>
-      <li>QA-API genera evidencia con logs de requests/responses (no necesita video)</li>
+      <li><strong>Pulpo:</strong> <code>preflightQaChecks()</code> clasifica <code>qaMode</code> (<code>android</code> / <code>api</code> / <code>structural</code>) y lo pasa como env var al agente</li>
+      <li><strong>Script:</strong> <code>qa/scripts/qa-api.sh</code> — ejecuta test cases del issue como requests HTTP, genera evidencia por criterio de aceptación</li>
+      <li><strong>Generador de test cases:</strong> <code>qa/scripts/qa-generate-test-cases.js</code> — genera test cases desde criterios de aceptación del issue como fallback automático</li>
+      <li><strong>Test cases:</strong> se generan en etapa de definición (<code>qa/test-cases/{issue}.json</code>). Si faltan, el pre-flight los genera automáticamente. El agente QA solo los consume</li>
+      <li><strong>Rol QA actualizado:</strong> <code>.pipeline/roles/qa.md</code> ahora incluye ruteo por <code>QA_MODE</code> con 3 secciones: QA-Android, QA-API, QA Estructural</li>
+      <li><strong>QA-API no pasa por ventana QA:</strong> se procesa inmediatamente sin esperar emulador, reduciendo la cola</li>
+      <li><strong>Backend check:</strong> QA-API verifica que el backend responda antes de lanzar (reutiliza check 3 de pre-flight)</li>
+      <li><strong>Pre-flight check 5:</strong> verifica existencia de test cases; si no existen, ejecuta <code>qa-generate-test-cases.js</code> automáticamente</li>
     </ul>
+    <p><strong>Spec técnica:</strong> <code>docs/qa/qa-api-spec.md</code></p>
   </div>
 
   <!-- CAPA 4 -->
@@ -600,12 +606,12 @@
         Resuelve el 60% de fallos. Esfuerzo: <strong>Simple</strong>.
       </div>
     </div>
-    <div class="roadmap-item">
-      <div class="phase">Fase 2 — Separación</div>
+    <div class="roadmap-item" style="border-left: 4px solid #27ae60;">
+      <div class="phase">Fase 2 — Separación ✅ IMPLEMENTADA</div>
       <div class="title">Capa 3</div>
       <div class="detail">
         QA-API vs QA-Android. Desbloquea issues backend.
-        Esfuerzo: <strong>Medio</strong>.
+        <strong>Implementado:</strong> qa-api.sh + ruteo en Pulpo por qaMode + backend check + generador de test cases + rol QA con 3 modos.
       </div>
     </div>
     <div class="roadmap-item">
