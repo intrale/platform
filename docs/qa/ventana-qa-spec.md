@@ -174,7 +174,7 @@ Si la ventana QA lleva mas de **2 horas** activa sin completar ningun issue:
 | Capa | Nombre                          | Estado                         |
 |------|---------------------------------|--------------------------------|
 | 1    | Ventanas de QA Exclusivas       | **Este documento** — aprobado  |
-| 2    | Pre-Flight Checks en Pulpo      | Pendiente de revision con Leo  |
+| 2    | Pre-Flight Checks en Pulpo      | **Aprobado** — `preflight-checks-spec.md` |
 | 3    | Separar QA-API de QA-Android    | Pendiente de revision con Leo  |
 | 4    | APK como Artefacto de Build     | **Aprobado** — cada issue genera su APK en fase build |
 | 5    | Evidencia con Degradacion Gradual | Pendiente de revision con Leo |

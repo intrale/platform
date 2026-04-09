@@ -1681,14 +1681,27 @@ function brazoLanzamiento(config) {
       continue;
     }
 
+    // Pre-flight checks para fase verificación (Capa 2)
+    if (fase === 'verificacion') {
+      const preflight = preflightQaChecks(issue);
+      if (!preflight.ok) {
+        if (preflight.result === 'apk_missing') {
+          // Re-encolar para build — NO penalizar circuit breaker
+          log('lanzamiento', `⏪ #${issue}: pre-flight → APK faltante, re-encolando para build`);
+        } else if (preflight.result === 'waiting:emulator') {
+          // Señalizar que hay issues esperando emulador — evaluateQaPriority() se encarga
+          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (ventana QA)`);
+        } else {
+          // blocked:infra — mantener en cola, reintentar en próximo ciclo
+          log('lanzamiento', `🚫 #${issue}: pre-flight → ${preflight.result}: ${preflight.reason}`);
+        }
+        continue; // No mover a trabajando/, no lanzar
+      }
+    }
+
     // Mover a trabajando/ (atómico)
     try {
       const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-
-      // Pre-requisitos por fase
-      if (fase === 'verificacion') {
-        ensureQaEnvironment(config);
-      }
 
       // Lanzar agente
       if (fase === 'build') {
@@ -1713,10 +1726,17 @@ function brazoLanzamiento(config) {
       const { archivo, pipelineName, fase } = forced;
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
       try {
-        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-        if (fase === 'verificacion') ensureQaEnvironment(config);
         const skill = skillFromFile(archivo.name);
         const issue = issueFromFile(archivo.name);
+        // Pre-flight para verificación incluso en deadlock breaker
+        if (fase === 'verificacion') {
+          const preflight = preflightQaChecks(issue);
+          if (!preflight.ok) {
+            log('deadlock', `#${issue}: pre-flight bloqueó lanzamiento forzado → ${preflight.result}`);
+            return; // No lanzar — el deadlock breaker no puede forzar sin infra
+          }
+        }
+        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
         if (fase === 'build') {
           lanzarBuild(issue, trabajandoPath, pipelineName, config);
         } else {
@@ -1732,6 +1752,130 @@ function brazoLanzamiento(config) {
       consecutiveAllBlockedCycles = 0;
     }
   }
+}
+
+// =============================================================================
+// PRE-FLIGHT CHECKS — Capa 2 de la estrategia QA
+// Verifica infraestructura ANTES de lanzar agente QA para evitar tokens desperdiciados
+// =============================================================================
+
+const APP_LABELS = ['app:client', 'app:business', 'app:delivery'];
+const LABEL_TO_FLAVOR = { 'app:client': 'client', 'app:business': 'business', 'app:delivery': 'delivery' };
+const QA_ARTIFACTS_DIR = path.join(ROOT, 'qa', 'artifacts');
+const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
+
+/**
+ * Pre-flight checks para agentes QA (Capa 2).
+ * Retorna { ok, result, reason, flavors, requiresEmulator }
+ *   ok=true  → lanzar agente
+ *   ok=false → no lanzar, result indica la acción a tomar
+ */
+function preflightQaChecks(issue) {
+  const startMs = Date.now();
+  const checks = {};
+
+  // --- Check 1: Clasificar issue (requiere emulador o no) ---
+  const labels = getIssueLabels(issue);
+  const appLabels = labels.filter(l => APP_LABELS.includes(l));
+  const requiresEmulator = appLabels.length > 0;
+  const flavors = appLabels.map(l => LABEL_TO_FLAVOR[l]);
+
+  checks.classify = requiresEmulator ? `ui:${flavors.join(',')}` : 'no-ui';
+  log('preflight', `#${issue}: check 1 OK (${requiresEmulator ? `requiere emulador, flavors: ${flavors.join(', ')}` : 'no requiere emulador — QA-API/estructural'})`);
+
+  // Si no requiere emulador, puede lanzarse directamente
+  if (!requiresEmulator) {
+    logPreflight(issue, checks, 'pass', startMs);
+    return { ok: true, result: 'pass', reason: 'Issue sin UI — no requiere emulador ni APK', flavors: [], requiresEmulator: false };
+  }
+
+  // --- Check 2: APK disponible (solo si requiere emulador) ---
+  fs.mkdirSync(QA_ARTIFACTS_DIR, { recursive: true });
+  const missingApks = [];
+  for (const flavor of flavors) {
+    const apkName = `${issue}-composeApp-${flavor}-debug.apk`;
+    const apkPath = path.join(QA_ARTIFACTS_DIR, apkName);
+    if (!fs.existsSync(apkPath)) {
+      missingApks.push(apkName);
+    }
+  }
+
+  if (missingApks.length > 0) {
+    checks.apk = `missing:${missingApks.join(',')}`;
+    log('preflight', `#${issue}: check 2 FAIL — APK faltante: ${missingApks.join(', ')} → re-encolar para build`);
+    logPreflight(issue, checks, 'apk_missing', startMs);
+    return { ok: false, result: 'apk_missing', reason: `APK faltante: ${missingApks.join(', ')}`, flavors, requiresEmulator: true };
+  }
+  checks.apk = 'ok';
+  log('preflight', `#${issue}: check 2 OK (APK encontrado para ${flavors.join(', ')})`);
+
+  // --- Check 3: Backend responde ---
+  let backendOk = false;
+  try {
+    // Usar curl para hacer POST al backend de QA (Lambda AWS)
+    const backendUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin';
+    const curlResult = execSync(
+      `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    ).trim();
+    const httpCode = parseInt(curlResult, 10);
+    // 400 = backend vivo (falta data), 401/403 = auth activo, todos son "vivo"
+    if (httpCode >= 400 && httpCode < 500) {
+      backendOk = true;
+      checks.backend = `ok:${httpCode}`;
+      log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${httpCode})`);
+    } else {
+      checks.backend = `error:${httpCode}`;
+      log('preflight', `#${issue}: check 3 FAIL (backend responde HTTP ${httpCode}) → blocked:infra`);
+    }
+  } catch (e) {
+    checks.backend = `error:${e.message.slice(0, 80)}`;
+    log('preflight', `#${issue}: check 3 FAIL (backend no responde: ${e.message.slice(0, 80)}) → blocked:infra`);
+  }
+
+  if (!backendOk) {
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendTelegram(`⚠️ Pre-flight QA #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
+    return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true };
+  }
+
+  // --- Check 4: Emulador disponible via ADB ---
+  let emulatorReady = false;
+  try {
+    const adbOutput = execSync('adb devices', {
+      encoding: 'utf8', timeout: 5000, windowsHide: true
+    }).trim();
+    // Buscar linea con "emulator" y estado "device" (no "offline")
+    const lines = adbOutput.split('\n').filter(l => l.includes('emulator') && l.includes('device'));
+    emulatorReady = lines.length > 0;
+  } catch {}
+
+  if (!emulatorReady) {
+    checks.emulator = 'waiting';
+    log('preflight', `#${issue}: check 4 FAIL (emulador no disponible) → waiting:emulator — señalizando ventana QA`);
+    logPreflight(issue, checks, 'waiting:emulator', startMs);
+    return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true };
+  }
+  checks.emulator = 'ok';
+  log('preflight', `#${issue}: check 4 OK (emulador disponible via ADB)`);
+
+  // --- Todos los checks pasaron ---
+  logPreflight(issue, checks, 'pass', startMs);
+  return { ok: true, result: 'pass', reason: 'Todos los pre-flight checks OK', flavors, requiresEmulator: true };
+}
+
+/** Persistir resultado de pre-flight en log JSONL para análisis */
+function logPreflight(issue, checks, result, startMs) {
+  try {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      issue: String(issue),
+      checks,
+      result,
+      duration_ms: Date.now() - startMs
+    };
+    fs.appendFileSync(PREFLIGHT_LOG_FILE, JSON.stringify(entry) + '\n');
+  } catch {}
 }
 
 /** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
