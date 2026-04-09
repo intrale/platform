@@ -149,6 +149,28 @@ Se persisten en `qa-preflight-log.jsonl` para analisis:
 {"timestamp":"2026-04-09T12:30:01Z","issue":"2041","checks":{"classify":"ui","apk":"ok","backend":"ok","emulator":"waiting"},"result":"waiting:emulator","duration_ms":1200}
 ```
 
+## Cadena de responsabilidad de labels de ruteo
+
+Los labels de ruteo (`app:client`, `app:business`, `app:delivery`, `area:backend`, `area:infra`)
+son criticos para que el pipeline sepa como clasificar y validar cada issue. La responsabilidad
+de asignarlos sigue esta cadena:
+
+| Orden | Responsable | Rol | Momento |
+|-------|-------------|-----|---------|
+| 1 | **`/doc`** (definicion) | **Responsable primario.** Asigna labels de ruteo al crear o refinar el issue, junto con los criterios de aceptacion. | Etapa de definicion |
+| 2 | **`/po`** (validacion) | Valida que los labels sean correctos. Puede corregirlos si `/doc` se equivoco. | Etapa de validacion |
+| 3 | **Pre-flight (Capa 2)** | **Red de seguridad.** Si un issue llega sin labels de ruteo, el fallback inteligente (`autoClassifyIssue()` en pulpo.js) infiere el label leyendo titulo y body, y lo asigna en GitHub. | Antes de lanzar QA |
+
+**Regla:** el fallback inteligente es la excepcion, no la regla. Los issues deberian llegar
+al pre-flight ya con sus labels asignados por `/doc` y validados por `/po`. El fallback
+existe para:
+- Issues creados antes de que existiera esta regla
+- Issues creados manualmente sin pasar por `/doc`
+- Errores humanos de clasificacion
+
+Cuando el fallback actua, notifica por Telegram: "Issue #X auto-clasificado como `{label}`"
+para que quede registro de que la definicion fue incompleta.
+
 ## Decisiones clave (registro)
 
 - **2026-04-09:** Leo aprueba Capa 2 y ordena implementar y entregar.
@@ -156,3 +178,6 @@ Se persisten en `qa-preflight-log.jsonl` para analisis:
   para activar la ventana QA, no devolver a la cola en un loop sin sentido.
 - **2026-04-09:** La responsabilidad de levantar el emulador es exclusiva de la ventana QA
   (Capa 1), no del pre-flight ni del agente QA.
+- **2026-04-09:** Leo confirma que `/doc` es el responsable primario de asignar labels de ruteo,
+  `/po` los valida, y el fallback inteligente del pre-flight es la red de seguridad.
+  El fallback debe ser lo suficientemente inteligente para asignar el label correcto.
