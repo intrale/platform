@@ -1681,20 +1681,45 @@ function brazoLanzamiento(config) {
       continue;
     }
 
+    // Pre-flight checks para fase verificación (Capa 2 + Capa 3 ruteo)
+    let preflightResult = null;
+    if (fase === 'verificacion') {
+      preflightResult = preflightQaChecks(issue);
+      if (!preflightResult.ok) {
+        if (preflightResult.result === 'apk_missing') {
+          // Re-encolar para build — NO penalizar circuit breaker
+          log('lanzamiento', `⏪ #${issue}: pre-flight → APK faltante, re-encolando para build`);
+        } else if (preflightResult.result === 'waiting:emulator') {
+          // Señalizar que hay issues esperando emulador — evaluateQaPriority() se encarga
+          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (ventana QA)`);
+        } else {
+          // blocked:infra — mantener en cola, reintentar en próximo ciclo
+          log('lanzamiento', `🚫 #${issue}: pre-flight → ${preflightResult.result}: ${preflightResult.reason}`);
+        }
+        continue; // No mover a trabajando/, no lanzar
+      }
+      // Capa 3: loguear el qaMode asignado
+      log('lanzamiento', `#${issue}: qaMode=${preflightResult.qaMode} (Capa 3 ruteo)`);
+    }
+
     // Mover a trabajando/ (atómico)
     try {
       const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-
-      // Pre-requisitos por fase
-      if (fase === 'verificacion') {
-        ensureQaEnvironment(config);
-      }
 
       // Lanzar agente
       if (fase === 'build') {
         lanzarBuild(issue, trabajandoPath, pipelineName, config);
       } else {
-        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+        // Capa 3: pasar qaMode al agente QA via extraEnv
+        const extraEnv = {};
+        if (preflightResult && preflightResult.qaMode) {
+          extraEnv.QA_MODE = preflightResult.qaMode;
+          extraEnv.QA_ISSUE = String(issue);
+          if (preflightResult.flavors && preflightResult.flavors.length > 0) {
+            extraEnv.QA_FLAVOR = preflightResult.flavors[0];
+          }
+        }
+        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       }
       anyLaunched = true;
     } catch (e) {
@@ -1713,10 +1738,17 @@ function brazoLanzamiento(config) {
       const { archivo, pipelineName, fase } = forced;
       const trabajandoDir = path.join(fasePath(pipelineName, fase), 'trabajando');
       try {
-        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-        if (fase === 'verificacion') ensureQaEnvironment(config);
         const skill = skillFromFile(archivo.name);
         const issue = issueFromFile(archivo.name);
+        // Pre-flight para verificación incluso en deadlock breaker
+        if (fase === 'verificacion') {
+          const preflight = preflightQaChecks(issue);
+          if (!preflight.ok) {
+            log('deadlock', `#${issue}: pre-flight bloqueó lanzamiento forzado → ${preflight.result}`);
+            return; // No lanzar — el deadlock breaker no puede forzar sin infra
+          }
+        }
+        const trabajandoPath = moveFile(archivo.path, trabajandoDir);
         if (fase === 'build') {
           lanzarBuild(issue, trabajandoPath, pipelineName, config);
         } else {
@@ -1732,6 +1764,327 @@ function brazoLanzamiento(config) {
       consecutiveAllBlockedCycles = 0;
     }
   }
+}
+
+// =============================================================================
+// PRE-FLIGHT CHECKS — Capa 2 + Capa 3 de la estrategia QA
+// Capa 2: Verifica infraestructura ANTES de lanzar agente QA
+// Capa 3: Clasifica qaMode (android/api/structural) para rutear al script correcto
+// =============================================================================
+
+const APP_LABELS = ['app:client', 'app:business', 'app:delivery'];
+const LABEL_TO_FLAVOR = { 'app:client': 'client', 'app:business': 'business', 'app:delivery': 'delivery' };
+const ROUTING_LABELS = [...APP_LABELS, 'area:backend', 'area:infra', 'docs'];
+
+// Keywords para auto-clasificación inteligente de issues sin labels de ruteo
+const AUTO_CLASSIFY_RULES = [
+  // UI / Android — palabras que indican impacto en la interfaz del usuario
+  { keywords: ['pantalla', 'screen', 'ui', 'ux', 'botón', 'button', 'formulario', 'form', 'dialog',
+    'compose', 'viewmodel', 'navegación', 'navigation', 'diseño', 'layout', 'color', 'tema', 'theme',
+    'carrito', 'cart', 'pedido', 'order', 'producto', 'product', 'menú', 'menu', 'login', 'registro',
+    'perfil', 'profile', 'notificación', 'notification', 'lista', 'list', 'detalle', 'detail',
+    'imagen', 'image', 'ícono', 'icon', 'toast', 'snackbar', 'repetir pedido', 'checkout',
+    'splash', 'onboarding', 'search', 'buscar', 'filtro', 'filter', 'animación', 'animation'],
+    label: 'app:client' },
+  // Backend / API
+  { keywords: ['endpoint', 'api', 'lambda', 'cognito', 'dynamodb', 'serverless', 'función backend',
+    'backend function', 'signin', 'signup', 'token', 'jwt', 'cors', 'http', 'request', 'response',
+    'ktor', 'route', 'ruta backend', 'status code', 'migration', 'tabla', 'table', 'index',
+    'secretsmanager', 'ses', 'email', 'sms', 'otp', '2fa', 'mfa', 'auth'],
+    label: 'area:backend' },
+  // Infra / pipeline / hooks
+  { keywords: ['pipeline', 'hook', 'infra', 'ci/cd', 'github action', 'gradle', 'build', 'deploy',
+    'worktree', 'pulpo', 'restart', 'dashboard', 'monitor', 'agent', 'agente', 'config',
+    'yaml', 'json config', 'script', '.pipeline', 'cron', 'scheduler'],
+    label: 'area:infra' },
+  // Documentación
+  { keywords: ['documentación', 'documentation', 'docs/', 'readme', 'spec', 'arquitectura',
+    'architecture', 'manual', 'guía', 'guide', 'changelog'],
+    label: 'docs' }
+];
+
+/**
+ * Auto-clasificar un issue sin labels de ruteo.
+ * Lee título y body del issue, matchea contra keywords, asigna el label en GitHub.
+ * Retorna el label asignado o null si no pudo determinar.
+ */
+function autoClassifyIssue(issueNum) {
+  try {
+    ghThrottle();
+    const issueJson = execSync(
+      `"${GH_BIN}" issue view ${issueNum} --json title,body`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    const { title = '', body = '' } = JSON.parse(issueJson);
+    const text = `${title}\n${body}`.toLowerCase();
+
+    // Contar matches por regla
+    const scores = AUTO_CLASSIFY_RULES.map(rule => {
+      const hits = rule.keywords.filter(kw => text.includes(kw.toLowerCase()));
+      return { label: rule.label, hits: hits.length, matched: hits };
+    }).filter(s => s.hits > 0).sort((a, b) => b.hits - a.hits);
+
+    if (scores.length === 0) {
+      log('auto-classify', `#${issueNum}: sin matches — no se puede clasificar automáticamente`);
+      return null;
+    }
+
+    const winner = scores[0];
+    log('auto-classify', `#${issueNum}: clasificado como "${winner.label}" (${winner.hits} hits: ${winner.matched.slice(0, 5).join(', ')})`);
+
+    // Asignar label en GitHub
+    try {
+      ghThrottle();
+      execSync(
+        `"${GH_BIN}" issue edit ${issueNum} --add-label "${winner.label}"`,
+        { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+      );
+      log('auto-classify', `#${issueNum}: label "${winner.label}" asignado en GitHub ✓`);
+
+      // Invalidar cache de labels para que el ruteo use el label nuevo
+      issueLabelsCache.delete(issueNum);
+    } catch (e) {
+      log('auto-classify', `#${issueNum}: error asignando label — ${e.message.slice(0, 80)}`);
+    }
+
+    return winner.label;
+  } catch (e) {
+    log('auto-classify', `#${issueNum}: error leyendo issue — ${e.message.slice(0, 80)}`);
+    return null;
+  }
+}
+const QA_ARTIFACTS_DIR = path.join(ROOT, 'qa', 'artifacts');
+const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
+
+/**
+ * Pre-flight checks para agentes QA (Capa 2 + Capa 3 ruteo).
+ * Retorna { ok, result, reason, flavors, requiresEmulator, qaMode }
+ *   ok=true  → lanzar agente
+ *   qaMode: 'android' | 'api' | 'structural' (Capa 3)
+ *   ok=false → no lanzar, result indica la acción a tomar
+ */
+function preflightQaChecks(issue) {
+  const startMs = Date.now();
+  const checks = {};
+
+  // --- Check 1: Clasificar issue (requiere emulador o no) ---
+  let labels = getIssueLabels(issue);
+
+  // Auto-clasificación: si el issue no tiene ningún label de ruteo, inferir y asignar
+  const hasRoutingLabel = labels.some(l => ROUTING_LABELS.includes(l));
+  if (!hasRoutingLabel) {
+    log('preflight', `#${issue}: sin labels de ruteo — intentando auto-clasificar...`);
+    const assignedLabel = autoClassifyIssue(issue);
+    if (assignedLabel) {
+      // Re-leer labels después de la asignación
+      labels = getIssueLabels(issue);
+      sendTelegram(`🏷️ Issue #${issue} auto-clasificado como \`${assignedLabel}\` (no tenía label de ruteo QA).`);
+    } else {
+      log('preflight', `#${issue}: auto-clasificación falló — cae en structural por defecto`);
+    }
+  }
+
+  const appLabels = labels.filter(l => APP_LABELS.includes(l));
+  const requiresEmulator = appLabels.length > 0;
+  const flavors = appLabels.map(l => LABEL_TO_FLAVOR[l]);
+
+  // Capa 3: Clasificación extendida — qaMode determina el ruteo QA
+  // 'android' = necesita emulador + APK + Maestro
+  // 'api'     = necesita backend, NO emulador ni APK
+  // 'structural' = no necesita infra externa (docs, hooks, infra)
+  const hasBackendLabel = labels.includes('area:backend');
+  const qaMode = requiresEmulator ? 'android'
+    : hasBackendLabel ? 'api'
+    : 'structural';
+
+  checks.classify = requiresEmulator ? `ui:${flavors.join(',')}` : `no-ui:${qaMode}`;
+  log('preflight', `#${issue}: check 1 OK (qaMode=${qaMode}${requiresEmulator ? `, flavors: ${flavors.join(', ')}` : ''})`);
+
+  // Si no requiere emulador, verificar backend para QA-API antes de aprobar
+  if (!requiresEmulator) {
+    if (qaMode === 'api') {
+      // QA-API necesita backend vivo — ejecutar check 3
+      let backendOk = false;
+      try {
+        const backendUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin';
+        const curlResult = execSync(
+          `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
+          { encoding: 'utf8', timeout: 15000, windowsHide: true }
+        ).trim();
+        const httpCode = parseInt(curlResult, 10);
+        if (httpCode >= 400 && httpCode < 500) {
+          backendOk = true;
+          checks.backend = `ok:${httpCode}`;
+          log('preflight', `#${issue}: check 3 (QA-API) OK — backend responde HTTP ${httpCode}`);
+        } else {
+          checks.backend = `error:${httpCode}`;
+          log('preflight', `#${issue}: check 3 (QA-API) FAIL — backend HTTP ${httpCode} → blocked:infra`);
+        }
+      } catch (e) {
+        checks.backend = `error:${e.message.slice(0, 80)}`;
+        log('preflight', `#${issue}: check 3 (QA-API) FAIL — backend no responde → blocked:infra`);
+      }
+
+      if (!backendOk) {
+        logPreflight(issue, checks, 'blocked:infra', startMs);
+        sendTelegram(`⚠️ Pre-flight QA-API #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
+        return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors: [], requiresEmulator: false, qaMode };
+      }
+
+      // Capa 3: Verificar/generar test cases para QA-API
+      const testCasesFile = path.join(ROOT, 'qa', 'test-cases', `${issue}.json`);
+      if (fs.existsSync(testCasesFile)) {
+        checks.testCases = 'exists';
+        log('preflight', `#${issue}: check 5 (test cases) OK — encontrado ${testCasesFile}`);
+      } else {
+        // Fallback: generar test cases automáticamente desde criterios del issue
+        log('preflight', `#${issue}: check 5 (test cases) — no existe, generando fallback...`);
+        try {
+          const genScript = path.join(ROOT, 'qa', 'scripts', 'qa-generate-test-cases.js');
+          const ghPath = fs.existsSync(GH_BIN) ? GH_BIN : 'gh';
+          execSync(`node "${genScript}"`, {
+            encoding: 'utf8',
+            timeout: 20000,
+            windowsHide: true,
+            env: { ...process.env, QA_ISSUE: String(issue), GH_PATH: ghPath }
+          });
+          checks.testCases = 'generated-fallback';
+          log('preflight', `#${issue}: check 5 (test cases) OK — generados como fallback`);
+        } catch (genErr) {
+          // No bloquear si falla la generación — el agente QA puede generar manualmente
+          checks.testCases = `gen-failed:${genErr.message.slice(0, 60)}`;
+          log('preflight', `#${issue}: check 5 (test cases) WARN — generación fallback falló, el agente QA los generará`);
+        }
+      }
+    }
+
+    logPreflight(issue, checks, 'pass', startMs);
+    return { ok: true, result: 'pass', reason: `Issue ${qaMode} — no requiere emulador ni APK`, flavors: [], requiresEmulator: false, qaMode };
+  }
+
+  // --- Check 2: APK disponible (solo si requiere emulador) ---
+  fs.mkdirSync(QA_ARTIFACTS_DIR, { recursive: true });
+  const missingApks = [];
+  for (const flavor of flavors) {
+    const apkName = `${issue}-composeApp-${flavor}-debug.apk`;
+    const apkPath = path.join(QA_ARTIFACTS_DIR, apkName);
+    if (!fs.existsSync(apkPath)) {
+      missingApks.push(apkName);
+    }
+  }
+
+  if (missingApks.length > 0) {
+    checks.apk = `missing:${missingApks.join(',')}`;
+    log('preflight', `#${issue}: check 2 FAIL — APK faltante: ${missingApks.join(', ')} → re-encolar para build`);
+    logPreflight(issue, checks, 'apk_missing', startMs);
+    return { ok: false, result: 'apk_missing', reason: `APK faltante: ${missingApks.join(', ')}`, flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+  checks.apk = 'ok';
+  log('preflight', `#${issue}: check 2 OK (APK encontrado para ${flavors.join(', ')})`);
+
+  // --- Check 3: Backend responde ---
+  let backendOk = false;
+  try {
+    // Usar curl para hacer POST al backend de QA (Lambda AWS)
+    const backendUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin';
+    const curlResult = execSync(
+      `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    ).trim();
+    const httpCode = parseInt(curlResult, 10);
+    // 400 = backend vivo (falta data), 401/403 = auth activo, todos son "vivo"
+    if (httpCode >= 400 && httpCode < 500) {
+      backendOk = true;
+      checks.backend = `ok:${httpCode}`;
+      log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${httpCode})`);
+    } else {
+      checks.backend = `error:${httpCode}`;
+      log('preflight', `#${issue}: check 3 FAIL (backend responde HTTP ${httpCode}) → blocked:infra`);
+    }
+  } catch (e) {
+    checks.backend = `error:${e.message.slice(0, 80)}`;
+    log('preflight', `#${issue}: check 3 FAIL (backend no responde: ${e.message.slice(0, 80)}) → blocked:infra`);
+  }
+
+  if (!backendOk) {
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendTelegram(`⚠️ Pre-flight QA #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
+    return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  // --- Check 4: Emulador disponible via ADB + test de screenrecord (Blindaje 2) ---
+  let emulatorReady = false;
+  let emulatorSerial = '';
+  try {
+    const adbOutput = execSync('adb devices', {
+      encoding: 'utf8', timeout: 5000, windowsHide: true
+    }).trim();
+    // Buscar linea con "emulator" y estado "device" (no "offline")
+    const lines = adbOutput.split('\n').filter(l => l.includes('emulator') && l.includes('device'));
+    emulatorReady = lines.length > 0;
+    if (emulatorReady) {
+      emulatorSerial = lines[0].split('\t')[0].trim();
+    }
+  } catch {}
+
+  if (!emulatorReady) {
+    checks.emulator = 'waiting';
+    log('preflight', `#${issue}: check 4 FAIL (emulador no disponible) → waiting:emulator — señalizando ventana QA`);
+    logPreflight(issue, checks, 'waiting:emulator', startMs);
+    return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar
+  // Si falla, reintentar hasta 3 veces con espera progresiva
+  let screenrecordOk = false;
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Grabar 2 segundos de prueba
+      execSync(
+        `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
+        { encoding: 'utf8', timeout: 15000, windowsHide: true }
+      );
+      screenrecordOk = true;
+      log('preflight', `#${issue}: check 4b OK — screenrecord test passed (intento ${attempt}/${maxRetries})`);
+      break;
+    } catch (e) {
+      log('preflight', `#${issue}: check 4b — screenrecord test FAIL intento ${attempt}/${maxRetries}: ${e.message.slice(0, 60)}`);
+      if (attempt < maxRetries) {
+        // Espera progresiva: 3s, 6s
+        execSync(`sleep ${attempt * 3}`, { windowsHide: true });
+      }
+    }
+  }
+
+  if (!screenrecordOk) {
+    checks.emulator = 'screenrecord-fail';
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona despues de ${maxRetries} intentos → blocked:infra`);
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendTelegram(`⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
+    return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+
+  checks.emulator = 'ok+screenrecord';
+  log('preflight', `#${issue}: check 4 OK (emulador disponible + screenrecord verificado)`);
+
+  // --- Todos los checks pasaron ---
+  logPreflight(issue, checks, 'pass', startMs);
+  return { ok: true, result: 'pass', reason: 'Todos los pre-flight checks OK', flavors, requiresEmulator: true, qaMode: 'android' };
+}
+
+/** Persistir resultado de pre-flight en log JSONL para análisis */
+function logPreflight(issue, checks, result, startMs) {
+  try {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      issue: String(issue),
+      checks,
+      result,
+      duration_ms: Date.now() - startMs
+    };
+    fs.appendFileSync(PREFLIGHT_LOG_FILE, JSON.stringify(entry) + '\n');
+  } catch {}
 }
 
 /** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
@@ -1815,7 +2168,7 @@ function ensureQaEnvironment(config) {
   }
 }
 
-function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config) {
+function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
   const basePrompt = path.join(PIPELINE, 'roles', '_base.md');
   const rolPrompt = path.join(PIPELINE, 'roles', `${skill}.md`);
 
@@ -1901,7 +2254,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     detached: false,
     shell: false,
     windowsHide: true,
-    env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase }
+    env: { ...process.env, PIPELINE_ISSUE: issue, PIPELINE_SKILL: skill, PIPELINE_FASE: fase, ...extraEnv }
   });
 
   child.unref();

@@ -854,6 +854,16 @@ enum class MessageKey {
     client_notifications_event_business_message,
     client_notifications_push_placeholder,
 
+    // Content descriptions para iconos de notificacion client (sin parametros)
+    client_notifications_icon_order_created,
+    client_notifications_icon_order_confirmed,
+    client_notifications_icon_order_preparing,
+    client_notifications_icon_order_ready,
+    client_notifications_icon_order_delivering,
+    client_notifications_icon_order_delivered,
+    client_notifications_icon_order_cancelled,
+    client_notifications_icon_business_message,
+
     // Preferencias de notificaciones push
     client_push_settings_title,
     client_push_settings_enabled,
