@@ -1000,6 +1000,7 @@ function generateHTML(state) {
       </div>
     </div>
     ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
+    ${fs.existsSync(path.join(PIPELINE, '.paused')) ? '<div class="resource-alert" style="background:rgba(251,188,5,0.12);border-color:rgba(251,188,5,0.4);color:#f0a500;">⏸️ Lanzamientos pausados por el usuario <button class="ctl-btn" style="margin-left:12px;padding:2px 10px;font-size:0.85em;" onclick="pauseAction(\'resume\')">▶ Reanudar</button></div>' : ''}
     ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // Emulador Android — integrado como servicio más en svcCardsHTML
@@ -1872,6 +1873,22 @@ async function ctlAction(target, action) {
     showToast('Error de conexión: ' + e.message, false);
   }
   btns.forEach(b => b.classList.remove('loading'));
+}
+
+// Pause/resume pipeline
+async function pauseAction(action) {
+  try {
+    const resp = await fetch('/api/pause', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
 }
 
 // QA component action (individual or all)
@@ -2852,6 +2869,36 @@ const server = http.createServer((req, res) => {
         log(`Action: ${action} ${target} → ${result.ok ? '✓' : '✗'} ${result.msg}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: pause/resume pipeline
+  if (req.url === '/api/pause' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { action } = JSON.parse(body);
+        const pauseFile = path.join(PIPELINE, '.paused');
+        if (action === 'resume' || action === 'remove') {
+          try { fs.unlinkSync(pauseFile); } catch {}
+          log(`Pausa eliminada por dashboard (${action})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
+        } else if (action === 'pause') {
+          fs.writeFileSync(pauseFile, new Date().toISOString());
+          log('Pipeline pausado desde dashboard');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline pausado — solo Telegram activo' }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Acción "${action}" no válida` }));
+        }
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
