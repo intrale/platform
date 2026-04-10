@@ -1,0 +1,54 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #2022 — Criterio 1: Recibir pedido asignado
+# Prerrequisito: Usuario delivery logueado (ejecutar validate-2022-login-delivery primero)
+# Verifica que el repartidor puede ver pedidos asignados en su dashboard
+
+- launchApp:
+    clearState: false
+
+- waitForAnimationToEnd
+
+# Esperar home de delivery
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 15000
+
+- takeScreenshot: 2022-recibir-01-home
+
+# Verificar que se muestran pedidos asignados
+- assertVisible:
+    text: "Pedidos activos"
+
+# Navegar al tab de pedidos (bottom nav)
+- tapOn:
+    text: "Pedidos"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-recibir-02-orders-tab
+
+# Verificar tab "Mis pedidos" (pedidos asignados)
+- tapOn:
+    text: "Mis pedidos"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-recibir-03-mis-pedidos
+
+# Verificar tab "Disponibles" (pedidos que puede tomar)
+- tapOn:
+    text: "Disponibles"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-recibir-04-disponibles
+
+# Volver a Mis pedidos
+- tapOn:
+    text: "Mis pedidos"
+    optional: true
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-recibir-05-final

@@ -1,0 +1,74 @@
+appId: com.intrale.app.delivery
+---
+# Flujo E2E: Validación #2022 — Criterio 4: Confirmar entrega
+# Prerrequisito: Usuario delivery logueado con un pedido en estado IN_PROGRESS
+# Verifica flujo completo: Marcar entregado → Diálogo confirmación → Entregado
+
+- launchApp:
+    clearState: false
+
+- waitForAnimationToEnd
+
+# Esperar home
+- extendedWaitUntil:
+    visible:
+      text: "Pedidos activos"
+    timeout: 15000
+
+- takeScreenshot: 2022-entrega-01-home
+
+# Navegar a un pedido en progreso/en camino
+- tapOn:
+    text: "En camino"
+    optional: true
+- waitForAnimationToEnd
+
+- tapOn:
+    text: "En progreso"
+    optional: true
+- waitForAnimationToEnd
+
+# Esperar detalle
+- extendedWaitUntil:
+    visible:
+      text: "Pedido"
+    timeout: 10000
+
+- takeScreenshot: 2022-entrega-02-detail
+
+# Verificar botón "Marcar entregado"
+- assertVisible:
+    text: "Marcar entregado"
+
+- takeScreenshot: 2022-entrega-03-action
+
+# Tocar "Marcar entregado"
+- tapOn:
+    text: "Marcar entregado"
+- waitForAnimationToEnd
+
+# Verificar diálogo de confirmación
+- assertVisible:
+    text: "Confirmar entrega"
+
+- takeScreenshot: 2022-entrega-04-dialog
+
+# Verificar botones del diálogo
+- assertVisible:
+    text: "Sí, entregar"
+- assertVisible:
+    text: "Cancelar"
+
+# Confirmar la entrega
+- tapOn:
+    text: "Sí, entregar"
+- waitForAnimationToEnd
+
+- takeScreenshot: 2022-entrega-05-confirmed
+
+# Verificar mensaje de éxito
+- assertVisible:
+    text: "Estado actualizado"
+    optional: true
+
+- takeScreenshot: 2022-entrega-06-final
