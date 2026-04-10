@@ -51,6 +51,14 @@ class ProductRepository {
         return products.remove(key(business, productId)) != null
     }
 
+    /**
+     * Busca productos por IDs dentro de un negocio.
+     * Retorna solo los encontrados; los IDs ausentes no aparecen en el resultado.
+     */
+    fun getProductsByIds(business: String, productIds: List<String>): List<ProductRecord> {
+        return productIds.mapNotNull { id -> products[key(business, id)]?.copy() }
+    }
+
     fun listPublishedProductsPaginated(
         business: String,
         offset: Int = 0,

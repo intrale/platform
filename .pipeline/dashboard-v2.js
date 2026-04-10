@@ -1752,12 +1752,22 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
           { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
           { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
         ];
+        // Leer umbral configurado
+        let threshold = 3;
+        try {
+          const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
+          threshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+        } catch {}
+        const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
         return items.map(i => {
           const s = pw[i.key];
           const active = s && s.active;
           const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
           const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
-          const tip = active ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar' : 'Activar ' + i.label + ' Priority';
+          let tip = active
+            ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
+            : 'Activar ' + i.label + ' Priority (umbral auto: ' + threshold + ' issues)';
+          if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
           const action = active ? 'off' : 'on';
           const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
           return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
@@ -2987,11 +2997,20 @@ const server = http.createServer((req, res) => {
 
         // Escribir manualOverride para que el Pulpo lo consuma en su próximo ciclo
         // También actualizar active/manual inmediatamente para que el dashboard refleje el cambio
+        // Ventanas autoexcluyentes: si activamos una, desactivamos la otra
         current[win].manualOverride = (action === 'on');
         if (action === 'on') {
           current[win].active = true;
           current[win].manual = true;
           current[win].activatedAt = Date.now();
+          // Autoexclusión: desactivar la otra ventana
+          const other = win === 'qa' ? 'build' : 'qa';
+          if (current[other] && current[other].active) {
+            current[other].manualOverride = false;
+            current[other].active = false;
+            current[other].manual = false;
+            current[other].activatedAt = null;
+          }
         } else {
           current[win].active = false;
           current[win].manual = false;
