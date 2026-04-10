@@ -45,6 +45,22 @@ function ghThrottle() {
   lastGhCallTime = Date.now();
 }
 
+/**
+ * Agregar un comentario a un issue de GitHub (fire-and-forget).
+ */
+function ghCommentOnIssue(issueNumber, body) {
+  try {
+    ghThrottle();
+    execSync(`"${GH_BIN}" issue comment ${issueNumber} --body "${body.replace(/"/g, '\\"')}"`, {
+      encoding: 'utf8', timeout: 15000, windowsHide: true,
+      cwd: path.resolve(__dirname, '..')
+    });
+    log('github', `Comentario en #${issueNumber}: ${body.slice(0, 80)}`);
+  } catch (e) {
+    log('github', `Error comentando #${issueNumber}: ${e.message}`);
+  }
+}
+
 // --- Utilidades ---
 
 function log(brazo, msg) {
@@ -741,6 +757,7 @@ let qaPriorityActivatedAt = 0;
 let qaFirstBlockedAt = 0;           // Momento en que se detectó acumulación QA sin poder lanzar
 let qaPriorityNotifiedTelegram = false;
 let qaPriorityManual = false;       // true si fue activada manualmente desde el dashboard
+let qaPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
 
 // =============================================================================
 // BUILD PRIORITY WINDOW — Protección de builds contra kill de emergencia y
@@ -753,6 +770,7 @@ let buildPriorityActivatedAt = 0;
 let buildFirstBlockedAt = 0;
 let buildPriorityNotifiedTelegram = false;
 let buildPriorityManual = false;    // true si fue activada manualmente desde el dashboard
+let buildPrioritySafetyNotified = false; // true si ya se envió notificación de safety timeout
 
 const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
 
@@ -860,24 +878,27 @@ function countRunningDev(config) {
 
 /**
  * Evaluar si debe activarse/desactivarse la QA Priority Window.
- * Retorna true si QA Priority está activa (dev debe bloquearse).
+ * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
+ * - Activación inmediata cuando cola >= umbral configurable
+ * - Sin timeout fijo (corre hasta vaciar cola)
+ * - Timeout de seguridad: notifica Telegram si no completa en N horas (no cierra)
+ * Retorna true si QA Priority está activa (dev y build deben bloquearse).
  */
 function evaluateQaPriority(config) {
   const limits = config.resource_limits || {};
-  const queueThreshold = limits.qa_priority_queue_threshold || 3;
-  const waitMinutes = limits.qa_priority_wait_minutes || 30;
-  const maxDurationMinutes = limits.qa_priority_max_duration_minutes || 15;
+  const threshold = limits.priority_windows_activation_threshold || 3;
+  const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
   const now = Date.now();
 
   const pendingQa = countPendingVerificacion(config);
 
   // ---- Desactivación ----
   if (qaPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
+    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
     if (!qaPriorityManual && pendingQa === 0) {
       log('qa-priority', '🟢 QA Priority Window desactivada — cola de verificación vacía');
       if (qaPriorityNotifiedTelegram) {
-        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Lanzamientos dev reactivados.');
+        sendTelegram('✅ QA Priority Window terminó — se procesaron todos los issues de verificación pendientes. Pipeline en modo normal.');
       }
       qaPriorityActive = false;
       qaPriorityActivatedAt = 0;
@@ -886,44 +907,40 @@ function evaluateQaPriority(config) {
       persistPriorityWindows();
       return false;
     }
-    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
-    if (now - qaPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
-      log('qa-priority', `⏱️ QA Priority Window expiró después de ${maxDurationMinutes}min — ${pendingQa} issues QA aún pendientes`);
-      if (qaPriorityNotifiedTelegram) {
-        sendTelegram(`⏱️ QA Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingQa} issues de verificación pendientes. Lanzamientos dev reactivados.`);
-      }
-      qaPriorityActive = false;
-      qaPriorityManual = false;
-      qaPriorityActivatedAt = 0;
-      qaFirstBlockedAt = 0;
-      qaPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
-      return false;
+    // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
+    const elapsedHours = (now - qaPriorityActivatedAt) / (3600 * 1000);
+    if (elapsedHours >= safetyTimeoutHours && !qaPrioritySafetyNotified) {
+      qaPrioritySafetyNotified = true;
+      log('qa-priority', `⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
+      sendTelegram(`⚠️ QA Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingQa} issues pendientes. Verificá desde el dashboard si hay un problema.`);
     }
-    return true; // Sigue activa
+    return true; // Sigue activa — sin timeout fijo
   }
 
   // ---- Activación ----
-  // Condición: N+ issues QA pendientes Y llevan M+ minutos sin poder correr
-  if (pendingQa >= queueThreshold) {
-    if (qaFirstBlockedAt === 0) {
-      qaFirstBlockedAt = now;
-      log('qa-priority', `⚠️ Acumulación QA detectada: ${pendingQa} issues pendientes en verificación — esperando ${waitMinutes}min antes de activar QA Priority`);
+  // Activación inmediata cuando cola >= umbral (sin esperar N minutos)
+  if (pendingQa >= threshold) {
+    // QA siempre gana: si Build está activa, desactivarla
+    if (buildPriorityActive && !buildPriorityManual) {
+      log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — ${pendingQa} issues QA pendientes`);
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
     }
-    const waitedMs = now - qaFirstBlockedAt;
-    if (waitedMs >= waitMinutes * 60 * 1000) {
-      qaPriorityActive = true;
-      qaPriorityActivatedAt = now;
-      qaPriorityNotifiedTelegram = true;
-      log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min sin verificar. Bloqueando lanzamientos dev.`);
-      sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues llevan ${Math.round(waitedMs / 60000)}min esperando verificación. Bloqueando nuevos lanzamientos de dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
-      persistPriorityWindows();
-      return true;
-    }
+    qaPriorityActive = true;
+    qaPriorityActivatedAt = now;
+    qaPriorityNotifiedTelegram = true;
+    qaPrioritySafetyNotified = false;
+    log('qa-priority', `🚨 QA PRIORITY WINDOW ACTIVADA — ${pendingQa} issues en verificación (umbral: ${threshold}). Bloqueando dev y build.`);
+    sendTelegram(`🚨 QA Priority Window activada — ${pendingQa} issues esperando verificación (umbral: ${threshold}). Dev y build bloqueados hasta vaciar cola.`);
+    persistPriorityWindows();
+    return true;
   } else {
-    // Si bajó del umbral, resetear el timer
+    // Si bajó del umbral, resetear
     if (qaFirstBlockedAt !== 0) {
-      log('qa-priority', `✅ Acumulación QA bajó a ${pendingQa} (< ${queueThreshold}) — timer de QA Priority reseteado`);
+      log('qa-priority', `✅ Cola QA bajó a ${pendingQa} (< ${threshold}) — modo normal`);
       qaFirstBlockedAt = 0;
     }
   }
@@ -959,15 +976,16 @@ function countRunningBuild(config) {
 
 /**
  * Evaluar si debe activarse/desactivarse la Build Priority Window.
- * Cuando hay builds en cola, bloquea nuevos dev para liberar recursos
- * y evitar saturación del sistema.
+ * Modelo V2: ventanas autoexcluyentes, QA > Build > Dev.
+ * - Activación inmediata cuando cola >= umbral configurable
+ * - Sin timeout fijo (corre hasta vaciar cola)
+ * - NO se activa si QA Priority ya está activa (QA > Build)
  * Retorna true si Build Priority está activa (dev debe bloquearse).
  */
 function evaluateBuildPriority(config) {
   const limits = config.resource_limits || {};
-  const queueThreshold = limits.build_priority_queue_threshold || 2;
-  const waitMinutes = limits.build_priority_wait_minutes || 5;
-  const maxDurationMinutes = limits.build_priority_max_duration_minutes || 20;
+  const threshold = limits.priority_windows_activation_threshold || 3;
+  const safetyTimeoutHours = limits.priority_windows_safety_timeout_hours || 2;
   const now = Date.now();
 
   const pendingBuild = countPendingBuild(config);
@@ -975,57 +993,58 @@ function evaluateBuildPriority(config) {
 
   // ---- Desactivación ----
   if (buildPriorityActive) {
-    // Si fue activada manualmente, solo desactivar por timeout o por override manual (no por cola vacía)
+    // Si QA Priority se activó, Build cede (QA > Build) — excepto si fue manual
+    if (qaPriorityActive && !buildPriorityManual) {
+      log('build-priority', '🔄 Build Priority cede ante QA Priority (QA > Build)');
+      buildPriorityActive = false;
+      buildPriorityActivatedAt = 0;
+      buildFirstBlockedAt = 0;
+      buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
+      persistPriorityWindows();
+      return false;
+    }
+    // Si fue activada manualmente, solo desactivar por override manual (no por cola vacía)
     if (!buildPriorityManual && pendingBuild === 0 && runningBuild === 0) {
       log('build-priority', '🟢 Build Priority Window desactivada — cola de build vacía');
       if (buildPriorityNotifiedTelegram) {
-        sendTelegram('✅ Build Priority Window terminó — builds completados. Lanzamientos dev reactivados.');
+        sendTelegram('✅ Build Priority Window terminó — builds completados. Pipeline en modo normal.');
       }
       buildPriorityActive = false;
       buildPriorityActivatedAt = 0;
       buildFirstBlockedAt = 0;
       buildPriorityNotifiedTelegram = false;
+      buildPrioritySafetyNotified = false;
       persistPriorityWindows();
       return false;
     }
-    // Si excedió duración máxima, desactivar para no bloquear dev indefinidamente
-    if (now - buildPriorityActivatedAt > maxDurationMinutes * 60 * 1000) {
-      log('build-priority', `⏱️ Build Priority Window expiró después de ${maxDurationMinutes}min — ${pendingBuild} builds pendientes, ${runningBuild} en curso`);
-      if (buildPriorityNotifiedTelegram) {
-        sendTelegram(`⏱️ Build Priority Window expiró (${maxDurationMinutes}min). Quedan ${pendingBuild} builds pendientes. Lanzamientos dev reactivados.`);
-      }
-      buildPriorityActive = false;
-      buildPriorityManual = false;
-      buildPriorityActivatedAt = 0;
-      buildFirstBlockedAt = 0;
-      buildPriorityNotifiedTelegram = false;
-      persistPriorityWindows();
-      return false;
+    // Timeout de seguridad: notificar si lleva mucho sin completar (pero NO cerrar)
+    const elapsedHours = (now - buildPriorityActivatedAt) / (3600 * 1000);
+    if (elapsedHours >= safetyTimeoutHours && !buildPrioritySafetyNotified) {
+      buildPrioritySafetyNotified = true;
+      log('build-priority', `⚠️ Build Priority Window lleva ${Math.round(elapsedHours)}h activa sin completar — notificando`);
+      sendTelegram(`⚠️ Build Priority Window lleva ${Math.round(elapsedHours)}h activa con ${pendingBuild} builds pendientes. Verificá desde el dashboard.`);
     }
-    return true; // Sigue activa
+    return true; // Sigue activa — sin timeout fijo
   }
 
   // ---- Activación ----
-  // Condición: N+ builds pendientes Y llevan M+ minutos sin poder correr
-  if (pendingBuild >= queueThreshold) {
-    if (buildFirstBlockedAt === 0) {
-      buildFirstBlockedAt = now;
-      log('build-priority', `⚠️ Acumulación build detectada: ${pendingBuild} issues pendientes en build — esperando ${waitMinutes}min antes de activar Build Priority`);
-    }
-    const waitedMs = now - buildFirstBlockedAt;
-    if (waitedMs >= waitMinutes * 60 * 1000) {
-      buildPriorityActive = true;
-      buildPriorityActivatedAt = now;
-      buildPriorityNotifiedTelegram = true;
-      log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues llevan ${Math.round(waitedMs / 60000)}min sin buildear. Bloqueando lanzamientos dev.`);
-      sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build hace ${Math.round(waitedMs / 60000)}min. Bloqueando nuevos dev para liberar recursos. Duración máxima: ${maxDurationMinutes}min.`);
-      persistPriorityWindows();
-      return true;
-    }
+  // NO activar si QA Priority ya está activa (QA > Build, autoexcluyentes)
+  if (qaPriorityActive) return false;
+
+  // Activación inmediata cuando cola >= umbral
+  if (pendingBuild >= threshold) {
+    buildPriorityActive = true;
+    buildPriorityActivatedAt = now;
+    buildPriorityNotifiedTelegram = true;
+    buildPrioritySafetyNotified = false;
+    log('build-priority', `🔨 BUILD PRIORITY WINDOW ACTIVADA — ${pendingBuild} issues esperando build (umbral: ${threshold}). Bloqueando dev.`);
+    sendTelegram(`🔨 Build Priority Window activada — ${pendingBuild} issues esperando build (umbral: ${threshold}). Dev bloqueado hasta vaciar cola.`);
+    persistPriorityWindows();
+    return true;
   } else {
-    // Si bajó del umbral, resetear el timer
     if (buildFirstBlockedAt !== 0) {
-      log('build-priority', `✅ Acumulación build bajó a ${pendingBuild} (< ${queueThreshold}) — timer de Build Priority reseteado`);
+      log('build-priority', `✅ Cola build bajó a ${pendingBuild} (< ${threshold}) — modo normal`);
       buildFirstBlockedAt = 0;
     }
   }
@@ -1571,8 +1590,11 @@ function brazoLanzamiento(config) {
   const pressure = getResourcePressure(config);
   const multiplier = concurrencyMultiplier(pressure.level);
 
-  // Fases de desarrollo que se bloquean durante QA/Build Priority
+  // Fases bloqueadas según ventana activa (autoexcluyentes: QA > Build > Dev)
+  // QA Priority: bloquea dev + validacion + build (QA necesita recursos exclusivos)
+  // Build Priority: bloquea dev + validacion (build corre, QA sigue si hay)
   const DEV_PHASES = ['dev', 'validacion'];
+  const QA_BLOCKED_PHASES = ['dev', 'validacion', 'build']; // QA bloquea también build
 
   // --- PIEZA 2+3: Recolectar TODOS los pendientes de TODAS las fases ---
   // En vez de iterar fase por fase (que prioriza fases avanzadas),
@@ -1584,8 +1606,9 @@ function brazoLanzamiento(config) {
     for (let faseIdx = 0; faseIdx < fases.length; faseIdx++) {
       const fase = fases[faseIdx];
 
-      // QA/BUILD PRIORITY: si alguna ventana está activa, bloquear lanzamientos de fases dev
-      if ((qaPriority || buildPriority) && DEV_PHASES.includes(fase)) continue;
+      // PRIORITY WINDOWS (autoexcluyentes): QA bloquea dev+build, Build bloquea solo dev
+      if (qaPriority && QA_BLOCKED_PHASES.includes(fase)) continue;
+      if (buildPriority && !qaPriority && DEV_PHASES.includes(fase)) continue;
 
       const pendienteDir = path.join(fasePath(pipelineName, fase), 'pendiente');
       const archivos = listWorkFiles(pendienteDir);
@@ -1687,8 +1710,16 @@ function brazoLanzamiento(config) {
       preflightResult = preflightQaChecks(issue);
       if (!preflightResult.ok) {
         if (preflightResult.result === 'apk_missing') {
-          // Re-encolar para build — NO penalizar circuit breaker
-          log('lanzamiento', `⏪ #${issue}: pre-flight → APK faltante, re-encolando para build`);
+          // Mover de verificacion/pendiente → build/pendiente — NO penalizar circuit breaker
+          log('lanzamiento', `⏪ #${issue}: APK faltante, moviendo de verificación a cola de build`);
+          try {
+            const buildPendDir = path.join(fasePath(pipelineName, 'build'), 'pendiente');
+            moveFile(archivo.path, buildPendDir);
+            ghCommentOnIssue(issue, `⏪ QA requiere APK para este issue. Devuelto al builder automáticamente.`);
+            log('lanzamiento', `✅ #${issue}: movido a build/pendiente OK`);
+          } catch (moveErr) {
+            log('lanzamiento', `⚠️ #${issue}: no se pudo mover a build — ${moveErr.message}`);
+          }
         } else if (preflightResult.result === 'waiting:emulator') {
           // Señalizar que hay issues esperando emulador — evaluateQaPriority() se encarga
           log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (ventana QA)`);

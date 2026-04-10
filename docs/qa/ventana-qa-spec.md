@@ -1,8 +1,12 @@
 # Ventana de QA Exclusiva — Especificacion Tecnica
 
 **Fecha:** 2026-04-09  
-**Estado:** Aprobado por Leo (pendiente implementacion)  
+**Estado:** Superado por `ventanas-prioridad-spec.md` (2026-04-10)  
 **Contexto:** Estrategia de 5 Capas para solucion definitiva del agente QA
+
+> **NOTA:** Este documento describe el modelo original de ventana QA exclusiva.
+> El modelo fue reemplazado por **ventanas autoexcluyentes con umbral configurable**
+> documentado en [`ventanas-prioridad-spec.md`](ventanas-prioridad-spec.md).
 
 ---
 

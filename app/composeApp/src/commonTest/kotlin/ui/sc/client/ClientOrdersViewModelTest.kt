@@ -6,6 +6,8 @@ import asdo.client.ClientOrderDetail
 import asdo.client.ClientOrderItem
 import asdo.client.ClientOrderStatus
 import asdo.client.RepeatOrderResult
+import asdo.client.SkippedItem
+import ar.com.intrale.shared.client.SkipReason
 import asdo.client.ToDoGetClientOrders
 import asdo.client.ToDoGetClientOrderDetail
 import asdo.client.ToDoRepeatOrder
@@ -319,7 +321,10 @@ class ClientOrdersViewModelRepeatOrderTest {
                 ClientOrderItem(id = "item-1", name = "Producto A", quantity = 2, unitPrice = 50.0, subtotal = 100.0)
             ),
             skippedItems = listOf(
-                ClientOrderItem(id = null, name = "Producto sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0)
+                SkippedItem(
+                    item = ClientOrderItem(id = null, name = "Producto sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0),
+                    reason = SkipReason.UNKNOWN_PRODUCT
+                )
             )
         )
         val viewModel = ClientOrdersViewModel(
@@ -342,7 +347,10 @@ class ClientOrdersViewModelRepeatOrderTest {
         val repeatResult = RepeatOrderResult(
             addedItems = emptyList(),
             skippedItems = listOf(
-                ClientOrderItem(id = null, name = "Sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0)
+                SkippedItem(
+                    item = ClientOrderItem(id = null, name = "Sin ID", quantity = 1, unitPrice = 10.0, subtotal = 10.0),
+                    reason = SkipReason.UNKNOWN_PRODUCT
+                )
             )
         )
         val viewModel = ClientOrdersViewModel(
