@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,6 +32,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -232,13 +236,15 @@ private fun NotificationCard(
                 }
             }
             if (!notification.isRead) {
-                TextButton(
+                OutlinedButton(
                     onClick = onMarkRead,
-                    modifier = Modifier.align(Alignment.End)
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .heightIn(min = 48.dp)
                 ) {
                     Text(
                         text = markReadLabel,
-                        style = MaterialTheme.typography.labelSmall
+                        style = MaterialTheme.typography.labelMedium
                     )
                 }
             }
@@ -248,6 +254,17 @@ private fun NotificationCard(
 
 @Composable
 private fun NotificationIcon(eventType: NotificationEventType) {
+    val eventTypeDescription = when (eventType) {
+        NotificationEventType.ORDER_CREATED -> Txt(MessageKey.client_notifications_icon_order_created)
+        NotificationEventType.ORDER_CONFIRMED -> Txt(MessageKey.client_notifications_icon_order_confirmed)
+        NotificationEventType.ORDER_PREPARING -> Txt(MessageKey.client_notifications_icon_order_preparing)
+        NotificationEventType.ORDER_READY -> Txt(MessageKey.client_notifications_icon_order_ready)
+        NotificationEventType.ORDER_DELIVERING -> Txt(MessageKey.client_notifications_icon_order_delivering)
+        NotificationEventType.ORDER_DELIVERED -> Txt(MessageKey.client_notifications_icon_order_delivered)
+        NotificationEventType.ORDER_CANCELLED -> Txt(MessageKey.client_notifications_icon_order_cancelled)
+        NotificationEventType.BUSINESS_MESSAGE -> Txt(MessageKey.client_notifications_icon_business_message)
+    }
+
     val (emoji, bgColor) = when (eventType) {
         NotificationEventType.ORDER_CREATED -> "\uD83D\uDCE6" to MaterialTheme.colorScheme.primaryContainer
         NotificationEventType.ORDER_CONFIRMED -> "\u2705" to MaterialTheme.colorScheme.primaryContainer
@@ -262,7 +279,8 @@ private fun NotificationIcon(eventType: NotificationEventType) {
         modifier = Modifier
             .size(36.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(bgColor),
+            .background(bgColor)
+            .semantics { contentDescription = eventTypeDescription },
         contentAlignment = Alignment.Center
     ) {
         Text(text = emoji, style = MaterialTheme.typography.bodyMedium)

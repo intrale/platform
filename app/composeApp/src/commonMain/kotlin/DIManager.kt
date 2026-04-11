@@ -181,9 +181,11 @@ import ext.auth.CommTwoFactorSetupService
 import ext.auth.CommTwoFactorVerifyService
 import ext.client.ClientAddressesService
 import ext.client.ClientOrdersService
+import ext.client.ProductAvailabilityService
 import ext.client.ClientProfileService
 import ext.client.CommClientAddressesService
 import ext.client.CommClientOrdersService
+import ext.client.CommProductAvailabilityService
 import ext.client.CommClientProfileService
 import ext.client.CommPaymentMethodsService
 import ext.client.PaymentMethodsService
@@ -514,6 +516,7 @@ private val clientModule = DI.Module("client") {
     bindSingleton<CommClientProfileService> { ClientProfileService(instance(), instance()) }
     bindSingleton<CommClientAddressesService> { ClientAddressesService(instance(), instance()) }
     bindSingleton<CommClientOrdersService> { ClientOrdersService(instance(), instance()) }
+    bindSingleton<CommProductAvailabilityService> { ProductAvailabilityService(instance(), instance()) }
     bindSingleton<CommPaymentMethodsService> { PaymentMethodsService(instance(), instance()) }
 
     bindSingleton<ToDoGetClientProfile> { DoGetClientProfile(instance(), instance(), instance()) }
@@ -522,7 +525,7 @@ private val clientModule = DI.Module("client") {
 
     bindSingleton<ToDoGetClientOrders> { DoGetClientOrders(instance()) }
     bindSingleton<ToDoGetClientOrderDetail> { DoGetClientOrderDetail(instance()) }
-    bindSingleton<ToDoRepeatOrder> { DoRepeatOrder() }
+    bindSingleton<ToDoRepeatOrder> { DoRepeatOrder(instance()) }
     bindSingleton<ToDoGetPaymentMethods> { DoGetPaymentMethods(instance()) }
 
     bindSingleton<ToDoGetNotifications> { DoGetNotifications() }

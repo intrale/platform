@@ -218,6 +218,11 @@ function getPipelineState() {
         entry.hasLog = fs.existsSync(path.join(LOG_DIR, logFile));
         entry.logFile = logFile;
 
+        // PDF de reporte de rechazo disponible?
+        const rejectionPdf = `rejection-${issue}-${skill}.pdf`;
+        entry.hasRejectionPdf = fs.existsSync(path.join(LOG_DIR, rejectionPdf));
+        entry.rejectionPdf = rejectionPdf;
+
         state.issueMatrix[issue].fases[`${pName}/${fase}`].push(entry);
 
         if (estado !== 'procesado') {
@@ -595,7 +600,7 @@ function generateHTML(state) {
   });
 
   // Show all issues, but only first 5 visible by default
-  const ISSUE_VISIBLE_LIMIT = 5;
+  const ISSUE_VISIBLE_LIMIT = 7;
   let rows = '';
   let rowIndex = 0;
   for (const [issueNum, data] of sorted) {
@@ -675,12 +680,22 @@ function generateHTML(state) {
         continue;
       }
 
-      // Detectar skills repetidos para mostrar índice y diferenciar runs anteriores
+      // Fase completada: si TODOS los entries están procesados y aprobados,
+      // colapsar a un indicador compacto en vez de N chips individuales
+      const allProcessed = entries.every(e => e.estado === 'procesado');
+      const allApproved = entries.every(e => !e.resultado || e.resultado === 'aprobado');
+      if (allProcessed && allApproved && !isCurrent) {
+        const skillCount = new Set(entries.map(e => e.skill)).size;
+        cells += `<td class="${pipeline === 'definicion' ? 'col-def' : 'col-dev'}"><span class="phase-done" title="${skillCount} skill(s) completados">✔</span></td>`;
+        continue;
+      }
+
+      // Detectar skills repetidos y colapsar: solo mostrar el último run de cada skill
+      // Los runs anteriores (procesados) son ruido visual — se indican con badge ×N
       const skillRunCount = {};
       for (const e of entries) {
         skillRunCount[e.skill] = (skillRunCount[e.skill] || 0) + 1;
       }
-      // Asignar índice por orden de aparición (más viejo primero)
       const skillRunIndex = {};
       const sortedEntries = [...entries].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
       for (const e of sortedEntries) {
@@ -691,7 +706,10 @@ function generateHTML(state) {
         e._isLatestRun = skillRunIndex[e.skill] === skillRunCount[e.skill];
       }
 
-      const chips = entries.map(e => {
+      // Filtrar: solo el último run de cada skill (colapsar runs anteriores)
+      const visibleEntries = entries.filter(e => e._isLatestRun);
+
+      const chips = visibleEntries.map(e => {
         // Estado rechazado: resultado explícito de rechazo
         const isRejected = e.resultado && e.resultado !== 'aprobado';
 
@@ -704,9 +722,8 @@ function generateHTML(state) {
                      e.estado === 'listo' ? '✓' :
                      e.estado === 'procesado' ? '✔' : '○';
         const staleClass = (e.estado === 'trabajando' && e.ageMin > 30) ? ' stale-chip' : '';
-        // Runs anteriores de un skill repetido se muestran compactos
-        const priorClass = (e._isRetry && !e._isLatestRun) ? ' chip-prior' : '';
-        const runLabel = e._isRetry ? `<sup class="run-idx">${e._runIndex}</sup>` : '';
+        // Badge de reintentos: ×N si hubo más de 1 run
+        const retryBadge = e._isRetry ? `<sup class="retry-badge" title="${e._runTotal} intentos">×${e._runTotal}</sup>` : '';
 
         // ETA por agente activo
         let etaBadge = '';
@@ -727,30 +744,34 @@ function generateHTML(state) {
           }
         }
 
-        // Tooltip content
+        // Tooltip content (atributo title nativo — nunca aparece como texto inline)
         const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
-        const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
+        const ttResStr = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
-        const ttRun = e._isRetry ? `Ejecución: ${e._runIndex}/${e._runTotal}` : '';
-        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEta, ttRes, ttMot].filter(Boolean);
-        const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
+        const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
+        const ttEtaStr = ttEta || '';
+        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
+        const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-        // Prior runs: solo ícono + índice (sin nombre del skill)
         const agentColor = skillColor(e.skill);
-        const chipContent = (e._isRetry && !e._isLatestRun)
-          ? `${icon} ${skillIcon(e.skill)}${runLabel}`
-          : `${icon} ${skillIcon(e.skill)} ${e.skill}${runLabel}${etaBadge}`;
+        const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
 
         // Botón de cancelar para agentes activos (trabajando)
         const killBtn = e.estado === 'trabajando'
           ? `<span class="kill-btn" title="Cancelar agente" onclick="event.preventDefault();event.stopPropagation();killAgent('${issueNum}','${e.skill}','${pipeline}','${fase}')">&times;</span>`
           : '';
 
+        // PDF de rechazo disponible
+        const pdfBtn = e.hasRejectionPdf
+          ? `<a href="/logs/${e.rejectionPdf}" class="rejection-pdf-btn" title="Descargar reporte de rechazo (PDF)" target="_blank" onclick="event.stopPropagation()">📄</a>`
+          : '';
+
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}${priorClass}">${chipContent}${killBtn}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
         if (e.hasLog) {
-          return `<a href="/logs/${e.logFile}" target="_blank" class="log-link">${inner}</a>`;
+          const isLive = e.estado === 'trabajando';
+          return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
         }
         return inner;
       }).join(' ');
@@ -785,14 +806,33 @@ function generateHTML(state) {
     </div>`;
 
   // Skill capacity — versión reducida: solo activos/parciales, idle como resumen
-  // Calcular frecuencia de uso de cada skill en el issue tracker
+  // Calcular frecuencia de uso y últimos issues por skill
   const skillUsageCount = {};
-  for (const [, data] of matrixEntries) {
+  const recentBySkill = {}; // skill → [{ issue, resultado, logFile, hasLog, ts }] (últimos 3)
+  for (const [issue, data] of matrixEntries) {
     for (const [, faseEntries] of Object.entries(data.fases || {})) {
       for (const e of faseEntries) {
         skillUsageCount[e.skill] = (skillUsageCount[e.skill] || 0) + 1;
+        // Recolectar issues completados (listo/procesado) para historial reciente
+        if (e.estado === 'listo' || e.estado === 'procesado') {
+          if (!recentBySkill[e.skill]) recentBySkill[e.skill] = [];
+          recentBySkill[e.skill].push({
+            issue, resultado: e.resultado, logFile: e.logFile,
+            hasLog: e.hasLog, hasRejectionPdf: e.hasRejectionPdf,
+            rejectionPdf: e.rejectionPdf, ts: e.updatedAt || e.startedAt || 0
+          });
+        }
       }
     }
+  }
+  // Ordenar cada skill por timestamp desc y quedarse con los últimos 3
+  for (const sk of Object.keys(recentBySkill)) {
+    // Deduplicar por issue (quedarse con el más reciente)
+    const byIssue = {};
+    for (const r of recentBySkill[sk]) {
+      if (!byIssue[r.issue] || r.ts > byIssue[r.issue].ts) byIssue[r.issue] = r;
+    }
+    recentBySkill[sk] = Object.values(byIssue).sort((a, b) => b.ts - a.ts).slice(0, 3);
   }
   // Ordenar: 1) más agentes activos (running desc), 2) más usados históricamente (usage desc)
   const skillEntries = Object.entries(state.skillLoad)
@@ -801,8 +841,27 @@ function generateHTML(state) {
       if (diff !== 0) return diff;
       return (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0);
     });
+  // Helper: genera mini-historial de los últimos 3 issues para un skill
+  function skillRecentHTML(skill) {
+    const recents = recentBySkill[skill];
+    if (!recents || recents.length === 0) return '';
+    return '<div class="skill-recent">' + recents.map(r => {
+      const icon = r.resultado === 'aprobado' ? '\u2705' : r.resultado === 'rechazado' ? '\u274C' : '\u23F3';
+      const inner = '#' + r.issue;
+      const pdfLink = r.hasRejectionPdf
+        ? ' <a class="skill-recent-pdf" href="/logs/' + r.rejectionPdf + '" target="_blank" title="Reporte de rechazo PDF" onclick="event.stopPropagation()">\u{1F4C4}</a>'
+        : '';
+      if (r.hasLog) {
+        return '<a class="skill-recent-item" href="#" onclick="event.preventDefault();openLogViewer(\'' + r.logFile + '\',\'#' + r.issue + ' ' + skill + '\')" title="' + (r.resultado || 'en curso') + '">' + icon + ' ' + inner + '</a>' + pdfLink;
+      }
+      return '<span class="skill-recent-item" title="' + (r.resultado || 'sin log') + '">' + icon + ' ' + inner + '</span>' + pdfLink;
+    }).join('') + '</div>';
+  }
+
   // Mostrar activos/parciales + llenar con idle hasta MAX_CAP_VISIBLE
-  const MAX_CAP_VISIBLE = 6;
+  // Sin agentes activos ni servicios en Equipo → más espacio para skills
+  const hasActiveAgents = Object.values(state.skillLoad).some(l => l.running > 0);
+  const MAX_CAP_VISIBLE = hasActiveAgents ? 6 : 12;
   let heatmapHTML = '';
   let shownCount = 0;
   const idleSkills = [];
@@ -816,10 +875,13 @@ function generateHTML(state) {
       ? `<span style="color:var(--rd);font-weight:700">${load.running}/${load.max}</span>`
       : `${load.running}/${load.max}`;
     heatmapHTML += `<div class="skill-cap-chip ${cls}" style="--agent-color:${p.color}" title="${skill}: ${load.running}/${load.max}">
-      <span class="skill-cap-icon">${p.icon}</span>
-      <span class="skill-cap-name">${p.name || skill}</span>
-      <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
-      <span class="skill-cap-count">${countLabel}</span>
+      <div class="skill-cap-main">
+        <span class="skill-cap-icon">${p.icon}</span>
+        <span class="skill-cap-name">${p.name || skill}</span>
+        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:${barPct}%"></span></span>
+        <span class="skill-cap-count">${countLabel}</span>
+      </div>
+      ${skillRecentHTML(skill)}
     </div>`;
     shownCount++;
   }
@@ -830,10 +892,13 @@ function generateHTML(state) {
   for (const [skill, load] of shownIdle) {
     const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, color: 'var(--dim2)' };
     heatmapHTML += `<div class="skill-cap-chip load-idle" style="--agent-color:${p.color}" title="${skill}: 0/${load.max}">
-      <span class="skill-cap-icon">${p.icon}</span>
-      <span class="skill-cap-name">${p.name || skill}</span>
-      <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
-      <span class="skill-cap-count">0/${load.max}</span>
+      <div class="skill-cap-main">
+        <span class="skill-cap-icon">${p.icon}</span>
+        <span class="skill-cap-name">${p.name || skill}</span>
+        <span class="skill-cap-bar"><span class="skill-cap-fill" style="width:0%"></span></span>
+        <span class="skill-cap-count">0/${load.max}</span>
+      </div>
+      ${skillRecentHTML(skill)}
     </div>`;
   }
   if (hiddenIdle > 0) {
@@ -936,80 +1001,34 @@ function generateHTML(state) {
       </div>
     </div>
     ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
+    ${fs.existsSync(path.join(PIPELINE, '.paused')) ? '<div class="resource-alert" style="background:rgba(251,188,5,0.12);border-color:rgba(251,188,5,0.4);color:#f0a500;">⏸️ Lanzamientos pausados por el usuario <button class="ctl-btn" style="margin-left:12px;padding:2px 10px;font-size:0.85em;" onclick="pauseAction(\'resume\')">▶ Reanudar</button></div>' : ''}
     ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
-  // QA Environment — cards individuales con botones start/stop
-  const qaLabels = { emulator: '📱' };
-  const qaNames = { emulator: 'Emulador Android' };
-  const allQaUp = Object.values(state.qaEnv).every(v => v);
-  const anyQaUp = Object.values(state.qaEnv).some(v => v);
+  // Emulador Android — integrado como servicio más en svcCardsHTML
   const qaRemoteActive = state.qaRemote && state.qaRemote.active;
-
-  let qaEnvHTML = '';
-
   if (qaRemoteActive) {
-    // Modo remoto activo — mostrar card especial
-    qaEnvHTML = `<div class="svc-card svc-card-ok" style="grid-column: span 3; background: linear-gradient(135deg, #0984e3 0%, #6c5ce7 100%); color: white;">
+    svcCardsHTML += `<div class="svc-card svc-card-ok" style="background: linear-gradient(135deg, #0984e3 0%, #6c5ce7 100%); color: white;">
       <div class="svc-card-header">
-        <span class="svc-card-name">☁️ QA Remoto (Lambda AWS)</span>
+        <span class="svc-card-name">\u2601\uFE0F QA Remoto</span>
         <span class="svc-card-pulse"></span>
       </div>
-      <div class="svc-card-pid" style="color: rgba(255,255,255,0.9);">
-        Rama: ${state.qaRemote.ref || 'N/A'}<br>
-        Desde: ${state.qaRemote.startedAt || 'N/A'}
-      </div>
+      <div class="svc-card-pid" style="color: rgba(255,255,255,0.9);">${state.qaRemote.ref || 'Lambda AWS'}</div>
     </div>`;
   } else {
-    // Modo local — cards individuales
-    const qaGlobalBtn = anyQaUp
-      ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('all','stop')" title="Detener emulador">■</button>`
-      : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('all','start')" title="Levantar emulador">▶</button>`;
-    qaEnvHTML = Object.entries(state.qaEnv).map(([name, alive]) => {
+    Object.entries(state.qaEnv).forEach(([name, alive]) => {
       const statusCls = alive ? 'svc-card-ok' : 'svc-card-dead';
       const btn = alive
-        ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener ${qaNames[name]}">■</button>`
-        : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar ${qaNames[name]}">▶</button>`;
-      return `<div class="svc-card ${statusCls}">
+        ? `<button class="ctl-btn ctl-stop" onclick="qaComponentAction('${name}','stop')" title="Detener Emulador">■</button>`
+        : `<button class="ctl-btn ctl-start" onclick="qaComponentAction('${name}','start')" title="Iniciar Emulador">▶</button>`;
+      svcCardsHTML += `<div class="svc-card ${statusCls}">
         <div class="svc-card-header">
-          ${btn}<span class="svc-card-name">${qaLabels[name] || ''} ${qaNames[name] || name}</span>
+          ${btn}<span class="svc-card-name">\u{1F4F1} Emulador</span>
           ${alive ? '<span class="svc-card-pulse"></span>' : ''}
         </div>
         <div class="svc-card-pid">${alive ? 'activo' : 'detenido'}</div>
       </div>`;
-    }).join('');
+    });
   }
-
-  // Priority Windows (QA + Build)
-  const pwQa = state.priorityWindows.qa;
-  const pwBuild = state.priorityWindows.build;
-  const pwQaElapsed = pwQa.active && pwQa.activatedAt ? Math.round((Date.now() - pwQa.activatedAt) / 60000) : 0;
-  const pwBuildElapsed = pwBuild.active && pwBuild.activatedAt ? Math.round((Date.now() - pwBuild.activatedAt) / 60000) : 0;
-
-  const pwQaStatus = pwQa.active
-    ? `<span class="pw-badge pw-active">ACTIVA${pwQaElapsed > 0 ? ` (${pwQaElapsed}min)` : ''}</span>`
-    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
-  const pwBuildStatus = pwBuild.active
-    ? `<span class="pw-badge pw-active">ACTIVA${pwBuildElapsed > 0 ? ` (${pwBuildElapsed}min)` : ''}</span>`
-    : `<span class="pw-badge pw-inactive">Inactiva</span>`;
-
-  const pwQaBtn = pwQa.active
-    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('qa','off')">■ Desactivar</button>`
-    : `<button class="ctl-btn ctl-start" onclick="pwAction('qa','on')">▶ Activar</button>`;
-  const pwBuildBtn = pwBuild.active
-    ? `<button class="ctl-btn ctl-stop" onclick="pwAction('build','off')">■ Desactivar</button>`
-    : `<button class="ctl-btn ctl-start" onclick="pwAction('build','on')">▶ Activar</button>`;
-
-  const priorityWindowsHTML = `
-    <div class="pw-row">
-      <div class="pw-item">
-        <span class="pw-label">🔍 QA Priority</span> ${pwQaStatus} ${pwQaBtn}
-        <span class="pw-desc">Bloquea dev → prioriza verificación</span>
-      </div>
-      <div class="pw-item">
-        <span class="pw-label">🔨 Build Priority</span> ${pwBuildStatus} ${pwBuildBtn}
-        <span class="pw-desc">Bloquea dev → prioriza builds</span>
-      </div>
-    </div>`;
 
   // Rechazos recientes
   let rechazosHTML = '';
@@ -1029,7 +1048,8 @@ function generateHTML(state) {
     for (const e of entries) {
       if (e.estado === 'trabajando') {
         if (!activeAgents[e.skill]) activeAgents[e.skill] = [];
-        activeAgents[e.skill].push({ issue: issueNum, fase: data.faseActual.split('/')[1], duration: e.durationMs });
+        const [pline, fse] = data.faseActual.split('/');
+        activeAgents[e.skill].push({ issue: issueNum, pipeline: pline, fase: fse, skill: e.skill, duration: e.durationMs });
       }
     }
   }
@@ -1041,6 +1061,7 @@ function generateHTML(state) {
       const issueChips = issues.map(i =>
         `<a href="${GH(i.issue)}" target="_blank" class="agent-issue">#${i.issue} <span class="agent-issue-fase">${i.fase}</span> <span class="agent-issue-dur">${fmtDuration(i.duration)}</span></a>`
       ).join('');
+      const killGroupData = JSON.stringify(issues.map(i => ({ issue: i.issue, skill: i.skill, pipeline: i.pipeline, fase: i.fase }))).replace(/"/g, '&quot;');
       agentTeamCards += `
         <div class="agent-card" style="--agent-color:${p.color}">
           <div class="agent-avatar">${p.icon}</div>
@@ -1048,6 +1069,7 @@ function generateHTML(state) {
             <div class="agent-name">${p.name}</div>
             <div class="agent-issues">${issueChips}</div>
           </div>
+          <span class="kill-group-btn" title="Cancelar todos los agentes ${p.name}" onclick="event.stopPropagation();killSkillGroup('${skill}',${killGroupData})">&times;</span>
           <div class="agent-pulse"></div>
         </div>`;
     }
@@ -1272,15 +1294,12 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .st-processed{color:var(--gn);opacity:0.55}
 .st-pending{color:var(--dim);background:rgba(139,148,158,0.08);border-color:rgba(139,148,158,0.2)}
 .st-rejected{color:var(--rd);background:rgba(248,81,73,0.1);border-color:rgba(248,81,73,0.3);opacity:0.7}
-.chip-prior{
-  font-size:0.72em;padding:2px 6px;opacity:0.5;
-  transform:scale(0.85);transform-origin:center;
+.retry-badge{
+  font-size:0.7em;font-weight:700;color:var(--yl);
+  margin-left:2px;vertical-align:super;line-height:1;
+  opacity:0.85;
 }
-.chip-prior:hover{opacity:0.85}
-.run-idx{
-  font-size:0.7em;font-weight:700;color:var(--ac);
-  margin-left:1px;vertical-align:super;line-height:1;
-}
+.phase-done{color:var(--gn);opacity:0.4;font-size:1.1em;cursor:default}
 .stale-chip{
   color:var(--ac)!important;background:rgba(88,166,255,0.15)!important;
   border-color:rgba(88,166,255,0.5)!important;animation:pulseBlue 1.8s infinite;
@@ -1290,19 +1309,129 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link{text-decoration:none}
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
-/* ── Tooltip ────────────────────────────────────────────────────────────── */
-.chip .tt{
-  display:none;position:absolute;z-index:200;
-  bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
-  background:#000000;border:2px solid var(--ac);border-radius:10px;
-  padding:14px 18px;font-size:0.95em;white-space:nowrap;
-  min-width:220px;color:var(--tx);
-  box-shadow:0 8px 32px rgba(0,0,0,0.9),0 0 0 1px rgba(88,166,255,0.2);
-  pointer-events:none;
+/* ── Log Viewer Panel ──────────────────────────────────────────────────── */
+.log-overlay{
+  display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:500;
+  background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);
 }
-.chip .tt span{display:block;line-height:1.7;color:#c9d1d9;font-size:0.95em}
-.chip .tt span:first-child{color:var(--tx);font-weight:700;font-size:1.05em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
-.chip:hover .tt{display:block}
+.log-overlay.open{display:block}
+.log-panel{
+  position:fixed;top:0;right:0;bottom:0;width:55%;min-width:480px;max-width:900px;
+  background:var(--bg);border-left:2px solid var(--bd);z-index:501;
+  display:flex;flex-direction:column;
+  transform:translateX(100%);transition:transform 0.25s ease-out;
+  box-shadow:-8px 0 32px rgba(0,0,0,0.6);
+}
+.log-overlay.open .log-panel{transform:translateX(0)}
+
+.log-header{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 16px;border-bottom:1px solid var(--bd);
+  background:var(--sf);flex-shrink:0;
+}
+.log-title{font-weight:700;font-size:1.05em;color:var(--tx);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.log-live-badge{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:0.75em;font-weight:700;color:var(--rd);
+  padding:2px 8px;border-radius:10px;
+  background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.3);
+}
+.log-live-dot{
+  width:6px;height:6px;border-radius:50%;background:var(--rd);
+  animation:pulse 1.5s infinite;
+}
+.log-done-badge{
+  font-size:0.75em;font-weight:600;color:var(--dim);
+  padding:2px 8px;border-radius:10px;
+  background:rgba(139,148,158,0.12);border:1px solid rgba(139,148,158,0.25);
+}
+.log-close{
+  background:none;border:1px solid var(--bd);color:var(--dim);
+  width:28px;height:28px;border-radius:6px;cursor:pointer;
+  font-size:1.1em;display:flex;align-items:center;justify-content:center;
+  transition:all 0.15s;
+}
+.log-close:hover{background:var(--rd);color:var(--tx);border-color:var(--rd)}
+.log-open-tab{
+  background:none;border:1px solid var(--bd);color:var(--dim);
+  padding:3px 8px;border-radius:6px;cursor:pointer;
+  font-size:0.78em;transition:all 0.15s;
+}
+.log-open-tab:hover{background:var(--sf2);color:var(--tx)}
+
+.log-toolbar{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 16px;border-bottom:1px solid var(--bd2);
+  background:var(--sf);flex-shrink:0;
+}
+.log-search{
+  flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:5px 10px;color:var(--tx);font-size:0.88em;font-family:inherit;
+  outline:none;
+}
+.log-search:focus{border-color:var(--ac)}
+.log-search::placeholder{color:var(--dim2)}
+.log-filter{
+  background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:5px 8px;color:var(--tx);font-size:0.82em;cursor:pointer;
+}
+.log-match-count{font-size:0.78em;color:var(--dim);white-space:nowrap;min-width:60px;text-align:center}
+.log-btn{
+  background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+  padding:4px 10px;color:var(--dim);font-size:0.82em;cursor:pointer;
+  transition:all 0.15s;white-space:nowrap;
+}
+.log-btn:hover{background:var(--sf2);color:var(--tx)}
+.log-btn.active{background:var(--ac2);color:var(--tx);border-color:var(--ac)}
+
+.log-body{
+  flex:1;overflow-y:auto;overflow-x:hidden;
+  padding:0;font-family:'SF Mono','Cascadia Code','Fira Code',Consolas,monospace;
+  font-size:0.82em;line-height:1.65;
+  scroll-behavior:smooth;
+}
+.log-line{
+  padding:1px 16px;display:flex;gap:8px;
+  border-bottom:1px solid rgba(48,54,61,0.3);
+  transition:background 0.1s;white-space:pre-wrap;word-break:break-all;
+}
+.log-line:hover{background:rgba(88,166,255,0.04)}
+.log-line-num{
+  color:var(--dim2);font-size:0.85em;min-width:40px;text-align:right;
+  user-select:none;flex-shrink:0;padding-top:1px;
+}
+.log-line-text{flex:1;min-width:0}
+.log-line.log-error{color:var(--rd);background:rgba(248,81,73,0.05)}
+.log-line.log-error:hover{background:rgba(248,81,73,0.1)}
+.log-line.log-warning{color:var(--yl)}
+.log-line.log-success{color:var(--gn)}
+.log-line.log-tool{color:var(--ac)}
+.log-line.log-meta{color:var(--dim)}
+.log-line.log-highlight{background:rgba(210,153,34,0.15)!important}
+.log-line.log-highlight-current{background:rgba(210,153,34,0.3)!important}
+.log-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--dim);gap:10px;
+}
+.log-empty-spinner{
+  width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);
+  border-radius:50%;animation:spin 1s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.log-footer{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 16px;border-top:1px solid var(--bd);
+  background:var(--sf);flex-shrink:0;font-size:0.78em;color:var(--dim);
+}
+.log-scroll-btn{
+  background:var(--ac2);color:var(--tx);border:none;border-radius:6px;
+  padding:3px 10px;cursor:pointer;font-size:0.85em;
+  display:none;
+}
+.log-scroll-btn.visible{display:inline-block}
+
+/* Tooltip nativo via atributo title — sin HTML inline en el chip */
 .more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
 .issue-overflow{display:none}
 .issue-overflow.show{display:table-row}
@@ -1361,17 +1490,20 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .ctl-start{background:var(--gn2);color:var(--gn)}
 .ctl-stop{background:var(--rd2);color:var(--rd)}
 .ctl-wide{padding:4px 12px;font-size:0.78em;margin-top:8px;display:inline-block}
-/* Priority Windows (compact for Sistema panel) */
-.pw-row{display:flex;gap:8px;flex-wrap:wrap}
-.pw-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 10px;background:var(--sf2);border-radius:var(--radius-sm);border:1px solid var(--bd2);flex:1;min-width:180px}
-.pw-label{font-weight:600;font-size:0.82em;white-space:nowrap}
-.pw-badge{font-size:0.7em;padding:2px 6px;border-radius:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
-.pw-active{background:var(--yl2);color:var(--yl);border:1px solid var(--yl)}
-.pw-inactive{background:var(--bd2);color:var(--dim);border:1px solid var(--bd)}
-.pw-desc{display:none}
+/* Priority Windows (inline toggles in Equipo header) */
+.pw-toggles{margin-left:auto;display:inline-flex;gap:6px;font-size:0.65em;vertical-align:middle}
+.pw-toggle{padding:2px 10px;border-radius:12px;cursor:pointer;font-weight:600;letter-spacing:0.3px;transition:all 0.2s;border:1px solid var(--bd);user-select:none}
+.pw-toggle-active{background:var(--yl2);color:var(--yl);border-color:var(--yl);animation:pwPulse 2.5s ease-in-out infinite}
+.pw-toggle-inactive{background:var(--sf2);color:var(--dim);border-color:var(--bd)}
+.pw-toggle-inactive:hover{background:var(--bd2);color:var(--fg)}
+.pw-toggle.pw-build.pw-toggle-active{background:var(--ac2);color:var(--ac);border-color:var(--ac)}
+@keyframes pwPulse{0%,100%{opacity:1}50%{opacity:0.65}}
 /* Kill agent button */
 .kill-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;opacity:0.6;transition:opacity 0.15s,background 0.15s;line-height:1;vertical-align:middle}
 .kill-btn:hover{opacity:1;background:var(--rd);color:#fff}
+.kill-group-btn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--rd2);color:var(--rd);font-size:14px;font-weight:700;cursor:pointer;opacity:0;transition:opacity 0.2s,background 0.15s;line-height:1;flex-shrink:0;margin-left:auto}
+.agent-card:hover .kill-group-btn{opacity:0.6}
+.kill-group-btn:hover{opacity:1!important;background:var(--rd);color:#fff}
 /* ETA badges */
 .eta-badge{font-size:0.7em;padding:1px 5px;border-radius:8px;background:var(--ac2);color:var(--ac);margin-left:4px;font-weight:600;white-space:nowrap}
 .eta-over{background:var(--or2);color:var(--or)}
@@ -1492,13 +1624,14 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 /* ── Skill Capacity Chips (inline compact) ──────────────────────────────── */
 .skill-cap-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .skill-cap-chip{
-  display:inline-flex;align-items:center;gap:6px;
+  display:inline-flex;flex-direction:column;gap:3px;
   background:var(--bg);border:1px solid var(--bd2);border-radius:var(--radius-sm);
-  padding:5px 10px;border-left:3px solid var(--agent-color,var(--dim2));
-  transition:box-shadow 0.2s;
+  padding:6px 10px;border-left:3px solid var(--agent-color,var(--dim2));
+  transition:box-shadow 0.2s;min-width:110px;
 }
 .skill-cap-chip:hover{box-shadow:0 0 6px rgba(88,166,255,0.08)}
 .load-full.skill-cap-chip{border-left-color:var(--rd)}
+.skill-cap-main{display:flex;align-items:center;gap:6px}
 .skill-cap-icon{font-size:1em;line-height:1}
 .skill-cap-name{font-size:0.78em;font-weight:600;color:var(--tx);white-space:nowrap}
 .skill-cap-bar{width:32px;height:4px;background:var(--bd);border-radius:2px;overflow:hidden;display:inline-block}
@@ -1509,6 +1642,13 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .load-idle.skill-cap-chip{opacity:0.5;border-left-color:var(--dim2)}
 .load-idle .skill-cap-name{color:var(--dim)}
 .skill-idle-summary{font-size:0.75em;color:var(--dim);font-style:italic;padding:4px 8px}
+.skill-recent{display:flex;gap:4px;flex-wrap:wrap}
+.skill-recent-item{font-size:0.65em;color:var(--dim);text-decoration:none;cursor:pointer;padding:1px 4px;border-radius:4px;background:var(--sf2);white-space:nowrap;transition:background 0.15s}
+a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
+.skill-recent-pdf{font-size:0.65em;text-decoration:none;cursor:pointer;opacity:0.7;transition:opacity 0.15s}
+.skill-recent-pdf:hover{opacity:1}
+.rejection-pdf-btn{text-decoration:none;font-size:0.7em;margin-left:2px;opacity:0.7;transition:opacity 0.15s;cursor:pointer}
+.rejection-pdf-btn:hover{opacity:1}
 
 /* ── DORA Mini ─────────────────────────────────────────────────────────── */
 .dora-mini{
@@ -1548,9 +1688,12 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 <body>
   <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
     <h1 style="margin:0">🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
-    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap">
+    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap;align-items:center">
       <span>📊 Dashboard: <b style="color:var(--tx)">${dashboardBuild}</b></span>
       <span>🐙 Pulpo: <b style="color:var(--tx)">${pulpoBuild}</b></span>
+      ${fs.existsSync(path.join(PIPELINE, '.paused'))
+        ? '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:#f0a500;color:#000;border-radius:6px;" onclick="pauseAction(\'resume\')" title="Pipeline pausado — click para reanudar">▶ Reanudar</button>'
+        : '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:rgba(251,188,5,0.18);color:#f0a500;border:1px solid rgba(251,188,5,0.4);border-radius:6px;" onclick="pauseAction(\'pause\')" title="Pausar lanzamientos del pipeline">⏸ Pausar</button>'}
     </div>
   </div>
 
@@ -1592,25 +1735,45 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 
   <div class="dual-row">
     <div class="bar-section dual-col">
-      <h2>🧠 Equipo</h2>
+      <h2>🧠 Equipo<span class="pw-toggles">${(() => {
+        const pw = state.priorityWindows;
+        const items = [
+          { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
+          { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
+        ];
+        // Leer umbral configurado
+        let threshold = 3;
+        try {
+          const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
+          threshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+        } catch {}
+        const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
+        return items.map(i => {
+          const s = pw[i.key];
+          const active = s && s.active;
+          const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
+          const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
+          let tip = active
+            ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
+            : 'Activar ' + i.label + ' Priority (umbral auto: ' + threshold + ' issues)';
+          if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
+          const action = active ? 'off' : 'on';
+          const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
+          return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
+        }).join('');
+      })()}</span></h2>
       ${agentTeamCards ? '<div class="subsection-label">En trabajo ahora</div><div class="agent-grid">' + agentTeamCards + '</div>' : ''}
       ${heatmapHTML ? '<div class="subsection-label">' + (agentTeamCards ? 'Capacidad' : 'Equipo disponible') + '</div><div class="skill-cap-row">' + heatmapHTML + '</div>' : '<span class="empty-label">Sin skills configurados</span>'}
-      <div class="subsection-label">Servicios</div>
-      <div class="svc-grid">${svcCardsHTML}</div>
     </div>
     <div class="bar-section dual-col">
       <h2>💻 Sistema</h2>
       ${resourcesHTML}
-      <div class="subsection-label" style="margin-top:14px">QA Environment${qaRemoteActive ? ' ☁️ REMOTO' : (anyQaUp ? '' : '')}</div>
-      <div class="svc-grid">${qaEnvHTML}</div>
-      <div class="subsection-label">Priority Windows</div>
-      ${priorityWindowsHTML}
+      <div class="subsection-label" style="margin-top:14px">Servicios</div>
+      <div class="svc-grid">${svcCardsHTML}</div>
     </div>
   </div>
 
   ${matrixHTML}
-
-  ${doraMinHTML}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
@@ -1618,12 +1781,43 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 
   <div class="footer">🔴 Live · Auto-refresh 10s &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
+<!-- Log Viewer Panel -->
+<div id="log-overlay" class="log-overlay" onclick="if(event.target===this)closeLogViewer()">
+  <div class="log-panel">
+    <div class="log-header">
+      <span id="log-title" class="log-title"></span>
+      <span id="log-status-badge"></span>
+      <button class="log-open-tab" onclick="openLogInTab()" title="Abrir en nueva pestaña">↗ Tab</button>
+      <button class="log-close" onclick="closeLogViewer()" title="Cerrar (Esc)">✕</button>
+    </div>
+    <div class="log-toolbar">
+      <input type="text" id="log-search" class="log-search" placeholder="Buscar en el log…" oninput="filterLog()" onkeydown="if(event.key==='Enter')jumpToMatch(event.shiftKey?-1:1)">
+      <span id="log-match-count" class="log-match-count"></span>
+      <select id="log-filter" class="log-filter" onchange="filterLog()">
+        <option value="all">Todo</option>
+        <option value="error">❌ Errores</option>
+        <option value="warning">⚠ Warnings</option>
+        <option value="tool">🔧 Tools</option>
+        <option value="success">✓ Éxitos</option>
+      </select>
+      <button id="log-pause-btn" class="log-btn" onclick="togglePause()">⏸ Pause</button>
+    </div>
+    <div id="log-body" class="log-body"></div>
+    <div class="log-footer">
+      <span id="log-line-count"></span>
+      <span id="log-last-update"></span>
+      <button id="log-scroll-btn" class="log-scroll-btn" onclick="scrollLogToBottom()">⬇ Ir al final</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // SSE live refresh — solo recarga si el estado cambió
 let lastHash = null;
 const es = new EventSource('/events');
 es.onmessage = e => {
-  if (lastHash && e.data !== lastHash) location.reload();
+  // No recargar si el log viewer está abierto (perdería el panel)
+  if (lastHash && e.data !== lastHash && !document.getElementById('log-overlay').classList.contains('open')) location.reload();
   lastHash = e.data;
 };
 es.onerror = () => { setTimeout(() => location.reload(), 10000); };
@@ -1683,6 +1877,22 @@ async function ctlAction(target, action) {
   btns.forEach(b => b.classList.remove('loading'));
 }
 
+// Pause/resume pipeline
+async function pauseAction(action) {
+  try {
+    const resp = await fetch('/api/pause', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
+}
+
 // QA component action (individual or all)
 async function qaComponentAction(component, action) {
   const btn = event && event.target ? event.target : null;
@@ -1720,6 +1930,25 @@ async function killAgent(issue, skill, pipeline, fase) {
   } catch (e) {
     showToast('Error: ' + e.message, false);
   }
+}
+
+// Kill all agents of a skill group
+async function killSkillGroup(skill, agents) {
+  if (!confirm('¿Cancelar todos los agentes ' + skill + ' (' + agents.length + ' activos)?')) return;
+  let ok = 0, fail = 0;
+  for (const a of agents) {
+    try {
+      const resp = await fetch('/api/kill-agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase })
+      });
+      const result = await resp.json();
+      if (result.ok) ok++; else fail++;
+    } catch { fail++; }
+  }
+  showToast(skill + ': ' + ok + ' cancelados' + (fail > 0 ? ', ' + fail + ' fallaron' : ''), fail === 0);
+  setTimeout(() => location.reload(), 1500);
 }
 
 // Priority Window toggle
@@ -1773,6 +2002,216 @@ document.querySelectorAll('.fase-badge[data-fase-tt]').forEach(el => {
   });
   el.addEventListener('mousemove', positionTt);
   el.addEventListener('mouseleave', () => { tt.style.display = 'none'; });
+});
+
+// ── Log Viewer ────────────────────────────────────────────────────────
+let logViewerES = null;
+let logViewerFile = null;
+let logViewerPaused = false;
+let logAllLines = [];
+let logMatchIndices = [];
+let logCurrentMatch = -1;
+let logAutoScroll = true;
+
+function classifyLine(text) {
+  if (/error|exception|fail|❌|CRASH|panic/i.test(text)) return 'log-error';
+  if (/warn|⚠|WARNING/i.test(text)) return 'log-warning';
+  if (/\[Tool:|tool_use|Edit\]|Read\]|Write\]|Bash\]|Grep\]|Glob\]/i.test(text)) return 'log-tool';
+  if (/✓|passed|success|✔|completed|APROBADO/i.test(text)) return 'log-success';
+  if (/^---\s|^\[.*\]\s*$|^=+$/.test(text)) return 'log-meta';
+  return '';
+}
+
+function renderLine(text, idx) {
+  const cls = classifyLine(text);
+  const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return '<div class="log-line ' + cls + '" data-idx="' + idx + '"><span class="log-line-num">' + (idx + 1) + '</span><span class="log-line-text">' + escaped + '</span></div>';
+}
+
+function openLogViewer(filename, title, isLive) {
+  logViewerFile = filename;
+  logAllLines = [];
+  logMatchIndices = [];
+  logCurrentMatch = -1;
+  logAutoScroll = true;
+  logViewerPaused = false;
+
+  document.getElementById('log-title').textContent = title;
+  document.getElementById('log-status-badge').innerHTML = isLive
+    ? '<span class="log-live-badge"><span class="log-live-dot"></span> LIVE</span>'
+    : '<span class="log-done-badge">Finalizado</span>';
+  document.getElementById('log-body').innerHTML = '<div class="log-empty"><div class="log-empty-spinner"></div>Cargando log…</div>';
+  document.getElementById('log-search').value = '';
+  document.getElementById('log-match-count').textContent = '';
+  document.getElementById('log-filter').value = 'all';
+  document.getElementById('log-pause-btn').textContent = '⏸ Pause';
+  document.getElementById('log-pause-btn').classList.toggle('active', false);
+  document.getElementById('log-pause-btn').style.display = isLive ? '' : 'none';
+  document.getElementById('log-line-count').textContent = '';
+  document.getElementById('log-scroll-btn').classList.remove('visible');
+  document.getElementById('log-overlay').classList.add('open');
+
+  // Close SSE if open
+  if (logViewerES) { logViewerES.close(); logViewerES = null; }
+
+  // Open SSE stream
+  logViewerES = new EventSource('/logs/stream/' + encodeURIComponent(filename));
+  logViewerES.onmessage = function(e) {
+    if (logViewerPaused) return;
+    try {
+      const msg = JSON.parse(e.data);
+      const body = document.getElementById('log-body');
+      if (msg.type === 'init') {
+        logAllLines = msg.lines;
+        body.innerHTML = msg.lines.map((l, i) => renderLine(l, i)).join('');
+        scrollLogToBottom();
+      } else if (msg.type === 'append') {
+        const startIdx = logAllLines.length;
+        logAllLines.push(...msg.lines);
+        const html = msg.lines.map((l, i) => renderLine(l, startIdx + i)).join('');
+        body.insertAdjacentHTML('beforeend', html);
+        if (logAutoScroll) scrollLogToBottom();
+      }
+      updateLogFooter();
+      // Re-apply filter/search if active
+      const searchVal = document.getElementById('log-search').value;
+      const filterVal = document.getElementById('log-filter').value;
+      if (searchVal || filterVal !== 'all') applyFilterVisual();
+    } catch(_) {}
+  };
+  logViewerES.onerror = function() {
+    // Connection lost — show in status
+    const badge = document.getElementById('log-status-badge');
+    if (badge) badge.innerHTML = '<span class="log-done-badge">Desconectado</span>';
+  };
+
+  // Track scroll for auto-scroll toggle
+  const body = document.getElementById('log-body');
+  body.onscroll = function() {
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+    logAutoScroll = atBottom;
+    document.getElementById('log-scroll-btn').classList.toggle('visible', !atBottom);
+  };
+}
+
+function closeLogViewer() {
+  document.getElementById('log-overlay').classList.remove('open');
+  if (logViewerES) { logViewerES.close(); logViewerES = null; }
+}
+
+function openLogInTab() {
+  if (logViewerFile) window.open('/logs/' + logViewerFile, '_blank');
+}
+
+function scrollLogToBottom() {
+  const body = document.getElementById('log-body');
+  body.scrollTop = body.scrollHeight;
+  logAutoScroll = true;
+  document.getElementById('log-scroll-btn').classList.remove('visible');
+}
+
+function togglePause() {
+  logViewerPaused = !logViewerPaused;
+  const btn = document.getElementById('log-pause-btn');
+  btn.textContent = logViewerPaused ? '▶ Resume' : '⏸ Pause';
+  btn.classList.toggle('active', logViewerPaused);
+}
+
+function updateLogFooter() {
+  document.getElementById('log-line-count').textContent = logAllLines.length + ' líneas';
+  document.getElementById('log-last-update').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
+}
+
+function filterLog() {
+  applyFilterVisual();
+}
+
+function applyFilterVisual() {
+  const searchVal = document.getElementById('log-search').value.toLowerCase();
+  const filterVal = document.getElementById('log-filter').value;
+  const body = document.getElementById('log-body');
+  const lines = body.querySelectorAll('.log-line');
+  logMatchIndices = [];
+
+  lines.forEach((el, i) => {
+    const text = logAllLines[i] || '';
+    const textLower = text.toLowerCase();
+    let visible = true;
+
+    // Category filter
+    if (filterVal !== 'all') {
+      const cls = classifyLine(text);
+      const filterMap = { error: 'log-error', warning: 'log-warning', tool: 'log-tool', success: 'log-success' };
+      if (cls !== filterMap[filterVal]) visible = false;
+    }
+
+    // Search filter
+    if (searchVal && visible) {
+      if (textLower.includes(searchVal)) {
+        logMatchIndices.push(i);
+        el.classList.add('log-highlight');
+      } else {
+        el.classList.remove('log-highlight');
+        visible = false;
+      }
+    } else {
+      el.classList.remove('log-highlight');
+    }
+
+    el.style.display = visible ? '' : 'none';
+    el.classList.remove('log-highlight-current');
+  });
+
+  // Update match count
+  const countEl = document.getElementById('log-match-count');
+  if (searchVal && logMatchIndices.length > 0) {
+    logCurrentMatch = 0;
+    highlightCurrentMatch();
+    countEl.textContent = logMatchIndices.length + ' coincidencias';
+  } else if (searchVal) {
+    countEl.textContent = '0 coincidencias';
+    logCurrentMatch = -1;
+  } else {
+    countEl.textContent = filterVal !== 'all' ? logMatchIndices.length + ' filtradas' : '';
+    // When only filter, show matching lines without search
+    if (filterVal !== 'all' && !searchVal) {
+      lines.forEach((el, i) => {
+        const text = logAllLines[i] || '';
+        const cls = classifyLine(text);
+        const filterMap = { error: 'log-error', warning: 'log-warning', tool: 'log-tool', success: 'log-success' };
+        el.style.display = cls === filterMap[filterVal] ? '' : 'none';
+      });
+    }
+  }
+}
+
+function highlightCurrentMatch() {
+  if (logCurrentMatch < 0 || logMatchIndices.length === 0) return;
+  const body = document.getElementById('log-body');
+  body.querySelectorAll('.log-highlight-current').forEach(el => el.classList.remove('log-highlight-current'));
+  const idx = logMatchIndices[logCurrentMatch];
+  const target = body.querySelector('.log-line[data-idx="' + idx + '"]');
+  if (target) {
+    target.classList.add('log-highlight-current');
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  document.getElementById('log-match-count').textContent = (logCurrentMatch + 1) + '/' + logMatchIndices.length;
+}
+
+function jumpToMatch(direction) {
+  if (logMatchIndices.length === 0) return;
+  logCurrentMatch = (logCurrentMatch + direction + logMatchIndices.length) % logMatchIndices.length;
+  highlightCurrentMatch();
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('log-overlay').classList.contains('open')) return;
+  if (e.key === 'Escape') { closeLogViewer(); e.preventDefault(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    document.getElementById('log-search').focus();
+  }
 });
 </script>
 </body></html>`;
@@ -2334,16 +2773,65 @@ ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>P
 // --- Server ---
 
 const server = http.createServer((req, res) => {
-  // Servir logs como archivos estáticos
-  if (req.url.startsWith('/logs/')) {
+  // Servir logs y PDFs como archivos estáticos
+  if (req.url.startsWith('/logs/') && !req.url.startsWith('/logs/stream/')) {
     const filename = path.basename(req.url.slice(6)).replace(/[^a-zA-Z0-9\-\.]/g, '');
     const logPath = path.join(LOG_DIR, filename);
     if (fs.existsSync(logPath)) {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(fs.readFileSync(logPath, 'utf8'));
+      const isPdf = filename.endsWith('.pdf');
+      const contentType = isPdf ? 'application/pdf' : 'text/plain; charset=utf-8';
+      const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache' };
+      if (isPdf) headers['Content-Disposition'] = `inline; filename="${filename}"`;
+      res.writeHead(200, headers);
+      res.end(fs.readFileSync(logPath));
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
     }
+    return;
+  }
+
+  // SSE log streaming — tail -f style
+  if (req.url.startsWith('/logs/stream/')) {
+    const filename = path.basename(req.url.slice(13)).replace(/[^a-zA-Z0-9\-\.]/g, '');
+    const logPath = path.join(LOG_DIR, filename);
+    if (!fs.existsSync(logPath)) {
+      res.writeHead(404); res.end('Log no encontrado');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+
+    // Send initial content (last 1000 lines)
+    const content = fs.readFileSync(logPath, 'utf8');
+    const lines = content.split('\n');
+    const initialLines = lines.slice(-1000);
+    res.write(`data: ${JSON.stringify({ type: 'init', lines: initialLines })}\n\n`);
+
+    // Watch for changes
+    let lastSize = fs.statSync(logPath).size;
+    const interval = setInterval(() => {
+      try {
+        if (!fs.existsSync(logPath)) return;
+        const stat = fs.statSync(logPath);
+        if (stat.size > lastSize) {
+          const fd = fs.openSync(logPath, 'r');
+          const buf = Buffer.alloc(stat.size - lastSize);
+          fs.readSync(fd, buf, 0, buf.length, lastSize);
+          fs.closeSync(fd);
+          const newLines = buf.toString('utf8').split('\n').filter(l => l.length > 0);
+          if (newLines.length > 0) {
+            res.write(`data: ${JSON.stringify({ type: 'append', lines: newLines })}\n\n`);
+          }
+          lastSize = stat.size;
+        }
+      } catch {}
+    }, 800);
+
+    req.on('close', () => clearInterval(interval));
     return;
   }
 
@@ -2383,6 +2871,36 @@ const server = http.createServer((req, res) => {
         log(`Action: ${action} ${target} → ${result.ok ? '✓' : '✗'} ${result.msg}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: pause/resume pipeline
+  if (req.url === '/api/pause' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { action } = JSON.parse(body);
+        const pauseFile = path.join(PIPELINE, '.paused');
+        if (action === 'resume' || action === 'remove') {
+          try { fs.unlinkSync(pauseFile); } catch {}
+          log(`Pausa eliminada por dashboard (${action})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
+        } else if (action === 'pause') {
+          fs.writeFileSync(pauseFile, new Date().toISOString());
+          log('Pipeline pausado desde dashboard');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline pausado — solo Telegram activo' }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Acción "${action}" no válida` }));
+        }
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
@@ -2468,11 +2986,20 @@ const server = http.createServer((req, res) => {
 
         // Escribir manualOverride para que el Pulpo lo consuma en su próximo ciclo
         // También actualizar active/manual inmediatamente para que el dashboard refleje el cambio
+        // Ventanas autoexcluyentes: si activamos una, desactivamos la otra
         current[win].manualOverride = (action === 'on');
         if (action === 'on') {
           current[win].active = true;
           current[win].manual = true;
           current[win].activatedAt = Date.now();
+          // Autoexclusión: desactivar la otra ventana
+          const other = win === 'qa' ? 'build' : 'qa';
+          if (current[other] && current[other].active) {
+            current[other].manualOverride = false;
+            current[other].active = false;
+            current[other].manual = false;
+            current[other].activatedAt = null;
+          }
         } else {
           current[win].active = false;
           current[win].manual = false;
