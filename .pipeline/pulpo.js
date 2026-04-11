@@ -1149,9 +1149,9 @@ function tryFreeResources(mode = 'soft') {
 }
 
 /**
- * Apagar el emulador QA si no hay nada en fase verificacion/trabajando.
- * El emulador consume ~2.5GB de RAM y ensureQaEnvironment() lo re-levanta cuando hace falta.
- * Retorna true si mató el emulador.
+ * Solicitar apagado del emulador QA si no hay nada en fase verificacion/trabajando.
+ * Delega al servicio-emulador via cola (no ejecuta directamente).
+ * Retorna true si encoló el pedido de stop.
  */
 function shutdownIdleEmulator(config) {
   try {
@@ -1187,30 +1187,9 @@ function shutdownIdleEmulator(config) {
 
     if (!emulatorRunning) return false;
 
-    // Apagar QA environment completo (emulador + backend local + DynamoDB)
-    log('recursos', '🔌 Apagando QA environment idle (emulador + servicios) para liberar ~2.5GB RAM');
-    try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" stop`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-      });
-    } catch (e) {
-      log('recursos', `Error apagando QA env vía script: ${e.message}`);
-    }
-
-    // Fallback: si QEMU sigue vivo después del stop, matarlo directo por nombre
-    try {
-      const check = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
-        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
-      if (check.includes('qemu-system')) {
-        execSync('taskkill /IM qemu-system-x86_64-headless.exe /F /T',
-          { timeout: 10000, windowsHide: true, stdio: 'ignore' });
-        log('recursos', '🔌 QEMU matado por nombre (fallback — state file había perdido el PID)');
-      }
-    } catch (e) {
-      log('recursos', `Error matando QEMU por nombre: ${e.message}`);
-    }
-    // Reset circuit breaker para que pueda re-levantarse después
-    qaEnvStartFailures = 0;
+    // Encolar stop al servicio-emulador (no ejecutar directo)
+    log('recursos', '🔌 Encolando stop de emulador idle para liberar ~2.5GB RAM');
+    requestEmulator('stop', 'pulpo-idle', null, 'Cola de verificación vacía, sin agentes QA activos');
     return true;
   } catch (e) {
     log('recursos', `Error verificando emulador idle: ${e.message}`);
@@ -1864,8 +1843,9 @@ function brazoLanzamiento(config) {
         if (preflightResult.result === 'apk_missing') {
           reboteVerificacionABuild(issue, pipelineName, preflightResult);
         } else if (preflightResult.result === 'waiting:emulator') {
-          // Señalizar que hay issues esperando emulador — evaluateQaPriority() se encarga
-          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (ventana QA)`);
+          // Encolar start del emulador al servicio-emulador
+          requestEmulator('start', 'pulpo-preflight', issue, 'QA_MODE=android, emulador necesario para verificación');
+          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (encolado start al servicio-emulador)`);
         } else {
           // blocked:infra — mantener en cola, reintentar en próximo ciclo
           log('lanzamiento', `🚫 #${issue}: pre-flight → ${preflightResult.result}: ${preflightResult.reason}`);
@@ -2405,84 +2385,22 @@ function logPreflight(issue, checks, result, startMs) {
   } catch {}
 }
 
-/** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
-let lastQaEnvCheck = 0;
-const QA_ENV_CHECK_INTERVAL = 5 * 60 * 1000; // Re-verificar cada 5 minutos (no una sola vez)
-let qaEnvStartFailures = 0;
-const QA_ENV_MAX_FAILURES = 3; // Circuit breaker: después de 3 fallos, dejar de intentar
-
-function ensureQaEnvironment(config) {
-  const now = Date.now();
-
-  // Cooldown entre verificaciones: no bombardear cada tick del loop
-  if (now - lastQaEnvCheck < QA_ENV_CHECK_INTERVAL) return;
-  lastQaEnvCheck = now;
-
-  // Circuit breaker: si falló muchas veces, no seguir intentando
-  if (qaEnvStartFailures >= QA_ENV_MAX_FAILURES) {
-    log('qa-env', `Circuit breaker activo (${qaEnvStartFailures} fallos). No se reintenta levantar QA env.`);
-    return;
-  }
-
-  // GATE DE RECURSOS: QA env usa umbrales más bajos que agentes porque levanta 3 servicios pesados
-  const limits = config.resource_limits || {};
-  const maxCpu = limits.qa_env_max_cpu_percent || 60;
-  const maxMem = limits.qa_env_max_mem_percent || 60;
-
-  const { cpuPercent, memPercent } = getSystemResourceUsage();
-  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
-    log('qa-env', `Sistema saturado para QA env (CPU: ${cpuPercent}% >= ${maxCpu}% | RAM: ${memPercent}% >= ${maxMem}%). Intentando liberar recursos...`);
-
-    // Intentar limpiar zombies/daemons para destrabar
-    const { freed } = tryFreeResources();
-
-    if (freed) {
-      // Re-chequear después de la limpieza
-      const after = getSystemResourceUsage();
-      if (after.cpuPercent >= maxCpu || after.memPercent >= maxMem) {
-        log('qa-env', `Post-limpieza: aún saturado (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Posponiendo QA environment.`);
-        return;
-      }
-      log('qa-env', `Post-limpieza: recursos liberados (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Continuando con QA environment.`);
-    } else {
-      log('qa-env', `No se encontraron recursos para liberar. Posponiendo QA environment.`);
-      return;
-    }
-  }
-
-  const stateFile = path.join(PIPELINE, 'qa-env-state.json');
-  let needsStart = false;
-
+/**
+ * Encolar un pedido de start/stop del emulador al servicio-emulador.
+ * El servicio procesa la cola con coalescencia last-write-wins.
+ * Diseño: docs/pipeline/diseno-servicio-emulador.md
+ */
+function requestEmulator(action, requester, issue, reason) {
+  const ts = Date.now();
+  const msg = { action, requester, issue: issue || null, reason: reason || '', timestamp: Math.floor(ts / 1000) };
+  const svcDir = path.join(PIPELINE, 'servicios', 'emulador', 'pendiente');
   try {
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    // Verificar si todos los servicios están vivos
-    for (const [name, pid] of Object.entries(state)) {
-      if (!pid || !isProcessAlive(pid)) {
-        log('qa-env', `${name} no está corriendo (PID: ${pid || 'null'})`);
-        needsStart = true;
-        break;
-      }
-    }
-  } catch {
-    needsStart = true;
-  }
-
-  if (needsStart) {
-    log('qa-env', 'Levantando QA environment automáticamente...');
-    try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" start`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('qa-env', 'QA environment levantado OK');
-      qaEnvStartFailures = 0; // Reset circuit breaker en éxito
-      sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
-    } catch (e) {
-      qaEnvStartFailures++;
-      log('qa-env', `Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ${e.message}`);
-      sendTelegram(`⚠️ Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ` + e.message.slice(0, 100));
-    }
-  } else {
-    log('qa-env', 'QA environment OK — ya corriendo');
+    fs.mkdirSync(svcDir, { recursive: true });
+    const file = path.join(svcDir, `${ts}-${Math.random().toString(36).slice(2, 6)}.json`);
+    fs.writeFileSync(file, JSON.stringify(msg, null, 2));
+    log('qa-env', `Encolado ${action} emulador (requester: ${requester}, issue: #${issue || '-'})`);
+  } catch (e) {
+    log('qa-env', `Error encolando ${action} emulador: ${e.message}`);
   }
 }
 
