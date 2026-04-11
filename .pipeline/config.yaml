@@ -16,7 +16,7 @@ pipelines:
     skills_por_fase:
       validacion: [po, ux, guru]
       dev: [backend-dev, android-dev, web-dev]  # Uno solo por historia, según labels
-      build: [build]                             # Script puro, no Claude
+      build: [build]                             # Agente Claude (haiku) — gradlew check
       verificacion: [tester, security, qa]
       aprobacion: [review, po, ux]
       entrega: [delivery]
