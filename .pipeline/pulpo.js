@@ -1653,6 +1653,12 @@ function brazoLanzamiento(config) {
     const issue = issueFromFile(archivo.name);
     const key = processKey(skill, issue);
 
+    // 0. Defensa contra archivos evaporados — el procesamiento previo de otro candidate
+    //    del mismo issue (p.ej. rebote por APK faltante que archiva todos los hermanos
+    //    de verificacion/pendiente/ en el primer match) pudo haber movido este archivo.
+    //    Sin este check el siguiente iteration explota al intentar moverlo.
+    if (!fs.existsSync(archivo.path)) continue;
+
     // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
     const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
     if (issueAlreadyWorking) continue;
@@ -1710,46 +1716,106 @@ function brazoLanzamiento(config) {
       preflightResult = preflightQaChecks(issue);
       if (!preflightResult.ok) {
         if (preflightResult.result === 'apk_missing') {
-          // Re-encolar SOLO el build de este issue — NO mover el archivo de verificación.
-          // El archivo de verificación (qa/security/tester) debe permanecer en
-          // verificacion/pendiente/ para que se ejecute cuando el APK esté disponible.
-          // Si lo moviéramos a build/pendiente/, quedaría huérfano porque el builder
-          // solo procesa archivos con skill "build" (#2125).
+          // APK faltante: la verificación se RECHAZA y el issue vuelve a la fase build.
+          // Patrón genérico de rebote (mismo que usa el brazo 1 para rechazos de producto,
+          // pero dirigido a build en vez de dev porque la dependencia rota es infra de build).
+          //
+          // 1) Marcar todos los archivos de verificacion/pendiente/<issue>.* como rechazados
+          //    y moverlos a verificacion/procesado/ — salen de la cola y dejan de contar para
+          //    countPendingVerificacion(), permitiendo que la ventana QA se auto-cierre si
+          //    era el último pendiente (pulpo.js:898).
+          // 2) Encolar <issue>.build en build/pendiente/ con motivo explícito y rebote_numero
+          //    para que el circuit breaker proteja contra loops verificacion↔build.
+          // 3) Cuando el build termine y el brazo 1 lo promueva a verificacion/pendiente/,
+          //    se crearán archivos frescos por skill — no hace falta preservar nada.
           try {
+            const verPendDir = path.join(fasePath(pipelineName, 'verificacion'), 'pendiente');
+            const verProcDir = path.join(fasePath(pipelineName, 'verificacion'), 'procesado');
             const buildPendDir = path.join(fasePath(pipelineName, 'build'), 'pendiente');
             const buildTrabDir = path.join(fasePath(pipelineName, 'build'), 'trabajando');
             const buildListoDir = path.join(fasePath(pipelineName, 'build'), 'listo');
             const buildProcDir = path.join(fasePath(pipelineName, 'build'), 'procesado');
             const buildFileName = `${issue}.build`;
 
-            // ¿Ya hay un build en vuelo o encolado para este issue? Si sí, no hacer nada.
+            // Recolectar TODOS los archivos del issue en verificacion/pendiente/
+            const archivosVerificacion = listWorkFiles(verPendDir).filter(f => issueFromFile(f.name) === issue);
+
+            // Calcular rebote_numero: máximo entre archivos actuales y builds previos del issue
+            let reboteCount = 0;
+            for (const f of archivosVerificacion) {
+              const data = readYaml(f.path);
+              if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
+            }
+            for (const estado of ['pendiente', 'trabajando', 'listo', 'procesado']) {
+              const prevBuild = path.join(fasePath(pipelineName, 'build'), estado, buildFileName);
+              if (fs.existsSync(prevBuild)) {
+                const data = readYaml(prevBuild);
+                if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
+              }
+            }
+
+            const MAX_REBOTES_APK = 3;
+            if (reboteCount >= MAX_REBOTES_APK) {
+              log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Archivando a procesado.`);
+              sendTelegram(`⛔ #${issue} atascado — ${reboteCount} rebotes por APK faltante entre verificacion y build. Requiere intervención manual.`);
+              for (const f of archivosVerificacion) {
+                try { moveFile(f.path, verProcDir); } catch {}
+              }
+              continue;
+            }
+
+            // 1. Marcar rechazados y archivar a procesado/
+            const motivoRechazo = `APK faltante: ${preflightResult.reason || 'preflight QA no encontró APK del build'}`;
+            for (const f of archivosVerificacion) {
+              try {
+                const data = readYaml(f.path);
+                writeYaml(f.path, {
+                  ...data,
+                  resultado: 'rechazado',
+                  motivo: motivoRechazo,
+                  rechazado_en_fase: 'verificacion',
+                  rechazado_por: 'preflight-apk',
+                  rebote_a: 'build',
+                  rebote_numero: reboteCount + 1,
+                  rechazado_ts: new Date().toISOString(),
+                });
+                moveFile(f.path, verProcDir);
+              } catch (moverErr) {
+                log('lanzamiento', `⚠️ #${issue}: no se pudo archivar ${f.name}: ${moverErr.message}`);
+              }
+            }
+
+            // 2. Encolar build (idempotente — si ya hay uno en vuelo/encolado, no duplicar)
             const yaEncolado =
               fs.existsSync(path.join(buildPendDir, buildFileName)) ||
               fs.existsSync(path.join(buildTrabDir, buildFileName)) ||
               fs.existsSync(path.join(buildListoDir, buildFileName));
 
             if (!yaEncolado) {
-              // Si existe un build procesado anterior, moverlo de vuelta a pendiente
-              // (reaprovecha el rebote_numero si existe). Si no, crear uno nuevo.
+              const payload = {
+                issue: parseInt(issue),
+                fase: 'build',
+                pipeline: pipelineName,
+                motivo: 'APK faltante detectado por preflight QA',
+                rebote: true,
+                rebote_numero: reboteCount + 1,
+                rechazado_en_fase: 'verificacion',
+              };
               const procFile = path.join(buildProcDir, buildFileName);
               if (fs.existsSync(procFile)) {
+                writeYaml(procFile, payload);
                 moveFile(procFile, buildPendDir);
-                log('lanzamiento', `⏪ #${issue}: APK faltante — build re-encolado desde procesado`);
+                log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build re-encolado desde procesado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
               } else {
-                writeYaml(path.join(buildPendDir, buildFileName), {
-                  issue: parseInt(issue),
-                  fase: 'build',
-                  pipeline: pipelineName,
-                  motivo: 'APK faltante detectado por preflight QA',
-                });
-                log('lanzamiento', `⏪ #${issue}: APK faltante — nuevo build encolado`);
+                writeYaml(path.join(buildPendDir, buildFileName), payload);
+                log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build nuevo encolado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
               }
-              ghCommentOnIssue(issue, `⏪ QA requiere APK para este issue. Re-encolado al builder automáticamente.`);
+              ghCommentOnIssue(issue, `⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK.`);
             } else {
-              log('lanzamiento', `⏸️ #${issue}: APK faltante — build ya en curso/encolado, esperando`);
+              log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build ya en curso/encolado`);
             }
           } catch (reencolarErr) {
-            log('lanzamiento', `⚠️ #${issue}: no se pudo re-encolar build — ${reencolarErr.message}`);
+            log('lanzamiento', `⚠️ #${issue}: no se pudo rebotar verificación→build — ${reencolarErr.message}`);
           }
         } else if (preflightResult.result === 'waiting:emulator') {
           // Señalizar que hay issues esperando emulador — evaluateQaPriority() se encarga
@@ -2354,6 +2420,27 @@ function ensureQaEnvironment(config) {
 }
 
 function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
+  // INVARIANTE CRÍTICO: el skill debe pertenecer a skills_por_fase[fase] de este pipeline.
+  // Ningún agente puede correr en una fase que no es la suya, ni siquiera por excepción
+  // (incidentes previos: project_apk-builder-responsibility, project_build-bypass-agent).
+  // Si esto falla, el archivo se devuelve a pendiente/ y se alerta — NO se lanza.
+  try {
+    const skillsValidos = ((config.pipelines || {})[pipeline] || {}).skills_por_fase || {};
+    const permitidos = skillsValidos[fase] || [];
+    if (!permitidos.includes(skill)) {
+      log('lanzamiento', `⛔ INVARIANTE: skill "${skill}" no pertenece a fase "${fase}" (permitidos: ${permitidos.join(', ') || '∅'}). Archivo: ${path.basename(trabajandoPath)}`);
+      sendTelegram(`⛔ Pipeline bloqueó lanzamiento de ${skill}:#${issue} en fase "${fase}" — skill no autorizado para esa fase. Revisar inmediatamente.`);
+      try {
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        moveFile(trabajandoPath, pendienteDir);
+      } catch {}
+      return;
+    }
+  } catch (invErr) {
+    log('lanzamiento', `⚠️ No se pudo validar invariante skill∈fase para ${skill}:#${issue}: ${invErr.message}`);
+    return;
+  }
+
   const basePrompt = path.join(PIPELINE, 'roles', '_base.md');
   const rolPrompt = path.join(PIPELINE, 'roles', `${skill}.md`);
 
