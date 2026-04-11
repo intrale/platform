@@ -1743,6 +1743,7 @@ function brazoLanzamiento(config) {
       if (preflightResult && preflightResult.qaMode) {
         extraEnv.QA_MODE = preflightResult.qaMode;
         extraEnv.QA_ISSUE = String(issue);
+        extraEnv.QA_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev';
         if (preflightResult.flavors && preflightResult.flavors.length > 0) {
           extraEnv.QA_FLAVOR = preflightResult.flavors[0];
         }
