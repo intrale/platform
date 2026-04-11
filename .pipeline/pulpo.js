@@ -1884,6 +1884,9 @@ const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
 const BACKEND_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale';
 const WARMUP_RETRIES = 3;       // Intentos totales (1 warm-up + 2 retries)
 const WARMUP_WAIT_MS = 5000;    // Espera entre intentos (5 segundos)
+// Deduplicación de notificaciones blocked:infra — evita spam en Telegram
+const _lastBlockedNotif = {};   // { issueNumber: timestampMs }
+const BLOCKED_NOTIF_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutos entre notificaciones del mismo issue
 
 /**
  * Hace un request al backend con warm-up automático.
@@ -1892,11 +1895,13 @@ const WARMUP_WAIT_MS = 5000;    // Espera entre intentos (5 segundos)
  */
 function checkBackendWithWarmup(issue) {
   const backendUrl = `${BACKEND_BASE_URL}/signin`;
+  // NUL en Windows, /dev/null en Unix — execSync usa cmd.exe en Windows
+  const devNull = process.platform === 'win32' ? 'NUL' : '/dev/null';
 
   for (let attempt = 1; attempt <= WARMUP_RETRIES; attempt++) {
     try {
       const curlResult = execSync(
-        `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+        `curl -s -o ${devNull} -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
         { encoding: 'utf8', timeout: 25000, windowsHide: true }
       ).trim();
       const httpCode = parseInt(curlResult, 10);
@@ -1923,6 +1928,20 @@ function checkBackendWithWarmup(issue) {
   }
 
   return { ok: false, httpCode: null, error: `No respondió tras ${WARMUP_RETRIES} intentos (cold start persistente)` };
+}
+
+/**
+ * Envía notificación de blocked:infra con deduplicación (máximo 1 cada 5 min por issue).
+ */
+function sendBlockedInfraNotif(issue, message) {
+  const now = Date.now();
+  const lastSent = _lastBlockedNotif[issue] || 0;
+  if (now - lastSent < BLOCKED_NOTIF_COOLDOWN_MS) {
+    log('preflight', `#${issue}: blocked:infra notificación suprimida (cooldown ${Math.round((BLOCKED_NOTIF_COOLDOWN_MS - (now - lastSent)) / 1000)}s restantes)`);
+    return;
+  }
+  _lastBlockedNotif[issue] = now;
+  sendTelegram(message);
 }
 
 /**
@@ -2059,7 +2078,7 @@ function preflightQaChecks(issue) {
 
       if (!warmup.ok) {
         logPreflight(issue, checks, 'blocked:infra', startMs);
-        sendTelegram(`⚠️ Pre-flight QA-API #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
         return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors: [], requiresEmulator: false, qaMode };
       }
 
@@ -2068,7 +2087,7 @@ function preflightQaChecks(issue) {
       checks.dynamodb = dynamoCheck.checks;
       if (!dynamoCheck.ok) {
         logPreflight(issue, checks, 'blocked:infra', startMs);
-        sendTelegram(`⚠️ Pre-flight QA-API #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
         return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors: [], requiresEmulator: false, qaMode };
       }
       log('preflight', `#${issue}: check DynamoDB remoto OK`);
@@ -2133,7 +2152,7 @@ function preflightQaChecks(issue) {
     checks.backend = `error:${warmupAndroid.error}`;
     log('preflight', `#${issue}: check 3 FAIL — ${warmupAndroid.error} → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
-    sendTelegram(`⚠️ Pre-flight QA #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
     return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
@@ -2142,7 +2161,7 @@ function preflightQaChecks(issue) {
   checks.dynamodb = dynamoCheckAndroid.checks;
   if (!dynamoCheckAndroid.ok) {
     logPreflight(issue, checks, 'blocked:infra', startMs);
-    sendTelegram(`⚠️ Pre-flight QA #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
     return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors, requiresEmulator: true, qaMode: 'android' };
   }
   log('preflight', `#${issue}: check DynamoDB remoto OK`);
@@ -2196,7 +2215,7 @@ function preflightQaChecks(issue) {
     checks.emulator = 'screenrecord-fail';
     log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona despues de ${maxRetries} intentos → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
-    sendTelegram(`⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
     return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
