@@ -1710,15 +1710,46 @@ function brazoLanzamiento(config) {
       preflightResult = preflightQaChecks(issue);
       if (!preflightResult.ok) {
         if (preflightResult.result === 'apk_missing') {
-          // Mover de verificacion/pendiente → build/pendiente — NO penalizar circuit breaker
-          log('lanzamiento', `⏪ #${issue}: APK faltante, moviendo de verificación a cola de build`);
+          // Re-encolar SOLO el build de este issue — NO mover el archivo de verificación.
+          // El archivo de verificación (qa/security/tester) debe permanecer en
+          // verificacion/pendiente/ para que se ejecute cuando el APK esté disponible.
+          // Si lo moviéramos a build/pendiente/, quedaría huérfano porque el builder
+          // solo procesa archivos con skill "build" (#2125).
           try {
             const buildPendDir = path.join(fasePath(pipelineName, 'build'), 'pendiente');
-            moveFile(archivo.path, buildPendDir);
-            ghCommentOnIssue(issue, `⏪ QA requiere APK para este issue. Devuelto al builder automáticamente.`);
-            log('lanzamiento', `✅ #${issue}: movido a build/pendiente OK`);
-          } catch (moveErr) {
-            log('lanzamiento', `⚠️ #${issue}: no se pudo mover a build — ${moveErr.message}`);
+            const buildTrabDir = path.join(fasePath(pipelineName, 'build'), 'trabajando');
+            const buildListoDir = path.join(fasePath(pipelineName, 'build'), 'listo');
+            const buildProcDir = path.join(fasePath(pipelineName, 'build'), 'procesado');
+            const buildFileName = `${issue}.build`;
+
+            // ¿Ya hay un build en vuelo o encolado para este issue? Si sí, no hacer nada.
+            const yaEncolado =
+              fs.existsSync(path.join(buildPendDir, buildFileName)) ||
+              fs.existsSync(path.join(buildTrabDir, buildFileName)) ||
+              fs.existsSync(path.join(buildListoDir, buildFileName));
+
+            if (!yaEncolado) {
+              // Si existe un build procesado anterior, moverlo de vuelta a pendiente
+              // (reaprovecha el rebote_numero si existe). Si no, crear uno nuevo.
+              const procFile = path.join(buildProcDir, buildFileName);
+              if (fs.existsSync(procFile)) {
+                moveFile(procFile, buildPendDir);
+                log('lanzamiento', `⏪ #${issue}: APK faltante — build re-encolado desde procesado`);
+              } else {
+                writeYaml(path.join(buildPendDir, buildFileName), {
+                  issue: parseInt(issue),
+                  fase: 'build',
+                  pipeline: pipelineName,
+                  motivo: 'APK faltante detectado por preflight QA',
+                });
+                log('lanzamiento', `⏪ #${issue}: APK faltante — nuevo build encolado`);
+              }
+              ghCommentOnIssue(issue, `⏪ QA requiere APK para este issue. Re-encolado al builder automáticamente.`);
+            } else {
+              log('lanzamiento', `⏸️ #${issue}: APK faltante — build ya en curso/encolado, esperando`);
+            }
+          } catch (reencolarErr) {
+            log('lanzamiento', `⚠️ #${issue}: no se pudo re-encolar build — ${reencolarErr.message}`);
           }
         } else if (preflightResult.result === 'waiting:emulator') {
           // Señalizar que hay issues esperando emulador — evaluateQaPriority() se encarga
