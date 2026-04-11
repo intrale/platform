@@ -1737,21 +1737,17 @@ function brazoLanzamiento(config) {
     try {
       const trabajandoPath = moveFile(archivo.path, trabajandoDir);
 
-      // Lanzar agente
-      if (fase === 'build') {
-        lanzarBuild(issue, trabajandoPath, pipelineName, config);
-      } else {
-        // Capa 3: pasar qaMode al agente QA via extraEnv
-        const extraEnv = {};
-        if (preflightResult && preflightResult.qaMode) {
-          extraEnv.QA_MODE = preflightResult.qaMode;
-          extraEnv.QA_ISSUE = String(issue);
-          if (preflightResult.flavors && preflightResult.flavors.length > 0) {
-            extraEnv.QA_FLAVOR = preflightResult.flavors[0];
-          }
+      // Lanzar agente (todas las fases, incluyendo build)
+      // Capa 3: pasar qaMode al agente QA via extraEnv
+      const extraEnv = {};
+      if (preflightResult && preflightResult.qaMode) {
+        extraEnv.QA_MODE = preflightResult.qaMode;
+        extraEnv.QA_ISSUE = String(issue);
+        if (preflightResult.flavors && preflightResult.flavors.length > 0) {
+          extraEnv.QA_FLAVOR = preflightResult.flavors[0];
         }
-        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       }
+      lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       anyLaunched = true;
     } catch (e) {
       log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
@@ -1780,11 +1776,7 @@ function brazoLanzamiento(config) {
           }
         }
         const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-        if (fase === 'build') {
-          lanzarBuild(issue, trabajandoPath, pipelineName, config);
-        } else {
-          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
-        }
+        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -2244,6 +2236,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
+  const useExistingWorktree = (fase === 'build');
   let worktreePath = ROOT;
   let worktreeBranch = null;
 
@@ -2264,6 +2257,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       moveFile(trabajandoPath, pendienteDir);
       return;
     }
+  } else if (useExistingWorktree) {
+    // Build: buscar el worktree existente del issue (creado en fase dev)
+    try {
+      const worktreePattern = `platform.agent-${issue}-`;
+      const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+      for (const line of worktrees.split('\n')) {
+        if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
+          worktreePath = line.replace('worktree ', '').trim();
+          break;
+        }
+      }
+      if (worktreePath !== ROOT) {
+        log('lanzamiento', `Build #${issue}: usando worktree existente ${worktreePath}`);
+      } else {
+        log('lanzamiento', `Build #${issue}: no se encontró worktree, usando ROOT`);
+      }
+    } catch (e) {
+      log('lanzamiento', `Build #${issue}: error buscando worktree (${e.message}), usando ROOT`);
+    }
   }
 
   const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
@@ -2280,7 +2292,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
 
   const child = spawn(spawnCmd, spawnArgs, {
-    cwd: needsWorktree ? worktreePath : ROOT,
+    cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
     detached: false,
     shell: false,
@@ -2297,7 +2309,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     trabajandoPath,
     pipeline,
     fase,
-    worktreePath: needsWorktree ? worktreePath : null
+    worktreePath: (needsWorktree || useExistingWorktree) ? worktreePath : null
   });
 
   // Crear canal de contexto para el agente (auto-join)
@@ -2335,7 +2347,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
       // Matar Gradle daemons incluso en fast-fail
-      killGradleDaemonsForCwd(needsWorktree ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
+      killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
       // Salir del canal de contexto
       if (contextChannelId) {
         try {
@@ -2421,7 +2433,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // Matar Gradle daemons del worktree para liberar RAM (cada daemon usa hasta 4GB)
     // Delay de 10s para evitar race condition: si el barrido ya lanzó un build en este
     // worktree, el guard dentro de killGradleDaemonsForCwd lo protegerá.
-    const cleanupCwd = needsWorktree ? worktreePath : ROOT;
+    const cleanupCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
     const cleanupLabel = `${skill}:#${issue}`;
     setTimeout(() => killGradleDaemonsForCwd(cleanupCwd, cleanupLabel), 10000);
 
@@ -2440,128 +2452,6 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   // stdout/stderr redirigidos al archivo de log via stdio fd
-}
-
-function lanzarBuild(issue, trabajandoPath, pipeline, config) {
-  log('lanzamiento', `BUILD #${issue} — ejecutando gradlew check`);
-
-  // Buscar el worktree del issue
-  const worktreePattern = `platform.agent-${issue}-`;
-  let buildCwd = ROOT;
-
-  try {
-    const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
-    for (const line of worktrees.split('\n')) {
-      if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
-        buildCwd = line.replace('worktree ', '').trim();
-        break;
-      }
-    }
-  } catch { /* usar ROOT */ }
-
-  // Antes de compilar, mergear origin/main para tener los últimos hotfixes
-  if (buildCwd !== ROOT) {
-    try {
-      execSync('git fetch origin main && git merge origin/main --no-edit', {
-        cwd: buildCwd, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('build', `#${issue} worktree actualizado con origin/main`);
-    } catch (e) {
-      log('build', `#${issue} merge main falló (puede haber conflictos): ${e.message.slice(0, 200)}`);
-    }
-  }
-
-  // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
-  const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  // Validar que JAVA_HOME tenga un java.exe válido; si no, usar Temurin 21
-  // IMPORTANTE: solo chequear existencia del directorio no alcanza — IntelliJ JBR puede existir
-  // pero no ser un JDK válido (sin bin/java.exe). Hay que validar el binario.
-  const envJavaHome = process.env.JAVA_HOME;
-  const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
-  const isValidJavaHome = envJavaHome && fs.existsSync(path.join(envJavaHome, 'bin', javaExe));
-  const javaHome = (isValidJavaHome ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
-  const cwdUnix = buildCwd.replace(/\\/g, '/');
-
-  // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
-  const gitUsrBin = 'C:/Program Files/Git/usr/bin';
-  const buildEnv = {
-    ...process.env,
-    JAVA_HOME: javaHome,
-    PATH: `${gitUsrBin}${path.delimiter}${process.env.PATH || ''}`
-  };
-
-  const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
-
-  // Excluir WasmJs test compilation (causa OOM) y targets iOS (no aplican en CI local)
-  // Mismo criterio que .github/workflows/pr-checks.yml
-  const excludeTasks = [
-    '-x compileTestDevelopmentExecutableKotlinWasmJs',
-    '-x compileTestKotlinIosX64',
-    '-x compileKotlinIosSimulatorArm64',
-    '-x compileTestKotlinIosSimulatorArm64',
-  ].join(' ');
-  buildEnv.GRADLE_OPTS = '-Xmx3g -Dfile.encoding=UTF-8';
-
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon ${excludeTasks}`], {
-    cwd: buildCwd,
-    env: buildEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
-    windowsHide: true
-  });
-
-  child.unref();
-
-  // Timeout: matar el build si excede 30 minutos
-  const buildTimer = setTimeout(() => {
-    log('build', `#${issue} TIMEOUT — build excedió ${BUILD_TIMEOUT_MS / 60000} minutos, matando proceso`);
-    try { child.kill('SIGTERM'); } catch {}
-  }, BUILD_TIMEOUT_MS);
-
-  const buildStartTime = Date.now();
-  activeProcesses.set(processKey('build', issue), {
-    pid: child.pid,
-    startTime: buildStartTime,
-    trabajandoPath,
-    worktreePath: buildCwd,
-    pipeline,
-    fase: 'build'
-  });
-
-  let output = '';
-  child.stdout.on('data', (d) => { output += d; });
-  child.stderr.on('data', (d) => { output += d; });
-
-  child.on('exit', (code) => {
-    clearTimeout(buildTimer);
-    const durationMin = ((Date.now() - buildStartTime) / 60000).toFixed(1);
-    const logFile = path.join(LOG_DIR, `build-${issue}.log`);
-    fs.writeFileSync(logFile, output);
-
-    const data = readYaml(trabajandoPath);
-    if (code === 0) {
-      data.resultado = 'aprobado';
-    } else {
-      data.resultado = 'rechazado';
-      // Extraer últimas líneas relevantes del log
-      const lines = output.split('\n');
-      const errorLines = lines.filter(l => /error|FAILED|failure/i.test(l)).slice(0, 5);
-      data.motivo = `Build falló (exit ${code}). ${errorLines.join(' | ')}. Log: .pipeline/logs/build-${issue}.log`;
-    }
-    writeYaml(trabajandoPath, data);
-
-    const listoDir = path.join(fasePath(pipeline, 'build'), 'listo');
-    try {
-      moveFile(trabajandoPath, listoDir);
-      log('build', `#${issue} build ${code === 0 ? '✓' : '✗'} (${durationMin}min) → listo/`);
-    } catch (e) {
-      log('build', `Error moviendo build result #${issue}: ${e.message}`);
-    }
-    activeProcesses.delete(processKey('build', issue));
-
-    // Matar Gradle daemons del build para liberar RAM
-    killGradleDaemonsForCwd(buildCwd, `build:#${issue}`);
-  });
 }
 
 // =============================================================================
