@@ -114,6 +114,64 @@ check_endpoint \
     "searchBusinesses sin body → 200" \
     "POST" "/intrale/searchBusinesses" "{}" "200"
 
+# ── 6. DynamoDB remoto (verificar que no hay overrides locales) ───────────────
+section "DynamoDB remoto"
+
+# 6a. Verificar que no hay env vars apuntando a DynamoDB local
+if [ -n "${DYNAMODB_ENDPOINT:-}" ]; then
+    case "$DYNAMODB_ENDPOINT" in
+        *localhost*|*127.0.0.1*|*0.0.0.0*)
+            fail "DYNAMODB_ENDPOINT apunta a local: $DYNAMODB_ENDPOINT (debe ser remoto o no estar seteado)"
+            ;;
+        *)
+            pass "DYNAMODB_ENDPOINT remoto: $DYNAMODB_ENDPOINT"
+            ;;
+    esac
+else
+    pass "DYNAMODB_ENDPOINT no seteado (usa AWS remoto por defecto)"
+fi
+
+# 6b. Verificar que LOCAL_MODE no está activo
+if [ "${LOCAL_MODE:-}" = "true" ]; then
+    fail "LOCAL_MODE=true activo — DynamoDB/Cognito apuntarían a localhost"
+else
+    pass "LOCAL_MODE no activo (modo remoto)"
+fi
+
+# 6c. Verificar que .env.qa no tiene overrides locales
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ENV_QA_FILE="$PROJECT_ROOT/.env.qa"
+if [ -f "$ENV_QA_FILE" ]; then
+    if grep -q 'DYNAMODB_ENDPOINT=.*localhost\|DYNAMODB_ENDPOINT=.*127\.0\.0\.1' "$ENV_QA_FILE" 2>/dev/null; then
+        fail ".env.qa contiene DYNAMODB_ENDPOINT local — QA usaría DynamoDB en localhost"
+    elif grep -q 'LOCAL_MODE=true' "$ENV_QA_FILE" 2>/dev/null; then
+        fail ".env.qa contiene LOCAL_MODE=true — backend usaría servicios locales"
+    else
+        pass ".env.qa sin overrides locales"
+    fi
+else
+    pass ".env.qa no existe (sin overrides)"
+fi
+
+# 6d. Verificar que searchBusinesses devuelve datos reales de DynamoDB
+CHECKS=$((CHECKS + 1))
+SEARCH_RESPONSE=$(curl \
+    --silent \
+    --max-time "$HC_TIMEOUT" \
+    --request POST \
+    --header 'Content-Type: application/json' \
+    --data-raw '{}' \
+    -- "${BASE_URL}/intrale/searchBusinesses" 2>/dev/null || echo "")
+
+if echo "$SEARCH_RESPONSE" | grep -q '"businesses":\[.\+\]'; then
+    pass "DynamoDB devuelve datos reales (searchBusinesses con resultados)"
+elif echo "$SEARCH_RESPONSE" | grep -q '"businesses":\[\]'; then
+    fail "DynamoDB vacío — searchBusinesses devuelve lista vacía (¿apunta a DB local sin datos?)"
+else
+    fail "DynamoDB no responde correctamente — searchBusinesses sin campo 'businesses'"
+fi
+
 # ── Resumen ───────────────────────────────────────────────────────────────────
 echo ""
 echo "======================================="

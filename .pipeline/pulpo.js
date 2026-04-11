@@ -1887,6 +1887,80 @@ const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
  *   qaMode: 'android' | 'api' | 'structural' (Capa 3)
  *   ok=false → no lanzar, result indica la acción a tomar
  */
+// --- Check DynamoDB remoto: verifica que no hay overrides locales ---
+function checkDynamoDbRemote(issue) {
+  const checks = {};
+  let ok = true;
+
+  // 1. Verificar env vars que apuntan a DynamoDB local
+  const dynamoEndpoint = process.env.DYNAMODB_ENDPOINT || '';
+  if (dynamoEndpoint && /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(dynamoEndpoint)) {
+    checks.dynamodb_env = `local:${dynamoEndpoint}`;
+    log('preflight', `#${issue}: FAIL — DYNAMODB_ENDPOINT apunta a local: ${dynamoEndpoint}`);
+    ok = false;
+  } else {
+    checks.dynamodb_env = dynamoEndpoint ? `remote:${dynamoEndpoint}` : 'not-set:aws-default';
+  }
+
+  // 2. Verificar LOCAL_MODE
+  if ((process.env.LOCAL_MODE || '').toLowerCase() === 'true') {
+    checks.local_mode = 'true';
+    log('preflight', `#${issue}: FAIL — LOCAL_MODE=true activo, DynamoDB/Cognito apuntarían a localhost`);
+    ok = false;
+  } else {
+    checks.local_mode = 'off';
+  }
+
+  // 3. Verificar .env.qa no tiene overrides locales
+  const envQaPath = path.join(ROOT, '.env.qa');
+  if (fs.existsSync(envQaPath)) {
+    try {
+      const envContent = fs.readFileSync(envQaPath, 'utf8');
+      if (/DYNAMODB_ENDPOINT=.*localhost|DYNAMODB_ENDPOINT=.*127\.0\.0\.1/.test(envContent)) {
+        checks.env_qa = 'dynamodb-local';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene DYNAMODB_ENDPOINT local`);
+        ok = false;
+      } else if (/LOCAL_MODE=true/.test(envContent)) {
+        checks.env_qa = 'local-mode-true';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene LOCAL_MODE=true`);
+        ok = false;
+      } else {
+        checks.env_qa = 'ok';
+      }
+    } catch (e) {
+      checks.env_qa = `read-error:${e.message.slice(0, 40)}`;
+    }
+  } else {
+    checks.env_qa = 'not-exists';
+  }
+
+  // 4. Verificar que searchBusinesses devuelve datos reales (DynamoDB remoto con data)
+  try {
+    const searchUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/searchBusinesses';
+    const result = execSync(
+      `curl -s -X POST "${searchUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    ).trim();
+    if (result.includes('"businesses":[') && !result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'ok:has-data';
+      log('preflight', `#${issue}: DynamoDB remoto OK — searchBusinesses devuelve datos reales`);
+    } else if (result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'empty';
+      log('preflight', `#${issue}: WARN — DynamoDB remoto vacío (searchBusinesses sin resultados)`);
+      // No bloquear por datos vacíos, solo advertir
+    } else {
+      checks.dynamodb_data = `unexpected:${result.slice(0, 60)}`;
+      log('preflight', `#${issue}: WARN — DynamoDB respuesta inesperada: ${result.slice(0, 60)}`);
+    }
+  } catch (e) {
+    checks.dynamodb_data = `error:${e.message.slice(0, 60)}`;
+    log('preflight', `#${issue}: FAIL — DynamoDB check falló: ${e.message.slice(0, 60)}`);
+    ok = false;
+  }
+
+  return { ok, checks };
+}
+
 function preflightQaChecks(issue) {
   const startMs = Date.now();
   const checks = {};
@@ -1954,6 +2028,16 @@ function preflightQaChecks(issue) {
         sendTelegram(`⚠️ Pre-flight QA-API #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
         return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors: [], requiresEmulator: false, qaMode };
       }
+
+      // Check DynamoDB remoto (no overrides locales)
+      const dynamoCheck = checkDynamoDbRemote(issue);
+      checks.dynamodb = dynamoCheck.checks;
+      if (!dynamoCheck.ok) {
+        logPreflight(issue, checks, 'blocked:infra', startMs);
+        sendTelegram(`⚠️ Pre-flight QA-API #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+        return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors: [], requiresEmulator: false, qaMode };
+      }
+      log('preflight', `#${issue}: check DynamoDB remoto OK`);
 
       // Capa 3: Verificar/generar test cases para QA-API
       const testCasesFile = path.join(ROOT, 'qa', 'test-cases', `${issue}.json`);
@@ -2035,6 +2119,16 @@ function preflightQaChecks(issue) {
     sendTelegram(`⚠️ Pre-flight QA #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
     return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
   }
+
+  // --- Check 3b: DynamoDB remoto (no overrides locales) ---
+  const dynamoCheckAndroid = checkDynamoDbRemote(issue);
+  checks.dynamodb = dynamoCheckAndroid.checks;
+  if (!dynamoCheckAndroid.ok) {
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendTelegram(`⚠️ Pre-flight QA #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+    return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+  log('preflight', `#${issue}: check DynamoDB remoto OK`);
 
   // --- Check 4: Emulador disponible via ADB + test de screenrecord (Blindaje 2) ---
   let emulatorReady = false;
