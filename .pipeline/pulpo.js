@@ -1880,6 +1880,51 @@ function autoClassifyIssue(issueNum) {
 const QA_ARTIFACTS_DIR = path.join(ROOT, 'qa', 'artifacts');
 const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
 
+// --- Warm-up + retry para backend Lambda (evita falsos blocked:infra por cold start) ---
+const BACKEND_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale';
+const WARMUP_RETRIES = 3;       // Intentos totales (1 warm-up + 2 retries)
+const WARMUP_WAIT_MS = 5000;    // Espera entre intentos (5 segundos)
+
+/**
+ * Hace un request al backend con warm-up automático.
+ * Si el primer intento falla por timeout/error, espera y reintenta.
+ * Retorna { ok: boolean, httpCode: number|null, error: string|null }
+ */
+function checkBackendWithWarmup(issue) {
+  const backendUrl = `${BACKEND_BASE_URL}/signin`;
+
+  for (let attempt = 1; attempt <= WARMUP_RETRIES; attempt++) {
+    try {
+      const curlResult = execSync(
+        `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+        { encoding: 'utf8', timeout: 25000, windowsHide: true }
+      ).trim();
+      const httpCode = parseInt(curlResult, 10);
+
+      if (httpCode >= 400 && httpCode < 500) {
+        if (attempt > 1) {
+          log('preflight', `#${issue}: backend respondió OK en intento ${attempt}/${WARMUP_RETRIES} (cold start resuelto)`);
+        }
+        return { ok: true, httpCode, error: null };
+      }
+
+      // Respuesta inesperada (5xx, etc) — reintentar
+      log('preflight', `#${issue}: backend HTTP ${httpCode} en intento ${attempt}/${WARMUP_RETRIES} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s...` : 'agotados reintentos'}`);
+    } catch (e) {
+      log('preflight', `#${issue}: backend timeout/error en intento ${attempt}/${WARMUP_RETRIES}: ${e.message.slice(0, 60)} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s (probable cold start)...` : 'agotados reintentos'}`);
+    }
+
+    // Esperar antes del siguiente intento (excepto en el último)
+    // Usamos Atomics.wait como sleep sincrónico portable (funciona en Windows sin shell hacks)
+    if (attempt < WARMUP_RETRIES) {
+      const sharedBuf = new SharedArrayBuffer(4);
+      Atomics.wait(new Int32Array(sharedBuf), 0, 0, WARMUP_WAIT_MS);
+    }
+  }
+
+  return { ok: false, httpCode: null, error: `No respondió tras ${WARMUP_RETRIES} intentos (cold start persistente)` };
+}
+
 /**
  * Pre-flight checks para agentes QA (Capa 2 + Capa 3 ruteo).
  * Retorna { ok, result, reason, flavors, requiresEmulator, qaMode }
@@ -1935,11 +1980,12 @@ function checkDynamoDbRemote(issue) {
   }
 
   // 4. Verificar que searchBusinesses devuelve datos reales (DynamoDB remoto con data)
+  // Timeouts más generosos para tolerar cold start (el warm-up de signin puede no calentar esta ruta)
   try {
-    const searchUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/searchBusinesses';
+    const searchUrl = `${BACKEND_BASE_URL}/searchBusinesses`;
     const result = execSync(
-      `curl -s -X POST "${searchUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
-      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+      `curl -s -X POST "${searchUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+      { encoding: 'utf8', timeout: 25000, windowsHide: true }
     ).trim();
     if (result.includes('"businesses":[') && !result.includes('"businesses":[]')) {
       checks.dynamodb_data = 'ok:has-data';
@@ -2001,31 +2047,19 @@ function preflightQaChecks(issue) {
   // Si no requiere emulador, verificar backend para QA-API antes de aprobar
   if (!requiresEmulator) {
     if (qaMode === 'api') {
-      // QA-API necesita backend vivo — ejecutar check 3
-      let backendOk = false;
-      try {
-        const backendUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin';
-        const curlResult = execSync(
-          `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
-          { encoding: 'utf8', timeout: 15000, windowsHide: true }
-        ).trim();
-        const httpCode = parseInt(curlResult, 10);
-        if (httpCode >= 400 && httpCode < 500) {
-          backendOk = true;
-          checks.backend = `ok:${httpCode}`;
-          log('preflight', `#${issue}: check 3 (QA-API) OK — backend responde HTTP ${httpCode}`);
-        } else {
-          checks.backend = `error:${httpCode}`;
-          log('preflight', `#${issue}: check 3 (QA-API) FAIL — backend HTTP ${httpCode} → blocked:infra`);
-        }
-      } catch (e) {
-        checks.backend = `error:${e.message.slice(0, 80)}`;
-        log('preflight', `#${issue}: check 3 (QA-API) FAIL — backend no responde → blocked:infra`);
+      // QA-API necesita backend vivo — check 3 con warm-up (tolera cold start de Lambda)
+      const warmup = checkBackendWithWarmup(issue);
+      if (warmup.ok) {
+        checks.backend = `ok:${warmup.httpCode}`;
+        log('preflight', `#${issue}: check 3 (QA-API) OK — backend responde HTTP ${warmup.httpCode}`);
+      } else {
+        checks.backend = `error:${warmup.error}`;
+        log('preflight', `#${issue}: check 3 (QA-API) FAIL — ${warmup.error} → blocked:infra`);
       }
 
-      if (!backendOk) {
+      if (!warmup.ok) {
         logPreflight(issue, checks, 'blocked:infra', startMs);
-        sendTelegram(`⚠️ Pre-flight QA-API #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
+        sendTelegram(`⚠️ Pre-flight QA-API #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
         return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors: [], requiresEmulator: false, qaMode };
       }
 
@@ -2090,33 +2124,16 @@ function preflightQaChecks(issue) {
   checks.apk = 'ok';
   log('preflight', `#${issue}: check 2 OK (APK encontrado para ${flavors.join(', ')})`);
 
-  // --- Check 3: Backend responde ---
-  let backendOk = false;
-  try {
-    // Usar curl para hacer POST al backend de QA (Lambda AWS)
-    const backendUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin';
-    const curlResult = execSync(
-      `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
-      { encoding: 'utf8', timeout: 15000, windowsHide: true }
-    ).trim();
-    const httpCode = parseInt(curlResult, 10);
-    // 400 = backend vivo (falta data), 401/403 = auth activo, todos son "vivo"
-    if (httpCode >= 400 && httpCode < 500) {
-      backendOk = true;
-      checks.backend = `ok:${httpCode}`;
-      log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${httpCode})`);
-    } else {
-      checks.backend = `error:${httpCode}`;
-      log('preflight', `#${issue}: check 3 FAIL (backend responde HTTP ${httpCode}) → blocked:infra`);
-    }
-  } catch (e) {
-    checks.backend = `error:${e.message.slice(0, 80)}`;
-    log('preflight', `#${issue}: check 3 FAIL (backend no responde: ${e.message.slice(0, 80)}) → blocked:infra`);
-  }
-
-  if (!backendOk) {
+  // --- Check 3: Backend responde (con warm-up para tolerar cold start de Lambda) ---
+  const warmupAndroid = checkBackendWithWarmup(issue);
+  if (warmupAndroid.ok) {
+    checks.backend = `ok:${warmupAndroid.httpCode}`;
+    log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${warmupAndroid.httpCode})`);
+  } else {
+    checks.backend = `error:${warmupAndroid.error}`;
+    log('preflight', `#${issue}: check 3 FAIL — ${warmupAndroid.error} → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
-    sendTelegram(`⚠️ Pre-flight QA #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
+    sendTelegram(`⚠️ Pre-flight QA #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
     return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
