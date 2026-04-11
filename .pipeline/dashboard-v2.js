@@ -744,14 +744,15 @@ function generateHTML(state) {
           }
         }
 
-        // Tooltip content
+        // Tooltip content (atributo title nativo — nunca aparece como texto inline)
         const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
-        const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
+        const ttResStr = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
         const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
-        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEta, ttRes, ttMot].filter(Boolean);
-        const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
+        const ttEtaStr = ttEta || '';
+        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
+        const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
         const agentColor = skillColor(e.skill);
         const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
@@ -767,7 +768,7 @@ function generateHTML(state) {
           : '';
 
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}">${chipContent}${killBtn}${pdfBtn}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
         if (e.hasLog) {
           const isLive = e.estado === 'trabajando';
           return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
@@ -1430,19 +1431,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .log-scroll-btn.visible{display:inline-block}
 
-/* ── Tooltip ────────────────────────────────────────────────────────────── */
-.chip .tt{
-  display:none;position:absolute;z-index:200;
-  bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
-  background:#000000;border:2px solid var(--ac);border-radius:10px;
-  padding:14px 18px;font-size:0.95em;white-space:nowrap;
-  min-width:220px;color:var(--tx);
-  box-shadow:0 8px 32px rgba(0,0,0,0.9),0 0 0 1px rgba(88,166,255,0.2);
-  pointer-events:none;
-}
-.chip .tt span{display:block;line-height:1.7;color:#c9d1d9;font-size:0.95em}
-.chip .tt span:first-child{color:var(--tx);font-weight:700;font-size:1.05em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
-.chip:hover .tt{display:block}
+/* Tooltip nativo via atributo title — sin HTML inline en el chip */
 .more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
 .issue-overflow{display:none}
 .issue-overflow.show{display:table-row}

@@ -32,7 +32,7 @@ abstract class QATestBase {
         lateinit var recordingsDir: Path
 
         val baseUrl: String
-            get() = System.getenv("QA_BASE_URL") ?: "http://localhost:80"
+            get() = System.getenv("QA_BASE_URL") ?: "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
 
         @JvmStatic
         @BeforeAll

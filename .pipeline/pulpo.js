@@ -1737,21 +1737,18 @@ function brazoLanzamiento(config) {
     try {
       const trabajandoPath = moveFile(archivo.path, trabajandoDir);
 
-      // Lanzar agente
-      if (fase === 'build') {
-        lanzarBuild(issue, trabajandoPath, pipelineName, config);
-      } else {
-        // Capa 3: pasar qaMode al agente QA via extraEnv
-        const extraEnv = {};
-        if (preflightResult && preflightResult.qaMode) {
-          extraEnv.QA_MODE = preflightResult.qaMode;
-          extraEnv.QA_ISSUE = String(issue);
-          if (preflightResult.flavors && preflightResult.flavors.length > 0) {
-            extraEnv.QA_FLAVOR = preflightResult.flavors[0];
-          }
+      // Lanzar agente (todas las fases, incluyendo build)
+      // Capa 3: pasar qaMode al agente QA via extraEnv
+      const extraEnv = {};
+      if (preflightResult && preflightResult.qaMode) {
+        extraEnv.QA_MODE = preflightResult.qaMode;
+        extraEnv.QA_ISSUE = String(issue);
+        extraEnv.QA_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev';
+        if (preflightResult.flavors && preflightResult.flavors.length > 0) {
+          extraEnv.QA_FLAVOR = preflightResult.flavors[0];
         }
-        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       }
+      lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
       anyLaunched = true;
     } catch (e) {
       log('lanzamiento', `Error moviendo/lanzando ${archivo.name}: ${e.message}`);
@@ -1780,11 +1777,7 @@ function brazoLanzamiento(config) {
           }
         }
         const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-        if (fase === 'build') {
-          lanzarBuild(issue, trabajandoPath, pipelineName, config);
-        } else {
-          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
-        }
+        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -1887,6 +1880,70 @@ function autoClassifyIssue(issueNum) {
 const QA_ARTIFACTS_DIR = path.join(ROOT, 'qa', 'artifacts');
 const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
 
+// --- Warm-up + retry para backend Lambda (evita falsos blocked:infra por cold start) ---
+const BACKEND_BASE_URL = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale';
+const WARMUP_RETRIES = 3;       // Intentos totales (1 warm-up + 2 retries)
+const WARMUP_WAIT_MS = 5000;    // Espera entre intentos (5 segundos)
+// Deduplicación de notificaciones blocked:infra — evita spam en Telegram
+const _lastBlockedNotif = {};   // { issueNumber: timestampMs }
+const BLOCKED_NOTIF_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutos entre notificaciones del mismo issue
+
+/**
+ * Hace un request al backend con warm-up automático.
+ * Si el primer intento falla por timeout/error, espera y reintenta.
+ * Retorna { ok: boolean, httpCode: number|null, error: string|null }
+ */
+function checkBackendWithWarmup(issue) {
+  const backendUrl = `${BACKEND_BASE_URL}/signin`;
+  // NUL en Windows, /dev/null en Unix — execSync usa cmd.exe en Windows
+  const devNull = process.platform === 'win32' ? 'NUL' : '/dev/null';
+
+  for (let attempt = 1; attempt <= WARMUP_RETRIES; attempt++) {
+    try {
+      const curlResult = execSync(
+        `curl -s -o ${devNull} -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+        { encoding: 'utf8', timeout: 25000, windowsHide: true }
+      ).trim();
+      const httpCode = parseInt(curlResult, 10);
+
+      if (httpCode >= 400 && httpCode < 500) {
+        if (attempt > 1) {
+          log('preflight', `#${issue}: backend respondió OK en intento ${attempt}/${WARMUP_RETRIES} (cold start resuelto)`);
+        }
+        return { ok: true, httpCode, error: null };
+      }
+
+      // Respuesta inesperada (5xx, etc) — reintentar
+      log('preflight', `#${issue}: backend HTTP ${httpCode} en intento ${attempt}/${WARMUP_RETRIES} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s...` : 'agotados reintentos'}`);
+    } catch (e) {
+      log('preflight', `#${issue}: backend timeout/error en intento ${attempt}/${WARMUP_RETRIES}: ${e.message.slice(0, 60)} — ${attempt < WARMUP_RETRIES ? `esperando ${WARMUP_WAIT_MS/1000}s (probable cold start)...` : 'agotados reintentos'}`);
+    }
+
+    // Esperar antes del siguiente intento (excepto en el último)
+    // Usamos Atomics.wait como sleep sincrónico portable (funciona en Windows sin shell hacks)
+    if (attempt < WARMUP_RETRIES) {
+      const sharedBuf = new SharedArrayBuffer(4);
+      Atomics.wait(new Int32Array(sharedBuf), 0, 0, WARMUP_WAIT_MS);
+    }
+  }
+
+  return { ok: false, httpCode: null, error: `No respondió tras ${WARMUP_RETRIES} intentos (cold start persistente)` };
+}
+
+/**
+ * Envía notificación de blocked:infra con deduplicación (máximo 1 cada 5 min por issue).
+ */
+function sendBlockedInfraNotif(issue, message) {
+  const now = Date.now();
+  const lastSent = _lastBlockedNotif[issue] || 0;
+  if (now - lastSent < BLOCKED_NOTIF_COOLDOWN_MS) {
+    log('preflight', `#${issue}: blocked:infra notificación suprimida (cooldown ${Math.round((BLOCKED_NOTIF_COOLDOWN_MS - (now - lastSent)) / 1000)}s restantes)`);
+    return;
+  }
+  _lastBlockedNotif[issue] = now;
+  sendTelegram(message);
+}
+
 /**
  * Pre-flight checks para agentes QA (Capa 2 + Capa 3 ruteo).
  * Retorna { ok, result, reason, flavors, requiresEmulator, qaMode }
@@ -1894,6 +1951,81 @@ const PREFLIGHT_LOG_FILE = path.join(LOG_DIR, 'qa-preflight-log.jsonl');
  *   qaMode: 'android' | 'api' | 'structural' (Capa 3)
  *   ok=false → no lanzar, result indica la acción a tomar
  */
+// --- Check DynamoDB remoto: verifica que no hay overrides locales ---
+function checkDynamoDbRemote(issue) {
+  const checks = {};
+  let ok = true;
+
+  // 1. Verificar env vars que apuntan a DynamoDB local
+  const dynamoEndpoint = process.env.DYNAMODB_ENDPOINT || '';
+  if (dynamoEndpoint && /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(dynamoEndpoint)) {
+    checks.dynamodb_env = `local:${dynamoEndpoint}`;
+    log('preflight', `#${issue}: FAIL — DYNAMODB_ENDPOINT apunta a local: ${dynamoEndpoint}`);
+    ok = false;
+  } else {
+    checks.dynamodb_env = dynamoEndpoint ? `remote:${dynamoEndpoint}` : 'not-set:aws-default';
+  }
+
+  // 2. Verificar LOCAL_MODE
+  if ((process.env.LOCAL_MODE || '').toLowerCase() === 'true') {
+    checks.local_mode = 'true';
+    log('preflight', `#${issue}: FAIL — LOCAL_MODE=true activo, DynamoDB/Cognito apuntarían a localhost`);
+    ok = false;
+  } else {
+    checks.local_mode = 'off';
+  }
+
+  // 3. Verificar .env.qa no tiene overrides locales
+  const envQaPath = path.join(ROOT, '.env.qa');
+  if (fs.existsSync(envQaPath)) {
+    try {
+      const envContent = fs.readFileSync(envQaPath, 'utf8');
+      if (/DYNAMODB_ENDPOINT=.*localhost|DYNAMODB_ENDPOINT=.*127\.0\.0\.1/.test(envContent)) {
+        checks.env_qa = 'dynamodb-local';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene DYNAMODB_ENDPOINT local`);
+        ok = false;
+      } else if (/LOCAL_MODE=true/.test(envContent)) {
+        checks.env_qa = 'local-mode-true';
+        log('preflight', `#${issue}: FAIL — .env.qa contiene LOCAL_MODE=true`);
+        ok = false;
+      } else {
+        checks.env_qa = 'ok';
+      }
+    } catch (e) {
+      checks.env_qa = `read-error:${e.message.slice(0, 40)}`;
+    }
+  } else {
+    checks.env_qa = 'not-exists';
+  }
+
+  // 4. Verificar que searchBusinesses devuelve datos reales (DynamoDB remoto con data)
+  // Timeouts más generosos para tolerar cold start (el warm-up de signin puede no calentar esta ruta)
+  try {
+    const searchUrl = `${BACKEND_BASE_URL}/searchBusinesses`;
+    const result = execSync(
+      `curl -s -X POST "${searchUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 10 --max-time 20`,
+      { encoding: 'utf8', timeout: 25000, windowsHide: true }
+    ).trim();
+    if (result.includes('"businesses":[') && !result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'ok:has-data';
+      log('preflight', `#${issue}: DynamoDB remoto OK — searchBusinesses devuelve datos reales`);
+    } else if (result.includes('"businesses":[]')) {
+      checks.dynamodb_data = 'empty';
+      log('preflight', `#${issue}: WARN — DynamoDB remoto vacío (searchBusinesses sin resultados)`);
+      // No bloquear por datos vacíos, solo advertir
+    } else {
+      checks.dynamodb_data = `unexpected:${result.slice(0, 60)}`;
+      log('preflight', `#${issue}: WARN — DynamoDB respuesta inesperada: ${result.slice(0, 60)}`);
+    }
+  } catch (e) {
+    checks.dynamodb_data = `error:${e.message.slice(0, 60)}`;
+    log('preflight', `#${issue}: FAIL — DynamoDB check falló: ${e.message.slice(0, 60)}`);
+    ok = false;
+  }
+
+  return { ok, checks };
+}
+
 function preflightQaChecks(issue) {
   const startMs = Date.now();
   const checks = {};
@@ -1934,33 +2066,31 @@ function preflightQaChecks(issue) {
   // Si no requiere emulador, verificar backend para QA-API antes de aprobar
   if (!requiresEmulator) {
     if (qaMode === 'api') {
-      // QA-API necesita backend vivo — ejecutar check 3
-      let backendOk = false;
-      try {
-        const backendUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin';
-        const curlResult = execSync(
-          `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
-          { encoding: 'utf8', timeout: 15000, windowsHide: true }
-        ).trim();
-        const httpCode = parseInt(curlResult, 10);
-        if (httpCode >= 400 && httpCode < 500) {
-          backendOk = true;
-          checks.backend = `ok:${httpCode}`;
-          log('preflight', `#${issue}: check 3 (QA-API) OK — backend responde HTTP ${httpCode}`);
-        } else {
-          checks.backend = `error:${httpCode}`;
-          log('preflight', `#${issue}: check 3 (QA-API) FAIL — backend HTTP ${httpCode} → blocked:infra`);
-        }
-      } catch (e) {
-        checks.backend = `error:${e.message.slice(0, 80)}`;
-        log('preflight', `#${issue}: check 3 (QA-API) FAIL — backend no responde → blocked:infra`);
+      // QA-API necesita backend vivo — check 3 con warm-up (tolera cold start de Lambda)
+      const warmup = checkBackendWithWarmup(issue);
+      if (warmup.ok) {
+        checks.backend = `ok:${warmup.httpCode}`;
+        log('preflight', `#${issue}: check 3 (QA-API) OK — backend responde HTTP ${warmup.httpCode}`);
+      } else {
+        checks.backend = `error:${warmup.error}`;
+        log('preflight', `#${issue}: check 3 (QA-API) FAIL — ${warmup.error} → blocked:infra`);
       }
 
-      if (!backendOk) {
+      if (!warmup.ok) {
         logPreflight(issue, checks, 'blocked:infra', startMs);
-        sendTelegram(`⚠️ Pre-flight QA-API #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
         return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors: [], requiresEmulator: false, qaMode };
       }
+
+      // Check DynamoDB remoto (no overrides locales)
+      const dynamoCheck = checkDynamoDbRemote(issue);
+      checks.dynamodb = dynamoCheck.checks;
+      if (!dynamoCheck.ok) {
+        logPreflight(issue, checks, 'blocked:infra', startMs);
+        sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA-API #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+        return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors: [], requiresEmulator: false, qaMode };
+      }
+      log('preflight', `#${issue}: check DynamoDB remoto OK`);
 
       // Capa 3: Verificar/generar test cases para QA-API
       const testCasesFile = path.join(ROOT, 'qa', 'test-cases', `${issue}.json`);
@@ -2013,35 +2143,28 @@ function preflightQaChecks(issue) {
   checks.apk = 'ok';
   log('preflight', `#${issue}: check 2 OK (APK encontrado para ${flavors.join(', ')})`);
 
-  // --- Check 3: Backend responde ---
-  let backendOk = false;
-  try {
-    // Usar curl para hacer POST al backend de QA (Lambda AWS)
-    const backendUrl = 'https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev/intrale/signin';
-    const curlResult = execSync(
-      `curl -s -o /dev/null -w "%{http_code}" -X POST "${backendUrl}" -H "Content-Type: application/json" -d "{}" --connect-timeout 5 --max-time 10`,
-      { encoding: 'utf8', timeout: 15000, windowsHide: true }
-    ).trim();
-    const httpCode = parseInt(curlResult, 10);
-    // 400 = backend vivo (falta data), 401/403 = auth activo, todos son "vivo"
-    if (httpCode >= 400 && httpCode < 500) {
-      backendOk = true;
-      checks.backend = `ok:${httpCode}`;
-      log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${httpCode})`);
-    } else {
-      checks.backend = `error:${httpCode}`;
-      log('preflight', `#${issue}: check 3 FAIL (backend responde HTTP ${httpCode}) → blocked:infra`);
-    }
-  } catch (e) {
-    checks.backend = `error:${e.message.slice(0, 80)}`;
-    log('preflight', `#${issue}: check 3 FAIL (backend no responde: ${e.message.slice(0, 80)}) → blocked:infra`);
-  }
-
-  if (!backendOk) {
+  // --- Check 3: Backend responde (con warm-up para tolerar cold start de Lambda) ---
+  const warmupAndroid = checkBackendWithWarmup(issue);
+  if (warmupAndroid.ok) {
+    checks.backend = `ok:${warmupAndroid.httpCode}`;
+    log('preflight', `#${issue}: check 3 OK (backend responde HTTP ${warmupAndroid.httpCode})`);
+  } else {
+    checks.backend = `error:${warmupAndroid.error}`;
+    log('preflight', `#${issue}: check 3 FAIL — ${warmupAndroid.error} → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
-    sendTelegram(`⚠️ Pre-flight QA #${issue}: backend no responde. Issue bloqueado hasta que se recupere.`);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: backend no responde tras ${WARMUP_RETRIES} intentos (cold start). Issue bloqueado hasta que se recupere.`);
     return { ok: false, result: 'blocked:infra', reason: `Backend no responde (${checks.backend})`, flavors, requiresEmulator: true, qaMode: 'android' };
   }
+
+  // --- Check 3b: DynamoDB remoto (no overrides locales) ---
+  const dynamoCheckAndroid = checkDynamoDbRemote(issue);
+  checks.dynamodb = dynamoCheckAndroid.checks;
+  if (!dynamoCheckAndroid.ok) {
+    logPreflight(issue, checks, 'blocked:infra', startMs);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: DynamoDB apunta a local o no responde. Verificar .env.qa y env vars.`);
+    return { ok: false, result: 'blocked:infra', reason: 'DynamoDB no es remoto — overrides locales detectados', flavors, requiresEmulator: true, qaMode: 'android' };
+  }
+  log('preflight', `#${issue}: check DynamoDB remoto OK`);
 
   // --- Check 4: Emulador disponible via ADB + test de screenrecord (Blindaje 2) ---
   let emulatorReady = false;
@@ -2092,7 +2215,7 @@ function preflightQaChecks(issue) {
     checks.emulator = 'screenrecord-fail';
     log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona despues de ${maxRetries} intentos → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
-    sendTelegram(`⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
+    sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
     return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
@@ -2244,6 +2367,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 
   // Determinar si necesita worktree (solo fases que modifican código)
   const needsWorktree = (fase === 'dev');
+  const useExistingWorktree = (fase === 'build');
   let worktreePath = ROOT;
   let worktreeBranch = null;
 
@@ -2264,6 +2388,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       moveFile(trabajandoPath, pendienteDir);
       return;
     }
+  } else if (useExistingWorktree) {
+    // Build: buscar el worktree existente del issue (creado en fase dev)
+    try {
+      const worktreePattern = `platform.agent-${issue}-`;
+      const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+      for (const line of worktrees.split('\n')) {
+        if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
+          worktreePath = line.replace('worktree ', '').trim();
+          break;
+        }
+      }
+      if (worktreePath !== ROOT) {
+        log('lanzamiento', `Build #${issue}: usando worktree existente ${worktreePath}`);
+      } else {
+        log('lanzamiento', `Build #${issue}: no se encontró worktree, usando ROOT`);
+      }
+    } catch (e) {
+      log('lanzamiento', `Build #${issue}: error buscando worktree (${e.message}), usando ROOT`);
+    }
   }
 
   const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
@@ -2280,7 +2423,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   const spawnArgs = USE_NODE_DIRECT ? [CLAUDE_CLI_JS, ...args] : args;
 
   const child = spawn(spawnCmd, spawnArgs, {
-    cwd: needsWorktree ? worktreePath : ROOT,
+    cwd: (needsWorktree || useExistingWorktree) ? worktreePath : ROOT,
     stdio: ['ignore', agentLogFd, agentLogFd],
     detached: false,
     shell: false,
@@ -2297,7 +2440,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     trabajandoPath,
     pipeline,
     fase,
-    worktreePath: needsWorktree ? worktreePath : null
+    worktreePath: (needsWorktree || useExistingWorktree) ? worktreePath : null
   });
 
   // Crear canal de contexto para el agente (auto-join)
@@ -2335,7 +2478,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       try { moveFile(trabajandoPath, pendienteDir); } catch {}
       activeProcesses.delete(processKey(skill, issue));
       // Matar Gradle daemons incluso en fast-fail
-      killGradleDaemonsForCwd(needsWorktree ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
+      killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (fast-fail)`);
       // Salir del canal de contexto
       if (contextChannelId) {
         try {
@@ -2421,7 +2564,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // Matar Gradle daemons del worktree para liberar RAM (cada daemon usa hasta 4GB)
     // Delay de 10s para evitar race condition: si el barrido ya lanzó un build en este
     // worktree, el guard dentro de killGradleDaemonsForCwd lo protegerá.
-    const cleanupCwd = needsWorktree ? worktreePath : ROOT;
+    const cleanupCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
     const cleanupLabel = `${skill}:#${issue}`;
     setTimeout(() => killGradleDaemonsForCwd(cleanupCwd, cleanupLabel), 10000);
 
@@ -2440,128 +2583,6 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   // stdout/stderr redirigidos al archivo de log via stdio fd
-}
-
-function lanzarBuild(issue, trabajandoPath, pipeline, config) {
-  log('lanzamiento', `BUILD #${issue} — ejecutando gradlew check`);
-
-  // Buscar el worktree del issue
-  const worktreePattern = `platform.agent-${issue}-`;
-  let buildCwd = ROOT;
-
-  try {
-    const worktrees = execSync('git worktree list --porcelain', { cwd: ROOT, encoding: 'utf8', windowsHide: true });
-    for (const line of worktrees.split('\n')) {
-      if (line.startsWith('worktree ') && line.includes(worktreePattern)) {
-        buildCwd = line.replace('worktree ', '').trim();
-        break;
-      }
-    }
-  } catch { /* usar ROOT */ }
-
-  // Antes de compilar, mergear origin/main para tener los últimos hotfixes
-  if (buildCwd !== ROOT) {
-    try {
-      execSync('git fetch origin main && git merge origin/main --no-edit', {
-        cwd: buildCwd, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('build', `#${issue} worktree actualizado con origin/main`);
-    } catch (e) {
-      log('build', `#${issue} merge main falló (puede haber conflictos): ${e.message.slice(0, 200)}`);
-    }
-  }
-
-  // Ejecutar ./gradlew check via Git Bash (path absoluto para que spawn lo encuentre)
-  const bashExe = 'C:/Program Files/Git/usr/bin/bash.exe';
-  // Validar que JAVA_HOME tenga un java.exe válido; si no, usar Temurin 21
-  // IMPORTANTE: solo chequear existencia del directorio no alcanza — IntelliJ JBR puede existir
-  // pero no ser un JDK válido (sin bin/java.exe). Hay que validar el binario.
-  const envJavaHome = process.env.JAVA_HOME;
-  const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
-  const isValidJavaHome = envJavaHome && fs.existsSync(path.join(envJavaHome, 'bin', javaExe));
-  const javaHome = (isValidJavaHome ? envJavaHome : 'C:/Users/Administrator/.jdks/temurin-21.0.7').replace(/\\/g, '/');
-  const cwdUnix = buildCwd.replace(/\\/g, '/');
-
-  // Construir env con JAVA_HOME forzado y PATH completo (incluye /usr/bin de Git para uname)
-  const gitUsrBin = 'C:/Program Files/Git/usr/bin';
-  const buildEnv = {
-    ...process.env,
-    JAVA_HOME: javaHome,
-    PATH: `${gitUsrBin}${path.delimiter}${process.env.PATH || ''}`
-  };
-
-  const BUILD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
-
-  // Excluir WasmJs test compilation (causa OOM) y targets iOS (no aplican en CI local)
-  // Mismo criterio que .github/workflows/pr-checks.yml
-  const excludeTasks = [
-    '-x compileTestDevelopmentExecutableKotlinWasmJs',
-    '-x compileTestKotlinIosX64',
-    '-x compileKotlinIosSimulatorArm64',
-    '-x compileTestKotlinIosSimulatorArm64',
-  ].join(' ');
-  buildEnv.GRADLE_OPTS = '-Xmx3g -Dfile.encoding=UTF-8';
-
-  const child = spawn(bashExe, ['-c', `cd "${cwdUnix}" && ./gradlew check --no-daemon ${excludeTasks}`], {
-    cwd: buildCwd,
-    env: buildEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
-    windowsHide: true
-  });
-
-  child.unref();
-
-  // Timeout: matar el build si excede 30 minutos
-  const buildTimer = setTimeout(() => {
-    log('build', `#${issue} TIMEOUT — build excedió ${BUILD_TIMEOUT_MS / 60000} minutos, matando proceso`);
-    try { child.kill('SIGTERM'); } catch {}
-  }, BUILD_TIMEOUT_MS);
-
-  const buildStartTime = Date.now();
-  activeProcesses.set(processKey('build', issue), {
-    pid: child.pid,
-    startTime: buildStartTime,
-    trabajandoPath,
-    worktreePath: buildCwd,
-    pipeline,
-    fase: 'build'
-  });
-
-  let output = '';
-  child.stdout.on('data', (d) => { output += d; });
-  child.stderr.on('data', (d) => { output += d; });
-
-  child.on('exit', (code) => {
-    clearTimeout(buildTimer);
-    const durationMin = ((Date.now() - buildStartTime) / 60000).toFixed(1);
-    const logFile = path.join(LOG_DIR, `build-${issue}.log`);
-    fs.writeFileSync(logFile, output);
-
-    const data = readYaml(trabajandoPath);
-    if (code === 0) {
-      data.resultado = 'aprobado';
-    } else {
-      data.resultado = 'rechazado';
-      // Extraer últimas líneas relevantes del log
-      const lines = output.split('\n');
-      const errorLines = lines.filter(l => /error|FAILED|failure/i.test(l)).slice(0, 5);
-      data.motivo = `Build falló (exit ${code}). ${errorLines.join(' | ')}. Log: .pipeline/logs/build-${issue}.log`;
-    }
-    writeYaml(trabajandoPath, data);
-
-    const listoDir = path.join(fasePath(pipeline, 'build'), 'listo');
-    try {
-      moveFile(trabajandoPath, listoDir);
-      log('build', `#${issue} build ${code === 0 ? '✓' : '✗'} (${durationMin}min) → listo/`);
-    } catch (e) {
-      log('build', `Error moviendo build result #${issue}: ${e.message}`);
-    }
-    activeProcesses.delete(processKey('build', issue));
-
-    // Matar Gradle daemons del build para liberar RAM
-    killGradleDaemonsForCwd(buildCwd, `build:#${issue}`);
-  });
 }
 
 // =============================================================================
