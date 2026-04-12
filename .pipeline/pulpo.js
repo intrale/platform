@@ -1153,18 +1153,28 @@ function tryFreeResources(mode = 'soft') {
  * Delega al servicio-emulador via cola (no ejecuta directamente).
  * Retorna true si encoló el pedido de stop.
  */
+// Grace period: después de levantar el emulador (boot_completed), no apagarlo
+// durante este tiempo. Evita el loop preflight→start→idle→stop→preflight que
+// corrompía el quickboot. Anclado a qa-env-state.lastStartedAt, que qa-environment.js
+// escribe recién DESPUÉS de confirmar sys.boot_completed=1.
+const EMULATOR_IDLE_GRACE_MS = 3 * 60 * 1000; // 3 minutos de warm-up protegido
+
 function shutdownIdleEmulator(config) {
   try {
-    // ¿Hay algo en verificacion/trabajando?
+    // ¿Hay algo en verificacion/trabajando O pendiente?
+    // Si hay QA pendiente encolada, el emulador va a ser necesario inmediatamente.
     for (const [pName, pConfig] of Object.entries(config.pipelines)) {
       if (!pConfig.fases.includes('verificacion')) continue;
-      const trabajandoDir = path.join(fasePath(pName, 'verificacion'), 'trabajando');
-      const archivos = listWorkFiles(trabajandoDir);
-      if (archivos.length > 0) return false; // Hay agentes de QA corriendo, no tocar
+      const verifDir = fasePath(pName, 'verificacion');
+      const trabajando = listWorkFiles(path.join(verifDir, 'trabajando'));
+      if (trabajando.length > 0) return false; // Hay agentes QA corriendo
+      const pendiente = listWorkFiles(path.join(verifDir, 'pendiente'));
+      if (pendiente.length > 0) return false; // Hay QA pendiente en cola
     }
 
     // ¿Está corriendo el emulador? Verificar state file Y por nombre de proceso
     let emulatorRunning = false;
+    let lastStartedAt = 0;
 
     // Check 1: state file
     const stateFile = path.join(PIPELINE, 'qa-env-state.json');
@@ -1173,6 +1183,7 @@ function shutdownIdleEmulator(config) {
         const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
         const emulatorPid = state.emulator || state.emulador;
         if (emulatorPid && isProcessAlive(emulatorPid)) emulatorRunning = true;
+        lastStartedAt = state.lastStartedAt || 0;
       } catch {}
     }
 
@@ -1186,6 +1197,15 @@ function shutdownIdleEmulator(config) {
     }
 
     if (!emulatorRunning) return false;
+
+    // Grace period: no apagar si estamos dentro de la ventana post-boot.
+    // lastStartedAt se actualiza en qa-environment.js DESPUÉS de boot_completed.
+    const ageMs = Date.now() - lastStartedAt;
+    if (lastStartedAt > 0 && ageMs < EMULATOR_IDLE_GRACE_MS) {
+      const remaining = Math.round((EMULATOR_IDLE_GRACE_MS - ageMs) / 1000);
+      log('recursos', `⏳ Emulador dentro de grace period post-boot (${remaining}s restantes) — no apagar`);
+      return false;
+    }
 
     // Encolar stop al servicio-emulador (no ejecutar directo)
     log('recursos', '🔌 Encolando stop de emulador idle para liberar ~2.5GB RAM');
@@ -2332,32 +2352,25 @@ function preflightQaChecks(issue) {
     return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
-  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar
-  // Si falla, reintentar hasta 3 veces con espera progresiva
+  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar.
+  // Con el gating de boot real en qa-environment.waitBootCompleted(), el framework
+  // ya está listo antes de llegar acá, así que un solo intento es suficiente.
+  // Si falla, es ADB realmente inestable y conviene abortar el preflight rápido.
   let screenrecordOk = false;
-  const maxRetries = 3;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // Grabar 2 segundos de prueba
-      execSync(
-        `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
-        { encoding: 'utf8', timeout: 15000, windowsHide: true }
-      );
-      screenrecordOk = true;
-      log('preflight', `#${issue}: check 4b OK — screenrecord test passed (intento ${attempt}/${maxRetries})`);
-      break;
-    } catch (e) {
-      log('preflight', `#${issue}: check 4b — screenrecord test FAIL intento ${attempt}/${maxRetries}: ${e.message.slice(0, 60)}`);
-      if (attempt < maxRetries) {
-        // Espera progresiva: 3s, 6s
-        execSync(`sleep ${attempt * 3}`, { windowsHide: true });
-      }
-    }
+  try {
+    execSync(
+      `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    screenrecordOk = true;
+    log('preflight', `#${issue}: check 4b OK — screenrecord test passed`);
+  } catch (e) {
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord: ${e.message.slice(0, 80)}`);
   }
 
   if (!screenrecordOk) {
     checks.emulator = 'screenrecord-fail';
-    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona despues de ${maxRetries} intentos → blocked:infra`);
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
     sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
     return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
