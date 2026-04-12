@@ -17,6 +17,7 @@ const LOG_DIR = path.join(PIPELINE, 'logs');
 const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
 const PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 const REPORT_SCRIPT = path.join(ROOT, 'scripts', 'report-to-pdf-telegram.js');
+const GH_CLI = process.env.GH_CLI_PATH || '/c/Workspaces/gh-cli/bin/gh';
 
 // --- Parse args ---
 const args = process.argv.slice(2);
@@ -68,6 +69,201 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// --- Contexto del issue desde GitHub ---
+function fetchIssueContext(issueNum) {
+  try {
+    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+    const raw = execSync(
+      `"${ghPath}" issue view ${issueNum} --json title,body,labels --repo intrale/platform`,
+      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).toString();
+    const data = JSON.parse(raw);
+    // Extraer resumen del body (primeros 3 párrafos no vacíos, sin markdown headers)
+    const bodyLines = (data.body || '').split('\n').filter(l => l.trim() && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('-'));
+    const summary = bodyLines.slice(0, 3).join(' ').substring(0, 300);
+    return {
+      title: data.title || `Issue #${issueNum}`,
+      labels: (data.labels || []).map(l => l.name),
+      summary: summary || '(sin descripción)',
+    };
+  } catch {
+    return { title: `Issue #${issueNum}`, labels: [], summary: '(no se pudo obtener del repositorio)' };
+  }
+}
+
+// --- Historial de rechazos previos del mismo issue ---
+function getRejectHistory(issueNum) {
+  const history = [];
+  const allFases = ['analisis', 'sizing', 'dev', 'build', 'verificacion', 'entrega'];
+  const pipelines = ['desarrollo'];
+  for (const pip of pipelines) {
+    for (const f of allFases) {
+      for (const sub of ['listo', 'procesado']) {
+        const dir = path.join(PIPELINE, pip, f, sub);
+        try {
+          const files = fs.readdirSync(dir).filter(fn => fn.startsWith(issueNum + '.'));
+          for (const fn of files) {
+            try {
+              const yaml = require('js-yaml');
+              const data = yaml.load(fs.readFileSync(path.join(dir, fn), 'utf8'));
+              if (data && data.resultado === 'rechazado') {
+                history.push({
+                  skill: fn.split('.').slice(1).join('.'),
+                  fase: f,
+                  motivo: data.motivo || 'Sin motivo',
+                  rechazadoPor: data.rechazado_por || 'desconocido',
+                });
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+    }
+  }
+  // Buscar también PDFs de rechazo previos
+  try {
+    const pdfFiles = fs.readdirSync(path.join(ROOT, 'docs', 'qa'))
+      .filter(f => f.startsWith(`rejection-${issueNum}-`) && f.endsWith('.pdf'));
+    for (const pf of pdfFiles) {
+      const skillMatch = pf.match(/rejection-\d+-(.+)\.pdf/);
+      if (skillMatch && !history.find(h => h.skill === skillMatch[1])) {
+        history.push({ skill: skillMatch[1], fase: '?', motivo: '(ver PDF anterior)', rechazadoPor: 'pipeline' });
+      }
+    }
+  } catch {}
+  return history;
+}
+
+// --- Estado de los otros gates para este issue ---
+function getGateStatus(issueNum) {
+  const gates = [];
+  const verifyDir = path.join(PIPELINE, 'desarrollo', 'verificacion', 'listo');
+  try {
+    const files = fs.readdirSync(verifyDir).filter(fn => fn.startsWith(issueNum + '.'));
+    for (const fn of files) {
+      try {
+        const yaml = require('js-yaml');
+        const data = yaml.load(fs.readFileSync(path.join(verifyDir, fn), 'utf8'));
+        const sk = fn.split('.').slice(1).join('.');
+        gates.push({ skill: sk, resultado: data.resultado || '?', motivo: data.motivo || '' });
+      } catch {}
+    }
+  } catch {}
+  return gates;
+}
+
+// --- Clasificación de causa raíz ---
+// Clasifica en dos dimensiones: tipo técnico + origen (interno al issue vs externo)
+function classifyRootCause(motivo, logTail, exitCode) {
+  const motivoLower = (motivo || '').toLowerCase();
+  const logLower = (logTail || '').toLowerCase();
+
+  // Infraestructura — SIEMPRE externo al issue
+  if (logLower.includes('enotfound') || logLower.includes('econnrefused') || logLower.includes('unable to connect'))
+    return { tipo: 'INFRAESTRUCTURA', emoji: '🔌', origen: 'EXTERNO',
+      desc: 'El agente no pudo conectarse a internet o a un servicio externo. No tiene nada que ver con el código del issue.',
+      negocio: 'La prueba no se ejecutó porque hubo un problema de red. El código no fue evaluado.' };
+  if (logLower.includes('enomem') || logLower.includes('out of memory') || logLower.includes('heap'))
+    return { tipo: 'INFRAESTRUCTURA', emoji: '🔌', origen: 'EXTERNO',
+      desc: 'El servidor se quedó sin memoria disponible.',
+      negocio: 'La máquina no tenía recursos suficientes para correr la prueba. No es un problema del código.' };
+  if (logLower.includes('eaddrinuse'))
+    return { tipo: 'INFRAESTRUCTURA', emoji: '🔌', origen: 'EXTERNO',
+      desc: 'Un puerto de red estaba ocupado por otro proceso.',
+      negocio: 'Conflicto de procesos en el servidor. No es un problema del código.' };
+  if (motivoLower.includes('muerte prematura') || (parseFloat(exitCode) !== 0 && logTail && logTail.split('\n').filter(Boolean).length <= 3))
+    return { tipo: 'INFRAESTRUCTURA', emoji: '🔌', origen: 'EXTERNO',
+      desc: 'El agente no pudo arrancar correctamente (murió en menos de 15 segundos).',
+      negocio: 'El proceso de validación falló al iniciar. Es un problema del entorno, no del código.' };
+
+  // QA / Evidencia — puede ser externo (app crashea antes de llegar al feature)
+  if (motivoLower.includes('evidencia') || motivoLower.includes('video')) {
+    // Detectar si el log muestra un crash en otra pantalla (blocker externo)
+    const hasExternalCrash = logLower.includes('unexpected json') || logLower.includes('crash') ||
+      logLower.includes('exception') && !logLower.includes('doxxexception');
+    return { tipo: 'QA-EVIDENCIA', emoji: '📹',
+      origen: hasExternalCrash ? 'EXTERNO' : 'INTERNO',
+      desc: hasExternalCrash
+        ? 'El agente QA no pudo generar evidencia porque la app crasheó antes de llegar a la pantalla del feature.'
+        : 'El agente QA ejecutó pero no generó el video/audio de evidencia requerido.',
+      negocio: hasExternalCrash
+        ? 'La app tiene un bug en otra pantalla que impide llegar a probar esta funcionalidad. El feature en sí no fue evaluado.'
+        : 'La prueba se ejecutó pero no se grabó correctamente el video. Puede ser un problema técnico de grabación.' };
+  }
+
+  // Compilación — generalmente interno
+  if (motivoLower.includes('build') || motivoLower.includes('compilation') || logLower.includes('build failed'))
+    return { tipo: 'COMPILACION', emoji: '🔨', origen: 'INTERNO',
+      desc: 'El código no compila — errores en el código fuente.',
+      negocio: 'Los cambios de código tienen errores que impiden generar la aplicación. El desarrollador debe corregirlos.' };
+
+  // Tests — generalmente interno
+  if (motivoLower.includes('test') || logLower.includes('test failed') || logLower.includes('assertion'))
+    return { tipo: 'TESTS', emoji: '🧪', origen: 'INTERNO',
+      desc: 'Tests automáticos fallaron — posible regresión.',
+      negocio: 'Las pruebas automáticas detectaron que algo se rompió. Puede ser un bug nuevo o un test que hay que actualizar.' };
+
+  // Review — interno
+  if (motivoLower.includes('review') || motivoLower.includes('bloqueante'))
+    return { tipo: 'CODE-REVIEW', emoji: '👁️', origen: 'INTERNO',
+      desc: 'El code review encontró problemas bloqueantes en el código.',
+      negocio: 'La revisión de código encontró problemas de calidad que deben corregirse antes de continuar.' };
+
+  // Funcional — interno
+  if (motivoLower.includes('funcional') || motivoLower.includes('criterio') || motivoLower.includes('acceptance'))
+    return { tipo: 'FUNCIONAL', emoji: '❌', origen: 'INTERNO',
+      desc: 'El feature no cumple los criterios de aceptación.',
+      negocio: 'La funcionalidad no hace lo que se pidió. Hay que revisar los requisitos y corregir la implementación.' };
+
+  // Dependencia externa — cuando el log menciona otro issue o feature faltante
+  if (logLower.includes('feature faltante') || logLower.includes('depende de') || logLower.includes('bloqueado por'))
+    return { tipo: 'DEPENDENCIA', emoji: '🔗', origen: 'EXTERNO',
+      desc: 'El issue depende de otro feature o corrección que aún no existe.',
+      negocio: 'Esta funcionalidad necesita que primero se construya o corrija otra parte del sistema.' };
+
+  return { tipo: 'DESCONOCIDO', emoji: '❓', origen: 'INDETERMINADO',
+    desc: 'Causa no clasificada automáticamente — requiere revisión del log.',
+    negocio: 'No se pudo determinar automáticamente por qué falló. Requiere revisión manual.' };
+}
+
+// --- Extraer líneas significativas del log (no JSON crudo) ---
+function extractMeaningfulLog(logTail, maxLines) {
+  if (!logTail) return '(log no disponible)';
+  const lines = logTail.split('\n');
+  const meaningful = [];
+  for (const line of lines) {
+    // Intentar parsear JSON del stream
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type === 'assistant' && obj.message && obj.message.content) {
+        for (const c of obj.message.content) {
+          if (c.type === 'text' && c.text) {
+            // Truncar texto largo
+            const txt = c.text.length > 200 ? c.text.substring(0, 200) + '...' : c.text;
+            meaningful.push('[Agente] ' + txt);
+          }
+        }
+      } else if (obj.type === 'user' && obj.tool_use_result) {
+        const stdout = obj.tool_use_result.stdout || '';
+        if (stdout.includes('error') || stdout.includes('FAILED') || stdout.includes('Exception')) {
+          const txt = stdout.length > 200 ? stdout.substring(0, 200) + '...' : stdout;
+          meaningful.push('[Resultado] ' + txt);
+        }
+      }
+      continue;
+    } catch {}
+    // Línea no-JSON: incluir si es significativa
+    if (line.trim() && !line.startsWith('{')) {
+      meaningful.push(line);
+    }
+  }
+  if (meaningful.length === 0) {
+    // Fallback: últimas líneas crudas
+    return lines.slice(-maxLines).join('\n');
+  }
+  return meaningful.slice(-maxLines).join('\n');
 }
 
 // --- Build report ---
@@ -125,6 +321,24 @@ function generateReport() {
   // 7. Análisis automático
   const analysis = analyzeRejection(exitCode, elapsed, motivo, logTail, avgCpu, avgMem, skill);
 
+  // 8. Contexto del issue (GitHub)
+  const issueCtx = fetchIssueContext(issue);
+
+  // 9. Historial de rechazos previos
+  const rejectHistory = getRejectHistory(issue);
+
+  // 10. Estado de otros gates
+  const otherGates = getGateStatus(issue);
+
+  // 11. Clasificación de causa raíz
+  const rootCause = classifyRootCause(motivo, logTail, exitCode);
+
+  // 12. Log legible (no JSON crudo)
+  const readableLog = extractMeaningfulLog(logTail, 30);
+
+  // 13. Issues de dependencia creados por QA (V9)
+  const depIssues = fetchDependencyIssues(issue);
+
   // --- HTML ---
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -150,12 +364,60 @@ function generateReport() {
   .metric-label { font-size: 0.8em; color: #7f8c8d; }
   .analysis-box { background: #fef9e7; border-left: 4px solid #f39c12; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
   .solution-box { background: #d5f5e3; border-left: 4px solid #27ae60; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  .context-box { background: #eaf2f8; border-left: 4px solid #2980b9; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  .rootcause-box { background: #fdedec; border-left: 4px solid #e74c3c; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  .history-box { background: #f5eef8; border-left: 4px solid #8e44ad; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  .gate-approved { color: #27ae60; font-weight: 600; }
+  .gate-rejected { color: #c0392b; font-weight: 600; }
+  .label-tag { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 0.8em; background: #ecf0f1; color: #2c3e50; margin: 1px; }
   .footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 0.8em; color: #999; text-align: center; }
 </style>
 </head><body>
 
 <h1>Reporte de Rechazo &mdash; #${escapeHtml(issue)} ${escapeHtml(skill)}</h1>
 <p><span class="badge badge-red">RECHAZADO</span> &nbsp; ${escapeHtml(timestamp)}</p>
+
+<h2>Que se estaba haciendo</h2>
+<div class="context-box">
+  <h3>${escapeHtml(issueCtx.title)}</h3>
+  <p>${escapeHtml(issueCtx.summary)}</p>
+  ${issueCtx.labels.length > 0 ? '<p>' + issueCtx.labels.map(l => '<span class="label-tag">' + escapeHtml(l) + '</span>').join(' ') + '</p>' : ''}
+</div>
+
+<h2>Que paso (en lenguaje simple)</h2>
+<div class="rootcause-box">
+  <h3>${escapeHtml(rootCause.emoji)} ${escapeHtml(rootCause.negocio || rootCause.desc)}</h3>
+  <p><span class="badge ${rootCause.origen === 'EXTERNO' ? 'badge-yellow' : rootCause.origen === 'INTERNO' ? 'badge-red' : 'badge-blue'}">${escapeHtml(rootCause.origen || 'INDETERMINADO')}: ${rootCause.origen === 'EXTERNO' ? 'No es culpa de este issue' : rootCause.origen === 'INTERNO' ? 'Problema en el codigo de este issue' : 'Requiere revision'}</span></p>
+</div>
+
+<h2>Sintoma vs Causa Raiz</h2>
+<table>
+  <tr><th>Sintoma (lo que se vio)</th><td>${escapeHtml(motivo)}</td></tr>
+  <tr><th>Causa raiz (lo que realmente paso)</th><td>${escapeHtml(rootCause.desc)}</td></tr>
+  <tr><th>Clasificacion</th><td><span class="badge ${rootCause.tipo === 'INFRAESTRUCTURA' || rootCause.tipo === 'DEPENDENCIA' ? 'badge-yellow' : 'badge-red'}">${escapeHtml(rootCause.tipo)}</span></td></tr>
+  <tr><th>Origen</th><td>${rootCause.origen === 'EXTERNO' ? '⚠️ El problema NO esta en el codigo de este issue — es un factor externo (infra, dependencia de otro feature, bug en otra pantalla)' : rootCause.origen === 'INTERNO' ? '🔴 El problema esta en los cambios de este issue — requiere correccion del desarrollador' : '❓ No se pudo determinar automaticamente'}</td></tr>
+</table>
+
+${otherGates.length > 0 ? `
+<h2>Estado de los Otros Gates</h2>
+<table>
+  <tr><th>Gate</th><th>Resultado</th><th>Detalle</th></tr>
+  ${otherGates.map(g => {
+    const cls = g.resultado === 'aprobado' ? 'gate-approved' : g.resultado === 'rechazado' ? 'gate-rejected' : '';
+    const icon = g.resultado === 'aprobado' ? '✅' : g.resultado === 'rechazado' ? '❌' : '⏳';
+    return '<tr><td>' + escapeHtml(g.skill) + '</td><td class="' + cls + '">' + icon + ' ' + escapeHtml(g.resultado) + '</td><td>' + escapeHtml(g.motivo ? g.motivo.substring(0, 120) : '-') + '</td></tr>';
+  }).join('')}
+</table>` : ''}
+
+${rejectHistory.length > 1 ? `
+<h2>Historial de Rechazos (este issue)</h2>
+<div class="history-box">
+  <p>Este issue ha sido rechazado <strong>${rejectHistory.length} veces</strong>:</p>
+  <table>
+    <tr><th>Agente</th><th>Fase</th><th>Rechazado por</th><th>Motivo resumido</th></tr>
+    ${rejectHistory.map(h => '<tr><td>' + escapeHtml(h.skill) + '</td><td>' + escapeHtml(h.fase) + '</td><td>' + escapeHtml(h.rechazadoPor) + '</td><td>' + escapeHtml((h.motivo || '').substring(0, 100)) + '</td></tr>').join('')}
+  </table>
+</div>` : ''}
 
 <h2>Informacion del Agente</h2>
 <table>
@@ -210,115 +472,309 @@ ${skillProfile ? `
   ${analysis.factors.length > 0 ? '<h3>Factores contribuyentes</h3><ul>' + analysis.factors.map(f => '<li>' + escapeHtml(f) + '</li>').join('') + '</ul>' : ''}
 </div>
 
-<h2>Solucion Sugerida</h2>
+<h2>Que hay que hacer para desbloquearlo</h2>
 <div class="solution-box">
+  <h3>${rootCause.origen === 'EXTERNO' ? '⚠️ Este issue NO necesita cambios — el bloqueo es externo' : '🔧 Acciones requeridas en este issue'}</h3>
   <p>${escapeHtml(analysis.suggestion)}</p>
-  ${analysis.steps.length > 0 ? '<h3>Pasos recomendados</h3><ol>' + analysis.steps.map(s => '<li>' + escapeHtml(s) + '</li>').join('') + '</ol>' : ''}
+  ${analysis.steps.length > 0 ? '<h3>Pasos concretos</h3><ol>' + analysis.steps.map(s => '<li>' + escapeHtml(s) + '</li>').join('') + '</ol>' : ''}
+  ${analysis.externalDeps && analysis.externalDeps.length > 0 ? '<h3>Dependencias externas detectadas</h3><ul>' + analysis.externalDeps.map(d => '<li>🔗 ' + escapeHtml(d) + '</li>').join('') + '</ul><p><em>Estas dependencias deberian resolverse en issues separados antes de reintentar la validacion de este issue.</em></p>' : ''}
 </div>
 
-<h2>Log del Agente (ultimas 80 lineas)</h2>
+${depIssues.linkedDeps.length > 0 || depIssues.isBlocked ? `
+<h2>Issues de Dependencia Creados</h2>
+<div class="${depIssues.isBlocked ? 'rootcause-box' : 'history-box'}">
+  ${depIssues.isBlocked ? '<p>⛔ <strong>Este issue esta BLOQUEADO</strong> — tiene label <span class="badge badge-red">blocked:dependencies</span>. No se puede avanzar hasta que se resuelvan las dependencias listadas abajo.</p>' : ''}
+  ${depIssues.linkedDeps.length > 0 ? `
+  <p>QA creo los siguientes issues como dependencias que deben resolverse antes de reintentar la validacion:</p>
+  <table>
+    <tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>
+    ${depIssues.linkedDeps.map(d => {
+      const stateIcon = d.state === 'OPEN' ? '🔴 Pendiente' : d.state === 'CLOSED' ? '✅ Resuelto' : d.state;
+      const stateCls = d.state === 'CLOSED' ? 'gate-approved' : 'gate-rejected';
+      return '<tr><td><strong>#' + d.number + '</strong></td><td>' + escapeHtml(d.title) + '</td><td class="' + stateCls + '">' + stateIcon + '</td></tr>';
+    }).join('')}
+  </table>
+  <p><em>${depIssues.linkedDeps.filter(d => d.state === 'OPEN').length > 0 ? '⚠️ Hay dependencias pendientes de resolver. Este issue no debe reintentarse hasta que se cierren.' : '✅ Todas las dependencias estan resueltas. Se puede reintentar la validacion.'}</em></p>` : '<p>El issue esta marcado como bloqueado pero no se encontraron issues de dependencia vinculados.</p>'}
+</div>` : ''}
+
+<h2>Log del Agente (resumen legible)</h2>
+<pre><code>${escapeHtml(readableLog)}</code></pre>
+
+<details><summary>Log crudo (ultimas 80 lineas)</summary>
 <pre><code>${escapeHtml(logTail)}</code></pre>
+</details>
 
 <div class="footer">
-  Intrale Platform &mdash; Reporte de Rechazo &mdash; ${escapeHtml(now.toISOString().slice(0, 10))}
+  Intrale Platform &mdash; Reporte de Rechazo &mdash; v4.1 &mdash; ${escapeHtml(now.toISOString().slice(0, 10))}
 </div>
 </body></html>`;
 }
 
+// --- Buscar issues de dependencia creados en GitHub ---
+function fetchDependencyIssues(issueNum) {
+  try {
+    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+    // Buscar issues con label qa:dependency que mencionen este issue
+    const raw = execSync(
+      `"${ghPath}" issue list --label "qa:dependency" --json number,title,state,url --repo intrale/platform --limit 50`,
+      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).toString();
+    const allDeps = JSON.parse(raw || '[]');
+
+    // También buscar si el issue actual tiene label blocked:dependencies
+    let isBlocked = false;
+    try {
+      const issueRaw = execSync(
+        `"${ghPath}" issue view ${issueNum} --json labels --repo intrale/platform`,
+        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      ).toString();
+      const issueData = JSON.parse(issueRaw);
+      isBlocked = (issueData.labels || []).some(l => l.name === 'blocked:dependencies');
+    } catch {}
+
+    // Buscar en comentarios del issue cuáles fueron vinculados como dependencia
+    let linkedDeps = [];
+    try {
+      const commentsRaw = execSync(
+        `"${ghPath}" issue view ${issueNum} --json comments --repo intrale/platform`,
+        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      ).toString();
+      const comments = JSON.parse(commentsRaw).comments || [];
+      for (const c of comments) {
+        const body = c.body || '';
+        // Buscar menciones de issues de dependencia (#NNN)
+        const matches = body.match(/#(\d+)/g);
+        if (matches && (body.toLowerCase().includes('dependencia') || body.toLowerCase().includes('bloqueado') || body.toLowerCase().includes('dependency'))) {
+          for (const m of matches) {
+            const num = parseInt(m.slice(1));
+            if (num !== parseInt(issueNum)) {
+              const depInfo = allDeps.find(d => d.number === num);
+              if (depInfo) linkedDeps.push(depInfo);
+              else linkedDeps.push({ number: num, title: `Issue #${num}`, state: 'OPEN', url: '' });
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Deduplicar
+    const seen = new Set();
+    linkedDeps = linkedDeps.filter(d => {
+      if (seen.has(d.number)) return false;
+      seen.add(d.number);
+      return true;
+    });
+
+    return { isBlocked, linkedDeps };
+  } catch {
+    return { isBlocked: false, linkedDeps: [] };
+  }
+}
+
+// --- Detectar dependencias externas en el log ---
+function detectExternalDependencies(logTail, motivo) {
+  const deps = [];
+  const logLower = (logTail || '').toLowerCase();
+  const motivoLower = (motivo || '').toLowerCase();
+  const combined = logLower + ' ' + motivoLower;
+
+  // Detectar crashes en pantallas que no son del issue
+  if (combined.includes('unexpected json') || combined.includes('unknownkeyexception'))
+    deps.push('Bug en parser JSON de otro servicio — la app crashea antes de llegar al feature bajo prueba');
+  if (combined.includes('clientsearchbusinesses') || combined.includes('dashboard') && combined.includes('crash'))
+    deps.push('Bug en el Dashboard / listado de negocios (ClientSearchBusinessesService) que bloquea la navegacion');
+  if (combined.includes('ignoreunknownkeys'))
+    deps.push('Falta ignoreUnknownKeys en un servicio client — el backend devuelve campos que el cliente no conoce');
+
+  // Detectar features faltantes mencionadas en el log
+  const featurePatterns = [
+    /no\s+(?:existe|implementad[oa]|disponible)\s+(?:la?\s+)?(?:pantalla|screen|feature|funcionalidad)\s+(?:de\s+)?(\w[\w\s]{3,30})/gi,
+    /falta\s+(?:implementar|construir|crear)\s+(\w[\w\s]{3,30})/gi,
+    /depende\s+de\s+(?:#(\d+)|(\w[\w\s]{3,30}))/gi,
+    /bloqueado\s+por\s+(?:#(\d+)|(\w[\w\s]{3,30}))/gi,
+  ];
+  for (const pattern of featurePatterns) {
+    let match;
+    while ((match = pattern.exec(logTail || '')) !== null) {
+      const dep = (match[1] || match[2] || match[3] || '').trim();
+      if (dep && dep.length > 3 && !deps.includes(dep)) deps.push(dep);
+    }
+  }
+
+  return deps;
+}
+
 // --- Análisis automático basado en patrones ---
 function analyzeRejection(code, elapsed, motivo, logTail, avgCpu, avgMem, skill) {
-  const result = { conclusion: '', factors: [], suggestion: '', steps: [] };
+  const result = { conclusion: '', factors: [], suggestion: '', steps: [], externalDeps: [] };
   const motivoLower = (motivo || '').toLowerCase();
   const logLower = (logTail || '').toLowerCase();
   const elapsedNum = parseFloat(elapsed) || 0;
   const codeNum = parseInt(code) || -1;
 
+  // Detectar dependencias externas para todos los casos
+  result.externalDeps = detectExternalDependencies(logTail, motivo);
+
   // Muerte prematura (<15s)
   if (elapsedNum < 15) {
-    result.conclusion = 'El agente murio prematuramente (menos de 15 segundos). Esto indica un fallo de infraestructura, no un problema funcional.';
+    result.conclusion = 'El agente murio en menos de 15 segundos. Esto es un fallo del entorno (servidor, red, recursos), no del codigo del issue. La funcionalidad no fue evaluada.';
     result.factors.push('Tiempo de ejecucion extremadamente corto (' + elapsed + 's)');
-    if (avgCpu > 80) result.factors.push('CPU en estado critico (' + avgCpu + '%)');
-    if (avgMem > 85) result.factors.push('RAM en estado critico (' + avgMem + '%)');
-    if (logLower.includes('eaddrinuse')) result.factors.push('Puerto en uso — conflicto de procesos');
-    if (logLower.includes('enomem') || logLower.includes('out of memory')) result.factors.push('Sistema sin memoria disponible');
-    if (logLower.includes('module_not_found') || logLower.includes('cannot find module')) result.factors.push('Dependencia faltante en el entorno');
-    result.suggestion = 'Verificar el estado del sistema y reintentar. Si es recurrente, revisar los logs para identificar el error de arranque.';
-    result.steps = ['Verificar recursos del sistema (CPU/RAM)', 'Revisar las primeras lineas del log para el error inicial', 'Verificar que el worktree y dependencias esten intactos', 'Reintentar manualmente si el sistema esta estable'];
+    if (avgCpu > 80) result.factors.push('CPU en estado critico (' + avgCpu + '%) — la maquina estaba sobrecargada');
+    if (avgMem > 85) result.factors.push('RAM en estado critico (' + avgMem + '%) — no habia memoria suficiente');
+    if (logLower.includes('eaddrinuse')) result.factors.push('Puerto en uso — otro proceso estaba ocupando el recurso');
+    if (logLower.includes('enomem') || logLower.includes('out of memory')) result.factors.push('El sistema se quedo sin memoria');
+    if (logLower.includes('module_not_found') || logLower.includes('cannot find module')) result.factors.push('Falta una dependencia en el entorno de ejecucion');
+    result.suggestion = 'Reintentar cuando el sistema este estable. No requiere cambios en el codigo del issue.';
+    result.steps = ['Esperar a que el sistema baje la carga (CPU < 70%, RAM < 80%)', 'Verificar que no haya procesos zombies consumiendo recursos', 'Reintentar automaticamente — el pipeline lo maneja'];
     return result;
   }
 
   // Evidencia QA incompleta
   if (motivoLower.includes('evidencia') || motivoLower.includes('video')) {
-    result.conclusion = 'El agente QA termino sin generar evidencia completa (video, audio o screenshots). El gate de evidencia automatico rechazo la ejecucion.';
-    result.factors.push('Gate de evidencia on-exit rechazo el resultado');
-    if (motivoLower.includes('video_size')) result.factors.push('Video ausente o demasiado pequeno (<200KB)');
-    if (motivoLower.includes('audio')) result.factors.push('Video sin narracion de audio');
-    if (motivoLower.includes('no encontrado')) result.factors.push('Archivo de video no encontrado en disco');
-    result.suggestion = 'Re-ejecutar la validacion QA asegurandose de que el emulador este corriendo y el screenrecord funcione correctamente.';
-    result.steps = ['Verificar que el emulador Android este levantado', 'Confirmar que screenrecord tiene permisos', 'Re-ejecutar /qa validate para el issue', 'Si persiste, revisar la configuracion de qa-android.sh'];
+    // Distinguir: no genero video vs la app crasheo antes de poder probar
+    const hasExternalBlocker = logLower.includes('crash') || logLower.includes('unexpected json') ||
+      logLower.includes('exception') && !logLower.includes('el feature');
+    if (hasExternalBlocker) {
+      result.conclusion = 'El agente QA intento probar el feature pero la app tiene un bug en OTRA pantalla que impide llegar a la funcionalidad. El rechazo dice "evidencia incompleta" pero la causa real es que la app crashea antes de poder probar nada.';
+      result.factors.push('La app crashea antes de llegar al feature bajo prueba');
+      result.factors.push('El rechazo por "evidencia incompleta" es un SINTOMA, no la causa');
+      if (logLower.includes('unexpected json')) result.factors.push('Error de parsing JSON: el backend devuelve campos que la app no conoce');
+      result.suggestion = 'Corregir el bug bloqueante en otra parte de la app (ver dependencias externas abajo). Este issue NO necesita cambios.';
+      result.steps = ['Identificar el bug que crashea la app (ver log)', 'Crear un issue separado para corregir ese bug', 'Marcar este issue como bloqueado por el nuevo issue', 'Reintentar QA una vez que el bug bloqueante este corregido'];
+    } else {
+      result.conclusion = 'El agente QA ejecuto la prueba pero no genero evidencia valida (video o audio). Puede ser un problema tecnico de grabacion (emulador, screenrecord, permisos).';
+      result.factors.push('Gate de evidencia on-exit rechazo el resultado');
+      if (motivoLower.includes('video_size')) result.factors.push('Video ausente o demasiado pequeno (<200KB)');
+      if (motivoLower.includes('audio')) result.factors.push('Video sin narracion de audio');
+      if (motivoLower.includes('no encontrado')) result.factors.push('Archivo de video no encontrado en disco');
+      result.suggestion = 'Verificar que el emulador este corriendo y que screenrecord funcione. Reintentar la prueba QA.';
+      result.steps = ['Verificar que el emulador Android este levantado y respondiendo', 'Confirmar que screenrecord tiene permisos y espacio', 'Re-ejecutar la validacion QA'];
+    }
     return result;
   }
 
   // Errores de compilacion/build
   if (motivoLower.includes('build') || motivoLower.includes('compilation') || logLower.includes('build failed') || logLower.includes('compilation error')) {
-    result.conclusion = 'El agente fallo durante la fase de build/compilacion. Los cambios de codigo introdujeron errores que impiden la compilacion.';
+    result.conclusion = 'El codigo tiene errores de compilacion — no se puede generar la aplicacion. El desarrollador debe revisar y corregir los errores marcados en el log.';
     result.factors.push('Error de compilacion detectado');
-    if (logLower.includes('unresolved reference')) result.factors.push('Referencia a simbolo no resuelto');
-    if (logLower.includes('type mismatch')) result.factors.push('Error de tipos en el codigo');
-    if (avgMem > 80) result.factors.push('RAM alta — Gradle puede quedarse sin heap');
-    result.suggestion = 'Revisar los errores de compilacion en el log y corregir el codigo fuente. Si es un problema de memoria, reducir la concurrencia de agentes.';
-    result.steps = ['Leer el log buscando "error:" o "FAILED"', 'Identificar los archivos y lineas con errores', 'Corregir el codigo fuente', 'Ejecutar ./gradlew check --no-daemon localmente antes de reintentar'];
+    if (logLower.includes('unresolved reference')) result.factors.push('Se usa una funcion o variable que no existe (referencia no resuelta)');
+    if (logLower.includes('type mismatch')) result.factors.push('Error de tipos: se pasa un dato incorrecto a una funcion');
+    if (avgMem > 80) result.factors.push('RAM alta (' + avgMem + '%) — Gradle puede haberse quedado sin memoria');
+    result.suggestion = 'El desarrollador debe corregir los errores de compilacion y verificar que el build pase localmente antes de reintentar.';
+    result.steps = ['Leer el log buscando "error:" — ahi estan los errores con archivo y linea', 'Corregir cada error de compilacion', 'Ejecutar ./gradlew check --no-daemon localmente para verificar', 'Re-entregar cuando compile sin errores'];
     return result;
   }
 
   // Tests fallando
   if (motivoLower.includes('test') || logLower.includes('test failed') || logLower.includes('tests failed') || logLower.includes('assertion')) {
-    result.conclusion = 'Los tests automaticos fallaron durante la ejecucion del agente. Esto puede indicar una regresion o un test mal escrito.';
+    result.conclusion = 'Las pruebas automaticas fallaron. Esto puede significar que los cambios rompieron algo que funcionaba antes (regresion) o que un test necesita actualizarse para reflejar el nuevo comportamiento.';
     result.factors.push('Fallos en tests automaticos');
-    if (logLower.includes('timeout')) result.factors.push('Posible timeout en tests (sistema lento o test inestable)');
-    result.suggestion = 'Identificar los tests fallidos, verificar si son regresiones reales o tests flaky, y corregir el codigo o los tests segun corresponda.';
-    result.steps = ['Buscar "FAILED" en el log para identificar tests especificos', 'Ejecutar los tests fallidos localmente para reproducir', 'Si es flaky, agregar retry o estabilizar el test', 'Si es regresion, corregir el codigo de produccion'];
+    if (logLower.includes('timeout')) result.factors.push('Posible timeout: el test tardo demasiado (sistema lento o test inestable)');
+    result.suggestion = 'Identificar que tests fallaron, verificar si es una regresion real o un test desactualizado, y corregir.';
+    result.steps = ['Buscar "FAILED" en el log para ver que tests especificos fallaron', 'Ejecutar esos tests localmente para reproducir', 'Si el test esta correcto: corregir el codigo de produccion', 'Si el test esta desactualizado: actualizar el test'];
     return result;
   }
 
   // Review rechazado
   if (motivoLower.includes('review') || motivoLower.includes('bloqueante')) {
-    result.conclusion = 'El code review automatico encontro problemas bloqueantes en el codigo. El agente debe corregir los hallazgos antes de continuar.';
+    result.conclusion = 'La revision de codigo encontro problemas de calidad que deben corregirse. Estos pueden ser violaciones de convenciones del proyecto, problemas de seguridad, o codigo que no sigue los patrones establecidos.';
     result.factors.push('Code review rechazo el PR');
-    if (motivoLower.includes('string')) result.factors.push('Violacion de convenciones de strings');
-    if (motivoLower.includes('logger')) result.factors.push('Logger faltante en clase nueva');
-    result.suggestion = 'Revisar los comentarios del code review y aplicar las correcciones sugeridas. Los bloqueantes deben resolverse antes de reintentar.';
-    result.steps = ['Leer el feedback del review en los comentarios del PR', 'Aplicar las correcciones bloqueantes', 'Verificar convenciones de CLAUDE.md', 'Re-ejecutar el delivery'];
+    if (motivoLower.includes('string')) result.factors.push('Violacion de convenciones de strings (usar resString en vez de stringResource)');
+    if (motivoLower.includes('logger')) result.factors.push('Falta logger en una clase nueva (obligatorio segun CLAUDE.md)');
+    result.suggestion = 'Aplicar las correcciones bloqueantes del review. Los comentarios del PR detallan que hay que cambiar.';
+    result.steps = ['Leer los comentarios del code review en el PR', 'Aplicar cada correccion bloqueante', 'Verificar que se cumplen las convenciones de CLAUDE.md', 'Re-entregar el PR corregido'];
     return result;
   }
 
   // Saturacion de recursos
   if (avgCpu > 75 || avgMem > 85) {
-    result.conclusion = 'El sistema estaba bajo alta carga de recursos durante la ejecucion. Es probable que la falta de CPU/RAM haya causado inestabilidad o timeouts.';
-    result.factors.push('CPU promedio alto: ' + avgCpu + '%');
-    result.factors.push('RAM promedio alto: ' + avgMem + '%');
-    if (avgMem > 85) result.factors.push('RAM critica — posibles OOM kills');
-    result.suggestion = 'Esperar a que el sistema se estabilice (presion GREEN) antes de reintentar. Considerar reducir la concurrencia de agentes.';
-    result.steps = ['Verificar la presion actual del sistema', 'Si esta en YELLOW/ORANGE/RED, esperar', 'Matar procesos zombies (Gradle daemons, etc.)', 'Reintentar cuando la presion baje a GREEN'];
+    result.conclusion = 'La maquina estaba sobrecargada durante la ejecucion. No es un problema del codigo — es un problema de recursos del servidor. El agente fallo por falta de CPU o memoria, no por un bug.';
+    result.factors.push('CPU promedio: ' + avgCpu + '% (la maquina estaba sobrecargada)');
+    result.factors.push('RAM promedio: ' + avgMem + '% (poca memoria disponible)');
+    if (avgMem > 85) result.factors.push('RAM critica — el sistema puede haber matado procesos por falta de memoria');
+    result.suggestion = 'Esperar a que el servidor se desocupe y reintentar. No requiere cambios en el codigo.';
+    result.steps = ['Esperar a que la carga baje (CPU < 70%, RAM < 80%)', 'Matar Gradle daemons o procesos zombies si los hay', 'El pipeline reintentara automaticamente'];
     return result;
   }
 
   // Timeout / ejecucion larga
   if (elapsedNum > 3600) {
-    result.conclusion = 'El agente estuvo corriendo por mas de ' + Math.round(elapsedNum / 60) + ' minutos antes de fallar. Esto sugiere un proceso que se quedo trabado o un scope demasiado grande.';
+    result.conclusion = 'El agente estuvo corriendo ' + Math.round(elapsedNum / 60) + ' minutos sin terminar. Puede haberse trabado en un loop, o el issue es demasiado grande para una sola ejecucion.';
     result.factors.push('Duracion excesiva: ' + Math.round(elapsedNum / 60) + ' minutos');
-    result.suggestion = 'Verificar si el agente se quedo en un loop o si el issue es demasiado complejo para una sola ejecucion. Considerar dividir el trabajo.';
-    result.steps = ['Revisar el log buscando patrones repetitivos (loops)', 'Verificar si el issue tiene un scope demasiado grande', 'Considerar dividir en sub-issues mas pequeños', 'Reintentar con un scope mas acotado'];
+    result.suggestion = 'Revisar si el agente se quedo en un loop o si el issue necesita dividirse en partes mas chicas.';
+    result.steps = ['Revisar el log buscando patrones repetitivos', 'Si el issue tiene scope muy grande, dividirlo en sub-issues', 'Reintentar con un scope mas acotado'];
     return result;
   }
 
-  // Genérico
-  result.conclusion = 'El agente termino con codigo ' + code + ' despues de ' + elapsed + 's. El motivo reportado fue: "' + motivo + '". Se requiere revision manual del log para determinar la causa exacta.';
-  result.factors.push('Codigo de salida: ' + code);
-  if (codeNum !== 0) result.factors.push('Terminacion anormal (no-zero exit code)');
-  result.suggestion = 'Revisar el log completo del agente para identificar el punto exacto de falla. Buscar errores, excepciones o mensajes de rechazo en las ultimas lineas.';
-  result.steps = ['Abrir el log viewer en el dashboard para el issue #' + issue, 'Buscar "error", "FAILED", "rechazado" en el log', 'Identificar la seccion donde ocurrio el fallo', 'Corregir el problema y reintentar'];
+  // Genérico — mejorado
+  result.conclusion = 'El agente termino con un error (codigo ' + code + ') despues de ' + elapsed + ' segundos. El motivo reportado fue: "' + motivo + '". Requiere revision manual del log para determinar la causa exacta.';
+  result.factors.push('Codigo de salida: ' + code + (codeNum !== 0 ? ' (terminacion anormal)' : ''));
+  result.suggestion = 'Revisar el log del agente buscando errores, excepciones o mensajes de rechazo.';
+  result.steps = ['Abrir el log del issue #' + issue + ' en el dashboard', 'Buscar "error", "FAILED", "rechazado" en el log', 'Identificar donde ocurrio el fallo y corregir'];
   return result;
+}
+
+// --- Generar narración en texto plano para TTS ---
+function generateNarration() {
+  const issueCtx = fetchIssueContext(issue);
+  const rootCause = classifyRootCause(motivo, readLastLines(path.join(LOG_DIR, logFile), 80), exitCode);
+  const analysis = analyzeRejection(exitCode, elapsed, motivo, readLastLines(path.join(LOG_DIR, logFile), 80),
+    (() => { const m = getRecentMetrics(10); return m.length > 0 ? Math.round(m.reduce((s, x) => s + x.cpu, 0) / m.length) : 0; })(),
+    (() => { const m = getRecentMetrics(10); return m.length > 0 ? Math.round(m.reduce((s, x) => s + x.mem, 0) / m.length) : 0; })(),
+    skill);
+  const rejectHistory = getRejectHistory(issue);
+  const depIssues = fetchDependencyIssues(issue);
+
+  const parts = [];
+
+  // Intro
+  parts.push(`Reporte de rechazo del issue número ${issue}, que estaba en la fase de ${fase} con el agente ${skill}.`);
+
+  // Qué se estaba haciendo
+  parts.push(`El issue se llama "${issueCtx.title}". ${issueCtx.summary}`);
+
+  // Qué pasó
+  parts.push(`¿Qué pasó? ${rootCause.negocio || rootCause.desc}`);
+
+  // Causa raíz
+  const origenTexto = rootCause.origen === 'EXTERNO'
+    ? 'El problema es externo, no es culpa de este issue.'
+    : rootCause.origen === 'INTERNO'
+    ? 'El problema está en los cambios de este issue, requiere corrección del desarrollador.'
+    : 'No se pudo determinar automáticamente si es un problema interno o externo.';
+  parts.push(`Causa raíz: ${rootCause.desc}. Clasificación: ${rootCause.tipo}. ${origenTexto}`);
+
+  // Historial
+  if (rejectHistory.length > 1) {
+    parts.push(`Este issue ya fue rechazado ${rejectHistory.length} veces. Los rechazos anteriores fueron por: ${rejectHistory.map(h => h.skill + ' en fase ' + h.fase).join(', ')}.`);
+  }
+
+  // Análisis y solución
+  parts.push(`Análisis de la situación: ${analysis.conclusion}`);
+  if (analysis.factors.length > 0) {
+    parts.push(`Factores que contribuyeron: ${analysis.factors.join('. ')}.`);
+  }
+  parts.push(`Para desbloquearlo: ${analysis.suggestion}`);
+  if (analysis.steps.length > 0) {
+    parts.push(`Pasos concretos: ${analysis.steps.map((s, i) => (i + 1) + ', ' + s).join('. ')}.`);
+  }
+
+  // Dependencias
+  if (depIssues.isBlocked || depIssues.linkedDeps.length > 0) {
+    const openDeps = depIssues.linkedDeps.filter(d => d.state === 'OPEN');
+    const closedDeps = depIssues.linkedDeps.filter(d => d.state === 'CLOSED');
+    parts.push(`Este issue está bloqueado por dependencias.`);
+    if (depIssues.linkedDeps.length > 0) {
+      parts.push(`QA creó ${depIssues.linkedDeps.length} issues de dependencia: ${depIssues.linkedDeps.map(d => 'número ' + d.number + ', ' + d.title + ', estado ' + (d.state === 'OPEN' ? 'pendiente' : 'resuelto')).join('. ')}.`);
+    }
+    if (openDeps.length > 0) {
+      parts.push(`Hay ${openDeps.length} dependencias pendientes de resolver. No se debe reintentar hasta que se cierren.`);
+    } else if (closedDeps.length > 0) {
+      parts.push(`Todas las dependencias están resueltas. Se puede reintentar la validación.`);
+    }
+  }
+
+  return parts.join(' ');
 }
 
 // --- Main ---
@@ -361,6 +817,51 @@ async function main() {
     try { fs.unlinkSync(path.join(ROOT, 'docs', 'qa', `rejection-${issue}-${skill}.html`)); } catch {}
 
     console.log(`[rejection-report] Reporte enviado a Telegram para #${issue} ${skill}`);
+
+    // --- Audio TTS del reporte ---
+    try {
+      const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+      const TG_CONFIG = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
+      const tgConfig = JSON.parse(fs.readFileSync(TG_CONFIG, 'utf8'));
+
+      const narration = generateNarration();
+      console.log(`[rejection-report] Generando audio TTS (${narration.length} chars)...`);
+
+      // TTS tiene limite de ~4096 chars — partir en chunks si es necesario
+      const MAX_TTS_CHARS = 3800;
+      const chunks = [];
+      if (narration.length <= MAX_TTS_CHARS) {
+        chunks.push(narration);
+      } else {
+        // Partir por oraciones, respetando el limite
+        const sentences = narration.split(/(?<=[.!?])\s+/);
+        let current = '';
+        for (const sentence of sentences) {
+          if ((current + ' ' + sentence).length > MAX_TTS_CHARS && current.length > 0) {
+            chunks.push(current.trim());
+            current = sentence;
+          } else {
+            current = current ? current + ' ' + sentence : sentence;
+          }
+        }
+        if (current.trim()) chunks.push(current.trim());
+      }
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkText = chunks.length > 1
+          ? `Parte ${i + 1} de ${chunks.length}. ${chunks[i]}`
+          : chunks[i];
+        const audioBuffer = await textToSpeech(chunkText);
+        if (audioBuffer) {
+          const sent = await sendVoiceTelegram(audioBuffer, tgConfig.bot_token, tgConfig.chat_id);
+          console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado: ${sent ? 'OK' : 'FALLO'}`);
+        } else {
+          console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1})`);
+        }
+      }
+    } catch (audioErr) {
+      console.error(`[rejection-report] Error generando audio TTS (no fatal): ${audioErr.message}`);
+    }
   } catch (e) {
     console.error(`[rejection-report] Error: ${e.message}`);
     process.exit(1);
