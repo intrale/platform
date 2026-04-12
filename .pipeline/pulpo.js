@@ -2673,7 +2673,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   child.unref();
-  fs.closeSync(agentLogFd);
+  // NO cerrar agentLogFd aquí — en Windows, cerrar el FD en el padre
+  // mata la herencia y el hijo pierde stdout/stderr.
+  // Se cierra en child.on('exit') para que el log capture todo el output.
 
   activeProcesses.set(processKey(skill, issue), {
     pid: child.pid,
@@ -2709,6 +2711,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
+    // Cerrar el FD del log ahora que el hijo terminó
+    try { fs.closeSync(agentLogFd); } catch {}
+
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
