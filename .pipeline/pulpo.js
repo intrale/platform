@@ -195,44 +195,97 @@ function clearCooldown(skill, issue) {
 // Se actualizan al terminar cada agente usando los snapshots de metrics-history.
 const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 
+// Versión del schema de skill-profiles. Incrementar cada vez que cambie la fórmula
+// de aprendizaje de `avgMem` / `avgCpu` — al hacerlo, los perfiles viejos se invalidan
+// automáticamente en el próximo arranque de pulpo. v2 = aprendizaje por DELTA vs baseline.
+const SKILL_PROFILES_SCHEMA_VERSION = 2;
+
 function loadSkillProfiles() {
-  try { return JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8')); } catch { return {}; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    // Compatibilidad: si el archivo viejo no tiene _schemaVersion (v1), devolver vacío
+    // al próximo save se escribirá con la versión nueva.
+    if (!raw || raw._schemaVersion !== SKILL_PROFILES_SCHEMA_VERSION) return {};
+    const { _schemaVersion, ...profiles } = raw;
+    return profiles;
+  } catch { return {}; }
 }
 
 function saveSkillProfiles(profiles) {
-  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(profiles, null, 2));
+  const payload = { _schemaVersion: SKILL_PROFILES_SCHEMA_VERSION, ...profiles };
+  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(payload, null, 2));
+}
+
+/**
+ * Migración one-shot: si skill-profiles.json existe pero tiene un schema viejo
+ * (o no tiene schema version), renombrarlo a .bak y empezar de cero con la fórmula
+ * nueva. Se ejecuta una sola vez al arrancar pulpo.
+ */
+function migrateSkillProfilesIfNeeded() {
+  try {
+    if (!fs.existsSync(SKILL_PROFILES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    if (raw && raw._schemaVersion === SKILL_PROFILES_SCHEMA_VERSION) return; // ya migrado
+
+    const bakPath = SKILL_PROFILES_FILE + '.v1.bak';
+    fs.renameSync(SKILL_PROFILES_FILE, bakPath);
+    log('pulpo', `📦 skill-profiles.json migrado a v${SKILL_PROFILES_SCHEMA_VERSION}: backup en ${path.basename(bakPath)}. Los perfiles se reaprenden con la fórmula DELTA.`);
+  } catch (e) {
+    log('pulpo', `Error migrando skill-profiles: ${e.message}`);
+  }
 }
 
 /**
  * Registrar el consumo de recursos de un agente que terminó.
- * Lee metrics-history.jsonl para el período de ejecución del agente,
- * calcula el promedio de CPU/RAM durante ese período, y actualiza
- * el perfil del skill con un rolling average ponderado.
+ *
+ * Estrategia DELTA (v2): aprender el INCREMENTO que el agente introdujo respecto
+ * a la baseline inmediatamente previa a su lanzamiento, no el promedio absoluto
+ * del sistema durante su vida. Sin esto, infra pesada coexistente (emulador,
+ * Edge, Gradle daemons) se cuela en el perfil y el gate predictivo lo vuelve
+ * a sumar al usage actual → doble conteo → livelock.
+ *
+ * Ver pulpo.js comentario de predictResourceImpact y docs/pipeline/gate-predictivo.md
  */
+const BASELINE_WINDOW_MS = 60_000; // Ventana de muestras pre-lanzamiento para estimar baseline
+
 function recordSkillResourceUsage(skill, startTime, endTime) {
   try {
     const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
     if (!fs.existsSync(metricsFile)) return;
 
     const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
-    const snapshots = [];
+    const parsed = [];
     for (const line of lines) {
-      try {
-        const s = JSON.parse(line);
-        if (s.ts >= startTime && s.ts <= endTime) snapshots.push(s);
-      } catch {}
+      try { parsed.push(JSON.parse(line)); } catch {}
     }
 
-    if (snapshots.length < 2) return; // Necesitamos al menos 2 snapshots para un promedio significativo
+    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s)
+    const baseline = parsed.filter(s => s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
+    // Durante: muestras mientras el agente estuvo vivo
+    const during = parsed.filter(s => s.ts >= startTime && s.ts <= endTime);
 
-    // Promedio de CPU y RAM durante la vida del agente
-    const avgCpu = snapshots.reduce((sum, s) => sum + s.cpu, 0) / snapshots.length;
-    const avgMem = snapshots.reduce((sum, s) => sum + s.mem, 0) / snapshots.length;
-    // Cantidad de agentes promedio corriendo durante el período (para estimar contribución individual)
-    const avgAgents = snapshots.reduce((sum, s) => sum + Math.max(1, s.agents), 0) / snapshots.length;
-    // Estimación de la contribución individual de este agente
-    const estCpuPerAgent = avgCpu / avgAgents;
-    const estMemPerAgent = avgMem / avgAgents;
+    if (baseline.length === 0 || during.length < 2) {
+      // Sin baseline confiable o muy pocas muestras — no aprender (evita corromper el perfil)
+      return;
+    }
+
+    const avgBaselineCpu = baseline.reduce((sum, s) => sum + s.cpu, 0) / baseline.length;
+    const avgBaselineMem = baseline.reduce((sum, s) => sum + s.mem, 0) / baseline.length;
+    const avgDuringCpu = during.reduce((sum, s) => sum + s.cpu, 0) / during.length;
+    const avgDuringMem = during.reduce((sum, s) => sum + s.mem, 0) / during.length;
+
+    // Delta bruto: cuánto subió el sistema respecto al instante previo a lanzarlo
+    const deltaCpu = Math.max(0, avgDuringCpu - avgBaselineCpu);
+    const deltaMem = Math.max(0, avgDuringMem - avgBaselineMem);
+
+    // Si había otros agentes Claude corriendo durante la ventana, atribuirles
+    // parcialmente el delta (50% de atribución conservadora). Así no inflamos
+    // el perfil de este skill con el consumo de los vecinos.
+    const avgDuringAgents = during.reduce((sum, s) => sum + Math.max(1, s.agents || 1), 0) / during.length;
+    const otherAgents = Math.max(0, avgDuringAgents - 1);
+    const shareDenominator = 1 + otherAgents * 0.5;
+    const estCpuPerAgent = deltaCpu / shareDenominator;
+    const estMemPerAgent = deltaMem / shareDenominator;
 
     const profiles = loadSkillProfiles();
     const existing = profiles[skill] || { avgCpu: estCpuPerAgent, avgMem: estMemPerAgent, samples: 0 };
@@ -266,12 +319,20 @@ function recordSkillResourceUsage(skill, startTime, endTime) {
  */
 const MIN_RELIABLE_SAMPLES = 5;
 const MAX_EST_CPU = 25;  // Cap: ningún agente Claude usa más que esto
-const MAX_EST_MEM = 20;  // Cap: un proceso Claude rara vez pasa de 3GB (~20% en 16GB)
+const MAX_EST_MEM = 5;   // Cap: un proceso claude.exe real usa ~250-500MB (~1.6-3% en 16GB).
+                         // Defensa en profundidad contra perfiles mal aprendidos — ver doc
+                         // docs/pipeline/gate-predictivo.md
 const PROFILE_STALE_HOURS = 24;
+
+// Skills cuya infra reservada (emulador Android) debe restarse del baseline del gate.
+// Razón: el emulador existe PORQUE estos skills lo necesitan; cobrarle su RAM al propio
+// skill que lo consume es doble conteo y lleva a livelock (la baseline + el delta del
+// agente nunca cierran bajo el umbral porque el emulador ya está presente en la baseline).
+const QA_INFRA_SKILLS = new Set(['qa', 'security', 'tester']);
 
 function getEstimatedImpact(profile) {
   const DEFAULT_CPU = 12;
-  const DEFAULT_MEM = 8;
+  const DEFAULT_MEM = 3;  // Proceso claude.exe real ~ 250-500 MB en 16 GB
 
   if (!profile) return { cpu: DEFAULT_CPU, mem: DEFAULT_MEM };
 
@@ -299,7 +360,45 @@ function getEstimatedImpact(profile) {
   return { cpu: Math.round(cpu * 10) / 10, mem: Math.round(mem * 10) / 10 };
 }
 
-function predictResourceImpact(skill, config) {
+/**
+ * Lee la RAM ocupada por qemu-system-x86_64-headless.exe como porcentaje del total
+ * del sistema. Cacheado por 5 segundos para no pagar un `tasklist` en cada llamada.
+ * Devuelve 0 si el emulador no está corriendo o si la medición falla.
+ */
+let _emulatorMemCache = { ts: 0, percent: 0, running: false };
+const EMULATOR_MEM_CACHE_MS = 5000;
+
+function measureEmulatorMemPercent() {
+  const now = Date.now();
+  if (now - _emulatorMemCache.ts < EMULATOR_MEM_CACHE_MS) return _emulatorMemCache;
+
+  let running = false;
+  let percent = 0;
+  try {
+    const out = execSync(
+      'tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    // Formato CSV: "qemu-system-x86_64-headless.exe","1234","Console","1","234,567 KB"
+    const line = out.split('\n').find(l => l.toLowerCase().includes('qemu-system'));
+    if (line) {
+      running = true;
+      const cols = line.split('","').map(c => c.replace(/^"|"$/g, ''));
+      const memKbStr = (cols[4] || '').replace(/[^\d]/g, '');
+      const memKb = parseInt(memKbStr, 10);
+      if (!isNaN(memKb) && memKb > 0) {
+        const totalBytes = os.totalmem();
+        const usedBytes = memKb * 1024;
+        percent = Math.round((usedBytes / totalBytes) * 1000) / 10; // 1 decimal
+      }
+    }
+  } catch { /* sin tasklist o sin qemu — degradar silencioso */ }
+
+  _emulatorMemCache = { ts: now, percent, running };
+  return _emulatorMemCache;
+}
+
+function predictResourceImpact(skill, config, ctx = {}) {
   const profiles = loadSkillProfiles();
   const profile = profiles[skill];
   const usage = getSystemResourceUsage();
@@ -309,24 +408,44 @@ function predictResourceImpact(skill, config) {
 
   const est = getEstimatedImpact(profile);
 
+  // Reserva de infra del propio skill: si este skill es QA y el emulador está
+  // corriendo, restarlo del baseline — su RAM es un costo de la ventana QA, no
+  // del agente individual. Ver QA_INFRA_SKILLS arriba.
+  let reservedMem = 0;
+  let reservedReason = null;
+  if (QA_INFRA_SKILLS.has(skill)) {
+    const emu = ctx.emulator || measureEmulatorMemPercent();
+    if (emu.running && emu.percent > 0) {
+      reservedMem = emu.percent;
+      reservedReason = `emulador ${emu.percent}%`;
+    }
+  }
+
+  const effectiveMemBase = Math.max(0, usage.memPercent - reservedMem);
   const predictedCpu = usage.cpuPercent + est.cpu;
-  const predictedMem = usage.memPercent + est.mem;
+  const predictedMem = effectiveMemBase + est.mem;
 
   const cpuSafe = predictedCpu < maxCpu;
   const memSafe = predictedMem < maxMem;
 
   if (cpuSafe && memSafe) {
-    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem } };
+    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem }, reserved: reservedMem };
   }
 
   const reasons = [];
   if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${est.cpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
-  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
+  if (!memSafe) {
+    const memDetail = reservedReason
+      ? `MEM ${usage.memPercent}% − ${reservedReason} + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`
+      : `MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`;
+    reasons.push(memDetail);
+  }
 
   return {
     safe: false,
     reason: reasons.join(' | '),
-    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) }
+    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) },
+    reserved: reservedMem
   };
 }
 
@@ -805,14 +924,26 @@ function readManualPriorityOverrides() {
   try {
     const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
 
-    // QA manual override
+    // QA manual override — al activar manual, AUTOEXCLUIR Build (las ventanas son
+    // mutuamente exclusivas; QA > Build > Dev). Sin esto quedaban las dos activas
+    // a la vez cuando se activaba una manualmente y la otra cruzaba el umbral.
     if (data.qa?.manualOverride === true && !qaPriorityActive) {
       qaPriorityActive = true;
       qaPriorityManual = true;
       qaPriorityActivatedAt = Date.now();
       qaPriorityNotifiedTelegram = false;
       log('qa-priority', '🔧 QA Priority Window ACTIVADA MANUALMENTE desde dashboard');
-      sendTelegram('🔧 QA Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
+      sendTelegram('🔧 QA Priority Window activada manualmente desde el dashboard. Dev y build bloqueados hasta desactivación.');
+      // Autoexcluir Build (incluso si era manual — el último override gana)
+      if (buildPriorityActive) {
+        log('build-priority', '🔄 Build Priority desactivada por activación manual de QA (autoexcluyentes)');
+        buildPriorityActive = false;
+        buildPriorityManual = false;
+        buildPriorityActivatedAt = 0;
+        buildFirstBlockedAt = 0;
+        buildPriorityNotifiedTelegram = false;
+        buildPrioritySafetyNotified = false;
+      }
       persistPriorityWindows();
     } else if (data.qa?.manualOverride === false && qaPriorityActive) {
       qaPriorityActive = false;
@@ -823,7 +954,7 @@ function readManualPriorityOverrides() {
       persistPriorityWindows();
     }
 
-    // Build manual override
+    // Build manual override — autoexclusión simétrica con QA
     if (data.build?.manualOverride === true && !buildPriorityActive) {
       buildPriorityActive = true;
       buildPriorityManual = true;
@@ -831,6 +962,16 @@ function readManualPriorityOverrides() {
       buildPriorityNotifiedTelegram = false;
       log('build-priority', '🔧 Build Priority Window ACTIVADA MANUALMENTE desde dashboard');
       sendTelegram('🔧 Build Priority Window activada manualmente desde el dashboard. Dev bloqueado hasta desactivación.');
+      // Autoexcluir QA (incluso si era manual — el último override gana)
+      if (qaPriorityActive) {
+        log('qa-priority', '🔄 QA Priority desactivada por activación manual de Build (autoexcluyentes)');
+        qaPriorityActive = false;
+        qaPriorityManual = false;
+        qaPriorityActivatedAt = 0;
+        qaFirstBlockedAt = 0;
+        qaPriorityNotifiedTelegram = false;
+        qaPrioritySafetyNotified = false;
+      }
       persistPriorityWindows();
     } else if (data.build?.manualOverride === false && buildPriorityActive) {
       buildPriorityActive = false;
@@ -920,7 +1061,17 @@ function evaluateQaPriority(config) {
   // ---- Activación ----
   // Activación inmediata cuando cola >= umbral (sin esperar N minutos)
   if (pendingQa >= threshold) {
-    // QA siempre gana: si Build está activa, desactivarla
+    // Respetar override manual de Build: si el operador activó Build a mano,
+    // NO auto-activar QA en paralelo (las ventanas son autoexcluyentes).
+    // QA quedará en espera hasta que Build manual se desactive.
+    if (buildPriorityActive && buildPriorityManual) {
+      if (qaFirstBlockedAt === 0) {
+        qaFirstBlockedAt = now;
+        log('qa-priority', `⏳ QA Priority en espera (${pendingQa} pendientes) — Build manual activa, autoexcluyentes`);
+      }
+      return false;
+    }
+    // QA siempre gana sobre Build automática
     if (buildPriorityActive && !buildPriorityManual) {
       log('qa-priority', `🔄 QA Priority desplaza Build Priority (QA > Build) — ${pendingQa} issues QA pendientes`);
       buildPriorityActive = false;
@@ -1117,22 +1268,32 @@ function tryFreeResources(mode = 'soft') {
 }
 
 /**
- * Apagar el emulador QA si no hay nada en fase verificacion/trabajando.
- * El emulador consume ~2.5GB de RAM y ensureQaEnvironment() lo re-levanta cuando hace falta.
- * Retorna true si mató el emulador.
+ * Solicitar apagado del emulador QA si no hay nada en fase verificacion/trabajando.
+ * Delega al servicio-emulador via cola (no ejecuta directamente).
+ * Retorna true si encoló el pedido de stop.
  */
+// Grace period: después de levantar el emulador (boot_completed), no apagarlo
+// durante este tiempo. Evita el loop preflight→start→idle→stop→preflight que
+// corrompía el quickboot. Anclado a qa-env-state.lastStartedAt, que qa-environment.js
+// escribe recién DESPUÉS de confirmar sys.boot_completed=1.
+const EMULATOR_IDLE_GRACE_MS = 3 * 60 * 1000; // 3 minutos de warm-up protegido
+
 function shutdownIdleEmulator(config) {
   try {
-    // ¿Hay algo en verificacion/trabajando?
+    // ¿Hay algo en verificacion/trabajando O pendiente?
+    // Si hay QA pendiente encolada, el emulador va a ser necesario inmediatamente.
     for (const [pName, pConfig] of Object.entries(config.pipelines)) {
       if (!pConfig.fases.includes('verificacion')) continue;
-      const trabajandoDir = path.join(fasePath(pName, 'verificacion'), 'trabajando');
-      const archivos = listWorkFiles(trabajandoDir);
-      if (archivos.length > 0) return false; // Hay agentes de QA corriendo, no tocar
+      const verifDir = fasePath(pName, 'verificacion');
+      const trabajando = listWorkFiles(path.join(verifDir, 'trabajando'));
+      if (trabajando.length > 0) return false; // Hay agentes QA corriendo
+      const pendiente = listWorkFiles(path.join(verifDir, 'pendiente'));
+      if (pendiente.length > 0) return false; // Hay QA pendiente en cola
     }
 
     // ¿Está corriendo el emulador? Verificar state file Y por nombre de proceso
     let emulatorRunning = false;
+    let lastStartedAt = 0;
 
     // Check 1: state file
     const stateFile = path.join(PIPELINE, 'qa-env-state.json');
@@ -1141,6 +1302,7 @@ function shutdownIdleEmulator(config) {
         const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
         const emulatorPid = state.emulator || state.emulador;
         if (emulatorPid && isProcessAlive(emulatorPid)) emulatorRunning = true;
+        lastStartedAt = state.lastStartedAt || 0;
       } catch {}
     }
 
@@ -1155,30 +1317,18 @@ function shutdownIdleEmulator(config) {
 
     if (!emulatorRunning) return false;
 
-    // Apagar QA environment completo (emulador + backend local + DynamoDB)
-    log('recursos', '🔌 Apagando QA environment idle (emulador + servicios) para liberar ~2.5GB RAM');
-    try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" stop`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
-      });
-    } catch (e) {
-      log('recursos', `Error apagando QA env vía script: ${e.message}`);
+    // Grace period: no apagar si estamos dentro de la ventana post-boot.
+    // lastStartedAt se actualiza en qa-environment.js DESPUÉS de boot_completed.
+    const ageMs = Date.now() - lastStartedAt;
+    if (lastStartedAt > 0 && ageMs < EMULATOR_IDLE_GRACE_MS) {
+      const remaining = Math.round((EMULATOR_IDLE_GRACE_MS - ageMs) / 1000);
+      log('recursos', `⏳ Emulador dentro de grace period post-boot (${remaining}s restantes) — no apagar`);
+      return false;
     }
 
-    // Fallback: si QEMU sigue vivo después del stop, matarlo directo por nombre
-    try {
-      const check = execSync('tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
-        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
-      if (check.includes('qemu-system')) {
-        execSync('taskkill /IM qemu-system-x86_64-headless.exe /F /T',
-          { timeout: 10000, windowsHide: true, stdio: 'ignore' });
-        log('recursos', '🔌 QEMU matado por nombre (fallback — state file había perdido el PID)');
-      }
-    } catch (e) {
-      log('recursos', `Error matando QEMU por nombre: ${e.message}`);
-    }
-    // Reset circuit breaker para que pueda re-levantarse después
-    qaEnvStartFailures = 0;
+    // Encolar stop al servicio-emulador (no ejecutar directo)
+    log('recursos', '🔌 Encolando stop de emulador idle para liberar ~2.5GB RAM');
+    requestEmulator('stop', 'pulpo-idle', null, 'Cola de verificación vacía, sin agentes QA activos');
     return true;
   } catch (e) {
     log('recursos', `Error verificando emulador idle: ${e.message}`);
@@ -1570,6 +1720,121 @@ function sortByPriority(archivos, config) {
   });
 }
 
+/**
+ * Rebotar verificación→build cuando preflight detecta APK faltante.
+ *
+ * Patrón genérico: archiva todos los hermanos de verificacion/pendiente/<issue>.* a
+ * procesado/ con resultado: rechazado, y encola un <issue>.build fresco en build/pendiente/.
+ * Idempotente: si ya hay un build en curso/encolado para el issue, no duplica.
+ * Circuit breaker MAX_REBOTES_APK protege contra loops verificacion↔build.
+ *
+ * Esta función fue extraída del dispatcher para que también la pueda invocar el
+ * deadlock breaker — sin esto, cuando el gate predictivo bloquea preflight (path
+ * normal) o cuando el deadlock breaker fuerza preflight, el rebote no corría y el
+ * issue quedaba atascado eternamente en verificacion/pendiente/.
+ *
+ * Llamada por:
+ *   - dispatcher normal en brazoLanzamiento (path verificacion + apk_missing)
+ *   - deadlock breaker (Tier 2 forzado + apk_missing)
+ *
+ * @returns {boolean} true si rebote ejecutado, false si circuit breaker disparado
+ *                    (en cuyo caso los archivos quedan archivados pero NO se encola build)
+ */
+function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
+  const MAX_REBOTES_APK = 3;
+
+  try {
+    const verPendDir = path.join(fasePath(pipelineName, 'verificacion'), 'pendiente');
+    const verProcDir = path.join(fasePath(pipelineName, 'verificacion'), 'procesado');
+    const buildPendDir = path.join(fasePath(pipelineName, 'build'), 'pendiente');
+    const buildTrabDir = path.join(fasePath(pipelineName, 'build'), 'trabajando');
+    const buildListoDir = path.join(fasePath(pipelineName, 'build'), 'listo');
+    const buildProcDir = path.join(fasePath(pipelineName, 'build'), 'procesado');
+    const buildFileName = `${issue}.build`;
+
+    // Recolectar TODOS los archivos del issue en verificacion/pendiente/
+    const archivosVerificacion = listWorkFiles(verPendDir).filter(f => issueFromFile(f.name) === issue);
+
+    // Calcular rebote_numero: máximo entre archivos actuales y builds previos del issue
+    let reboteCount = 0;
+    for (const f of archivosVerificacion) {
+      const data = readYaml(f.path);
+      if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
+    }
+    for (const estado of ['pendiente', 'trabajando', 'listo', 'procesado']) {
+      const prevBuild = path.join(fasePath(pipelineName, 'build'), estado, buildFileName);
+      if (fs.existsSync(prevBuild)) {
+        const data = readYaml(prevBuild);
+        if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
+      }
+    }
+
+    if (reboteCount >= MAX_REBOTES_APK) {
+      log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Archivando a procesado.`);
+      sendTelegram(`⛔ #${issue} atascado — ${reboteCount} rebotes por APK faltante entre verificacion y build. Requiere intervención manual.`);
+      for (const f of archivosVerificacion) {
+        try { moveFile(f.path, verProcDir); } catch {}
+      }
+      return false;
+    }
+
+    // 1. Marcar rechazados y archivar a procesado/
+    const motivoRechazo = `APK faltante: ${preflightResult?.reason || 'preflight QA no encontró APK del build'}`;
+    for (const f of archivosVerificacion) {
+      try {
+        const data = readYaml(f.path);
+        writeYaml(f.path, {
+          ...data,
+          resultado: 'rechazado',
+          motivo: motivoRechazo,
+          rechazado_en_fase: 'verificacion',
+          rechazado_por: 'preflight-apk',
+          rebote_a: 'build',
+          rebote_numero: reboteCount + 1,
+          rechazado_ts: new Date().toISOString(),
+        });
+        moveFile(f.path, verProcDir);
+      } catch (moverErr) {
+        log('lanzamiento', `⚠️ #${issue}: no se pudo archivar ${f.name}: ${moverErr.message}`);
+      }
+    }
+
+    // 2. Encolar build (idempotente — si ya hay uno en vuelo/encolado, no duplicar)
+    const yaEncolado =
+      fs.existsSync(path.join(buildPendDir, buildFileName)) ||
+      fs.existsSync(path.join(buildTrabDir, buildFileName)) ||
+      fs.existsSync(path.join(buildListoDir, buildFileName));
+
+    if (!yaEncolado) {
+      const payload = {
+        issue: parseInt(issue),
+        fase: 'build',
+        pipeline: pipelineName,
+        motivo: 'APK faltante detectado por preflight QA',
+        rebote: true,
+        rebote_numero: reboteCount + 1,
+        rechazado_en_fase: 'verificacion',
+      };
+      const procFile = path.join(buildProcDir, buildFileName);
+      if (fs.existsSync(procFile)) {
+        writeYaml(procFile, payload);
+        moveFile(procFile, buildPendDir);
+        log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build re-encolado desde procesado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
+      } else {
+        writeYaml(path.join(buildPendDir, buildFileName), payload);
+        log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build nuevo encolado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
+      }
+      ghCommentOnIssue(issue, `⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK.`);
+    } else {
+      log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build ya en curso/encolado`);
+    }
+    return true;
+  } catch (reencolarErr) {
+    log('lanzamiento', `⚠️ #${issue}: no se pudo rebotar verificación→build — ${reencolarErr.message}`);
+    return false;
+  }
+}
+
 function brazoLanzamiento(config) {
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
@@ -1700,126 +1965,26 @@ function brazoLanzamiento(config) {
       }
     }
 
-    // 6. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
-    eligibleForGateCount++;
-    const impact = predictResourceImpact(skill, config);
-    if (!impact.safe) {
-      log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
-      gateBlockedCount++;
-      gateBlockedCandidates.push(candidate);
-      continue;
-    }
-
-    // Pre-flight checks para fase verificación (Capa 2 + Capa 3 ruteo)
+    // 6. PRE-FLIGHT CHECKS PARA FASE VERIFICACIÓN — DEBE ir ANTES del gate predictivo.
+    //
+    // Razón: si el gate predictivo bloquea por memoria, hace continue antes de llegar
+    // al preflight, y el rebote APK→build nunca se ejecuta. El issue queda atascado
+    // eternamente en verificacion/pendiente/, pendingQa nunca baja a 0, la ventana QA
+    // no se auto-desactiva y el build (que podría regenerar el APK) está bloqueado por
+    // la propia ventana QA. Deadlock duro.
+    //
+    // El preflight y el rebote son barato (no consumen RAM ni CPU significativos),
+    // así que tiene sentido ejecutarlos ANTES del gate de recursos.
     let preflightResult = null;
     if (fase === 'verificacion') {
       preflightResult = preflightQaChecks(issue);
       if (!preflightResult.ok) {
         if (preflightResult.result === 'apk_missing') {
-          // APK faltante: la verificación se RECHAZA y el issue vuelve a la fase build.
-          // Patrón genérico de rebote (mismo que usa el brazo 1 para rechazos de producto,
-          // pero dirigido a build en vez de dev porque la dependencia rota es infra de build).
-          //
-          // 1) Marcar todos los archivos de verificacion/pendiente/<issue>.* como rechazados
-          //    y moverlos a verificacion/procesado/ — salen de la cola y dejan de contar para
-          //    countPendingVerificacion(), permitiendo que la ventana QA se auto-cierre si
-          //    era el último pendiente (pulpo.js:898).
-          // 2) Encolar <issue>.build en build/pendiente/ con motivo explícito y rebote_numero
-          //    para que el circuit breaker proteja contra loops verificacion↔build.
-          // 3) Cuando el build termine y el brazo 1 lo promueva a verificacion/pendiente/,
-          //    se crearán archivos frescos por skill — no hace falta preservar nada.
-          try {
-            const verPendDir = path.join(fasePath(pipelineName, 'verificacion'), 'pendiente');
-            const verProcDir = path.join(fasePath(pipelineName, 'verificacion'), 'procesado');
-            const buildPendDir = path.join(fasePath(pipelineName, 'build'), 'pendiente');
-            const buildTrabDir = path.join(fasePath(pipelineName, 'build'), 'trabajando');
-            const buildListoDir = path.join(fasePath(pipelineName, 'build'), 'listo');
-            const buildProcDir = path.join(fasePath(pipelineName, 'build'), 'procesado');
-            const buildFileName = `${issue}.build`;
-
-            // Recolectar TODOS los archivos del issue en verificacion/pendiente/
-            const archivosVerificacion = listWorkFiles(verPendDir).filter(f => issueFromFile(f.name) === issue);
-
-            // Calcular rebote_numero: máximo entre archivos actuales y builds previos del issue
-            let reboteCount = 0;
-            for (const f of archivosVerificacion) {
-              const data = readYaml(f.path);
-              if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
-            }
-            for (const estado of ['pendiente', 'trabajando', 'listo', 'procesado']) {
-              const prevBuild = path.join(fasePath(pipelineName, 'build'), estado, buildFileName);
-              if (fs.existsSync(prevBuild)) {
-                const data = readYaml(prevBuild);
-                if (data.rebote_numero && data.rebote_numero > reboteCount) reboteCount = data.rebote_numero;
-              }
-            }
-
-            const MAX_REBOTES_APK = 3;
-            if (reboteCount >= MAX_REBOTES_APK) {
-              log('lanzamiento', `⛔ #${issue} CIRCUIT BREAKER APK — ${reboteCount} rebotes verificacion↔build. Archivando a procesado.`);
-              sendTelegram(`⛔ #${issue} atascado — ${reboteCount} rebotes por APK faltante entre verificacion y build. Requiere intervención manual.`);
-              for (const f of archivosVerificacion) {
-                try { moveFile(f.path, verProcDir); } catch {}
-              }
-              continue;
-            }
-
-            // 1. Marcar rechazados y archivar a procesado/
-            const motivoRechazo = `APK faltante: ${preflightResult.reason || 'preflight QA no encontró APK del build'}`;
-            for (const f of archivosVerificacion) {
-              try {
-                const data = readYaml(f.path);
-                writeYaml(f.path, {
-                  ...data,
-                  resultado: 'rechazado',
-                  motivo: motivoRechazo,
-                  rechazado_en_fase: 'verificacion',
-                  rechazado_por: 'preflight-apk',
-                  rebote_a: 'build',
-                  rebote_numero: reboteCount + 1,
-                  rechazado_ts: new Date().toISOString(),
-                });
-                moveFile(f.path, verProcDir);
-              } catch (moverErr) {
-                log('lanzamiento', `⚠️ #${issue}: no se pudo archivar ${f.name}: ${moverErr.message}`);
-              }
-            }
-
-            // 2. Encolar build (idempotente — si ya hay uno en vuelo/encolado, no duplicar)
-            const yaEncolado =
-              fs.existsSync(path.join(buildPendDir, buildFileName)) ||
-              fs.existsSync(path.join(buildTrabDir, buildFileName)) ||
-              fs.existsSync(path.join(buildListoDir, buildFileName));
-
-            if (!yaEncolado) {
-              const payload = {
-                issue: parseInt(issue),
-                fase: 'build',
-                pipeline: pipelineName,
-                motivo: 'APK faltante detectado por preflight QA',
-                rebote: true,
-                rebote_numero: reboteCount + 1,
-                rechazado_en_fase: 'verificacion',
-              };
-              const procFile = path.join(buildProcDir, buildFileName);
-              if (fs.existsSync(procFile)) {
-                writeYaml(procFile, payload);
-                moveFile(procFile, buildPendDir);
-                log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build re-encolado desde procesado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
-              } else {
-                writeYaml(path.join(buildPendDir, buildFileName), payload);
-                log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build nuevo encolado (rebote ${reboteCount + 1}/${MAX_REBOTES_APK})`);
-              }
-              ghCommentOnIssue(issue, `⏪ La verificación detectó APK faltante. Issue devuelto automáticamente a la fase build para re-generar el APK.`);
-            } else {
-              log('lanzamiento', `⏪ #${issue}: verificación rechazada (APK faltante) → build ya en curso/encolado`);
-            }
-          } catch (reencolarErr) {
-            log('lanzamiento', `⚠️ #${issue}: no se pudo rebotar verificación→build — ${reencolarErr.message}`);
-          }
+          reboteVerificacionABuild(issue, pipelineName, preflightResult);
         } else if (preflightResult.result === 'waiting:emulator') {
-          // Señalizar que hay issues esperando emulador — evaluateQaPriority() se encarga
-          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (ventana QA)`);
+          // Encolar start del emulador al servicio-emulador
+          requestEmulator('start', 'pulpo-preflight', issue, 'QA_MODE=android, emulador necesario para verificación');
+          log('lanzamiento', `⏸️ #${issue}: pre-flight → esperando emulador (encolado start al servicio-emulador)`);
         } else {
           // blocked:infra — mantener en cola, reintentar en próximo ciclo
           log('lanzamiento', `🚫 #${issue}: pre-flight → ${preflightResult.result}: ${preflightResult.reason}`);
@@ -1828,6 +1993,24 @@ function brazoLanzamiento(config) {
       }
       // Capa 3: loguear el qaMode asignado
       log('lanzamiento', `#${issue}: qaMode=${preflightResult.qaMode} (Capa 3 ruteo)`);
+    }
+
+    // 7. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
+    //    (corre DESPUÉS del preflight para que las verificaciones que serían rebotadas
+    //    no inflen el contador de candidatos bloqueados ni paren el deadlock breaker)
+    //
+    //    Pasamos el estado del emulador para que los skills QA puedan restar su RAM
+    //    del baseline — el emulador es infra reservada por la propia ventana QA, no
+    //    un costo del agente individual. Sin esto el cálculo cuenta dos veces el
+    //    emulador y lleva a livelock cuando la baseline ya lo incluye.
+    eligibleForGateCount++;
+    const gateCtx = { emulator: measureEmulatorMemPercent() };
+    const impact = predictResourceImpact(skill, config, gateCtx);
+    if (!impact.safe) {
+      log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
+      gateBlockedCount++;
+      gateBlockedCandidates.push(candidate);
+      continue;
     }
 
     // Mover a trabajando/ (atómico)
@@ -1865,11 +2048,20 @@ function brazoLanzamiento(config) {
       try {
         const skill = skillFromFile(archivo.name);
         const issue = issueFromFile(archivo.name);
-        // Pre-flight para verificación incluso en deadlock breaker
+        // Pre-flight para verificación incluso en deadlock breaker.
+        // Si detecta APK faltante, REBOTAR a build (no abandonar) — sin esto, el
+        // deadlock breaker se queda atascado para siempre haciendo return ciclo tras
+        // ciclo mientras los archivos siguen en verificacion/pendiente/.
         if (fase === 'verificacion') {
           const preflight = preflightQaChecks(issue);
           if (!preflight.ok) {
-            log('deadlock', `#${issue}: pre-flight bloqueó lanzamiento forzado → ${preflight.result}`);
+            if (preflight.result === 'apk_missing') {
+              log('deadlock', `#${issue}: pre-flight forzado detectó APK faltante → rebote a build`);
+              reboteVerificacionABuild(issue, pipelineName, preflight);
+              consecutiveAllBlockedCycles = 0; // El rebote es progreso real, resetear contador
+            } else {
+              log('deadlock', `#${issue}: pre-flight bloqueó lanzamiento forzado → ${preflight.result}`);
+            }
             return; // No lanzar — el deadlock breaker no puede forzar sin infra
           }
         }
@@ -2285,32 +2477,25 @@ function preflightQaChecks(issue) {
     return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
-  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar
-  // Si falla, reintentar hasta 3 veces con espera progresiva
+  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar.
+  // Con el gating de boot real en qa-environment.waitBootCompleted(), el framework
+  // ya está listo antes de llegar acá, así que un solo intento es suficiente.
+  // Si falla, es ADB realmente inestable y conviene abortar el preflight rápido.
   let screenrecordOk = false;
-  const maxRetries = 3;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // Grabar 2 segundos de prueba
-      execSync(
-        `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
-        { encoding: 'utf8', timeout: 15000, windowsHide: true }
-      );
-      screenrecordOk = true;
-      log('preflight', `#${issue}: check 4b OK — screenrecord test passed (intento ${attempt}/${maxRetries})`);
-      break;
-    } catch (e) {
-      log('preflight', `#${issue}: check 4b — screenrecord test FAIL intento ${attempt}/${maxRetries}: ${e.message.slice(0, 60)}`);
-      if (attempt < maxRetries) {
-        // Espera progresiva: 3s, 6s
-        execSync(`sleep ${attempt * 3}`, { windowsHide: true });
-      }
-    }
+  try {
+    execSync(
+      `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    screenrecordOk = true;
+    log('preflight', `#${issue}: check 4b OK — screenrecord test passed`);
+  } catch (e) {
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord: ${e.message.slice(0, 80)}`);
   }
 
   if (!screenrecordOk) {
     checks.emulator = 'screenrecord-fail';
-    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona despues de ${maxRetries} intentos → blocked:infra`);
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
     sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
     return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
@@ -2338,84 +2523,22 @@ function logPreflight(issue, checks, result, startMs) {
   } catch {}
 }
 
-/** Asegurar que el QA environment está levantado. Respeta saturación y cooldown entre intentos. */
-let lastQaEnvCheck = 0;
-const QA_ENV_CHECK_INTERVAL = 5 * 60 * 1000; // Re-verificar cada 5 minutos (no una sola vez)
-let qaEnvStartFailures = 0;
-const QA_ENV_MAX_FAILURES = 3; // Circuit breaker: después de 3 fallos, dejar de intentar
-
-function ensureQaEnvironment(config) {
-  const now = Date.now();
-
-  // Cooldown entre verificaciones: no bombardear cada tick del loop
-  if (now - lastQaEnvCheck < QA_ENV_CHECK_INTERVAL) return;
-  lastQaEnvCheck = now;
-
-  // Circuit breaker: si falló muchas veces, no seguir intentando
-  if (qaEnvStartFailures >= QA_ENV_MAX_FAILURES) {
-    log('qa-env', `Circuit breaker activo (${qaEnvStartFailures} fallos). No se reintenta levantar QA env.`);
-    return;
-  }
-
-  // GATE DE RECURSOS: QA env usa umbrales más bajos que agentes porque levanta 3 servicios pesados
-  const limits = config.resource_limits || {};
-  const maxCpu = limits.qa_env_max_cpu_percent || 60;
-  const maxMem = limits.qa_env_max_mem_percent || 60;
-
-  const { cpuPercent, memPercent } = getSystemResourceUsage();
-  if (cpuPercent >= maxCpu || memPercent >= maxMem) {
-    log('qa-env', `Sistema saturado para QA env (CPU: ${cpuPercent}% >= ${maxCpu}% | RAM: ${memPercent}% >= ${maxMem}%). Intentando liberar recursos...`);
-
-    // Intentar limpiar zombies/daemons para destrabar
-    const { freed } = tryFreeResources();
-
-    if (freed) {
-      // Re-chequear después de la limpieza
-      const after = getSystemResourceUsage();
-      if (after.cpuPercent >= maxCpu || after.memPercent >= maxMem) {
-        log('qa-env', `Post-limpieza: aún saturado (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Posponiendo QA environment.`);
-        return;
-      }
-      log('qa-env', `Post-limpieza: recursos liberados (CPU: ${after.cpuPercent}% | RAM: ${after.memPercent}%). Continuando con QA environment.`);
-    } else {
-      log('qa-env', `No se encontraron recursos para liberar. Posponiendo QA environment.`);
-      return;
-    }
-  }
-
-  const stateFile = path.join(PIPELINE, 'qa-env-state.json');
-  let needsStart = false;
-
+/**
+ * Encolar un pedido de start/stop del emulador al servicio-emulador.
+ * El servicio procesa la cola con coalescencia last-write-wins.
+ * Diseño: docs/pipeline/diseno-servicio-emulador.md
+ */
+function requestEmulator(action, requester, issue, reason) {
+  const ts = Date.now();
+  const msg = { action, requester, issue: issue || null, reason: reason || '', timestamp: Math.floor(ts / 1000) };
+  const svcDir = path.join(PIPELINE, 'servicios', 'emulador', 'pendiente');
   try {
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    // Verificar si todos los servicios están vivos
-    for (const [name, pid] of Object.entries(state)) {
-      if (!pid || !isProcessAlive(pid)) {
-        log('qa-env', `${name} no está corriendo (PID: ${pid || 'null'})`);
-        needsStart = true;
-        break;
-      }
-    }
-  } catch {
-    needsStart = true;
-  }
-
-  if (needsStart) {
-    log('qa-env', 'Levantando QA environment automáticamente...');
-    try {
-      execSync(`node "${path.join(PIPELINE, 'qa-environment.js')}" start`, {
-        cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true
-      });
-      log('qa-env', 'QA environment levantado OK');
-      qaEnvStartFailures = 0; // Reset circuit breaker en éxito
-      sendTelegram('🧪 QA Environment levantado automáticamente (emulador + backend + DynamoDB)');
-    } catch (e) {
-      qaEnvStartFailures++;
-      log('qa-env', `Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ${e.message}`);
-      sendTelegram(`⚠️ Error levantando QA environment (${qaEnvStartFailures}/${QA_ENV_MAX_FAILURES}): ` + e.message.slice(0, 100));
-    }
-  } else {
-    log('qa-env', 'QA environment OK — ya corriendo');
+    fs.mkdirSync(svcDir, { recursive: true });
+    const file = path.join(svcDir, `${ts}-${Math.random().toString(36).slice(2, 6)}.json`);
+    fs.writeFileSync(file, JSON.stringify(msg, null, 2));
+    log('qa-env', `Encolado ${action} emulador (requester: ${requester}, issue: #${issue || '-'})`);
+  } catch (e) {
+    log('qa-env', `Error encolando ${action} emulador: ${e.message}`);
   }
 }
 
@@ -3802,6 +3925,9 @@ async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
 
+  // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
+  migrateSkillProfilesIfNeeded();
+
   while (running) {
     try {
       checkPauseFile();
@@ -3847,6 +3973,26 @@ async function mainLoop() {
 // Graceful shutdown
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+
+// --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
+// Uso: PULPO_NO_AUTOSTART=1 node -e "require('./pulpo.js').predictResourceImpact(...)"
+// Útil para tests unitarios y scripts de evidencia del gate predictivo.
+if (process.env.PULPO_NO_AUTOSTART === '1') {
+  module.exports = {
+    predictResourceImpact,
+    getEstimatedImpact,
+    measureEmulatorMemPercent,
+    recordSkillResourceUsage,
+    loadSkillProfiles,
+    saveSkillProfiles,
+    migrateSkillProfilesIfNeeded,
+    SKILL_PROFILES_SCHEMA_VERSION,
+    QA_INFRA_SKILLS,
+    MAX_EST_MEM,
+    MAX_EST_CPU
+  };
+  return; // No arrancar singleton ni mainLoop
+}
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');

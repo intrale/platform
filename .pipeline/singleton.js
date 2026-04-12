@@ -68,6 +68,7 @@ module.exports = function singleton(name) {
     'svc-telegram': 'servicio-telegram.js',
     'svc-github': 'servicio-github.js',
     'svc-drive': 'servicio-drive.js',
+    'svc-emulador': 'servicio-emulador.js',
     'dashboard': 'dashboard-v2.js'
   };
 

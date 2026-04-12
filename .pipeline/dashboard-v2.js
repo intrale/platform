@@ -25,6 +25,7 @@ const COMPONENTS = [
   { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
   { name: 'outbox-drain', script: 'outbox-drain.js', pid: 'outbox-drain.pid' },
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
@@ -911,6 +912,7 @@ function generateHTML(state) {
     { name: 'Telegram', icon: '📨', queues: ['commander', 'telegram'], processes: ['listener', 'svc-telegram'] },
     { name: 'GitHub', icon: '🐙', queues: ['github'], processes: ['svc-github'] },
     { name: 'Drive', icon: '📁', queues: ['drive'], processes: ['svc-drive'] },
+    { name: 'Emulador', icon: '📱', queues: ['emulador'], processes: ['svc-emulador'] },
   ];
   const STANDALONE_PROCESSES = ['pulpo', 'outbox-drain', 'dashboard'];
   const groupedProcesses = new Set(SERVICE_GROUPS.flatMap(g => g.processes));
