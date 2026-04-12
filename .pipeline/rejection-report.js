@@ -336,6 +336,9 @@ function generateReport() {
   // 12. Log legible (no JSON crudo)
   const readableLog = extractMeaningfulLog(logTail, 30);
 
+  // 13. Issues de dependencia creados por QA (V9)
+  const depIssues = fetchDependencyIssues(issue);
+
   // --- HTML ---
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -477,6 +480,23 @@ ${skillProfile ? `
   ${analysis.externalDeps && analysis.externalDeps.length > 0 ? '<h3>Dependencias externas detectadas</h3><ul>' + analysis.externalDeps.map(d => '<li>🔗 ' + escapeHtml(d) + '</li>').join('') + '</ul><p><em>Estas dependencias deberian resolverse en issues separados antes de reintentar la validacion de este issue.</em></p>' : ''}
 </div>
 
+${depIssues.linkedDeps.length > 0 || depIssues.isBlocked ? `
+<h2>Issues de Dependencia Creados</h2>
+<div class="${depIssues.isBlocked ? 'rootcause-box' : 'history-box'}">
+  ${depIssues.isBlocked ? '<p>⛔ <strong>Este issue esta BLOQUEADO</strong> — tiene label <span class="badge badge-red">blocked:dependencies</span>. No se puede avanzar hasta que se resuelvan las dependencias listadas abajo.</p>' : ''}
+  ${depIssues.linkedDeps.length > 0 ? `
+  <p>QA creo los siguientes issues como dependencias que deben resolverse antes de reintentar la validacion:</p>
+  <table>
+    <tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>
+    ${depIssues.linkedDeps.map(d => {
+      const stateIcon = d.state === 'OPEN' ? '🔴 Pendiente' : d.state === 'CLOSED' ? '✅ Resuelto' : d.state;
+      const stateCls = d.state === 'CLOSED' ? 'gate-approved' : 'gate-rejected';
+      return '<tr><td><strong>#' + d.number + '</strong></td><td>' + escapeHtml(d.title) + '</td><td class="' + stateCls + '">' + stateIcon + '</td></tr>';
+    }).join('')}
+  </table>
+  <p><em>${depIssues.linkedDeps.filter(d => d.state === 'OPEN').length > 0 ? '⚠️ Hay dependencias pendientes de resolver. Este issue no debe reintentarse hasta que se cierren.' : '✅ Todas las dependencias estan resueltas. Se puede reintentar la validacion.'}</em></p>` : '<p>El issue esta marcado como bloqueado pero no se encontraron issues de dependencia vinculados.</p>'}
+</div>` : ''}
+
 <h2>Log del Agente (resumen legible)</h2>
 <pre><code>${escapeHtml(readableLog)}</code></pre>
 
@@ -485,9 +505,70 @@ ${skillProfile ? `
 </details>
 
 <div class="footer">
-  Intrale Platform &mdash; Reporte de Rechazo &mdash; v4.0 &mdash; ${escapeHtml(now.toISOString().slice(0, 10))}
+  Intrale Platform &mdash; Reporte de Rechazo &mdash; v4.1 &mdash; ${escapeHtml(now.toISOString().slice(0, 10))}
 </div>
 </body></html>`;
+}
+
+// --- Buscar issues de dependencia creados en GitHub ---
+function fetchDependencyIssues(issueNum) {
+  try {
+    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+    // Buscar issues con label qa:dependency que mencionen este issue
+    const raw = execSync(
+      `"${ghPath}" issue list --label "qa:dependency" --json number,title,state,url --repo intrale/platform --limit 50`,
+      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).toString();
+    const allDeps = JSON.parse(raw || '[]');
+
+    // También buscar si el issue actual tiene label blocked:dependencies
+    let isBlocked = false;
+    try {
+      const issueRaw = execSync(
+        `"${ghPath}" issue view ${issueNum} --json labels --repo intrale/platform`,
+        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      ).toString();
+      const issueData = JSON.parse(issueRaw);
+      isBlocked = (issueData.labels || []).some(l => l.name === 'blocked:dependencies');
+    } catch {}
+
+    // Buscar en comentarios del issue cuáles fueron vinculados como dependencia
+    let linkedDeps = [];
+    try {
+      const commentsRaw = execSync(
+        `"${ghPath}" issue view ${issueNum} --json comments --repo intrale/platform`,
+        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      ).toString();
+      const comments = JSON.parse(commentsRaw).comments || [];
+      for (const c of comments) {
+        const body = c.body || '';
+        // Buscar menciones de issues de dependencia (#NNN)
+        const matches = body.match(/#(\d+)/g);
+        if (matches && (body.toLowerCase().includes('dependencia') || body.toLowerCase().includes('bloqueado') || body.toLowerCase().includes('dependency'))) {
+          for (const m of matches) {
+            const num = parseInt(m.slice(1));
+            if (num !== parseInt(issueNum)) {
+              const depInfo = allDeps.find(d => d.number === num);
+              if (depInfo) linkedDeps.push(depInfo);
+              else linkedDeps.push({ number: num, title: `Issue #${num}`, state: 'OPEN', url: '' });
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Deduplicar
+    const seen = new Set();
+    linkedDeps = linkedDeps.filter(d => {
+      if (seen.has(d.number)) return false;
+      seen.add(d.number);
+      return true;
+    });
+
+    return { isBlocked, linkedDeps };
+  } catch {
+    return { isBlocked: false, linkedDeps: [] };
+  }
 }
 
 // --- Detectar dependencias externas en el log ---
