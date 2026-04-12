@@ -195,44 +195,97 @@ function clearCooldown(skill, issue) {
 // Se actualizan al terminar cada agente usando los snapshots de metrics-history.
 const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 
+// Versión del schema de skill-profiles. Incrementar cada vez que cambie la fórmula
+// de aprendizaje de `avgMem` / `avgCpu` — al hacerlo, los perfiles viejos se invalidan
+// automáticamente en el próximo arranque de pulpo. v2 = aprendizaje por DELTA vs baseline.
+const SKILL_PROFILES_SCHEMA_VERSION = 2;
+
 function loadSkillProfiles() {
-  try { return JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8')); } catch { return {}; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    // Compatibilidad: si el archivo viejo no tiene _schemaVersion (v1), devolver vacío
+    // al próximo save se escribirá con la versión nueva.
+    if (!raw || raw._schemaVersion !== SKILL_PROFILES_SCHEMA_VERSION) return {};
+    const { _schemaVersion, ...profiles } = raw;
+    return profiles;
+  } catch { return {}; }
 }
 
 function saveSkillProfiles(profiles) {
-  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(profiles, null, 2));
+  const payload = { _schemaVersion: SKILL_PROFILES_SCHEMA_VERSION, ...profiles };
+  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(payload, null, 2));
+}
+
+/**
+ * Migración one-shot: si skill-profiles.json existe pero tiene un schema viejo
+ * (o no tiene schema version), renombrarlo a .bak y empezar de cero con la fórmula
+ * nueva. Se ejecuta una sola vez al arrancar pulpo.
+ */
+function migrateSkillProfilesIfNeeded() {
+  try {
+    if (!fs.existsSync(SKILL_PROFILES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    if (raw && raw._schemaVersion === SKILL_PROFILES_SCHEMA_VERSION) return; // ya migrado
+
+    const bakPath = SKILL_PROFILES_FILE + '.v1.bak';
+    fs.renameSync(SKILL_PROFILES_FILE, bakPath);
+    log('pulpo', `📦 skill-profiles.json migrado a v${SKILL_PROFILES_SCHEMA_VERSION}: backup en ${path.basename(bakPath)}. Los perfiles se reaprenden con la fórmula DELTA.`);
+  } catch (e) {
+    log('pulpo', `Error migrando skill-profiles: ${e.message}`);
+  }
 }
 
 /**
  * Registrar el consumo de recursos de un agente que terminó.
- * Lee metrics-history.jsonl para el período de ejecución del agente,
- * calcula el promedio de CPU/RAM durante ese período, y actualiza
- * el perfil del skill con un rolling average ponderado.
+ *
+ * Estrategia DELTA (v2): aprender el INCREMENTO que el agente introdujo respecto
+ * a la baseline inmediatamente previa a su lanzamiento, no el promedio absoluto
+ * del sistema durante su vida. Sin esto, infra pesada coexistente (emulador,
+ * Edge, Gradle daemons) se cuela en el perfil y el gate predictivo lo vuelve
+ * a sumar al usage actual → doble conteo → livelock.
+ *
+ * Ver pulpo.js comentario de predictResourceImpact y docs/pipeline/gate-predictivo.md
  */
+const BASELINE_WINDOW_MS = 60_000; // Ventana de muestras pre-lanzamiento para estimar baseline
+
 function recordSkillResourceUsage(skill, startTime, endTime) {
   try {
     const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
     if (!fs.existsSync(metricsFile)) return;
 
     const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
-    const snapshots = [];
+    const parsed = [];
     for (const line of lines) {
-      try {
-        const s = JSON.parse(line);
-        if (s.ts >= startTime && s.ts <= endTime) snapshots.push(s);
-      } catch {}
+      try { parsed.push(JSON.parse(line)); } catch {}
     }
 
-    if (snapshots.length < 2) return; // Necesitamos al menos 2 snapshots para un promedio significativo
+    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s)
+    const baseline = parsed.filter(s => s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
+    // Durante: muestras mientras el agente estuvo vivo
+    const during = parsed.filter(s => s.ts >= startTime && s.ts <= endTime);
 
-    // Promedio de CPU y RAM durante la vida del agente
-    const avgCpu = snapshots.reduce((sum, s) => sum + s.cpu, 0) / snapshots.length;
-    const avgMem = snapshots.reduce((sum, s) => sum + s.mem, 0) / snapshots.length;
-    // Cantidad de agentes promedio corriendo durante el período (para estimar contribución individual)
-    const avgAgents = snapshots.reduce((sum, s) => sum + Math.max(1, s.agents), 0) / snapshots.length;
-    // Estimación de la contribución individual de este agente
-    const estCpuPerAgent = avgCpu / avgAgents;
-    const estMemPerAgent = avgMem / avgAgents;
+    if (baseline.length === 0 || during.length < 2) {
+      // Sin baseline confiable o muy pocas muestras — no aprender (evita corromper el perfil)
+      return;
+    }
+
+    const avgBaselineCpu = baseline.reduce((sum, s) => sum + s.cpu, 0) / baseline.length;
+    const avgBaselineMem = baseline.reduce((sum, s) => sum + s.mem, 0) / baseline.length;
+    const avgDuringCpu = during.reduce((sum, s) => sum + s.cpu, 0) / during.length;
+    const avgDuringMem = during.reduce((sum, s) => sum + s.mem, 0) / during.length;
+
+    // Delta bruto: cuánto subió el sistema respecto al instante previo a lanzarlo
+    const deltaCpu = Math.max(0, avgDuringCpu - avgBaselineCpu);
+    const deltaMem = Math.max(0, avgDuringMem - avgBaselineMem);
+
+    // Si había otros agentes Claude corriendo durante la ventana, atribuirles
+    // parcialmente el delta (50% de atribución conservadora). Así no inflamos
+    // el perfil de este skill con el consumo de los vecinos.
+    const avgDuringAgents = during.reduce((sum, s) => sum + Math.max(1, s.agents || 1), 0) / during.length;
+    const otherAgents = Math.max(0, avgDuringAgents - 1);
+    const shareDenominator = 1 + otherAgents * 0.5;
+    const estCpuPerAgent = deltaCpu / shareDenominator;
+    const estMemPerAgent = deltaMem / shareDenominator;
 
     const profiles = loadSkillProfiles();
     const existing = profiles[skill] || { avgCpu: estCpuPerAgent, avgMem: estMemPerAgent, samples: 0 };
@@ -266,12 +319,20 @@ function recordSkillResourceUsage(skill, startTime, endTime) {
  */
 const MIN_RELIABLE_SAMPLES = 5;
 const MAX_EST_CPU = 25;  // Cap: ningún agente Claude usa más que esto
-const MAX_EST_MEM = 20;  // Cap: un proceso Claude rara vez pasa de 3GB (~20% en 16GB)
+const MAX_EST_MEM = 5;   // Cap: un proceso claude.exe real usa ~250-500MB (~1.6-3% en 16GB).
+                         // Defensa en profundidad contra perfiles mal aprendidos — ver doc
+                         // docs/pipeline/gate-predictivo.md
 const PROFILE_STALE_HOURS = 24;
+
+// Skills cuya infra reservada (emulador Android) debe restarse del baseline del gate.
+// Razón: el emulador existe PORQUE estos skills lo necesitan; cobrarle su RAM al propio
+// skill que lo consume es doble conteo y lleva a livelock (la baseline + el delta del
+// agente nunca cierran bajo el umbral porque el emulador ya está presente en la baseline).
+const QA_INFRA_SKILLS = new Set(['qa', 'security', 'tester']);
 
 function getEstimatedImpact(profile) {
   const DEFAULT_CPU = 12;
-  const DEFAULT_MEM = 8;
+  const DEFAULT_MEM = 3;  // Proceso claude.exe real ~ 250-500 MB en 16 GB
 
   if (!profile) return { cpu: DEFAULT_CPU, mem: DEFAULT_MEM };
 
@@ -299,7 +360,45 @@ function getEstimatedImpact(profile) {
   return { cpu: Math.round(cpu * 10) / 10, mem: Math.round(mem * 10) / 10 };
 }
 
-function predictResourceImpact(skill, config) {
+/**
+ * Lee la RAM ocupada por qemu-system-x86_64-headless.exe como porcentaje del total
+ * del sistema. Cacheado por 5 segundos para no pagar un `tasklist` en cada llamada.
+ * Devuelve 0 si el emulador no está corriendo o si la medición falla.
+ */
+let _emulatorMemCache = { ts: 0, percent: 0, running: false };
+const EMULATOR_MEM_CACHE_MS = 5000;
+
+function measureEmulatorMemPercent() {
+  const now = Date.now();
+  if (now - _emulatorMemCache.ts < EMULATOR_MEM_CACHE_MS) return _emulatorMemCache;
+
+  let running = false;
+  let percent = 0;
+  try {
+    const out = execSync(
+      'tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    // Formato CSV: "qemu-system-x86_64-headless.exe","1234","Console","1","234,567 KB"
+    const line = out.split('\n').find(l => l.toLowerCase().includes('qemu-system'));
+    if (line) {
+      running = true;
+      const cols = line.split('","').map(c => c.replace(/^"|"$/g, ''));
+      const memKbStr = (cols[4] || '').replace(/[^\d]/g, '');
+      const memKb = parseInt(memKbStr, 10);
+      if (!isNaN(memKb) && memKb > 0) {
+        const totalBytes = os.totalmem();
+        const usedBytes = memKb * 1024;
+        percent = Math.round((usedBytes / totalBytes) * 1000) / 10; // 1 decimal
+      }
+    }
+  } catch { /* sin tasklist o sin qemu — degradar silencioso */ }
+
+  _emulatorMemCache = { ts: now, percent, running };
+  return _emulatorMemCache;
+}
+
+function predictResourceImpact(skill, config, ctx = {}) {
   const profiles = loadSkillProfiles();
   const profile = profiles[skill];
   const usage = getSystemResourceUsage();
@@ -309,24 +408,44 @@ function predictResourceImpact(skill, config) {
 
   const est = getEstimatedImpact(profile);
 
+  // Reserva de infra del propio skill: si este skill es QA y el emulador está
+  // corriendo, restarlo del baseline — su RAM es un costo de la ventana QA, no
+  // del agente individual. Ver QA_INFRA_SKILLS arriba.
+  let reservedMem = 0;
+  let reservedReason = null;
+  if (QA_INFRA_SKILLS.has(skill)) {
+    const emu = ctx.emulator || measureEmulatorMemPercent();
+    if (emu.running && emu.percent > 0) {
+      reservedMem = emu.percent;
+      reservedReason = `emulador ${emu.percent}%`;
+    }
+  }
+
+  const effectiveMemBase = Math.max(0, usage.memPercent - reservedMem);
   const predictedCpu = usage.cpuPercent + est.cpu;
-  const predictedMem = usage.memPercent + est.mem;
+  const predictedMem = effectiveMemBase + est.mem;
 
   const cpuSafe = predictedCpu < maxCpu;
   const memSafe = predictedMem < maxMem;
 
   if (cpuSafe && memSafe) {
-    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem } };
+    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem }, reserved: reservedMem };
   }
 
   const reasons = [];
   if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${est.cpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
-  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
+  if (!memSafe) {
+    const memDetail = reservedReason
+      ? `MEM ${usage.memPercent}% − ${reservedReason} + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`
+      : `MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`;
+    reasons.push(memDetail);
+  }
 
   return {
     safe: false,
     reason: reasons.join(' | '),
-    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) }
+    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) },
+    reserved: reservedMem
   };
 }
 
@@ -1879,8 +1998,14 @@ function brazoLanzamiento(config) {
     // 7. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
     //    (corre DESPUÉS del preflight para que las verificaciones que serían rebotadas
     //    no inflen el contador de candidatos bloqueados ni paren el deadlock breaker)
+    //
+    //    Pasamos el estado del emulador para que los skills QA puedan restar su RAM
+    //    del baseline — el emulador es infra reservada por la propia ventana QA, no
+    //    un costo del agente individual. Sin esto el cálculo cuenta dos veces el
+    //    emulador y lleva a livelock cuando la baseline ya lo incluye.
     eligibleForGateCount++;
-    const impact = predictResourceImpact(skill, config);
+    const gateCtx = { emulator: measureEmulatorMemPercent() };
+    const impact = predictResourceImpact(skill, config, gateCtx);
     if (!impact.safe) {
       log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       gateBlockedCount++;
@@ -3800,6 +3925,9 @@ async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
 
+  // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
+  migrateSkillProfilesIfNeeded();
+
   while (running) {
     try {
       checkPauseFile();
@@ -3845,6 +3973,26 @@ async function mainLoop() {
 // Graceful shutdown
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+
+// --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
+// Uso: PULPO_NO_AUTOSTART=1 node -e "require('./pulpo.js').predictResourceImpact(...)"
+// Útil para tests unitarios y scripts de evidencia del gate predictivo.
+if (process.env.PULPO_NO_AUTOSTART === '1') {
+  module.exports = {
+    predictResourceImpact,
+    getEstimatedImpact,
+    measureEmulatorMemPercent,
+    recordSkillResourceUsage,
+    loadSkillProfiles,
+    saveSkillProfiles,
+    migrateSkillProfilesIfNeeded,
+    SKILL_PROFILES_SCHEMA_VERSION,
+    QA_INFRA_SKILLS,
+    MAX_EST_MEM,
+    MAX_EST_CPU
+  };
+  return; // No arrancar singleton ni mainLoop
+}
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');
