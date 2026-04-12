@@ -894,6 +894,37 @@ let buildPrioritySafetyNotified = false; // true si ya se envió notificación d
 const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
 
 /**
+ * Restaurar el estado de priority windows desde disco al iniciar.
+ * Sin esto, un restart del pulpo pierde la ventana activa y lanza dev
+ * aunque QA/Build estuviera bloqueando.
+ */
+function restorePriorityWindows() {
+  try {
+    if (!fs.existsSync(PRIORITY_WINDOWS_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+    if (data.qa?.active) {
+      qaPriorityActive = true;
+      qaPriorityActivatedAt = data.qa.activatedAt || Date.now();
+      qaPriorityManual = data.qa.manual || false;
+      qaPriorityNotifiedTelegram = true; // Ya se notificó antes del restart
+      log('qa-priority', `♻️ QA Priority Window restaurada desde disco (activada ${new Date(qaPriorityActivatedAt).toISOString()})`);
+    }
+    if (data.build?.active) {
+      buildPriorityActive = true;
+      buildPriorityActivatedAt = data.build.activatedAt || Date.now();
+      buildPriorityManual = data.build.manual || false;
+      buildPriorityNotifiedTelegram = true;
+      log('build-priority', `♻️ Build Priority Window restaurada desde disco (activada ${new Date(buildPriorityActivatedAt).toISOString()})`);
+    }
+  } catch (e) {
+    log('priority', `⚠️ Error restaurando priority windows: ${e.message}`);
+  }
+}
+
+// Restaurar al cargar el módulo
+restorePriorityWindows();
+
+/**
  * Persistir el estado actual de las priority windows a disco.
  * El dashboard lee este archivo para mostrar estado y el usuario puede
  * activar/desactivar ventanas manualmente escribiendo en él.
@@ -2650,7 +2681,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
@@ -2673,7 +2704,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   child.unref();
-  fs.closeSync(agentLogFd);
+  // NO cerrar agentLogFd aquí — en Windows, cerrar el FD en el padre
+  // mata la herencia y el hijo pierde stdout/stderr.
+  // Se cierra en child.on('exit') para que el log capture todo el output.
 
   activeProcesses.set(processKey(skill, issue), {
     pid: child.pid,
@@ -2709,6 +2742,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
+    // Cerrar el FD del log ahora que el hijo terminó
+    try { fs.closeSync(agentLogFd); } catch {}
+
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
