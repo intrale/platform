@@ -19,6 +19,9 @@ const PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 const REPORT_SCRIPT = path.join(ROOT, 'scripts', 'report-to-pdf-telegram.js');
 const GH_CLI = process.env.GH_CLI_PATH || '/c/Workspaces/gh-cli/bin/gh';
 
+// Shared state: issues de dependencia creados por generateReport(), leídos por generateNarration()
+let _autoCreatedDeps = [];
+
 // --- Parse args ---
 const args = process.argv.slice(2);
 function getArg(name) {
@@ -339,6 +342,10 @@ function generateReport() {
   // 13. Issues de dependencia creados por QA (V9)
   const depIssues = fetchDependencyIssues(issue);
 
+  // 14. Crear issues de dependencia automáticamente si se detectaron y no existen
+  const autoCreatedDeps = createDependencyIssues(issue, analysis.externalDeps, issueCtx.title);
+  _autoCreatedDeps = autoCreatedDeps; // Compartir con generateNarration()
+
   // --- HTML ---
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -477,15 +484,16 @@ ${skillProfile ? `
   <h3>${rootCause.origen === 'EXTERNO' ? '⚠️ Este issue NO necesita cambios — el bloqueo es externo' : '🔧 Acciones requeridas en este issue'}</h3>
   <p>${escapeHtml(analysis.suggestion)}</p>
   ${analysis.steps.length > 0 ? '<h3>Pasos concretos</h3><ol>' + analysis.steps.map(s => '<li>' + escapeHtml(s) + '</li>').join('') + '</ol>' : ''}
-  ${analysis.externalDeps && analysis.externalDeps.length > 0 ? '<h3>Dependencias externas detectadas</h3><ul>' + analysis.externalDeps.map(d => '<li>🔗 ' + escapeHtml(d) + '</li>').join('') + '</ul><p><em>Estas dependencias deberian resolverse en issues separados antes de reintentar la validacion de este issue.</em></p>' : ''}
+  ${autoCreatedDeps.length > 0 ? '<h3>Issues de Dependencia Creados Automaticamente</h3><table><tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>' + autoCreatedDeps.map(d => '<tr><td><strong>#' + d.number + '</strong></td><td>' + escapeHtml(d.title) + '</td><td>' + (d.alreadyExisted ? '<span class="badge badge-yellow">Ya existia</span>' : '<span class="badge badge-blue">Creado ahora</span>') + '</td></tr>').join('') + '</table><p><em>Este issue queda bloqueado (blocked:dependencies) hasta que se resuelvan estos issues.</em></p>' : ''}
+  ${analysis.externalDeps && analysis.externalDeps.length > 0 && autoCreatedDeps.length === 0 ? '<h3>Dependencias externas detectadas</h3><ul>' + analysis.externalDeps.map(d => '<li>🔗 ' + escapeHtml(d) + '</li>').join('') + '</ul><p><em>No se pudieron crear issues automaticamente. Crear manualmente antes de reintentar.</em></p>' : ''}
 </div>
 
-${depIssues.linkedDeps.length > 0 || depIssues.isBlocked ? `
-<h2>Issues de Dependencia Creados</h2>
+${(depIssues.linkedDeps.length > 0 || depIssues.isBlocked) && autoCreatedDeps.length === 0 ? `
+<h2>Issues de Dependencia Previos</h2>
 <div class="${depIssues.isBlocked ? 'rootcause-box' : 'history-box'}">
   ${depIssues.isBlocked ? '<p>⛔ <strong>Este issue esta BLOQUEADO</strong> — tiene label <span class="badge badge-red">blocked:dependencies</span>. No se puede avanzar hasta que se resuelvan las dependencias listadas abajo.</p>' : ''}
   ${depIssues.linkedDeps.length > 0 ? `
-  <p>QA creo los siguientes issues como dependencias que deben resolverse antes de reintentar la validacion:</p>
+  <p>Issues de dependencia vinculados previamente:</p>
   <table>
     <tr><th>Issue</th><th>Titulo</th><th>Estado</th></tr>
     ${depIssues.linkedDeps.map(d => {
@@ -505,7 +513,7 @@ ${depIssues.linkedDeps.length > 0 || depIssues.isBlocked ? `
 </details>
 
 <div class="footer">
-  Intrale Platform &mdash; Reporte de Rechazo &mdash; v4.1 &mdash; ${escapeHtml(now.toISOString().slice(0, 10))}
+  Intrale Platform &mdash; Reporte de Rechazo &mdash; v4.2 &mdash; ${escapeHtml(now.toISOString().slice(0, 10))}
 </div>
 </body></html>`;
 }
@@ -602,6 +610,113 @@ function detectExternalDependencies(logTail, motivo) {
   }
 
   return deps;
+}
+
+// --- Crear issues de dependencia en GitHub automáticamente ---
+// Recibe las dependencias detectadas, crea issues con label qa:dependency,
+// vincula al issue original y devuelve los issues creados con sus números.
+function createDependencyIssues(issueNum, externalDeps, issueTitle) {
+  if (!externalDeps || externalDeps.length === 0) return [];
+
+  const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+  const created = [];
+
+  for (const dep of externalDeps) {
+    try {
+      // 1. Buscar si ya existe un issue abierto para esta dependencia (evitar duplicados)
+      const searchQuery = dep.length > 60 ? dep.substring(0, 60) : dep;
+      let alreadyExists = false;
+      try {
+        const searchRaw = execSync(
+          `"${ghPath}" issue list --label "qa:dependency" --search "${searchQuery.replace(/"/g, '\\"')}" --json number,title,state --repo intrale/platform --limit 5`,
+          { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
+        ).toString();
+        const existing = JSON.parse(searchRaw || '[]');
+        const openMatch = existing.find(e => e.state === 'OPEN');
+        if (openMatch) {
+          created.push({ number: openMatch.number, title: openMatch.title, state: 'OPEN', alreadyExisted: true });
+          alreadyExists = true;
+        }
+      } catch {}
+
+      if (alreadyExists) continue;
+
+      // 2. Crear el issue de dependencia
+      const depTitle = `dep: ${dep.length > 80 ? dep.substring(0, 80) + '...' : dep}`;
+      const depBody = [
+        '## Contexto',
+        '',
+        `Dependencia detectada automáticamente durante el rechazo del issue #${issueNum} (${issueTitle || ''}).`,
+        '',
+        '## Problema',
+        '',
+        dep,
+        '',
+        '## Origen',
+        '',
+        `El issue #${issueNum} fue rechazado porque depende de una funcionalidad que no existe o tiene un bug que bloquea la ejecución.`,
+        '',
+        '## Criterios de aceptación',
+        '',
+        '- [ ] La funcionalidad descrita arriba está implementada y funcionando',
+        `- [ ] El issue #${issueNum} puede reintentarse sin este bloqueo`,
+        '',
+        '---',
+        `_Issue creado automáticamente por el rejection report del pipeline._`,
+      ].join('\n');
+
+      const createRaw = execSync(
+        `"${ghPath}" issue create --title "${depTitle.replace(/"/g, '\\"')}" --body "${depBody.replace(/"/g, '\\"')}" --label "needs-definition,qa:dependency" --repo intrale/platform`,
+        { timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] }
+      ).toString().trim();
+
+      // gh issue create devuelve la URL del issue, extraer el número
+      const urlMatch = createRaw.match(/\/(\d+)\s*$/);
+      const newNumber = urlMatch ? parseInt(urlMatch[1]) : null;
+
+      if (newNumber) {
+        created.push({ number: newNumber, title: depTitle, state: 'OPEN', alreadyExisted: false });
+        console.log(`[rejection-report] Issue de dependencia creado: #${newNumber} — ${depTitle}`);
+      }
+    } catch (err) {
+      console.error(`[rejection-report] Error creando issue de dependencia: ${err.message}`);
+    }
+  }
+
+  // 3. Si se crearon issues, vincular al issue original con un comentario y agregar label blocked:dependencies
+  if (created.length > 0) {
+    try {
+      const newIssues = created.filter(c => !c.alreadyExisted);
+      const existingIssues = created.filter(c => c.alreadyExisted);
+      const commentParts = ['## 🔗 Dependencias detectadas por el pipeline\n'];
+      if (newIssues.length > 0) {
+        commentParts.push('**Issues creados automáticamente:**');
+        for (const c of newIssues) commentParts.push(`- #${c.number} — ${c.title}`);
+      }
+      if (existingIssues.length > 0) {
+        commentParts.push('\n**Issues existentes vinculados:**');
+        for (const c of existingIssues) commentParts.push(`- #${c.number} — ${c.title}`);
+      }
+      commentParts.push(`\nEste issue queda bloqueado hasta que se resuelvan las dependencias listadas.`);
+
+      const comment = commentParts.join('\n');
+      execSync(
+        `"${ghPath}" issue comment ${issueNum} --body "${comment.replace(/"/g, '\\"')}" --repo intrale/platform`,
+        { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+
+      // Agregar label blocked:dependencies al issue original
+      execSync(
+        `"${ghPath}" issue edit ${issueNum} --add-label "blocked:dependencies" --repo intrale/platform`,
+        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      console.log(`[rejection-report] Issue #${issueNum} marcado como blocked:dependencies con ${created.length} dependencias`);
+    } catch (err) {
+      console.error(`[rejection-report] Error vinculando dependencias al issue #${issueNum}: ${err.message}`);
+    }
+  }
+
+  return created;
 }
 
 // --- Análisis automático basado en patrones ---
@@ -759,13 +874,24 @@ function generateNarration() {
     parts.push(`Pasos concretos: ${analysis.steps.map((s, i) => (i + 1) + ', ' + s).join('. ')}.`);
   }
 
-  // Dependencias
-  if (depIssues.isBlocked || depIssues.linkedDeps.length > 0) {
+  // Dependencias creadas automáticamente por este reporte
+  if (_autoCreatedDeps.length > 0) {
+    const newOnes = _autoCreatedDeps.filter(d => !d.alreadyExisted);
+    const existingOnes = _autoCreatedDeps.filter(d => d.alreadyExisted);
+    if (newOnes.length > 0) {
+      parts.push(`Se crearon automáticamente ${newOnes.length} issues de dependencia: ${newOnes.map(d => 'número ' + d.number + ', ' + d.title.replace(/^dep:\s*/i, '')).join('. ')}.`);
+    }
+    if (existingOnes.length > 0) {
+      parts.push(`Se vincularon ${existingOnes.length} issues de dependencia que ya existían: ${existingOnes.map(d => 'número ' + d.number).join(', ')}.`);
+    }
+    parts.push(`El issue queda bloqueado hasta que se resuelvan estas dependencias.`);
+  } else if (depIssues.isBlocked || depIssues.linkedDeps.length > 0) {
+    // Dependencias previas (ya existían antes de este reporte)
     const openDeps = depIssues.linkedDeps.filter(d => d.state === 'OPEN');
     const closedDeps = depIssues.linkedDeps.filter(d => d.state === 'CLOSED');
     parts.push(`Este issue está bloqueado por dependencias.`);
     if (depIssues.linkedDeps.length > 0) {
-      parts.push(`QA creó ${depIssues.linkedDeps.length} issues de dependencia: ${depIssues.linkedDeps.map(d => 'número ' + d.number + ', ' + d.title + ', estado ' + (d.state === 'OPEN' ? 'pendiente' : 'resuelto')).join('. ')}.`);
+      parts.push(`Hay ${depIssues.linkedDeps.length} issues de dependencia vinculados: ${depIssues.linkedDeps.map(d => 'número ' + d.number + ', ' + d.title + ', estado ' + (d.state === 'OPEN' ? 'pendiente' : 'resuelto')).join('. ')}.`);
     }
     if (openDeps.length > 0) {
       parts.push(`Hay ${openDeps.length} dependencias pendientes de resolver. No se debe reintentar hasta que se cierren.`);
