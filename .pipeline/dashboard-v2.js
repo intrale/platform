@@ -25,6 +25,7 @@ const COMPONENTS = [
   { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
   { name: 'outbox-drain', script: 'outbox-drain.js', pid: 'outbox-drain.pid' },
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
@@ -744,14 +745,15 @@ function generateHTML(state) {
           }
         }
 
-        // Tooltip content
+        // Tooltip content (atributo title nativo — nunca aparece como texto inline)
         const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
-        const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
+        const ttResStr = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
         const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
-        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEta, ttRes, ttMot].filter(Boolean);
-        const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
+        const ttEtaStr = ttEta || '';
+        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
+        const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
         const agentColor = skillColor(e.skill);
         const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
@@ -767,7 +769,7 @@ function generateHTML(state) {
           : '';
 
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}">${chipContent}${killBtn}${pdfBtn}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
         if (e.hasLog) {
           const isLive = e.estado === 'trabajando';
           return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
@@ -910,6 +912,7 @@ function generateHTML(state) {
     { name: 'Telegram', icon: '📨', queues: ['commander', 'telegram'], processes: ['listener', 'svc-telegram'] },
     { name: 'GitHub', icon: '🐙', queues: ['github'], processes: ['svc-github'] },
     { name: 'Drive', icon: '📁', queues: ['drive'], processes: ['svc-drive'] },
+    { name: 'Emulador', icon: '📱', queues: ['emulador'], processes: ['svc-emulador'] },
   ];
   const STANDALONE_PROCESSES = ['pulpo', 'outbox-drain', 'dashboard'];
   const groupedProcesses = new Set(SERVICE_GROUPS.flatMap(g => g.processes));
@@ -1430,19 +1433,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .log-scroll-btn.visible{display:inline-block}
 
-/* ── Tooltip ────────────────────────────────────────────────────────────── */
-.chip .tt{
-  display:none;position:absolute;z-index:200;
-  bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
-  background:#000000;border:2px solid var(--ac);border-radius:10px;
-  padding:14px 18px;font-size:0.95em;white-space:nowrap;
-  min-width:220px;color:var(--tx);
-  box-shadow:0 8px 32px rgba(0,0,0,0.9),0 0 0 1px rgba(88,166,255,0.2);
-  pointer-events:none;
-}
-.chip .tt span{display:block;line-height:1.7;color:#c9d1d9;font-size:0.95em}
-.chip .tt span:first-child{color:var(--tx);font-weight:700;font-size:1.05em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
-.chip:hover .tt{display:block}
+/* Tooltip nativo via atributo title — sin HTML inline en el chip */
 .more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
 .issue-overflow{display:none}
 .issue-overflow.show{display:table-row}
@@ -1752,12 +1743,22 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
           { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
           { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
         ];
+        // Leer umbral configurado
+        let threshold = 3;
+        try {
+          const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
+          threshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+        } catch {}
+        const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
         return items.map(i => {
           const s = pw[i.key];
           const active = s && s.active;
           const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
           const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
-          const tip = active ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar' : 'Activar ' + i.label + ' Priority';
+          let tip = active
+            ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
+            : 'Activar ' + i.label + ' Priority (umbral auto: ' + threshold + ' issues)';
+          if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
           const action = active ? 'off' : 'on';
           const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
           return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
@@ -2987,11 +2988,20 @@ const server = http.createServer((req, res) => {
 
         // Escribir manualOverride para que el Pulpo lo consuma en su próximo ciclo
         // También actualizar active/manual inmediatamente para que el dashboard refleje el cambio
+        // Ventanas autoexcluyentes: si activamos una, desactivamos la otra
         current[win].manualOverride = (action === 'on');
         if (action === 'on') {
           current[win].active = true;
           current[win].manual = true;
           current[win].activatedAt = Date.now();
+          // Autoexclusión: desactivar la otra ventana
+          const other = win === 'qa' ? 'build' : 'qa';
+          if (current[other] && current[other].active) {
+            current[other].manualOverride = false;
+            current[other].active = false;
+            current[other].manual = false;
+            current[other].activatedAt = null;
+          }
         } else {
           current[win].active = false;
           current[win].manual = false;

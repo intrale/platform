@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# backend-healthcheck.sh — Verifica que el backend local responde correctamente
+# backend-healthcheck.sh — Verifica que el backend remoto (Lambda AWS) responde correctamente
 # Uso: bash qa/scripts/backend-healthcheck.sh [BASE_URL]
 # Salida: 0 si todos los endpoints responden, 1 si alguno falla
 #
 # Env vars opcionales:
-#   QA_BASE_URL — URL base del backend (default: http://localhost:80)
+#   QA_BASE_URL — URL base del backend (default: Lambda AWS dev)
 #   HC_TIMEOUT  — segundos máximos de espera por intento (default: 5)
 set -euo pipefail
 
@@ -13,13 +13,13 @@ set -euo pipefail
 if [ -n "${1:-}" ]; then
     BASE_URL="${1}"
 else
-    BASE_URL="${QA_BASE_URL:-http://localhost:80}"
+    BASE_URL="${QA_BASE_URL:-https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev}"
 fi
 
 # Validar que BASE_URL tenga formato aceptable (http/https + host)
 if ! echo "$BASE_URL" | grep -qE '^https?://[a-zA-Z0-9._-]+(:[0-9]+)?(/.*)?$'; then
     echo "ERROR: BASE_URL inválida: '$BASE_URL'"
-    echo "  Formato esperado: http://localhost:80"
+    echo "  Formato esperado: https://host/path"
     exit 1
 fi
 
@@ -82,7 +82,7 @@ check_endpoint() {
 section "Conectividad"
 check_endpoint \
     "Ruta raíz (routing básico)" \
-    "GET" "/" "" "404"
+    "GET" "/" "" "403"
 
 # ── 2. Endpoint de autenticación (signin) ────────────────────────────────────
 section "Auth — signin"
@@ -91,10 +91,10 @@ check_endpoint \
     "POST" "/intrale/signin" "{}" "400"
 
 check_endpoint \
-    "signin con email inválido → 400" \
+    "signin con email inválido → 401" \
     "POST" "/intrale/signin" \
     '{"email":"not-an-email","password":"test"}' \
-    "400"
+    "401"
 
 # ── 3. Endpoint de registro (signup) ─────────────────────────────────────────
 section "Auth — signup"
@@ -111,8 +111,66 @@ check_endpoint \
 # ── 5. Endpoint de negocios ───────────────────────────────────────────────────
 section "Negocios"
 check_endpoint \
-    "searchBusinesses sin body → 400 o 401" \
-    "POST" "/intrale/searchBusinesses" "{}" "400"
+    "searchBusinesses sin body → 200" \
+    "POST" "/intrale/searchBusinesses" "{}" "200"
+
+# ── 6. DynamoDB remoto (verificar que no hay overrides locales) ───────────────
+section "DynamoDB remoto"
+
+# 6a. Verificar que no hay env vars apuntando a DynamoDB local
+if [ -n "${DYNAMODB_ENDPOINT:-}" ]; then
+    case "$DYNAMODB_ENDPOINT" in
+        *localhost*|*127.0.0.1*|*0.0.0.0*)
+            fail "DYNAMODB_ENDPOINT apunta a local: $DYNAMODB_ENDPOINT (debe ser remoto o no estar seteado)"
+            ;;
+        *)
+            pass "DYNAMODB_ENDPOINT remoto: $DYNAMODB_ENDPOINT"
+            ;;
+    esac
+else
+    pass "DYNAMODB_ENDPOINT no seteado (usa AWS remoto por defecto)"
+fi
+
+# 6b. Verificar que LOCAL_MODE no está activo
+if [ "${LOCAL_MODE:-}" = "true" ]; then
+    fail "LOCAL_MODE=true activo — DynamoDB/Cognito apuntarían a localhost"
+else
+    pass "LOCAL_MODE no activo (modo remoto)"
+fi
+
+# 6c. Verificar que .env.qa no tiene overrides locales
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ENV_QA_FILE="$PROJECT_ROOT/.env.qa"
+if [ -f "$ENV_QA_FILE" ]; then
+    if grep -q 'DYNAMODB_ENDPOINT=.*localhost\|DYNAMODB_ENDPOINT=.*127\.0\.0\.1' "$ENV_QA_FILE" 2>/dev/null; then
+        fail ".env.qa contiene DYNAMODB_ENDPOINT local — QA usaría DynamoDB en localhost"
+    elif grep -q 'LOCAL_MODE=true' "$ENV_QA_FILE" 2>/dev/null; then
+        fail ".env.qa contiene LOCAL_MODE=true — backend usaría servicios locales"
+    else
+        pass ".env.qa sin overrides locales"
+    fi
+else
+    pass ".env.qa no existe (sin overrides)"
+fi
+
+# 6d. Verificar que searchBusinesses devuelve datos reales de DynamoDB
+CHECKS=$((CHECKS + 1))
+SEARCH_RESPONSE=$(curl \
+    --silent \
+    --max-time "$HC_TIMEOUT" \
+    --request POST \
+    --header 'Content-Type: application/json' \
+    --data-raw '{}' \
+    -- "${BASE_URL}/intrale/searchBusinesses" 2>/dev/null || echo "")
+
+if echo "$SEARCH_RESPONSE" | grep -q '"businesses":\[.\+\]'; then
+    pass "DynamoDB devuelve datos reales (searchBusinesses con resultados)"
+elif echo "$SEARCH_RESPONSE" | grep -q '"businesses":\[\]'; then
+    fail "DynamoDB vacío — searchBusinesses devuelve lista vacía (¿apunta a DB local sin datos?)"
+else
+    fail "DynamoDB no responde correctamente — searchBusinesses sin campo 'businesses'"
+fi
 
 # ── Resumen ───────────────────────────────────────────────────────────────────
 echo ""
@@ -127,8 +185,8 @@ if [ $ERRORS -eq 0 ]; then
 else
     echo "RESULTADO: $ERRORS endpoint(s) no respondieron como se esperaba"
     echo "  Verificar:"
-    echo "    1. El backend está corriendo (qa-env-up.sh)"
-    echo "    2. Las variables de entorno LOCAL_MODE, USER_POOL_ID, CLIENT_ID están seteadas"
-    echo "    3. Los logs del backend: ./gradlew :users:run"
+    echo "    1. El backend remoto (Lambda AWS) está activo"
+    echo "    2. La URL en QA_BASE_URL es correcta"
+    echo "    3. Verificar estado de API Gateway en AWS Console"
     exit 1
 fi
