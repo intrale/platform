@@ -2681,7 +2681,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
