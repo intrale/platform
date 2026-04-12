@@ -3974,10 +3974,12 @@ function persistMetricsSnapshot(config) {
 // =============================================================================
 // BRAZO DESBLOQUEO — Revisa issues con blocked:dependencies y desbloquea
 // cuando todas sus dependencias están cerradas.
-// Frecuencia: cada 10 minutos (no necesita ser frecuente).
+// Frecuencia: cada 30 minutos. Basado en datos reales del pipeline:
+//   - P10 de duración de issues: 1.2h, P25: 2.7h, mediana: 141h
+//   - 30 min es generoso (cubre issues rápidos) sin ser innecesariamente frecuente
 // =============================================================================
 let lastUnblockTime = 0;
-const UNBLOCK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutos
+const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
 
 function brazoDesbloqueo(config) {
   if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
