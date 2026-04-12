@@ -714,6 +714,69 @@ function analyzeRejection(code, elapsed, motivo, logTail, avgCpu, avgMem, skill)
   return result;
 }
 
+// --- Generar narración en texto plano para TTS ---
+function generateNarration() {
+  const issueCtx = fetchIssueContext(issue);
+  const rootCause = classifyRootCause(motivo, readLastLines(path.join(LOG_DIR, logFile), 80), exitCode);
+  const analysis = analyzeRejection(exitCode, elapsed, motivo, readLastLines(path.join(LOG_DIR, logFile), 80),
+    (() => { const m = getRecentMetrics(10); return m.length > 0 ? Math.round(m.reduce((s, x) => s + x.cpu, 0) / m.length) : 0; })(),
+    (() => { const m = getRecentMetrics(10); return m.length > 0 ? Math.round(m.reduce((s, x) => s + x.mem, 0) / m.length) : 0; })(),
+    skill);
+  const rejectHistory = getRejectHistory(issue);
+  const depIssues = fetchDependencyIssues(issue);
+
+  const parts = [];
+
+  // Intro
+  parts.push(`Reporte de rechazo del issue número ${issue}, que estaba en la fase de ${fase} con el agente ${skill}.`);
+
+  // Qué se estaba haciendo
+  parts.push(`El issue se llama "${issueCtx.title}". ${issueCtx.summary}`);
+
+  // Qué pasó
+  parts.push(`¿Qué pasó? ${rootCause.negocio || rootCause.desc}`);
+
+  // Causa raíz
+  const origenTexto = rootCause.origen === 'EXTERNO'
+    ? 'El problema es externo, no es culpa de este issue.'
+    : rootCause.origen === 'INTERNO'
+    ? 'El problema está en los cambios de este issue, requiere corrección del desarrollador.'
+    : 'No se pudo determinar automáticamente si es un problema interno o externo.';
+  parts.push(`Causa raíz: ${rootCause.desc}. Clasificación: ${rootCause.tipo}. ${origenTexto}`);
+
+  // Historial
+  if (rejectHistory.length > 1) {
+    parts.push(`Este issue ya fue rechazado ${rejectHistory.length} veces. Los rechazos anteriores fueron por: ${rejectHistory.map(h => h.skill + ' en fase ' + h.fase).join(', ')}.`);
+  }
+
+  // Análisis y solución
+  parts.push(`Análisis de la situación: ${analysis.conclusion}`);
+  if (analysis.factors.length > 0) {
+    parts.push(`Factores que contribuyeron: ${analysis.factors.join('. ')}.`);
+  }
+  parts.push(`Para desbloquearlo: ${analysis.suggestion}`);
+  if (analysis.steps.length > 0) {
+    parts.push(`Pasos concretos: ${analysis.steps.map((s, i) => (i + 1) + ', ' + s).join('. ')}.`);
+  }
+
+  // Dependencias
+  if (depIssues.isBlocked || depIssues.linkedDeps.length > 0) {
+    const openDeps = depIssues.linkedDeps.filter(d => d.state === 'OPEN');
+    const closedDeps = depIssues.linkedDeps.filter(d => d.state === 'CLOSED');
+    parts.push(`Este issue está bloqueado por dependencias.`);
+    if (depIssues.linkedDeps.length > 0) {
+      parts.push(`QA creó ${depIssues.linkedDeps.length} issues de dependencia: ${depIssues.linkedDeps.map(d => 'número ' + d.number + ', ' + d.title + ', estado ' + (d.state === 'OPEN' ? 'pendiente' : 'resuelto')).join('. ')}.`);
+    }
+    if (openDeps.length > 0) {
+      parts.push(`Hay ${openDeps.length} dependencias pendientes de resolver. No se debe reintentar hasta que se cierren.`);
+    } else if (closedDeps.length > 0) {
+      parts.push(`Todas las dependencias están resueltas. Se puede reintentar la validación.`);
+    }
+  }
+
+  return parts.join(' ');
+}
+
 // --- Main ---
 async function main() {
   try {
@@ -754,6 +817,51 @@ async function main() {
     try { fs.unlinkSync(path.join(ROOT, 'docs', 'qa', `rejection-${issue}-${skill}.html`)); } catch {}
 
     console.log(`[rejection-report] Reporte enviado a Telegram para #${issue} ${skill}`);
+
+    // --- Audio TTS del reporte ---
+    try {
+      const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+      const TG_CONFIG = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json');
+      const tgConfig = JSON.parse(fs.readFileSync(TG_CONFIG, 'utf8'));
+
+      const narration = generateNarration();
+      console.log(`[rejection-report] Generando audio TTS (${narration.length} chars)...`);
+
+      // TTS tiene limite de ~4096 chars — partir en chunks si es necesario
+      const MAX_TTS_CHARS = 3800;
+      const chunks = [];
+      if (narration.length <= MAX_TTS_CHARS) {
+        chunks.push(narration);
+      } else {
+        // Partir por oraciones, respetando el limite
+        const sentences = narration.split(/(?<=[.!?])\s+/);
+        let current = '';
+        for (const sentence of sentences) {
+          if ((current + ' ' + sentence).length > MAX_TTS_CHARS && current.length > 0) {
+            chunks.push(current.trim());
+            current = sentence;
+          } else {
+            current = current ? current + ' ' + sentence : sentence;
+          }
+        }
+        if (current.trim()) chunks.push(current.trim());
+      }
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkText = chunks.length > 1
+          ? `Parte ${i + 1} de ${chunks.length}. ${chunks[i]}`
+          : chunks[i];
+        const audioBuffer = await textToSpeech(chunkText);
+        if (audioBuffer) {
+          const sent = await sendVoiceTelegram(audioBuffer, tgConfig.bot_token, tgConfig.chat_id);
+          console.log(`[rejection-report] Audio ${i + 1}/${chunks.length} enviado: ${sent ? 'OK' : 'FALLO'}`);
+        } else {
+          console.log(`[rejection-report] No se pudo generar audio TTS (chunk ${i + 1})`);
+        }
+      }
+    } catch (audioErr) {
+      console.error(`[rejection-report] Error generando audio TTS (no fatal): ${audioErr.message}`);
+    }
   } catch (e) {
     console.error(`[rejection-report] Error: ${e.message}`);
     process.exit(1);
