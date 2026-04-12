@@ -2954,8 +2954,14 @@ function saveSession(session) {
 
 // --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
 
-function cmdStatus(config) {
+async function cmdStatus(config) {
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const mins = Math.floor((uptime % 3600) / 60);
+
   const lines = ['📊 *Estado del Pipeline*\n'];
+  lines.push(`🟢 Online · ${hours}h ${mins}m`);
+  lines.push('');
 
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     lines.push(`*${pipelineName.toUpperCase()}*`);
@@ -3023,10 +3029,65 @@ function cmdStatus(config) {
     lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
+  // PRs mergeados hoy
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+    const prs = JSON.parse(ghOut);
+    if (prs.length > 0) {
+      lines.push(`\n*Entregado hoy (${prs.length} PRs)*`);
+      for (const pr of prs.slice(0, 10)) {
+        lines.push(`  #${pr.number} ${pr.title}`);
+      }
+      if (prs.length > 10) lines.push(`  +${prs.length - 10} más`);
+    }
+  } catch (e) {
+    log('commander', `[status] Error obteniendo PRs del día: ${e.message}`);
+  }
+
   // Estado pausa
   if (paused) lines.push('\n⏸️ *PULPO PAUSADO*');
 
-  return lines.join('\n');
+  const text = lines.join('\n');
+
+  // Audio TTS de la narración
+  try {
+    const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+    const botToken = getTelegramToken();
+    const chatId = getTelegramChatId();
+    if (botToken && chatId) {
+      let narration = `Estado del pipeline. Llevo ${hours} horas y ${mins} minutos online. `;
+      // Agentes activos
+      const aliveCount = [...activeProcesses.values()].filter(i => isProcessAlive(i.pid)).length;
+      narration += aliveCount > 0 ? `${aliveCount} agentes activos. ` : 'Sin agentes activos. ';
+      // Recursos
+      const { cpuPercent: cpu, memPercent: mem } = getSystemResourceUsage();
+      narration += `CPU al ${cpu} por ciento, RAM al ${mem} por ciento. `;
+      if (paused) narration += 'El pulpo está pausado. ';
+      // PRs del día
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+        const prs = JSON.parse(ghOut);
+        if (prs.length > 0) {
+          narration += `Hoy se entregaron ${prs.length} PRs. `;
+          for (const pr of prs.slice(0, 5)) {
+            narration += `PR ${pr.number}, ${pr.title}. `;
+          }
+        }
+      } catch {}
+
+      const audioBuffer = await textToSpeech(narration);
+      if (audioBuffer) {
+        await sendVoiceTelegram(audioBuffer, botToken, chatId);
+        log('commander', '[status] Audio TTS enviado');
+      }
+    }
+  } catch (audioErr) {
+    log('commander', `[status] Error TTS (no fatal): ${audioErr.message}`);
+  }
+
+  return text;
 }
 
 function cmdActividad(args) {
@@ -3556,7 +3617,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
     let respuesta = null;
     switch (parsed.cmd) {
-      case 'status': respuesta = cmdStatus(config); break;
+      case 'status': respuesta = await cmdStatus(config); break;
       case 'actividad': respuesta = cmdActividad(parsed.args); break;
       case 'intake': respuesta = cmdIntake(parsed.args, config); break;
       case 'pausar': respuesta = cmdPausar(); break;
