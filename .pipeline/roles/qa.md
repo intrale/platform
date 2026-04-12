@@ -34,6 +34,10 @@ else (QA_MODE == "android" o vacío):
 
 Backend y DynamoDB/Cognito son **SIEMPRE remotos** (Lambda AWS). NO existe modo local.
 
+**CRITICO: NUNCA leer ni usar `.env.local`, `.env`, ni ningún archivo de configuración local.**
+Estos archivos pueden contener `LOCAL_MODE=true` o endpoints `localhost` que NO aplican a QA.
+Ignoralos completamente — los únicos valores válidos son los de abajo:
+
 - **Backend**: Lambda AWS en `https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev`
 - **DynamoDB/Cognito**: servicios reales de AWS (no local)
 - **Emulador Android**: AVD `virtualAndroid` (sin ventana, sin audio) — solo para QA_MODE=android
