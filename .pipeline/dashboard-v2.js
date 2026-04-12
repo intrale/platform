@@ -2024,9 +2024,50 @@ function classifyLine(text) {
   return '';
 }
 
+/** Parsear una línea de stream-json de Claude CLI a texto legible para el log viewer */
+function parseStreamJsonLine(raw) {
+  if (!raw || !raw.startsWith('{')) return raw; // No es JSON, devolver tal cual
+  try {
+    const ev = JSON.parse(raw);
+    switch (ev.type) {
+      case 'system':
+        if (ev.subtype === 'init') return '[init] modelo: ' + (ev.model || '?') + ' | tools: ' + (ev.tools || []).length;
+        return '[system] ' + (ev.subtype || '') + ' ' + (ev.message || '');
+      case 'assistant':
+        if (ev.subtype === 'text') return ev.content || '';
+        if (ev.subtype === 'tool_use') {
+          var name = ev.tool_name || ev.name || '?';
+          var inp = '';
+          try {
+            var input = ev.input || ev.tool_input || {};
+            if (input.command) inp = ': ' + input.command.substring(0, 120);
+            else if (input.pattern) inp = ': ' + input.pattern;
+            else if (input.file_path) inp = ': ' + input.file_path;
+            else if (input.skill) inp = ': ' + input.skill;
+            else if (input.query) inp = ': ' + input.query.substring(0, 80);
+          } catch(_) {}
+          return '[Tool] ' + name + inp;
+        }
+        return ev.content || JSON.stringify(ev).substring(0, 200);
+      case 'result':
+        var cost = ev.cost_usd ? ' ($' + ev.cost_usd.toFixed(4) + ')' : '';
+        var dur = ev.duration_ms ? ' ' + Math.round(ev.duration_ms / 1000) + 's' : '';
+        return '[result] ' + (ev.subtype || 'done') + cost + dur;
+      default:
+        // Otros tipos: mostrar tipo + contenido resumido
+        if (ev.content) return '[' + ev.type + '] ' + (typeof ev.content === 'string' ? ev.content.substring(0, 200) : JSON.stringify(ev.content).substring(0, 200));
+        return raw.substring(0, 200);
+    }
+  } catch(_) {
+    return raw; // Parse falló, devolver raw
+  }
+}
+
 function renderLine(text, idx) {
-  const cls = classifyLine(text);
-  const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  var display = parseStreamJsonLine(text);
+  if (!display || !display.trim()) return ''; // Skip empty lines
+  var cls = classifyLine(display);
+  var escaped = display.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   return '<div class="log-line ' + cls + '" data-idx="' + idx + '"><span class="log-line-num">' + (idx + 1) + '</span><span class="log-line-text">' + escaped + '</span></div>';
 }
 
