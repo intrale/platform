@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // =============================================================================
 // Pulpo V2 — Proceso central del pipeline
-// Brazos: barrido, lanzamiento, huérfanos (+ intake en F5)
+// Brazos: barrido, lanzamiento, huérfanos, desbloqueo (+ intake en F5)
 // =============================================================================
 
 const fs = require('fs');
@@ -1955,6 +1955,13 @@ function brazoLanzamiento(config) {
     //    Sin este check el siguiente iteration explota al intentar moverlo.
     if (!fs.existsSync(archivo.path)) continue;
 
+    // 0b. BLOCKED: no lanzar issues con blocked:dependencies
+    const issueLbls = getIssueLabels(issue);
+    if (issueLbls.includes('blocked:dependencies')) {
+      log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      continue;
+    }
+
     // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
     const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
     if (issueAlreadyWorking) continue;
@@ -3827,6 +3834,13 @@ function brazoIntake(config) {
       for (const issue of issues) {
         const issueNum = String(issue.number);
 
+        // BLOCKED: no procesar issues con label blocked:dependencies
+        const issueLabels = (issue.labels || []).map(l => l.name);
+        if (issueLabels.includes('blocked:dependencies')) {
+          log('intake', `#${issueNum} omitido — tiene label blocked:dependencies`);
+          continue;
+        }
+
         // Deduplicación: verificar que el issue no esté ya activo en este pipeline
         if (issueExistsInPipeline(issueNum, pipelineName)) continue;
 
@@ -3957,6 +3971,109 @@ function persistMetricsSnapshot(config) {
   } catch {}
 }
 
+// =============================================================================
+// BRAZO DESBLOQUEO — Revisa issues con blocked:dependencies y desbloquea
+// cuando todas sus dependencias están cerradas.
+// Frecuencia: cada 30 minutos. Basado en datos reales del pipeline:
+//   - P10 de duración de issues: 1.2h, P25: 2.7h, mediana: 141h
+//   - 30 min es generoso (cubre issues rápidos) sin ser innecesariamente frecuente
+// =============================================================================
+let lastUnblockTime = 0;
+const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+
+function brazoDesbloqueo(config) {
+  if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
+  lastUnblockTime = Date.now();
+
+  try {
+    // 1. Buscar issues abiertos con label blocked:dependencies
+    ghThrottle();
+    const result = execSync(
+      `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title --limit 50`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+    );
+    const blockedIssues = JSON.parse(result || '[]');
+    if (blockedIssues.length === 0) return;
+
+    log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
+
+    for (const issue of blockedIssues) {
+      try {
+        // 2. Leer comentarios del issue para encontrar dependencias creadas por el pipeline
+        ghThrottle();
+        const comments = execSync(
+          `"${GH_BIN}" issue view ${issue.number} --json comments --jq ".comments[].body" --repo intrale/platform`,
+          { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+        );
+
+        // Buscar el comentario de dependencias del pipeline
+        const depCommentMatch = comments.match(/Dependencias detectadas por el pipeline[\s\S]*?(?=\n\n|\Z)/);
+        if (!depCommentMatch) {
+          log('desbloqueo', `#${issue.number}: no se encontró comentario de dependencias — omitido`);
+          continue;
+        }
+
+        // Extraer números de issues referenciados (#NNN)
+        const depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)].map(m => m[1]);
+        if (depIssueNumbers.length === 0) {
+          log('desbloqueo', `#${issue.number}: no se encontraron issues de dependencia — omitido`);
+          continue;
+        }
+
+        // 3. Verificar si todas las dependencias están cerradas
+        let allClosed = true;
+        const openDeps = [];
+        for (const depNum of depIssueNumbers) {
+          ghThrottle();
+          try {
+            const depState = execSync(
+              `"${GH_BIN}" issue view ${depNum} --json state --jq ".state" --repo intrale/platform`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+            ).trim();
+            if (depState !== 'CLOSED') {
+              allClosed = false;
+              openDeps.push(depNum);
+            }
+          } catch (e) {
+            // Si no se puede leer el estado, asumir que está abierto
+            allClosed = false;
+            openDeps.push(depNum);
+          }
+        }
+
+        if (allClosed) {
+          // 4. Todas cerradas → desbloquear
+          log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
+
+          // Quitar label blocked:dependencies
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue edit ${issue.number} --remove-label "blocked:dependencies" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          // Agregar comentario de desbloqueo
+          const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue comment ${issue.number} --body "${unblockComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+          log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
+        } else {
+          log('desbloqueo', `#${issue.number}: dependencias abiertas: ${openDeps.map(n => '#' + n).join(', ')} — sigue bloqueado`);
+        }
+      } catch (e) {
+        log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    log('desbloqueo', `Error en brazo de desbloqueo: ${e.message}`);
+  }
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
@@ -3989,10 +4106,11 @@ async function mainLoop() {
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
-        brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
-        brazoBarrido(config);   // Tercero: promover entre fases
-        brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
-        brazoHuerfanos(config); // Quinto: recuperar trabajo trabado
+        brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
+        brazoDesbloqueo(config);  // Tercero: desbloquear issues cuyas dependencias se resolvieron
+        brazoBarrido(config);     // Cuarto: promover entre fases
+        brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
+        brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
