@@ -672,11 +672,12 @@ function generateHTML(state) {
       }
     }
 
-    const blockedBy = state.blockedIssues.blockedBy[issueNum] || [];
+    const blockedBy = state.blockedIssues.blockedBy[issueNum];
     const blocksOthers = state.blockedIssues.blocks[issueNum] || [];
     let blockIcons = '';
-    if (blockedBy.length > 0) {
-      const depLinks = blockedBy.map(d => '#' + d).join(', ');
+    if (blockedBy != null) {
+      // blockedBy puede ser [] (label sin deps conocidas) o [n1, n2, ...] (con deps)
+      const depLinks = blockedBy.length > 0 ? blockedBy.map(d => '#' + d).join(', ') : 'dependencias no especificadas';
       blockIcons += `<span class="block-icon block-locked">🔒<span class="block-tt">Bloqueado por: ${depLinks}</span></span>`;
     }
     if (blocksOthers.length > 0) {
@@ -799,7 +800,7 @@ function generateHTML(state) {
       cells += `<td class="${isCurrent ? 'cell-current' : ''} ${pipeline === 'definicion' ? 'col-def' : 'col-dev'}">${chips}</td>`;
     }
 
-    const blockedClass = blockedBy.length > 0 ? ' issue-blocked' : '';
+    const blockedClass = blockedBy != null ? ' issue-blocked' : '';
     const rowClass = (data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done') + blockedClass;
     const hiddenClass = rowIndex >= ISSUE_VISIBLE_LIMIT ? ' issue-overflow' : '';
     rows += `<tr class="${rowClass}${hiddenClass}">${issueCell}${cells}</tr>`;
