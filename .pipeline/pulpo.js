@@ -63,6 +63,40 @@ function ghCommentOnIssue(issueNumber, body) {
 
 // --- Utilidades ---
 
+// Partir texto en chunks para TTS respetando límites de oraciones
+function splitTextForTTSChunks(text, maxChars) {
+  if (text.length <= maxChars) return [text];
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const chunks = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if ((current + ' ' + sentence).length > maxChars && current.length > 0) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + ' ' + sentence : sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  // Oraciones individuales más largas que maxChars → corte por palabras
+  const result = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= maxChars) { result.push(chunk); continue; }
+    const words = chunk.split(/\s+/);
+    let part = '';
+    for (const word of words) {
+      if ((part + ' ' + word).length > maxChars && part.length > 0) {
+        result.push(part.trim());
+        part = word;
+      } else {
+        part = part ? part + ' ' + word : word;
+      }
+    }
+    if (part.trim()) result.push(part.trim());
+  }
+  return result;
+}
+
 function log(brazo, msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [${brazo}] ${msg}`);
@@ -3077,10 +3111,16 @@ async function cmdStatus(config) {
         }
       } catch {}
 
-      const audioBuffer = await textToSpeech(narration);
-      if (audioBuffer) {
-        await sendVoiceTelegram(audioBuffer, botToken, chatId);
-        log('commander', '[status] Audio TTS enviado');
+      const statusChunks = splitTextForTTSChunks(narration, 3800);
+      for (let i = 0; i < statusChunks.length; i++) {
+        const chunkText = statusChunks.length > 1
+          ? `Parte ${i + 1} de ${statusChunks.length}. ${statusChunks[i]}`
+          : statusChunks[i];
+        const audioBuffer = await textToSpeech(chunkText);
+        if (audioBuffer) {
+          await sendVoiceTelegram(audioBuffer, botToken, chatId);
+          log('commander', `[status] Audio TTS parte ${i + 1}/${statusChunks.length} enviado`);
+        }
       }
     }
   } catch (audioErr) {
@@ -3811,12 +3851,18 @@ INSTRUCCIÓN: Integrá los complementos del usuario en tu respuesta. Generá UNA
         // Si hubo audio → intentar TTS
         if (esAudio) {
           try {
-            const audioBuffer = await textToSpeech(respuesta);
-            if (audioBuffer) {
-              const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}.ogg`);
-              fs.writeFileSync(audioPath, audioBuffer);
-              enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
-              if (enviado) log('telegram', `Audio TTS enviado (${audioBuffer.length} bytes)`);
+            const chatChunks = splitTextForTTSChunks(respuesta, 3800);
+            for (let i = 0; i < chatChunks.length; i++) {
+              const chunkText = chatChunks.length > 1
+                ? `Parte ${i + 1} de ${chatChunks.length}. ${chatChunks[i]}`
+                : chatChunks[i];
+              const audioBuffer = await textToSpeech(chunkText);
+              if (audioBuffer) {
+                const audioPath = path.join(LOG_DIR, 'media', `tts-${Date.now()}-${i}.ogg`);
+                fs.writeFileSync(audioPath, audioBuffer);
+                enviado = await sendVoiceTelegram(audioBuffer, botToken, chatId);
+                if (enviado) log('telegram', `Audio TTS parte ${i + 1}/${chatChunks.length} enviado (${audioBuffer.length} bytes)`);
+              }
             }
           } catch (e) {
             log('commander', `TTS error: ${e.message}`);

@@ -859,10 +859,17 @@ async function routeCallback(cbData, callbackQueryId, message) {
 
         try {
             const multimediaHandler = require("./multimedia-handler");
-            const text = stored.text.substring(0, 2000); // Límite TTS
-            const audioBuffer = await multimediaHandler.callTTS(text);
-            await _tgApi.sendVoiceMessage(audioBuffer);
-            _log("TTS bajo demanda enviado: " + audioBuffer.length + " bytes");
+            const TTS_CHUNK_SIZE = 3800;
+            const chunks = multimediaHandler.splitTextForTTS(stored.text, TTS_CHUNK_SIZE);
+            _log("TTS bajo demanda: " + stored.text.length + " chars, " + chunks.length + " parte(s)");
+            for (let i = 0; i < chunks.length; i++) {
+                const chunkText = chunks.length > 1
+                    ? "Parte " + (i + 1) + " de " + chunks.length + ". " + chunks[i]
+                    : chunks[i];
+                const audioBuffer = await multimediaHandler.callTTS(chunkText);
+                await _tgApi.sendVoiceMessage(audioBuffer);
+                _log("TTS bajo demanda parte " + (i + 1) + "/" + chunks.length + " enviada: " + audioBuffer.length + " bytes");
+            }
         } catch (ttsErr) {
             _log("Error TTS bajo demanda: " + ttsErr.message);
             await _tgApi.sendMessage("❌ Error generando audio: <code>" + _tgApi.escHtml(ttsErr.message) + "</code>");
