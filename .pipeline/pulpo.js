@@ -1917,14 +1917,15 @@ function brazoLanzamiento(config) {
   // Leer activaciones/desactivaciones manuales del dashboard
   readManualPriorityOverrides();
 
+  // Evaluar Priority Windows ANTES del gate de recursos — para que puedan
+  // desactivarse (cola vacía) incluso cuando el sistema está bajo presión.
+  // Sin esto, una ventana activada durante un pico de carga queda atascada
+  // indefinidamente porque isSystemOverloaded() retorna antes de la evaluación.
+  const qaPriority = evaluateQaPriority(config);
+  const buildPriority = evaluateBuildPriority(config);
+
   // GATE DE RECURSOS: presión graduada (green/yellow/orange/red)
   if (isSystemOverloaded(config)) return;
-
-  // Evaluar QA Priority Window — bloquea dev si QA está acumulado
-  const qaPriority = evaluateQaPriority(config);
-
-  // Evaluar Build Priority Window — bloquea dev si builds están acumulados
-  const buildPriority = evaluateBuildPriority(config);
 
   // Calcular multiplicador de concurrencia según presión actual
   const pressure = getResourcePressure(config);
@@ -4234,7 +4235,11 @@ function brazoDesbloqueo(config) {
       { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
     );
     const blockedIssues = JSON.parse(result || '[]');
-    if (blockedIssues.length === 0) return;
+    if (blockedIssues.length === 0) {
+      // Limpiar datos stale — si ya no hay bloqueados, el dashboard debe saberlo
+      try { fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy: {}, blocks: {} }, null, 2)); } catch {}
+      return;
+    }
 
     log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
 
@@ -4254,14 +4259,19 @@ function brazoDesbloqueo(config) {
         // Buscar el comentario de dependencias del pipeline
         const depCommentMatch = comments.match(/Dependencias detectadas por el pipeline[\s\S]*?(?=\n\n|\Z)/);
         if (!depCommentMatch) {
-          log('desbloqueo', `#${issue.number}: no se encontró comentario de dependencias — omitido`);
+          // Issue tiene label blocked:dependencies pero sin comentario de dependencias.
+          // Registrarlo con lista vacía para que el dashboard muestre el icono de bloqueo.
+          log('desbloqueo', `#${issue.number}: label blocked:dependencies sin comentario de dependencias — registrado sin deps`);
+          blockedBy[issue.number] = [];
           continue;
         }
 
-        // Extraer números de issues referenciados (#NNN)
-        const depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)].map(m => m[1]);
+        // Extraer números de issues referenciados (#NNN), excluyendo auto-referencia
+        const depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)]
+          .map(m => m[1])
+          .filter(n => n !== String(issue.number));
         if (depIssueNumbers.length === 0) {
-          log('desbloqueo', `#${issue.number}: no se encontraron issues de dependencia — omitido`);
+          log('desbloqueo', `#${issue.number}: no se encontraron issues de dependencia (excluida auto-referencia) — omitido`);
           continue;
         }
 
