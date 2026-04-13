@@ -133,7 +133,71 @@ Para cada componente afectado, verificar contra OWASP Top 10:
 [Explicación y recomendaciones priorizadas]
 ```
 
-### Paso A5: Generar issue automático si riesgo es ALTO
+### Paso A5b: Verificar dependencias funcionales (seguridad)
+
+Además del análisis de superficie de ataque, verificar si el issue **asume funcionalidades de seguridad que no existen aún** (middleware de auth, validaciones, controles de acceso, cifrado):
+
+1. **Identificar dependencias de seguridad implícitas** del body del issue:
+   - ¿Requiere `SecuredFunction` en endpoints que hoy son `Function`?
+   - ¿Asume que existe validación de roles/permisos que no está implementada?
+   - ¿Necesita cifrado de datos o tokens que no existe?
+   - ¿Depende de un flujo de auth (2FA, recovery, etc.) que no está desarrollado?
+
+2. **Buscar en el codebase** si la funcionalidad de seguridad existe:
+   ```bash
+   # Buscar SecuredFunction existentes
+   grep -rn "SecuredFunction" backend/src/ users/src/ --include="*.kt" | head -20
+   # Buscar validaciones de roles/permisos
+   grep -rn "role\|permission\|authorize" backend/src/ users/src/ --include="*.kt" | head -20
+   ```
+
+3. **Buscar en GitHub** si ya hay un issue abierto para la funcionalidad faltante:
+   ```bash
+   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+   gh issue list --repo intrale/platform --search "<keyword>" --state open --json number,title --limit 5
+   ```
+
+4. **Si la funcionalidad de seguridad NO existe y no hay issue** → crear issue de dependencia:
+   ```bash
+   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+   gh issue create --repo intrale/platform \
+     --title "dep(security): <descripción del control faltante>" \
+     --body "## Contexto
+   Detectado por Security durante análisis de seguridad del issue #<N>.
+
+   ## Control de seguridad requerido
+   <descripción del control que falta — entendible por PO>
+
+   ## Riesgo si no se implementa
+   <qué puede pasar si se desarrolla #<N> sin este control>
+
+   ## Criterio de aceptación
+   - [ ] <criterio verificable>" \
+     --label "needs-definition,qa:dependency,area:seguridad" \
+     --assignee leitolarreta
+   ```
+
+5. **Vincular y bloquear** el issue original:
+   ```bash
+   gh issue comment <N> --repo intrale/platform --body "🔒 **Dependencia de seguridad detectada:** #<nuevo-issue> — <descripción>. Este issue NO debe desarrollarse sin este control de seguridad."
+   gh issue edit <N> --repo intrale/platform --add-label "blocked:dependencies"
+   ```
+
+### Reporte de dependencias de seguridad (agregar al reporte de análisis)
+
+Si se detectaron dependencias de seguridad, agregar al reporte:
+
+```
+### ⚠️ Dependencias de seguridad detectadas
+
+| # | Control faltante | Issue creado | Riesgo sin control |
+|---|-----------------|--------------|-------------------|
+| 1 | <descripción> | #<nuevo> | Alto/Medio/Bajo |
+
+**Impacto:** Este issue queda BLOQUEADO hasta que se implementen los controles de seguridad requeridos.
+```
+
+### Paso A5b: Generar issue automático si riesgo es ALTO
 
 Si el análisis detecta riesgo alto, crear un issue de seguridad automáticamente:
 

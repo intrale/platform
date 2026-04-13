@@ -93,6 +93,74 @@ Al iniciar, parsear el primer argumento:
 
 ---
 
+## Verificación de dependencias funcionales (en análisis de issues)
+
+Cuando UX se ejecuta como parte del análisis de un issue del pipeline (el argumento contiene un número de issue), agregar este paso **antes** de cualquier auditoría o propuesta:
+
+### Paso D1: Identificar dependencias de UX implícitas
+
+Del body del issue, extraer las funcionalidades de UI que el issue **asume como existentes**:
+- Pantallas referenciadas que deben existir previamente
+- Componentes UI compartidos que se mencionan pero podrían no existir
+- Flujos de navegación que asumen pantallas intermedias
+- Estados de UI (loading, empty, error) en pantallas de las que depende
+
+### Paso D2: Verificar existencia en el codebase
+
+```bash
+# Buscar pantallas mencionadas
+# Glob: **/sc/**Screen.kt + Grep por nombre
+# Buscar componentes UI mencionados
+# Glob: **/cp/** + Grep por nombre de componente
+# Buscar rutas de navegación
+# Grep en **/ro/** por rutas referenciadas
+```
+
+### Paso D3: Buscar issues abiertos que cubran la funcionalidad faltante
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue list --repo intrale/platform --search "<keyword de la pantalla o componente>" --state open --json number,title --limit 5
+```
+
+### Paso D4: Crear issue de dependencia si la funcionalidad NO existe
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue create --repo intrale/platform \
+  --title "dep(ux): <descripción del componente/pantalla faltante>" \
+  --body "## Contexto
+Detectado por UX durante análisis de experiencia del issue #<N>.
+
+## Componente/Pantalla requerida
+<descripción de lo que falta — entendible por PO y dev>
+
+## Impacto en la experiencia
+<qué pasa si se desarrolla #<N> sin este componente — flujo roto, navegación incompleta, etc.>
+
+## Criterio de aceptación
+- [ ] <criterio verificable>" \
+  --label "needs-definition,qa:dependency,ux" \
+  --assignee leitolarreta
+```
+
+### Paso D5: Vincular y bloquear el issue original
+
+```bash
+gh issue comment <N> --repo intrale/platform --body "🎨 **Dependencia de UX detectada:** #<nuevo-issue> — <descripción>. El issue #<N> asume que este componente/pantalla existe pero no está implementado."
+gh issue edit <N> --repo intrale/platform --add-label "blocked:dependencies"
+```
+
+> **Reporte de dependencias UX:** Si se detectaron dependencias, incluir en el reporte:
+> ```
+> ### ⚠️ Dependencias de UX detectadas
+> | # | Componente/Pantalla faltante | Issue creado | Impacto en flujo |
+> |---|----------------------------|--------------|-----------------|
+> | 1 | <descripción> | #<nuevo> | <flujo afectado> |
+> ```
+
+---
+
 ## Modo: Auditar (`/ux auditar <flujo>`)
 
 Auditoria UX profunda de un flujo completo de usuario (no solo una pantalla — el journey entero).

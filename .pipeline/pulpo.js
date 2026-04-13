@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // =============================================================================
 // Pulpo V2 — Proceso central del pipeline
-// Brazos: barrido, lanzamiento, huérfanos (+ intake en F5)
+// Brazos: barrido, lanzamiento, huérfanos, desbloqueo (+ intake en F5)
 // =============================================================================
 
 const fs = require('fs');
@@ -195,44 +195,97 @@ function clearCooldown(skill, issue) {
 // Se actualizan al terminar cada agente usando los snapshots de metrics-history.
 const SKILL_PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 
+// Versión del schema de skill-profiles. Incrementar cada vez que cambie la fórmula
+// de aprendizaje de `avgMem` / `avgCpu` — al hacerlo, los perfiles viejos se invalidan
+// automáticamente en el próximo arranque de pulpo. v2 = aprendizaje por DELTA vs baseline.
+const SKILL_PROFILES_SCHEMA_VERSION = 2;
+
 function loadSkillProfiles() {
-  try { return JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8')); } catch { return {}; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    // Compatibilidad: si el archivo viejo no tiene _schemaVersion (v1), devolver vacío
+    // al próximo save se escribirá con la versión nueva.
+    if (!raw || raw._schemaVersion !== SKILL_PROFILES_SCHEMA_VERSION) return {};
+    const { _schemaVersion, ...profiles } = raw;
+    return profiles;
+  } catch { return {}; }
 }
 
 function saveSkillProfiles(profiles) {
-  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(profiles, null, 2));
+  const payload = { _schemaVersion: SKILL_PROFILES_SCHEMA_VERSION, ...profiles };
+  fs.writeFileSync(SKILL_PROFILES_FILE, JSON.stringify(payload, null, 2));
+}
+
+/**
+ * Migración one-shot: si skill-profiles.json existe pero tiene un schema viejo
+ * (o no tiene schema version), renombrarlo a .bak y empezar de cero con la fórmula
+ * nueva. Se ejecuta una sola vez al arrancar pulpo.
+ */
+function migrateSkillProfilesIfNeeded() {
+  try {
+    if (!fs.existsSync(SKILL_PROFILES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(SKILL_PROFILES_FILE, 'utf8'));
+    if (raw && raw._schemaVersion === SKILL_PROFILES_SCHEMA_VERSION) return; // ya migrado
+
+    const bakPath = SKILL_PROFILES_FILE + '.v1.bak';
+    fs.renameSync(SKILL_PROFILES_FILE, bakPath);
+    log('pulpo', `📦 skill-profiles.json migrado a v${SKILL_PROFILES_SCHEMA_VERSION}: backup en ${path.basename(bakPath)}. Los perfiles se reaprenden con la fórmula DELTA.`);
+  } catch (e) {
+    log('pulpo', `Error migrando skill-profiles: ${e.message}`);
+  }
 }
 
 /**
  * Registrar el consumo de recursos de un agente que terminó.
- * Lee metrics-history.jsonl para el período de ejecución del agente,
- * calcula el promedio de CPU/RAM durante ese período, y actualiza
- * el perfil del skill con un rolling average ponderado.
+ *
+ * Estrategia DELTA (v2): aprender el INCREMENTO que el agente introdujo respecto
+ * a la baseline inmediatamente previa a su lanzamiento, no el promedio absoluto
+ * del sistema durante su vida. Sin esto, infra pesada coexistente (emulador,
+ * Edge, Gradle daemons) se cuela en el perfil y el gate predictivo lo vuelve
+ * a sumar al usage actual → doble conteo → livelock.
+ *
+ * Ver pulpo.js comentario de predictResourceImpact y docs/pipeline/gate-predictivo.md
  */
+const BASELINE_WINDOW_MS = 60_000; // Ventana de muestras pre-lanzamiento para estimar baseline
+
 function recordSkillResourceUsage(skill, startTime, endTime) {
   try {
     const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
     if (!fs.existsSync(metricsFile)) return;
 
     const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
-    const snapshots = [];
+    const parsed = [];
     for (const line of lines) {
-      try {
-        const s = JSON.parse(line);
-        if (s.ts >= startTime && s.ts <= endTime) snapshots.push(s);
-      } catch {}
+      try { parsed.push(JSON.parse(line)); } catch {}
     }
 
-    if (snapshots.length < 2) return; // Necesitamos al menos 2 snapshots para un promedio significativo
+    // Baseline: muestras inmediatamente PREVIAS al lanzamiento (ventana de 60s)
+    const baseline = parsed.filter(s => s.ts >= startTime - BASELINE_WINDOW_MS && s.ts < startTime);
+    // Durante: muestras mientras el agente estuvo vivo
+    const during = parsed.filter(s => s.ts >= startTime && s.ts <= endTime);
 
-    // Promedio de CPU y RAM durante la vida del agente
-    const avgCpu = snapshots.reduce((sum, s) => sum + s.cpu, 0) / snapshots.length;
-    const avgMem = snapshots.reduce((sum, s) => sum + s.mem, 0) / snapshots.length;
-    // Cantidad de agentes promedio corriendo durante el período (para estimar contribución individual)
-    const avgAgents = snapshots.reduce((sum, s) => sum + Math.max(1, s.agents), 0) / snapshots.length;
-    // Estimación de la contribución individual de este agente
-    const estCpuPerAgent = avgCpu / avgAgents;
-    const estMemPerAgent = avgMem / avgAgents;
+    if (baseline.length === 0 || during.length < 2) {
+      // Sin baseline confiable o muy pocas muestras — no aprender (evita corromper el perfil)
+      return;
+    }
+
+    const avgBaselineCpu = baseline.reduce((sum, s) => sum + s.cpu, 0) / baseline.length;
+    const avgBaselineMem = baseline.reduce((sum, s) => sum + s.mem, 0) / baseline.length;
+    const avgDuringCpu = during.reduce((sum, s) => sum + s.cpu, 0) / during.length;
+    const avgDuringMem = during.reduce((sum, s) => sum + s.mem, 0) / during.length;
+
+    // Delta bruto: cuánto subió el sistema respecto al instante previo a lanzarlo
+    const deltaCpu = Math.max(0, avgDuringCpu - avgBaselineCpu);
+    const deltaMem = Math.max(0, avgDuringMem - avgBaselineMem);
+
+    // Si había otros agentes Claude corriendo durante la ventana, atribuirles
+    // parcialmente el delta (50% de atribución conservadora). Así no inflamos
+    // el perfil de este skill con el consumo de los vecinos.
+    const avgDuringAgents = during.reduce((sum, s) => sum + Math.max(1, s.agents || 1), 0) / during.length;
+    const otherAgents = Math.max(0, avgDuringAgents - 1);
+    const shareDenominator = 1 + otherAgents * 0.5;
+    const estCpuPerAgent = deltaCpu / shareDenominator;
+    const estMemPerAgent = deltaMem / shareDenominator;
 
     const profiles = loadSkillProfiles();
     const existing = profiles[skill] || { avgCpu: estCpuPerAgent, avgMem: estMemPerAgent, samples: 0 };
@@ -266,12 +319,20 @@ function recordSkillResourceUsage(skill, startTime, endTime) {
  */
 const MIN_RELIABLE_SAMPLES = 5;
 const MAX_EST_CPU = 25;  // Cap: ningún agente Claude usa más que esto
-const MAX_EST_MEM = 20;  // Cap: un proceso Claude rara vez pasa de 3GB (~20% en 16GB)
+const MAX_EST_MEM = 5;   // Cap: un proceso claude.exe real usa ~250-500MB (~1.6-3% en 16GB).
+                         // Defensa en profundidad contra perfiles mal aprendidos — ver doc
+                         // docs/pipeline/gate-predictivo.md
 const PROFILE_STALE_HOURS = 24;
+
+// Skills cuya infra reservada (emulador Android) debe restarse del baseline del gate.
+// Razón: el emulador existe PORQUE estos skills lo necesitan; cobrarle su RAM al propio
+// skill que lo consume es doble conteo y lleva a livelock (la baseline + el delta del
+// agente nunca cierran bajo el umbral porque el emulador ya está presente en la baseline).
+const QA_INFRA_SKILLS = new Set(['qa', 'security', 'tester']);
 
 function getEstimatedImpact(profile) {
   const DEFAULT_CPU = 12;
-  const DEFAULT_MEM = 8;
+  const DEFAULT_MEM = 3;  // Proceso claude.exe real ~ 250-500 MB en 16 GB
 
   if (!profile) return { cpu: DEFAULT_CPU, mem: DEFAULT_MEM };
 
@@ -299,7 +360,45 @@ function getEstimatedImpact(profile) {
   return { cpu: Math.round(cpu * 10) / 10, mem: Math.round(mem * 10) / 10 };
 }
 
-function predictResourceImpact(skill, config) {
+/**
+ * Lee la RAM ocupada por qemu-system-x86_64-headless.exe como porcentaje del total
+ * del sistema. Cacheado por 5 segundos para no pagar un `tasklist` en cada llamada.
+ * Devuelve 0 si el emulador no está corriendo o si la medición falla.
+ */
+let _emulatorMemCache = { ts: 0, percent: 0, running: false };
+const EMULATOR_MEM_CACHE_MS = 5000;
+
+function measureEmulatorMemPercent() {
+  const now = Date.now();
+  if (now - _emulatorMemCache.ts < EMULATOR_MEM_CACHE_MS) return _emulatorMemCache;
+
+  let running = false;
+  let percent = 0;
+  try {
+    const out = execSync(
+      'tasklist /FI "IMAGENAME eq qemu-system-x86_64-headless.exe" /NH /FO CSV',
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    // Formato CSV: "qemu-system-x86_64-headless.exe","1234","Console","1","234,567 KB"
+    const line = out.split('\n').find(l => l.toLowerCase().includes('qemu-system'));
+    if (line) {
+      running = true;
+      const cols = line.split('","').map(c => c.replace(/^"|"$/g, ''));
+      const memKbStr = (cols[4] || '').replace(/[^\d]/g, '');
+      const memKb = parseInt(memKbStr, 10);
+      if (!isNaN(memKb) && memKb > 0) {
+        const totalBytes = os.totalmem();
+        const usedBytes = memKb * 1024;
+        percent = Math.round((usedBytes / totalBytes) * 1000) / 10; // 1 decimal
+      }
+    }
+  } catch { /* sin tasklist o sin qemu — degradar silencioso */ }
+
+  _emulatorMemCache = { ts: now, percent, running };
+  return _emulatorMemCache;
+}
+
+function predictResourceImpact(skill, config, ctx = {}) {
   const profiles = loadSkillProfiles();
   const profile = profiles[skill];
   const usage = getSystemResourceUsage();
@@ -309,24 +408,44 @@ function predictResourceImpact(skill, config) {
 
   const est = getEstimatedImpact(profile);
 
+  // Reserva de infra del propio skill: si este skill es QA y el emulador está
+  // corriendo, restarlo del baseline — su RAM es un costo de la ventana QA, no
+  // del agente individual. Ver QA_INFRA_SKILLS arriba.
+  let reservedMem = 0;
+  let reservedReason = null;
+  if (QA_INFRA_SKILLS.has(skill)) {
+    const emu = ctx.emulator || measureEmulatorMemPercent();
+    if (emu.running && emu.percent > 0) {
+      reservedMem = emu.percent;
+      reservedReason = `emulador ${emu.percent}%`;
+    }
+  }
+
+  const effectiveMemBase = Math.max(0, usage.memPercent - reservedMem);
   const predictedCpu = usage.cpuPercent + est.cpu;
-  const predictedMem = usage.memPercent + est.mem;
+  const predictedMem = effectiveMemBase + est.mem;
 
   const cpuSafe = predictedCpu < maxCpu;
   const memSafe = predictedMem < maxMem;
 
   if (cpuSafe && memSafe) {
-    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem } };
+    return { safe: true, reason: null, predicted: { cpu: predictedCpu, mem: predictedMem }, reserved: reservedMem };
   }
 
   const reasons = [];
   if (!cpuSafe) reasons.push(`CPU ${usage.cpuPercent}% + ~${est.cpu}% = ${Math.round(predictedCpu)}% (max ${maxCpu}%)`);
-  if (!memSafe) reasons.push(`MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`);
+  if (!memSafe) {
+    const memDetail = reservedReason
+      ? `MEM ${usage.memPercent}% − ${reservedReason} + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`
+      : `MEM ${usage.memPercent}% + ~${est.mem}% = ${Math.round(predictedMem)}% (max ${maxMem}%)`;
+    reasons.push(memDetail);
+  }
 
   return {
     safe: false,
     reason: reasons.join(' | '),
-    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) }
+    predicted: { cpu: Math.round(predictedCpu), mem: Math.round(predictedMem) },
+    reserved: reservedMem
   };
 }
 
@@ -775,6 +894,37 @@ let buildPrioritySafetyNotified = false; // true si ya se envió notificación d
 const PRIORITY_WINDOWS_FILE = path.join(PIPELINE, 'priority-windows.json');
 
 /**
+ * Restaurar el estado de priority windows desde disco al iniciar.
+ * Sin esto, un restart del pulpo pierde la ventana activa y lanza dev
+ * aunque QA/Build estuviera bloqueando.
+ */
+function restorePriorityWindows() {
+  try {
+    if (!fs.existsSync(PRIORITY_WINDOWS_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(PRIORITY_WINDOWS_FILE, 'utf8'));
+    if (data.qa?.active) {
+      qaPriorityActive = true;
+      qaPriorityActivatedAt = data.qa.activatedAt || Date.now();
+      qaPriorityManual = data.qa.manual || false;
+      qaPriorityNotifiedTelegram = true; // Ya se notificó antes del restart
+      log('qa-priority', `♻️ QA Priority Window restaurada desde disco (activada ${new Date(qaPriorityActivatedAt).toISOString()})`);
+    }
+    if (data.build?.active) {
+      buildPriorityActive = true;
+      buildPriorityActivatedAt = data.build.activatedAt || Date.now();
+      buildPriorityManual = data.build.manual || false;
+      buildPriorityNotifiedTelegram = true;
+      log('build-priority', `♻️ Build Priority Window restaurada desde disco (activada ${new Date(buildPriorityActivatedAt).toISOString()})`);
+    }
+  } catch (e) {
+    log('priority', `⚠️ Error restaurando priority windows: ${e.message}`);
+  }
+}
+
+// Restaurar al cargar el módulo
+restorePriorityWindows();
+
+/**
  * Persistir el estado actual de las priority windows a disco.
  * El dashboard lee este archivo para mostrar estado y el usuario puede
  * activar/desactivar ventanas manualmente escribiendo en él.
@@ -1153,18 +1303,28 @@ function tryFreeResources(mode = 'soft') {
  * Delega al servicio-emulador via cola (no ejecuta directamente).
  * Retorna true si encoló el pedido de stop.
  */
+// Grace period: después de levantar el emulador (boot_completed), no apagarlo
+// durante este tiempo. Evita el loop preflight→start→idle→stop→preflight que
+// corrompía el quickboot. Anclado a qa-env-state.lastStartedAt, que qa-environment.js
+// escribe recién DESPUÉS de confirmar sys.boot_completed=1.
+const EMULATOR_IDLE_GRACE_MS = 3 * 60 * 1000; // 3 minutos de warm-up protegido
+
 function shutdownIdleEmulator(config) {
   try {
-    // ¿Hay algo en verificacion/trabajando?
+    // ¿Hay algo en verificacion/trabajando O pendiente?
+    // Si hay QA pendiente encolada, el emulador va a ser necesario inmediatamente.
     for (const [pName, pConfig] of Object.entries(config.pipelines)) {
       if (!pConfig.fases.includes('verificacion')) continue;
-      const trabajandoDir = path.join(fasePath(pName, 'verificacion'), 'trabajando');
-      const archivos = listWorkFiles(trabajandoDir);
-      if (archivos.length > 0) return false; // Hay agentes de QA corriendo, no tocar
+      const verifDir = fasePath(pName, 'verificacion');
+      const trabajando = listWorkFiles(path.join(verifDir, 'trabajando'));
+      if (trabajando.length > 0) return false; // Hay agentes QA corriendo
+      const pendiente = listWorkFiles(path.join(verifDir, 'pendiente'));
+      if (pendiente.length > 0) return false; // Hay QA pendiente en cola
     }
 
     // ¿Está corriendo el emulador? Verificar state file Y por nombre de proceso
     let emulatorRunning = false;
+    let lastStartedAt = 0;
 
     // Check 1: state file
     const stateFile = path.join(PIPELINE, 'qa-env-state.json');
@@ -1173,6 +1333,7 @@ function shutdownIdleEmulator(config) {
         const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
         const emulatorPid = state.emulator || state.emulador;
         if (emulatorPid && isProcessAlive(emulatorPid)) emulatorRunning = true;
+        lastStartedAt = state.lastStartedAt || 0;
       } catch {}
     }
 
@@ -1186,6 +1347,15 @@ function shutdownIdleEmulator(config) {
     }
 
     if (!emulatorRunning) return false;
+
+    // Grace period: no apagar si estamos dentro de la ventana post-boot.
+    // lastStartedAt se actualiza en qa-environment.js DESPUÉS de boot_completed.
+    const ageMs = Date.now() - lastStartedAt;
+    if (lastStartedAt > 0 && ageMs < EMULATOR_IDLE_GRACE_MS) {
+      const remaining = Math.round((EMULATOR_IDLE_GRACE_MS - ageMs) / 1000);
+      log('recursos', `⏳ Emulador dentro de grace period post-boot (${remaining}s restantes) — no apagar`);
+      return false;
+    }
 
     // Encolar stop al servicio-emulador (no ejecutar directo)
     log('recursos', '🔌 Encolando stop de emulador idle para liberar ~2.5GB RAM');
@@ -1785,6 +1955,13 @@ function brazoLanzamiento(config) {
     //    Sin este check el siguiente iteration explota al intentar moverlo.
     if (!fs.existsSync(archivo.path)) continue;
 
+    // 0b. BLOCKED: no lanzar issues con blocked:dependencies
+    const issueLbls = getIssueLabels(issue);
+    if (issueLbls.includes('blocked:dependencies')) {
+      log('lanzamiento', `#${issue} omitido — blocked:dependencies`);
+      continue;
+    }
+
     // 1. DEDUP: ¿ya hay un agente activo para este ISSUE (cualquier skill) en trabajando/?
     const issueAlreadyWorking = listWorkFiles(trabajandoDir).some(f => issueFromFile(f.name) === issue);
     if (issueAlreadyWorking) continue;
@@ -1859,8 +2036,14 @@ function brazoLanzamiento(config) {
     // 7. GATE PREDICTIVO DE RECURSOS: ¿lanzar este agente saturaría el sistema?
     //    (corre DESPUÉS del preflight para que las verificaciones que serían rebotadas
     //    no inflen el contador de candidatos bloqueados ni paren el deadlock breaker)
+    //
+    //    Pasamos el estado del emulador para que los skills QA puedan restar su RAM
+    //    del baseline — el emulador es infra reservada por la propia ventana QA, no
+    //    un costo del agente individual. Sin esto el cálculo cuenta dos veces el
+    //    emulador y lleva a livelock cuando la baseline ya lo incluye.
     eligibleForGateCount++;
-    const impact = predictResourceImpact(skill, config);
+    const gateCtx = { emulator: measureEmulatorMemPercent() };
+    const impact = predictResourceImpact(skill, config, gateCtx);
     if (!impact.safe) {
       log('lanzamiento', `🛑 Gate predictivo bloqueó ${skill}:#${issue} — ${impact.reason}`);
       gateBlockedCount++;
@@ -2332,32 +2515,25 @@ function preflightQaChecks(issue) {
     return { ok: false, result: 'waiting:emulator', reason: 'Emulador no disponible — requiere activación de ventana QA', flavors, requiresEmulator: true, qaMode: 'android' };
   }
 
-  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar
-  // Si falla, reintentar hasta 3 veces con espera progresiva
+  // Blindaje 2: Mini screenrecord de prueba (2s) para verificar que ADB puede grabar.
+  // Con el gating de boot real en qa-environment.waitBootCompleted(), el framework
+  // ya está listo antes de llegar acá, así que un solo intento es suficiente.
+  // Si falla, es ADB realmente inestable y conviene abortar el preflight rápido.
   let screenrecordOk = false;
-  const maxRetries = 3;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // Grabar 2 segundos de prueba
-      execSync(
-        `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
-        { encoding: 'utf8', timeout: 15000, windowsHide: true }
-      );
-      screenrecordOk = true;
-      log('preflight', `#${issue}: check 4b OK — screenrecord test passed (intento ${attempt}/${maxRetries})`);
-      break;
-    } catch (e) {
-      log('preflight', `#${issue}: check 4b — screenrecord test FAIL intento ${attempt}/${maxRetries}: ${e.message.slice(0, 60)}`);
-      if (attempt < maxRetries) {
-        // Espera progresiva: 3s, 6s
-        execSync(`sleep ${attempt * 3}`, { windowsHide: true });
-      }
-    }
+  try {
+    execSync(
+      `adb -s ${emulatorSerial} shell "screenrecord --time-limit 2 /sdcard/qa-preflight-test.mp4 && ls -l /sdcard/qa-preflight-test.mp4 && rm -f /sdcard/qa-preflight-test.mp4"`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    screenrecordOk = true;
+    log('preflight', `#${issue}: check 4b OK — screenrecord test passed`);
+  } catch (e) {
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord: ${e.message.slice(0, 80)}`);
   }
 
   if (!screenrecordOk) {
     checks.emulator = 'screenrecord-fail';
-    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona despues de ${maxRetries} intentos → blocked:infra`);
+    log('preflight', `#${issue}: check 4b FAIL — screenrecord no funciona → blocked:infra`);
     logPreflight(issue, checks, 'blocked:infra', startMs);
     sendBlockedInfraNotif(issue, `⚠️ Pre-flight QA #${issue}: emulador disponible pero screenrecord no funciona. Posible ADB inestable — reintentando en proxima ventana.`);
     return { ok: false, result: 'blocked:infra', reason: 'Screenrecord no funciona — ADB inestable', flavors, requiresEmulator: true, qaMode: 'android' };
@@ -2512,7 +2688,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     }
   }
 
-  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'text', '--verbose', '--permission-mode', 'bypassPermissions'];
+  const args = ['-p', userPrompt, '--system-prompt-file', systemFile, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
 
   log('lanzamiento', `Lanzando ${skill}:#${issue} (fase: ${fase}, pipeline: ${pipeline})`);
 
@@ -2535,7 +2711,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   });
 
   child.unref();
-  fs.closeSync(agentLogFd);
+  // NO cerrar agentLogFd aquí — en Windows, cerrar el FD en el padre
+  // mata la herencia y el hijo pierde stdout/stderr.
+  // Se cierra en child.on('exit') para que el log capture todo el output.
 
   activeProcesses.set(processKey(skill, issue), {
     pid: child.pid,
@@ -2571,6 +2749,9 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Cuando el proceso termina, mover de trabajando → listo
   const launchTime = Date.now();
   child.on('exit', (code) => {
+    // Cerrar el FD del log ahora que el hijo terminó
+    try { fs.closeSync(agentLogFd); } catch {}
+
     const elapsedSec = (Date.now() - launchTime) / 1000;
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
@@ -2773,8 +2954,14 @@ function saveSession(session) {
 
 // --- Handlers nativos de comandos (cero tokens, ejecución instantánea) ---
 
-function cmdStatus(config) {
+async function cmdStatus(config) {
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const mins = Math.floor((uptime % 3600) / 60);
+
   const lines = ['📊 *Estado del Pipeline*\n'];
+  lines.push(`🟢 Online · ${hours}h ${mins}m`);
+  lines.push('');
 
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     lines.push(`*${pipelineName.toUpperCase()}*`);
@@ -2842,10 +3029,65 @@ function cmdStatus(config) {
     lines.push(`  ⛔ Lanzamiento bloqueado por sobrecarga`);
   }
 
+  // PRs mergeados hoy
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+    const prs = JSON.parse(ghOut);
+    if (prs.length > 0) {
+      lines.push(`\n*Entregado hoy (${prs.length} PRs)*`);
+      for (const pr of prs.slice(0, 10)) {
+        lines.push(`  #${pr.number} ${pr.title}`);
+      }
+      if (prs.length > 10) lines.push(`  +${prs.length - 10} más`);
+    }
+  } catch (e) {
+    log('commander', `[status] Error obteniendo PRs del día: ${e.message}`);
+  }
+
   // Estado pausa
   if (paused) lines.push('\n⏸️ *PULPO PAUSADO*');
 
-  return lines.join('\n');
+  const text = lines.join('\n');
+
+  // Audio TTS de la narración
+  try {
+    const { textToSpeech, sendVoiceTelegram } = require('./multimedia');
+    const botToken = getTelegramToken();
+    const chatId = getTelegramChatId();
+    if (botToken && chatId) {
+      let narration = `Estado del pipeline. Llevo ${hours} horas y ${mins} minutos online. `;
+      // Agentes activos
+      const aliveCount = [...activeProcesses.values()].filter(i => isProcessAlive(i.pid)).length;
+      narration += aliveCount > 0 ? `${aliveCount} agentes activos. ` : 'Sin agentes activos. ';
+      // Recursos
+      const { cpuPercent: cpu, memPercent: mem } = getSystemResourceUsage();
+      narration += `CPU al ${cpu} por ciento, RAM al ${mem} por ciento. `;
+      if (paused) narration += 'El pulpo está pausado. ';
+      // PRs del día
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const ghOut = execSync(`"${GH_BIN}" pr list --state merged --search "merged:>=${today}" --limit 20 --json number,title`, { encoding: 'utf8', timeout: 15000, cwd: ROOT });
+        const prs = JSON.parse(ghOut);
+        if (prs.length > 0) {
+          narration += `Hoy se entregaron ${prs.length} PRs. `;
+          for (const pr of prs.slice(0, 5)) {
+            narration += `PR ${pr.number}, ${pr.title}. `;
+          }
+        }
+      } catch {}
+
+      const audioBuffer = await textToSpeech(narration);
+      if (audioBuffer) {
+        await sendVoiceTelegram(audioBuffer, botToken, chatId);
+        log('commander', '[status] Audio TTS enviado');
+      }
+    }
+  } catch (audioErr) {
+    log('commander', `[status] Error TTS (no fatal): ${audioErr.message}`);
+  }
+
+  return text;
 }
 
 function cmdActividad(args) {
@@ -3375,7 +3617,7 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     log('commander', `Comando detectado: /${parsed.cmd} args="${parsed.args}"`);
     let respuesta = null;
     switch (parsed.cmd) {
-      case 'status': respuesta = cmdStatus(config); break;
+      case 'status': respuesta = await cmdStatus(config); break;
       case 'actividad': respuesta = cmdActividad(parsed.args); break;
       case 'intake': respuesta = cmdIntake(parsed.args, config); break;
       case 'pausar': respuesta = cmdPausar(); break;
@@ -3653,6 +3895,13 @@ function brazoIntake(config) {
       for (const issue of issues) {
         const issueNum = String(issue.number);
 
+        // BLOCKED: no procesar issues con label blocked:dependencies
+        const issueLabels = (issue.labels || []).map(l => l.name);
+        if (issueLabels.includes('blocked:dependencies')) {
+          log('intake', `#${issueNum} omitido — tiene label blocked:dependencies`);
+          continue;
+        }
+
         // Deduplicación: verificar que el issue no esté ya activo en este pipeline
         if (issueExistsInPipeline(issueNum, pipelineName)) continue;
 
@@ -3783,9 +4032,115 @@ function persistMetricsSnapshot(config) {
   } catch {}
 }
 
+// =============================================================================
+// BRAZO DESBLOQUEO — Revisa issues con blocked:dependencies y desbloquea
+// cuando todas sus dependencias están cerradas.
+// Frecuencia: cada 30 minutos. Basado en datos reales del pipeline:
+//   - P10 de duración de issues: 1.2h, P25: 2.7h, mediana: 141h
+//   - 30 min es generoso (cubre issues rápidos) sin ser innecesariamente frecuente
+// =============================================================================
+let lastUnblockTime = 0;
+const UNBLOCK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+
+function brazoDesbloqueo(config) {
+  if (Date.now() - lastUnblockTime < UNBLOCK_INTERVAL_MS) return;
+  lastUnblockTime = Date.now();
+
+  try {
+    // 1. Buscar issues abiertos con label blocked:dependencies
+    ghThrottle();
+    const result = execSync(
+      `"${GH_BIN}" issue list --label "blocked:dependencies" --state open --json number,title --limit 50`,
+      { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true }
+    );
+    const blockedIssues = JSON.parse(result || '[]');
+    if (blockedIssues.length === 0) return;
+
+    log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
+
+    for (const issue of blockedIssues) {
+      try {
+        // 2. Leer comentarios del issue para encontrar dependencias creadas por el pipeline
+        ghThrottle();
+        const comments = execSync(
+          `"${GH_BIN}" issue view ${issue.number} --json comments --jq ".comments[].body" --repo intrale/platform`,
+          { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+        );
+
+        // Buscar el comentario de dependencias del pipeline
+        const depCommentMatch = comments.match(/Dependencias detectadas por el pipeline[\s\S]*?(?=\n\n|\Z)/);
+        if (!depCommentMatch) {
+          log('desbloqueo', `#${issue.number}: no se encontró comentario de dependencias — omitido`);
+          continue;
+        }
+
+        // Extraer números de issues referenciados (#NNN)
+        const depIssueNumbers = [...depCommentMatch[0].matchAll(/#(\d+)/g)].map(m => m[1]);
+        if (depIssueNumbers.length === 0) {
+          log('desbloqueo', `#${issue.number}: no se encontraron issues de dependencia — omitido`);
+          continue;
+        }
+
+        // 3. Verificar si todas las dependencias están cerradas
+        let allClosed = true;
+        const openDeps = [];
+        for (const depNum of depIssueNumbers) {
+          ghThrottle();
+          try {
+            const depState = execSync(
+              `"${GH_BIN}" issue view ${depNum} --json state --jq ".state" --repo intrale/platform`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
+            ).trim();
+            if (depState !== 'CLOSED') {
+              allClosed = false;
+              openDeps.push(depNum);
+            }
+          } catch (e) {
+            // Si no se puede leer el estado, asumir que está abierto
+            allClosed = false;
+            openDeps.push(depNum);
+          }
+        }
+
+        if (allClosed) {
+          // 4. Todas cerradas → desbloquear
+          log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
+
+          // Quitar label blocked:dependencies
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue edit ${issue.number} --remove-label "blocked:dependencies" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          // Agregar comentario de desbloqueo
+          const unblockComment = `## ✅ Issue desbloqueado automáticamente\n\nTodas las dependencias fueron resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Este issue vuelve a la cola del pipeline para ser procesado.`;
+          ghThrottle();
+          execSync(
+            `"${GH_BIN}" issue comment ${issue.number} --body "${unblockComment.replace(/"/g, '\\"')}" --repo intrale/platform`,
+            { cwd: ROOT, timeout: 10000, windowsHide: true }
+          );
+
+          sendTelegram(`🔓 Issue #${issue.number} desbloqueado — todas las dependencias resueltas (${depIssueNumbers.map(n => '#' + n).join(', ')}). Vuelve a la cola del pipeline.`);
+          log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
+        } else {
+          log('desbloqueo', `#${issue.number}: dependencias abiertas: ${openDeps.map(n => '#' + n).join(', ')} — sigue bloqueado`);
+        }
+      } catch (e) {
+        log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    log('desbloqueo', `Error en brazo de desbloqueo: ${e.message}`);
+  }
+}
+
 async function mainLoop() {
   log('pulpo', `Pulpo V2 iniciado — poll cada ${loadConfig().timeouts?.poll_interval_seconds || 30}s`);
   log('pulpo', `Pipeline: ${PIPELINE}`);
+
+  // Migración one-shot del schema de skill-profiles (v1 → v2 delta)
+  migrateSkillProfilesIfNeeded();
 
   while (running) {
     try {
@@ -3812,10 +4167,11 @@ async function mainLoop() {
       if (!paused) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
         persistMetricsSnapshot(config); // Métricas históricas para /metrics
-        brazoIntake(config);    // Segundo: traer trabajo nuevo de GitHub
-        brazoBarrido(config);   // Tercero: promover entre fases
-        brazoLanzamiento(config); // Cuarto: asignar trabajo a agentes
-        brazoHuerfanos(config); // Quinto: recuperar trabajo trabado
+        brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
+        brazoDesbloqueo(config);  // Tercero: desbloquear issues cuyas dependencias se resolvieron
+        brazoBarrido(config);     // Cuarto: promover entre fases
+        brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
+        brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
       } else {
         log('pulpo', 'PAUSADO — esperando reanudación (borrar .pipeline/.paused)');
       }
@@ -3832,6 +4188,26 @@ async function mainLoop() {
 // Graceful shutdown
 process.on('SIGINT', () => { log('pulpo', 'SIGINT recibido — cerrando'); running = false; });
 process.on('SIGTERM', () => { log('pulpo', 'SIGTERM recibido — cerrando'); running = false; });
+
+// --- MODO TEST: permitir require() del archivo sin arrancar el pulpo ---
+// Uso: PULPO_NO_AUTOSTART=1 node -e "require('./pulpo.js').predictResourceImpact(...)"
+// Útil para tests unitarios y scripts de evidencia del gate predictivo.
+if (process.env.PULPO_NO_AUTOSTART === '1') {
+  module.exports = {
+    predictResourceImpact,
+    getEstimatedImpact,
+    measureEmulatorMemPercent,
+    recordSkillResourceUsage,
+    loadSkillProfiles,
+    saveSkillProfiles,
+    migrateSkillProfilesIfNeeded,
+    SKILL_PROFILES_SCHEMA_VERSION,
+    QA_INFRA_SKILLS,
+    MAX_EST_MEM,
+    MAX_EST_CPU
+  };
+  return; // No arrancar singleton ni mainLoop
+}
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');

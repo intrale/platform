@@ -285,30 +285,10 @@ async function handleHelp() {
 }
 
 async function handleStatus() {
-    // P4-UX: Status compacto sin datos técnicos (PID, path, message registry)
-    const uptime = process.uptime();
-    const hours = Math.floor(uptime / 3600);
-    const mins = Math.floor((uptime % 3600) / 60);
-
-    let msg = "📊 <b>Estado</b>\n\n";
-    msg += "🟢 Online · " + hours + "h " + mins + "m\n";
-    msg += "⚡ " + _skills.length + " skills\n";
-
-    const session = _sessionManager.loadSession();
-    if (session && !_sessionManager.isSessionExpired(session)) {
-        const elapsed = Date.now() - new Date(session.last_used).getTime();
-        const remainingMins = Math.max(0, Math.floor((_sessionManager.SESSION_TTL_MS - elapsed) / 60000));
-        msg += "🔗 Sesion: " + _tgApi.escHtml(session.skill || "texto libre") + " (" + remainingMins + " min)\n";
-    }
-
-    if (_sprintManager.isSprintRunning()) {
-        msg += "\n🏃 Sprint en curso (monitor cada " + Math.round(_sprintManager.getSprintMonitorIntervalMs() / 60000) + " min)\n";
-    } else {
-        msg += "\n💤 Sin sprint activo\n";
-    }
-
-    // Datos eliminados: PID, repo path, message registry stats, categorías
-    await _tgApi.sendMessage(msg);
+    // DEPRECATED: /status se maneja nativamente en pulpo.js:cmdStatus()
+    // Este handler ya no se invoca desde el flujo de Telegram.
+    // Se mantiene solo por compatibilidad si algún hook lo referencia.
+    await _tgApi.sendMessage("ℹ️ /status se procesa desde el pipeline. Usá /status en Telegram.");
 }
 
 async function handleSession() {

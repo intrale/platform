@@ -717,7 +717,59 @@ Limpiar tests generados:
 rm -rf qa/generated/api/ qa/generated/maestro/
 ```
 
-## Paso V9: Agregar label qa:passed al issue (si APROBADO)
+## Paso V9: Detección de dependencias externas y creación de issues (si RECHAZADO)
+
+Cuando el veredicto es RECHAZADO, analizar las causas del rechazo para identificar **dependencias externas** — funcionalidades, endpoints, pantallas o componentes que NO son parte del issue actual pero que bloquean su validación.
+
+### Criterios para detectar una dependencia externa
+
+Un fallo se clasifica como **dependencia externa** (no es culpa del issue actual) cuando:
+
+1. **Feature faltante**: el test falla porque una pantalla, endpoint o flujo que el issue asume como existente no está implementado aún
+2. **Bug preexistente**: el test falla por un bug en código que NO fue modificado por el issue actual (verificar con git diff origin/main...HEAD)
+3. **Infraestructura faltante**: el test requiere un servicio, configuración o recurso que no existe todavía
+4. **Datos de seed incompletos**: el test necesita datos que no existen en el entorno QA y que corresponden a otro dominio funcional
+
+### Cómo verificar si es dependencia externa vs bug propio
+
+Verificar si el archivo que causa el fallo fue modificado por este issue:
+- Ejecutar: git diff origin/main...HEAD --name-only | grep '<archivo-del-fallo>'
+- Si NO aparece en el diff → es dependencia externa
+- Si aparece → es bug propio del issue
+
+### Creación de issues de dependencia
+
+Para cada dependencia externa detectada:
+
+1. **Buscar si ya existe** un issue abierto para la misma funcionalidad:
+   - gh issue list --repo intrale/platform --search '<keyword>' --state open --json number,title --limit 5
+
+2. **Si no existe**, crear un issue nuevo con:
+   - Título: 'dep: <descripción corta de lo que falta>'
+   - Labels: needs-definition, qa:dependency
+   - Body con: Contexto (qué issue lo detectó), Problema (lenguaje no-técnico), Evidencia (test y error), Criterio de aceptación
+
+3. **Vincular al issue actual** con un comentario listando las dependencias detectadas
+
+4. **Agregar label blocked:dependencies** al issue actual
+
+### Reglas para la creación de issues de dependencia
+
+- **Solo dependencias REALES** — si el fallo es bug propio del issue, NO crear issue de dependencia
+- **No duplicar** — buscar antes de crear; si existe, referenciar el existente
+- **Descripción no-técnica** — entendible por el PO, no solo por devs
+- **Un issue por dependencia** — no agrupar múltiples en uno solo
+- **Label needs-definition** — entra al flujo normal del pipeline
+
+### Ejemplo
+
+Si #1920 (editar perfil) falla porque 'cambiar contraseña' no existe:
+- NO es bug del #1920 — es feature faltante
+- Crear: dep: Implementar pantalla de cambio de contraseña
+- Vincular: #1920 depende del nuevo issue
+- #1920 queda blocked:dependencies hasta que se resuelva
+
+## Paso V10: Agregar label qa:passed al issue (si APROBADO)
 
 Si el veredicto es APROBADO, agregar label `qa:passed` al issue validado:
 
