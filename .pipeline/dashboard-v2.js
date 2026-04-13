@@ -378,6 +378,14 @@ function getPipelineState() {
   state.rechazos.sort((a, b) => b.ts - a.ts);
   state.rechazos = state.rechazos.slice(0, 10);
 
+  // Bloqueos entre issues
+  state.blockedIssues = { blockedBy: {}, blocks: {} };
+  try {
+    const blockedData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'blocked-issues.json'), 'utf8'));
+    if (blockedData.blockedBy) state.blockedIssues.blockedBy = blockedData.blockedBy;
+    if (blockedData.blocks) state.blockedIssues.blocks = blockedData.blocks;
+  } catch {}
+
   // Recursos del sistema
   const resourceLimits = config.resource_limits || {};
   state.resources = {
@@ -664,12 +672,23 @@ function generateHTML(state) {
       }
     }
 
+    const blockedBy = state.blockedIssues.blockedBy[issueNum] || [];
+    const blocksOthers = state.blockedIssues.blocks[issueNum] || [];
+    let blockIcons = '';
+    if (blockedBy.length > 0) {
+      const depLinks = blockedBy.map(d => '#' + d).join(', ');
+      blockIcons += `<span class="block-icon block-locked">🔒<span class="block-tt">Bloqueado por: ${depLinks}</span></span>`;
+    }
+    if (blocksOthers.length > 0) {
+      const blockLinks = blocksOthers.map(d => '#' + d).join(', ');
+      blockIcons += `<span class="block-icon block-blocking">⛓️<span class="block-tt">Bloquea a: ${blockLinks}</span></span>`;
+    }
+
     const issueCell = `<td class="issue-col">
-      <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>
+      <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>${blockIcons}
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
       <span class="progress-text">${completedFases}/${totalFases}</span>${issueEtaLabel}
-    </td>`;
-
+    </td>`
     let cells = '';
     for (const { pipeline, fase } of allFases) {
       const key = `${pipeline}/${fase}`;
@@ -780,7 +799,8 @@ function generateHTML(state) {
       cells += `<td class="${isCurrent ? 'cell-current' : ''} ${pipeline === 'definicion' ? 'col-def' : 'col-dev'}">${chips}</td>`;
     }
 
-    const rowClass = data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done';
+    const blockedClass = blockedBy.length > 0 ? ' issue-blocked' : '';
+    const rowClass = (data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done') + blockedClass;
     const hiddenClass = rowIndex >= ISSUE_VISIBLE_LIMIT ? ' issue-overflow' : '';
     rows += `<tr class="${rowClass}${hiddenClass}">${issueCell}${cells}</tr>`;
     rowIndex++;
