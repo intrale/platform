@@ -1064,7 +1064,12 @@ function countPendingVerificacion(config) {
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('verificacion')) continue;
     const pendDir = path.join(PIPELINE, pName, 'verificacion', 'pendiente');
-    count += listWorkFiles(pendDir).length;
+    const files = listWorkFiles(pendDir);
+    for (const f of files) {
+      const issue = issueFromFile(f.name);
+      const labels = getIssueLabels(issue);
+      if (!labels.includes('blocked:dependencies')) count++;
+    }
   }
   return count;
 }
@@ -1172,7 +1177,12 @@ function countPendingBuild(config) {
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     if (!pConfig.fases.includes('build')) continue;
     const pendDir = path.join(PIPELINE, pName, 'build', 'pendiente');
-    count += listWorkFiles(pendDir).length;
+    const files = listWorkFiles(pendDir);
+    for (const f of files) {
+      const issue = issueFromFile(f.name);
+      const labels = getIssueLabels(issue);
+      if (!labels.includes('blocked:dependencies')) count++;
+    }
   }
   return count;
 }
@@ -4228,6 +4238,10 @@ function brazoDesbloqueo(config) {
 
     log('desbloqueo', `Revisando ${blockedIssues.length} issues bloqueados por dependencias`);
 
+    // Mapeos bidireccionales para el dashboard
+    const blockedBy = {};  // issue → [dependencias]
+    const blocks = {};     // dependencia → [issues que bloquea]
+
     for (const issue of blockedIssues) {
       try {
         // 2. Leer comentarios del issue para encontrar dependencias creadas por el pipeline
@@ -4249,6 +4263,13 @@ function brazoDesbloqueo(config) {
         if (depIssueNumbers.length === 0) {
           log('desbloqueo', `#${issue.number}: no se encontraron issues de dependencia — omitido`);
           continue;
+        }
+
+        // Registrar mapeos bidireccionales
+        blockedBy[issue.number] = depIssueNumbers;
+        for (const dep of depIssueNumbers) {
+          if (!blocks[dep]) blocks[dep] = [];
+          if (!blocks[dep].includes(String(issue.number))) blocks[dep].push(String(issue.number));
         }
 
         // 3. Verificar si todas las dependencias están cerradas
@@ -4276,6 +4297,13 @@ function brazoDesbloqueo(config) {
           // 4. Todas cerradas → desbloquear
           log('desbloqueo', `#${issue.number}: todas las dependencias cerradas (${depIssueNumbers.join(', ')}) → desbloqueando`);
 
+          // Quitar de los mapeos (ya no está bloqueado)
+          delete blockedBy[issue.number];
+          for (const dep of depIssueNumbers) {
+            if (blocks[dep]) blocks[dep] = blocks[dep].filter(n => n !== String(issue.number));
+            if (blocks[dep] && blocks[dep].length === 0) delete blocks[dep];
+          }
+
           // Quitar label blocked:dependencies
           ghThrottle();
           execSync(
@@ -4299,6 +4327,13 @@ function brazoDesbloqueo(config) {
       } catch (e) {
         log('desbloqueo', `Error procesando #${issue.number}: ${e.message}`);
       }
+    }
+
+    // Persistir mapeos para el dashboard
+    try {
+      fs.writeFileSync(path.join(PIPELINE, 'blocked-issues.json'), JSON.stringify({ blockedBy, blocks }, null, 2));
+    } catch (e) {
+      log('desbloqueo', `Error persistiendo blocked-issues.json: ${e.message}`);
     }
   } catch (e) {
     log('desbloqueo', `Error en brazo de desbloqueo: ${e.message}`);
