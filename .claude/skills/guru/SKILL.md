@@ -84,6 +84,72 @@ de la tecnología relevante para el proyecto:
 Si encontraste una URL relevante (docs oficiales, GitHub, etc.), fetcheala
 para obtener información más detallada.
 
+## Detección de dependencias funcionales (cuando se analiza un issue)
+
+Cuando Guru se ejecuta en la fase de **análisis** del pipeline (el argumento es un número de issue o el contexto indica que se está analizando un issue para el pipeline), agregar este paso DESPUÉS del protocolo de búsqueda:
+
+### Paso 5: Verificar dependencias funcionales
+
+Del body del issue, extraer las funcionalidades que el issue **asume como existentes** (pantallas, endpoints, servicios, componentes). Para cada una:
+
+1. **Buscar en el codebase** si la funcionalidad existe:
+   - Pantallas: Glob `**/sc/**Screen.kt` + Grep por nombre de pantalla
+   - Endpoints: Grep por tag en Kodein / `Function` / `SecuredFunction`
+   - Servicios: Grep por `Comm*` / `Client*` / `ToDo*` / `Do*`
+   - Componentes UI: Glob `**/cp/**` + Grep
+
+2. **Buscar en GitHub** si ya hay un issue abierto que cubra esa funcionalidad:
+   ```bash
+   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+   gh issue list --repo intrale/platform --search "<keyword de la funcionalidad>" --state open --json number,title --limit 5
+   ```
+
+3. **Si la funcionalidad NO existe en el codebase Y no hay issue abierto** → crear un issue de dependencia:
+   ```bash
+   export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+   gh issue create --repo intrale/platform \
+     --title "dep: <descripción corta de la funcionalidad faltante>" \
+     --body "## Contexto
+   Detectado por Guru durante análisis técnico del issue #<N>.
+
+   ## Funcionalidad requerida
+   <descripción no-técnica de lo que falta>
+
+   ## Por qué es necesario
+   El issue #<N> asume que esta funcionalidad existe pero no está implementada.
+
+   ## Criterio de aceptación
+   - [ ] <criterio verificable>" \
+     --label "needs-definition,qa:dependency" \
+     --assignee leitolarreta
+   ```
+
+4. **Vincular al issue original** con un comentario que referencie la dependencia detectada y el número de issue creado:
+   ```bash
+   gh issue comment <N> --repo intrale/platform --body "🔗 **Dependencia detectada por Guru (análisis técnico):** #<nuevo-issue> — <descripción corta>. Este issue requiere que la funcionalidad anterior exista antes de poder desarrollarse."
+   ```
+
+5. **Si se crearon dependencias**, agregar label `blocked:dependencies` al issue original:
+   ```bash
+   gh issue edit <N> --repo intrale/platform --add-label "blocked:dependencies"
+   ```
+
+### Reporte de dependencias (agregar al final del reporte normal)
+
+Si se detectaron dependencias, agregar esta sección al reporte:
+
+```
+## ⚠️ Dependencias funcionales detectadas
+
+| # | Funcionalidad faltante | Issue creado | Estado |
+|---|----------------------|--------------|--------|
+| 1 | <descripción> | #<nuevo> | 🔴 Pendiente |
+
+**Impacto:** Este issue queda BLOQUEADO (`blocked:dependencies`) hasta que se resuelvan las dependencias.
+**Recomendación:** Priorizar los issues de dependencia antes de iniciar el desarrollo de #<N>.
+```
+
+
 ## Formato de respuesta
 
 Estructurá siempre el reporte así:

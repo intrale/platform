@@ -6,9 +6,10 @@
 // el estado vive en el filesystem, no en memoria.
 //
 // Uso:
-//   node .pipeline/restart.js          → sync + kill all + relaunch
-//   node .pipeline/restart.js stop     → kill all
-//   node .pipeline/restart.js status   → verificar estado
+//   node .pipeline/restart.js              → sync + kill all + relaunch
+//   node .pipeline/restart.js --paused     → relaunch solo Telegram + dashboard (sin procesar issues)
+//   node .pipeline/restart.js stop         → kill all
+//   node .pipeline/restart.js status       → verificar estado
 
 const { execSync, spawn, spawnSync } = require('child_process');
 const fs = require('fs');
@@ -23,6 +24,7 @@ const COMPONENTS = [
   { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
   { name: 'dashboard', script: 'dashboard-v2.js', pid: 'dashboard.pid' },
 ];
 
@@ -209,6 +211,7 @@ function status() {
 // --- MAIN ---
 
 const action = process.argv[2] || 'restart';
+const flagPaused = process.argv.includes('--paused');
 
 switch (action) {
   case 'stop':
@@ -221,6 +224,12 @@ switch (action) {
   default:
     killAll();
     syncWithMain();
+    if (flagPaused) {
+      fs.writeFileSync(path.join(PIPELINE, '.paused'), new Date().toISOString());
+      log('Modo PAUSADO — solo Telegram + dashboard activos (intake/lanzamiento deshabilitados)');
+    } else {
+      try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
+    }
     launchAll();
     const ok = status();
     log(ok ? '=== Pipeline V2 operativo ===' : '=== Revisar componentes ===');

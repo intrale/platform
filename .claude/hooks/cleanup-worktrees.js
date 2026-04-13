@@ -23,6 +23,7 @@ const REPO_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HOOKS_DIR, ".."
 const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
 const GH_CLI = "/c/Workspaces/gh-cli/bin/gh.exe";
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
+const PIPELINE_DIR = path.join(REPO_ROOT, ".pipeline");
 
 const DRY_RUN = process.argv.includes("--dry-run");
 
@@ -56,6 +57,57 @@ function sendAlert(text) {
             req.end();
         } catch (e) { resolve(false); }
     });
+}
+
+/**
+ * Escanea las fases activas del pipeline (pendiente/trabajando/listo) y devuelve
+ * un Set con los nombres de directorio de worktrees que el pipeline necesita.
+ * Ej: si existe .pipeline/desarrollo/dev/trabajando/1234.backend-dev
+ *     → protege "platform.agent-1234-backend-dev"
+ *
+ * Solo protege worktrees con patrón pipeline (platform.agent-*).
+ * Worktrees manuales (session-*, codex-*, etc.) NO se protegen aunque
+ * tengan el mismo número de issue.
+ */
+function getActivePipelineWorktreeNames() {
+    const protectedNames = new Set();
+    const repoName = path.basename(REPO_ROOT);
+    const activeStates = ["pendiente", "trabajando", "listo"];
+    const pipelines = ["desarrollo", "definicion"];
+
+    for (const pipeline of pipelines) {
+        const pipeDir = path.join(PIPELINE_DIR, pipeline);
+        if (!fs.existsSync(pipeDir)) continue;
+
+        let fases;
+        try { fases = fs.readdirSync(pipeDir).filter(f => {
+            try { return fs.statSync(path.join(pipeDir, f)).isDirectory(); } catch(e) { return false; }
+        }); } catch(e) { continue; }
+
+        for (const fase of fases) {
+            for (const state of activeStates) {
+                const stateDir = path.join(pipeDir, fase, state);
+                if (!fs.existsSync(stateDir)) continue;
+
+                let files;
+                try { files = fs.readdirSync(stateDir); } catch(e) { continue; }
+
+                for (const file of files) {
+                    if (file === ".gitkeep") continue;
+                    // Archivo: {issue}.{skill} → worktree: platform.agent-{issue}-{skill}
+                    const dotIdx = file.indexOf(".");
+                    if (dotIdx <= 0) continue;
+                    const issue = file.substring(0, dotIdx);
+                    const skill = file.substring(dotIdx + 1);
+                    if (!issue || !skill) continue;
+                    protectedNames.add(repoName + ".agent-" + issue + "-" + skill);
+                }
+            }
+        }
+    }
+
+    log("Pipeline worktrees protegidos: " + (protectedNames.size > 0 ? [...protectedNames].join(", ") : "ninguno"));
+    return protectedNames;
 }
 
 function parseGitWorktreeList() {
@@ -205,6 +257,17 @@ function cleanupWorktree(wtPath, branchName) {
 function getTargetWorktrees(args) {
     const mainPath = REPO_ROOT.replace(/\\/g, "/");
     const repoName = path.basename(REPO_ROOT);
+    const pipelineProtected = getActivePipelineWorktreeNames();
+
+    // Helper: verificar si un worktree está protegido por el pipeline
+    function isPipelineProtected(wtPath) {
+        const dirName = path.basename(wtPath);
+        if (pipelineProtected.has(dirName)) {
+            log("PROTEGIDO por pipeline: " + dirName);
+            return true;
+        }
+        return false;
+    }
 
     // Si se pasan paths como argumentos
     const pathArgs = args.filter(a => !a.startsWith("--"));
@@ -212,7 +275,7 @@ function getTargetWorktrees(args) {
         return pathArgs.map(p => {
             const fullPath = path.resolve(p);
             return { path: fullPath, branch: null };
-        });
+        }).filter(wt => !isPipelineProtected(wt.path));
     }
 
     // Stdin disponible? (piped)
@@ -232,17 +295,21 @@ function getTargetWorktrees(args) {
             }
         }
         if (current.path) worktrees.push(current);
-        return worktrees.filter(w => w.path.replace(/\\/g, "/") !== mainPath);
+        return worktrees
+            .filter(w => w.path.replace(/\\/g, "/") !== mainPath)
+            .filter(w => !isPipelineProtected(w.path));
     }
 
-    // Auto-detectar: worktrees registrados en git que estén muertos
+    // Auto-detectar: worktrees registrados en git que estén muertos o vivos
     const allWt = parseGitWorktreeList();
-    const dead = [];
+    const candidates = [];
     for (const wt of allWt) {
         const wtNorm = (wt.path || "").replace(/\\/g, "/");
         if (wtNorm === mainPath || wt.bare) continue;
         // NUNCA tocar el worktree ops
         if (path.basename(wt.path || "").endsWith(".ops")) continue;
+        // NUNCA tocar worktrees activos en el pipeline
+        if (isPipelineProtected(wt.path)) continue;
 
         let isDead = false;
         if (!fs.existsSync(wt.path)) {
@@ -257,29 +324,31 @@ function getTargetWorktrees(args) {
         }
 
         if (isDead) {
-            dead.push({ path: wt.path, branch: getBranchName(wt) });
+            candidates.push({ path: wt.path, branch: getBranchName(wt) });
         }
     }
 
-    // También buscar en filesystem
+    // También buscar en filesystem (sibling worktrees)
     const parentDir = path.resolve(REPO_ROOT, "..");
     try {
         const entries = fs.readdirSync(parentDir);
         for (const entry of entries) {
-            if (!entry.startsWith(repoName + ".agent-")) continue;
+            if (!entry.startsWith(repoName + ".agent-") && !entry.startsWith(repoName + ".codex-") && !entry.startsWith(repoName + ".session-")) continue;
             const fullPath = path.join(parentDir, entry);
             const fullPathNorm = fullPath.replace(/\\/g, "/");
-            if (dead.some(d => d.path.replace(/\\/g, "/") === fullPathNorm)) continue;
+            if (candidates.some(d => d.path.replace(/\\/g, "/") === fullPathNorm)) continue;
+            // Pipeline protection
+            if (isPipelineProtected(fullPath)) continue;
             try {
                 const contents = fs.readdirSync(fullPath);
                 if (contents.length <= 1) {
-                    dead.push({ path: fullPath, branch: null });
+                    candidates.push({ path: fullPath, branch: null });
                 }
             } catch (e) {}
         }
     } catch (e) {}
 
-    return dead;
+    return candidates;
 }
 
 async function main() {

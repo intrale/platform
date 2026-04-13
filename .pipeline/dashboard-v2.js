@@ -25,6 +25,7 @@ const COMPONENTS = [
   { name: 'svc-telegram', script: 'servicio-telegram.js', pid: 'svc-telegram.pid' },
   { name: 'svc-github', script: 'servicio-github.js', pid: 'svc-github.pid' },
   { name: 'svc-drive', script: 'servicio-drive.js', pid: 'svc-drive.pid' },
+  { name: 'svc-emulador', script: 'servicio-emulador.js', pid: 'svc-emulador.pid' },
   { name: 'outbox-drain', script: 'outbox-drain.js', pid: 'outbox-drain.pid' },
 ];
 // Nota: dashboard no se incluye (no puede matarse a sí mismo)
@@ -377,6 +378,14 @@ function getPipelineState() {
   state.rechazos.sort((a, b) => b.ts - a.ts);
   state.rechazos = state.rechazos.slice(0, 10);
 
+  // Bloqueos entre issues
+  state.blockedIssues = { blockedBy: {}, blocks: {} };
+  try {
+    const blockedData = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'blocked-issues.json'), 'utf8'));
+    if (blockedData.blockedBy) state.blockedIssues.blockedBy = blockedData.blockedBy;
+    if (blockedData.blocks) state.blockedIssues.blocks = blockedData.blocks;
+  } catch {}
+
   // Recursos del sistema
   const resourceLimits = config.resource_limits || {};
   state.resources = {
@@ -663,12 +672,24 @@ function generateHTML(state) {
       }
     }
 
+    const blockedBy = state.blockedIssues.blockedBy[issueNum];
+    const blocksOthers = state.blockedIssues.blocks[issueNum] || [];
+    let blockIcons = '';
+    if (blockedBy != null) {
+      // blockedBy puede ser [] (label sin deps conocidas) o [n1, n2, ...] (con deps)
+      const depLinks = blockedBy.length > 0 ? blockedBy.map(d => '#' + d).join(', ') : 'dependencias no especificadas';
+      blockIcons += `<span class="block-icon block-locked">🔒<span class="block-tt">Bloqueado por: ${depLinks}</span></span>`;
+    }
+    if (blocksOthers.length > 0) {
+      const blockLinks = blocksOthers.map(d => '#' + d).join(', ');
+      blockIcons += `<span class="block-icon block-blocking">⛓️<span class="block-tt">Bloquea a: ${blockLinks}</span></span>`;
+    }
+
     const issueCell = `<td class="issue-col">
-      <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>
+      <a href="${GH(issueNum)}" target="_blank" class="issue-link">#${issueNum}</a>${blockIcons}
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
       <span class="progress-text">${completedFases}/${totalFases}</span>${issueEtaLabel}
-    </td>`;
-
+    </td>`
     let cells = '';
     for (const { pipeline, fase } of allFases) {
       const key = `${pipeline}/${fase}`;
@@ -744,14 +765,15 @@ function generateHTML(state) {
           }
         }
 
-        // Tooltip content
+        // Tooltip content (atributo title nativo — nunca aparece como texto inline)
         const ttStart = e.startedAt ? `Inicio: ${fmtTime(e.startedAt)}` : '';
         const ttDur = e.durationMs ? `Duración: ${fmtDuration(e.durationMs)}` : '';
-        const ttRes = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
+        const ttResStr = e.resultado ? `Resultado: ${e.resultado === 'aprobado' ? '✓' : '✗'} ${e.resultado}` : '';
         const ttMot = e.motivo ? `Motivo: ${e.motivo.slice(0, 80)}` : '';
         const ttRun = e._isRetry ? `Intentos: ${e._runTotal} (mostrando último)` : '';
-        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEta, ttRes, ttMot].filter(Boolean);
-        const tooltip = `<span class="tt">${ttLines.map(l => `<span>${l}</span>`).join('')}</span>`;
+        const ttEtaStr = ttEta || '';
+        const ttLines = [e.skill, ttRun, ttStart, ttDur, ttEtaStr, ttResStr, ttMot].filter(Boolean);
+        const titleAttr = ttLines.join('\n').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
         const agentColor = skillColor(e.skill);
         const chipContent = `${icon} ${skillIcon(e.skill)} ${e.skill}${retryBadge}${etaBadge}`;
@@ -767,7 +789,7 @@ function generateHTML(state) {
           : '';
 
         // Wrap in link if log exists
-        const inner = `<span class="chip ${cls}${staleClass}">${chipContent}${killBtn}${pdfBtn}${tooltip}</span>`;
+        const inner = `<span class="chip ${cls}${staleClass}" title="${titleAttr}">${chipContent}${killBtn}${pdfBtn}</span>`;
         if (e.hasLog) {
           const isLive = e.estado === 'trabajando';
           return `<a href="/logs/${e.logFile}" class="log-link" onclick="event.preventDefault();openLogViewer('${e.logFile}','#${issueNum} ${e.skill}',${isLive})">${inner}</a>`;
@@ -778,7 +800,8 @@ function generateHTML(state) {
       cells += `<td class="${isCurrent ? 'cell-current' : ''} ${pipeline === 'definicion' ? 'col-def' : 'col-dev'}">${chips}</td>`;
     }
 
-    const rowClass = data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done';
+    const blockedClass = blockedBy != null ? ' issue-blocked' : '';
+    const rowClass = (data.estadoActual ? `issue-${data.estadoActual}` : 'issue-done') + blockedClass;
     const hiddenClass = rowIndex >= ISSUE_VISIBLE_LIMIT ? ' issue-overflow' : '';
     rows += `<tr class="${rowClass}${hiddenClass}">${issueCell}${cells}</tr>`;
     rowIndex++;
@@ -910,6 +933,7 @@ function generateHTML(state) {
     { name: 'Telegram', icon: '📨', queues: ['commander', 'telegram'], processes: ['listener', 'svc-telegram'] },
     { name: 'GitHub', icon: '🐙', queues: ['github'], processes: ['svc-github'] },
     { name: 'Drive', icon: '📁', queues: ['drive'], processes: ['svc-drive'] },
+    { name: 'Emulador', icon: '📱', queues: ['emulador'], processes: ['svc-emulador'] },
   ];
   const STANDALONE_PROCESSES = ['pulpo', 'outbox-drain', 'dashboard'];
   const groupedProcesses = new Set(SERVICE_GROUPS.flatMap(g => g.processes));
@@ -1000,6 +1024,7 @@ function generateHTML(state) {
       </div>
     </div>
     ${blocked ? '<div class="resource-alert">⛔ Lanzamiento bloqueado por sobrecarga del sistema</div>' : ''}
+    ${fs.existsSync(path.join(PIPELINE, '.paused')) ? '<div class="resource-alert" style="background:rgba(251,188,5,0.12);border-color:rgba(251,188,5,0.4);color:#f0a500;">⏸️ Lanzamientos pausados por el usuario <button class="ctl-btn" style="margin-left:12px;padding:2px 10px;font-size:0.85em;" onclick="pauseAction(\'resume\')">▶ Reanudar</button></div>' : ''}
     ${stale > 0 ? `<div class="resource-alert">⚠️ ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 
   // Emulador Android — integrado como servicio más en svcCardsHTML
@@ -1275,6 +1300,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .cell-current{background:rgba(88,166,255,0.07);border-left:3px solid var(--ac)}
 .issue-done{opacity:0.38}
 .issue-listo{opacity:0.65}
+.issue-blocked{background:rgba(248,81,73,0.08)}
+.block-icon{position:relative;margin-left:4px;cursor:help;font-size:0.85em}
+.block-icon .block-tt{display:none;position:absolute;left:50%;transform:translateX(-50%);bottom:120%;background:var(--sf);color:var(--fg);padding:4px 8px;border-radius:4px;font-size:0.8em;white-space:nowrap;z-index:10;border:1px solid var(--bd)}
+.block-icon:hover .block-tt{display:block}
 
 /* ── Chips ──────────────────────────────────────────────────────────────── */
 .chip{
@@ -1429,19 +1458,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 }
 .log-scroll-btn.visible{display:inline-block}
 
-/* ── Tooltip ────────────────────────────────────────────────────────────── */
-.chip .tt{
-  display:none;position:absolute;z-index:200;
-  bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
-  background:#000000;border:2px solid var(--ac);border-radius:10px;
-  padding:14px 18px;font-size:0.95em;white-space:nowrap;
-  min-width:220px;color:var(--tx);
-  box-shadow:0 8px 32px rgba(0,0,0,0.9),0 0 0 1px rgba(88,166,255,0.2);
-  pointer-events:none;
-}
-.chip .tt span{display:block;line-height:1.7;color:#c9d1d9;font-size:0.95em}
-.chip .tt span:first-child{color:var(--tx);font-weight:700;font-size:1.05em;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
-.chip:hover .tt{display:block}
+/* Tooltip nativo via atributo title — sin HTML inline en el chip */
 .more-label{color:var(--dim);font-style:italic;text-align:center;font-size:0.88em;padding:8px}
 .issue-overflow{display:none}
 .issue-overflow.show{display:table-row}
@@ -1698,9 +1715,12 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 <body>
   <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
     <h1 style="margin:0">🐙 Pipeline V2 <span class="subtitle">— Intrale Platform</span> <span class="health-dot ${stale > 0 ? 'health-warn' : trabajando > 0 ? 'health-active' : 'health-idle'}"></span></h1>
-    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap">
+    <div style="display:flex;gap:16px;font-size:0.78em;color:var(--dim);white-space:nowrap;align-items:center">
       <span>📊 Dashboard: <b style="color:var(--tx)">${dashboardBuild}</b></span>
       <span>🐙 Pulpo: <b style="color:var(--tx)">${pulpoBuild}</b></span>
+      ${fs.existsSync(path.join(PIPELINE, '.paused'))
+        ? '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:#f0a500;color:#000;border-radius:6px;" onclick="pauseAction(\'resume\')" title="Pipeline pausado — click para reanudar">▶ Reanudar</button>'
+        : '<button class="ctl-btn" style="padding:4px 14px;font-size:1.1em;background:rgba(251,188,5,0.18);color:#f0a500;border:1px solid rgba(251,188,5,0.4);border-radius:6px;" onclick="pauseAction(\'pause\')" title="Pausar lanzamientos del pipeline">⏸ Pausar</button>'}
     </div>
   </div>
 
@@ -1748,12 +1768,22 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
           { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
           { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
         ];
+        // Leer umbral configurado
+        let threshold = 3;
+        try {
+          const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
+          threshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+        } catch {}
+        const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
         return items.map(i => {
           const s = pw[i.key];
           const active = s && s.active;
           const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
           const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
-          const tip = active ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar' : 'Activar ' + i.label + ' Priority';
+          let tip = active
+            ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
+            : 'Activar ' + i.label + ' Priority (umbral auto: ' + threshold + ' issues)';
+          if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
           const action = active ? 'off' : 'on';
           const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
           return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
@@ -1872,6 +1902,22 @@ async function ctlAction(target, action) {
     showToast('Error de conexión: ' + e.message, false);
   }
   btns.forEach(b => b.classList.remove('loading'));
+}
+
+// Pause/resume pipeline
+async function pauseAction(action) {
+  try {
+    const resp = await fetch('/api/pause', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const result = await resp.json();
+    showToast(result.msg, result.ok);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Error de conexión: ' + e.message, false);
+  }
 }
 
 // QA component action (individual or all)
@@ -2003,9 +2049,50 @@ function classifyLine(text) {
   return '';
 }
 
+/** Parsear una línea de stream-json de Claude CLI a texto legible para el log viewer */
+function parseStreamJsonLine(raw) {
+  if (!raw || !raw.startsWith('{')) return raw; // No es JSON, devolver tal cual
+  try {
+    const ev = JSON.parse(raw);
+    switch (ev.type) {
+      case 'system':
+        if (ev.subtype === 'init') return '[init] modelo: ' + (ev.model || '?') + ' | tools: ' + (ev.tools || []).length;
+        return '[system] ' + (ev.subtype || '') + ' ' + (ev.message || '');
+      case 'assistant':
+        if (ev.subtype === 'text') return ev.content || '';
+        if (ev.subtype === 'tool_use') {
+          var name = ev.tool_name || ev.name || '?';
+          var inp = '';
+          try {
+            var input = ev.input || ev.tool_input || {};
+            if (input.command) inp = ': ' + input.command.substring(0, 120);
+            else if (input.pattern) inp = ': ' + input.pattern;
+            else if (input.file_path) inp = ': ' + input.file_path;
+            else if (input.skill) inp = ': ' + input.skill;
+            else if (input.query) inp = ': ' + input.query.substring(0, 80);
+          } catch(_) {}
+          return '[Tool] ' + name + inp;
+        }
+        return ev.content || JSON.stringify(ev).substring(0, 200);
+      case 'result':
+        var cost = ev.cost_usd ? ' ($' + ev.cost_usd.toFixed(4) + ')' : '';
+        var dur = ev.duration_ms ? ' ' + Math.round(ev.duration_ms / 1000) + 's' : '';
+        return '[result] ' + (ev.subtype || 'done') + cost + dur;
+      default:
+        // Otros tipos: mostrar tipo + contenido resumido
+        if (ev.content) return '[' + ev.type + '] ' + (typeof ev.content === 'string' ? ev.content.substring(0, 200) : JSON.stringify(ev.content).substring(0, 200));
+        return raw.substring(0, 200);
+    }
+  } catch(_) {
+    return raw; // Parse falló, devolver raw
+  }
+}
+
 function renderLine(text, idx) {
-  const cls = classifyLine(text);
-  const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  var display = parseStreamJsonLine(text);
+  if (!display || !display.trim()) return ''; // Skip empty lines
+  var cls = classifyLine(display);
+  var escaped = display.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   return '<div class="log-line ' + cls + '" data-idx="' + idx + '"><span class="log-line-num">' + (idx + 1) + '</span><span class="log-line-text">' + escaped + '</span></div>';
 }
 
@@ -2860,6 +2947,36 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API: pause/resume pipeline
+  if (req.url === '/api/pause' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { action } = JSON.parse(body);
+        const pauseFile = path.join(PIPELINE, '.paused');
+        if (action === 'resume' || action === 'remove') {
+          try { fs.unlinkSync(pauseFile); } catch {}
+          log(`Pausa eliminada por dashboard (${action})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
+        } else if (action === 'pause') {
+          fs.writeFileSync(pauseFile, new Date().toISOString());
+          log('Pipeline pausado desde dashboard');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, msg: 'Pipeline pausado — solo Telegram activo' }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `Acción "${action}" no válida` }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
   // API: Kill agent (cancelar agente activo)
   if (req.url === '/api/kill-agent' && req.method === 'POST') {
     let body = '';
@@ -2937,11 +3054,20 @@ const server = http.createServer((req, res) => {
 
         // Escribir manualOverride para que el Pulpo lo consuma en su próximo ciclo
         // También actualizar active/manual inmediatamente para que el dashboard refleje el cambio
+        // Ventanas autoexcluyentes: si activamos una, desactivamos la otra
         current[win].manualOverride = (action === 'on');
         if (action === 'on') {
           current[win].active = true;
           current[win].manual = true;
           current[win].activatedAt = Date.now();
+          // Autoexclusión: desactivar la otra ventana
+          const other = win === 'qa' ? 'build' : 'qa';
+          if (current[other] && current[other].active) {
+            current[other].manualOverride = false;
+            current[other].active = false;
+            current[other].manual = false;
+            current[other].activatedAt = null;
+          }
         } else {
           current[win].active = false;
           current[win].manual = false;

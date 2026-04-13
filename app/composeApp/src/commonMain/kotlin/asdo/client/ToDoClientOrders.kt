@@ -10,7 +10,15 @@ interface ToDoGetClientOrderDetail {
 
 data class RepeatOrderResult(
     val addedItems: List<ClientOrderItem>,
-    val skippedItems: List<ClientOrderItem>
+    val skippedItems: List<SkippedItem>
+)
+
+/**
+ * Item omitido al repetir pedido, con el motivo de exclusión del backend.
+ */
+data class SkippedItem(
+    val item: ClientOrderItem,
+    val reason: ar.com.intrale.shared.client.SkipReason
 )
 
 interface ToDoRepeatOrder {

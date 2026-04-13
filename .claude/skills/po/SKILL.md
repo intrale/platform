@@ -67,6 +67,77 @@ Al iniciar, parsear el primer argumento:
 
 ---
 
+## Verificación de dependencias funcionales (en análisis de issues)
+
+Cuando PO se ejecuta como parte del análisis de un issue del pipeline (modos `validar`, `acceptance`, o el argumento contiene un número de issue), agregar este paso **antes** de emitir el veredicto:
+
+### Paso PRE1: Identificar funcionalidades asumidas
+
+Del body del issue, extraer las funcionalidades que el issue **asume como existentes** desde la perspectiva de producto:
+- Flujos de negocio previos que deben estar implementados (ej: "el usuario ya tiene cuenta" → ¿existe registro?)
+- Endpoints o servicios backend que el issue consume pero que podrían no existir
+- Reglas de negocio referenciadas en `business-rules.md` que requieren implementación previa
+- Roles o permisos que el issue asume pero que podrían no estar desarrollados
+
+### Paso PRE2: Verificar existencia en el codebase
+
+```bash
+# Buscar endpoints/funciones mencionadas
+# Grep por Function/SecuredFunction + tag en Kodein
+# Buscar servicios backend: Comm*, Client*, ToDo*, Do*
+# Buscar pantallas: *Screen.kt en sc/
+```
+
+### Paso PRE3: Buscar issues abiertos que cubran la funcionalidad faltante
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue list --repo intrale/platform --search "<keyword de la funcionalidad>" --state open --json number,title --limit 5
+```
+
+### Paso PRE4: Crear issue de dependencia si la funcionalidad NO existe
+
+```bash
+export PATH="/c/Workspaces/gh-cli/bin:$PATH"
+gh issue create --repo intrale/platform \
+  --title "dep(producto): <descripción de la funcionalidad faltante>" \
+  --body "## Contexto
+Detectado por PO durante validación de producto del issue #<N>.
+
+## Funcionalidad requerida
+<descripción no-técnica de lo que falta — en términos de negocio>
+
+## Por qué es necesario
+El issue #<N> asume que esta funcionalidad existe, pero no hay evidencia de implementación ni issue abierto que la cubra.
+
+## Impacto en el producto
+<qué pasa si se desarrolla #<N> sin esta funcionalidad — flujo incompleto, regla de negocio violada, etc.>
+
+## Criterio de aceptación
+- [ ] <criterio verificable>" \
+  --label "needs-definition,qa:dependency" \
+  --assignee leitolarreta
+```
+
+### Paso PRE5: Vincular y bloquear el issue original
+
+```bash
+gh issue comment <N> --repo intrale/platform --body "📋 **Dependencia de producto detectada por PO:** #<nuevo-issue> — <descripción>. Este issue NO debe desarrollarse hasta que la funcionalidad requerida esté disponible."
+gh issue edit <N> --repo intrale/platform --add-label "blocked:dependencies"
+```
+
+> **Reporte de dependencias de producto:** Si se detectaron dependencias, incluir en el veredicto:
+> ```
+> ### ⚠️ Dependencias de producto detectadas
+> | # | Funcionalidad faltante | Issue creado | Impacto en negocio |
+> |---|----------------------|--------------|-------------------|
+> | 1 | <descripción> | #<nuevo> | <flujo afectado> |
+>
+> **Veredicto automático: REQUIERE CAMBIOS** — El issue tiene dependencias funcionales no resueltas.
+> ```
+
+---
+
 ## Modo: Definir (`/po definir <area>`)
 
 Define los flujos detallados para un área de negocio.
