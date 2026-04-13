@@ -470,59 +470,46 @@ async function handleReset(confirmed) {
 }
 
 async function handleRestart() {
-    await _tgApi.sendMessage("🔄 <b>Reinicio operativo</b> en progreso...");
+    await _tgApi.sendMessage("🔄 <b>Reinicio completo del pipeline</b> en progreso...\n\n<i>Usando cmd.exe /c restart para que los procesos hijos sobrevivan.</i>");
     try {
-        const scriptPath = path.join(_repoRoot, "scripts", "restart-operational-system.js");
-        if (!fs.existsSync(scriptPath)) {
-            await _tgApi.sendMessage("❌ Script no encontrado: <code>scripts/restart-operational-system.js</code>");
-            return;
-        }
-        const { execSync } = require("child_process");
-        const output = execSync("node \"" + scriptPath + "\" --json --notify", {
-            timeout: 30000,
-            encoding: "utf8",
-            stdio: ["pipe", "pipe", "pipe"],
-        });
-        const report = JSON.parse(output);
-        const icon = { ok: "✅", partial: "⚠️", error: "❌" };
-        const stateResetOk = report.stateFiles.filter(f => f.status === "reset").length;
-        const stateTotal = report.stateFiles.length;
-        const cleanedCount = (report.processes.cleaned || []).length;
+        const { exec } = require("child_process");
 
-        let msg = "🔄 <b>Restart Operativo Completado</b>\n\n";
-        msg += "Estado: " + (icon[report.status] || "❓") + " <b>" + report.status.toUpperCase() + "</b>\n\n";
-        msg += "📁 State files: " + stateResetOk + "/" + stateTotal + " reseteados\n";
-        msg += (report.telegram.status === "ok" ? "✅" : "❌") + " Telegram\n";
-        msg += (report.github.status === "ok" ? "✅" : "❌") + " GitHub CLI" + (report.github.account ? " (" + _tgApi.escHtml(report.github.account) + ")" : "") + "\n";
-        msg += (report.java.status === "ok" ? "✅" : "❌") + " Java" + (report.java.version ? " v" + _tgApi.escHtml(report.java.version) : "") + "\n";
-        msg += "🧹 Lockfiles limpiados: " + cleanedCount + "\n";
-        msg += "⏱ Duración: " + report.durationMs + "ms";
-
-        if (report.status !== "ok") {
-            msg += "\n\n<b>Errores:</b>\n";
-            if (report.telegram.status === "error") msg += "• Telegram: " + _tgApi.escHtml(report.telegram.error) + "\n";
-            if (report.github.status === "error") msg += "• GitHub: " + _tgApi.escHtml(report.github.error) + "\n";
-            if (report.java.status === "error") msg += "• Java: " + _tgApi.escHtml(report.java.error) + "\n";
-        }
-
-        await _tgApi.sendLongMessage(msg);
-
-        if (report.status !== "ok") {
-            await _tgApi.telegramPost("sendMessage", {
-                chat_id: _tgApi.getChatId(),
-                text: "¿Qué hacer?",
-                parse_mode: "HTML",
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "🔄 Reintentar", callback_data: "restart_retry" }],
-                        [{ text: "📋 Ver log", callback_data: "restart_log" }],
-                    ]
+        // Usar cmd.exe /c restart para que los procesos spawneados con detached:true
+        // sobrevivan al cierre del padre. Desde Git Bash/hooks el Job Object de Windows
+        // mata los hijos — cmd.exe nativo no tiene ese problema.
+        exec("cmd.exe /c restart", {
+            timeout: 60000,
+            cwd: _repoRoot,
+            env: { ...process.env, PATH: "C:\\Workspaces\\bin;" + process.env.PATH },
+        }, async (error, stdout, stderr) => {
+            try {
+                if (error) {
+                    _log("Error en handleRestart: " + error.message);
+                    await _tgApi.sendMessage(
+                        "❌ Error en reinicio completo:\n<code>" + _tgApi.escHtml(error.message) + "</code>"
+                        + (stderr ? "\n\n<b>stderr:</b>\n<code>" + _tgApi.escHtml(stderr.slice(0, 500)) + "</code>" : "")
+                        + "\n\nIntentar manualmente desde terminal:\n<code>cmd.exe /c restart</code>"
+                    );
+                    return;
                 }
-            });
-        }
+                const output = (stdout || "").trim();
+                let msg = "✅ <b>Restart completo ejecutado</b>\n\n";
+                if (output) {
+                    // Mostrar las últimas líneas del output (puede ser largo)
+                    const lines = output.split("\n");
+                    const tail = lines.slice(-15).join("\n");
+                    msg += "<pre>" + _tgApi.escHtml(tail) + "</pre>";
+                } else {
+                    msg += "Pipeline reiniciado. Los servicios están arrancando.";
+                }
+                await _tgApi.sendMessage(msg);
+            } catch (sendErr) {
+                _log("Error enviando resultado de restart: " + sendErr.message);
+            }
+        });
     } catch (e) {
         _log("Error en handleRestart: " + e.message);
-        await _tgApi.sendMessage("❌ Error en reinicio: <code>" + _tgApi.escHtml(e.message) + "</code>\n\nIntentar manualmente:\n<code>node scripts/restart-operational-system.js --notify</code>");
+        await _tgApi.sendMessage("❌ Error lanzando reinicio: <code>" + _tgApi.escHtml(e.message) + "</code>\n\nIntentar manualmente:\n<code>cmd.exe /c restart</code>");
     }
 }
 
