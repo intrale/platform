@@ -1299,6 +1299,10 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .cell-current{background:rgba(88,166,255,0.07);border-left:3px solid var(--ac)}
 .issue-done{opacity:0.38}
 .issue-listo{opacity:0.65}
+.issue-blocked{background:rgba(248,81,73,0.08)}
+.block-icon{position:relative;margin-left:4px;cursor:help;font-size:0.85em}
+.block-icon .block-tt{display:none;position:absolute;left:50%;transform:translateX(-50%);bottom:120%;background:var(--sf);color:var(--fg);padding:4px 8px;border-radius:4px;font-size:0.8em;white-space:nowrap;z-index:10;border:1px solid var(--bd)}
+.block-icon:hover .block-tt{display:block}
 
 /* ── Chips ──────────────────────────────────────────────────────────────── */
 .chip{
