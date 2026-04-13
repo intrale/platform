@@ -22,7 +22,7 @@ const LOG_DIR = path.join(PIPELINE, 'logs');
 const METRICS_FILE = path.join(PIPELINE, 'metrics-history.jsonl');
 const PROFILES_FILE = path.join(PIPELINE, 'skill-profiles.json');
 const REPORT_SCRIPT = path.join(ROOT, 'scripts', 'report-to-pdf-telegram.js');
-const GH_CLI = process.env.GH_CLI_PATH || '/c/Workspaces/gh-cli/bin/gh';
+const GH_CLI = process.env.GH_CLI_PATH || 'C:/Workspaces/gh-cli/bin/gh.exe';
 const GH_QUEUE_DIR = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
 
 // --- Parse args ---
@@ -89,23 +89,34 @@ function escapeHtml(str) {
 
 // --- Contexto del issue desde GitHub ---
 function fetchIssueContext(issueNum) {
-  try {
-    const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
-    const raw = execSync(
-      `"${ghPath}" issue view ${issueNum} --json title,body,labels --repo intrale/platform`,
-      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
-    ).toString();
-    const data = JSON.parse(raw);
-    const bodyLines = (data.body || '').split('\n').filter(l => l.trim() && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('-'));
-    const summary = bodyLines.slice(0, 3).join(' ').substring(0, 300);
-    return {
-      title: data.title || `Issue #${issueNum}`,
-      labels: (data.labels || []).map(l => l.name),
-      summary: summary || '(sin descripción)',
-    };
-  } catch {
-    return { title: `Issue #${issueNum}`, labels: [], summary: '(GitHub no respondio a tiempo — el issue existe pero no se pudo leer su contenido)' };
+  const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const raw = execSync(
+        `"${ghPath}" issue view ${issueNum} --json title,body,labels --repo intrale/platform`,
+        { timeout: 20000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+      );
+      const data = JSON.parse(raw);
+      const bodyLines = (data.body || '').split('\n').filter(l => l.trim() && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('-'));
+      const summary = bodyLines.slice(0, 3).join(' ').substring(0, 300);
+      return {
+        title: data.title || `Issue #${issueNum}`,
+        labels: (data.labels || []).map(l => l.name),
+        summary: summary || '(sin descripción)',
+      };
+    } catch (e) {
+      console.error(`[rejection-report] fetchIssueContext #${issueNum} intento ${attempt}/${MAX_RETRIES}: ${e.message}`);
+      if (attempt < MAX_RETRIES) {
+        // Esperar 2s antes de reintentar
+        execSync('timeout /t 2 /nobreak >nul 2>&1 || sleep 2', { windowsHide: true, stdio: 'ignore' });
+      }
+    }
   }
+
+  console.error(`[rejection-report] fetchIssueContext #${issueNum} FALLIDO tras ${MAX_RETRIES} intentos — gh path: ${ghPath}, existe: ${fs.existsSync(ghPath)}`);
+  return { title: `Issue #${issueNum}`, labels: [], summary: '(no se pudo leer el issue de GitHub)' };
 }
 
 // --- Historial de rechazos previos del mismo issue ---
@@ -129,6 +140,9 @@ function getRejectHistory(issueNum) {
                   fase: f,
                   motivo: data.motivo || 'Sin motivo',
                   rechazadoPor: data.rechazado_por || 'desconocido',
+                  criteriosNoVerificados: data.criterios_no_verificados || [],
+                  evidenciaParcial: data.evidencia_parcial || [],
+                  modo: data.modo || null,
                 });
               }
             } catch {}
@@ -173,11 +187,18 @@ function classifyRootCause(motivo, logTail, exitCode) {
   const motivoLower = (motivo || '').toLowerCase();
   const logLower = (logTail || '').toLowerCase();
 
+  // Detectar señales en el log para no contradecirse entre secciones
+  const hasAppCrash = logLower.includes('unexpected json') || logLower.includes('crash') ||
+    (logLower.includes('exception') && !logLower.includes('doxxexception'));
+  const hasEmulatorIssue = !!logLower.match(/emulator.*(?:not|no)|(?:no|not).*(?:emulador|emulator|device)|adb.*(?:not|error|offline)/i);
+  const hasOOM = logLower.includes('enomem') || logLower.includes('out of memory') || logLower.includes('heap');
+
+  // Infra pura: solo si NO hay evidencia de que la app llegó a correr
   if (logLower.includes('enotfound') || logLower.includes('econnrefused') || logLower.includes('unable to connect'))
     return { tipo: 'INFRAESTRUCTURA', emoji: '🔌', origen: 'EXTERNO',
       desc: 'El agente no pudo conectarse a internet o a un servicio externo. No tiene nada que ver con el código del issue.',
       negocio: 'La prueba no se ejecutó porque hubo un problema de red. El código no fue evaluado.' };
-  if (logLower.includes('enomem') || logLower.includes('out of memory') || logLower.includes('heap'))
+  if (hasOOM && !hasAppCrash)
     return { tipo: 'INFRAESTRUCTURA', emoji: '🔌', origen: 'EXTERNO',
       desc: 'El servidor se quedó sin memoria disponible.',
       negocio: 'La máquina no tenía recursos suficientes para correr la prueba. No es un problema del código.' };
@@ -191,16 +212,24 @@ function classifyRootCause(motivo, logTail, exitCode) {
       negocio: 'El proceso de validación falló al iniciar. Es un problema del entorno, no del código.' };
 
   if (motivoLower.includes('evidencia') || motivoLower.includes('video')) {
-    const hasExternalCrash = logLower.includes('unexpected json') || logLower.includes('crash') ||
-      logLower.includes('exception') && !logLower.includes('doxxexception');
-    return { tipo: 'QA-EVIDENCIA', emoji: '📹',
-      origen: hasExternalCrash ? 'EXTERNO' : 'INTERNO',
-      desc: hasExternalCrash
-        ? 'El agente QA no pudo generar evidencia porque la app crasheó antes de llegar a la pantalla del feature.'
-        : 'El agente QA ejecutó pero no generó el video/audio de evidencia requerido.',
-      negocio: hasExternalCrash
-        ? 'La app tiene un bug en otra pantalla que impide llegar a probar esta funcionalidad. El feature en sí no fue evaluado.'
-        : 'La prueba se ejecutó pero no se grabó correctamente el video. Puede ser un problema técnico de grabación.' };
+    if (hasAppCrash && hasEmulatorIssue) {
+      return { tipo: 'BLOQUEO-MULTIPLE', emoji: '🚧', origen: 'EXTERNO',
+        desc: 'Multiples bloqueos: la app crashea en otra pantalla y ademas hubo problemas con el emulador. La funcionalidad no pudo evaluarse.',
+        negocio: 'La prueba no pudo completarse por dos motivos: la app tiene un bug en otra pantalla que impide navegar al feature, y ademas hubo problemas con el emulador. El feature en si no fue evaluado — los issues de dependencia detallan cada bloqueo.' };
+    }
+    if (hasAppCrash) {
+      return { tipo: 'QA-EVIDENCIA', emoji: '📹', origen: 'EXTERNO',
+        desc: 'El agente QA no pudo generar evidencia porque la app crasheó antes de llegar a la pantalla del feature.',
+        negocio: 'La app tiene un bug en otra pantalla que impide llegar a probar esta funcionalidad. El feature en sí no fue evaluado.' };
+    }
+    if (hasEmulatorIssue) {
+      return { tipo: 'QA-EVIDENCIA', emoji: '📹', origen: 'EXTERNO',
+        desc: 'El emulador o dispositivo Android no estaba disponible. Sin emulador no se puede ejecutar la app ni generar evidencia.',
+        negocio: 'No habia emulador o dispositivo Android disponible para ejecutar la prueba. El feature no fue evaluado — es un problema de infraestructura.' };
+    }
+    return { tipo: 'QA-EVIDENCIA', emoji: '📹', origen: 'INTERNO',
+      desc: 'El agente QA ejecutó pero no generó el video/audio de evidencia requerido.',
+      negocio: 'La prueba se ejecutó pero no se grabó correctamente el video. Puede ser un problema técnico de grabación.' };
   }
 
   if (motivoLower.includes('build') || motivoLower.includes('compilation') || logLower.includes('build failed'))
@@ -683,10 +712,20 @@ function detectExternalDependencies(logTail, motivo) {
     }
   }
 
-  // --- 5. Ordenar: high priority primero ---
-  deps.sort((a, b) => (a.priority === 'high' ? 0 : 1) - (b.priority === 'high' ? 0 : 1));
+  // --- 5. Filtrar contradicciones ---
+  // Si hay evidencia de que la app corrió (crash, exception, login, navegación),
+  // el emulador SÍ estaba disponible — quitar deps de emulador espurias
+  const appRan = deps.some(d =>
+    d.summary.match(/crash|bug|error.*json|dashboard|login|pantalla|navegacion|exception/i)
+  );
+  const filtered = appRan
+    ? deps.filter(d => !d.summary.match(/^(?:emulador|emulator|dispositivo).*(?:no disponible|not|no esta)/i))
+    : deps;
 
-  return deps;
+  // --- 6. Ordenar: high priority primero ---
+  filtered.sort((a, b) => (a.priority === 'high' ? 0 : 1) - (b.priority === 'high' ? 0 : 1));
+
+  return filtered;
 }
 
 // --- Buscar issues de dependencia creados en GitHub ---
@@ -695,16 +734,16 @@ function fetchDependencyIssues(issueNum) {
     const ghPath = fs.existsSync(GH_CLI) ? GH_CLI : 'gh';
     const raw = execSync(
       `"${ghPath}" issue list --label "qa:dependency" --json number,title,state,url --repo intrale/platform --limit 50`,
-      { timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
-    ).toString();
+      { timeout: 20000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+    );
     const allDeps = JSON.parse(raw || '[]');
 
     let isBlocked = false;
     try {
       const issueRaw = execSync(
         `"${ghPath}" issue view ${issueNum} --json labels --repo intrale/platform`,
-        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-      ).toString();
+        { timeout: 15000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+      );
       const issueData = JSON.parse(issueRaw);
       isBlocked = (issueData.labels || []).some(l => l.name === 'blocked:dependencies');
     } catch {}
@@ -713,8 +752,8 @@ function fetchDependencyIssues(issueNum) {
     try {
       const commentsRaw = execSync(
         `"${ghPath}" issue view ${issueNum} --json comments --repo intrale/platform`,
-        { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-      ).toString();
+        { timeout: 15000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+      );
       const comments = JSON.parse(commentsRaw).comments || [];
       for (const c of comments) {
         const body = c.body || '';
@@ -771,19 +810,41 @@ function analyzeRejection(code, elapsed, motivo, logTail, avgCpu, avgMem, skill)
   if (motivoLower.includes('evidencia') || motivoLower.includes('video')) {
     const hasExternalBlocker = logLower.includes('crash') || logLower.includes('unexpected json') ||
       logLower.includes('exception') && !logLower.includes('el feature');
-    if (hasExternalBlocker) {
+    const hasEmulatorIssue = logLower.match(/emulator.*(?:not|no)|(?:no|not).*(?:emulador|emulator|device)|adb.*(?:not|error|offline)/i);
+
+    if (hasExternalBlocker && hasEmulatorIssue) {
+      // Ambos problemas presentes — reportar los dos sin contradecirse
+      result.conclusion = 'Se detectaron multiples bloqueos: (1) hay un bug en otra parte de la app que impide navegar al feature bajo prueba, y (2) problemas con el emulador o dispositivo Android. El rechazo por "evidencia incompleta" es un sintoma de estos bloqueos, no la causa.';
+      result.factors.push('La app tiene un bug en otra pantalla que bloquea la navegacion al feature');
+      result.factors.push('El emulador o dispositivo Android tambien presento problemas');
+      result.factors.push('El rechazo por "evidencia incompleta" es un SINTOMA, no la causa');
+      if (logLower.includes('unexpected json')) result.factors.push('Error de parsing JSON: el backend devuelve campos que la app no conoce');
+    } else if (hasExternalBlocker) {
       result.conclusion = 'El agente QA intento probar el feature pero la app tiene un bug en OTRA pantalla que impide llegar a la funcionalidad. El rechazo dice "evidencia incompleta" pero la causa real es que la app crashea antes de poder probar nada.';
       result.factors.push('La app crashea antes de llegar al feature bajo prueba');
       result.factors.push('El rechazo por "evidencia incompleta" es un SINTOMA, no la causa');
       if (logLower.includes('unexpected json')) result.factors.push('Error de parsing JSON: el backend devuelve campos que la app no conoce');
-      result.suggestion = 'Corregir el bug bloqueante en otra parte de la app (ver dependencias externas abajo). Este issue NO necesita cambios.';
-      result.steps = ['Identificar el bug que crashea la app (ver log)', 'Crear un issue separado para corregir ese bug', 'Marcar este issue como bloqueado por el nuevo issue', 'Reintentar QA una vez que el bug bloqueante este corregido'];
+    } else if (hasEmulatorIssue) {
+      result.conclusion = 'El emulador o dispositivo Android no estaba disponible o no respondio durante la prueba. Sin emulador no se puede ejecutar la app ni generar evidencia de video.';
+      result.factors.push('Emulador o dispositivo Android no disponible');
+      if (motivoLower.includes('video_size')) result.factors.push('No se genero video porque no habia dispositivo donde ejecutar la app');
     } else {
       result.conclusion = 'El agente QA ejecuto la prueba pero no genero evidencia valida (video o audio). Puede ser un problema tecnico de grabacion (emulador, screenrecord, permisos).';
       result.factors.push('Gate de evidencia on-exit rechazo el resultado');
       if (motivoLower.includes('video_size')) result.factors.push('Video ausente o demasiado pequeno (<200KB)');
       if (motivoLower.includes('audio')) result.factors.push('Video sin narracion de audio');
       if (motivoLower.includes('no encontrado')) result.factors.push('Archivo de video no encontrado en disco');
+    }
+
+    // Steps y suggestion: cuando hay dependencias externas, referenciarlas directamente
+    if (result.externalDeps.length > 0) {
+      result.suggestion = 'Este issue esta bloqueado por ' + result.externalDeps.length + ' dependencia(s) externa(s). No requiere cambios propios — se desbloqueara automaticamente cuando se resuelvan los issues de dependencia.';
+      result.steps = result.externalDeps.map(d => 'Resolver: ' + (typeof d === 'object' ? d.summary : d));
+      result.steps.push('Una vez resueltas todas las dependencias, el pipeline reintentara QA automaticamente');
+    } else if (hasExternalBlocker || hasEmulatorIssue) {
+      result.suggestion = 'Resolver los bloqueos externos detectados. Este issue NO necesita cambios propios.';
+      result.steps = ['Revisar las dependencias externas listadas en este reporte', 'Resolver cada una en su propio issue', 'El pipeline reintentara QA automaticamente cuando se desbloquee'];
+    } else {
       result.suggestion = 'Verificar que el emulador este corriendo y que screenrecord funcione. Reintentar la prueba QA.';
       result.steps = ['Verificar que el emulador Android este levantado y respondiendo', 'Confirmar que screenrecord tiene permisos y espacio', 'Re-ejecutar la validacion QA'];
     }
@@ -855,9 +916,9 @@ function analyzeRejection(code, elapsed, motivo, logTail, avgCpu, avgMem, skill)
   if (lastAgentMsg && lastAgentMsg !== lastToolErr) result.factors.push('Diagnostico del agente: ' + lastAgentMsg.substring(0, 100).replace(/\n/g, ' '));
 
   if (result.externalDeps.length > 0) {
-    result.suggestion = 'Se detectaron ' + result.externalDeps.length + ' dependencias externas que pueden estar bloqueando. Resolver primero las dependencias y luego reintentar.';
-    result.steps = result.externalDeps.map((d, i) => (typeof d === 'object' ? d.summary : d));
-    result.steps.push('Una vez resueltas las dependencias, reintentar automaticamente');
+    result.suggestion = 'Este issue esta bloqueado por ' + result.externalDeps.length + ' dependencia(s) externa(s). No requiere cambios propios — se desbloqueara automaticamente cuando se resuelvan los issues de dependencia.';
+    result.steps = result.externalDeps.map(d => 'Resolver: ' + (typeof d === 'object' ? d.summary : d));
+    result.steps.push('Una vez resueltas todas las dependencias, el pipeline reintentara automaticamente');
   } else {
     result.suggestion = 'Revisar el log del agente enfocandose en los errores y el diagnostico extraido arriba.';
     result.steps = ['Revisar el detalle del error extraido arriba', 'Identificar si es un problema del codigo, infra o dependencia', 'Corregir y reintentar'];
@@ -1029,10 +1090,19 @@ ${rejectHistory.length > 1 ? `
 <h2>Historial de Rechazos (este issue)</h2>
 <div class="history-box">
   <p>Este issue ha sido rechazado <strong>${rejectHistory.length} veces</strong>:</p>
-  <table>
-    <tr><th>Agente</th><th>Fase</th><th>Rechazado por</th><th>Motivo resumido</th></tr>
-    ${rejectHistory.map(h => '<tr><td>' + escapeHtml(h.skill) + '</td><td>' + escapeHtml(h.fase) + '</td><td>' + escapeHtml(h.rechazadoPor) + '</td><td>' + escapeHtml((h.motivo || '').substring(0, 100)) + '</td></tr>').join('')}
-  </table>
+  ${rejectHistory.map((h, i) => `
+  <div style="background:#fff3f3; border:1px solid #e0a0a0; border-radius:6px; padding:12px; margin:10px 0;">
+    <p style="margin:0 0 6px 0;"><strong>Rechazo #${i + 1}</strong> — <code>${escapeHtml(h.skill)}</code> en fase <code>${escapeHtml(h.fase)}</code> (por ${escapeHtml(h.rechazadoPor)})</p>
+    <p style="margin:4px 0; white-space:pre-wrap;">${escapeHtml(h.motivo)}</p>
+    ${h.criteriosNoVerificados && h.criteriosNoVerificados.length > 0 ? `
+    <details style="margin-top:8px;"><summary><strong>Criterios no verificados (${h.criteriosNoVerificados.length})</strong></summary>
+    <ul>${h.criteriosNoVerificados.map(c => '<li>' + escapeHtml(c) + '</li>').join('')}</ul>
+    </details>` : ''}
+    ${h.evidenciaParcial && h.evidenciaParcial.length > 0 ? `
+    <details style="margin-top:4px;"><summary><strong>Evidencia parcial</strong></summary>
+    <ul>${h.evidenciaParcial.map(e => '<li>' + escapeHtml(e) + '</li>').join('')}</ul>
+    </details>` : ''}
+  </div>`).join('')}
 </div>` : ''}
 
 <h2>Informacion del Agente</h2>
@@ -1155,7 +1225,11 @@ function generateNarration(data) {
   parts.push(`Causa raíz: ${rootCause.desc}. Clasificación: ${rootCause.tipo}. ${origenTexto}`);
 
   if (rejectHistory.length > 1) {
-    parts.push(`Este issue ya fue rechazado ${rejectHistory.length} veces. Los rechazos anteriores fueron por: ${rejectHistory.map(h => h.skill + ' en fase ' + h.fase).join(', ')}.`);
+    parts.push(`Atención: este issue ya fue rechazado ${rejectHistory.length} veces.`);
+    for (const h of rejectHistory.slice(-3)) {
+      const motivoCorto = (h.motivo || '').split('.').slice(0, 2).join('.').substring(0, 200);
+      parts.push(`Rechazo de ${h.skill} en fase ${h.fase}: ${motivoCorto}.`);
+    }
   }
 
   parts.push(`Análisis de la situación: ${analysis.conclusion}`);
