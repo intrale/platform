@@ -109,6 +109,7 @@ function parseCommand(text) {
     if (trimmed === "/limpiar") return { type: "limpiar" };
     if (trimmed === "/detalle" || trimmed === "/mas") return { type: "detalle" };
     if (trimmed === "/restart") return { type: "restart" };
+    if (trimmed === "/restart pausado" || trimmed === "/restart --paused") return { type: "restart", paused: true };
     if (trimmed === "/session") return { type: "session" };
     if (trimmed === "/session clear") return { type: "session_clear" };
 
@@ -469,15 +470,17 @@ async function handleReset(confirmed) {
     }
 }
 
-async function handleRestart() {
-    await _tgApi.sendMessage("🔄 <b>Reinicio completo del pipeline</b> en progreso...\n\n<i>Usando cmd.exe /c restart para que los procesos hijos sobrevivan.</i>");
+async function handleRestart(paused) {
+    const mode = paused ? "pausado" : "completo";
+    const cmd = paused ? "cmd.exe /c restart --paused" : "cmd.exe /c restart";
+    await _tgApi.sendMessage("🔄 <b>Reinicio " + mode + " del pipeline</b> en progreso..." + (paused ? "\n\n<i>Modo pausado: Telegram + dashboard activos, sin intake ni agentes.</i>" : "\n\n<i>Usando cmd.exe /c restart para que los procesos hijos sobrevivan.</i>"));
     try {
         const { exec } = require("child_process");
 
         // Usar cmd.exe /c restart para que los procesos spawneados con detached:true
         // sobrevivan al cierre del padre. Desde Git Bash/hooks el Job Object de Windows
         // mata los hijos — cmd.exe nativo no tiene ese problema.
-        exec("cmd.exe /c restart", {
+        exec(cmd, {
             timeout: 60000,
             cwd: _repoRoot,
             env: { ...process.env, PATH: "C:\\Workspaces\\bin;" + process.env.PATH },
