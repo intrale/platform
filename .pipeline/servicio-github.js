@@ -173,6 +173,55 @@ function retryFailedOnCompletes() {
   }
 }
 
+// --- Cache de labels existentes (se refresca cada 10 min) ---
+let labelCache = new Set();
+let labelCacheTs = 0;
+const LABEL_CACHE_TTL = 10 * 60 * 1000;
+
+function refreshLabelCache() {
+  if (Date.now() - labelCacheTs < LABEL_CACHE_TTL && labelCache.size > 0) return;
+  try {
+    const raw = execSync(`"${GH_BIN}" label list --json name --limit 200 --repo intrale/platform`, {
+      cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
+    });
+    const labels = JSON.parse(raw || '[]');
+    labelCache = new Set(labels.map(l => l.name));
+    labelCacheTs = Date.now();
+    log(`Label cache refrescado: ${labelCache.size} labels`);
+  } catch (e) {
+    log(`Error refrescando label cache: ${e.message}`);
+  }
+}
+
+const LABEL_COLORS = {
+  'qa:dependency': 'D93F0B',
+  'blocked:dependencies': 'B60205',
+  'needs-definition': 'ededed',
+};
+
+function ensureLabels(labelsStr) {
+  if (!labelsStr) return;
+  refreshLabelCache();
+  const names = labelsStr.split(',').map(s => s.trim()).filter(Boolean);
+  for (const name of names) {
+    if (labelCache.has(name)) continue;
+    const color = LABEL_COLORS[name] || 'ededed';
+    try {
+      execSync(`"${GH_BIN}" label create "${esc(name)}" --color "${color}" --repo intrale/platform`, {
+        cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true
+      });
+      labelCache.add(name);
+      log(`Label "${name}" creado automáticamente`);
+    } catch (e) {
+      if (e.message && e.message.includes('already exists')) {
+        labelCache.add(name);
+      } else {
+        log(`Error creando label "${name}": ${e.message}`);
+      }
+    }
+  }
+}
+
 // --- Procesamiento de cola ---
 function processQueue() {
   const files = listWorkFiles(PENDIENTE);
@@ -195,6 +244,7 @@ function processQueue() {
           break;
 
         case 'label':
+          ensureLabels(data.label);
           execSync(`"${GH_BIN}" issue edit ${data.issue} --add-label "${esc(data.label)}"`, {
             cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true
           });
@@ -209,6 +259,7 @@ function processQueue() {
           break;
 
         case 'create-issue': {
+          ensureLabels(data.labels);
           const output = execSync(
             `"${GH_BIN}" issue create --title "${esc(data.title)}" --body "${esc(data.body)}" --label "${esc(data.labels)}" --repo ${data.repo || 'intrale/platform'}`,
             { cwd: ROOT, encoding: 'utf8', timeout: 20000, windowsHide: true }
